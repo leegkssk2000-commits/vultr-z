@@ -48,10 +48,14 @@ FIELD_ALIASES = {
 STATE_ALIASES = {
     "equity_series": ("equity_series", "equity_curve", "equity"),
     "virtual_equity": ("virtual_equity", "virtual_equity_value"),
+    "wallet_balance": ("wallet_balance", "walletBalance", "balance"),
+    "totalWalletBalance": ("totalWalletBalance", "total_wallet_balance", "total_wallet"),
+    "availableBalance": ("availableBalance", "available_balance", "available_balance_value", "free_balance"),
     "virtual_asset_pnl": ("virtual_asset_pnl", "virtual_pnl"),
     "bot_team_stats": ("bot_team_stats", "team_stats", "bots"),
 }
 BOT_TEAM_REQUIRED_FIELDS = ("win_rate", "contribution")
+OPTIONAL_VIRTUAL_FIELDS = ("wallet_balance", "totalWalletBalance", "availableBalance")
 
 
 def repo_root() -> Path:
@@ -276,6 +280,7 @@ def _source_has_bindable_data(source: dict[str, Any]) -> bool:
         _positions_from(source)
         or _state_value(source, "equity_series") is not None
         or _state_value(source, "virtual_equity") is not None
+        or any(_state_value(source, field) is not None for field in OPTIONAL_VIRTUAL_FIELDS)
         or _state_value(source, "virtual_asset_pnl") is not None
         or _state_value(source, "bot_team_stats") is not None
     )
@@ -404,6 +409,10 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
             state_payload[field] = value
             if field == "bot_team_stats":
                 missing_fields.extend(_missing_bot_team_stats(value))
+    for field in OPTIONAL_VIRTUAL_FIELDS:
+        value = _state_value(source, field)
+        if value is not None:
+            state_payload[field] = value
 
     status = "HARD_PAUSE" if missing_fields else "PASS"
     hold = bool(missing_fields)
@@ -422,6 +431,7 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "source_path": str(source_path),
         "virtual_equity": state_payload.get("virtual_equity"),
         "virtual_asset_pnl": state_payload.get("virtual_asset_pnl"),
+        **{field: state_payload[field] for field in OPTIONAL_VIRTUAL_FIELDS if field in state_payload},
         **common,
     }
     positions_artifact = {

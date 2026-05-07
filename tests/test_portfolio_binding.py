@@ -37,6 +37,9 @@ class PortfolioBindingTest(unittest.TestCase):
                     ],
                     "equity_series": [{"ts": "2026-05-07T00:00:00Z", "equity": 1000}],
                     "virtual_equity": 1000,
+                    "wallet_balance": 995,
+                    "totalWalletBalance": 1000,
+                    "availableBalance": 750,
                     "virtual_asset_pnl": {"BTCUSDT": 0},
                     "bot_team_stats": {"Alpha": {"win_rate": 100, "contribution": 0}},
                 },
@@ -57,6 +60,38 @@ class PortfolioBindingTest(unittest.TestCase):
             self.assertFalse(state["execution_allowed"])
             self.assertFalse(state["mutation_allowed"])
             self.assertFalse(state["may_emit_to_bot"])
+            virtual = load_or_refresh_artifact("virtual", root)
+            self.assertEqual(virtual["virtual_equity"], 1000)
+            self.assertEqual(virtual["wallet_balance"], 995)
+            self.assertEqual(virtual["totalWalletBalance"], 1000)
+            self.assertEqual(virtual["availableBalance"], 750)
+
+    def test_virtual_balance_only_source_is_bound_but_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_source(
+                root,
+                {
+                    "virtual": {
+                        "walletBalance": 44.5,
+                        "totalWalletBalance": 45.0,
+                        "availableBalance": 12.25,
+                    }
+                },
+            )
+
+            result = build_portfolio_artifacts(root)
+            virtual = load_or_refresh_artifact("virtual", root)
+
+            self.assertEqual(result["status"], "HARD_PAUSE")
+            self.assertTrue(result["portfolio_source_bound"])
+            self.assertEqual(virtual["wallet_balance"], 44.5)
+            self.assertEqual(virtual["totalWalletBalance"], 45.0)
+            self.assertEqual(virtual["availableBalance"], 12.25)
+            self.assertIn("positions", result["missing_fields"])
+            self.assertFalse(virtual["execution_allowed"])
+            self.assertFalse(virtual["mutation_allowed"])
+            self.assertFalse(virtual["may_emit_to_bot"])
 
     def test_missing_fields_hold_without_filling_values(self):
         with tempfile.TemporaryDirectory() as tmp:

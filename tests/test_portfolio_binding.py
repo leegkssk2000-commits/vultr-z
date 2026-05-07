@@ -75,6 +75,16 @@ class PortfolioBindingTest(unittest.TestCase):
             self.assertFalse(positions["mutation_allowed"])
             self.assertFalse(positions["may_emit_to_bot"])
 
+    def test_source_inventory_uses_empty_strings_for_absent_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = build_portfolio_artifacts(Path(tmp))
+
+            self.assertEqual(result["status"], "UNBOUND")
+            self.assertFalse(result["portfolio_source_bound"])
+            self.assertTrue(result["source_inventory"])
+            self.assertTrue(all(row["sha256"] == "" for row in result["source_inventory"]))
+            self.assertTrue(all(isinstance(row["sha256"], str) for row in result["source_inventory"]))
+
     def test_sqlite_paper_ledger_binds_real_pnl_and_keeps_position_hold(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -104,6 +114,7 @@ class PortfolioBindingTest(unittest.TestCase):
             Path("backend/portfolio_binding.py"),
             Path("backend/routers/portfolio.py"),
             Path("wsgi.py"),
+            Path("backend/zops_app_wrapper_v8_observability.py"),
             Path("tests/test_portfolio_binding.py"),
             Path("scripts/smoke_portfolio_binding.py"),
         ]

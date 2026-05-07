@@ -43,4 +43,10 @@ async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
     if path == "/api/portfolio/positions":
         await _send_json(send, 200, load_or_refresh_artifact("positions"))
         return
+    if path == "/api/portfolio/pnl-bars":
+        await _send_json(send, 200, load_or_refresh_artifact("pnl-bars"))
+        return
+    if path == "/api/portfolio/equity-curve":
+        await _send_json(send, 200, load_or_refresh_artifact("equity-curve"))
+        return
     await _send_json(send, 404, {"ok": False, "reason": "not_found"})

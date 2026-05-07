@@ -25,6 +25,22 @@ def _write_artifact(root: Path, kind: str, payload: dict):
     return path
 
 
+def _write_sheets_csv(root: Path, source_ts_ms: str = ""):
+    path = root / "data" / "sources" / "sheets_signal_latest.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "symbol,side,entry,mark,qty,lev,liq,TP,SL,entry_ts,rr,liq_warn,sl_ok,strategy,pos_pct,funding_8h_pct,dd_day_pct,dd_total_pct,liq_buffer_pct,source_ts_ms",
+                f"BTCUSDT,long,104000,104500,0.01,4,92000,108000,101000,2026-05-02T00:00:00Z,2,0,1,Alpha,25,0.01,-0.6,-2.1,12.4,{source_ts_ms}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 async def _asgi_get(path: str) -> dict:
     from backend.zops_app_wrapper_v8_observability import app
 
@@ -67,18 +83,59 @@ class PortfolioBindingTest(unittest.TestCase):
                 labels = {row["label"] for row in artifact["source_inventory"]}
                 self.assertIn(ARTIFACT_NAMES[kind], labels)
 
-    def test_existing_virtual_artifact_reports_missing_balance_fields_without_values(self):
+    def test_unusable_virtual_artifact_without_real_source_is_unbound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _write_artifact(root, "virtual", {"patch": "artifact_virtual"})
+            _write_artifact(root, "virtual", {"patch": "artifact_virtual", "virtual_equity": None})
 
             virtual = load_or_refresh_artifact("virtual", root)
 
+            self.assertEqual(virtual["status"], "UNBOUND")
+            self.assertFalse(virtual["portfolio_source_bound"])
+            self.assertFalse(virtual["execution_allowed"])
+            self.assertFalse(virtual["mutation_allowed"])
+            self.assertFalse(virtual["may_emit_to_bot"])
+
+    def test_sheets_csv_binds_mindata_when_virtual_artifact_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = _write_sheets_csv(root)
+            _write_artifact(
+                root,
+                "virtual",
+                {"patch": "V7_3_1_4_PORTFOLIO_READONLY_CONTRACT_SKELETON", "virtual_equity": None},
+            )
+
+            result = build_portfolio_artifacts(root)
+            virtual = load_or_refresh_artifact("virtual", root)
+            state = load_or_refresh_artifact("state", root)
+            positions = load_or_refresh_artifact("positions", root)
+
+            self.assertEqual(result["status"], "HARD_PAUSE")
+            self.assertEqual(result["missing_fields"], ["wallet_balance"])
             self.assertTrue(virtual["portfolio_source_bound"])
-            self.assertIsNone(virtual["virtual_equity"])
+            self.assertTrue(virtual["source_bound"])
             self.assertIsNone(virtual["wallet_balance"])
-            self.assertIn("virtual_equity", virtual["missing_fields"])
-            self.assertIn("wallet_balance", virtual["missing_fields"])
+            self.assertEqual(virtual["missing_fields"], ["wallet_balance"])
+            self.assertEqual(virtual["symbol"], "BTCUSDT")
+            self.assertEqual(virtual["strategy"], "Alpha")
+            self.assertEqual(virtual["price"], 104500)
+            self.assertEqual(virtual["pos_pct"], 25)
+            self.assertEqual(virtual["lev"], 4)
+            self.assertEqual(virtual["entry_ts"], "2026-05-02T00:00:00Z")
+            self.assertEqual(virtual["liq_price"], 92000)
+            self.assertEqual(virtual["liq_buffer_pct"], 12.4)
+            self.assertEqual(virtual["funding_8h_pct"], 0.01)
+            self.assertEqual(virtual["DD_day_pct"], -0.6)
+            self.assertEqual(virtual["DD_total_pct"], -2.1)
+            self.assertEqual(state["primary_position"]["entry_price"], 104000)
+            self.assertEqual(state["primary_position"]["qty"], 0.01)
+            self.assertEqual(positions["positions"][0]["price"], 104500)
+            self.assertEqual(positions["positions"][0]["leverage"], 4)
+            self.assertEqual(positions["positions"][0]["source_ts_origin"], "file_mtime")
+            self.assertEqual(positions["positions"][0]["source_ts_ms"], int(csv_path.stat().st_mtime * 1000))
+            self.assertNotIn("positions[0].price", virtual["missing_fields"])
+            self.assertNotIn("positions[0].liq_price", virtual["missing_fields"])
             self.assertFalse(virtual["execution_allowed"])
             self.assertFalse(virtual["mutation_allowed"])
             self.assertFalse(virtual["may_emit_to_bot"])

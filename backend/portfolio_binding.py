@@ -94,6 +94,11 @@ def _candidate_paths(root: Path) -> list[Path]:
         "data/portfolio/portfolio_source_latest.json",
         "data/portfolio/portfolio_latest.json",
         "data/portfolio/source_latest.json",
+        "data/cf/portfolio_latest.json",
+        "data/cf/zops_portfolio_latest.json",
+        "data/gs/portfolio_latest.json",
+        "data/gs/zops_portfolio_latest.json",
+        "data/source/portfolio_latest.json",
         "db/portfolio_latest.json",
         "z/db/portfolio_latest.json",
     ):

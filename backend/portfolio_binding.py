@@ -41,15 +41,19 @@ READ_ONLY_CONTRACT_FLAGS = {
 }
 
 FIELD_ALIASES = {
-    "price": ("price", "mark_price", "last_price", "current_price", "close"),
+    "price": ("price", "mark", "mark_price", "last_price", "current_price", "close"),
     "pos_pct": ("pos_pct", "position_pct", "allocation_pct", "pos_percent"),
     "lev": ("lev", "leverage"),
     "entry_ts": ("entry_ts", "entry_time", "opened_at", "created_at"),
-    "liq_price": ("liq_price", "liquidation_price"),
+    "liq_price": ("liq_price", "liq", "liquidation_price"),
     "liq_buffer_pct": ("liq_buffer_pct", "liq_buffer", "liquidation_buffer_pct"),
     "funding_8h_pct": ("funding_8h_pct", "funding_rate_8h_pct", "funding_8h"),
     "DD_day_pct": ("DD_day_pct", "dd_day_pct", "daily_drawdown_pct"),
     "DD_total_pct": ("DD_total_pct", "dd_total_pct", "total_drawdown_pct"),
+}
+POSITION_OPTIONAL_ALIASES = {
+    "entry_price": ("entry_price", "entry"),
+    "qty": ("qty",),
 }
 STATE_ALIASES = {
     "equity_series": ("equity_series", "equity_curve", "equity"),
@@ -64,6 +68,41 @@ STATE_ALIASES = {
 BOT_TEAM_REQUIRED_FIELDS = ("win_rate", "contribution")
 OPTIONAL_VIRTUAL_FIELDS = ("wallet_balance", "totalWalletBalance", "availableBalance")
 VIRTUAL_ARTIFACT_FIELDS = ("virtual_equity", "wallet_balance", "totalWalletBalance", "availableBalance")
+VIRTUAL_POSITION_FIELDS = (
+    "symbol",
+    "strategy",
+    "price",
+    "pos_pct",
+    "lev",
+    "entry_ts",
+    "liq_price",
+    "liq_buffer_pct",
+    "funding_8h_pct",
+    "DD_day_pct",
+    "DD_total_pct",
+)
+NUMERIC_FIELDS = {
+    "price",
+    "entry_price",
+    "mark",
+    "entry",
+    "pos_pct",
+    "lev",
+    "leverage",
+    "liq_price",
+    "liq",
+    "liq_buffer_pct",
+    "funding_8h_pct",
+    "DD_day_pct",
+    "DD_total_pct",
+    "dd_day_pct",
+    "dd_total_pct",
+    "qty",
+    "rr",
+    "TP",
+    "SL",
+    "source_ts_ms",
+}
 
 
 def repo_root() -> Path:
@@ -138,9 +177,36 @@ def _missing_artifact_fields(kind: str, artifact: dict[str, Any]) -> list[str]:
     return []
 
 
+def _has_value(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _has_usable_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None or value == "":
+        return False
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _use_existing_artifact(kind: str, artifact: dict[str, Any]) -> bool:
+    if artifact.get("patch") == "V7_3_1_4_PORTFOLIO_READONLY_CONTRACT_SKELETON":
+        return False
+    if kind != "virtual":
+        return True
+    return any(_has_usable_number(artifact.get(field)) for field in VIRTUAL_ARTIFACT_FIELDS) or any(
+        _has_value(artifact.get(field)) for field in VIRTUAL_POSITION_FIELDS
+    )
+
+
 def _decorate_existing_artifact(kind: str, artifact: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     out = dict(artifact)
-    missing_fields = sorted(set(out.get("missing_fields") or []) | set(_missing_artifact_fields(kind, out)))
+    if isinstance(out.get("missing_fields"), list):
+        missing_fields = sorted(set(out["missing_fields"]))
+    else:
+        missing_fields = sorted(set(_missing_artifact_fields(kind, out)))
     if kind == "virtual":
         for field in VIRTUAL_ARTIFACT_FIELDS:
             out.setdefault(field, None)
@@ -258,6 +324,19 @@ def _read_csv_source(path: Path) -> dict[str, Any] | None:
         return None
     if not rows:
         return None
+    file_ts_ms = _ts_ms(path)
+    for row in rows:
+        for key, value in list(row.items()):
+            if value == "":
+                row[key] = None
+            elif key in NUMERIC_FIELDS:
+                try:
+                    row[key] = float(value) if "." in value else int(value)
+                except (TypeError, ValueError):
+                    pass
+        if row.get("source_ts_ms") is None:
+            row["source_ts_ms"] = file_ts_ms
+            row["source_ts_origin"] = "file_mtime"
     return {"positions": rows, "source_format": "csv"}
 
 
@@ -367,7 +446,7 @@ def find_portfolio_source(root: Path | None = None) -> tuple[Path | None, dict[s
 
 def _pick(container: dict[str, Any], aliases: tuple[str, ...]) -> Any:
     for key in aliases:
-        if key in container and container[key] is not None:
+        if key in container and container[key] is not None and container[key] != "":
             return container[key]
     return None
 
@@ -398,6 +477,12 @@ def _normalize_position(position: dict[str, Any]) -> tuple[dict[str, Any], list[
             missing.append(field)
         else:
             out[field] = value
+    for field, aliases in POSITION_OPTIONAL_ALIASES.items():
+        value = _pick(position, aliases)
+        if value is not None:
+            out[field] = value
+    if out.get("lev") is not None:
+        out.setdefault("leverage", out["lev"])
     return out, missing
 
 
@@ -448,6 +533,7 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
 
     missing_fields: list[str] = []
     normalized_positions: list[dict[str, Any]] = []
+    source_format = source.get("source_format")
     for index, position in enumerate(_positions_from(source)):
         normalized, missing = _normalize_position(position)
         normalized_positions.append(normalized)
@@ -455,15 +541,18 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
     if not normalized_positions:
         missing_fields.append("positions")
 
+    primary_position = normalized_positions[0] if normalized_positions else {}
     state_payload: dict[str, Any] = {
         "source_path": str(source_path),
         "positions_count": len(normalized_positions),
+        "primary_position": primary_position,
         **READ_ONLY_FLAGS,
     }
     for field in ("equity_series", "virtual_equity", "virtual_asset_pnl", "bot_team_stats"):
         value = _state_value(source, field)
         if value is None:
-            missing_fields.append(field)
+            if source_format != "csv":
+                missing_fields.append(field)
         else:
             state_payload[field] = value
             if field == "bot_team_stats":
@@ -472,6 +561,8 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         value = _state_value(source, field)
         if value is not None:
             state_payload[field] = value
+    if source_format == "csv" and "wallet_balance" not in state_payload:
+        missing_fields.append("wallet_balance")
 
     status = "HARD_PAUSE" if missing_fields else "PASS"
     hold = bool(missing_fields)
@@ -489,7 +580,9 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
     virtual_artifact = {
         "source_path": str(source_path),
         "virtual_equity": state_payload.get("virtual_equity"),
+        "wallet_balance": state_payload.get("wallet_balance"),
         "virtual_asset_pnl": state_payload.get("virtual_asset_pnl"),
+        **{field: primary_position.get(field) for field in VIRTUAL_POSITION_FIELDS if field in primary_position},
         **{field: state_payload[field] for field in OPTIONAL_VIRTUAL_FIELDS if field in state_payload},
         **common,
     }
@@ -548,11 +641,20 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
         try:
             artifact = _read_json(path)
             if isinstance(artifact, dict):
-                return _decorate_existing_artifact(kind, artifact, base)
+                if _use_existing_artifact(kind, artifact):
+                    return _decorate_existing_artifact(kind, artifact, base)
         except (OSError, json.JSONDecodeError):
             pass
 
     refresh = build_portfolio_artifacts(root)
+    if path.is_file():
+        try:
+            artifact = _read_json(path)
+            if isinstance(artifact, dict):
+                if refresh.get("portfolio_source_bound") or _use_existing_artifact(kind, artifact):
+                    return _decorate_existing_artifact(kind, artifact, base)
+        except (OSError, json.JSONDecodeError):
+            pass
 
     return {
         "status": "UNBOUND",

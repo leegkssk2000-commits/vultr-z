@@ -1,10 +1,14 @@
+import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from backend.portfolio_binding import ARTIFACT_NAMES, build_portfolio_artifacts, load_or_refresh_artifact
+
+SKELETON_PATCH = "V7_3_1_4_PORTFOLIO_READONLY_CONTRACT_SKELETON"
 
 
 def _write_source(root: Path, payload: dict):
@@ -14,7 +18,108 @@ def _write_source(root: Path, payload: dict):
     return path
 
 
+def _write_artifact(root: Path, kind: str, payload: dict):
+    path = root / "data" / "portfolio" / ARTIFACT_NAMES[kind]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+async def _asgi_get(path: str) -> dict:
+    from backend.zops_app_wrapper_v8_observability import app
+
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await app({"type": "http", "method": "GET", "path": path}, receive, send)
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+    return json.loads(body.decode("utf-8"))
+
+
 class PortfolioBindingTest(unittest.TestCase):
+    def test_existing_required_artifacts_are_served_before_source_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payloads = {
+                "state": {"patch": "artifact_state", "status": "PASS"},
+                "virtual": {"patch": "artifact_virtual", "status": "PASS", "virtual_equity": 10},
+                "positions": {"patch": "artifact_positions", "positions": []},
+                "pnl-bars": {"patch": "artifact_pnl_bars", "bars": []},
+                "equity-curve": {"patch": "artifact_equity_curve", "equity_series": []},
+            }
+            for kind, payload in payloads.items():
+                _write_artifact(root, kind, payload)
+
+            for kind, expected in payloads.items():
+                artifact = load_or_refresh_artifact(kind, root)
+                self.assertEqual(artifact["patch"], expected["patch"])
+                self.assertNotEqual(artifact.get("patch"), SKELETON_PATCH)
+                self.assertTrue(artifact["portfolio_source_bound"])
+                self.assertTrue(artifact["read_only"])
+                self.assertFalse(artifact["execution_allowed"])
+                self.assertFalse(artifact["mutation_allowed"])
+                self.assertFalse(artifact["may_emit_to_bot"])
+                labels = {row["label"] for row in artifact["source_inventory"]}
+                self.assertIn(ARTIFACT_NAMES[kind], labels)
+
+    def test_existing_virtual_artifact_reports_missing_balance_fields_without_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_artifact(root, "virtual", {"patch": "artifact_virtual"})
+
+            virtual = load_or_refresh_artifact("virtual", root)
+
+            self.assertTrue(virtual["portfolio_source_bound"])
+            self.assertIsNone(virtual["virtual_equity"])
+            self.assertIsNone(virtual["wallet_balance"])
+            self.assertIn("virtual_equity", virtual["missing_fields"])
+            self.assertIn("wallet_balance", virtual["missing_fields"])
+            self.assertFalse(virtual["execution_allowed"])
+            self.assertFalse(virtual["mutation_allowed"])
+            self.assertFalse(virtual["may_emit_to_bot"])
+
+    def test_asgi_routes_serve_existing_artifacts_not_skeleton(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payloads = {
+                "state": {"patch": "artifact_state"},
+                "virtual": {"patch": "artifact_virtual", "virtual_equity": 10},
+                "positions": {"patch": "artifact_positions"},
+                "pnl-bars": {"patch": "artifact_pnl_bars"},
+                "equity-curve": {"patch": "artifact_equity_curve"},
+            }
+            for kind, payload in payloads.items():
+                _write_artifact(root, kind, payload)
+            old_home = os.environ.get("Z_HOME")
+            os.environ["Z_HOME"] = str(root)
+            try:
+                route_map = {
+                    "state": "/api/portfolio/state",
+                    "virtual": "/api/portfolio/virtual",
+                    "positions": "/api/portfolio/positions",
+                    "pnl-bars": "/api/portfolio/pnl-bars",
+                    "equity-curve": "/api/portfolio/equity-curve",
+                }
+                for kind, path in route_map.items():
+                    payload = asyncio.run(_asgi_get(path))
+                    self.assertEqual(payload["patch"], payloads[kind]["patch"])
+                    self.assertNotEqual(payload.get("patch"), SKELETON_PATCH)
+                    self.assertTrue(payload["portfolio_source_bound"])
+                    self.assertTrue(payload["read_only"])
+                    self.assertFalse(payload["execution_allowed"])
+                    self.assertFalse(payload["mutation_allowed"])
+                    self.assertFalse(payload["may_emit_to_bot"])
+            finally:
+                if old_home is None:
+                    os.environ.pop("Z_HOME", None)
+                else:
+                    os.environ["Z_HOME"] = old_home
+
     def test_artifacts_are_refreshed_from_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -98,7 +98,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _source_candidates(root: Path) -> list[dict[str, Any]]:
+def _source_candidates(root: Path, include_runtime: bool = True) -> list[dict[str, Any]]:
     env_names = (
         "ZOPS_PORTFOLIO_SOURCE",
         "PORTFOLIO_SOURCE_PATH",
@@ -134,16 +134,17 @@ def _source_candidates(root: Path) -> list[dict[str, Any]]:
     ):
         out.append({"kind": kind, "label": rel, "path": root / rel})
 
-    for kind, path in (
-        ("portfolio", Path("/home/z/z/data/portfolio/portfolio_source_latest.json")),
-        ("cf", Path("/home/z/z/data/cf/portfolio_latest.json")),
-        ("gs", Path("/home/z/z/data/gs/portfolio_latest.json")),
-        ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.json")),
-        ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.csv")),
-        ("ledger", Path("/home/z/z/db/z.sqlite")),
-        ("ledger", Path("/home/z/z/db/logs.db")),
-    ):
-        out.append({"kind": kind, "label": str(path), "path": path})
+    if include_runtime:
+        for kind, path in (
+            ("portfolio", Path("/home/z/z/data/portfolio/portfolio_source_latest.json")),
+            ("cf", Path("/home/z/z/data/cf/portfolio_latest.json")),
+            ("gs", Path("/home/z/z/data/gs/portfolio_latest.json")),
+            ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.json")),
+            ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.csv")),
+            ("ledger", Path("/home/z/z/db/z.sqlite")),
+            ("ledger", Path("/home/z/z/db/logs.db")),
+        ):
+            out.append({"kind": kind, "label": str(path), "path": path})
 
     artifacts = {artifact_path(kind, root).resolve() for kind in ARTIFACT_NAMES}
     unique: list[dict[str, Any]] = []
@@ -174,6 +175,17 @@ def _inventory_item(candidate: dict[str, Any], usable: bool = False, reason: str
         "sha256": _sha256(path) if exists else "",
         "ts_ms": _ts_ms(path) if exists else 0,
     }
+
+
+def _ordered_inventory(inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        inventory,
+        key=lambda row: (
+            0 if row.get("usable") else 1,
+            0 if row.get("exists") else 1,
+            row.get("path", ""),
+        ),
+    )
 
 
 def _read_csv_source(path: Path) -> dict[str, Any] | None:
@@ -270,9 +282,10 @@ def _source_has_bindable_data(source: dict[str, Any]) -> bool:
 
 
 def find_portfolio_source(root: Path | None = None) -> tuple[Path | None, dict[str, Any] | None, list[dict[str, Any]]]:
+    explicit_root = root is not None
     base = root or repo_root()
     inventory: list[dict[str, Any]] = []
-    for candidate in _source_candidates(base):
+    for candidate in _source_candidates(base, include_runtime=not explicit_root):
         path = candidate["path"]
         if not path.is_file():
             inventory.append(_inventory_item(candidate, reason="missing"))
@@ -284,8 +297,8 @@ def find_portfolio_source(root: Path | None = None) -> tuple[Path | None, dict[s
         usable = _source_has_bindable_data(source)
         inventory.append(_inventory_item(candidate, usable=usable, reason="usable" if usable else "no_bindable_fields"))
         if usable:
-            return path, source, inventory
-    return None, None, inventory
+            return path, source, _ordered_inventory(inventory)
+    return None, None, _ordered_inventory(inventory)
 
 
 def _pick(container: dict[str, Any], aliases: tuple[str, ...]) -> Any:
@@ -357,7 +370,7 @@ def _missing_bot_team_stats(value: Any) -> list[str]:
 
 def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
     base = root or repo_root()
-    source_path, source, checked = find_portfolio_source(base)
+    source_path, source, checked = find_portfolio_source(root)
     if source is None or source_path is None:
         return {
             "status": "UNBOUND",
@@ -449,7 +462,7 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
             **READ_ONLY_FLAGS,
         }
 
-    refresh = build_portfolio_artifacts(base)
+    refresh = build_portfolio_artifacts(root)
     path = artifact_path(kind, base)
     if path.is_file():
         try:

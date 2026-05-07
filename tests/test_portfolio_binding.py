@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,7 @@ class PortfolioBindingTest(unittest.TestCase):
                         }
                     ],
                     "equity_series": [{"ts": "2026-05-07T00:00:00Z", "equity": 1000}],
+                    "virtual_equity": 1000,
                     "virtual_asset_pnl": {"BTCUSDT": 0},
                     "bot_team_stats": {"Alpha": {"win_rate": 100, "contribution": 0}},
                 },
@@ -49,6 +51,9 @@ class PortfolioBindingTest(unittest.TestCase):
                 self.assertTrue((root / "data" / "portfolio" / name).is_file())
             state = load_or_refresh_artifact("state", root)
             self.assertNotEqual(state.get("reason"), "portfolio_artifact_missing")
+            self.assertTrue(state["portfolio_source_bound"])
+            self.assertTrue(state["source_inventory"][0]["sha256"])
+            self.assertTrue(state["source_inventory"][0]["ts_ms"])
             self.assertFalse(state["execution_allowed"])
             self.assertFalse(state["mutation_allowed"])
             self.assertFalse(state["may_emit_to_bot"])
@@ -70,12 +75,37 @@ class PortfolioBindingTest(unittest.TestCase):
             self.assertFalse(positions["mutation_allowed"])
             self.assertFalse(positions["may_emit_to_bot"])
 
+    def test_sqlite_paper_ledger_binds_real_pnl_and_keeps_position_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "db" / "z.sqlite"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(db_path) as con:
+                con.execute("CREATE TABLE trades(ts TEXT, symbol TEXT, strategy TEXT, pnl REAL)")
+                con.execute(
+                    "INSERT INTO trades(ts, symbol, strategy, pnl) VALUES(?,?,?,?)",
+                    ("2026-05-07T00:00:00Z", "BTCUSDT", "Alpha", 12.5),
+                )
+                con.commit()
+
+            result = build_portfolio_artifacts(root)
+            virtual = load_or_refresh_artifact("virtual", root)
+
+            self.assertTrue(result["portfolio_source_bound"])
+            self.assertEqual(result["status"], "HARD_PAUSE")
+            self.assertIn("positions", result["missing_fields"])
+            self.assertEqual(virtual["virtual_asset_pnl"][0]["symbol"], "BTCUSDT")
+            self.assertFalse(virtual["execution_allowed"])
+            self.assertFalse(virtual["mutation_allowed"])
+            self.assertFalse(virtual["may_emit_to_bot"])
+
     def test_portfolio_binding_stays_outside_ui_paths(self):
         changed = [
             Path("backend/portfolio_binding.py"),
             Path("backend/routers/portfolio.py"),
             Path("wsgi.py"),
             Path("tests/test_portfolio_binding.py"),
+            Path("scripts/smoke_portfolio_binding.py"),
         ]
         blocked = {"frontend", "static", "templates"}
         for path in changed:

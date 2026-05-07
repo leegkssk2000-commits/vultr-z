@@ -71,7 +71,7 @@ def _read_json(path: Path) -> Any:
         return json.load(handle)
 
 
-def _sha256(path: Path) -> str | None:
+def _sha256(path: Path) -> str:
     try:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -79,14 +79,14 @@ def _sha256(path: Path) -> str | None:
                 digest.update(chunk)
         return digest.hexdigest()
     except OSError:
-        return None
+        return ""
 
 
-def _ts_ms(path: Path) -> int | None:
+def _ts_ms(path: Path) -> int:
     try:
         return int(path.stat().st_mtime * 1000)
     except OSError:
-        return None
+        return 0
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -171,8 +171,8 @@ def _inventory_item(candidate: dict[str, Any], usable: bool = False, reason: str
         "exists": exists,
         "usable": usable,
         "reason": reason,
-        "sha256": _sha256(path) if exists else None,
-        "ts_ms": _ts_ms(path) if exists else None,
+        "sha256": _sha256(path) if exists else "",
+        "ts_ms": _ts_ms(path) if exists else 0,
     }
 
 

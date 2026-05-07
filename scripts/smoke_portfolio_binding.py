@@ -62,6 +62,9 @@ def _assert_binding_paths() -> None:
                     ],
                     "equity_series": [{"ts": "2026-05-07T00:00:00Z", "equity": 1000}],
                     "virtual_equity": 1000,
+                    "wallet_balance": 995,
+                    "totalWalletBalance": 1000,
+                    "availableBalance": 750,
                     "virtual_asset_pnl": {"BTCUSDT": 0},
                     "bot_team_stats": {"Alpha": {"win_rate": 100, "contribution": 0}},
                 }
@@ -70,9 +73,14 @@ def _assert_binding_paths() -> None:
         )
         result = build_portfolio_artifacts(root)
         state = load_or_refresh_artifact("state", root)
+        virtual = load_or_refresh_artifact("virtual", root)
         assert result["status"] == "PASS", result
         assert state["portfolio_source_bound"] is True, state
         assert state["source_inventory"][0]["sha256"], state["source_inventory"]
+        assert virtual["virtual_equity"] == 1000, virtual
+        assert virtual["wallet_balance"] == 995, virtual
+        assert virtual["totalWalletBalance"] == 1000, virtual
+        assert virtual["availableBalance"] == 750, virtual
         assert state["execution_allowed"] is False, state
         assert state["mutation_allowed"] is False, state
         assert state["may_emit_to_bot"] is False, state

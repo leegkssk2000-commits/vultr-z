@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import csv
+import hashlib
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,7 @@ FIELD_ALIASES = {
 }
 STATE_ALIASES = {
     "equity_series": ("equity_series", "equity_curve", "equity"),
+    "virtual_equity": ("virtual_equity", "virtual_equity_value"),
     "virtual_asset_pnl": ("virtual_asset_pnl", "virtual_pnl"),
     "bot_team_stats": ("bot_team_stats", "team_stats", "bots"),
 }
@@ -67,6 +71,24 @@ def _read_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def _sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _ts_ms(path: Path) -> int | None:
+    try:
+        return int(path.stat().st_mtime * 1000)
+    except OSError:
+        return None
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -76,61 +98,194 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _candidate_paths(root: Path) -> list[Path]:
+def _source_candidates(root: Path) -> list[dict[str, Any]]:
     env_names = (
         "ZOPS_PORTFOLIO_SOURCE",
         "PORTFOLIO_SOURCE_PATH",
         "CF_PORTFOLIO_SOURCE",
         "GS_PORTFOLIO_SOURCE",
+        "SHEETS_PORTFOLIO_SOURCE",
+        "PAPER_LEDGER_PATH",
     )
-    out: list[Path] = []
+    out: list[dict[str, Any]] = []
     for name in env_names:
         raw = os.getenv(name)
         if raw:
-            out.append(Path(raw).expanduser())
+            out.append({"kind": "env", "label": name, "path": Path(raw).expanduser()})
 
-    for rel in (
-        "data/portfolio/zops_portfolio_source_latest.json",
-        "data/portfolio/portfolio_source_latest.json",
-        "data/portfolio/portfolio_latest.json",
-        "data/portfolio/source_latest.json",
-        "data/cf/portfolio_latest.json",
-        "data/cf/zops_portfolio_latest.json",
-        "data/gs/portfolio_latest.json",
-        "data/gs/zops_portfolio_latest.json",
-        "data/source/portfolio_latest.json",
-        "db/portfolio_latest.json",
-        "z/db/portfolio_latest.json",
+    for kind, rel in (
+        ("portfolio", "data/portfolio/zops_portfolio_source_latest.json"),
+        ("portfolio", "data/portfolio/portfolio_source_latest.json"),
+        ("portfolio", "data/portfolio/portfolio_latest.json"),
+        ("portfolio", "data/portfolio/source_latest.json"),
+        ("cf", "data/cf/portfolio_latest.json"),
+        ("cf", "data/cf/zops_portfolio_latest.json"),
+        ("gs", "data/gs/portfolio_latest.json"),
+        ("gs", "data/gs/zops_portfolio_latest.json"),
+        ("sheets", "data/sources/sheets_signal_latest.json"),
+        ("sheets", "data/sources/sheets_signal_latest.csv"),
+        ("source", "data/source/portfolio_latest.json"),
+        ("portfolio", "db/portfolio_latest.json"),
+        ("portfolio", "z/db/portfolio_latest.json"),
+        ("ledger", "db/z.sqlite"),
+        ("ledger", "z/db/z.sqlite"),
+        ("ledger", "db/logs.db"),
+        ("ledger", "z/db/logs.db"),
     ):
-        out.append(root / rel)
+        out.append({"kind": kind, "label": rel, "path": root / rel})
+
+    for kind, path in (
+        ("portfolio", Path("/home/z/z/data/portfolio/portfolio_source_latest.json")),
+        ("cf", Path("/home/z/z/data/cf/portfolio_latest.json")),
+        ("gs", Path("/home/z/z/data/gs/portfolio_latest.json")),
+        ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.json")),
+        ("sheets", Path("/home/z/z/data/sources/sheets_signal_latest.csv")),
+        ("ledger", Path("/home/z/z/db/z.sqlite")),
+        ("ledger", Path("/home/z/z/db/logs.db")),
+    ):
+        out.append({"kind": kind, "label": str(path), "path": path})
 
     artifacts = {artifact_path(kind, root).resolve() for kind in ARTIFACT_NAMES}
-    unique: list[Path] = []
+    unique: list[dict[str, Any]] = []
     seen: set[Path] = set()
-    for path in out:
+    for item in out:
+        path = item["path"]
         resolved = path if path.is_absolute() else root / path
         resolved = resolved.resolve()
+        if "backend/.venv" in resolved.as_posix():
+            continue
         if resolved in seen or resolved in artifacts:
             continue
         seen.add(resolved)
-        unique.append(resolved)
+        unique.append({**item, "path": resolved})
     return unique
 
 
-def find_portfolio_source(root: Path | None = None) -> tuple[Path | None, dict[str, Any] | None, list[str]]:
-    base = root or repo_root()
-    checked: list[str] = []
-    for path in _candidate_paths(base):
-        checked.append(str(path))
-        if not path.is_file():
-            continue
+def _inventory_item(candidate: dict[str, Any], usable: bool = False, reason: str | None = None) -> dict[str, Any]:
+    path = candidate["path"]
+    exists = path.is_file()
+    return {
+        "kind": candidate["kind"],
+        "label": candidate["label"],
+        "path": str(path),
+        "exists": exists,
+        "usable": usable,
+        "reason": reason,
+        "sha256": _sha256(path) if exists else None,
+        "ts_ms": _ts_ms(path) if exists else None,
+    }
+
+
+def _read_csv_source(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return None
+    if not rows:
+        return None
+    return {"positions": rows, "source_format": "csv"}
+
+
+def _read_sqlite_source(path: Path) -> dict[str, Any] | None:
+    try:
+        with sqlite3.connect(path) as con:
+            con.row_factory = sqlite3.Row
+            tables = {
+                row["name"]
+                for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            out: dict[str, Any] = {"source_format": "sqlite", "tables": sorted(tables)}
+            if "positions" in tables:
+                out["positions"] = [dict(row) for row in con.execute("SELECT * FROM positions").fetchall()]
+            if "portfolio_positions" in tables and "positions" not in out:
+                out["positions"] = [dict(row) for row in con.execute("SELECT * FROM portfolio_positions").fetchall()]
+            if "equity_series" in tables:
+                out["equity_series"] = [dict(row) for row in con.execute("SELECT * FROM equity_series").fetchall()]
+            if "virtual_equity" in tables and "equity_series" not in out:
+                rows = [dict(row) for row in con.execute("SELECT * FROM virtual_equity").fetchall()]
+                out["equity_series"] = rows
+                if rows:
+                    latest = rows[-1]
+                    out["virtual_equity"] = latest.get("equity", latest)
+            if "virtual_asset_pnl" in tables:
+                out["virtual_asset_pnl"] = [dict(row) for row in con.execute("SELECT * FROM virtual_asset_pnl").fetchall()]
+            trade_cols: set[str] = set()
+            if "trades" in tables:
+                trade_cols = {
+                    row["name"] for row in con.execute("PRAGMA table_info(trades)").fetchall()
+                }
+            if "bot_team_stats" in tables:
+                out["bot_team_stats"] = [dict(row) for row in con.execute("SELECT * FROM bot_team_stats").fetchall()]
+            if "trades" in tables and "virtual_asset_pnl" not in out:
+                if "symbol" not in trade_cols or "pnl" not in trade_cols:
+                    return out
+                rows = [dict(row) for row in con.execute(
+                    "SELECT symbol, SUM(pnl) AS pnl FROM trades GROUP BY symbol"
+                ).fetchall()]
+                if rows:
+                    out["virtual_asset_pnl"] = rows
+            if "trades" in tables and "bot_team_stats" not in out:
+                group_col = "strategy" if "strategy" in trade_cols else "symbol"
+                rows = [dict(row) for row in con.execute(
+                    f"""
+                    SELECT COALESCE({group_col}, '') AS name,
+                           AVG(CASE WHEN pnl > 0 THEN 1.0 ELSE 0.0 END) AS win_rate,
+                           SUM(pnl) AS contribution
+                    FROM trades
+                    GROUP BY COALESCE({group_col}, '')
+                    """
+                ).fetchall()]
+                if rows:
+                    out["bot_team_stats"] = rows
+            return out
+    except sqlite3.Error:
+        return None
+
+
+def _read_candidate_source(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    path = candidate["path"]
+    suffix = path.suffix.lower()
+    if suffix == ".json":
         try:
             data = _read_json(path)
         except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+    if suffix == ".csv":
+        return _read_csv_source(path)
+    if suffix in {".sqlite", ".db"}:
+        return _read_sqlite_source(path)
+    return None
+
+
+def _source_has_bindable_data(source: dict[str, Any]) -> bool:
+    return bool(
+        _positions_from(source)
+        or _state_value(source, "equity_series") is not None
+        or _state_value(source, "virtual_equity") is not None
+        or _state_value(source, "virtual_asset_pnl") is not None
+        or _state_value(source, "bot_team_stats") is not None
+    )
+
+
+def find_portfolio_source(root: Path | None = None) -> tuple[Path | None, dict[str, Any] | None, list[dict[str, Any]]]:
+    base = root or repo_root()
+    inventory: list[dict[str, Any]] = []
+    for candidate in _source_candidates(base):
+        path = candidate["path"]
+        if not path.is_file():
+            inventory.append(_inventory_item(candidate, reason="missing"))
             continue
-        if isinstance(data, dict):
-            return path, data, checked
-    return None, None, checked
+        source = _read_candidate_source(candidate)
+        if source is None:
+            inventory.append(_inventory_item(candidate, reason="unreadable_or_unsupported"))
+            continue
+        usable = _source_has_bindable_data(source)
+        inventory.append(_inventory_item(candidate, usable=usable, reason="usable" if usable else "no_bindable_fields"))
+        if usable:
+            return path, source, inventory
+    return None, None, inventory
 
 
 def _pick(container: dict[str, Any], aliases: tuple[str, ...]) -> Any:
@@ -205,10 +360,12 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
     source_path, source, checked = find_portfolio_source(base)
     if source is None or source_path is None:
         return {
-            "status": "HARD_PAUSE",
+            "status": "UNBOUND",
             "hold": True,
+            "hard_pause": True,
+            "portfolio_source_bound": False,
             "reason": "portfolio_source_missing",
-            "missing_sources": checked,
+            "source_inventory": checked,
             **READ_ONLY_FLAGS,
         }
 
@@ -226,7 +383,7 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "positions_count": len(normalized_positions),
         **READ_ONLY_FLAGS,
     }
-    for field in ("equity_series", "virtual_asset_pnl", "bot_team_stats"):
+    for field in ("equity_series", "virtual_equity", "virtual_asset_pnl", "bot_team_stats"):
         value = _state_value(source, field)
         if value is None:
             missing_fields.append(field)
@@ -240,13 +397,17 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
     common = {
         "status": status,
         "hold": hold,
+        "hard_pause": hold,
+        "portfolio_source_bound": True,
         "missing_fields": sorted(set(missing_fields)),
         "missing_sources": [] if not missing_fields else [str(source_path)],
+        "source_inventory": checked,
         **READ_ONLY_FLAGS,
     }
     state_artifact = {**state_payload, **common}
     virtual_artifact = {
         "source_path": str(source_path),
+        "virtual_equity": state_payload.get("virtual_equity"),
         "virtual_asset_pnl": state_payload.get("virtual_asset_pnl"),
         **common,
     }
@@ -268,8 +429,10 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "status": status,
         "hold": hold,
         "source_path": str(source_path),
+        "portfolio_source_bound": True,
         "artifacts": {kind: str(artifact_path(kind, base)) for kind in artifacts},
         "missing_fields": common["missing_fields"],
+        "source_inventory": checked,
         **READ_ONLY_FLAGS,
     }
 
@@ -278,8 +441,10 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
     base = root or repo_root()
     if kind not in ARTIFACT_NAMES:
         return {
-            "status": "HARD_PAUSE",
+            "status": "UNBOUND",
             "hold": True,
+            "hard_pause": True,
+            "portfolio_source_bound": False,
             "reason": "portfolio_artifact_kind_unknown",
             **READ_ONLY_FLAGS,
         }
@@ -292,14 +457,19 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
             if isinstance(artifact, dict):
                 artifact.setdefault("status", refresh.get("status", "HARD_PAUSE"))
                 artifact.setdefault("hold", refresh.get("hold", True))
+                artifact.setdefault("hard_pause", artifact.get("hold", True))
+                artifact.setdefault("portfolio_source_bound", refresh.get("portfolio_source_bound", False))
+                artifact.setdefault("source_inventory", refresh.get("source_inventory", []))
                 artifact.update(READ_ONLY_FLAGS)
                 return artifact
         except (OSError, json.JSONDecodeError):
             pass
 
     return {
-        "status": "HARD_PAUSE",
+        "status": "UNBOUND",
         "hold": True,
+        "hard_pause": True,
+        "portfolio_source_bound": False,
         "reason": "portfolio_artifact_missing",
         "artifact": str(path),
         "refresh": refresh,

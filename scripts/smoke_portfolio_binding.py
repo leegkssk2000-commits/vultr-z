@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
-from backend.portfolio_binding import build_portfolio_artifacts, load_or_refresh_artifact
-
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.portfolio_binding import build_portfolio_artifacts, load_or_refresh_artifact
+
 CHECKED_FILES = (
     Path("backend/portfolio_binding.py"),
     Path("backend/routers/portfolio.py"),
+    Path("backend/zops_app_wrapper_v8_observability.py"),
     Path("wsgi.py"),
     Path("tests/test_portfolio_binding.py"),
     Path("scripts/smoke_portfolio_binding.py"),

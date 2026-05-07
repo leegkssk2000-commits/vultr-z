@@ -16,6 +16,8 @@ ARTIFACT_NAMES = {
     "state": f"zops_portfolio_state_{ARTIFACT_VERSION}_latest.json",
     "virtual": f"zops_portfolio_virtual_{ARTIFACT_VERSION}_latest.json",
     "positions": f"zops_portfolio_positions_{ARTIFACT_VERSION}_latest.json",
+    "pnl-bars": f"zops_portfolio_pnl_bars_{ARTIFACT_VERSION}_latest.json",
+    "equity-curve": f"zops_portfolio_equity_curve_{ARTIFACT_VERSION}_latest.json",
 }
 REQUIRED_MINDATA_FIELDS = (
     "price",
@@ -32,6 +34,10 @@ READ_ONLY_FLAGS = {
     "execution_allowed": False,
     "mutation_allowed": False,
     "may_emit_to_bot": False,
+}
+READ_ONLY_CONTRACT_FLAGS = {
+    "read_only": True,
+    **READ_ONLY_FLAGS,
 }
 
 FIELD_ALIASES = {
@@ -52,10 +58,12 @@ STATE_ALIASES = {
     "totalWalletBalance": ("totalWalletBalance", "total_wallet_balance", "total_wallet"),
     "availableBalance": ("availableBalance", "available_balance", "available_balance_value", "free_balance"),
     "virtual_asset_pnl": ("virtual_asset_pnl", "virtual_pnl"),
+    "pnl_bars": ("pnl_bars", "pnlBars", "pnl_bars_series"),
     "bot_team_stats": ("bot_team_stats", "team_stats", "bots"),
 }
 BOT_TEAM_REQUIRED_FIELDS = ("win_rate", "contribution")
 OPTIONAL_VIRTUAL_FIELDS = ("wallet_balance", "totalWalletBalance", "availableBalance")
+VIRTUAL_ARTIFACT_FIELDS = ("virtual_equity", "wallet_balance", "totalWalletBalance", "availableBalance")
 
 
 def repo_root() -> Path:
@@ -68,6 +76,28 @@ def artifact_dir(root: Path | None = None) -> Path:
 
 def artifact_path(kind: str, root: Path | None = None) -> Path:
     return artifact_dir(root) / ARTIFACT_NAMES[kind]
+
+
+def artifact_inventory(root: Path | None = None) -> list[dict[str, Any]]:
+    base = root or repo_root()
+    inventory: list[dict[str, Any]] = []
+    for kind, name in ARTIFACT_NAMES.items():
+        path = artifact_dir(base) / name
+        exists = path.is_file()
+        inventory.append(
+            {
+                "kind": "artifact",
+                "artifact_kind": kind,
+                "label": name,
+                "path": str(path),
+                "exists": exists,
+                "usable": exists,
+                "reason": "artifact_found" if exists else "missing",
+                "sha256": _sha256(path) if exists else "",
+                "ts_ms": _ts_ms(path) if exists else 0,
+            }
+        )
+    return _ordered_inventory(inventory)
 
 
 def _read_json(path: Path) -> Any:
@@ -100,6 +130,34 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     tmp.replace(path)
+
+
+def _missing_artifact_fields(kind: str, artifact: dict[str, Any]) -> list[str]:
+    if kind == "virtual":
+        return [field for field in VIRTUAL_ARTIFACT_FIELDS if artifact.get(field) is None]
+    return []
+
+
+def _decorate_existing_artifact(kind: str, artifact: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
+    out = dict(artifact)
+    missing_fields = sorted(set(out.get("missing_fields") or []) | set(_missing_artifact_fields(kind, out)))
+    if kind == "virtual":
+        for field in VIRTUAL_ARTIFACT_FIELDS:
+            out.setdefault(field, None)
+    out["portfolio_source_bound"] = True
+    out["source_bound"] = True
+    out["missing_fields"] = missing_fields
+    data_quality = out.get("data_quality")
+    if isinstance(data_quality, dict):
+        data_quality = dict(data_quality)
+        if data_quality.get("state") == "UNBOUND":
+            data_quality["state"] = out.get("status", "BOUND")
+        data_quality["portfolio_source_bound"] = True
+        out["data_quality"] = data_quality
+    existing_inventory = out.get("source_inventory") if isinstance(out.get("source_inventory"), list) else []
+    out["source_inventory"] = artifact_inventory(root) + existing_inventory
+    out.update(READ_ONLY_CONTRACT_FLAGS)
+    return out
 
 
 def _source_candidates(root: Path, include_runtime: bool = True) -> list[dict[str, Any]]:
@@ -282,6 +340,7 @@ def _source_has_bindable_data(source: dict[str, Any]) -> bool:
         or _state_value(source, "virtual_equity") is not None
         or any(_state_value(source, field) is not None for field in OPTIONAL_VIRTUAL_FIELDS)
         or _state_value(source, "virtual_asset_pnl") is not None
+        or _state_value(source, "pnl_bars") is not None
         or _state_value(source, "bot_team_stats") is not None
     )
 
@@ -383,8 +442,8 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
             "hard_pause": True,
             "portfolio_source_bound": False,
             "reason": "portfolio_source_missing",
-            "source_inventory": checked,
-            **READ_ONLY_FLAGS,
+            "source_inventory": artifact_inventory(base) + checked,
+            **READ_ONLY_CONTRACT_FLAGS,
         }
 
     missing_fields: list[str] = []
@@ -424,7 +483,7 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "missing_fields": sorted(set(missing_fields)),
         "missing_sources": [] if not missing_fields else [str(source_path)],
         "source_inventory": checked,
-        **READ_ONLY_FLAGS,
+        **READ_ONLY_CONTRACT_FLAGS,
     }
     state_artifact = {**state_payload, **common}
     virtual_artifact = {
@@ -432,6 +491,16 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "virtual_equity": state_payload.get("virtual_equity"),
         "virtual_asset_pnl": state_payload.get("virtual_asset_pnl"),
         **{field: state_payload[field] for field in OPTIONAL_VIRTUAL_FIELDS if field in state_payload},
+        **common,
+    }
+    pnl_bars_artifact = {
+        "source_path": str(source_path),
+        "pnl_bars": _state_value(source, "pnl_bars"),
+        **common,
+    }
+    equity_curve_artifact = {
+        "source_path": str(source_path),
+        "equity_series": state_payload.get("equity_series"),
         **common,
     }
     positions_artifact = {
@@ -445,6 +514,8 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "state": state_artifact,
         "virtual": virtual_artifact,
         "positions": positions_artifact,
+        "pnl-bars": pnl_bars_artifact,
+        "equity-curve": equity_curve_artifact,
     }
     for kind, payload in artifacts.items():
         _write_json(artifact_path(kind, base), payload)
@@ -456,7 +527,7 @@ def build_portfolio_artifacts(root: Path | None = None) -> dict[str, Any]:
         "artifacts": {kind: str(artifact_path(kind, base)) for kind in artifacts},
         "missing_fields": common["missing_fields"],
         "source_inventory": checked,
-        **READ_ONLY_FLAGS,
+        **READ_ONLY_CONTRACT_FLAGS,
     }
 
 
@@ -469,24 +540,19 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
             "hard_pause": True,
             "portfolio_source_bound": False,
             "reason": "portfolio_artifact_kind_unknown",
-            **READ_ONLY_FLAGS,
+            **READ_ONLY_CONTRACT_FLAGS,
         }
 
-    refresh = build_portfolio_artifacts(root)
     path = artifact_path(kind, base)
     if path.is_file():
         try:
             artifact = _read_json(path)
             if isinstance(artifact, dict):
-                artifact.setdefault("status", refresh.get("status", "HARD_PAUSE"))
-                artifact.setdefault("hold", refresh.get("hold", True))
-                artifact.setdefault("hard_pause", artifact.get("hold", True))
-                artifact.setdefault("portfolio_source_bound", refresh.get("portfolio_source_bound", False))
-                artifact.setdefault("source_inventory", refresh.get("source_inventory", []))
-                artifact.update(READ_ONLY_FLAGS)
-                return artifact
+                return _decorate_existing_artifact(kind, artifact, base)
         except (OSError, json.JSONDecodeError):
             pass
+
+    refresh = build_portfolio_artifacts(root)
 
     return {
         "status": "UNBOUND",
@@ -496,5 +562,6 @@ def load_or_refresh_artifact(kind: str, root: Path | None = None) -> dict[str, A
         "reason": "portfolio_artifact_missing",
         "artifact": str(path),
         "refresh": refresh,
-        **READ_ONLY_FLAGS,
+        "source_inventory": artifact_inventory(base),
+        **READ_ONLY_CONTRACT_FLAGS,
     }

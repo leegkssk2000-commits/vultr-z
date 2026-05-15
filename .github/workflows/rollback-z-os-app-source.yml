@@ -1,0 +1,71 @@
+name: Rollback z-os-app-source on VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_dir:
+        description: 'latest 또는 app_canonical_deploy_YYYYMMDDTHHMMSSZ'
+        required: false
+        default: 'latest'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run rollback on VPS
+        run: |
+          ssh -i ~/.ssh/vps_key ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            'bash -s' -- "${{ github.event.inputs.backup_dir }}" <<'REMOTE'
+          set -euo pipefail
+
+          INPUT="${1:-latest}"
+          BACKUP_ROOT="/home/z/z/backups"
+
+          echo "INPUT=$INPUT"
+          echo "BACKUP_ROOT=$BACKUP_ROOT"
+
+          if [ "$INPUT" = "latest" ] || [ -z "$INPUT" ]; then
+            TARGET="$(ls -1dt "$BACKUP_ROOT"/app_canonical_deploy_* 2>/dev/null | head -n 1 || true)"
+          elif echo "$INPUT" | grep -q '^/'; then
+            TARGET="$INPUT"
+          else
+            TARGET="$BACKUP_ROOT/$INPUT"
+          fi
+
+          echo "TARGET=$TARGET"
+
+          if [ -z "${TARGET:-}" ]; then
+            echo "NO_BACKUP_FOUND"
+            exit 1
+          fi
+
+          if [ ! -d "$TARGET" ]; then
+            echo "BACKUP_DIR_NOT_FOUND: $TARGET"
+            exit 1
+          fi
+
+          if [ ! -f "$TARGET/rollback.sh" ]; then
+            echo "ROLLBACK_SCRIPT_NOT_FOUND: $TARGET/rollback.sh"
+            exit 1
+          fi
+
+          echo "== rollback script =="
+          ls -lh "$TARGET/rollback.sh"
+
+          echo "== run rollback =="
+          bash "$TARGET/rollback.sh"
+
+          echo "== verify live root =="
+          test -f /var/www/z-os-app/index.html
+          grep -nE 'z-os-app-canonical-source|/assets/index-|z_emergency_runtime_guard' /var/www/z-os-app/index.html | head -20 || true
+
+          echo "RESULT=PASS_ROLLBACK_FROM_BACKUP"
+          REMOTE

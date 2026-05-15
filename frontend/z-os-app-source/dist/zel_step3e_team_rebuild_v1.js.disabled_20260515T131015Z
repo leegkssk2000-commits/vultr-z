@@ -1,0 +1,218 @@
+(function(){
+  'use strict';
+  var KEY='__ZEL_STEP3E_TEAM_REBUILD_V1__';
+  if(window[KEY] && window[KEY].installed) return;
+
+  var DATA={
+    Alpha:{
+      key:'Alpha', cls:'is-active', name:'Alpha Team', state:'active', score:'74/100', tier:'Tier S · primary trend-confirm team',
+      summary:'Primary route team. Holds lead only while trend strength, venue state, and source proof remain inside guard.',
+      route:'trend-confirm', lead:'LBot', support:'MBot · OBot · SBot', authority:'advisory-only / ZEL-owned final action',
+      evidence:'source proof + venue clean + receipt hash', risk:'demote on proof stale, venue risk, or trend decay',
+      roles:{Lead:'LBot trend signal', Confirm:'MBot method confirmation', Venue:'OBot venue/watch', Guard:'SBot safety veto', Reserve:'Delta guard reserve'},
+      supportList:['Best lane when market structure remains directional and venue checks are clean.','Team output is context/advisor only; final action remains ZEL-owned and source-bound.','No app-side order mutation authority is added.'],
+      switchList:['Stay active while proof state, venue state, source age, and trend strength remain valid.','Demote to Beta when range confirmation beats Alpha decay.','Send to Delta if guard trigger, LKG defense, or drawdown defense appears.'],
+      gate:{Source:'required', Proof:'source-required', Receipt:'required', Orders:'blocked', Execution:'read-only'},
+      chips:['state:active','lead=LBot','support=MBot/OBot/SBot','score=74/100','orders=blocked']
+    },
+    Beta:{
+      key:'Beta', cls:'is-standby', name:'Beta Team', state:'standby', score:'74/100', tier:'Tier A · range / mean-revert team',
+      summary:'Fallback-ready range team. Promotes only when Alpha trend edge decays and range confirmation is cleaner.',
+      route:'range-confirm', lead:'MBot', support:'LBot · OBot · SBot', authority:'advisory-only / fallback candidate',
+      evidence:'range confirmation + source proof + venue clean', risk:'reject if trend reclaim beats range signal',
+      roles:{Lead:'MBot range/method queue', Confirm:'LBot trend cross-check', Venue:'OBot venue watch', Guard:'SBot guard reserve', Reserve:'Gamma reclaim lane'},
+      supportList:['Useful when the current move stalls, spread/venue stays stable, and Alpha loses trend priority.','Promotion requires clean range evidence; it cannot override ZEL proof gate.','Keeps route_change as candidate only until source-bound envelope exists.'],
+      switchList:['Promote if range confirmation beats Alpha decay and venue state remains clean.','Return to Alpha if trend confirmation recovers.','Fallback to Gamma if reclaim/range probe fails.'],
+      gate:{Source:'required', Proof:'source-required', Receipt:'required', Orders:'blocked', Execution:'read-only'},
+      chips:['state:standby','lead=MBot','support=LBot/OBot/SBot','score=74/100','fallback-ready']
+    },
+    Gamma:{
+      key:'Gamma', cls:'is-fallback', name:'Gamma Team', state:'fallback', score:'58/100', tier:'Tier B · reclaim / recovery team',
+      summary:'Recovery scout team. Used after failed range/trend handoff, only when venue recovery and slippage checks improve.',
+      route:'reclaim-probe', lead:'OBot', support:'MBot · LBot · SBot', authority:'advisory-only / recovery candidate',
+      evidence:'reclaim evidence + slippage clear + source freshness', risk:'route blocked if venue risk expands',
+      roles:{Lead:'OBot venue/reclaim watcher', Confirm:'MBot recovery method', Venue:'LBot trend recheck', Guard:'SBot safety veto', Reserve:'Delta guard'},
+      supportList:['Best for post-stall recovery checks, not for primary execution.','Needs venue recovery, source age, and slippage confirmation before route escalation.','Rejects quickly if venue risk expands or proof remains stale.'],
+      switchList:['Use only after reclaim evidence and slippage/venue checks clear.','Reject if venue risk expands or spread deteriorates.','Send to Delta when guard trigger or drawdown defense is active.'],
+      gate:{Source:'required', Proof:'source-required', Receipt:'required', Orders:'blocked', Execution:'read-only'},
+      chips:['state:fallback','lead=OBot','support=MBot/LBot/SBot','score=58/100','reclaim-only']
+    },
+    Delta:{
+      key:'Delta', cls:'is-guard', name:'Delta Team', state:'guard', score:'43/100', tier:'Tier C · reserve / defensive guard',
+      summary:'Defense-only team. Blocks or protects on stale proof, LKG defense, or drawdown/venue risk escalation.',
+      route:'guard-defense', lead:'SBot', support:'OBot · MBot', authority:'block/defense only',
+      evidence:'guard trigger + stale proof or LKG defense', risk:'must not open primary execution path',
+      roles:{Lead:'SBot safety veto', Confirm:'OBot venue stress', Venue:'MBot method stress', Guard:'SBot hard guard', Reserve:'none'},
+      supportList:['Used to stop noisy route switching and protect against stale source/proof state.','Can block, defend, or keep hold; it does not create a live order path.','Release only after primary route, proof, and source age recover.'],
+      switchList:['Activate only for stale guard, LKG defense, drawdown defense, or venue stress.','Maintain hold/block until source-bound envelope recovers.','Release back to Alpha/Beta only after proof/source and venue state pass.'],
+      gate:{Source:'required', Proof:'source-required', Receipt:'required', Orders:'blocked', Execution:'read-only'},
+      chips:['state:guard','lead=SBot','support=OBot/MBot','score=43/100','defense-only']
+    }
+  };
+  var ORDER=['Alpha','Beta','Gamma','Delta'];
+  var state=window[KEY]={installed:true,version:'20260515step3e1',nativeHidden:0,rendered:false,modalOpen:null,observer:false};
+
+  function txt(el){ return ((el && el.textContent)||'').replace(/\s+/g,' ').trim(); }
+  function ce(tag,cls,content){ var e=document.createElement(tag); if(cls)e.className=cls; if(content!=null)e.textContent=content; return e; }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function nativeScore(el){
+    if(!el || el.nodeType!==1) return 0;
+    if(el.closest && el.closest('.zel-step3e-root')) return 0;
+    var t=txt(el);
+    if(t.length<160 || t.length>10000) return 0;
+    var s=0;
+    if(/LANE\s*\/\s*TEAM\s*OVERLAY/i.test(t)) s+=50;
+    if(/Active\s*\/\s*standby\s*\/\s*fallback\s*\/\s*rejected/i.test(t)) s+=25;
+    if(/Alpha\s*-\s*source-bound/i.test(t)) s+=12;
+    if(/Beta\s*-\s*Tier\s*A/i.test(t)) s+=12;
+    if(/Gamma\s*-\s*Tier\s*B/i.test(t)) s+=12;
+    if(/Delta\s*-\s*Tier\s*C/i.test(t)) s+=12;
+    if(/Open Zlice proof|TEAM OVERLAY/i.test(t)) s+=4;
+    return s;
+  }
+  function findNativeBlock(){
+    var nodes=[];
+    try{ nodes=Array.prototype.slice.call(document.querySelectorAll('section,article,div')); }catch(e){ return null; }
+    var best=null,bestScore=0,bestLen=Infinity;
+    nodes.forEach(function(el){
+      var s=nativeScore(el); if(s<95) return;
+      var len=txt(el).length;
+      if(s>bestScore || (s===bestScore && len<bestLen)){ best=el; bestScore=s; bestLen=len; }
+    });
+    return best;
+  }
+  function findAnchor(){
+    var native=findNativeBlock();
+    if(native) return native;
+    var nodes=[];
+    try{ nodes=Array.prototype.slice.call(document.querySelectorAll('section,article,div')); }catch(e){ return null; }
+    var best=null,bestLen=Infinity;
+    nodes.forEach(function(el){
+      if(el.closest && el.closest('.zel-step3e-root')) return;
+      var t=txt(el);
+      if(/Advanced\s+ZEL\s+stack/i.test(t) && /live\s*·\s*virtual\s*·\s*advisor/i.test(t)){
+        var len=t.length; if(len<bestLen){ best=el; bestLen=len; }
+      }
+    });
+    return best;
+  }
+  function hideNative(){
+    var n=findNativeBlock();
+    if(!n) return null;
+    if(!n.classList.contains('zel-step3e-native-hidden')){
+      n.classList.add('zel-step3e-native-hidden');
+      n.setAttribute('data-zel-step3e-native-hidden','1');
+      state.nativeHidden++;
+    }
+    return n;
+  }
+  function removeOldOverlays(){
+    var sels=['.zel-team-board-c','.zel-step3c-route-board','[data-zel-step3c="route-board"]','[data-zel-step3d-modal="1"]','[data-zel-step3d-backdrop="1"]','.zel-step3d-modal','.zel-step3d-backdrop'];
+    sels.forEach(function(sel){
+      try{ Array.prototype.slice.call(document.querySelectorAll(sel)).forEach(function(el){ if(!el.closest || !el.closest('.zel-step3e-root')) el.remove(); }); }catch(e){}
+    });
+  }
+  function cardHTML(k){
+    var d=DATA[k];
+    return '<button type="button" class="zel-step3e-card '+d.cls+'" data-zel-step3e-team="'+esc(k)+'" aria-label="open '+esc(d.name)+'">'
+      +'<div class="zel-step3e-cardtop"><div><div class="zel-step3e-name">'+esc(d.name)+'</div><div class="zel-step3e-desc">'+esc(d.tier)+'</div></div><span class="zel-step3e-badge">'+esc(d.state)+'</span></div>'
+      +'<div class="zel-step3e-desc">'+esc(d.summary)+'</div>'
+      +'<div class="zel-step3e-pills">'+d.chips.slice(0,4).map(function(c){return '<span class="zel-step3e-pill">'+esc(c)+'</span>';}).join('')+'</div>'
+      +'<div class="zel-step3e-meta"><div class="zel-step3e-mini"><b>Lead</b><span>'+esc(d.lead)+'</span></div><div class="zel-step3e-mini"><b>Route</b><span>'+esc(d.route)+'</span></div></div>'
+      +'</button>';
+  }
+  function renderRoot(){
+    var old=document.querySelector('.zel-step3e-root');
+    if(old) return old;
+    var root=ce('section','zel-step3e-root');
+    root.setAttribute('data-zel-step3e-root','1');
+    root.innerHTML='<div class="zel-step3e-head"><div><div class="zel-step3e-kicker">ZEL Team System Rebuild</div><div class="zel-step3e-title">Route teams · single sheet</div><div class="zel-step3e-sub">Clean rebuild. Native team cards are hidden; this panel owns the team UI and opens exactly one read-only sheet.</div></div><div class="zel-step3e-mode">NO ORDER MUTATION</div></div><div class="zel-step3e-grid">'+ORDER.map(cardHTML).join('')+'</div><div class="zel-step3e-footer"><span>Alpha/Beta/Gamma/Delta route state · source-bound gate preserved</span><span class="zel-step3e-openhint">tap card</span></div>';
+    root.addEventListener('click',function(ev){
+      var card=ev.target && ev.target.closest ? ev.target.closest('[data-zel-step3e-team]') : null;
+      if(!card) return;
+      ev.preventDefault(); ev.stopPropagation(); if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+      openModal(card.getAttribute('data-zel-step3e-team'));
+    },true);
+    var anchor=hideNative() || findAnchor();
+    if(anchor && anchor.parentNode){ anchor.parentNode.insertBefore(root, anchor.nextSibling); }
+    else {
+      var app=document.querySelector('#root') || document.querySelector('[id*="root" i]') || document.body;
+      app.appendChild(root);
+    }
+    state.rendered=true;
+    return root;
+  }
+  function kv(title,obj,guard){
+    return '<div class="zel-step3e-box '+(guard?'is-gate':'')+'"><div class="zel-step3e-boxtitle">'+esc(title)+'</div><div class="zel-step3e-kv">'+Object.keys(obj).map(function(k){ return '<b>'+esc(k)+'</b><span>'+esc(obj[k])+'</span>'; }).join('')+'</div></div>';
+  }
+  function list(title,arr){
+    return '<div class="zel-step3e-box"><div class="zel-step3e-boxtitle">'+esc(title)+'</div><ul class="zel-step3e-list">'+arr.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+  }
+  function closeModal(){
+    try{ document.body.classList.remove('zel-step3e-modal-open'); }catch(e){}
+    try{ Array.prototype.slice.call(document.querySelectorAll('.zel-step3e-modal,.zel-step3e-backdrop')).forEach(function(el){el.remove();}); }catch(e){}
+    state.modalOpen=null;
+  }
+  function openModal(k){
+    var d=DATA[k] || DATA.Alpha;
+    closeModal(); removeOldOverlays();
+    var back=ce('div','zel-step3e-backdrop'); back.setAttribute('data-zel-step3e-backdrop','1');
+    var m=ce('div','zel-step3e-modal '+d.cls); m.setAttribute('data-zel-step3e-modal','1'); m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
+    m.innerHTML='<div class="zel-step3e-mhead"><div><div class="zel-step3e-mkicker">ZEL Team Route Sheet</div><div class="zel-step3e-mtitle">'+esc(d.name)+' · '+esc(d.state)+'</div><div class="zel-step3e-msub">'+esc(d.summary)+'</div></div><div class="zel-step3e-score"><small>Score</small><div>'+esc(d.score)+'</div></div><button type="button" class="zel-step3e-close" aria-label="close">×</button></div>'
+      +'<div class="zel-step3e-mchips">'+d.chips.map(function(c,i){return '<span class="zel-step3e-mchip '+(i===0?'is-state':'')+'">'+esc(c)+'</span>';}).join('')+'</div>'
+      +'<div class="zel-step3e-mgrid">'
+      +kv('Role Matrix',d.roles,false)
+      +list('Decision Support',d.supportList)
+      +list('Switch Logic',d.switchList)
+      +kv('Proof / Block Gate',d.gate,true)
+      +'</div>'
+      +'<div class="zel-step3e-note"><b>Authority:</b> '+esc(d.authority)+' · <b>Evidence:</b> '+esc(d.evidence)+' · <b>Risk:</b> '+esc(d.risk)+'</div>'
+      +'<div class="zel-step3e-actions"><button type="button" class="zel-step3e-action" data-zel-step3e-proof="1">Open Zlice proof</button><button type="button" class="zel-step3e-action" data-zel-step3e-close="1">Close</button></div>';
+    function stop(ev){ ev.preventDefault(); ev.stopPropagation(); if(ev.stopImmediatePropagation) ev.stopImmediatePropagation(); }
+    back.addEventListener('click',function(ev){ stop(ev); closeModal(); },true);
+    m.addEventListener('click',function(ev){
+      var close=ev.target && ev.target.closest ? ev.target.closest('[data-zel-step3e-close],.zel-step3e-close') : null;
+      var proof=ev.target && ev.target.closest ? ev.target.closest('[data-zel-step3e-proof]') : null;
+      if(close){ stop(ev); closeModal(); return; }
+      if(proof){ stop(ev); closeModal();
+        try{ var b=Array.prototype.slice.call(document.querySelectorAll('button,[role="button"],a')).find(function(x){return /Zlice proof|Open Zlice proof/i.test(txt(x));}); if(b) b.click(); }catch(e){}
+        return;
+      }
+      ev.stopPropagation(); if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    },true);
+    document.body.appendChild(back); document.body.appendChild(m);
+    try{ document.body.classList.add('zel-step3e-modal-open'); }catch(e){}
+    state.modalOpen=d.key;
+    setTimeout(function(){ try{ m.querySelector('.zel-step3e-close').focus(); }catch(e){} },0);
+  }
+  function ensure(){
+    hideNative(); removeOldOverlays(); renderRoot();
+  }
+  var scheduled=false;
+  function scheduleEnsure(){
+    if(scheduled) return; scheduled=true;
+    setTimeout(function(){ scheduled=false; ensure(); },80);
+  }
+  document.addEventListener('keydown',function(ev){ if(ev.key==='Escape') closeModal(); },true);
+  function start(){
+    ensure(); setTimeout(ensure,200); setTimeout(ensure,900);
+    try{ var mo=new MutationObserver(scheduleEnsure); mo.observe(document.documentElement||document.body,{childList:true,subtree:true}); state.observer=true; }catch(e){ state.observer=false; }
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();
+
+  window.__ZEL_STEP3E_TEAM_REBUILD_SCAN__=function(){
+    return {
+      installed:true,
+      version:state.version,
+      rootCount:document.querySelectorAll('.zel-step3e-root').length,
+      nativeHidden:document.querySelectorAll('.zel-step3e-native-hidden,[data-zel-step3e-native-hidden="1"]').length,
+      modalCount:document.querySelectorAll('.zel-step3e-modal').length,
+      backdropCount:document.querySelectorAll('.zel-step3e-backdrop').length,
+      oldOverlayCount:document.querySelectorAll('.zel-team-board-c,.zel-step3c-route-board,[data-zel-step3c="route-board"],[data-zel-step3d-modal="1"],.zel-step3d-modal').length,
+      orderbookRefs:document.querySelectorAll('script[src*="zel_live_orderbook_ws_v6"],script[src*="zel_btc_main_orderbook_v8"],link[href*="zel_live_orderbook_ws_v6"],link[href*="zel_btc_main_orderbook_v8"]').length,
+      ok:document.querySelectorAll('.zel-step3e-root').length===1 && document.querySelectorAll('.zel-step3e-modal').length<=1 && document.querySelectorAll('.zel-team-board-c,.zel-step3c-route-board,[data-zel-step3c="route-board"],[data-zel-step3d-modal="1"],.zel-step3d-modal').length===0
+    };
+  };
+  window.__ZEL_STEP3E_TEAM_REBUILD_OPEN__=openModal;
+  window.__ZEL_STEP3E_TEAM_REBUILD_CLOSE__=closeModal;
+})();

@@ -1,41 +1,60 @@
-cat > "$ROOT/engine/utils/state.py" <<'PY'
-import os, sqlite3
+"""Small state helpers with fail-closed defaults."""
+
+from __future__ import annotations
+
+import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-BASE = Path(__file__).resolve().parents[2] # /home/z/z
-DB = os.getenv("DB_PATH", str(BASE / "db" / "z.sqlite"))
 
-def _now(): return datetime.now(timezone.utc)
+BASE = Path(__file__).resolve().parents[2]
+DB = Path(os.getenv("DB_PATH", str(BASE / "db" / "z.sqlite")))
 
-def _q1(sql, p=()):
-    con = sqlite3.connect(DB); cur = con.cursor()
-    cur.execute(sql, p); r = cur.fetchone()
-    con.close(); return (r[0] if r else None)
 
-def load_state():
-    # returns (mode, started_at: datetime)
-    m = _q1("SELECT mode FROM app_state WHERE id=1")
-    t = _q1("SELECT started_at FROM app_state WHERE id=1")
-    if not m: return "paper", _now()
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _q1(sql: str, params: tuple[Any, ...] = ()) -> Any:
+    if not DB.exists():
+        return None
     try:
-        started = datetime.fromisoformat((t or "").replace("Z","+00:00"))
-    except Exception:
+        with sqlite3.connect(DB) as con:
+            cur = con.cursor()
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
+def load_state() -> tuple[str, datetime]:
+    mode = _q1("SELECT mode FROM app_state WHERE id=1")
+    started_at = _q1("SELECT started_at FROM app_state WHERE id=1")
+    if mode not in {"paper", "shadow"}:
+        return "paper", _now()
+    try:
+        started = datetime.fromisoformat(str(started_at or "").replace("Z", "+00:00"))
+    except ValueError:
         started = _now()
-    return m, started
+    return str(mode), started
 
-def update_mode(mode:str):
-    con = sqlite3.connect(DB); cur = con.cursor()
-    cur.execute("UPDATE app_state SET mode=? WHERE id=1", (mode,))
-    con.commit(); con.close()
 
-def ok_performance(min_trades:int=50, min_pnl:float=0.0):
+def update_mode(mode: str) -> bool:
+    if mode not in {"paper", "shadow"} or not DB.exists():
+        return False
+    try:
+        with sqlite3.connect(DB) as con:
+            con.execute("UPDATE app_state SET mode=? WHERE id=1", (mode,))
+            con.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def ok_performance(min_trades: int, min_pnl: float) -> bool:
     trades = int(_q1("SELECT COUNT(1) FROM trades") or 0)
     pnl = float(_q1("SELECT COALESCE(SUM(pnl),0) FROM trades") or 0.0)
     return trades >= min_trades and pnl >= min_pnl
-PY
-
-# shim (기존 import 대비)
-cat > "$ROOT/engine/util/state.py" <<'PY'
-from engine.utils.state import * # shim for legacy import path
-PY

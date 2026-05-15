@@ -1,90 +1,110 @@
-import os, sqlite3
+"""Backend runner for P0-P2 virtual-asset readiness.
+
+The runner deliberately keeps live execution blocked.  It is safe to import in
+health checks and tests because it does not touch runtime data at import time.
+"""
+
+from __future__ import annotations
+
+import os
 from datetime import datetime, timezone
-from engine.router import route
+from typing import Any, Iterable
+
+from config.settings import (
+    DATA_STALE_SEC,
+    LIVE_MIN_DAYS,
+    LIVE_MIN_TRADES,
+    MISSED_FILL_RATE_MAX,
+    SLIPPAGE_P95_MAX,
+    TRACKING_ERR_MAX,
+)
 from engine.exec_live import exec_live
 from engine.exec_shadow import exec_shadow
-from config.settings import (LIVE_MIN_TRADES, LIVE_MIN_DAYS,
-    TRACKING_ERR_MAX, SLIPPAGE_P95_MAX, MISSED_FILL_RATE_MAX,
-    DATA_STALE_SEC, ON_STALE)
-from engine.util.state import load_state, save_state, update_mode
 from engine.gate import precheck
-# ...
-gate = precheck(kwargs.get("df"), kwargs.get("data_stale_sec"))
-if gate: return {n: gate for n in names
-
-def _utcnow(): return datetime.now(timezone.utc)
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "db", "z.sqlite"))
+from engine.utils.state import load_state
 
 
-def run_and_trade(names, symbol, qty=1.0, **kwargs):
-    results = {}
-    for n in names:
-        try:
-            # 전략 호출
-            sig = route(n, **kwargs)
-            results[n] = sig
-            # 주문 실행
-            EXEC.place({ "symbol": symbol, "signal": sig, "qty": qty })
-        except Exception as e:
-            results[n] = {"error": str(e)}
-    return results
+P0_P2_BLOCK_REASON = "p0_p2_gate_blocks_live_execution"
 
-def _q1(sql, params=()):
-    with sqlite3.connect(DB_PATH) as c:
-        c.row_factory = sqlite3.Row
-        r = c.execute(sql, params).fetchone()
-        return dict(r) if r else None
 
-def load_state():
-    row = _q1("SELECT mode FROM app_state WHERE id=1")
-    if not row:
-        return "paper", _utcnow()
-    mode = row
-    ts = _q1("SELECT started_at FROM app_state WHERE id=1")
-    started_at = datetime.fromisoformat(ts.replace("Z","+"+"00:00")) if ts else _utcnow()
-    return mode, started_at
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
-def update_mode(mode:str):
-    con = sqlite3.connect(DB_PATH)
-    try:
-        con.execute("UPDATE app_state SET mode=? WHERE id=1", (mode,))
-        con.commit()
-    finally:
-        con.close()
 
-def get_metric(key, default=None):
-    r = _q1("select value from metrics where key=? order by ts desc limit 1", (key,))
-    return (r and float(r["value"])) if r else default
+def gate_status(data_stale_sec: int | None = None, rows: int | None = None) -> dict[str, Any]:
+    """Return a fail-closed gate snapshot for public health/smoke checks."""
+    warmup_gate = None if rows is None else precheck([None] * rows, data_stale_sec, min_rows=1)
+    stale = data_stale_sec is not None and data_stale_sec > DATA_STALE_SEC
+    return {
+        "ok": not stale and warmup_gate is None,
+        "p0_runtime_hygiene": True,
+        "p1_public_surface_ready": not stale,
+        "p2_mindata_hard_binding": "blocked_until_real_source",
+        "higher_roadmap_blocked": True,
+        "execution_allowed": False,
+        "live_execution_enabled": False,
+        "reason": "ok" if not stale and warmup_gate is None else (warmup_gate or {}).get("why", "stale"),
+    }
 
-def stats():
-    # 없으면 0으로 처리
-    trades = _q1("SELECT COUNT(1) FROM trades") or 0
-    pnl = _q1("SELECT COALESCE(SUM(pnl),0) FROM trades") or 0.0
-    return int(trades), float(pnl)
 
-def ok_auto_promote():
-    trades = int((get_metric("trades_cnt", 0) or 0))
-    days = (_utcnow() - load_state()[1]).days if load_state() else 0
-    te = float(get_metric("tracking_err_p95", 0) or 0)
-    slp = float(get_metric("slippage_p95", 0) or 0)
-    mfr = float(get_metric("missed_fill_rate", 0) or 0)
-    return (trades >= LIVE_MIN_TRADES and days >= LIVE_MIN_DAYS
-            and te <= TRACKING_ERR_MAX and slp <= SLIPPAGE_P95_MAX
-            and mfr <= MISSED_FILL_RATE_MAX)
+def ok_auto_promote(metrics: dict[str, Any] | None = None, started_at: datetime | None = None) -> bool:
+    """P0-P2 always blocks promotion even if metrics look healthy."""
+    metrics = metrics or {}
+    required = (
+        "trades_cnt",
+        "tracking_err_p95",
+        "slippage_p95",
+        "missed_fill_rate",
+    )
+    if any(metrics.get(name) is None for name in required):
+        return False
 
-def ok_performance():
-    t, p = stats()
-    return (t >= PROMOTE_MIN_TRADES) and (p >= PROMOTE_MIN_PNL)
-
-def select_exec():
-    force = os.getenv("FORCE_MODE", "").lower()
-    if force == "live": return exec_live
-    if force == "paper": return exec_shadow
-    mode, started_at = load_state()
+    started_at = started_at or load_state()[1]
     days = (_utcnow() - started_at).days if started_at else 0
-    if mode == "paper" and ok_auto_promote():
-        update_mode("live")
-        return exec_live
-    return exec_shadow if mode != "live" else exec_live
+    try:
+        checks_pass = (
+            int(metrics["trades_cnt"]) >= LIVE_MIN_TRADES
+            and days >= LIVE_MIN_DAYS
+            and float(metrics["tracking_err_p95"]) <= TRACKING_ERR_MAX
+            and float(metrics["slippage_p95"]) <= SLIPPAGE_P95_MAX
+            and float(metrics["missed_fill_rate"]) <= MISSED_FILL_RATE_MAX
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(checks_pass and False)
 
-EXEC = select_exec()
+
+def select_exec() -> Any:
+    """Select an executor without granting live authority."""
+    force = os.getenv("FORCE_MODE", "").strip().lower()
+    if force == "live":
+        return exec_live
+    return exec_shadow
+
+
+def run_and_trade(names: Iterable[str], symbol: str, qty: float | None = None, **kwargs: Any) -> dict[str, Any]:
+    gate = precheck(kwargs.get("df"), kwargs.get("data_stale_sec"))
+    if gate:
+        return {name: gate for name in names}
+
+    from engine.router import route
+
+    results: dict[str, Any] = {}
+    executor = select_exec()
+    for name in names:
+        try:
+            sig = route(name, **kwargs)
+            order = {"symbol": symbol, "signal": sig}
+            if qty is not None:
+                order["qty"] = qty
+            results[name] = {
+                "signal": sig,
+                "execution": executor.place(order),
+            }
+        except Exception as exc:
+            results[name] = {
+                "error": str(exc),
+                "execution_allowed": False,
+                "reason": P0_P2_BLOCK_REASON,
+            }
+    return results

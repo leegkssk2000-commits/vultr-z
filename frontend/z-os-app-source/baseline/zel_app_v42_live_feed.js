@@ -1,0 +1,1 @@
+window.ZEL_APP_V42_LIVE_FEED={"ok":false,"source":"cf","symbol":"BTCUSDT","price":null,"pos_pct":25.0,"lev":null,"liq_buffer_pct":12.4,"funding_8h_pct":0.01,"DD_day_pct":-0.6,"DD_total_pct":-2.1,"entry_ts":"2026-05-15T18:56:29.383Z","entry_ts_source":"source_ts_fallback","source_ts_ms":1778871389383,"updated_ts_ms":1778871389350,"age_ms":0,"reason":"missing price","history":[]};

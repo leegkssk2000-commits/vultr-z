@@ -1,4 +1,10 @@
 import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "db" / "z.sqlite"))
+LOG_DIR = os.getenv("LOG_DIR", str(BASE_DIR / "logs"))
+
 LIVE_MIN_TRADES = int(os.getenv("LIVE_MIN_TRADES", "60"))
 LIVE_MIN_DAYS = int(os.getenv("LIVE_MIN_DAYS", "90"))
 TRACKING_ERR_MAX = float(os.getenv("TRACKING_ERR_MAX", "0.006"))

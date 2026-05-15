@@ -1,11 +1,36 @@
-cat > "$ROOT/engine/exec_shadow.py" <<'PY'
-from engine.utils.costs import est_slippage, fee_cost
-# filled_price = px + side*est_slippage(spread, vol)
-# pnl -= fee_cost(abs(notional))
+"""Paper/shadow execution adapter.
+
+This module records intent only.  It does not submit orders, mutate exchange
+state, or open live trading authority.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
 class ShadowExec:
-    def place(self, order):
-        return {"ok": True, "mode": "paper", "order": order}
-    def cancel(self, oid):
-        return {"ok": True}
+    mode = "paper"
+
+    def place(self, order: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+        payload = dict(order or {})
+        payload.update(kwargs)
+        return {
+            "ok": True,
+            "status": "accepted_shadow",
+            "mode": self.mode,
+            "execution_allowed": False,
+            "order": payload,
+        }
+
+    def cancel(self, oid: Any = None, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "status": "accepted_shadow_cancel",
+            "mode": self.mode,
+            "execution_allowed": False,
+            "oid": oid,
+        }
+
+
 exec_shadow = ShadowExec()
-PY

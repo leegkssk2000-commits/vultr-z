@@ -1,0 +1,49 @@
+name: Deploy z-os-app-source to VPS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate source exists
+        run: |
+          set -e
+          test -f frontend/z-os-app-source/package.json
+          test -d frontend/z-os-app-source/scripts
+          test -d frontend/z-os-app-source/dist
+
+      - name: Install deploy tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync openssh-client
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload source to VPS
+        run: |
+          rsync -az --delete \
+            --exclude 'node_modules/' \
+            --exclude '*.tar.gz' \
+            -e "ssh -i ~/.ssh/vps_key" \
+            frontend/z-os-app-source/ \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/z/z/frontend/z-os-app-source/
+
+      - name: Validate and deploy on VPS
+        run: |
+          ssh -i ~/.ssh/vps_key ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} '
+            set -e
+            cd /home/z/z/frontend/z-os-app-source
+            npm run validate
+            npm run deploy
+          '

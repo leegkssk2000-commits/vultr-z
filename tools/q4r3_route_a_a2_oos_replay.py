@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
+import os
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -29,6 +31,7 @@ SYMBOLS = (
 
 A2_MODULE = "backend.strategies.ema_ribbon_beam"
 A1_MODULE = "backend.strategies.trend_ma_macd"
+A2_FILE_ENV = "Q4R3_A2_FILE"
 
 WINDOW_15M = 160
 TIMEOUT_MIN = 240
@@ -37,6 +40,28 @@ COST_PCT = 0.10
 
 TUNING_START = pd.Timestamp("2026-06-29 19:30:00", tz="UTC")
 TUNING_END = pd.Timestamp("2026-07-06 18:09:00", tz="UTC")
+
+
+def load_a2_module() -> Any:
+    override = os.environ.get(A2_FILE_ENV, "").strip()
+    if not override:
+        return importlib.import_module(A2_MODULE)
+
+    path = Path(override)
+    if not path.exists():
+        raise FileNotFoundError(f"{A2_FILE_ENV}:{path}")
+
+    spec = importlib.util.spec_from_file_location(
+        "q4r3_ema_ribbon_beam_overlay",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"UNABLE_TO_LOAD_A2_FILE:{path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_1m(symbol: str) -> pd.DataFrame:
@@ -503,7 +528,7 @@ def by_symbol(
 
 
 def main() -> None:
-    a2 = importlib.import_module(A2_MODULE)
+    a2 = load_a2_module()
     a1 = importlib.import_module(A1_MODULE)
 
     frames: Dict[str, pd.DataFrame] = {}
@@ -597,6 +622,7 @@ def main() -> None:
         },
         "source": {
             "a2_module": A2_MODULE,
+            "a2_file_override": os.environ.get(A2_FILE_ENV),
             "a2_sha256": hashlib.sha256(
                 a2_source.encode()
             ).hexdigest(),

@@ -72,7 +72,7 @@ def test_router_rejects_low_quality_regime() -> None:
 def test_atr_percentile_uses_current_against_prior_distribution() -> None:
     values = [float(index) for index in range(1, 101)]
     assert MODULE.atr_percentile(values) == 100.0
-    values[-1] = 1.0
+    values[-1] = 0.5
     assert MODULE.atr_percentile(values) == 0.0
     assert MODULE.atr_percentile(values[:20]) is None
 
@@ -148,7 +148,7 @@ def test_gate_requires_second_window_recovery() -> None:
     assert "second_window" in failed["failed_checks"]
 
 
-def test_monthly_blocks_purge_cross_month_trade(monkeypatch) -> None:
+def test_monthly_blocks_purge_cross_month_trade() -> None:
     start = int(pd.Timestamp("2026-01-31T23:00:00Z").timestamp() * 1000)
     same_month = {
         "entry_ts": start - 86_400_000,

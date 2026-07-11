@@ -44,6 +44,10 @@ payload = {
     "updated_at": datetime.now(timezone.utc).isoformat(),
     "outputs": {key: str(path) for key, path in paths.items()},
     "output_exists": {key: path.exists() for key, path in paths.items()},
+    "raw_path_contract": {
+        "prior_holdout_90d": "*_1m_90d_pre30d.json",
+        "second_holdout_90d": "*_1m_90d_pre90d.json",
+    },
     "order_authority": "blocked",
     "execution_authority": "none",
     "real_order_enabled": False,
@@ -83,7 +87,9 @@ write_status RUNNING "preflight"
 
 for required in \
   "$OVERLAY/tools/q4r3_route_a_raschke_loss_cluster_forensic.py" \
+  "$OVERLAY/tools/q4r3_route_a_raschke_loss_cluster_forensic_runner.py" \
   "$OVERLAY/tests/test_raschke_loss_cluster_forensic.py" \
+  "$OVERLAY/tests/test_raschke_loss_forensic_paths.py" \
   "$ROOT/runtime/q4r3_route_a_raschke_forensic_trades_latest.json" \
   "$ROOT/runtime/q4r3_route_a_raschke_second_holdout_trades_latest.json"
 do
@@ -107,15 +113,18 @@ done
 
 echo "=== RASCHKE LOSS FORENSIC TESTS ==="
 write_status RUNNING "tests"
+Q4R3_ROUTE_A_OVERLAY_ROOT="$OVERLAY" \
 PYTHONPATH="$OVERLAY:$ROOT" \
   "$PYTHON_BIN" -m pytest -q \
-  "$OVERLAY/tests/test_raschke_loss_cluster_forensic.py"
+  "$OVERLAY/tests/test_raschke_loss_cluster_forensic.py" \
+  "$OVERLAY/tests/test_raschke_loss_forensic_paths.py"
 
 echo "=== RASCHKE CROSS-WINDOW LOSS CLUSTER FORENSIC ==="
 write_status RUNNING "cluster_mfe_mae_matched_chart_analysis"
+Q4R3_ROUTE_A_OVERLAY_ROOT="$OVERLAY" \
 PYTHONPATH="$OVERLAY:$ROOT" \
   "$PYTHON_BIN" \
-  "$OVERLAY/tools/q4r3_route_a_raschke_loss_cluster_forensic.py"
+  "$OVERLAY/tools/q4r3_route_a_raschke_loss_cluster_forensic_runner.py"
 
 for output in "$RESULT" "$CLUSTERS" "$PAIRS" "$FIXES" "$CHART_INDEX"; do
   if [ ! -s "$output" ]; then

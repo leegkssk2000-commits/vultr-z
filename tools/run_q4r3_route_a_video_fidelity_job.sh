@@ -2,16 +2,22 @@
 set -Eeuo pipefail
 
 ROOT=/home/z/z
+PYTHON_BIN="$ROOT/.venv/bin/python"
 OVERLAY=${Q4R3_ROUTE_A_OVERLAY_ROOT:-/tmp/q4r3-route-a-video-fidelity}
 STATUS="$ROOT/runtime/q4r3_route_a_video_fidelity_job_latest.json"
 RESULT="$ROOT/runtime/q4r3_route_a_video_fidelity_tournament_latest.json"
 LOG="$ROOT/runtime/q4r3_route_a_video_fidelity_job.log"
 START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "PYTHON_BIN_MISSING:$PYTHON_BIN" >&2
+  exit 127
+fi
+
 write_status() {
   local state="$1"
   local reason="${2:-}"
-  python - "$STATUS" "$state" "$reason" "$START_TS" "$RESULT" <<'PY'
+  "$PYTHON_BIN" - "$STATUS" "$state" "$reason" "$START_TS" "$RESULT" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,7 +55,8 @@ PY
 
 on_error() {
   local code=$?
-  write_status FAILED "exit_code=$code"
+  trap - ERR
+  write_status FAILED "exit_code=$code" || true
   echo "ROUTE_A_VIDEO_FIDELITY_JOB_FAILED exit_code=$code" >&2
   exit "$code"
 }
@@ -61,13 +68,13 @@ write_status RUNNING "tests_and_tournament"
 
 echo "=== ROUTE A VIDEO FIDELITY TESTS ==="
 PYTHONPATH="$OVERLAY:$ROOT" \
-  "$ROOT/.venv/bin/python" -m pytest -q \
+  "$PYTHON_BIN" -m pytest -q \
   "$OVERLAY/tests/test_route_a_video_fidelity.py"
 
 echo "=== ROUTE A VIDEO FIDELITY TOURNAMENT ==="
 Q4R3_ROUTE_A_OVERLAY_ROOT="$OVERLAY" \
 PYTHONPATH="$OVERLAY:$ROOT" \
-  "$ROOT/.venv/bin/python" \
+  "$PYTHON_BIN" \
   "$OVERLAY/tools/q4r3_route_a_video_fidelity_tournament.py"
 
 write_status DONE "tournament_complete"

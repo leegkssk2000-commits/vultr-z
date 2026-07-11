@@ -116,5 +116,6 @@ PYTHONPATH="$OVERLAY:$ROOT" \
 write_status DONE "tournament_complete"
 
 echo "=== ROUTE A VIDEO FIDELITY TOP 10 ==="
-jq '{status, top10: .ranking_cost_0.15[:10], hard_gate, authority}' "$RESULT"
+# Post-result display must never turn a completed tournament into FAILED.
+jq '{status, top10: ."ranking_cost_0.15"[:10], hard_gate, authority}' "$RESULT" || true
 echo "ROUTE_A_VIDEO_FIDELITY_JOB_DONE"

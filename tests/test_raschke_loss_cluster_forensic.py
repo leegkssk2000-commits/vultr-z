@@ -69,7 +69,7 @@ def test_detects_consecutive_and_rolling_loss_cluster() -> None:
     clusters = MODULE.detect_clusters(rows, "candle_direction", "prior_holdout_90d")
     assert clusters
     assert any("consecutive_sl>=3" in cluster["triggers"] for cluster in clusters)
-    assert any(cluster["net_sum_R"] <= -1.5 for cluster in clusters)
+    assert any("rolling_5_net<=-1.5R" in cluster["triggers"] for cluster in clusters)
     assert any(row.get("cluster_ids") for row in rows[1:4])
 
 

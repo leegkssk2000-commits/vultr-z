@@ -64,6 +64,42 @@ trap on_error ERR
 
 mkdir -p "$ROOT/runtime"
 exec > >(tee -a "$LOG") 2>&1
+rm -f "$RESULT"
+write_status RUNNING "preflight_import"
+
+if [ ! -f "$OVERLAY/backend/__init__.py" ] || [ ! -f "$OVERLAY/backend/strategies/__init__.py" ]; then
+  echo "OVERLAY_PACKAGE_MISSING:$OVERLAY" >&2
+  exit 2
+fi
+
+# Python places the current working directory before PYTHONPATH. Running from
+# /home/z/z caused the production backend package to shadow the isolated
+# overlay package. Enter the overlay first so the research-only modules win.
+cd "$OVERLAY"
+
+echo "=== ROUTE A VIDEO FIDELITY IMPORT PREFLIGHT ==="
+PYTHONPATH="$OVERLAY:$ROOT" \
+  "$PYTHON_BIN" - <<'PY'
+import importlib
+import sys
+from pathlib import Path
+expected = Path.cwd().resolve()
+modules = [
+    "backend.strategies.rayner_hist_momentum",
+    "backend.strategies.raschke_macd_ema200",
+    "backend.strategies.fractal_triple_ema_pullback",
+    "backend.strategies.alligator_trend_pullback",
+]
+print("cwd=", expected)
+print("sys.path[:4]=", sys.path[:4])
+for name in modules:
+    module = importlib.import_module(name)
+    path = Path(module.__file__).resolve()
+    print(name, "->", path)
+    if expected not in path.parents:
+        raise RuntimeError(f"OVERLAY_SHADOWED:{name}:{path}")
+PY
+
 write_status RUNNING "tests_and_tournament"
 
 echo "=== ROUTE A VIDEO FIDELITY TESTS ==="

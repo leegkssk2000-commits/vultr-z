@@ -133,7 +133,7 @@ echo "=== RASCHKE V2 TOP 10 ==="
 jq '{
   status,
   verdict,
-  top10: .ranking_cost_0.15[:10],
+  top10: ."ranking_cost_0.15"[:10],
   third_holdout_queue,
   rescue_gate,
   chart_audit,

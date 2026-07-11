@@ -80,7 +80,9 @@ on_error() {
 trap on_error ERR
 
 mkdir -p "$ROOT/runtime"
+: > "$LOG"
 exec > >(tee -a "$LOG") 2>&1
+echo "RUN_START $START_TS"
 rm -f "$RESULT" "$CLUSTERS" "$PAIRS" "$FIXES"
 rm -rf "$ROOT/runtime/loss_cluster_chart_pack"
 write_status RUNNING "preflight"

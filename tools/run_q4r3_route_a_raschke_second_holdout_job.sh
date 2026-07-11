@@ -34,6 +34,7 @@ payload = {
     "updated_at": datetime.now(timezone.utc).isoformat(),
     "result_path": str(result_path),
     "result_exists": result_path.exists(),
+    "collector_mode": "checkpoint_plus_targeted_gap_repair_no_interpolation",
     "order_authority": "blocked",
     "execution_authority": "none",
     "real_order_enabled": False,
@@ -78,7 +79,9 @@ for required in \
   "$OVERLAY/tools/q4r3_route_a_video_fidelity_tournament.py" \
   "$OVERLAY/tools/q4r3_route_a_raschke_forensic_rescue.py" \
   "$OVERLAY/tools/q4r3_route_a_raschke_second_holdout.py" \
-  "$OVERLAY/tests/test_raschke_second_holdout.py"
+  "$OVERLAY/tools/q4r3_route_a_raschke_second_holdout_gap_repair.py" \
+  "$OVERLAY/tests/test_raschke_second_holdout.py" \
+  "$OVERLAY/tests/test_raschke_second_holdout_gap_repair.py"
 do
   if [ ! -f "$required" ]; then
     echo "SECOND_HOLDOUT_OVERLAY_MISSING:$required" >&2
@@ -96,17 +99,25 @@ import importlib.util
 import sys
 from pathlib import Path
 root = Path.cwd().resolve()
-path = root / "tools" / "q4r3_route_a_raschke_second_holdout.py"
-spec = importlib.util.spec_from_file_location("q4r3_second_holdout_preflight", path)
-if spec is None or spec.loader is None:
-    raise RuntimeError(f"IMPORT_SPEC_FAILED:{path}")
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-assert module.FROZEN_MODES == ("source_core", "candle_direction")
-assert module.FROZEN_CONTRACT["target_R"] == 2.0
-assert module.FROZEN_CONTRACT["loss_cap_R"] == -0.5
-print("FROZEN_INPUTS_OK")
+base_path = root / "tools" / "q4r3_route_a_raschke_second_holdout.py"
+repair_path = root / "tools" / "q4r3_route_a_raschke_second_holdout_gap_repair.py"
+for name, path in (
+    ("q4r3_second_holdout_preflight", base_path),
+    ("q4r3_second_holdout_gap_repair_preflight", repair_path),
+):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"IMPORT_SPEC_FAILED:{path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+base = sys.modules["q4r3_second_holdout_preflight"]
+repair = sys.modules["q4r3_second_holdout_gap_repair_preflight"]
+assert base.FROZEN_MODES == ("source_core", "candle_direction")
+assert base.FROZEN_CONTRACT["target_R"] == 2.0
+assert base.FROZEN_CONTRACT["loss_cap_R"] == -0.5
+assert repair.REPAIR_ROUNDS >= 3
+print("FROZEN_INPUTS_AND_GAP_REPAIR_OK")
 PY
 
 write_status RUNNING "tests"
@@ -115,14 +126,15 @@ Q4R3_ROUTE_A_OVERLAY_ROOT="$OVERLAY" \
 PYTHONPATH="$OVERLAY:$ROOT" \
   "$PYTHON_BIN" -m pytest -q \
   "$OVERLAY/tests/test_raschke_forensic_rescue.py" \
-  "$OVERLAY/tests/test_raschke_second_holdout.py"
+  "$OVERLAY/tests/test_raschke_second_holdout.py" \
+  "$OVERLAY/tests/test_raschke_second_holdout_gap_repair.py"
 
-write_status RUNNING "collect_and_replay"
-echo "=== RASCHKE SECOND HOLDOUT COLLECT + REPLAY ==="
+write_status RUNNING "collect_gap_repair_and_replay"
+echo "=== RASCHKE SECOND HOLDOUT COLLECT + GAP REPAIR + REPLAY ==="
 Q4R3_ROUTE_A_OVERLAY_ROOT="$OVERLAY" \
 PYTHONPATH="$OVERLAY:$ROOT" \
   "$PYTHON_BIN" \
-  "$OVERLAY/tools/q4r3_route_a_raschke_second_holdout.py"
+  "$OVERLAY/tools/q4r3_route_a_raschke_second_holdout_gap_repair.py"
 
 write_status DONE "second_holdout_complete"
 
@@ -132,6 +144,7 @@ jq '{
   verdict,
   frozen_modes: .frozen_spec.modes,
   window,
+  collection,
   robust_pass_modes,
   source_core_015: .evaluations.source_core.costs."cost_0.15",
   candle_direction_015: .evaluations.candle_direction.costs."cost_0.15",

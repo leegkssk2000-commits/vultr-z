@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 
@@ -31,6 +32,18 @@ def _row(stamp: int) -> dict[str, float]:
         "close": 100.5,
         "volume": 10.0,
     }
+
+
+def _row_list(stamp: int) -> list[float]:
+    row = _row(stamp)
+    return [
+        row["ts"],
+        row["open"],
+        row["high"],
+        row["low"],
+        row["close"],
+        row["volume"],
+    ]
 
 
 def test_contiguous_missing_range_is_repaired_without_interpolation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,3 +138,102 @@ def test_unresolved_gap_is_reported_not_synthesized(monkeypatch: pytest.MonkeyPa
     assert report["final_missing"] == 1
     assert report["missing_timestamps"] == [missing_stamp]
     assert missing_stamp not in candles
+
+
+def test_tiny_single_gap_is_quarantinable_but_large_or_multiple_gap_is_not() -> None:
+    minute = MODULE.BASE.MINUTE_MS
+    base = 1_600_000_000_000
+    one_gap = [base + index * minute for index in range(4)]
+    two_gaps = [base, base + minute, base + 10 * minute]
+    six_minutes = [base + index * minute for index in range(6)]
+
+    assert MODULE._sparse_gap_allowed(one_gap) is True
+    assert MODULE._sparse_gap_allowed(two_gaps) is False
+    assert MODULE._sparse_gap_allowed(six_minutes) is False
+
+
+def test_sparse_loader_accepts_four_minute_gap_and_marks_quarantine(tmp_path: Path) -> None:
+    minute = MODULE.BASE.MINUTE_MS
+    start = 1_650_000_000_000
+    end = start + 19 * minute
+    missing = {start + offset * minute for offset in (8, 9, 10, 11)}
+    path = tmp_path / "sparse.json"
+    path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    _row_list(stamp)
+                    for stamp in range(start, end + minute, minute)
+                    if stamp not in missing
+                ],
+                "missing_timestamps": sorted(missing),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    frame, integrity = MODULE.sparse_load_frame(path)
+
+    assert len(frame) == 16
+    assert integrity["valid"] is True
+    assert integrity["integrity_mode"] == "sparse_gap_quarantine"
+    assert integrity["missing_minutes"] == 4
+    assert integrity["missing_timestamps"] == sorted(missing)
+
+
+def test_sparse_simulation_rejects_trade_horizon_crossing_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    minute = MODULE.BASE.MINUTE_MS
+    start = 1_680_000_000_000
+    stamps = [start, start + minute, start + 3 * minute, start + 4 * minute]
+    raw = pd.DataFrame([_row(stamp) for stamp in stamps])
+    called = False
+
+    def fake_original(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"unexpected": True}
+
+    monkeypatch.setattr(MODULE, "ORIGINAL_SIMULATE_TRADE", fake_original)
+    result = MODULE.sparse_safe_simulate_trade(
+        raw,
+        entry_idx=0,
+        side="long",
+        signal_entry=100.0,
+        native_stop=99.0,
+        contract={"loss_cap_r": 0.5, "target_r": 2.0},
+        timeout_min=4,
+    )
+
+    assert result is None
+    assert called is False
+
+
+def test_sparse_file_validation_accepts_declared_four_minute_gap(tmp_path: Path) -> None:
+    minute = MODULE.BASE.MINUTE_MS
+    start = 1_690_000_000_000
+    end = start + 19 * minute
+    missing = {start + offset * minute for offset in (8, 9, 10, 11)}
+    path = tmp_path / "BTC.json"
+    path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    _row_list(stamp)
+                    for stamp in range(start, end + minute, minute)
+                    if stamp not in missing
+                ],
+                "missing_timestamps": sorted(missing),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    valid, _, reason = MODULE._validate_sparse_file(
+        path,
+        start_ms=start,
+        end_ms=end,
+        rows_required=20,
+    )
+
+    assert valid is True
+    assert reason == "PASS_SPARSE_GAP_QUARANTINE"

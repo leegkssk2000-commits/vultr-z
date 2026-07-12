@@ -5,8 +5,9 @@ ROOT=/home/z/z
 WORKTREE=${Q4R3_AUDIT_WORKTREE:-/tmp/q4r3-strategy-runtime-owner-contract-probe}
 BRANCH=q4r3-strategy-runtime-owner-contract-probe
 PYTHON_BIN=$ROOT/.venv/bin/python
-ANALYZER=$WORKTREE/tools/q4r3_strategy_runtime_owner_contract_probe.py
+ANALYZER=$WORKTREE/tools/q4r3_strategy_runtime_owner_contract_probe_v2.py
 TEST_FILE=$WORKTREE/tests/test_q4r3_strategy_runtime_owner_contract_probe.py
+TEST_FILE_V2=$WORKTREE/tests/test_q4r3_strategy_runtime_owner_contract_probe_v2.py
 COMPLETENESS_SOURCE=$WORKTREE/runtime_results/q4r3/strategy_canonical_completeness/q4r3_strategy_canonical_completeness_latest.json
 OWNER_SOURCE=$WORKTREE/runtime_results/q4r3/strategy_owner_writer_test_audit/q4r3_strategy_owner_writer_test_audit_latest.json
 COMPLETENESS_RUNTIME=$ROOT/runtime/q4r3_strategy_canonical_completeness_latest.json
@@ -75,7 +76,7 @@ on_error() {
 }
 trap on_error ERR
 
-for required in "$PYTHON_BIN" "$ANALYZER" "$TEST_FILE" "$COMPLETENESS_SOURCE" "$OWNER_SOURCE"; do
+for required in "$PYTHON_BIN" "$ANALYZER" "$TEST_FILE" "$TEST_FILE_V2" "$COMPLETENESS_SOURCE" "$OWNER_SOURCE"; do
   if [ ! -s "$required" ]; then
     echo REQUIRED_INPUT_MISSING:$required >&2
     exit 2
@@ -91,7 +92,7 @@ write_status RUNNING probe_started
 
 cd "$WORKTREE"
 echo '=== RUNTIME OWNER CONTRACT PROBE TESTS ==='
-PYTHONPATH="$WORKTREE:$ROOT" "$PYTHON_BIN" -m pytest -q "$TEST_FILE"
+PYTHONPATH="$WORKTREE:$ROOT" "$PYTHON_BIN" -m pytest -q "$TEST_FILE" "$TEST_FILE_V2"
 
 rm -rf "$DEST"
 mkdir -p "$DEST"

@@ -77,7 +77,39 @@ rm -rf "$DEST"
 mkdir -p "$DEST"
 "$PYTHON_BIN" "$PUBLISHER" --source "$SOURCE" --output-dir "$DEST"
 
-if grep -RIniE '(api[_-]?key|secret|password|private[_-]?key|access[_-]?token|refresh[_-]?token|bearer[[:space:]]+|BEGIN [A-Z ]+PRIVATE KEY)' "$DEST"; then
+if ! "$PYTHON_BIN" - "$DEST" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+patterns = (
+    ("pem_private_key", re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("bearer_token", re.compile(rb"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}")),
+    (
+        "assigned_secret",
+        re.compile(
+            rb"(?ix)\b(api[_-]?key|secret(?:[_-]?key)?|password|private[_-]?key|access[_-]?token|refresh[_-]?token)\b\s*[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9._~+/=-]{8,})"
+        ),
+    ),
+)
+
+hits = []
+for path in sorted(root.rglob("*")):
+    if not path.is_file():
+        continue
+    data = path.read_bytes()
+    for label, pattern in patterns:
+        if pattern.search(data):
+            hits.append((str(path.relative_to(root)), label))
+
+if hits:
+    for rel, label in hits:
+        print(f"SANITIZATION_HIT file={rel} pattern={label}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+then
+  write_status FAILED sanitization_check_failed
   echo SANITIZATION_CHECK_FAILED >&2
   exit 3
 fi

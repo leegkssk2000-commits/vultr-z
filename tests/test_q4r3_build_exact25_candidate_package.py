@@ -50,7 +50,7 @@ def test_dangerous_call_detection() -> None:
     clean = ast.parse("def strategy(df):\n    return {'action':'hold'}\n")
     dirty = ast.parse("def strategy(df):\n    Path('x').write_text('bad')\n")
     assert MODULE.dangerous_calls(clean) == []
-    assert "Path.write_text" in MODULE.dangerous_calls(dirty)
+    assert MODULE.dangerous_calls(dirty) == ["write_text"]
 
 
 def test_manifest_is_exact25_no_fallback() -> None:

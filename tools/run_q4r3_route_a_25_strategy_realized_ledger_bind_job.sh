@@ -97,7 +97,8 @@ for required in \
   $WORKTREE/backend/strategies/__init__.py \
   $WORKTREE/tools/q4r3_route_a_raschke_v3_factorial_portfolio_audit.py \
   $WORKTREE/tools/q4r3_route_a_25_strategy_realized_ledger_bind.py \
-  $WORKTREE/tests/test_q4r3_25_strategy_realized_ledger_bind.py \
+  $WORKTREE/tools/q4r3_route_a_25_strategy_realized_ledger_bind_fixed.py \
+  $WORKTREE/tests/test_q4r3_25_strategy_realized_ledger_bind_fixed.py \
   $ROOT/runtime/q4r3_route_a_raschke_v3_sparse_factorial_latest.json \
   $ROOT/runtime/q4r3_route_a_raschke_v3_sparse_factorial_trades_latest.json \
   $ROOT/runtime/q4r3_route_a_raschke_v3_factorial_portfolio_decision_latest.json
@@ -112,12 +113,12 @@ rm -f "$CANONICAL" "$COVERAGE" "$SOURCE" "$PORTFOLIO" "$DECISION" "$HTML"
 write_status RUNNING tests
 
 echo === 25 STRATEGY REALIZED R LEDGER BIND TESTS ===
-PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN -m pytest -q $WORKTREE/tests/test_q4r3_25_strategy_realized_ledger_bind.py
+PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN -m pytest -q $WORKTREE/tests/test_q4r3_25_strategy_realized_ledger_bind_fixed.py
 
 write_status RUNNING universe_discovery_canonical_bind_portfolio_rerun
 
 echo === 25 STRATEGY REALIZED R LEDGER BIND ===
-PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN $WORKTREE/tools/q4r3_route_a_25_strategy_realized_ledger_bind.py
+PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN $WORKTREE/tools/q4r3_route_a_25_strategy_realized_ledger_bind_fixed.py
 
 for attempt in $(seq 1 30); do
   ready=true

@@ -23,27 +23,65 @@ MODULE = load_module()
 def full_strategy_text(name: str = "range_fade") -> str:
     return f'''from dataclasses import dataclass
 import pandas as pd
+
 @dataclass
 class Config:
     atr_len: int = 14
+    ema_len: int = 20
+    rsi_len: int = 14
+    min_rr: float = 1.5
+
+
+def ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def atr(df, length):
+    tr = df["high"] - df["low"]
+    return tr.rolling(length).mean()
+
+
+def rsi(series, length):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(length).mean()
+    loss = (-delta.clip(upper=0)).rolling(length).mean()
+    return 100 - (100 / (1 + gain / (loss + 1e-9)))
+
+
+def infer_regime(df):
+    slope = ema(df["close"], 20).iloc[-1] - ema(df["close"], 20).iloc[-2]
+    return "trend" if abs(float(slope)) > 0 else "range"
+
+
+def execution_ok(spread_bps):
+    return float(spread_bps) <= 8.0
+
+
+def position_state(state):
+    state = dict(state or {{}})
+    return state.get("position_side"), float(state.get("position_qty") or 0.0)
+
 
 def helper(df):
     return df["close"].ewm(span=20).mean()
 
+
 def risk(df):
     return df["high"].rolling(14).max()
 
+
 def strategy(df, state=None, risk_action="hold", market_context=None):
+    cfg = Config()
     price = float(df["close"].iloc[-1])
-    atr = float((df["high"] - df["low"]).rolling(14).mean().iloc[-1])
-    rsi = 40
-    regime = "range"
+    atr_now = float(atr(df, cfg.atr_len).iloc[-1])
+    rsi_now = float(rsi(df["close"], cfg.rsi_len).iloc[-1])
+    regime = infer_regime(df)
     spread_bps = 2
-    position_side = (state or {{}}).get("position_side")
-    side = "long" if rsi < 45 else "short"
-    sl = price - atr if side == "long" else price + atr
-    tp = price + 2 * atr if side == "long" else price - 2 * atr
-    return {{"side": side, "action": "enter", "size": 0.1, "entry": price, "sl": sl, "tp": tp, "pyramiding": 1, "why": "{name}", "skill": "long_beam", "confidence": 0.7, "tags": [regime], "indicators": {{"spread_bps": spread_bps, "position_side": position_side}}}}
+    position_side, position_qty = position_state(state)
+    side = "long" if rsi_now < 45 else "short"
+    sl = price - atr_now if side == "long" else price + atr_now
+    tp = price + 2 * atr_now if side == "long" else price - 2 * atr_now
+    return {{"side": side, "action": "enter", "size": 0.1, "entry": price, "sl": sl, "tp": tp, "pyramiding": 1, "why": "{name}", "skill": "long_beam", "confidence": 0.7, "tags": [regime], "indicators": {{"spread_bps": spread_bps, "position_side": position_side, "position_qty": position_qty, "execution_ok": execution_ok(spread_bps)}}}}
 '''
 
 

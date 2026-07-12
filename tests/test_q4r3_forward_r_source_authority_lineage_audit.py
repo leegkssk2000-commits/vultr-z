@@ -7,7 +7,7 @@ from pathlib import Path
 
 def load_module():
     root = Path(__file__).resolve().parents[1]
-    path = root / "tools" / "q4r3_forward_r_source_authority_lineage_audit.py"
+    path = root / "tools" / "q4r3_forward_r_source_authority_lineage_audit_v2.py"
     spec = importlib.util.spec_from_file_location("test_q4r3_forward_r_source_authority_lineage_module", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -29,6 +29,14 @@ def test_forward_ledgers_can_be_authoritative() -> None:
     source_class, _ = MODULE.classify_source(Path("/home/z/z/runtime/h87_shadow_closed_ledger_latest.json"))
     assert source_class == "AUTHORITATIVE_FORWARD"
     source_class, _ = MODULE.classify_source(Path("/home/z/z/runtime/paper_order_ledger_state.json"))
+    assert source_class == "AUTHORITATIVE_FORWARD"
+
+
+def test_bounded_test_paths_are_diagnostic_without_matching_latest() -> None:
+    source_class, reasons = MODULE.classify_source(Path("/home/z/z/tests/test_forward_ledger.json"))
+    assert source_class == "REPLAY_DIAGNOSTIC"
+    assert "bounded_test_path" in reasons
+    source_class, _ = MODULE.classify_source(Path("/home/z/z/runtime/shadow_closed_ledger_latest.json"))
     assert source_class == "AUTHORITATIVE_FORWARD"
 
 

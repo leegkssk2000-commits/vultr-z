@@ -85,6 +85,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 for required in \
   "$WORKTREE/tools/q4r3_forward_r_source_authority_lineage_audit.py" \
+  "$WORKTREE/tools/q4r3_forward_r_source_authority_lineage_audit_v2.py" \
   "$WORKTREE/tests/test_q4r3_forward_r_source_authority_lineage_audit.py" \
   "$ROOT/runtime/q4r3_raschke_freeze_manifest_latest.json" \
   "$ROOT/runtime/q4r3_forward_r_writer_surface_latest.json" \
@@ -116,7 +117,7 @@ echo === FORWARD R SOURCE AUTHORITY AND WRITER LINEAGE ===
   PYTHONPATH="$WORKTREE:$ROOT" \
   Q4R3_ROUTE_A_WORKTREE="$WORKTREE" \
   Q4R3_ROUTE_A_OVERLAY_ROOT="$WORKTREE" \
-  "$PYTHON_BIN" tools/q4r3_forward_r_source_authority_lineage_audit.py
+  "$PYTHON_BIN" tools/q4r3_forward_r_source_authority_lineage_audit_v2.py
 )
 
 for output in "$AUTHORITY" "$LINEAGE" "$DECISION" "$HTML"; do

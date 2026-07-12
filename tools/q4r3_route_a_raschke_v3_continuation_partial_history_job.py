@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -14,6 +14,14 @@ if SPEC is None or SPEC.loader is None:
 BASE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BASE
 SPEC.loader.exec_module(BASE)
+
+ORIGINAL_REPLAY = BASE.replay_policies
+ORIGINAL_CONTINUATION = BASE.continuation_report
+
+
+def is_proximity_core_event(event: Dict[str, Any]) -> bool:
+    value = event.get("proximity_pass")
+    return value is True or value == 1 or str(value).lower() == "true"
 
 
 def conservative_first_touch_analysis(raw: pd.DataFrame, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -111,7 +119,38 @@ def conservative_first_touch_analysis(raw: pd.DataFrame, event: Dict[str, Any]) 
     }
 
 
+def replay_proximity_core(
+    events: Sequence[Dict[str, Any]],
+    raw_frames: Dict[Tuple[str, str], pd.DataFrame],
+) -> Dict[str, Any]:
+    selected = [event for event in events if is_proximity_core_event(event)]
+    result = ORIGINAL_REPLAY(selected, raw_frames)
+    result["input_lane"] = "v2_proximity_guard"
+    result["input_events"] = len(selected)
+    result["excluded_non_proximity_events"] = len(events) - len(selected)
+    return result
+
+
+def continuation_proximity_core(
+    events: Sequence[Dict[str, Any]],
+    raw_frames: Dict[Tuple[str, str], pd.DataFrame],
+) -> Dict[str, Any]:
+    selected = [event for event in events if is_proximity_core_event(event)]
+    core = ORIGINAL_CONTINUATION(selected, raw_frames)
+    all_signal_reference = ORIGINAL_CONTINUATION(events, raw_frames)
+    core["input_lane"] = "v2_proximity_guard"
+    core["input_events"] = len(selected)
+    core["excluded_non_proximity_events"] = len(events) - len(selected)
+    core["all_signal_reference"] = {
+        "input_events": len(events),
+        "continuation_all": all_signal_reference["groups"]["all"],
+    }
+    return core
+
+
 BASE.first_touch_analysis = conservative_first_touch_analysis
+BASE.replay_policies = replay_proximity_core
+BASE.continuation_report = continuation_proximity_core
 
 
 if __name__ == "__main__":

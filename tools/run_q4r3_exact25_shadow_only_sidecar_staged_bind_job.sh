@@ -14,6 +14,7 @@ STATUS=$ROOT/runtime/q4r3_exact25_shadow_only_sidecar_bind_job_latest.json
 LOG=$ROOT/runtime/q4r3_exact25_shadow_only_sidecar_bind_job.log
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CURRENT_STAGE=bootstrap
+APPLY_COMPLETED=false
 
 write_status() {
   local state=$1
@@ -77,9 +78,33 @@ set_stage() {
 
 on_error() {
   local code=$?
+  local rollback_state=not_required
   trap - ERR
-  write_status FAILED "stage=$CURRENT_STAGE exit_code=$code" || true
-  echo "Q4R3_EXACT25_SHADOW_ONLY_SIDECAR_BIND_FAILED stage=$CURRENT_STAGE exit_code=$code" >&2
+  if [ "$APPLY_COMPLETED" = true ] && [ -s "$ACTIVE_RESULT" ]; then
+    local backup_dir
+    backup_dir=$("$PYTHON_BIN" - "$ACTIVE_RESULT" <<'PY'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    print(json.loads(path.read_text(encoding="utf-8")).get("backup_dir") or "")
+except Exception:
+    print("")
+PY
+)
+    if [ -n "$backup_dir" ] && [ -f "$backup_dir/rollback.py" ]; then
+      if Q4R3_ALLOW_ROLLBACK=EXACT25_SHADOW_BINDING_ROLLBACK "$PYTHON_BIN" "$backup_dir/rollback.py"; then
+        rollback_state=rollback_done
+      else
+        rollback_state=rollback_failed
+      fi
+    else
+      rollback_state=rollback_artifact_missing
+    fi
+  fi
+  write_status FAILED "stage=$CURRENT_STAGE exit_code=$code rollback=$rollback_state" || true
+  echo "Q4R3_EXACT25_SHADOW_ONLY_SIDECAR_BIND_FAILED stage=$CURRENT_STAGE exit_code=$code rollback=$rollback_state" >&2
   exit "$code"
 }
 trap on_error ERR
@@ -108,6 +133,7 @@ rm -f "$ACTIVE_RESULT"
   --worktree "$WORKTREE" \
   --result "$ACTIVE_RESULT" \
   --apply-token Q4R3_EXACT25_SHADOW_BIND_DRYRUN_ONLY
+APPLY_COMPLETED=true
 
 set_stage independent_post_apply_integrity_gate
 "$PYTHON_BIN" - "$ACTIVE_RESULT" <<'PY'
@@ -187,6 +213,7 @@ git add runtime_results/q4r3/exact25_shadow_only_sidecar_bind
 
 if git diff --cached --quiet; then
   COMMIT=$(git rev-parse HEAD)
+  APPLY_COMPLETED=false
   CURRENT_STAGE=complete
   write_status DONE no_change "$COMMIT"
   echo "Q4R3_EXACT25_SHADOW_ONLY_SIDECAR_BIND_ALREADY_CURRENT commit=$COMMIT"
@@ -205,6 +232,7 @@ for attempt in 1 2 3; do
   sleep $((attempt * 3))
 done
 
+APPLY_COMPLETED=false
 CURRENT_STAGE=complete
 if [ "$PUSHED" = true ]; then
   write_status DONE published "$COMMIT"

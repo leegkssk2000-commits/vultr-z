@@ -70,6 +70,8 @@ if payload["result_exists"]:
             "production_strategy_modified",
             "registry_manifest_staged",
             "runtime_registry_bound",
+            "active_state",
+            "runner_failure_rollback",
         ):
             payload[key] = result.get(key)
     except Exception as exc:
@@ -90,8 +92,78 @@ stage() {
 on_error() {
   local code=$?
   trap - ERR
-  write_status FAILED "stage=$CURRENT_STAGE exit_code=$code" || true
-  echo "Q4R3_EXACT25_STAGED_ACTIVE_APPLY_FAILED stage=$CURRENT_STAGE exit_code=$code" >&2
+  local rollback_state=not_required_or_apply_tool_already_rolled_back
+
+  if [ -s "$RUNTIME_RESULT" ]; then
+    local backup_dir
+    backup_dir=$(
+      "$PYTHON_BIN" - "$RUNTIME_RESULT" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+try:
+    print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("backup_dir") or "")
+except Exception:
+    print("")
+PY
+    )
+    if [ -n "$backup_dir" ] && [ -f "$backup_dir/backup_manifest.json" ]; then
+      local rollback_tool=$backup_dir/q4r3_exact25_staged_active_apply.py
+      if [ ! -f "$rollback_tool" ]; then
+        cp "$TOOL" "$rollback_tool" 2>/dev/null || true
+        chmod 700 "$rollback_tool" 2>/dev/null || true
+      fi
+      if [ -f "$rollback_tool" ] && Q4R3_ALLOW_ROLLBACK=EXACT25_ROLLBACK "$PYTHON_BIN" "$rollback_tool" \
+          --active-root "$ROOT" \
+          --runtime-root "$RUNTIME_ROOT" \
+          --rollback-backup "$backup_dir"; then
+        rollback_state=auto_rollback_pass
+      else
+        rollback_state=auto_rollback_failed
+      fi
+
+      "$PYTHON_BIN" - "$RUNTIME_RESULT" "$PUBLISH_RESULT" "$rollback_state" "$CURRENT_STAGE" "$code" <<'PY' 2>/dev/null || true
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+runtime_path = Path(sys.argv[1])
+publish_path = Path(sys.argv[2])
+rollback_state = sys.argv[3]
+stage = sys.argv[4]
+code = int(sys.argv[5])
+try:
+    payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+payload.update({
+    "status": "ROLLBACK_Q4R3_EXACT25_STAGED_ACTIVE_APPLY_AFTER_RUNNER_FAILURE",
+    "verdict": "PRE_APPLY_STATE_RESTORED" if rollback_state == "auto_rollback_pass" else "ROLLBACK_FAILED_MANUAL_INTERVENTION_REQUIRED",
+    "action": "HOLD",
+    "next_action": "DIAGNOSE_RUNNER_FAILURE_BEFORE_RETRY",
+    "active_state": "ROLLED_BACK" if rollback_state == "auto_rollback_pass" else "UNKNOWN",
+    "runner_failure_rollback": rollback_state,
+    "runner_failure_stage": stage,
+    "runner_failure_exit_code": code,
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+    "runtime_registry_bound": False,
+    "activation_allowed": False,
+})
+for path in (runtime_path, publish_path):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        pass
+PY
+    fi
+  fi
+
+  write_status FAILED "stage=$CURRENT_STAGE exit_code=$code rollback=$rollback_state" || true
+  echo "Q4R3_EXACT25_STAGED_ACTIVE_APPLY_FAILED stage=$CURRENT_STAGE exit_code=$code rollback=$rollback_state" >&2
   exit "$code"
 }
 trap on_error ERR

@@ -119,12 +119,12 @@ rm -f "$RESULT" "$TRADES" "$ROBUSTNESS" "$DECISION" "$TRIAL" "$HTML"
 write_status RUNNING tests
 
 echo === RASCHKE V3 MULTIDIMENSIONAL 2R RESCUE TESTS ===
-PYTHONPATH=$WORKTREE:$ROOT $PYTHON_BIN -m pytest -q $WORKTREE/tests/test_raschke_v3_2r_rescue_tournament.py
+PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN -m pytest -q $WORKTREE/tests/test_raschke_v3_2r_rescue_tournament.py
 
 write_status RUNNING multidimensional_2r_rescue_replay
 
 echo === RASCHKE V3 MULTIDIMENSIONAL 2R RESCUE TOURNAMENT ===
-PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN $WORKTREE/tools/q4r3_route_a_raschke_v3_2r_rescue_tournament.py
+PYTHONPATH=$WORKTREE:$ROOT Q4R3_ROUTE_A_OVERLAY_ROOT=$WORKTREE Q4R3_ROUTE_A_WORKTREE=$WORKTREE $PYTHON_BIN $WORKTREE/tools/q4r3_route_a_raschke_v3_2r_rescue_tournament.py
 
 for attempt in $(seq 1 30); do
   ready=true

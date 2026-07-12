@@ -154,7 +154,7 @@ jq . "$DECISION"
 echo === TOP RANKING ===
 jq '{policy_count, promising_policy_candidates, prior_trained_side_target_map, ranking: .ranking[0:10]}' "$RESULT"
 echo === TOP REPORTS ===
-jq '{reports: (.reports | to_entries | sort_by(.value.gate.worst_window_avg_R) | reverse | .[0:10] | map({policy: .key, gate: .value.gate, combined_cost_0_15: .value.combined_cost_0.15, second_cost_0_15: .value.second_cost_0.15, combined_cost_0_20: .value.combined_cost_0.20, bootstrap_second: .value.bootstrap_second_cost_0.15}))}' "$RESULT"
+jq '{reports: (.reports | to_entries | sort_by(.value.gate.worst_window_avg_R) | reverse | .[0:10] | map({policy: .key, gate: .value.gate, combined_cost_0_15: .value["combined_cost_0.15"], second_cost_0_15: .value["second_cost_0.15"], combined_cost_0_20: .value["combined_cost_0.20"], bootstrap_second: .value["bootstrap_second_cost_0.15"]}))}' "$RESULT"
 echo === ROBUSTNESS ===
 jq '{pbo_month_blocks, target_training_audit}' "$ROBUSTNESS"
 echo RASCHKE_V3_2R_RESCUE_JOB_DONE

@@ -113,6 +113,10 @@ mkdir -p "$ROOT/runtime"
 exec > >(tee -a "$LOG") 2>&1
 
 for required in \
+  "$WORKTREE/backend/__init__.py" \
+  "$WORKTREE/backend/strategies/__init__.py" \
+  "$WORKTREE/backend/strategies/_route_a_video_common.py" \
+  "$WORKTREE/backend/strategies/raschke_macd_ema200.py" \
   "$WORKTREE/tools/q4r3_closed_pnl_contract_adapter.py" \
   "$WORKTREE/tools/q4r3_route_a_raschke_v3_factorial_portfolio_audit.py" \
   "$WORKTREE/tools/publish_q4r3_closed_pnl_adapter_results.sh" \
@@ -132,12 +136,24 @@ rm -f "$AUDIT" "$LEDGER" "$COVERAGE" "$PORTFOLIO" "$DECISION" "$HANDOFF" "$PUBLI
 write_status RUNNING tests
 
 echo === CLOSED PNL CONTRACT ADAPTER TESTS ===
-PYTHONPATH="$WORKTREE:$ROOT" Q4R3_ROUTE_A_WORKTREE="$WORKTREE" "$PYTHON_BIN" -m pytest -q "$WORKTREE/tests/test_q4r3_closed_pnl_contract_adapter.py"
+(
+  cd "$WORKTREE"
+  PYTHONPATH="$WORKTREE:$ROOT" \
+  Q4R3_ROUTE_A_WORKTREE="$WORKTREE" \
+  Q4R3_ROUTE_A_OVERLAY_ROOT="$WORKTREE" \
+  "$PYTHON_BIN" -m pytest -q tests/test_q4r3_closed_pnl_contract_adapter.py
+)
 
 write_status RUNNING classify_and_extend_canonical_r_ledger
 
 echo === CLOSED PNL CONTRACT ADAPTER ===
-PYTHONPATH="$WORKTREE:$ROOT" Q4R3_ROUTE_A_WORKTREE="$WORKTREE" "$PYTHON_BIN" "$WORKTREE/tools/q4r3_closed_pnl_contract_adapter.py"
+(
+  cd "$WORKTREE"
+  PYTHONPATH="$WORKTREE:$ROOT" \
+  Q4R3_ROUTE_A_WORKTREE="$WORKTREE" \
+  Q4R3_ROUTE_A_OVERLAY_ROOT="$WORKTREE" \
+  "$PYTHON_BIN" tools/q4r3_closed_pnl_contract_adapter.py
+)
 
 for output in "$AUDIT" "$LEDGER" "$COVERAGE" "$PORTFOLIO" "$DECISION" "$HANDOFF"; do
   if [ ! -s "$output" ]; then

@@ -155,7 +155,7 @@ write_status DONE continuation_partial_runner_history_complete
 echo === DECISION ===
 jq . "$DECISION"
 echo === POLICY SUMMARY ===
-jq '{ranking, promising_candidates, reports: (.reports | with_entries(.value |= {gate_pass, retention_vs_baseline_pct, avg_R_improvement_vs_baseline, combined_cost_0_15: .combined_cost_0.15, combined_cost_0_20: .combined_cost_0.20, prior_cost_0_15: .prior_cost_0.15, second_cost_0_15: .second_cost_0.15, checks}))}' "$POLICY"
+jq '{ranking, promising_candidates, reports: (.reports | with_entries(.value |= {gate_pass, retention_vs_baseline_pct, avg_R_improvement_vs_baseline, combined_cost_0_15: .["combined_cost_0.15"], combined_cost_0_20: .["combined_cost_0.20"], prior_cost_0_15: .["prior_cost_0.15"], second_cost_0_15: .["second_cost_0.15"], checks}))}' "$POLICY"
 echo === CONTINUATION SUMMARY ===
 jq '{all: .groups.all, by_window: .groups.window, by_side: .groups.side, speed: .groups.speed_bucket, stable_features: [.feature_screen[] | select(.stable_diagnostic == true)][0:10]}' "$CONTINUATION"
 echo === SAFE HISTORY ===

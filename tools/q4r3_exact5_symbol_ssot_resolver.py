@@ -102,10 +102,16 @@ def score_candidate(path: Path, location: str) -> int:
     return score
 
 
-def eligible_file(path: Path) -> bool:
+def eligible_file(path: Path, root: Path | None = None) -> bool:
     if not path.is_file() or path.suffix.lower() not in ALLOWED_SUFFIXES:
         return False
-    if any(part.lower() in EXCLUDED_PARTS for part in path.parts):
+    parts = path.parts
+    if root is not None:
+        try:
+            parts = path.resolve().relative_to(root.resolve()).parts
+        except (OSError, ValueError):
+            parts = path.parts
+    if any(part.lower() in EXCLUDED_PARTS for part in parts):
         return False
     try:
         size = path.stat().st_size
@@ -131,13 +137,13 @@ def scan_paths(root: Path, explicit_file: Path | None = None) -> List[Dict[str, 
             paths.append(base)
             continue
         for path in base.rglob("*"):
-            if eligible_file(path):
+            if eligible_file(path, root):
                 paths.append(path)
 
     candidates: List[Dict[str, Any]] = []
     seen: set[Tuple[str, str, Tuple[str, ...]]] = set()
     for path in sorted(set(paths)):
-        if not eligible_file(path):
+        if not eligible_file(path, root):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")

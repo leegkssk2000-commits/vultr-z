@@ -11,6 +11,16 @@ from typing import Any
 POSITION_SIZES = (5, 10, 15, 20)
 LEVERAGES = (10, 15, 20)
 SCENARIO_COUNT = len(POSITION_SIZES) * len(LEVERAGES)
+REQUIRED_FORWARD_FIELDS = (
+    "realized_r",
+    "fee_bps",
+    "slippage_bps",
+    "funding_bps",
+    "liq_buffer_pct",
+    "mfe_r",
+    "mae_r",
+    "exposure_time_min",
+)
 
 
 def now_iso() -> str:
@@ -51,26 +61,36 @@ def max_drawdown(values: list[float]) -> float:
 
 
 def build_grid(pairs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-    exact_pairs = [row for row in pairs if row.get("pair_state") == "EXACT_CLOSE_JOINED" and row.get("exact_join") is True]
+    exact_pairs = [
+        row
+        for row in pairs
+        if row.get("pair_state") == "EXACT_CLOSE_JOINED" and row.get("exact_join") is True
+    ]
     missing_fields: set[str] = set()
     for row in exact_pairs:
-        for field in ("realized_r", "fee_bps", "slippage_bps", "mfe_r", "mae_r", "exposure_time_min"):
+        for field in REQUIRED_FORWARD_FIELDS:
             if fnum(row.get(field)) is None:
                 missing_fields.add(field)
 
-    realized = [fnum(row.get("realized_r")) for row in exact_pairs]
-    realized_r = [value for value in realized if value is not None]
+    realized_r = [value for row in exact_pairs if (value := fnum(row.get("realized_r"))) is not None]
     fee_bps = [fnum(row.get("fee_bps")) or 0.0 for row in exact_pairs]
     slippage_bps = [fnum(row.get("slippage_bps")) or 0.0 for row in exact_pairs]
+    funding_bps = [fnum(row.get("funding_bps")) or 0.0 for row in exact_pairs]
+    liq_buffers = [value for row in exact_pairs if (value := fnum(row.get("liq_buffer_pct"))) is not None]
 
     grid: list[dict[str, Any]] = []
     for size_pct in POSITION_SIZES:
         for leverage in LEVERAGES:
             notional_exposure_pct = float(size_pct * leverage)
-            cost_equity_pct = sum(
+            execution_cost_equity_pct = sum(
                 notional_exposure_pct * ((fee + slip) / 10000.0)
                 for fee, slip in zip(fee_bps, slippage_bps)
             )
+            funding_cost_equity_pct = sum(
+                notional_exposure_pct * (funding / 10000.0)
+                for funding in funding_bps
+            )
+            total_cost_equity_pct = execution_cost_equity_pct + funding_cost_equity_pct
             risk_context_ready = bool(exact_pairs) and not missing_fields
             grid.append({
                 "scenario_id": f"P{size_pct}_L{leverage}",
@@ -80,7 +100,10 @@ def build_grid(pairs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[
                 "exact_pair_count": len(exact_pairs),
                 "net_r": round(sum(realized_r), 8) if realized_r else None,
                 "max_drawdown_r": round(max_drawdown(realized_r), 8) if realized_r else None,
-                "estimated_execution_cost_equity_pct": round(cost_equity_pct, 8) if exact_pairs else None,
+                "minimum_liq_buffer_pct": round(min(liq_buffers), 8) if liq_buffers else None,
+                "estimated_execution_cost_equity_pct": round(execution_cost_equity_pct, 8) if exact_pairs else None,
+                "estimated_funding_cost_equity_pct": round(funding_cost_equity_pct, 8) if exact_pairs else None,
+                "estimated_total_cost_equity_pct": round(total_cost_equity_pct, 8) if exact_pairs else None,
                 "risk_context_ready": risk_context_ready,
                 "decision_eligible": False,
                 "promotion_enabled": False,
@@ -105,7 +128,11 @@ def run(args: argparse.Namespace) -> int:
         pairs = []
     grid, missing_fields = build_grid(pairs)
 
-    exact_pair_count = sum(1 for row in pairs if row.get("pair_state") == "EXACT_CLOSE_JOINED" and row.get("exact_join") is True)
+    exact_pair_count = sum(
+        1
+        for row in pairs
+        if row.get("pair_state") == "EXACT_CLOSE_JOINED" and row.get("exact_join") is True
+    )
     critical = any(row.get("severity") == "C" for row in issues)
     state = "HOLD" if critical else "PASS"
     if critical:
@@ -126,6 +153,7 @@ def run(args: argparse.Namespace) -> int:
         "position_size_presets_pct": list(POSITION_SIZES),
         "leverage_presets_x": list(LEVERAGES),
         "exact_pair_count": exact_pair_count,
+        "required_forward_fields": list(REQUIRED_FORWARD_FIELDS),
         "missing_risk_fields": missing_fields,
         "scenarios": grid,
         "observer_only": True,

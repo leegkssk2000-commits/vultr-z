@@ -15,7 +15,7 @@ UNIT=q4r3-exact25-risk-scenario-grid-observer
 
 PAIR_ROOT="$ROOT/runtime/exact25_edge_v1/future_pair_join_observer"
 PAIR_STATUS="$PAIR_ROOT/status_latest.json"
-PAIR_REPORT="$PAIR_ROOT/pair_report_latest.json"
+PAIR_REPORT="$PAIR_ROOT/pairs_latest.json"
 PROJECTION_STATUS="$ROOT/runtime/exact25_edge_v1/six_profile_projection_observer/status_latest.json"
 LEDGER="$ROOT/runtime/exact25_edge_v1/formal_exact5_measurement/forward_r_ledger.jsonl"
 STORAGE_STATUS="$ROOT/runtime/q4r3_storage_regrowth_guard/status_latest.json"

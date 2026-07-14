@@ -342,11 +342,13 @@ PY
 set_stage commit_result
 REPORT_COMMIT=""
 if git -C "$WORKTREE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "$WORKTREE" add "$RESULT"
+  git -C "$WORKTREE" add "$RESULT" || true
   if ! git -C "$WORKTREE" diff --cached --quiet; then
-    git -C "$WORKTREE" commit -m "Record Exact25 six-layer observer suite install result"
-    REPORT_COMMIT=$(git -C "$WORKTREE" rev-parse HEAD)
-    git -C "$WORKTREE" push origin "HEAD:$BRANCH"
+    if git -C "$WORKTREE" commit -m "Record Exact25 six-layer observer suite install result" && git -C "$WORKTREE" push origin "HEAD:$BRANCH"; then
+      REPORT_COMMIT=$(git -C "$WORKTREE" rev-parse HEAD)
+    else
+      echo "RESULT_PUBLISH_WARNING: installation remains active; runtime result push failed" >&2
+    fi
   else
     REPORT_COMMIT=$(git -C "$WORKTREE" rev-parse HEAD)
   fi

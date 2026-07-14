@@ -15,6 +15,7 @@ from tools.q4r3_exact25_skill_registry_v2_audit import EXPECTED_SKILLS
 
 
 REGISTRY_PATH = Path("backend/contracts/ZOS_SKILL_REGISTRY_v2_candidate.json")
+EVENT_CONTRACT_PATH = Path("backend/contracts/ZOS_SKILL_EVENT_CONTRACT_v1.json")
 
 
 def registry() -> dict:
@@ -128,3 +129,14 @@ def test_registry_relationships_reference_known_ids() -> None:
     for row in data["skills"]:
         assert set(row.get("dependencies", [])) <= ids
         assert set(row.get("conflicts", [])) <= ids
+
+
+def test_event_contract_is_forward_only_and_exact_joined() -> None:
+    data = json.loads(EVENT_CONTRACT_PATH.read_text(encoding="utf-8"))
+    assert data["observer_only"] is True
+    assert data["historical_backfill_allowed"] is False
+    assert data["identity"]["duplicate_policy"] == "reject_exact_event_id"
+    assert data["close_outcome_join"]["join_key"] == "position_id"
+    assert data["causality_rules"]["future_bar_access_forbidden"] is True
+    assert data["causality_rules"]["same_bar_retroactive_stop_forbidden"] is True
+    assert data["integrity_rules"]["order_or_live_flag_true"] == "CRITICAL_VIOLATION"

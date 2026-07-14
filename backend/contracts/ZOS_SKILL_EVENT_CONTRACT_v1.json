@@ -1,0 +1,125 @@
+{
+  "schema": "zos_skill_event_contract_v1",
+  "version": "1.0.0-candidate.1",
+  "status": "CANDIDATE_ONLY_NOT_BOUND",
+  "observer_only": true,
+  "historical_backfill_allowed": false,
+  "order_authority": "blocked",
+  "execution_authority": "none",
+  "identity": {
+    "event_id_formula": "sha256(epoch_id|position_id|strategy_id|method_id|skill_id|skill_version|event_type|event_ts)",
+    "required_fields": [
+      "event_id",
+      "epoch_id",
+      "position_id",
+      "strategy_id",
+      "method_id",
+      "skill_id",
+      "skill_version",
+      "skill_source_sha256",
+      "event_type",
+      "event_ts",
+      "symbol",
+      "side"
+    ],
+    "duplicate_policy": "reject_exact_event_id",
+    "cross_position_join_forbidden": true
+  },
+  "event_types": [
+    "skill_evaluated",
+    "skill_triggered",
+    "skill_blocked",
+    "counterfactual_action",
+    "counterfactual_exit",
+    "close_outcome_joined"
+  ],
+  "required_pretrigger_context": [
+    "preentry_context_id",
+    "market_context_snapshot_id",
+    "context_observed_at_or_before_event_ts",
+    "reference_price",
+    "position_size_pct",
+    "leverage",
+    "entry_price",
+    "stop_price",
+    "liq_price_or_buffer_pct",
+    "funding_8h_pct",
+    "dd_day_pct",
+    "dd_total_pct",
+    "mfe_r",
+    "mae_r",
+    "unrealized_r",
+    "remaining_size_pct",
+    "elapsed_min"
+  ],
+  "counterfactual_action_fields": [
+    "action_kind",
+    "size_delta_pct",
+    "price",
+    "new_stop_price",
+    "new_target_price",
+    "hold_extension_min",
+    "blocked_reason",
+    "risk_reason",
+    "inputs_snapshot_sha256"
+  ],
+  "allowed_action_kinds": [
+    "observe",
+    "open_long_candidate",
+    "open_short_candidate",
+    "add_loss_direction_candidate",
+    "add_profit_direction_candidate",
+    "partial30_candidate",
+    "modify_stop_candidate",
+    "runner_candidate",
+    "hold_candidate",
+    "time_exit_candidate",
+    "reduce25_candidate",
+    "close_candidate",
+    "block_candidate"
+  ],
+  "close_outcome_join": {
+    "join_key": "position_id",
+    "required_fields": [
+      "close_event_id",
+      "closed_at",
+      "realized_r",
+      "realized_pnl_usdt",
+      "fee_bps",
+      "slippage_bps",
+      "mfe_r",
+      "mae_r",
+      "exposure_time_min",
+      "exit_reason"
+    ],
+    "outcome_metrics": [
+      "baseline_realized_r",
+      "counterfactual_realized_r",
+      "net_delta_r",
+      "dd_delta_r",
+      "tail_loss_delta_r",
+      "mfe_capture_delta_pct",
+      "giveback_delta_r",
+      "cost_delta_bps",
+      "hold_time_delta_min",
+      "liq_buffer_delta_pct"
+    ]
+  },
+  "causality_rules": {
+    "future_bar_access_forbidden": true,
+    "same_bar_retroactive_stop_forbidden": true,
+    "post_close_fields_as_trigger_forbidden": true,
+    "same_bar_stop_target_ambiguity": "score_conservatively_as_stop",
+    "trigger_uses_completed_bar_only_when_bar_feature_required": true,
+    "preentry_context_timestamp_must_be_lte_event_timestamp": true
+  },
+  "integrity_rules": {
+    "missing_required_identity": "HOLD",
+    "missing_pretrigger_context": "HOLD",
+    "missing_close_outcome": "UNSCORED",
+    "duplicate_event_id": "REJECT",
+    "conflicting_skill_source_sha": "CRITICAL_VIOLATION",
+    "multiple_actions_for_single_fire_skill": "CRITICAL_VIOLATION",
+    "order_or_live_flag_true": "CRITICAL_VIOLATION"
+  }
+}

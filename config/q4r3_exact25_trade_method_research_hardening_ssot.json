@@ -1,0 +1,108 @@
+{
+  "schema": "q4r3_exact25_trade_method_research_hardening_ssot_v1",
+  "mode": "READ_ONLY_SOURCE_CAPTURE_AND_AUDIT",
+  "source_paths": [
+    "backend/trade_methods/types.py",
+    "backend/trade_methods/profiles.py",
+    "backend/trade_methods/policy.py",
+    "backend/trade_methods/resolver.py"
+  ],
+  "known_method_families": [
+    "scalp_first",
+    "intraday",
+    "tactical_swing",
+    "blocked"
+  ],
+  "known_method_subtypes": [
+    "revert",
+    "continuation",
+    "liquidity_reclaim",
+    "breakout_probe",
+    "rescue"
+  ],
+  "candidate_allowed_combinations": {
+    "scalp_first": ["revert", "continuation", "liquidity_reclaim"],
+    "intraday": ["breakout_probe", "rescue"],
+    "tactical_swing": ["continuation"],
+    "blocked": []
+  },
+  "required_contract_fields": [
+    "method",
+    "method_subtype",
+    "profile_version",
+    "profile_sha256",
+    "entry_style",
+    "hold_horizon",
+    "risk_mode",
+    "target_r",
+    "size_multiplier",
+    "execution_overlays",
+    "resolver_trace_id",
+    "block_reason"
+  ],
+  "required_evidence_capabilities": {
+    "cost_aware_gate": ["fee", "spread", "slippage", "funding", "market_impact"],
+    "liquidity_gate": ["depth", "volume", "liquidity", "spread"],
+    "volatility_gate": ["atr", "volatility", "realized_vol"],
+    "regime_gate": ["regime", "trend", "range"],
+    "risk_contract": ["stop", "target", "time_stop", "max_hold", "size", "leverage"],
+    "deterministic_resolution": ["resolver_trace_id", "block_reason", "fail_closed"],
+    "execution_quality": ["implementation_shortfall", "fill", "latency", "adverse_selection"],
+    "validation": ["walk_forward", "out_of_sample", "replay", "ablation", "stress"]
+  },
+  "research_basis": [
+    {
+      "id": "COST_AWARE_EXECUTION",
+      "source": "Bysik_Slepaczuk_2026_arXiv_2606.00060",
+      "design_rule": "Do not trade unless expected edge exceeds all-in estimated cost plus safety margin."
+    },
+    {
+      "id": "NO_TRADE_ZONE",
+      "source": "Isichenko_2021_arXiv_2110.15239",
+      "design_rule": "Represent a cost-dependent no-trade region instead of forcing every signal into an order."
+    },
+    {
+      "id": "LIQUIDITY_CONDITIONING",
+      "source": "Begusic_Kostanjcar_2019_arXiv_1904.00890",
+      "design_rule": "Condition momentum and continuation methods on liquidity rather than treating all markets equally."
+    },
+    {
+      "id": "INTRADAY_SEASONALITY",
+      "source": "Petukhina_Reule_Hardle_2020_arXiv_2009.04200",
+      "design_rule": "Record and test time-of-day and intraday volatility context."
+    },
+    {
+      "id": "ROBUST_WALK_FORWARD",
+      "source": "Mroziewicz_Slepaczuk_2026_arXiv_2602.10785",
+      "design_rule": "Use single-use out-of-sample windows and fee sensitivity checks; never select on one backtest path."
+    },
+    {
+      "id": "BACKTEST_OVERFIT_CONTROL",
+      "source": "Bailey_Lopez_de_Prado_PBO",
+      "design_rule": "Track trial count, parameter degrees of freedom, purging/embargo and deflated performance statistics."
+    },
+    {
+      "id": "EXECUTION_SHORTFALL",
+      "source": "Almgren_Chriss_execution_framework",
+      "design_rule": "Separate signal quality from execution cost, fill risk and opportunity cost."
+    }
+  ],
+  "prohibited_in_phase_1": [
+    "live_source_mutation",
+    "producer_mutation",
+    "writer_mutation",
+    "formal_ledger_mutation",
+    "strategy_mutation",
+    "trade_method_activation",
+    "historical_backfill",
+    "paper_enable",
+    "live_enable",
+    "order_enable"
+  ],
+  "safety": {
+    "observer_only": true,
+    "action": "hold",
+    "order_authority": "blocked",
+    "execution_authority": "none"
+  }
+}

@@ -15,6 +15,9 @@ def test_projection_has_exact_six_profiles_when_empty() -> None:
     result = MODULE.project([])
     assert result["profile_count"] == 6
     assert result["total_trigger_count"] == 0
+    assert result["total_blocked_count"] == 0
+    assert result["profile_blocked_count"] == 0
+    assert result["unassigned_blocked_count"] == 0
     assert result["total_outcome_join_count"] == 0
     assert [row["method_id"] for row in result["rows"]] == list(MODULE.PROFILES)
     assert all(row["action"] == "hold" for row in result["rows"])
@@ -55,7 +58,7 @@ def test_projection_joins_forward_evidence_by_method() -> None:
     assert result["profiles_with_outcome"] == 1
 
 
-def test_projection_ignores_unknown_method_and_tracks_blocked() -> None:
+def test_projection_tracks_profile_blocked() -> None:
     events = [
         {"event_type": "skill_triggered", "method_id": "unknown/x", "position_id": "x"},
         {"event_type": "skill_blocked", "method_id": "intraday/rescue", "position_id": "p2"},
@@ -65,4 +68,20 @@ def test_projection_ignores_unknown_method_and_tracks_blocked() -> None:
     assert row["trigger_count"] == 0
     assert row["blocked_count"] == 1
     assert result["total_blocked_count"] == 1
+    assert result["profile_blocked_count"] == 1
+    assert result["unassigned_blocked_count"] == 0
     assert result["total_trigger_count"] == 0
+
+
+def test_projection_accounts_for_blocked_without_method() -> None:
+    events = [
+        {"event_type": "skill_blocked", "method_id": None, "position_id": "p3"},
+        {"event_type": "skill_blocked", "method_id": "unknown/x", "position_id": "p4"},
+        {"event_type": "skill_blocked", "method_id": "intraday/rescue", "position_id": "p5"},
+    ]
+    result = MODULE.project(events)
+    assert result["total_blocked_count"] == 3
+    assert result["profile_blocked_count"] == 1
+    assert result["unassigned_blocked_count"] == 2
+    assert result["unassigned_blocked_method_ids"] == ["<missing>", "unknown/x"]
+    assert result["profile_blocked_count"] + result["unassigned_blocked_count"] == result["total_blocked_count"]

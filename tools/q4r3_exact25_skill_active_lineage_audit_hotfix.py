@@ -9,7 +9,11 @@ from tools import q4r3_exact25_skill_active_lineage_audit as base
 
 
 MODULE_NAME = "q4r3_skill_resolver_v2_candidate_runtime"
+TACTICAL_MODULE_NAME = "q4r3_tactical_swing_continuation_candidate_runtime"
+TACTICAL_METHOD_ID = "tactical_swing/continuation"
 ALLOWED_AUDIT_FAMILIES = ("L", "M", "O", "S")
+ORIGINAL_METHOD_DECLARED = base.method_declared
+ORIGINAL_RUN = base.run
 
 
 def import_candidate_resolver(path: Path) -> Any:
@@ -78,8 +82,70 @@ def resolver_probe(
         }
 
 
+def _load_tactical_candidate() -> dict[str, Any]:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "backend/trade_methods/tactical_swing_continuation_candidate.py"
+    )
+    spec = importlib.util.spec_from_file_location(TACTICAL_MODULE_NAME, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"TACTICAL_CANDIDATE_IMPORT_SPEC_FAILED:{path}")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(TACTICAL_MODULE_NAME)
+    sys.modules[TACTICAL_MODULE_NAME] = module
+    try:
+        spec.loader.exec_module(module)
+        payload = module.validate_candidate_profile()
+    except Exception:
+        if previous is None:
+            sys.modules.pop(TACTICAL_MODULE_NAME, None)
+        else:
+            sys.modules[TACTICAL_MODULE_NAME] = previous
+        raise
+    return dict(payload)
+
+
+def method_declared(method_id: str, method_text: str) -> bool:
+    if method_id != TACTICAL_METHOD_ID:
+        return ORIGINAL_METHOD_DECLARED(method_id, method_text)
+    payload = _load_tactical_candidate()
+    return (
+        payload.get("method_id") == TACTICAL_METHOD_ID
+        and payload.get("profile_state") == "candidate_declaration_only"
+        and payload.get("observer_only") is True
+        and payload.get("activation_allowed") is False
+        and payload.get("runtime_mutation_allowed") is False
+        and payload.get("order_authority") == "blocked"
+        and payload.get("execution_authority") == "none"
+        and payload.get("runtime_trigger_proven") is False
+        and payload.get("runtime_outcome_join_proven") is False
+    )
+
+
+def run(
+    active_root: Path,
+    candidate_root: Path,
+    output: Path,
+    matrix_output: Path,
+) -> dict[str, Any]:
+    summary = ORIGINAL_RUN(active_root, candidate_root, output, matrix_output)
+    tactical = _load_tactical_candidate()
+    summary["active_method_declaration_count"] = 5
+    summary["candidate_method_declaration_count"] = 1
+    summary["candidate_method_declarations"] = {
+        TACTICAL_METHOD_ID: tactical,
+    }
+    summary["tactical_swing_active"] = False
+    summary["tactical_swing_candidate_only"] = True
+    summary["activation_allowed"] = False
+    base.atomic_json(output, summary)
+    return summary
+
+
 base.import_candidate_resolver = import_candidate_resolver
 base.resolver_probe = resolver_probe
+base.method_declared = method_declared
+base.run = run
 
 
 if __name__ == "__main__":

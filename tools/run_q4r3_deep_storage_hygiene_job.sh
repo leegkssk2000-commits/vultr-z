@@ -4,8 +4,10 @@ set -Eeuo pipefail
 ROOT=/home/z/z
 WORKTREE=${Q4R3_DEEP_STORAGE_WORKTREE:-/tmp/q4r3-safe-disk-hygiene}
 PYTHON_BIN=$ROOT/.venv/bin/python
-SCRIPT=$WORKTREE/tools/q4r3_deep_storage_hygiene.py
+SCRIPT=$WORKTREE/tools/q4r3_deep_storage_hygiene_hotfix.py
+BASE_SCRIPT=$WORKTREE/tools/q4r3_deep_storage_hygiene.py
 TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene.py
+HOTFIX_TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene_hotfix.py
 
 OUTDIR=$ROOT/runtime/q4r3_deep_storage_hygiene
 AUDIT_REPORT=$OUTDIR/audit_latest.json
@@ -54,7 +56,7 @@ fail() {
 trap 'fail unexpected "line=$LINENO command=$BASH_COMMAND"' ERR
 
 [ "$(id -u)" -eq 0 ] || fail preflight RUN_AS_ROOT
-for required in "$WORKTREE" "$PYTHON_BIN" "$SCRIPT" "$TEST_FILE" "$FORMAL_LEDGER" "$CAPTURE_STATUS" "$ACTIVE_METHOD_ROOT" "$ACTIVE_PRODUCER"; do
+for required in "$WORKTREE" "$PYTHON_BIN" "$SCRIPT" "$BASE_SCRIPT" "$TEST_FILE" "$HOTFIX_TEST_FILE" "$FORMAL_LEDGER" "$CAPTURE_STATUS" "$ACTIVE_METHOD_ROOT" "$ACTIVE_PRODUCER"; do
   [ -e "$required" ] || fail preflight "REQUIRED_INPUT_MISSING:$required"
 done
 systemctl is-active --quiet "$PRODUCER_UNIT" || fail preflight PRODUCER_NOT_ACTIVE
@@ -81,9 +83,9 @@ METHOD_HASH_BEFORE=$(find "$ACTIVE_METHOD_ROOT" -maxdepth 1 -type f -name '*.py'
 PRODUCER_HASH_BEFORE=$(sha256sum "$ACTIVE_PRODUCER" | awk '{print $1}')
 DISK_BEFORE=$(df -B1 --output=used,avail,pcent / | tail -1 | xargs)
 
-"$PYTHON_BIN" -m py_compile "$SCRIPT"
+"$PYTHON_BIN" -m py_compile "$BASE_SCRIPT" "$SCRIPT"
 cd "$WORKTREE"
-"$PYTHON_BIN" -m pytest -q "$TEST_FILE"
+"$PYTHON_BIN" -m pytest -q "$TEST_FILE" "$HOTFIX_TEST_FILE"
 
 "$PYTHON_BIN" "$SCRIPT" --output "$AUDIT_REPORT"
 

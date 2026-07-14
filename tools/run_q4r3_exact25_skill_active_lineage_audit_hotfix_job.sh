@@ -106,11 +106,13 @@ CURRENT_STAGE="compile_and_contract_tests"
 cd "$WT"
 PYTHONPATH="$WT" "$PYTHON_BIN" -m py_compile \
   backend/engine/skill_resolver_v2_candidate.py \
+  backend/trade_methods/tactical_swing_continuation_candidate.py \
   tools/q4r3_exact25_skill_active_lineage_audit.py \
   tools/q4r3_exact25_skill_active_lineage_audit_hotfix.py
 PYTHONPATH="$WT" "$PYTHON_BIN" -m pytest -q \
   tests/test_q4r3_exact25_skill_registry_v2.py \
-  tests/test_q4r3_exact25_skill_active_lineage_audit.py
+  tests/test_q4r3_exact25_skill_active_lineage_audit.py \
+  tests/test_q4r3_exact25_skill_active_lineage_hotfix.py
 
 CURRENT_STAGE="execute_readonly_active_lineage_audit"
 mkdir -p "$RUNTIME_DIR"

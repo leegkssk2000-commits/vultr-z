@@ -29,6 +29,8 @@ JOB="$ROOT/runtime/q4r3_exact25_auto_progress_to_200c_job_latest.json"
 
 SOURCE_SCRIPT="$WT/tools/q4r3_exact25_auto_progress_to_200c.py"
 TEST_FILE="$WT/tests/test_q4r3_exact25_auto_progress_to_200c.py"
+LEDGER_SNAPSHOT="$(mktemp /tmp/q4r3_exact25_ledger_prefix.XXXXXX)"
+trap 'rm -f "$LEDGER_SNAPSHOT"' EXIT
 
 for required in "$SOURCE_SCRIPT" "$TEST_FILE" "$LEDGER" "$PRE100_STATUS" "$CHECKPOINT_STATUS" "$STORAGE_STATUS"; do
   [[ -s "$required" ]] || { echo "REQUIRED_INPUT_MISSING=$required"; exit 1; }
@@ -40,7 +42,8 @@ done
 
 PRODUCER_PID_BEFORE="$(systemctl show "$PRODUCER_UNIT" -p MainPID --value)"
 WRITER_PID_BEFORE="$(systemctl show "$WRITER_UNIT" -p MainPID --value)"
-LEDGER_HASH_BEFORE="$(sha256sum "$LEDGER" | awk '{print $1}')"
+cp --reflink=auto "$LEDGER" "$LEDGER_SNAPSHOT"
+LEDGER_SIZE_BEFORE="$(stat -c %s "$LEDGER_SNAPSHOT")"
 
 PYTHONPATH="$WT" "$PY" -m pytest -q "$TEST_FILE"
 PYTHONPATH="$WT" "$PY" -m py_compile "$SOURCE_SCRIPT"
@@ -101,11 +104,12 @@ systemctl start "$UNIT.service"
 
 PRODUCER_PID_AFTER="$(systemctl show "$PRODUCER_UNIT" -p MainPID --value)"
 WRITER_PID_AFTER="$(systemctl show "$WRITER_UNIT" -p MainPID --value)"
-LEDGER_HASH_AFTER="$(sha256sum "$LEDGER" | awk '{print $1}')"
+LEDGER_SIZE_AFTER="$(stat -c %s "$LEDGER")"
 
 test "$PRODUCER_PID_BEFORE" = "$PRODUCER_PID_AFTER"
 test "$WRITER_PID_BEFORE" = "$WRITER_PID_AFTER"
-test "$LEDGER_HASH_BEFORE" = "$LEDGER_HASH_AFTER"
+test "$LEDGER_SIZE_AFTER" -ge "$LEDGER_SIZE_BEFORE"
+cmp -n "$LEDGER_SIZE_BEFORE" "$LEDGER_SNAPSHOT" "$LEDGER"
 systemctl is-active --quiet "$UNIT.timer"
 
 "$PY" - "$STATUS" "$VIOLATIONS" "$JOB" <<'PY'

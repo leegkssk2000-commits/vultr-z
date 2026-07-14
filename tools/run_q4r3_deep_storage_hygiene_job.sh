@@ -11,13 +11,6 @@ TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene.py
 HOTFIX_TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene_hotfix.py
 GROWTH_TEST_FILE=$WORKTREE/tests/test_q4r3_storage_growth_attribution.py
 
-# The repository is owned by the deployment user while this isolated hygiene
-# job runs as root. Trust only this repository for this process tree; do not
-# mutate global or system Git configuration.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=safe.directory
-export GIT_CONFIG_VALUE_0="$ROOT"
-
 OUTDIR=$ROOT/runtime/q4r3_deep_storage_hygiene
 AUDIT_REPORT=$OUTDIR/audit_latest.json
 APPLY_REPORT=$OUTDIR/apply_latest.json
@@ -97,8 +90,8 @@ DISK_BEFORE=$(df -B1 --output=used,avail,pcent / | tail -1 | xargs)
 cd "$WORKTREE"
 "$PYTHON_BIN" -m pytest -q "$TEST_FILE" "$HOTFIX_TEST_FILE" "$GROWTH_TEST_FILE"
 
-# Remove only the exact failed hygiene worktrees created by earlier attempts.
-# The current worktree and any path referenced by a running process are preserved.
+# Remove only exact failed hygiene worktree directories. Git metadata pruning is
+# maintenance-only and must never block storage audit or cleanup.
 write_status RUNNING failed_worktree_cleanup tests_passed
 FAILED_WORKTREE_REMOVED_COUNT=0
 FAILED_WORKTREE_REMOVED_BYTES=0
@@ -106,7 +99,9 @@ for stale in \
   /tmp/q4r3-deep-storage-hygiene \
   /tmp/q4r3-deep-storage-hygiene-hotfix \
   /tmp/q4r3-deep-storage-hygiene-hotfix-v3 \
-  /home/z/z/.worktrees/q4r3-deep-storage-hygiene-hotfix-v3
+  /home/z/z/.worktrees/q4r3-deep-storage-hygiene-hotfix-v3 \
+  /home/z/z/.worktrees/q4r3-deep-storage-hygiene-v4 \
+  /home/z/z/.worktrees/q4r3-deep-storage-hygiene-v5
 do
   [ "$stale" = "$WORKTREE" ] && continue
   [ -e "$stale" ] || continue
@@ -115,13 +110,17 @@ do
     continue
   fi
   size=$(du -sx -B1 "$stale" 2>/dev/null | awk '{print $1}' || echo 0)
-  git -C "$ROOT" worktree remove --force "$stale" 2>/dev/null || rm -rf --one-file-system "$stale"
+  rm -rf --one-file-system "$stale"
   FAILED_WORKTREE_REMOVED_COUNT=$((FAILED_WORKTREE_REMOVED_COUNT + 1))
   FAILED_WORKTREE_REMOVED_BYTES=$((FAILED_WORKTREE_REMOVED_BYTES + size))
 done
-git -C "$ROOT" worktree prune --expire now
 
-# Measure what is actively growing before deleting anything else.
+# Non-fatal metadata maintenance only. The actual directories above are already
+# handled independently and safely.
+if ! git -c safe.directory="$ROOT" -C "$ROOT" worktree prune --expire now; then
+  echo "GIT_WORKTREE_PRUNE_SKIPPED_NONFATAL"
+fi
+
 write_status RUNNING growth_attribution sampling_30_seconds
 "$PYTHON_BIN" "$GROWTH_SCRIPT" --interval-sec 30 --output "$GROWTH_REPORT"
 
@@ -191,8 +190,8 @@ assert report.get("runtime_root_deleted") is False, report
 assert report.get("formal_ledger_deleted") is False, report
 payload={
   "job":"q4r3_deep_storage_hygiene","state":"PASS","current_stage":"complete",
-  "status":"PASS_Q4R3_DEEP_STORAGE_HYGIENE_V5",
-  "verdict":"SCOPED_GIT_TRUST_MALFORMED_PATH_SAFE_CLEANUP_AND_GROWTH_ATTRIBUTION_COMPLETE",
+  "status":"PASS_Q4R3_DEEP_STORAGE_HYGIENE_V6",
+  "verdict":"NONFATAL_GIT_METADATA_MAINTENANCE_AND_DEEP_CLEANUP_COMPLETE",
   "updated_at":datetime.now(timezone.utc).isoformat(),"action":"hold",
   "policy":report.get("policy"),"disk_before":sys.argv[4],"disk_after":sys.argv[5],
   "backup_root_count":report.get("backup_root_count"),"snapshot_count":report.get("snapshot_count"),
@@ -220,8 +219,8 @@ payload={
   "next_action":"CAP_GROWING_SOURCE_OR_RUN_TARGETED_RETENTION_ONLY_FROM_ATTRIBUTION_REPORT"
 }
 Path(sys.argv[3]).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8")
-print("Q4R3_DEEP_STORAGE_HYGIENE_V5_PASS")
+print("Q4R3_DEEP_STORAGE_HYGIENE_V6_PASS")
 PY
 
 trap - ERR
-echo Q4R3_DEEP_STORAGE_HYGIENE_V5_INSTALL_PASS
+echo Q4R3_DEEP_STORAGE_HYGIENE_V6_INSTALL_PASS

@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 
 from tools.q4r3_exact25_six_layer_observer_core import (
     SEV, atomic_json, atomic_jsonl, cost_layer, funnel_layer, load_json,
-    now_iso, outcome_layer, owners, read_jsonl, validate,
+    now_iso, outcome_layer, owners, problem, read_jsonl, validate,
 )
 from tools.q4r3_exact25_six_layer_analytics import market_layer, portfolio_layer, replay_layer
 
@@ -19,7 +19,12 @@ def violations(path: Path, issues: Sequence[Mapping[str, Any]]) -> dict[str, Any
 
 def run(args: argparse.Namespace) -> int:
     ssot, manifest = load_json(args.ssot), load_json(args.manifest); producer_status = load_json(args.producer_status); producer_state = load_json(args.producer_state, True); open_positions = load_json(args.open_positions, True); context_status = load_json(args.context_status, True)
-    rows, ledger_hash, issues = read_jsonl(args.ledger); contexts, context_hash, context_issues = read_jsonl(args.context_ledger, True); issues.extend(context_issues); owner_map = owners(manifest, int(ssot.get("expected_strategy_count") or 25)); issues.extend(validate(rows, owner_map, ssot)); cfg = ssot.get("outcome_contract") if isinstance(ssot.get("outcome_contract"), Mapping) else {}
+    rows, ledger_hash, issues = read_jsonl(args.ledger); contexts, context_hash, context_issues = read_jsonl(args.context_ledger, True); issues.extend(context_issues)
+    if context_status and (context_status.get("state") != "RUNNING" or int(context_status.get("error_count") or 0) > 0): issues.append(problem("MARKET_CONTEXT_COLLECTOR_DEGRADED", "M", f"state={context_status.get('state')}:errors={context_status.get('error_count')}", "market_context"))
+    for item in contexts:
+        if item.get("epoch_id") != ssot.get("expected_epoch") or item.get("measurement_namespace") != ssot.get("expected_namespace"): issues.append(problem("CONTEXT_IDENTITY_MISMATCH", "M", str(item.get("snapshot_id") or "unknown"), "market_context"))
+        if item.get("observer_only") is not True or any(item.get(key) is not False for key in ("paper_enabled", "live_enabled", "order_enabled")): issues.append(problem("UNSAFE_CONTEXT_SNAPSHOT", "C", str(item.get("snapshot_id") or "unknown"), "market_context"))
+    owner_map = owners(manifest, int(ssot.get("expected_strategy_count") or 25)); issues.extend(validate(rows, owner_map, ssot)); cfg = ssot.get("outcome_contract") if isinstance(ssot.get("outcome_contract"), Mapping) else {}
     projections, outcome, outcome_issues = outcome_layer(rows, cfg); issues.extend(outcome_issues); projection_hash = atomic_jsonl(args.projection, projections); outcome.update({"projection_path": str(args.projection.resolve()), "projection_sha256": projection_hash})
     funnel, funnel_issues = funnel_layer(rows, owner_map, producer_status, producer_state, open_positions); issues.extend(funnel_issues); cost = cost_layer(rows, cfg); market = market_layer(rows, contexts, ssot, context_status); portfolio = portfolio_layer(rows, ssot)
     manifest_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest(); ssot_hash = hashlib.sha256(json.dumps(ssot, sort_keys=True, separators=(",", ":")).encode()).hexdigest(); replay = replay_layer(rows, ssot, {"formal_ledger_sha256": ledger_hash, "outcome_projection_sha256": projection_hash, "market_context_ledger_sha256": context_hash, "manifest_sha256": manifest_hash, "ssot_sha256": ssot_hash})

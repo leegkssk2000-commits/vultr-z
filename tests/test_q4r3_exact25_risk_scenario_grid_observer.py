@@ -32,6 +32,8 @@ def test_grid_aggregates_forward_pair_metrics() -> None:
             "realized_r": 2.0,
             "fee_bps": 4.0,
             "slippage_bps": 2.0,
+            "funding_bps": 1.0,
+            "liq_buffer_pct": 12.0,
             "mfe_r": 2.4,
             "mae_r": -0.3,
             "exposure_time_min": 30.0,
@@ -42,6 +44,8 @@ def test_grid_aggregates_forward_pair_metrics() -> None:
             "realized_r": -0.75,
             "fee_bps": 4.0,
             "slippage_bps": 2.0,
+            "funding_bps": 1.0,
+            "liq_buffer_pct": 8.0,
             "mfe_r": 0.3,
             "mae_r": -0.8,
             "exposure_time_min": 15.0,
@@ -54,6 +58,10 @@ def test_grid_aggregates_forward_pair_metrics() -> None:
     assert first["notional_exposure_pct"] == 50.0
     assert first["net_r"] == 1.25
     assert first["max_drawdown_r"] == 0.75
+    assert first["minimum_liq_buffer_pct"] == 8.0
+    assert first["estimated_execution_cost_equity_pct"] == 0.06
+    assert first["estimated_funding_cost_equity_pct"] == 0.01
+    assert first["estimated_total_cost_equity_pct"] == 0.07
     assert first["risk_context_ready"] is True
 
 
@@ -67,4 +75,6 @@ def test_missing_context_is_explicit() -> None:
     ])
     assert "fee_bps" in missing
     assert "slippage_bps" in missing
+    assert "funding_bps" in missing
+    assert "liq_buffer_pct" in missing
     assert all(row["risk_context_ready"] is False for row in grid)

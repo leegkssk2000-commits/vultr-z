@@ -1,0 +1,196 @@
+{
+  "schema": "q4r3_exact25_trade_method_vnext_sgrade_ssot_v1",
+  "mode": "ISOLATED_VNEXT_CANDIDATE_ONLY",
+  "baseline_policy": {
+    "current_exact25_epoch_mutation_allowed": false,
+    "active_trade_method_mutation_allowed": false,
+    "producer_mutation_allowed": false,
+    "writer_mutation_allowed": false,
+    "formal_ledger_mutation_allowed": false,
+    "historical_backfill_allowed": false,
+    "candidate_activation_allowed": false
+  },
+  "core_modules": [
+    "types.py",
+    "profiles.py",
+    "policy.py",
+    "resolver.py"
+  ],
+  "required_support_modules": [
+    "cost_model.py",
+    "manifest.py",
+    "lineage.py",
+    "validation.py"
+  ],
+  "method_families": [
+    "scalp_first",
+    "intraday",
+    "tactical_swing",
+    "blocked"
+  ],
+  "allowed_family_subtypes": {
+    "scalp_first": [
+      "revert",
+      "continuation",
+      "liquidity_reclaim"
+    ],
+    "intraday": [
+      "breakout_probe",
+      "rescue"
+    ],
+    "tactical_swing": [
+      "continuation"
+    ],
+    "blocked": []
+  },
+  "required_input_contract": [
+    "strategy_id",
+    "symbol",
+    "side",
+    "signal_ts",
+    "reference_price",
+    "expected_gross_edge_bps",
+    "fee_bps_round_trip",
+    "spread_bps",
+    "slippage_bps",
+    "funding_bps_horizon",
+    "market_impact_bps",
+    "available_depth_usdt",
+    "requested_notional_usdt",
+    "realized_vol_bps",
+    "atr_bps",
+    "regime",
+    "session_bucket",
+    "position_size_pct",
+    "leverage",
+    "dd_day_pct",
+    "dd_total_pct",
+    "liq_buffer_pct",
+    "entry_style",
+    "hold_horizon",
+    "risk_mode"
+  ],
+  "required_output_contract": [
+    "method",
+    "method_subtype",
+    "profile_version",
+    "profile_sha256",
+    "entry_style",
+    "hold_horizon",
+    "risk_mode",
+    "target_r",
+    "stop_r",
+    "time_stop_seconds",
+    "size_multiplier",
+    "execution_overlays",
+    "resolver_trace_id",
+    "block_reason",
+    "expected_all_in_cost_bps",
+    "net_edge_after_cost_bps",
+    "decision",
+    "evidence_flags"
+  ],
+  "fail_closed_rules": [
+    "missing_required_input",
+    "non_finite_numeric_input",
+    "unsupported_family_subtype",
+    "stale_signal",
+    "net_edge_not_above_cost_margin",
+    "insufficient_liquidity",
+    "spread_too_wide",
+    "volatility_outside_profile",
+    "regime_profile_mismatch",
+    "drawdown_limit_exceeded",
+    "liquidation_buffer_too_small",
+    "invalid_risk_contract",
+    "profile_hash_mismatch",
+    "resolver_nondeterminism"
+  ],
+  "cost_model": {
+    "components": [
+      "round_trip_fee",
+      "spread",
+      "slippage",
+      "funding_horizon",
+      "market_impact",
+      "latency_adverse_selection_margin"
+    ],
+    "entry_rule": "expected_gross_edge_bps > expected_all_in_cost_bps + safety_margin_bps",
+    "no_trade_zone_required": true,
+    "cost_components_must_be_non_negative": true
+  },
+  "risk_contract": {
+    "target_r_positive": true,
+    "stop_r_negative": true,
+    "time_stop_required": true,
+    "size_multiplier_range": [0.0, 1.0],
+    "leverage_must_not_exceed_ssot": true,
+    "drawdown_and_liquidation_gates_required": true,
+    "partial_trailing_runner_conflict_check_required": true
+  },
+  "determinism": {
+    "same_canonical_input_same_output": true,
+    "wall_clock_reads_for_decision_forbidden": true,
+    "randomness_forbidden": true,
+    "network_access_forbidden": true,
+    "environment_dependent_decision_forbidden": true,
+    "canonical_json_hash_trace_required": true
+  },
+  "lineage": {
+    "profile_version_required": true,
+    "profile_sha256_required": true,
+    "resolver_trace_id_required": true,
+    "decision_reason_codes_required": true,
+    "cost_breakdown_required": true,
+    "input_hash_required": true,
+    "output_hash_required": true
+  },
+  "validation_gates": {
+    "unit_contract_tests": true,
+    "property_tests": true,
+    "golden_fixtures": true,
+    "determinism_replay_count": 100,
+    "boundary_value_tests": true,
+    "unsupported_combination_tests": true,
+    "cost_monotonicity_tests": true,
+    "liquidity_monotonicity_tests": true,
+    "risk_monotonicity_tests": true,
+    "walk_forward_required": true,
+    "purge_and_embargo_required": true,
+    "out_of_sample_required": true,
+    "fee_sensitivity_required": true,
+    "slippage_stress_required": true,
+    "latency_stress_required": true,
+    "ablation_required": true,
+    "trial_count_tracking_required": true,
+    "deflated_performance_metric_required": true,
+    "candidate_shadow_required": true,
+    "paper_canary_required": true
+  },
+  "promotion_policy": {
+    "static_contract_pass_required": true,
+    "replay_pass_required": true,
+    "out_of_sample_pass_required": true,
+    "candidate_shadow_pass_required": true,
+    "paper_canary_pass_required": true,
+    "single_backtest_path_never_sufficient": true,
+    "win_rate_alone_never_sufficient": true,
+    "baseline_source_replacement_forbidden": true
+  },
+  "research_rules": [
+    "Research and trader heuristics are candidate hypotheses only.",
+    "No external technique is promoted without BingX-cost-aware replay, ablation, forward shadow, and paper evidence.",
+    "Signal quality and execution quality are attributed separately.",
+    "Parameter trials and degrees of freedom are recorded to control overfitting.",
+    "No-trade is a first-class valid decision."
+  ],
+  "safety": {
+    "observer_only": true,
+    "action": "hold",
+    "order_authority": "blocked",
+    "execution_authority": "none",
+    "paper_enabled": false,
+    "live_enabled": false,
+    "order_enabled": false
+  }
+}

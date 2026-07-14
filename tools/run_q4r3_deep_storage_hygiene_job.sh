@@ -11,6 +11,13 @@ TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene.py
 HOTFIX_TEST_FILE=$WORKTREE/tests/test_q4r3_deep_storage_hygiene_hotfix.py
 GROWTH_TEST_FILE=$WORKTREE/tests/test_q4r3_storage_growth_attribution.py
 
+# The repository is owned by the deployment user while this isolated hygiene
+# job runs as root. Trust only this repository for this process tree; do not
+# mutate global or system Git configuration.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0="$ROOT"
+
 OUTDIR=$ROOT/runtime/q4r3_deep_storage_hygiene
 AUDIT_REPORT=$OUTDIR/audit_latest.json
 APPLY_REPORT=$OUTDIR/apply_latest.json
@@ -184,8 +191,8 @@ assert report.get("runtime_root_deleted") is False, report
 assert report.get("formal_ledger_deleted") is False, report
 payload={
   "job":"q4r3_deep_storage_hygiene","state":"PASS","current_stage":"complete",
-  "status":"PASS_Q4R3_DEEP_STORAGE_HYGIENE_V4",
-  "verdict":"MALFORMED_PATH_SAFE_CLEANUP_AND_GROWTH_ATTRIBUTION_COMPLETE",
+  "status":"PASS_Q4R3_DEEP_STORAGE_HYGIENE_V5",
+  "verdict":"SCOPED_GIT_TRUST_MALFORMED_PATH_SAFE_CLEANUP_AND_GROWTH_ATTRIBUTION_COMPLETE",
   "updated_at":datetime.now(timezone.utc).isoformat(),"action":"hold",
   "policy":report.get("policy"),"disk_before":sys.argv[4],"disk_after":sys.argv[5],
   "backup_root_count":report.get("backup_root_count"),"snapshot_count":report.get("snapshot_count"),
@@ -213,8 +220,8 @@ payload={
   "next_action":"CAP_GROWING_SOURCE_OR_RUN_TARGETED_RETENTION_ONLY_FROM_ATTRIBUTION_REPORT"
 }
 Path(sys.argv[3]).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8")
-print("Q4R3_DEEP_STORAGE_HYGIENE_V4_PASS")
+print("Q4R3_DEEP_STORAGE_HYGIENE_V5_PASS")
 PY
 
 trap - ERR
-echo Q4R3_DEEP_STORAGE_HYGIENE_V4_INSTALL_PASS
+echo Q4R3_DEEP_STORAGE_HYGIENE_V5_INSTALL_PASS

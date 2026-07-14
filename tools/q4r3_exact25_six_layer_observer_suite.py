@@ -3,14 +3,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from tools.q4r3_exact25_six_layer_observer_core import (
     SEV, atomic_json, atomic_jsonl, cost_layer, funnel_layer, load_json,
     now_iso, outcome_layer, owners, problem, read_jsonl, validate,
 )
 from tools.q4r3_exact25_six_layer_analytics import market_layer, portfolio_layer, replay_layer
+
 
 def violations(path: Path, issues: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     stable = sorted((str(item.get("code")), str(item.get("severity")), str(item.get("metric")), str(item.get("detail"))) for item in issues); fingerprint = hashlib.sha256(json.dumps(stable, separators=(",", ":")).encode()).hexdigest() if stable else None; prior = load_json(path, True); severity = max((str(item.get("severity") or "m") for item in issues), key=lambda value: SEV.get(value, 0), default=None); notify = bool(issues) and (prior.get("fingerprint") != fingerprint or SEV.get(severity, 0) > SEV.get(prior.get("severity"), 0))

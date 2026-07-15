@@ -30,6 +30,7 @@ class TeamDecisionContext:
     skill_id: str
     data_state: str
     freshness_ms: int
+    latency_ms: int
     source_ids: tuple[str, ...] = field(default_factory=tuple)
     evidence_ids: tuple[str, ...] = field(default_factory=tuple)
 
@@ -87,6 +88,7 @@ def _request(
         team_role=team_role,
         data_state=context.data_state,
         freshness_ms=context.freshness_ms,
+        latency_ms=context.latency_ms,
         role_evidence=role_evidence,
         source_ids=context.source_ids,
         evidence_ids=context.evidence_ids,

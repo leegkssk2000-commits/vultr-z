@@ -12,6 +12,12 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+def test_fixed_classifier_is_bound_into_original_module() -> None:
+    assert module.classify_kind is module._fixed_classify_kind
+    assert module._original.classify_kind is module._fixed_classify_kind
+    assert module.classify_kind.__module__ == "tb11_fixed"
+
+
 def test_backup_restore_rollback_paths_are_excluded(tmp_path: Path) -> None:
     for name in (
         ".backup_restore_v23/file.py",
@@ -100,6 +106,36 @@ def test_pytest_temp_parent_does_not_demote_runtime_owner(tmp_path: Path) -> Non
     row = module.analyze_file(path)
     assert row is not None
     assert row["kind"] == "runtime_definition"
+
+
+def test_all_support_prefixes_in_ancestor_do_not_demote_runtime_owner(tmp_path: Path) -> None:
+    prefixes = ("test", "verify", "apply", "install", "bootstrap", "run", "audit", "probe", "smoke", "check")
+    for prefix in prefixes:
+        path = tmp_path / f"{prefix}_temporary_parent" / "backend/engine/zbot_core.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("class ZBotCore: pass", encoding="utf-8")
+        row = module.analyze_file(path)
+        assert row is not None, prefix
+        assert row["kind"] == "runtime_definition", prefix
+
+
+def test_actual_support_basename_is_support_surface(tmp_path: Path) -> None:
+    for name in ("verify_zbot_contract.py", "run_zbot_probe.py", "audit_zbot_owner.py"):
+        path = tmp_path / "backend/engine" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("class ZBotCore: pass", encoding="utf-8")
+        row = module.analyze_file(path)
+        assert row is not None
+        assert row["kind"] == "support_verifier_installer", name
+
+
+def test_exact_support_directory_is_support_surface(tmp_path: Path) -> None:
+    path = tmp_path / "backend/scripts/zbot_contract.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("class ZBotCore: pass", encoding="utf-8")
+    row = module.analyze_file(path)
+    assert row is not None
+    assert row["kind"] == "support_verifier_installer"
 
 
 def test_support_verifier_is_not_owner(tmp_path: Path) -> None:

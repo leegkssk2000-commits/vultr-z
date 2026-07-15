@@ -116,19 +116,23 @@ class ZliceProjection:
         event_ids = [record.event.event_id for record in records]
         event_set = set(event_ids)
         duplicate_count = len(event_ids) - len(event_set)
-        missing_parent_count = sum(
-            1
-            for index, record in enumerate(records)
-            if index > 0 and record.event.parent_event_id not in event_set
-        )
         sequence_gap_count = sum(1 for index, record in enumerate(records) if record.sequence_no != index)
-        chain_valid = duplicate_count == 0 and missing_parent_count == 0 and sequence_gap_count == 0
+        missing_parent_count = 0
+        seen: set[str] = set()
         previous_hash = "0" * 64
-        for record in records:
+        chain_valid = duplicate_count == 0 and sequence_gap_count == 0
+        for index, record in enumerate(records):
+            event = record.event
+            if index == 0:
+                if event.parent_event_id:
+                    missing_parent_count += 1
+            elif not event.parent_event_id or event.parent_event_id not in seen:
+                missing_parent_count += 1
             if record.previous_hash != previous_hash:
                 chain_valid = False
-                break
+            seen.add(event.event_id)
             previous_hash = record.record_hash
+        chain_valid = chain_valid and missing_parent_count == 0 and len(seen) == len(event_set)
         return IntegritySummary(
             record_count=len(records),
             unique_event_count=len(event_set),

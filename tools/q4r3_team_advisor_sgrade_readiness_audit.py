@@ -253,11 +253,11 @@ def load_units(path: Path) -> list[dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
-def unit_exec_paths(units: list[dict[str, Any]]) -> set[str]:
+def unit_exec_paths(units: list[dict[str, Any]], active_only: bool) -> set[str]:
     values: set[str] = set()
     path_pattern = re.compile(r"(/[A-Za-z0-9_./-]+\.(?:py|sh))")
     for unit in units:
-        if str(unit.get("ActiveState") or "") != "active":
+        if active_only and str(unit.get("ActiveState") or "") != "active":
             continue
         for match in path_pattern.findall(str(unit.get("ExecStart") or "")):
             values.add(match)
@@ -282,8 +282,22 @@ def tests_for_component(files: list[Path], component: str) -> list[str]:
 def analyze(args: argparse.Namespace) -> dict[str, Any]:
     ssot = read_json(args.ssot, {})
     units = load_units(args.units)
-    active_exec_paths = unit_exec_paths(units)
+    all_exec_paths = unit_exec_paths(units, active_only=False)
+    active_exec_paths = unit_exec_paths(units, active_only=True)
     all_files = list(iter_files(args.root))
+    known_paths = {str(path) for path in all_files}
+    for value in sorted(all_exec_paths):
+        path = Path(value)
+        if str(path) in known_paths or not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > 2 * 1024 * 1024:
+                continue
+        except OSError:
+            continue
+        all_files.append(path)
+        known_paths.add(str(path))
+
     excluded: list[dict[str, str]] = []
     semantic_files: list[Path] = []
     for path in all_files:
@@ -293,6 +307,7 @@ def analyze(args: argparse.Namespace) -> dict[str, Any]:
         else:
             semantic_files.append(path)
 
+    test_map = {component: tests_for_component(semantic_files, component) for component in ssot.get("scope", [])}
     candidate_map: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for path in semantic_files:
         try:
@@ -306,7 +321,7 @@ def analyze(args: argparse.Namespace) -> dict[str, Any]:
             continue
         order_calls, sensitive_access = ast_authority(tree)
         for component in components:
-            tests = tests_for_component(semantic_files, component)
+            tests = test_map.get(component, [])
             capabilities = detect_capabilities(text_lower, order_calls, sensitive_access, len(tests))
             role_hits = [pattern for pattern in ROLE_PATTERNS[component] if pattern in text_lower]
             lineage_fields = [field for field in ssot.get("required_lineage_fields", []) if str(field).lower() in text_lower]
@@ -315,6 +330,7 @@ def analyze(args: argparse.Namespace) -> dict[str, Any]:
                 "path": str(path),
                 "sha256": sha256(path),
                 "support_surface": support_surface(path),
+                "systemd_exec_reference": str(path) in all_exec_paths,
                 "active_exec": active_exec,
                 "parse_error": parse_error,
                 "direct_order_calls": order_calls,
@@ -398,6 +414,8 @@ def analyze(args: argparse.Namespace) -> dict[str, Any]:
             "semantic_file_count": len(semantic_files),
             "excluded_contamination_count": len(excluded),
             "excluded_contamination_sample": excluded[:100],
+            "systemd_exec_reference_count": len(all_exec_paths),
+            "systemd_exec_paths": sorted(all_exec_paths),
             "active_exec_path_count": len(active_exec_paths),
             "active_exec_paths": sorted(active_exec_paths),
         },

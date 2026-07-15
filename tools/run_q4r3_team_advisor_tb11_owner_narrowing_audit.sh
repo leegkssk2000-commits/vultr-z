@@ -8,7 +8,8 @@ PY="${Q4R3_PYTHON_BIN:-$ROOT/.venv/bin/python}"
 [[ -x "$PY" ]] || PY="$ROOT/venv/bin/python"
 [[ -x "$PY" ]] || { echo PYTHON_NOT_FOUND; exit 1; }
 
-AUDIT="$WT/tools/q4r3_team_advisor_tb11_owner_narrowing_audit.py"
+AUDIT_ORIGINAL="$WT/tools/q4r3_team_advisor_tb11_owner_narrowing_audit.py"
+AUDIT="$WT/tools/q4r3_team_advisor_tb11_owner_narrowing_audit_fixed.py"
 TEST="$WT/tests/test_q4r3_team_advisor_tb11_owner_narrowing_audit.py"
 EVIDENCE_REL="evidence/q4r3_team_advisor_tb11_owner_narrowing_latest.json"
 EVIDENCE="$WT/$EVIDENCE_REL"
@@ -20,7 +21,7 @@ PREFIX="$(mktemp /tmp/q4r3_tb11_ledger_prefix.XXXXXX)"
 cleanup() { rm -f "$PREFIX"; }
 trap cleanup EXIT
 
-for required in "$AUDIT" "$TEST" "$LEDGER"; do
+for required in "$AUDIT_ORIGINAL" "$AUDIT" "$TEST" "$LEDGER"; do
   [[ -f "$required" ]] || { echo "REQUIRED_INPUT_MISSING=$required"; exit 1; }
 done
 
@@ -34,7 +35,7 @@ WRITER_PID_BEFORE="$(systemctl show "$WRITER_UNIT" -p MainPID --value)"
 cp --reflink=auto "$LEDGER" "$PREFIX"
 PREFIX_SIZE="$(stat -c %s "$PREFIX")"
 
-"$PY" -m py_compile "$AUDIT"
+"$PY" -m py_compile "$AUDIT_ORIGINAL" "$AUDIT"
 PYTHONPATH="$WT" "$PY" -m pytest -q "$TEST"
 
 mkdir -p "$(dirname "$EVIDENCE")"

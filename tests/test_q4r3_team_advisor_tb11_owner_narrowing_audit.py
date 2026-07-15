@@ -4,9 +4,9 @@ import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "tools/q4r3_team_advisor_tb11_owner_narrowing_audit.py"
+MODULE_PATH = ROOT / "tools/q4r3_team_advisor_tb11_owner_narrowing_audit_fixed.py"
 
-spec = importlib.util.spec_from_file_location("tb11", MODULE_PATH)
+spec = importlib.util.spec_from_file_location("tb11_fixed", MODULE_PATH)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -86,9 +86,20 @@ def test_environment_credential_access_is_private_execution(tmp_path: Path) -> N
     )
     row = module.analyze_file(path)
     assert row is not None
+    assert row["kind"] == "runtime_definition"
     assert row["private_credential_access_signal"] is True
     authority = module.authority_matrix([row], [])
     assert authority["direct_execution_candidate_count"] == 1
+
+
+def test_pytest_temp_parent_does_not_demote_runtime_owner(tmp_path: Path) -> None:
+    parent = tmp_path / "test_environment_credential_ac0"
+    path = parent / "backend/engine/zbot_core.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("class ZBotCore: pass", encoding="utf-8")
+    row = module.analyze_file(path)
+    assert row is not None
+    assert row["kind"] == "runtime_definition"
 
 
 def test_support_verifier_is_not_owner(tmp_path: Path) -> None:

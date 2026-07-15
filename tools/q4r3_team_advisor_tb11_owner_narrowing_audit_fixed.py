@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 ORIGINAL_PATH = Path(__file__).with_name("q4r3_team_advisor_tb11_owner_narrowing_audit.py")
 spec = importlib.util.spec_from_file_location("q4r3_tb11_original", ORIGINAL_PATH)
@@ -18,20 +18,18 @@ SUPPORT_FILE_PREFIXES = (
 )
 
 
-def classify_kind(path: Path, exact_defs: Mapping[str, bool]) -> str:
-    """Classify only repository-owned support surfaces as support files.
+def _fixed_classify_kind(path: Path, exact_defs: Mapping[str, bool]) -> str:
+    """Classify support surfaces from exact directories or the final basename.
 
-    The original regex matched any ancestor segment beginning with ``test_``.
-    Pytest creates temporary parents such as ``test_environment_credential_ac0``;
-    that incorrectly demoted a real ``backend/engine/zbot_core.py`` fixture to a
-    verifier and suppressed its semantic authority evidence.
+    Ancestor names such as pytest's ``test_environment_credential_ac0`` are not
+    support surfaces. Only an exact test/tests/script/scripts directory or a
+    support-prefixed final filename is treated as verifier/installer code.
     """
     path_text = str(path).replace("\\", "/")
     if path.suffix in {".service", ".timer"} or path_text.startswith("/etc/systemd/system/"):
         return "systemd_unit"
 
-    lowered_parts = {part.lower() for part in path.parts}
-    support_directory = bool(lowered_parts.intersection(SUPPORT_DIR_NAMES))
+    support_directory = any(part.lower() in SUPPORT_DIR_NAMES for part in path.parts)
     support_filename = path.stem.lower().startswith(SUPPORT_FILE_PREFIXES)
     if support_directory or support_filename:
         return "support_verifier_installer"
@@ -43,12 +41,17 @@ def classify_kind(path: Path, exact_defs: Mapping[str, bool]) -> str:
     return "reference"
 
 
-# Re-export the audited implementation, then replace only the faulty classifier.
+# Re-export the original implementation without allowing it to overwrite the
+# fixed classifier or this wrapper's main entry point.
 for _name in dir(_original):
-    if not _name.startswith("__"):
-        globals()[_name] = getattr(_original, _name)
-_original.classify_kind = classify_kind
-globals()["classify_kind"] = classify_kind
+    if _name.startswith("__") or _name in {"classify_kind", "main"}:
+        continue
+    globals()[_name] = getattr(_original, _name)
+
+# analyze_file() resolves classify_kind from the original module globals, so
+# both bindings must point to the fixed function.
+_original.classify_kind = _fixed_classify_kind
+classify_kind = _fixed_classify_kind
 
 
 def main() -> int:

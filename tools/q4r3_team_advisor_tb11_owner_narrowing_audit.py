@@ -15,8 +15,11 @@ from typing import Any, Iterable, Mapping
 UTC = timezone.utc
 MAX_FILE_SIZE = 2 * 1024 * 1024
 MAX_FILES = 500
-MAX_HITS = 12
-TEXT_SUFFIXES = {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".service", ".timer", ".sh", ".md", ".txt"}
+MAX_HITS = 16
+TEXT_SUFFIXES = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".conf", ".service", ".timer", ".sh", ".md", ".txt",
+}
 CORE_COMPONENTS = ("LBot", "MBot", "OBot", "SBot", "ZBot", "ZICO", "LiCo", "Zlice")
 LANES = ("Alpha", "Beta", "Gamma", "Delta")
 COMPONENTS = CORE_COMPONENTS + LANES
@@ -34,18 +37,55 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "Gamma": ("gamma team", "gamma lane", "gamma_lane", "team gamma"),
     "Delta": ("delta team", "delta lane", "delta_lane", "team delta"),
 }
-ALIAS_RE = {name: re.compile("|".join(re.escape(value) for value in values), re.I) for name, values in ALIASES.items()}
-EXCLUDE_FRAGMENT_RE = re.compile(r"(^|[._/-])(backup|restore|rollback|archive|snapshot|quarantine|trash|golden[_-]?backup|locked[_-]?baseline|live[_-]?backup|patch[_-]?backup|old|copy)([._/-]|$)", re.I)
-EXCLUDE_PARTS = {".git", "node_modules", "vendor", "dist", "build", "__pycache__", ".venv", "venv", "coverage", ".pytest_cache"}
-SUPPORT_PATH_RE = re.compile(r"/(tests?|scripts?)/|(^|/)(test|verify|apply|install|bootstrap|run|audit|probe|smoke|check)[_-]", re.I)
+ALIAS_RE = {
+    name: re.compile("|".join(re.escape(value) for value in values), re.I)
+    for name, values in ALIASES.items()
+}
+EXCLUDE_FRAGMENT_RE = re.compile(
+    r"(^|[._/-])(backup|restore|rollback|archive|snapshot|quarantine|trash|"
+    r"golden[_-]?backup|locked[_-]?baseline|live[_-]?backup|patch[_-]?backup|old|copy)([._/-]|$)",
+    re.I,
+)
+EXCLUDE_PARTS = {
+    ".git", "node_modules", "vendor", "dist", "build", "__pycache__", ".venv", "venv",
+    "coverage", ".pytest_cache",
+}
+SUPPORT_PATH_RE = re.compile(
+    r"/(tests?|scripts?)/|(^|/)(test|verify|apply|install|bootstrap|run|audit|probe|smoke|check)[_-]",
+    re.I,
+)
 STALE_RE = re.compile(r"\b(legacy|deprecated|obsolete|stale|retired)\b|w\d{2,4}", re.I)
 CANONICAL_RE = re.compile(r"\b(canonical|owner|registry|manifest|ssot|contract|single[_ -]?writer)\b", re.I)
 IMPORT_CALL_RE = re.compile(r"\b(import|from|require|invoke|execute|handler|adapter|bridge|client|service|resolve|dispatch)\b", re.I)
-DIRECT_ORDER_RE = re.compile(r"\b(create_order|place_order|cancel_order|submit_order|send_order|private_api|private_endpoint)\b", re.I)
-PRIVATE_CREDENTIAL_RE = re.compile(r"\b(api[_-]?key|apiKey|secret|private[_-]?key|passphrase)\b", re.I)
-FILE_WRITE_RE = re.compile(r"write_text\s*\(|write_bytes\s*\(|open\s*\([^\n]{0,160}[\"'][awx+][^\"']*[\"']|append_jsonl|os\.replace\s*\(", re.I)
-POLICY_ONLY_RE = re.compile(r"\b(paper_enabled|live_enabled|order_enabled|order_authority|execution_authority|observer_only)\b", re.I)
-SECRET_RE = re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer)\s*[:=]\s*([^\s,;]+)")
+DIRECT_ORDER_CALL_RE = re.compile(
+    r"\b(create_order|place_order|cancel_order|submit_order|send_order|private_api|private_endpoint)\s*\(",
+    re.I,
+)
+PRIVATE_CREDENTIAL_REFERENCE_RE = re.compile(
+    r"\b(api[_-]?key|apikey|secret|private[_-]?key|passphrase|credential)\b",
+    re.I,
+)
+PRIVATE_CREDENTIAL_ACCESS_RE = re.compile(
+    r"(?:"
+    r"(?:os\.(?:getenv|environ(?:\.get)?)|environ(?:\.get)?|get_secret|get_credentials?|keyring\.get_password)"
+    r"\s*[\[(].{0,180}(?:api[_-]?key|apikey|secret|private[_-]?key|passphrase|credential)"
+    r"|(?:api[_-]?key|apikey|secret|private[_-]?key|passphrase|credential).{0,180}"
+    r"(?:os\.(?:getenv|environ(?:\.get)?)|environ(?:\.get)?|get_secret|get_credentials?|keyring\.get_password|read_text\s*\(|load_dotenv)"
+    r"|(?:ccxt\.[A-Za-z0-9_]+|Client|Exchange)\s*\(.{0,240}(?:apiKey|api_key|secret|private_key|passphrase)"
+    r")",
+    re.I | re.S,
+)
+FILE_WRITE_RE = re.compile(
+    r"write_text\s*\(|write_bytes\s*\(|open\s*\([^\n]{0,160}[\"'][awx+][^\"']*[\"']|append_jsonl|os\.replace\s*\(",
+    re.I,
+)
+POLICY_ONLY_RE = re.compile(
+    r"\b(paper_enabled|live_enabled|order_enabled|order_authority|execution_authority|observer_only)\b",
+    re.I,
+)
+SECRET_RE = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer)\s*[:=]\s*([^\s,;]+)"
+)
 
 
 def now_iso() -> str:
@@ -79,7 +119,10 @@ def run_raw(command: list[str], timeout: int = 30) -> tuple[int, str]:
 
 
 def canonical_roots(root: Path) -> list[Path]:
-    candidates = [root / "backend", root / "tools", root / "services", root / "systemd", root / "config", Path("/etc/systemd/system")]
+    candidates = [
+        root / "backend", root / "tools", root / "services", root / "systemd", root / "config",
+        Path("/etc/systemd/system"),
+    ]
     return [path for path in candidates if path.exists()]
 
 
@@ -106,7 +149,12 @@ def exact_definition(component: str, line: str) -> bool:
     return any(name and name in compact for name in names) and (declaration or assignment)
 
 
-def file_kind(path: Path, text: str, components: list[str]) -> str:
+def filename_signal(component: str, path: Path) -> bool:
+    name = normalize(path.stem)
+    return any(normalize(alias) in name for alias in ALIASES[component] if normalize(alias))
+
+
+def classify_kind(path: Path, exact_defs: Mapping[str, bool]) -> str:
     path_text = str(path).replace("\\", "/")
     if path.suffix in {".service", ".timer"} or path_text.startswith("/etc/systemd/system/"):
         return "systemd_unit"
@@ -114,14 +162,9 @@ def file_kind(path: Path, text: str, components: list[str]) -> str:
         return "support_verifier_installer"
     if path.suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf"}:
         return "config_contract"
-    if any(exact_definition(component, line) for component in components for line in text.splitlines()[:2000]):
+    if any(exact_defs.values()):
         return "runtime_definition"
     return "reference"
-
-
-def filename_signal(component: str, path: Path) -> bool:
-    name = normalize(path.stem)
-    return any(normalize(alias) in name for alias in ALIASES[component] if normalize(alias))
 
 
 def analyze_file(path: Path) -> dict[str, Any] | None:
@@ -129,50 +172,83 @@ def analyze_file(path: Path) -> dict[str, Any] | None:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None
-    components = sorted(component for component, regex in ALIAS_RE.items() if regex.search(text) or regex.search(path.name))
+
+    components = sorted(
+        component for component, regex in ALIAS_RE.items()
+        if regex.search(text) or regex.search(path.name)
+    )
     if not components:
         return None
-    kind = file_kind(path, text, components)
+
+    lines = text.splitlines()
+    exact_defs = {
+        component: any(exact_definition(component, line) for line in lines[:4000])
+        for component in components
+    }
+    filename_signals = {component: filename_signal(component, path) for component in components}
+    affiliated = [
+        component for component in components
+        if exact_defs.get(component) or filename_signals.get(component)
+    ]
+    semantic_scope = bool(affiliated)
+    kind = classify_kind(path, exact_defs)
+
+    caller = bool(IMPORT_CALL_RE.search(text)) if semantic_scope else False
+    canonical = bool(CANONICAL_RE.search(text)) if semantic_scope else False
+    direct_order = bool(DIRECT_ORDER_CALL_RE.search(text)) if semantic_scope else False
+    private_reference = bool(PRIVATE_CREDENTIAL_REFERENCE_RE.search(text)) if semantic_scope else False
+    private_access = bool(PRIVATE_CREDENTIAL_ACCESS_RE.search(text)) if semantic_scope else False
+    file_write = bool(FILE_WRITE_RE.search(text)) if semantic_scope else False
+    policy_reference = bool(POLICY_ONLY_RE.search(text)) if semantic_scope else False
+
     hits: list[dict[str, Any]] = []
-    exact_defs: dict[str, bool] = {component: False for component in components}
-    caller = False
-    canonical = False
-    direct_order = False
-    private_credentials = False
-    file_write = False
-    policy_reference = False
-    for line_no, line in enumerate(text.splitlines(), 1):
+    for line_no, line in enumerate(lines, 1):
         line_components = [component for component in components if ALIAS_RE[component].search(line)]
-        if not line_components:
+        signal_types: list[str] = []
+        if IMPORT_CALL_RE.search(line):
+            signal_types.append("caller")
+        if CANONICAL_RE.search(line):
+            signal_types.append("canonical")
+        if DIRECT_ORDER_CALL_RE.search(line):
+            signal_types.append("direct_order_call")
+        if PRIVATE_CREDENTIAL_REFERENCE_RE.search(line):
+            signal_types.append("credential_reference")
+        if FILE_WRITE_RE.search(line):
+            signal_types.append("file_write")
+        if POLICY_ONLY_RE.search(line):
+            signal_types.append("policy_reference")
+        if not line_components and not (semantic_scope and signal_types):
             continue
-        caller = caller or bool(IMPORT_CALL_RE.search(line))
-        canonical = canonical or bool(CANONICAL_RE.search(line))
-        direct_order = direct_order or bool(DIRECT_ORDER_RE.search(line))
-        private_credentials = private_credentials or bool(PRIVATE_CREDENTIAL_RE.search(line))
-        file_write = file_write or bool(FILE_WRITE_RE.search(line))
-        policy_reference = policy_reference or bool(POLICY_ONLY_RE.search(line))
-        for component in line_components:
-            exact_defs[component] = exact_defs[component] or exact_definition(component, line)
         if len(hits) < MAX_HITS:
-            hits.append({"line": line_no, "components": line_components, "snippet": sanitize(line.strip())})
+            hits.append({
+                "line": line_no,
+                "components": line_components or affiliated,
+                "signal_types": signal_types,
+                "snippet": sanitize(line.strip()),
+            })
+
     try:
         stat = path.stat()
         digest = sha256_file(path)
     except Exception:
         return None
+
     return {
         "path": str(path),
         "sha256": digest,
         "size_bytes": stat.st_size,
         "mtime_epoch": stat.st_mtime,
         "components": components,
+        "affiliated_components": affiliated,
         "kind": kind,
-        "filename_signals": {component: filename_signal(component, path) for component in components},
+        "filename_signals": filename_signals,
         "exact_definitions": exact_defs,
         "caller_signal": caller,
         "canonical_signal": canonical,
         "direct_order_signal": direct_order,
-        "private_credential_signal": private_credentials,
+        "private_credential_signal": private_access,
+        "private_credential_access_signal": private_access,
+        "private_credential_reference_signal": private_reference,
         "file_write_signal": file_write,
         "policy_reference_signal": policy_reference,
         "stale_signal": bool(STALE_RE.search(str(path)) or STALE_RE.search(text[:10000])),
@@ -222,6 +298,7 @@ def systemd_inventory(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
         token = line.split(maxsplit=1)[0] if line.strip() else ""
         if token.endswith((".service", ".timer")) and generic.search(token):
             names.add(token)
+
     rows: list[dict[str, Any]] = []
     file_by_path = {row["path"]: row for row in files}
     for name in sorted(names):
@@ -260,7 +337,7 @@ def score(component: str, row: Mapping[str, Any], active_exec_paths: set[str]) -
     if row.get("kind") == "systemd_unit":
         value += 3
     if row.get("kind") == "support_verifier_installer":
-        value -= 12
+        value -= 30
     if row.get("kind") == "reference":
         value -= 4
     if row.get("stale_signal"):
@@ -284,29 +361,41 @@ def dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_matrix(files: list[dict[str, Any]], units: list[dict[str, Any]]) -> dict[str, Any]:
-    active_exec_paths = {path for unit in units if unit.get("ActiveState") == "active" for path in unit.get("exec_paths", [])}
+    active_exec_paths = {
+        path for unit in units if unit.get("ActiveState") == "active" for path in unit.get("exec_paths", [])
+    }
     active_units: defaultdict[str, list[str]] = defaultdict(list)
     for unit in units:
         if unit.get("ActiveState") == "active":
             for component in unit.get("components", []):
                 active_units[component].append(str(unit["unit"]))
+
     matrix: dict[str, Any] = {}
     for component in COMPONENTS:
         candidates: list[dict[str, Any]] = []
+        support_surface_count = 0
         for row in files:
             if component not in row.get("components", []):
+                continue
+            if row.get("kind") == "support_verifier_installer":
+                support_surface_count += 1
+                continue
+            component_filename = bool((row.get("filename_signals") or {}).get(component))
+            component_definition = bool((row.get("exact_definitions") or {}).get(component))
+            active_exec = str(row["path"]) in active_exec_paths
+            if row.get("kind") == "reference" and not (component_filename or component_definition or active_exec):
                 continue
             candidates.append({
                 "path": row["path"],
                 "sha256": row["sha256"],
                 "kind": row["kind"],
                 "score": score(component, row, active_exec_paths),
-                "filename_signal": bool((row.get("filename_signals") or {}).get(component)),
-                "exact_definition": bool((row.get("exact_definitions") or {}).get(component)),
+                "filename_signal": component_filename,
+                "exact_definition": component_definition,
                 "canonical_signal": row["canonical_signal"],
                 "caller_signal": row["caller_signal"],
                 "stale_signal": row["stale_signal"],
-                "hits": row["hits"][:6],
+                "hits": row["hits"][:8],
             })
         candidates = dedupe_candidates(candidates)
         top = candidates[0] if candidates else None
@@ -324,32 +413,49 @@ def build_matrix(files: list[dict[str, Any]], units: list[dict[str, Any]]) -> di
             "decision": decision,
             "active_units": sorted(set(active_units.get(component, []))),
             "unique_candidate_count": len(candidates),
+            "excluded_support_surface_count": support_surface_count,
             "top_candidates": candidates[:5],
         }
     return matrix
 
 
 def authority_matrix(files: list[dict[str, Any]], units: list[dict[str, Any]]) -> dict[str, Any]:
-    active_exec_paths = {path for unit in units if unit.get("ActiveState") == "active" for path in unit.get("exec_paths", [])}
+    active_exec_paths = {
+        path for unit in units if unit.get("ActiveState") == "active" for path in unit.get("exec_paths", [])
+    }
     direct: list[dict[str, Any]] = []
     output_writers: list[dict[str, Any]] = []
     policy_refs: list[str] = []
+    credential_refs: list[str] = []
+
     for row in files:
         core = sorted(set(row.get("components", [])).intersection(CORE_COMPONENTS))
         if not core:
             continue
         runtime_owner = row.get("kind") == "runtime_definition" or row.get("path") in active_exec_paths
         support = row.get("kind") == "support_verifier_installer"
-        if runtime_owner and not support and (row.get("direct_order_signal") or row.get("private_credential_signal")):
+        strong_private_access = bool(row.get("private_credential_access_signal"))
+        if runtime_owner and not support and (row.get("direct_order_signal") or strong_private_access):
             direct.append({
-                "path": row["path"], "components": core, "active_exec": row["path"] in active_exec_paths,
-                "direct_order_signal": row["direct_order_signal"], "private_credential_signal": row["private_credential_signal"],
-                "hits": row["hits"][:8],
+                "path": row["path"],
+                "components": core,
+                "active_exec": row["path"] in active_exec_paths,
+                "direct_order_signal": row["direct_order_signal"],
+                "private_credential_access_signal": strong_private_access,
+                "hits": row["hits"][:10],
             })
         if runtime_owner and not support and row.get("file_write_signal"):
-            output_writers.append({"path": row["path"], "components": core, "active_exec": row["path"] in active_exec_paths, "hits": row["hits"][:8]})
-        if row.get("policy_reference_signal") and not row.get("direct_order_signal") and not row.get("private_credential_signal"):
+            output_writers.append({
+                "path": row["path"],
+                "components": core,
+                "active_exec": row["path"] in active_exec_paths,
+                "hits": row["hits"][:10],
+            })
+        if row.get("policy_reference_signal") and not row.get("direct_order_signal") and not strong_private_access:
             policy_refs.append(str(row["path"]))
+        if row.get("private_credential_reference_signal") and not strong_private_access:
+            credential_refs.append(str(row["path"]))
+
     return {
         "direct_execution_candidates": direct[:50],
         "direct_execution_candidate_count": len(direct),
@@ -357,7 +463,10 @@ def authority_matrix(files: list[dict[str, Any]], units: list[dict[str, Any]]) -
         "component_output_writer_candidate_count": len(output_writers),
         "policy_reference_count": len(set(policy_refs)),
         "policy_reference_sample": sorted(set(policy_refs))[:30],
+        "credential_reference_only_count": len(set(credential_refs)),
+        "credential_reference_only_sample": sorted(set(credential_refs))[:30],
         "generic_ledger_or_policy_mentions_count_as_direct_authority": False,
+        "credential_name_reference_counts_as_private_execution": False,
     }
 
 
@@ -386,15 +495,21 @@ def audit(root: Path) -> dict[str, Any]:
     matrix = build_matrix(files, units)
     authority = authority_matrix(files, units)
     ambiguous = [component for component in CORE_COMPONENTS if matrix[component]["confidence"] in {"NONE", "LOW"}]
-    active = sorted({component for unit in units if unit.get("ActiveState") == "active" for component in unit.get("components", [])})
-    if authority["direct_execution_candidate_count"]:
+    active = sorted({
+        component for unit in units if unit.get("ActiveState") == "active" for component in unit.get("components", [])
+    })
+
+    if stats.get("capped"):
+        state, verdict, route = "HOLD", "TB11_CANONICAL_SCAN_CAP_REACHED", "REDUCE_SCAN_SCOPE_BEFORE_CONTRACT_DECISION"
+    elif authority["direct_execution_candidate_count"]:
         state, verdict, route = "HOLD", "TB11_DIRECT_AUTHORITY_REQUIRES_CALLER_PERMISSION_TRACE", "DIRECT_AUTHORITY_CALLER_PERMISSION_TRACE"
     elif ambiguous:
         state, verdict, route = "HOLD", "TB11_OWNER_AMBIGUITY_REMAINS_AFTER_CLEAN_SCAN", "TARGETED_COMPONENT_CONTRACT_HARNESS"
     else:
         state, verdict, route = "PASS", "TB11_OWNER_CANDIDATES_NARROWED", "TARGETED_COMPONENT_CONTRACT_HARNESS"
+
     return {
-        "schema": "q4r3_team_advisor_tb11_owner_narrowing_audit_v1",
+        "schema": "q4r3_team_advisor_tb11_owner_narrowing_audit_v2",
         "generated_at": now_iso(),
         "state": state,
         "verdict": verdict,
@@ -405,7 +520,10 @@ def audit(root: Path) -> dict[str, Any]:
         "authority": authority,
         "systemd_units": units,
         "cadence_repair": cadence_snapshot(root),
-        "excluded_surfaces": ["frontend", "web", "runtime-wide scan", "backup/restore/rollback/archive/snapshot paths", "dist/build assets", "tests and installers as owner candidates"],
+        "excluded_surfaces": [
+            "frontend", "web", "runtime-wide scan", "backup/restore/rollback/archive/snapshot paths",
+            "dist/build assets", "tests/verifiers/installers as owner candidates",
+        ],
         "policy": {
             "observer_only": True,
             "team_advisor_binding_enabled": False,

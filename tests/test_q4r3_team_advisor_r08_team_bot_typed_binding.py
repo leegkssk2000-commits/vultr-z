@@ -24,6 +24,7 @@ def context(data_state: str = "FRESH") -> TeamDecisionContext:
         skill_id="skill.runner",
         data_state=data_state,
         freshness_ms=100,
+        latency_ms=25,
         source_ids=("src:test",),
         evidence_ids=("evidence:test",),
     )
@@ -58,7 +59,7 @@ def test_zbot_is_external_and_no_request_is_created() -> None:
     assert "ZBot" not in {item.bot_id for item in plan.all_internal_requests}
 
 
-def test_full_lineage_is_copied_to_every_request() -> None:
+def test_full_lineage_and_latency_are_copied_to_every_request() -> None:
     plan = build_binding_plan("GammaTeam", context(), evidence())
     for item in plan.all_internal_requests:
         request = item.request
@@ -68,6 +69,23 @@ def test_full_lineage_is_copied_to_every_request() -> None:
         assert request.team_id == "GammaTeam"
         assert request.decision_id == "decision.1"
         assert request.position_id == "position.1"
+        assert request.event_id == "event.1"
+        assert request.parent_event_id == "event.0"
+        assert request.latency_ms == 25
+
+
+def test_bound_bot_response_preserves_team_role_and_full_lineage() -> None:
+    plan = build_binding_plan("AlphaTeam", context(), evidence())
+    for bound in plan.voting_requests:
+        response = BOT_CLASS_REGISTRY[bound.bot_id]().evaluate(bound.request)
+        assert response.bot_id == bound.bot_id
+        assert response.team_role == bound.team_role
+        assert response.team_id == "AlphaTeam"
+        assert response.strategy_id == "strategy.alpha"
+        assert response.method_id == "method.pullback"
+        assert response.skill_id == "skill.runner"
+        assert response.event_id == "event.1"
+        assert response.latency_ms == 25
 
 
 def test_helper_is_conditional_and_non_voting() -> None:

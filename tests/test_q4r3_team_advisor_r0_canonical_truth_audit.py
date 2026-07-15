@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "tools/q4r3_team_advisor_r0_canonical_truth_audit.py"
+MODULE_PATH = ROOT / "tools/q4r3_team_advisor_r0_canonical_truth_audit_strict.py"
 ALIASES_PATH = ROOT / "backend/config/q4r3_r0_candidate_aliases_v1.json"
 
 spec = importlib.util.spec_from_file_location("r0_audit", MODULE_PATH)
@@ -13,6 +13,10 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 ALIASES = json.loads(ALIASES_PATH.read_text(encoding="utf-8"))
+
+
+def test_strict_owner_proof_is_bound_into_base_analyzer() -> None:
+    assert module.base.owner_proof is module.owner_proof
 
 
 def test_canonical_names() -> None:

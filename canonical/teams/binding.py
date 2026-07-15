@@ -8,6 +8,8 @@ from canonical.bots import LBot, MBot, OBot, SBot
 from canonical.bots.contracts import BotRequest
 from .registry import TEAM_REGISTRY
 
+ROLE_AUTHORITY_VERSION = "team-binding/1.1.0"
+
 BOT_CLASS_REGISTRY = MappingProxyType({
     "LBot": LBot,
     "MBot": MBot,
@@ -39,8 +41,27 @@ class TeamDecisionContext:
 class BoundBotRequest:
     bot_id: str
     team_role: str
-    vote_eligible: bool
+    proposal_owner: bool
+    support_validator: bool
+    watch_only: bool
+    helper_only: bool
+    generic_vote_eligible: bool
+    hard_veto_capable: bool
     request: BotRequest
+
+    def __post_init__(self) -> None:
+        authority_flags = (
+            self.proposal_owner,
+            self.support_validator,
+            self.watch_only,
+            self.helper_only,
+        )
+        if sum(bool(flag) for flag in authority_flags) != 1:
+            raise ValueError("TEAM_ROLE_AUTHORITY_NOT_EXCLUSIVE")
+        if self.generic_vote_eligible != (self.proposal_owner or self.support_validator):
+            raise ValueError("GENERIC_VOTE_AUTHORITY_INVALID")
+        if self.hard_veto_capable != (self.bot_id == "SBot"):
+            raise ValueError("HARD_VETO_CAPABILITY_INVALID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,21 +76,30 @@ class TeamBindingPlan:
     zbot_team_vote_allowed: bool = False
     runtime_enabled: bool = False
     execution_authority: str = "none"
+    role_authority_version: str = ROLE_AUTHORITY_VERSION
 
     @property
-    def voting_requests(self) -> tuple[BoundBotRequest, ...]:
-        return (self.main, self.support, *self.watchers)
+    def decision_requests(self) -> tuple[BoundBotRequest, BoundBotRequest]:
+        return (self.main, self.support)
+
+    @property
+    def watch_requests(self) -> tuple[BoundBotRequest, BoundBotRequest]:
+        return self.watchers
+
+    @property
+    def voting_requests(self) -> tuple[BoundBotRequest, BoundBotRequest]:
+        """Compatibility alias: only Main and Support have generic decision authority."""
+        return self.decision_requests
 
     @property
     def all_internal_requests(self) -> tuple[BoundBotRequest, ...]:
-        return self.voting_requests + ((self.helper,) if self.helper else ())
+        return self.decision_requests + self.watch_requests + ((self.helper,) if self.helper else ())
 
 
 def _request(
     context: TeamDecisionContext,
     *,
     team_id: str,
-    bot_id: str,
     team_role: str,
     role_evidence: Mapping[str, Any],
 ) -> BotRequest:
@@ -109,20 +139,22 @@ def build_binding_plan(
     if spec.validate():
         raise ValueError(f"TEAM_SPEC_INVALID:{','.join(spec.validate())}")
 
-    def bound(bot_id: str, role: str, *, vote_eligible: bool) -> BoundBotRequest:
+    def bound(bot_id: str, role: str) -> BoundBotRequest:
         if bot_id not in BOT_CLASS_REGISTRY:
             raise ValueError(f"BOT_ID_INVALID:{bot_id}")
-        evidence = evidence_by_bot.get(bot_id)
-        if evidence is None:
-            evidence = {}
+        evidence = evidence_by_bot.get(bot_id) or {}
         return BoundBotRequest(
             bot_id=bot_id,
             team_role=role,
-            vote_eligible=vote_eligible,
+            proposal_owner=role == "main",
+            support_validator=role == "support",
+            watch_only=role.startswith("watcher_"),
+            helper_only=role == "conditional_helper",
+            generic_vote_eligible=role in {"main", "support"},
+            hard_veto_capable=bot_id == "SBot",
             request=_request(
                 context,
                 team_id=team_id,
-                bot_id=bot_id,
                 team_role=role,
                 role_evidence=evidence,
             ),
@@ -136,15 +168,15 @@ def build_binding_plan(
             raise ValueError("HELPER_BOT_NOT_ALLOWED")
         if helper_trigger not in spec.helper_triggers:
             raise ValueError("HELPER_TRIGGER_NOT_ALLOWED")
-        helper = bound(helper_bot, "conditional_helper", vote_eligible=False)
+        helper = bound(helper_bot, "conditional_helper")
 
     return TeamBindingPlan(
         team_id=team_id,
-        main=bound(spec.main, "main", vote_eligible=True),
-        support=bound(spec.support, "support", vote_eligible=True),
+        main=bound(spec.main, "main"),
+        support=bound(spec.support, "support"),
         watchers=(
-            bound(spec.watchers[0], "watcher_1", vote_eligible=True),
-            bound(spec.watchers[1], "watcher_2", vote_eligible=True),
+            bound(spec.watchers[0], "watcher_1"),
+            bound(spec.watchers[1], "watcher_2"),
         ),
         helper=helper,
         helper_trigger=helper_trigger,

@@ -48,6 +48,17 @@ class CanonicalBot(ABC):
             semantic_role=self.semantic_role,
             decision_id=request.decision_id,
             position_id=request.position_id,
+            event_id=request.event_id,
+            parent_event_id=request.parent_event_id,
+            event_ts=request.event_ts,
+            symbol=request.symbol,
+            side=request.side,
+            strategy_id=request.strategy_id,
+            method_id=request.method_id,
+            skill_id=request.skill_id,
+            team_id=request.team_id,
+            team_role=request.team_role,
+            data_state=request.data_state,
             action=assessment.action,
             confidence=max(0.0, min(1.0, float(assessment.confidence))),
             abstain=bool(assessment.abstain),
@@ -56,6 +67,7 @@ class CanonicalBot(ABC):
             source_ids=request.source_ids,
             evidence_ids=request.evidence_ids,
             freshness_ms=request.freshness_ms,
+            latency_ms=request.latency_ms,
         )
 
 

@@ -86,3 +86,13 @@ def test_runner_contract_contains_no_runtime_mutation() -> None:
         assert token not in runner
     assert "cmp -n" in runner
     assert "journalctl" in runner
+
+
+def test_runner_normalizes_rfc3339_for_journalctl() -> None:
+    runner = (ROOT / "tools/run_q4r3_exact25_lineage_postrepair_root_cause_v2.sh").read_text(encoding="utf-8")
+    assert "datetime.fromisoformat" in runner
+    assert "astimezone(timezone.utc)" in runner
+    assert "strftime('%Y-%m-%d %H:%M:%S UTC')" in runner
+    assert 'journalctl -u "$OBSERVER_UNIT" --since "$JOURNAL_SINCE"' in runner
+    assert 'journalctl -u "$OBSERVER_UNIT" --since "$ACTIVATED_AT"' not in runner
+    assert "OBSERVER_JOURNAL_EMPTY_AFTER_ACTIVATION" in runner

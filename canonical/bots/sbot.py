@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 from .base import Assessment, CanonicalBot
 from .contracts import ALLOWED_ACTIONS, BotRequest, BotResponse
 
+CAPABILITY_TAGS = ("hard", "soft", "stop", "drawdown", "exposure", "buffer", "stale", "risk")
 CANONICAL_SOURCES = ("cf:", "sheets:")
 MIN_DATA = (
     "price", "pos_pct", "lev", "entry_ts", "market_ts",
@@ -41,8 +42,7 @@ def _number(name: str, value: Any, *, minimum: float | None = None) -> float:
 
 
 def _time(name: str, value: Any) -> datetime:
-    raw = _text(value)
-    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(_text(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError(f"{name}:TZ_REQUIRED")
     return parsed
@@ -107,7 +107,7 @@ class SBot(CanonicalBot):
             return Assessment("block", 1.0, False, True, ("SBOT_HARD:ORDER_CHANNEL_UNAVAILABLE",))
 
         try:
-            price = _number("price", snapshot.get("price"), minimum=0.0)
+            price = _number("price", snapshot.get("price"), minimum=1e-12)
             pos_pct = _number("pos_pct", snapshot.get("pos_pct"), minimum=0.0)
             lev = _number("lev", snapshot.get("lev"), minimum=0.0)
             entry_ts = _time("entry_ts", snapshot.get("entry_ts"))
@@ -126,15 +126,20 @@ class SBot(CanonicalBot):
                     raise ValueError("SIDE_INVALID")
                 if liq_buffer < 0.0:
                     raise ValueError("LIQ_BUFFER_NEGATIVE")
+            funding = _number("funding_8h_pct", snapshot.get("funding_8h_pct"))
+            drawdown_day = _number("dd_day_pct", snapshot.get("dd_day_pct"), minimum=0.0)
+            drawdown_total = _number("dd_total_pct", snapshot.get("dd_total_pct"), minimum=0.0)
             metrics = {
                 "price": price,
                 "pos_pct": pos_pct,
                 "lev": lev,
                 "exposure_pct_x": lev * pos_pct,
-                "funding_8h_pct": _number("funding_8h_pct", snapshot.get("funding_8h_pct")),
-                "abs_funding_8h_pct": abs(_number("funding_8h_pct", snapshot.get("funding_8h_pct"))),
-                "dd_day_pct": _number("dd_day_pct", snapshot.get("dd_day_pct"), minimum=0.0),
-                "dd_total_pct": _number("dd_total_pct", snapshot.get("dd_total_pct"), minimum=0.0),
+                "funding_8h_pct": funding,
+                "abs_funding_8h_pct": abs(funding),
+                "dd_day_pct": drawdown_day,
+                "dd_total_pct": drawdown_total,
+                "drawdown_day_pct": drawdown_day,
+                "drawdown_total_pct": drawdown_total,
                 "liq_buffer_pct": liq_buffer,
                 "time_exposure_min": (market_ts - entry_ts).total_seconds() / 60.0,
             }

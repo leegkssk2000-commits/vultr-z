@@ -25,6 +25,7 @@ def make_request(data_state: str = "FRESH", evidence: dict | None = None) -> Bot
         team_role="main",
         data_state=data_state,
         freshness_ms=100,
+        latency_ms=25,
         role_evidence=evidence or {},
         source_ids=("src:test",),
         evidence_ids=("evidence:test",),
@@ -34,6 +35,9 @@ def make_request(data_state: str = "FRESH", evidence: dict | None = None) -> Bot
 def test_manifest_and_action_contract() -> None:
     value = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert set(value["owners"]) == {"LBot", "MBot", "OBot", "SBot"}
+    assert value["contract_version"] == "canonical-bot/1.1.0"
+    assert value["response_lineage_complete"] is True
+    assert value["latency_contract_required"] is True
     assert value["runtime_binding"] is False
     assert value["systemd_binding"] is False
     assert value["execution_authority"] == "none"
@@ -54,6 +58,24 @@ def test_all_bots_fail_closed_on_stale_or_missing_evidence() -> None:
         missing = bot.evaluate(make_request())
         assert missing.action == "hold"
         assert missing.abstain is True
+
+
+def test_response_carries_complete_request_lineage() -> None:
+    request = make_request(evidence={
+        "trend_thesis": "continuation",
+        "hold_reduce_posture": "hold",
+        "invalidation_flags": [],
+        "suggested_action": "hold",
+        "confidence": 0.7,
+    })
+    response = LBot().evaluate(request)
+    for field in (
+        "decision_id", "position_id", "event_id", "parent_event_id", "event_ts",
+        "symbol", "side", "strategy_id", "method_id", "skill_id", "team_id",
+        "team_role", "data_state", "freshness_ms", "latency_ms",
+    ):
+        assert getattr(response, field) == getattr(request, field)
+    assert response.contract_version == "canonical-bot/1.1.0"
 
 
 def test_role_specific_contracts() -> None:

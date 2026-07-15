@@ -61,6 +61,36 @@ def test_direct_order_code_is_semantic_authority(tmp_path: Path) -> None:
     assert row["direct_order_signal"] is True
 
 
+def test_credential_name_reference_is_not_private_execution(tmp_path: Path) -> None:
+    path = tmp_path / "backend/engine/lico_core.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "class LiCoCore:\n    api_key = None\n    secret = None\n",
+        encoding="utf-8",
+    )
+    row = module.analyze_file(path)
+    assert row is not None
+    assert row["private_credential_reference_signal"] is True
+    assert row["private_credential_access_signal"] is False
+    authority = module.authority_matrix([row], [])
+    assert authority["direct_execution_candidate_count"] == 0
+    assert authority["credential_reference_only_count"] == 1
+
+
+def test_environment_credential_access_is_private_execution(tmp_path: Path) -> None:
+    path = tmp_path / "backend/engine/zbot_core.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "import os\nclass ZBotCore:\n    api_key = os.environ.get('BINGX_API_KEY')\n",
+        encoding="utf-8",
+    )
+    row = module.analyze_file(path)
+    assert row is not None
+    assert row["private_credential_access_signal"] is True
+    authority = module.authority_matrix([row], [])
+    assert authority["direct_execution_candidate_count"] == 1
+
+
 def test_support_verifier_is_not_owner(tmp_path: Path) -> None:
     path = tmp_path / "backend/scripts/verify_zlice_contract.py"
     path.parent.mkdir(parents=True)
@@ -69,6 +99,9 @@ def test_support_verifier_is_not_owner(tmp_path: Path) -> None:
     assert row is not None
     assert row["kind"] == "support_verifier_installer"
     assert module.score("Zlice", row, set()) < 10
+    matrix = module.build_matrix([row], [])
+    assert matrix["Zlice"]["unique_candidate_count"] == 0
+    assert matrix["Zlice"]["excluded_support_surface_count"] == 1
 
 
 def test_same_sha_candidates_are_deduplicated() -> None:

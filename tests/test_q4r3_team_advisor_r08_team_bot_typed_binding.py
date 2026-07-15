@@ -4,6 +4,7 @@ import pytest
 
 from canonical.teams.binding import (
     BOT_CLASS_REGISTRY,
+    ROLE_AUTHORITY_VERSION,
     TeamDecisionContext,
     build_binding_plan,
     validate_binding_registry,
@@ -42,14 +43,21 @@ def evidence() -> dict:
 def test_registry_is_exact() -> None:
     assert validate_binding_registry() == ()
     assert set(BOT_CLASS_REGISTRY) == {"LBot", "MBot", "OBot", "SBot"}
+    assert ROLE_AUTHORITY_VERSION == "team-binding/1.1.0"
 
 
 @pytest.mark.parametrize("team_id", ["AlphaTeam", "BetaTeam", "GammaTeam", "DeltaTeam"])
-def test_each_team_binds_all_four_internal_bots_once(team_id: str) -> None:
+def test_each_team_binds_all_four_internal_bots_once_without_equal_vote(team_id: str) -> None:
     plan = build_binding_plan(team_id, context(), evidence())
-    assert len(plan.voting_requests) == 4
-    assert {item.bot_id for item in plan.voting_requests} == {"LBot", "MBot", "OBot", "SBot"}
-    assert len({item.bot_id for item in plan.voting_requests}) == 4
+    assert len(plan.decision_requests) == 2
+    assert len(plan.watch_requests) == 2
+    assert len(plan.all_internal_requests) == 4
+    assert {item.bot_id for item in plan.all_internal_requests} == {"LBot", "MBot", "OBot", "SBot"}
+    assert plan.main.proposal_owner is True
+    assert plan.main.generic_vote_eligible is True
+    assert plan.support.support_validator is True
+    assert plan.support.generic_vote_eligible is True
+    assert all(item.watch_only and not item.generic_vote_eligible for item in plan.watch_requests)
 
 
 def test_zbot_is_external_and_no_request_is_created() -> None:
@@ -76,7 +84,7 @@ def test_full_lineage_and_latency_are_copied_to_every_request() -> None:
 
 def test_bound_bot_response_preserves_team_role_and_full_lineage() -> None:
     plan = build_binding_plan("AlphaTeam", context(), evidence())
-    for bound in plan.voting_requests:
+    for bound in plan.all_internal_requests:
         response = BOT_CLASS_REGISTRY[bound.bot_id]().evaluate(bound.request)
         assert response.bot_id == bound.bot_id
         assert response.team_role == bound.team_role
@@ -88,7 +96,7 @@ def test_bound_bot_response_preserves_team_role_and_full_lineage() -> None:
         assert response.latency_ms == 25
 
 
-def test_helper_is_conditional_and_non_voting() -> None:
+def test_helper_is_conditional_non_voting_and_not_a_watcher() -> None:
     plan = build_binding_plan(
         "AlphaTeam",
         context(),
@@ -98,8 +106,19 @@ def test_helper_is_conditional_and_non_voting() -> None:
     )
     assert plan.helper is not None
     assert plan.helper.bot_id == "OBot"
-    assert plan.helper.vote_eligible is False
-    assert len(plan.voting_requests) == 4
+    assert plan.helper.helper_only is True
+    assert plan.helper.generic_vote_eligible is False
+    assert plan.helper.watch_only is False
+    assert len(plan.decision_requests) == 2
+    assert len(plan.watch_requests) == 2
+
+
+def test_sbot_hard_veto_capability_is_role_independent() -> None:
+    for team_id in ("AlphaTeam", "BetaTeam", "GammaTeam", "DeltaTeam"):
+        plan = build_binding_plan(team_id, context(), evidence())
+        rows = {item.bot_id: item for item in plan.all_internal_requests}
+        assert rows["SBot"].hard_veto_capable is True
+        assert all(not row.hard_veto_capable for bot, row in rows.items() if bot != "SBot")
 
 
 def test_unapproved_helper_is_rejected() -> None:

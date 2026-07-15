@@ -19,6 +19,7 @@ def test_all_strict_bindings_reach_base_analyzer() -> None:
     assert module.base.owner_proof is module.owner_proof
     assert module.base.component_from_unit is module.component_from_unit
     assert module.base.relevant_unit_names is module.relevant_unit_names
+    assert module.base.analyze is module.analyze
 
 
 def test_generic_team_lane_unit_discovers_all_teams() -> None:

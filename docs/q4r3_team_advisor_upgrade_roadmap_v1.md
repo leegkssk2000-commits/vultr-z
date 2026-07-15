@@ -1,8 +1,18 @@
 # Q4R3 Team/Advisor Upgrade Roadmap v1
 
+## Canonical naming
+
+Human-readable names are fixed as:
+
+- `LBot`, `MBot`, `OBot`, `SBot`
+- `AlphaTeam`, `BetaTeam`, `GammaTeam`, `DeltaTeam`
+- `ZBot`, `Zico`, `Lico`, `Zlice`
+
+Legacy spellings such as `ZICO`, `LiCo`, `LICO`, `zico`, and `lico` may be accepted only while discovering old files and units. Every new report, contract, status, UI label, and roadmap entry must emit `Zico` and `Lico`.
+
 ## Current position
 
-The current Exact25 ledger remains a frozen Strategy/Method baseline only. It cannot support Skill, Team, ZBot, ZICO, LiCo, or Zlice performance claims.
+The current Exact25 ledger remains a frozen Strategy/Method baseline only. It cannot support Skill, Team, ZBot, Zico, Lico, or Zlice performance claims.
 
 Blocking facts:
 
@@ -11,8 +21,8 @@ Blocking facts:
 - Alpha/Beta/Gamma/Delta owners are missing
 - Skill lineage proof remains incomplete
 - ZBot dual-provider routing, cost, fallback, and evidence policy are not locked
-- ZICO control-plane ownership and contract are unproven
-- LiCo is fragmented and lacks a single source/freshness/execution contract
+- Zico control-plane ownership and contract are unproven
+- Lico is fragmented and lacks a single source/freshness/execution contract
 
 ## Invariants
 
@@ -27,26 +37,41 @@ Blocking facts:
 
 1. resolve active units to real executable files
 2. resolve symlinks and wrapper chains
-3. separate runtime owners, adapters, APIs, tests, and UI consumers
+3. separate runtime owners, adapters, APIs, contracts, tests, and UI consumers
 4. classify candidates as KEEP / ABSORB / RESERVE / QUARANTINE / ARCHIVE
 5. pin one canonical owner package per component
-6. pin SHA-256, version, and runtime owner
+6. pin SHA-256, version, Git lineage, and runtime owner
 7. audit ZBot provider adapters, model aliases, prompt policy, budget, fallback, and evidence outputs
-8. audit ZICO lifecycle, permissions, idempotency, and fail-closed behavior
-9. audit LiCo sources, freshness rules, execution-cost model, and team-specific context
+8. audit Zico lifecycle, permissions, idempotency, and fail-closed behavior
+9. audit Lico sources, freshness rules, execution-cost model, and team-specific context
+10. accept legacy Zico/Lico aliases for discovery but reject legacy spellings in outputs
+
+R0 owner-resolution rules:
+
+- a generic role word such as `trend`, `risk`, `advisor`, or `context` is never sufficient owner evidence
+- a systemd `.wants` symlink is never the canonical owner
+- interpreter paths must be resolved to their actual Python or shell scripts
+- wrapper chains must be followed until the first-party implementation is found
+- package ownership is permitted when one package intentionally contains several cohesive modules
+- a filename containing `snapshot` is not contamination by itself
+- contamination is excluded by directory lineage or explicit backup/archive naming, not by an isolated functional word
+- exact component identity or runtime binding evidence is required
 
 Exit gate:
 
-- canonical owner proven for LBot, MBot, OBot, SBot, Alpha, Beta, Gamma, Delta, ZBot, ZICO, LiCo, Zlice
+- canonical owner proven for LBot, MBot, OBot, SBot, AlphaTeam, BetaTeam, GammaTeam, DeltaTeam, ZBot, Zico, Lico, Zlice
 - duplicate owners = 0
 - active execution paths mapped = 100%
 - unclassified runtime candidates = 0
+- unresolved symlinks = 0
+- unresolved wrappers = 0
+- canonical-name violations = 0
 
-## R1 — Foundation Contracts: ZICO Skeleton + Zlice Event Core
+## R1 — Foundation Contracts: Zico Skeleton + Zlice Event Core
 
 This foundation precedes Bot behavior upgrades so every later decision is controlled and recorded from its first forward event.
 
-ZICO minimum foundation:
+Zico minimum foundation:
 
 - event-sourced lifecycle state machine
 - idempotency and causal ordering
@@ -65,7 +90,7 @@ Zlice minimum foundation:
 
 Baseline lifecycle:
 
-candidate_created -> team_resolved -> advisor_reviewed -> admitted -> open_requested -> open_confirmed -> managing -> close_requested -> closed_verified
+`candidate_created -> team_resolved -> advisor_reviewed -> admitted -> open_requested -> open_confirmed -> managing -> close_requested -> closed_verified`
 
 Exit gate:
 
@@ -109,7 +134,7 @@ Each Team retains the original organizational design:
 - two or three independent Watchers
 - optional Helper activated by an explicit trigger
 
-Alpha/Beta/Gamma/Delta assignments must be recovered from canonical evidence before modification. They must not be collapsed into identical weighting profiles.
+AlphaTeam/BetaTeam/GammaTeam/DeltaTeam assignments must be recovered from canonical evidence before modification. They must not be collapsed into identical weighting profiles.
 
 Required Team output:
 
@@ -127,7 +152,7 @@ Exit gate:
 - Helper activation is deterministic
 - duplicate evidence is deduplicated
 
-## R4 — LiCo Execution Intelligence
+## R4 — Lico Execution Intelligence
 
 Required capabilities:
 
@@ -139,7 +164,7 @@ Required capabilities:
 - macro/FX context with release-time leakage guard
 - team-specific Alpha/Beta/Gamma/Delta context
 
-LiCo remains context-only and has no direction or order authority.
+Lico remains context-only and has no direction or order authority.
 
 Exit gate:
 
@@ -149,7 +174,7 @@ Exit gate:
 
 ## R5 — ZBot Dual-Provider Meta-Advisor
 
-ZBot compares complete Team proposals. It does not replace Team reasoning or ZICO control.
+ZBot compares complete Team proposals. It does not replace Team reasoning or Zico control.
 
 Provider modes:
 
@@ -194,9 +219,9 @@ Exit gate:
 
 Exit gate: 20 new closes, 100% lineage, duplicate/missing/stale = 0.
 
-## R7 — Full ZICO Integration
+## R7 — Full Zico Integration
 
-After Bot, Team, LiCo, ZBot, and Skill contracts are complete, finish ZICO orchestration:
+After Bot, Team, Lico, ZBot, and Skill contracts are complete, finish Zico orchestration:
 
 - timeout, compensation, and state reconciliation
 - SSOT policy compiler
@@ -216,9 +241,9 @@ Exit gate:
 
 S1 20C: complete integrity.
 
-S2 100C: per-Bot, per-Team, LiCo, ZBot provider-mode ablation; avoided-loss, missed-profit, false-block, calibration, latency, and cost.
+S2 100C: per-Bot, per-Team, Lico, ZBot provider-mode ablation; avoided-loss, missed-profit, false-block, calibration, latency, and cost.
 
-S3 300C: Strategy -> Method -> Skill -> Team -> LiCo -> ZBot -> ZICO -> Zlice, including fee/slippage/latency/DD/exposure penalties and no regression versus the frozen raw baseline.
+S3 300C: Strategy -> Method -> Skill -> Team -> Lico -> ZBot -> Zico -> Zlice, including fee/slippage/latency/DD/exposure penalties and no regression versus the frozen raw baseline.
 
 ## Immediate next action
 

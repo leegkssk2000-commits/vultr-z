@@ -11,6 +11,7 @@ PY="${Q4R3_PYTHON_BIN:-$ROOT/.venv/bin/python}"
 AUDIT_ORIGINAL="$WT/tools/q4r3_team_advisor_tb11_owner_narrowing_audit.py"
 AUDIT="$WT/tools/q4r3_team_advisor_tb11_owner_narrowing_audit_fixed.py"
 TEST="$WT/tests/test_q4r3_team_advisor_tb11_owner_narrowing_audit.py"
+TEST_BINDING="$WT/tests/test_q4r3_team_advisor_tb11_binding_order_contract.py"
 EVIDENCE_REL="evidence/q4r3_team_advisor_tb11_owner_narrowing_latest.json"
 EVIDENCE="$WT/$EVIDENCE_REL"
 LEDGER="$ROOT/runtime/exact25_edge_v1/formal_exact5_measurement/forward_r_ledger.jsonl"
@@ -21,7 +22,7 @@ PREFIX="$(mktemp /tmp/q4r3_tb11_ledger_prefix.XXXXXX)"
 cleanup() { rm -f "$PREFIX"; }
 trap cleanup EXIT
 
-for required in "$AUDIT_ORIGINAL" "$AUDIT" "$TEST" "$LEDGER"; do
+for required in "$AUDIT_ORIGINAL" "$AUDIT" "$TEST" "$TEST_BINDING" "$LEDGER"; do
   [[ -f "$required" ]] || { echo "REQUIRED_INPUT_MISSING=$required"; exit 1; }
 done
 
@@ -36,7 +37,7 @@ cp --reflink=auto "$LEDGER" "$PREFIX"
 PREFIX_SIZE="$(stat -c %s "$PREFIX")"
 
 "$PY" -m py_compile "$AUDIT_ORIGINAL" "$AUDIT"
-PYTHONPATH="$WT" "$PY" -m pytest -q "$TEST"
+PYTHONPATH="$WT" "$PY" -m pytest -q "$TEST" "$TEST_BINDING"
 
 mkdir -p "$(dirname "$EVIDENCE")"
 "$PY" "$AUDIT" --root "$ROOT" --output "$EVIDENCE"

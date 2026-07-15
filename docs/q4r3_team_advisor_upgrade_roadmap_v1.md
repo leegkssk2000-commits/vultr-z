@@ -42,7 +42,40 @@ Exit gate:
 - active execution paths mapped = 100%
 - unclassified runtime candidates = 0
 
-## R1 — LBot/MBot/OBot/SBot Contract Upgrade
+## R1 — Foundation Contracts: ZICO Skeleton + Zlice Event Core
+
+This foundation precedes Bot behavior upgrades so every later decision is controlled and recorded from its first forward event.
+
+ZICO minimum foundation:
+
+- event-sourced lifecycle state machine
+- idempotency and causal ordering
+- one-position/one-owner lease
+- permissions and capability checks
+- fail-closed invariants
+- deterministic replay skeleton
+
+Zlice minimum foundation:
+
+- append-only event contract
+- event_id, decision_id, position_id, parent_event_id
+- strategy_id, method_id, skill_id, team_id
+- source_ids, contract_version, event_ts
+- duplicate prevention and parent-chain validation
+
+Baseline lifecycle:
+
+candidate_created -> team_resolved -> advisor_reviewed -> admitted -> open_requested -> open_confirmed -> managing -> close_requested -> closed_verified
+
+Exit gate:
+
+- invalid parent event rejected
+- duplicate event rejected
+- replay produces the same state
+- UI remains read-only consumer
+- no execution authority introduced
+
+## R2 — LBot/MBot/OBot/SBot Contract Upgrade
 
 Shared envelope:
 
@@ -59,7 +92,15 @@ Role upgrades:
 - OBot: breakout quality, fake-breakout, anomaly, momentum shift, MFE/MAE
 - SBot: hard veto and soft penalty separation; stale, SL, DD, exposure, liquidation buffer, authority, duplicate state
 
-## R2 — Team Organization Upgrade
+Exit gate:
+
+- typed input/output contracts
+- deterministic reason codes
+- confidence, abstain, freshness, latency
+- failure isolation and tests
+- no private execution authority
+
+## R3 — Team Organization Upgrade
 
 Each Team retains the original organizational design:
 
@@ -78,22 +119,13 @@ Required Team output:
 - confidence, abstain, veto
 - strategy_id, method_id, skill_id, evidence_ids
 
-## R3 — ZICO Deterministic Control Plane
+Exit gate:
 
-Required capabilities:
-
-- event-sourced lifecycle state machine
-- idempotency and causal ordering
-- one-position/one-owner lease
-- permissions and capability checks
-- timeout, compensation, and state reconciliation
-- fail-closed invariants
-- SSOT policy compiler
-- canary routing, rollback, deterministic replay
-
-Baseline lifecycle:
-
-candidate_created -> team_resolved -> advisor_reviewed -> admitted -> open_requested -> open_confirmed -> managing -> close_requested -> closed_verified
+- one canonical owner per Team
+- Main/Support/Watcher/Helper assignment locked
+- Watchers cover independent failure modes
+- Helper activation is deterministic
+- duplicate evidence is deduplicated
 
 ## R4 — LiCo Execution Intelligence
 
@@ -108,6 +140,12 @@ Required capabilities:
 - team-specific Alpha/Beta/Gamma/Delta context
 
 LiCo remains context-only and has no direction or order authority.
+
+Exit gate:
+
+- every source has owner, timestamp, stale threshold, and fallback
+- stale/conflicting data produces abstain or hold context
+- execution estimates are replayable
 
 ## R5 — ZBot Dual-Provider Meta-Advisor
 
@@ -139,25 +177,15 @@ Required controls:
 - prompt version, hashes, tokens, latency, and cost recorded in Zlice
 - No-ZBot/OpenAI-only/Gemini-only/Dual-Blind ablation
 
-## R6 — Zlice Evidence Core
+Exit gate:
 
-Zlice becomes append-only evidence and replay infrastructure. UI surfaces remain read-only consumers.
+- schema validity 100%
+- unauthorized action 0
+- duplicate provider call 0
+- budget violation 0
+- provider conflict handled deterministically
 
-Required events:
-
-- strategy_selected
-- method_selected
-- skill_selected
-- bot_vote_emitted
-- team_proposal_emitted
-- lico_context_applied
-- zbot_advice_emitted
-- zico_gate_decided
-- position_opened
-- position_closed
-- outcome_joined
-
-## R7 — Event-Driven Skill Lineage Repair
+## R6 — Event-Driven Skill Lineage Repair
 
 - Producer emits immutable decision/open envelopes
 - Skill evidence is written at decision/open time
@@ -165,6 +193,24 @@ Required events:
 - no historical reconstruction
 
 Exit gate: 20 new closes, 100% lineage, duplicate/missing/stale = 0.
+
+## R7 — Full ZICO Integration
+
+After Bot, Team, LiCo, ZBot, and Skill contracts are complete, finish ZICO orchestration:
+
+- timeout, compensation, and state reconciliation
+- SSOT policy compiler
+- canary routing and rollback
+- complete permission matrix
+- complete invariant engine
+- complete deterministic replay
+
+Exit gate:
+
+- no stale or reversed transition accepted
+- no order without explicit authority
+- no Shadow context leakage into Paper/Live
+- rollback and replay verified
 
 ## R8 — S-grade Forward Gates
 

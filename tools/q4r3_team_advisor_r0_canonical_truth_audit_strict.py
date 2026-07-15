@@ -11,6 +11,35 @@ assert spec and spec.loader
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
+_original_component_from_unit = base.component_from_unit
+GENERIC_TEAM_UNIT_TOKENS = ("team-lane", "team_lane", "teambot", "team-bot")
+TEAM_COMPONENTS = ("AlphaTeam", "BetaTeam", "GammaTeam", "DeltaTeam")
+
+
+def component_from_unit(unit: str, aliases: Mapping[str, Any]) -> list[str]:
+    result = set(_original_component_from_unit(unit, aliases))
+    normalized_unit = unit.lower()
+    if any(token in normalized_unit for token in GENERIC_TEAM_UNIT_TOKENS):
+        result.update(TEAM_COMPONENTS)
+    return sorted(result)
+
+
+def relevant_unit_names(aliases: Mapping[str, Any]) -> list[str]:
+    names: set[str] = set()
+    for command in (
+        ["systemctl", "list-unit-files", "--no-legend", "--no-pager"],
+        ["systemctl", "list-units", "--all", "--no-legend", "--no-pager"],
+    ):
+        listing = base.run(command, timeout=30)
+        for line in listing.stdout.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            unit = fields[0]
+            if component_from_unit(unit, aliases):
+                names.add(unit)
+    return sorted(names)
+
 
 def owner_proof(candidate: Mapping[str, Any]) -> bool:
     evidence = set(candidate.get("identity_evidence", []))
@@ -27,19 +56,25 @@ def owner_proof(candidate: Mapping[str, Any]) -> bool:
     return False
 
 
-# The base analyze function resolves owner_proof from its module globals.
-# Replace it explicitly and assert the binding so the strict function cannot be shadowed.
+# The base analyzer resolves these functions from its own module globals.
+# Replace them explicitly and assert the bindings so later namespace exports cannot shadow them.
+base.component_from_unit = component_from_unit
+base.relevant_unit_names = relevant_unit_names
 base.owner_proof = owner_proof
+assert base.component_from_unit is component_from_unit
+assert base.relevant_unit_names is relevant_unit_names
 assert base.owner_proof is owner_proof
 
-# Re-export the tested public helpers while preserving the strict binding.
+# Re-export tested helpers while preserving strict overrides.
 for name in dir(base):
-    if name.startswith("__") or name in {"owner_proof", "main"}:
+    if name.startswith("__") or name in {"component_from_unit", "relevant_unit_names", "owner_proof", "main"}:
         continue
     globals()[name] = getattr(base, name)
 
 
 def main() -> int:
+    assert base.component_from_unit is component_from_unit
+    assert base.relevant_unit_names is relevant_unit_names
     assert base.owner_proof is owner_proof
     return base.main()
 

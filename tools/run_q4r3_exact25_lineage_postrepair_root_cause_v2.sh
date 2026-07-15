@@ -43,14 +43,27 @@ PREFIX_SIZE="$(stat -c %s "$PREFIX")"
 "$PY" -m py_compile "$AUDIT"
 PYTHONPATH="$WT" "$PY" -m pytest -q "$TEST"
 
-ACTIVATED_AT="$($PY - "$ACTIVATION" <<'PY'
+# journalctl does not consistently accept RFC3339 strings containing T,
+# fractional seconds and an explicit +00:00 offset. Convert the activation
+# boundary to journalctl's documented calendar format in UTC and subtract one
+# second so the boundary invocation cannot be lost to second-level rounding.
+JOURNAL_SINCE="$($PY - "$ACTIVATION" <<'PY'
 import json,sys
-p=json.load(open(sys.argv[1],encoding='utf-8'))
-print(p['activated_at'])
+from datetime import datetime,timezone,timedelta
+payload=json.load(open(sys.argv[1],encoding='utf-8'))
+raw=str(payload['activated_at']).strip()
+dt=datetime.fromisoformat(raw.replace('Z','+00:00'))
+if dt.tzinfo is None:
+    dt=dt.replace(tzinfo=timezone.utc)
+dt=dt.astimezone(timezone.utc)-timedelta(seconds=1)
+print(dt.strftime('%Y-%m-%d %H:%M:%S UTC'))
 PY
 )"
+[[ "$JOURNAL_SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ UTC$ ]]
+echo "JOURNAL_SINCE=$JOURNAL_SINCE"
 
-journalctl -u "$OBSERVER_UNIT" --since "$ACTIVATED_AT" --no-pager -o json > "$RAW_JOURNAL"
+journalctl -u "$OBSERVER_UNIT" --since "$JOURNAL_SINCE" --no-pager -o json > "$RAW_JOURNAL"
+[[ -s "$RAW_JOURNAL" ]] || { echo OBSERVER_JOURNAL_EMPTY_AFTER_ACTIVATION; exit 1; }
 
 # journalctl emits __REALTIME_TIMESTAMP in microseconds. Normalize to Unix seconds
 # before the audit so timestamp units are explicit and deterministic.
@@ -67,12 +80,12 @@ for line in open(src,encoding='utf-8',errors='replace'):
         row['__REALTIME_TIMESTAMP']=float(raw)/1_000_000.0
     except Exception:
         pass
-    # Preserve only fields required by the root-cause audit.
     out.append({k:row.get(k) for k in ('_SYSTEMD_INVOCATION_ID','__REALTIME_TIMESTAMP','MESSAGE','PRIORITY','_SYSTEMD_UNIT')})
 with open(dst,'w',encoding='utf-8') as f:
     for row in out:
         f.write(json.dumps(row,ensure_ascii=False)+'\n')
 PY
+[[ -s "$JOURNAL" ]] || { echo NORMALIZED_OBSERVER_JOURNAL_EMPTY; exit 1; }
 
 mkdir -p "$(dirname "$EVIDENCE")"
 "$PY" "$AUDIT" \

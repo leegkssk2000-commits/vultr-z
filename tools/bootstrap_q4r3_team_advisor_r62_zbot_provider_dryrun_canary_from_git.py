@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-BRANCH = "q4r3-team-advisor-r62-zbot-provider-dryrun-canary-v1"
+BRANCH = "q4r3-team-advisor-r62-zbot-provider-dryrun-canary-v2"
 UNITS = {
     "ZICO_PID": "zico-ceo-canonical-adapter.service",
     "PRODUCER_PID": "q4r3-exact25-shadow-producer.service",

@@ -89,6 +89,36 @@ def test_partial_fill_match_is_not_fill_engine(tmp_path: Path) -> None:
     assert "realistic_fill_model" in payload["report"]["missing_surfaces"]
 
 
+def test_backup_lico_tree_is_excluded(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    write_owner(root, full_surface_body())
+    backup = root / "backend/_backup_phase2a_lico_20260427/canonical/lico/context.py"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_text(full_surface_body(), encoding="utf-8")
+    r36 = tmp_path / "r36.json"
+    write_r36(r36)
+    payload = module.analyze(root, r36)
+    assert payload["report"]["candidate_count"] == 1
+    assert payload["report"]["canonical_owner_count"] == 1
+
+
+def test_generic_exchange_adapter_is_not_lico_candidate(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    write_owner(root, full_surface_body())
+    adapter = root / "backend/engine/exchange_adapter_bingx.py"
+    adapter.parent.mkdir(parents=True, exist_ok=True)
+    adapter.write_text(
+        "spread_bps = slippage_bps = mark_price = funding_rate = latency_ms = 0\n",
+        encoding="utf-8",
+    )
+    r36 = tmp_path / "r36.json"
+    write_r36(r36)
+    payload = module.analyze(root, r36)
+    paths = {item["path"] for item in payload["report"]["candidates"]}
+    assert str(adapter) not in paths
+    assert payload["report"]["forbidden_hit_count"] == 0
+
+
 def test_duplicate_canonical_owner_blocks(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     write_owner(root, full_surface_body(), "context.py")

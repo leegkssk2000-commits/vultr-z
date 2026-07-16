@@ -4,7 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).parents[1] / "tools/q4r3_team_advisor_r41_lico_sgrade_gap_audit.py"
+MODULE_PATH = Path(__file__).parents[1] / "tools/q4r3_team_advisor_r41_validate_lico_sgrade_gap_audit.py"
 spec = importlib.util.spec_from_file_location("r41_lico_audit", MODULE_PATH)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
@@ -73,6 +73,19 @@ def test_missing_consensus_and_fill_model_hold(tmp_path: Path) -> None:
     payload = module.analyze(root, r36)
     assert payload["state"] == "HOLD"
     assert "source_consensus" in payload["report"]["missing_surfaces"]
+    assert "realistic_fill_model" in payload["report"]["missing_surfaces"]
+
+
+def test_partial_fill_match_is_not_fill_engine(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    body = full_surface_body().replace(
+        "order_book_walking = book_walk = partial_fill = filled_qty = no_fill = queue_model = first_fill_ts = final_fill_ts = 0",
+        "",
+    )
+    write_owner(root, body)
+    r36 = tmp_path / "r36.json"
+    write_r36(r36)
+    payload = module.analyze(root, r36)
     assert "realistic_fill_model" in payload["report"]["missing_surfaces"]
 
 

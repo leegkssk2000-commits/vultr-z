@@ -24,6 +24,8 @@ def main() -> int:
     root = args.root.resolve()
     worktree = args.worktree.resolve()
     py = python_bin(root)
+    primary_test = worktree / "tests/test_q4r3_team_advisor_r54_zbot_response_arbitration_receipt.py"
+    scalar_test = worktree / "tests/test_q4r3_team_advisor_r54_zbot_response_bool_regression.py"
     files = [
         worktree / "canonical/zbot.py",
         worktree / "policy/zbot_prompt.py",
@@ -33,7 +35,8 @@ def main() -> int:
         worktree / "policy/zbot_response.py",
         worktree / "policy/zbot_arbitration.py",
         worktree / "policy/zbot_receipt.py",
-        worktree / "tests/test_q4r3_team_advisor_r54_zbot_response_arbitration_receipt.py",
+        primary_test,
+        scalar_test,
         worktree / "tools/q4r3_team_advisor_r54_validate_zbot_response_arbitration_receipt.py",
     ]
     contract = worktree / "config/q4r3_zbot_response_arbitration_receipt_v1.json"
@@ -45,10 +48,7 @@ def main() -> int:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(worktree)
     subprocess.run([py, "-m", "py_compile", *map(str, files)], env=env, check=True)
-    subprocess.run([
-        py, "-m", "pytest", "-q",
-        str(worktree / "tests/test_q4r3_team_advisor_r54_zbot_response_arbitration_receipt.py")
-    ], env=env, check=True)
+    subprocess.run([py, "-m", "pytest", "-q", str(primary_test), str(scalar_test)], env=env, check=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([
         py,

@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import sys
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
@@ -42,6 +43,7 @@ def load_module(path: Path):
     if not spec or not spec.loader:
         raise RuntimeError("LICO_MODULE_SPEC_INVALID")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

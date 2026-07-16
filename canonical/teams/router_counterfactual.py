@@ -21,8 +21,7 @@ def _source_reasons(source_ids: tuple[str, ...], prefix: str) -> tuple[str, ...]
         return (f"{prefix}_SOURCE_IDS_MISSING",)
     if len(set(source_ids)) != len(source_ids):
         reasons.append(f"{prefix}_SOURCE_IDS_DUPLICATE")
-    invalid = tuple(source for source in source_ids if not source.startswith(CANONICAL_SOURCES))
-    if invalid:
+    if any(not source.startswith(CANONICAL_SOURCES) for source in source_ids):
         reasons.append(f"{prefix}_SOURCE_PREFIX_INVALID")
     if not any(source.startswith("cf:") for source in source_ids):
         reasons.append(f"{prefix}_CF_SOURCE_MISSING")
@@ -64,6 +63,8 @@ class RouterPolicy:
             errors.append("SCORE_WEIGHT_TOTAL_ZERO")
         if self.minimum_score_margin < 0.0:
             errors.append("MINIMUM_SCORE_MARGIN_NEGATIVE")
+        if self.minimum_counterfactual_uplift_r < 0.0:
+            errors.append("MINIMUM_COUNTERFACTUAL_UPLIFT_NEGATIVE")
         if self.maximum_candidate_dd_pct < 0.0:
             errors.append("MAXIMUM_CANDIDATE_DD_NEGATIVE")
         if not self.defense_override_regimes:
@@ -212,16 +213,12 @@ def _candidate_reasons(candidate: TeamRouteCandidate, policy: RouterPolicy) -> t
 
 def _regime_eligible(candidate: TeamRouteCandidate, policy: RouterPolicy) -> tuple[bool, tuple[str, ...]]:
     team_policy = TEAM_POLICY_REGISTRY[candidate.team_id]
-    reasons: list[str] = []
-    if candidate.observed_regime in team_policy.excluded_regimes:
-        reasons.append(f"CANDIDATE_{candidate.team_id}_REGIME_EXCLUDED")
-        return False, tuple(reasons)
-    if candidate.observed_regime not in team_policy.eligible_regimes:
-        reasons.append(f"CANDIDATE_{candidate.team_id}_REGIME_NOT_ELIGIBLE")
-        return False, tuple(reasons)
     if candidate.observed_regime in policy.defense_override_regimes and candidate.team_id != "DeltaTeam":
-        reasons.append(f"CANDIDATE_{candidate.team_id}_DEFENSE_OVERRIDE")
-        return False, tuple(reasons)
+        return False, (f"CANDIDATE_{candidate.team_id}_DEFENSE_OVERRIDE",)
+    if candidate.observed_regime in team_policy.excluded_regimes:
+        return False, (f"CANDIDATE_{candidate.team_id}_REGIME_EXCLUDED",)
+    if candidate.observed_regime not in team_policy.eligible_regimes:
+        return False, (f"CANDIDATE_{candidate.team_id}_REGIME_NOT_ELIGIBLE",)
     return True, ()
 
 
@@ -250,15 +247,13 @@ def route_teams(request: TeamRouterRequest) -> TeamRouteEnvelope:
             and not reason.endswith("REGIME_EXCLUDED")
             and not reason.endswith("DEFENSE_OVERRIDE")
         )
-        if hard_candidate_reasons:
-            integrity_failure = True
-        score = _candidate_score(candidate, request.policy)
+        integrity_failure = integrity_failure or bool(hard_candidate_reasons)
         ranked.append(
             RankedTeam(
                 team_id=candidate.team_id,
                 observed_regime=candidate.observed_regime,
                 eligible=eligible and not hard_candidate_reasons and not candidate.hard_veto,
-                score=score,
+                score=_candidate_score(candidate, request.policy),
                 calibrated_confidence=candidate.calibrated_confidence,
                 expected_net_r=candidate.expected_net_r,
                 expected_dd_pct=candidate.expected_dd_pct,
@@ -278,8 +273,8 @@ def route_teams(request: TeamRouterRequest) -> TeamRouteEnvelope:
             reverse=True,
         )
     )
-    eligible = tuple(item for item in ordered if item.eligible)
-    selected: RankedTeam | None = eligible[0] if eligible else None
+    eligible_teams = tuple(item for item in ordered if item.eligible)
+    selected = eligible_teams[0] if eligible_teams else None
     score_margin: float | None = None
     uplift: float | None = None
 
@@ -287,7 +282,7 @@ def route_teams(request: TeamRouterRequest) -> TeamRouteEnvelope:
         reasons.append("ROUTER_NO_ELIGIBLE_TEAM")
     else:
         no_team_score = request.policy.score_weights["net_r"] * request.no_team_expected_net_r
-        comparison_score = eligible[1].score if len(eligible) > 1 else no_team_score
+        comparison_score = eligible_teams[1].score if len(eligible_teams) > 1 else no_team_score
         score_margin = selected.score - comparison_score
         uplift = selected.counterfactual_uplift_r
         if score_margin < request.policy.minimum_score_margin:

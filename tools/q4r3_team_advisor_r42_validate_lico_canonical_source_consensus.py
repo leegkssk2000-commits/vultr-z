@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import ast
+import importlib.util
+import json
+import os
+import re
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Mapping
+
+SCHEMA = "q4r3_team_advisor_r42_lico_canonical_source_consensus_v1"
+FORBIDDEN_CALLS = {
+    "create_order", "place_order", "submit_order", "send_order", "cancel_order",
+    "private_api", "private_endpoint",
+}
+SENSITIVE_KEY = re.compile(
+    r"(?:BINGX|BITGET|KRAKEN|MEXC|BYBIT|BINANCE|OKX).*(?:API[_-]?KEY|SECRET|PASSPHRASE|PRIVATE[_-]?KEY)",
+    re.I,
+)
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def load_module(path: Path):
+    spec = importlib.util.spec_from_file_location("canonical_lico_r42", path)
+    if not spec or not spec.loader:
+        raise RuntimeError("LICO_MODULE_SPEC_INVALID")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def dotted_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        left = dotted_name(node.value)
+        return f"{left}.{node.attr}" if left else node.attr
+    return ""
+
+
+def authority_violations(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    violations: list[str] = []
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return ["LICO_CANONICAL_SYNTAX_INVALID"]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = dotted_name(node.func)
+            if name.rsplit(".", 1)[-1].lower() in FORBIDDEN_CALLS:
+                violations.append(f"DIRECT_EXECUTION_CALL:{name}:{getattr(node, 'lineno', 0)}")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and SENSITIVE_KEY.search(node.value):
+            violations.append(f"SENSITIVE_CREDENTIAL_LITERAL:{getattr(node, 'lineno', 0)}")
+    return sorted(set(violations))
+
+
+def canonical_owner_paths(worktree: Path) -> list[str]:
+    canonical = worktree / "canonical"
+    found: list[Path] = []
+    direct = canonical / "lico.py"
+    if direct.is_file():
+        found.append(direct)
+    package = canonical / "lico"
+    if package.exists():
+        found.extend(path for path in package.rglob("*") if path.is_file())
+    return sorted(str(path.relative_to(worktree)) for path in found)
+
+
+def sample_ready(module) -> bool:
+    policy = module.SourceConsensusPolicy(
+        required_source_prefixes=("cf:", "sheets:"),
+        required_metrics=("spread_bps", "source_age_ms"),
+        max_age_ms=1000,
+        numeric_tolerance_by_metric={
+            "spread_bps": Decimal("0.1"),
+            "source_age_ms": Decimal("0"),
+        },
+        minimum_source_confidence=Decimal("0.8"),
+        policy_refs=("cf:lico_policy", "sheets:lico_policy"),
+        schema_version="r42-fixture",
+    )
+    observations = (
+        module.SourceObservation("cf:market", "spread_bps", "1.0", 9900, "ready", Decimal("0.9"), "cf:market:spread"),
+        module.SourceObservation("sheets:market", "spread_bps", "1.0", 9900, "ready", Decimal("0.9"), "sheets:market:spread"),
+        module.SourceObservation("cf:market", "source_age_ms", 100, 9900, "ready", Decimal("0.9"), "cf:market:age"),
+        module.SourceObservation("sheets:market", "source_age_ms", 100, 9900, "ready", Decimal("0.9"), "sheets:market:age"),
+    )
+    result = module.evaluate_source_consensus(observations, now_ms=10000, policy=policy)
+    return (
+        result.state == "READY"
+        and result.action == "hold"
+        and result.source_parity
+        and result.source_consensus
+        and not result.abstain
+        and result.execution_authority == "none"
+    )
+
+
+def sample_fail_closed_count(module) -> int:
+    policy = module.SourceConsensusPolicy(
+        required_source_prefixes=("cf:", "sheets:"),
+        required_metrics=("spread_bps",),
+        max_age_ms=1000,
+        numeric_tolerance_by_metric={"spread_bps": Decimal("0.1")},
+        minimum_source_confidence=Decimal("0.8"),
+        policy_refs=("cf:lico_policy", "sheets:lico_policy"),
+        schema_version="r42-fixture",
+    )
+    cases = [
+        (),
+        (module.SourceObservation("cf:market", "spread_bps", 1, 9900, "ready", Decimal("0.9"), "cf:market:spread"),),
+        (
+            module.SourceObservation("cf:market", "spread_bps", 1, 1, "ready", Decimal("0.9"), "cf:market:spread"),
+            module.SourceObservation("sheets:market", "spread_bps", 1, 1, "ready", Decimal("0.9"), "sheets:market:spread"),
+        ),
+        (
+            module.SourceObservation("cf:market", "spread_bps", 1, 9900, "ready", Decimal("0.9"), "cf:market:spread"),
+            module.SourceObservation("sheets:market", "spread_bps", 3, 9900, "ready", Decimal("0.9"), "sheets:market:spread"),
+        ),
+        (
+            module.SourceObservation("cf:market", "spread_bps", 1, 10001, "ready", Decimal("0.9"), "cf:market:spread"),
+            module.SourceObservation("sheets:market", "spread_bps", 1, 9900, "ready", Decimal("0.9"), "sheets:market:spread"),
+        ),
+    ]
+    count = 0
+    for observations in cases:
+        result = module.evaluate_source_consensus(observations, now_ms=10000, policy=policy)
+        if result.state == "HOLD" and result.action == "hold" and result.abstain and result.fail_closed:
+            count += 1
+    return count
+
+
+def validate(worktree: Path, r41_path: Path, contract_path: Path) -> dict[str, Any]:
+    blockers: list[str] = []
+    r41 = read_json(r41_path)
+    contract = read_json(contract_path)
+    owner = worktree / "canonical/lico.py"
+    owners = canonical_owner_paths(worktree)
+
+    if r41.get("state") != "HOLD" or r41.get("blockers"):
+        blockers.append("R41_CLASSIFIED_HOLD_NOT_PROVEN")
+    r41_report = r41.get("report", {})
+    if r41_report.get("next_route") != "R4.2_LICO_CANONICAL_OWNER_SOURCE_CONSENSUS":
+        blockers.append("R41_NEXT_ROUTE_INVALID")
+    expected_gaps = {"unique_canonical_owner", "typed_context_contract", "source_registry", "source_consensus"}
+    if not expected_gaps.issubset(set(r41_report.get("missing_surfaces", []))):
+        blockers.append("R41_REQUIRED_GAPS_NOT_PROVEN")
+
+    if owners != ["canonical/lico.py"]:
+        blockers.append("LICO_CANONICAL_OWNER_NOT_UNIQUE")
+    if not owner.is_file():
+        blockers.append("LICO_CANONICAL_OWNER_MISSING")
+    if contract.get("schema") != "q4r3_lico_source_consensus_contract_v1":
+        blockers.append("LICO_CONTRACT_SCHEMA_INVALID")
+    if contract.get("canonical_owner") != "canonical/lico.py":
+        blockers.append("LICO_CONTRACT_OWNER_INVALID")
+
+    authority_hits: list[str] = []
+    module = None
+    if owner.is_file():
+        authority_hits = authority_violations(owner)
+        if authority_hits:
+            blockers.append("LICO_FORBIDDEN_AUTHORITY_SURFACE")
+        try:
+            module = load_module(owner)
+        except Exception as exc:
+            blockers.append(f"LICO_IMPORT_FAILED:{type(exc).__name__}")
+
+    ready = False
+    fail_closed_count = 0
+    if module is not None:
+        if module.LICO_OWNER != "canonical/lico.py":
+            blockers.append("LICO_OWNER_IDENTITY_INVALID")
+        if module.EXECUTION_AUTHORITY != "none" or not module.OBSERVER_ONLY:
+            blockers.append("LICO_AUTHORITY_BOUNDARY_INVALID")
+        if module.RUNTIME_ENABLED or module.ORDER_ENABLED:
+            blockers.append("LICO_RUNTIME_OR_ORDER_ENABLED")
+        if module.ALLOWED_ACTIONS != frozenset({"hold", "route_change"}):
+            blockers.append("LICO_ACTION_SET_INVALID")
+        ready = sample_ready(module)
+        if not ready:
+            blockers.append("LICO_SOURCE_CONSENSUS_NOT_READY")
+        fail_closed_count = sample_fail_closed_count(module)
+        if fail_closed_count != 5:
+            blockers.append("LICO_FAIL_CLOSED_MATRIX_INCOMPLETE")
+
+    state = "PASS" if not blockers else "HOLD"
+    return {
+        "schema": SCHEMA,
+        "official_stage": "R4.2",
+        "state": state,
+        "verdict": "R42_LICO_CANONICAL_SOURCE_CONSENSUS_PASS" if state == "PASS" else "R42_LICO_CANONICAL_SOURCE_CONSENSUS_HOLD",
+        "action": "hold",
+        "authority": {
+            "observer_only": True,
+            "execution_authority": "none",
+            "runtime_mutation_performed": False,
+            "systemd_mutation_performed": False,
+            "order_authority": "none",
+        },
+        "blockers": sorted(set(blockers)),
+        "report": {
+            "canonical_owner_count": len(owners),
+            "canonical_owner_paths": owners,
+            "typed_context_ready": module is not None and hasattr(module, "LicoContextEnvelope"),
+            "source_registry_ready": module is not None and hasattr(module, "build_source_registry"),
+            "source_consensus_ready": ready,
+            "cf_sheets_pair_required": True,
+            "fail_closed_scenario_count": fail_closed_count,
+            "forbidden_authority_hit_count": len(authority_hits),
+            "closed_gap_count": 4 if state == "PASS" else 0,
+            "remaining_gap_count": 9,
+            "sgrade_ready": False,
+            "runtime_binding": False,
+            "next_route": "R4.3_LICO_MARKET_STREAM_VENUE_HEALTH",
+        },
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--worktree", type=Path, required=True)
+    parser.add_argument("--r41", type=Path, required=True)
+    parser.add_argument("--contract", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    payload = validate(args.worktree.resolve(), args.r41.resolve(), args.contract.resolve())
+    atomic_json(args.output.resolve(), payload)
+    print(json.dumps({
+        "state": payload["state"],
+        "canonical_owner_count": payload["report"]["canonical_owner_count"],
+        "source_consensus_ready": payload["report"]["source_consensus_ready"],
+        "fail_closed_scenario_count": payload["report"]["fail_closed_scenario_count"],
+        "remaining_gap_count": payload["report"]["remaining_gap_count"],
+        "blocker_count": len(payload["blockers"]),
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

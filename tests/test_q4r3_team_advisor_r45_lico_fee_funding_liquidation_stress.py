@@ -194,8 +194,14 @@ def test_volatility_stress_liquidation_routes_change() -> None:
 
 
 def test_stale_position_fails_closed() -> None:
-    result = evaluate(snapshot=valid_snapshot(observed_at_ms=1))
+    result = evaluate(snapshot=valid_snapshot(observed_at_ms=8000))
     assert_hold(result, "POSITION_SNAPSHOT_STALE")
+
+
+def test_observation_before_open_fails_as_invalid_timestamp() -> None:
+    result = evaluate(snapshot=valid_snapshot(observed_at_ms=7999))
+    assert_hold(result, "POSITION_TIMESTAMP_INVALID")
+    assert "POSITION_SNAPSHOT_STALE" not in result.reason_codes
 
 
 def test_invalid_position_side_fails_closed() -> None:

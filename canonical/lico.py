@@ -272,3 +272,219 @@ def evaluate_source_consensus(
         order_enabled=ORDER_ENABLED,
         schema_version=policy.schema_version,
     )
+
+
+@dataclass(frozen=True)
+class MarketStreamSnapshot:
+    venue: str
+    symbol: str
+    observed_at_ms: int
+    sequence: int
+    best_bid: Decimal
+    best_ask: Decimal
+    mark_price: Decimal
+    index_price: Decimal
+    funding_rate: Decimal
+    order_book: tuple[tuple[Decimal, Decimal], ...]
+    trade_stream: bool
+    venue_status: str
+    source_ref: str
+
+
+@dataclass(frozen=True)
+class VenueHealthPolicy:
+    venue: str
+    max_stream_age_ms: int
+    max_sequence_gap: int
+    minimum_book_levels: int
+    max_mark_index_deviation_bps: Decimal
+    allowed_venue_statuses: tuple[str, ...]
+    policy_refs: tuple[str, ...]
+    schema_version: str
+
+
+@dataclass(frozen=True)
+class VenueHealthEnvelope:
+    state: str
+    action: str
+    reason_codes: tuple[str, ...]
+    venue: str
+    symbol: str
+    market_stream_ready: bool
+    venue_health: str
+    source_age_ms: int
+    sequence_gap: int
+    book_level_count: int
+    mark_index_deviation_bps: Decimal
+    source_ref: str
+    fail_closed: bool
+    abstain: bool
+    observer_only: bool
+    execution_authority: str
+    runtime_enabled: bool
+    order_enabled: bool
+    schema_version: str
+
+
+def _venue_hold(
+    reasons: Sequence[str],
+    *,
+    snapshot: MarketStreamSnapshot | None,
+    source_age_ms: int = 0,
+    sequence_gap: int = 0,
+    mark_index_deviation_bps: Decimal = Decimal("0"),
+    schema_version: str = "unknown",
+) -> VenueHealthEnvelope:
+    return VenueHealthEnvelope(
+        state="HOLD",
+        action="hold",
+        reason_codes=tuple(sorted(set(reasons))),
+        venue=snapshot.venue if snapshot else "unknown",
+        symbol=snapshot.symbol if snapshot else "unknown",
+        market_stream_ready=False,
+        venue_health="unhealthy",
+        source_age_ms=max(0, source_age_ms),
+        sequence_gap=max(0, sequence_gap),
+        book_level_count=len(snapshot.order_book) if snapshot else 0,
+        mark_index_deviation_bps=max(Decimal("0"), mark_index_deviation_bps),
+        source_ref=snapshot.source_ref if snapshot else "",
+        fail_closed=True,
+        abstain=True,
+        observer_only=OBSERVER_ONLY,
+        execution_authority=EXECUTION_AUTHORITY,
+        runtime_enabled=RUNTIME_ENABLED,
+        order_enabled=ORDER_ENABLED,
+        schema_version=schema_version,
+    )
+
+
+def _normalize_symbol(symbol: str) -> str:
+    return symbol.upper().replace("-", "").replace("_", "").replace("/", "").strip()
+
+
+def _validate_venue_policy(policy: VenueHealthPolicy) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if policy.venue != "BingX":
+        reasons.append("VENUE_POLICY_NOT_BINGX")
+    if policy.max_stream_age_ms < 0:
+        reasons.append("VENUE_POLICY_AGE_INVALID")
+    if policy.max_sequence_gap < 1:
+        reasons.append("VENUE_POLICY_SEQUENCE_INVALID")
+    if policy.minimum_book_levels < 1:
+        reasons.append("VENUE_POLICY_BOOK_LEVEL_INVALID")
+    if policy.max_mark_index_deviation_bps < 0:
+        reasons.append("VENUE_POLICY_DEVIATION_INVALID")
+    if not policy.allowed_venue_statuses:
+        reasons.append("VENUE_POLICY_STATUS_INVALID")
+    if not policy.policy_refs or any(not ref.startswith(SOURCE_PREFIXES) for ref in policy.policy_refs):
+        reasons.append("VENUE_POLICY_REFS_INVALID")
+    if not policy.schema_version:
+        reasons.append("VENUE_POLICY_SCHEMA_MISSING")
+    return tuple(sorted(set(reasons)))
+
+
+def evaluate_market_stream(
+    snapshot: MarketStreamSnapshot,
+    *,
+    previous: MarketStreamSnapshot | None,
+    consensus: LicoContextEnvelope,
+    now_ms: int,
+    policy: VenueHealthPolicy,
+) -> VenueHealthEnvelope:
+    policy_errors = _validate_venue_policy(policy)
+    if policy_errors:
+        return _venue_hold(policy_errors, snapshot=snapshot, schema_version=policy.schema_version)
+
+    reasons: list[str] = []
+    normalized_symbol = _normalize_symbol(snapshot.symbol)
+    if not consensus.source_consensus or not consensus.source_parity or consensus.state != "READY":
+        reasons.append("SOURCE_CONSENSUS_NOT_READY")
+    if snapshot.venue != policy.venue:
+        reasons.append("VENUE_MISMATCH")
+    if not normalized_symbol.endswith("USDT") or len(normalized_symbol) <= 4:
+        reasons.append("SYMBOL_INVALID")
+    if not snapshot.source_ref.startswith("cf:"):
+        reasons.append("MARKET_SOURCE_REF_INVALID")
+    if snapshot.observed_at_ms < 0 or snapshot.observed_at_ms > now_ms:
+        reasons.append("MARKET_TIMESTAMP_INVALID")
+        source_age_ms = 0
+    else:
+        source_age_ms = now_ms - snapshot.observed_at_ms
+        if source_age_ms > policy.max_stream_age_ms:
+            reasons.append("MARKET_STREAM_STALE")
+    if snapshot.sequence < 1:
+        reasons.append("MARKET_SEQUENCE_INVALID")
+
+    sequence_gap = 0
+    if previous is not None:
+        if previous.venue != snapshot.venue or _normalize_symbol(previous.symbol) != normalized_symbol:
+            reasons.append("MARKET_PREVIOUS_IDENTITY_MISMATCH")
+        elif snapshot.sequence <= previous.sequence:
+            reasons.append("MARKET_SEQUENCE_NON_MONOTONIC")
+        else:
+            sequence_gap = snapshot.sequence - previous.sequence
+            if sequence_gap > policy.max_sequence_gap:
+                reasons.append("MARKET_SEQUENCE_GAP")
+
+    values = (
+        snapshot.best_bid,
+        snapshot.best_ask,
+        snapshot.mark_price,
+        snapshot.index_price,
+        snapshot.funding_rate,
+    )
+    if any(not isinstance(value, Decimal) for value in values):
+        reasons.append("MARKET_DECIMAL_TYPE_REQUIRED")
+    if snapshot.best_bid <= 0 or snapshot.best_ask <= 0 or snapshot.mark_price <= 0 or snapshot.index_price <= 0:
+        reasons.append("MARKET_PRICE_INVALID")
+    if snapshot.best_bid >= snapshot.best_ask:
+        reasons.append("MARKET_BOOK_CROSSED")
+    if len(snapshot.order_book) < policy.minimum_book_levels:
+        reasons.append("MARKET_BOOK_LEVELS_INSUFFICIENT")
+    for price, quantity in snapshot.order_book:
+        if price <= 0 or quantity <= 0:
+            reasons.append("MARKET_BOOK_LEVEL_INVALID")
+            break
+    if not snapshot.trade_stream:
+        reasons.append("MARKET_TRADE_STREAM_DOWN")
+    if snapshot.venue_status not in policy.allowed_venue_statuses:
+        reasons.append("VENUE_STATUS_BLOCKED")
+
+    if snapshot.index_price > 0:
+        mark_index_deviation_bps = abs(snapshot.mark_price - snapshot.index_price) / snapshot.index_price * Decimal("10000")
+    else:
+        mark_index_deviation_bps = Decimal("0")
+    if mark_index_deviation_bps > policy.max_mark_index_deviation_bps:
+        reasons.append("MARK_INDEX_DEVIATION_EXCEEDED")
+
+    if reasons:
+        return _venue_hold(
+            reasons,
+            snapshot=snapshot,
+            source_age_ms=source_age_ms,
+            sequence_gap=sequence_gap,
+            mark_index_deviation_bps=mark_index_deviation_bps,
+            schema_version=policy.schema_version,
+        )
+
+    return VenueHealthEnvelope(
+        state="READY",
+        action="hold",
+        reason_codes=("MARKET_STREAM_VENUE_HEALTH_READY",),
+        venue=snapshot.venue,
+        symbol=normalized_symbol,
+        market_stream_ready=True,
+        venue_health="healthy",
+        source_age_ms=source_age_ms,
+        sequence_gap=sequence_gap,
+        book_level_count=len(snapshot.order_book),
+        mark_index_deviation_bps=mark_index_deviation_bps,
+        source_ref=snapshot.source_ref,
+        fail_closed=True,
+        abstain=False,
+        observer_only=OBSERVER_ONLY,
+        execution_authority=EXECUTION_AUTHORITY,
+        runtime_enabled=RUNTIME_ENABLED,
+        order_enabled=ORDER_ENABLED,
+        schema_version=policy.schema_version,
+    )

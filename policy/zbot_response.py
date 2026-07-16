@@ -132,18 +132,30 @@ def normalize_provider_response(
     except (TypeError, ValueError):
         generated_at_ms = -1
         reasons.append("RESPONSE_TIMESTAMP_INVALID")
-    try:
-        confidence = float(raw.get("confidence"))
-    except (TypeError, ValueError):
+
+    confidence_raw = raw.get("confidence")
+    if isinstance(confidence_raw, bool):
         confidence = -1.0
         reasons.append("RESPONSE_CONFIDENCE_INVALID")
-    try:
-        input_tokens = int(raw.get("input_tokens"))
-        output_tokens = int(raw.get("output_tokens"))
-        cost_micro_usd = int(raw.get("cost_micro_usd"))
-    except (TypeError, ValueError):
+    else:
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = -1.0
+            reasons.append("RESPONSE_CONFIDENCE_INVALID")
+
+    usage_raw = (raw.get("input_tokens"), raw.get("output_tokens"), raw.get("cost_micro_usd"))
+    if any(isinstance(value, bool) for value in usage_raw):
         input_tokens = output_tokens = cost_micro_usd = -1
         reasons.append("RESPONSE_USAGE_INVALID")
+    else:
+        try:
+            input_tokens = int(usage_raw[0])
+            output_tokens = int(usage_raw[1])
+            cost_micro_usd = int(usage_raw[2])
+        except (TypeError, ValueError):
+            input_tokens = output_tokens = cost_micro_usd = -1
+            reasons.append("RESPONSE_USAGE_INVALID")
 
     if provider_id not in set(expectation.provider_ids):
         reasons.append("RESPONSE_PROVIDER_UNEXPECTED")

@@ -27,19 +27,20 @@ def main() -> int:
     py = python_bin(root)
     spec_file = worktree / "tools/q4r3_team_advisor_r51_zbot_audit_spec.py"
     analyzer = worktree / "tools/q4r3_team_advisor_r51_zbot_sgrade_gap_audit.py"
+    host_merge = worktree / "tools/q4r3_team_advisor_r51_merge_zbot_host_inventory.py"
     validator = worktree / "tools/q4r3_team_advisor_r51_validate_zbot_sgrade_gap_audit.py"
     test_file = worktree / "tests/test_q4r3_team_advisor_r51_zbot_sgrade_gap_audit.py"
     contract = worktree / "config/q4r3_zbot_sgrade_audit_contract_v1.json"
     r46 = root / "runtime/exact25_edge_v1/team_advisor_r46_lico_team_lineage_calibration_sgrade/status_latest.json"
     output = root / "runtime/exact25_edge_v1/team_advisor_r51_zbot_sgrade_gap_audit/status_latest.json"
 
-    for path in (spec_file, analyzer, validator, test_file, contract, r46):
+    for path in (spec_file, analyzer, host_merge, validator, test_file, contract, r46):
         if not path.is_file():
             raise SystemExit(f"REQUIRED_INPUT_MISSING={path}")
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(worktree)
-    subprocess.run([py, "-m", "py_compile", str(spec_file), str(analyzer), str(validator), str(test_file)], env=env, check=True)
+    subprocess.run([py, "-m", "py_compile", str(spec_file), str(analyzer), str(host_merge), str(validator), str(test_file)], env=env, check=True)
     subprocess.run([py, "-m", "pytest", "-q", str(test_file)], env=env, check=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([
@@ -48,6 +49,7 @@ def main() -> int:
         "--r46", str(r46),
         "--output", str(output),
     ], env=env, check=True)
+    subprocess.run([py, str(host_merge), "--status", str(output)], env=env, check=True)
     subprocess.run([
         py, str(validator),
         "--status", str(output),

@@ -120,12 +120,16 @@ def iter_files(root: Path) -> Iterable[Path]:
     for base in roots(root):
         iterator = [base] if base.is_file() else base.rglob("*")
         for path in iterator:
+            try:
+                scoped_path = Path(path.name) if base.is_file() else path.relative_to(base)
+            except ValueError:
+                continue
             if (
                 not path.is_file()
                 or path.suffix.lower() not in TEXT_SUFFIXES
-                or contaminated(path)
-                or non_source(path)
-                or support_surface(path)
+                or contaminated(scoped_path)
+                or non_source(scoped_path)
+                or support_surface(scoped_path)
             ):
                 continue
             key = str(path)

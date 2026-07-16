@@ -104,14 +104,15 @@ def support_surface(path: Path) -> bool:
 
 
 def roots(root: Path) -> tuple[Path, ...]:
-    values = (
+    values = [
         root / "backend",
         root / "canonical",
         root / "config",
         root / "services",
         root / "systemd",
-        Path("/usr/local/bin"),
-    )
+    ]
+    if (root / ".git").exists():
+        values.append(Path("/usr/local/bin"))
     return tuple(path for path in values if path.exists())
 
 

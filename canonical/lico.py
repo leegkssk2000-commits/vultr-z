@@ -52,7 +52,7 @@ class LicoContextEnvelope:
     action: str
     reason_codes: tuple[str, ...]
     source_registry: Mapping[str, tuple[str, ...]]
-    source_ids: tuple[str, ...]
+    source_keys: tuple[str, ...]
     source_refs: tuple[str, ...]
     source_status: str
     source_parity: bool
@@ -88,7 +88,7 @@ def _hold(
     reasons: Sequence[str],
     *,
     registry: Mapping[str, tuple[str, ...]] | None = None,
-    source_ids: Sequence[str] = (),
+    source_keys: Sequence[str] = (),
     source_refs: Sequence[str] = (),
     source_age_ms: int = 0,
     disagreement: Sequence[str] = (),
@@ -100,7 +100,7 @@ def _hold(
         action="hold",
         reason_codes=tuple(sorted(set(reasons))),
         source_registry=MappingProxyType(dict(registry or {})),
-        source_ids=tuple(sorted(set(source_ids))),
+        source_keys=tuple(sorted(set(source_keys))),
         source_refs=tuple(sorted(set(source_refs))),
         source_status="invalid",
         source_parity=False,
@@ -145,8 +145,8 @@ def build_source_registry(observations: Sequence[SourceObservation]) -> Mapping[
     for item in observations:
         registry.setdefault(item.metric_key, []).append(item.source_id)
     return MappingProxyType({
-        metric: tuple(sorted(source_ids))
-        for metric, source_ids in sorted(registry.items())
+        metric: tuple(sorted(keys))
+        for metric, keys in sorted(registry.items())
     })
 
 
@@ -181,7 +181,7 @@ def evaluate_source_consensus(
         return _hold(("SOURCE_OBSERVATIONS_MISSING",), schema_version=policy.schema_version)
 
     registry = build_source_registry(observations)
-    source_ids = [item.source_id for item in observations]
+    source_keys = [item.source_id for item in observations]
     source_refs = [item.source_ref for item in observations]
     reasons: list[str] = []
     disagreement: list[str] = []
@@ -241,7 +241,7 @@ def evaluate_source_consensus(
         return _hold(
             reasons,
             registry=registry,
-            source_ids=source_ids,
+            source_keys=source_keys,
             source_refs=source_refs,
             source_age_ms=max(ages) if ages else 0,
             disagreement=disagreement,
@@ -254,7 +254,7 @@ def evaluate_source_consensus(
         action="hold",
         reason_codes=("SOURCE_CONSENSUS_READY",),
         source_registry=registry,
-        source_ids=tuple(sorted(set(source_ids))),
+        source_keys=tuple(sorted(set(source_keys))),
         source_refs=tuple(sorted(set(source_refs))),
         source_status="ready",
         source_parity=True,

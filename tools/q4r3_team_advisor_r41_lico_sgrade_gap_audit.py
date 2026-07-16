@@ -14,12 +14,24 @@ from typing import Any, Iterable, Mapping
 
 UTC = timezone.utc
 TEXT_SUFFIXES = {".py", ".sh", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".service", ".timer", ".md"}
-CONTAMINATION_PARTS = {".git", ".venv", "venv", "node_modules", "vendor", "dist", "build", "__pycache__", "backup", "backups", "archive", "archives", "rollback", "restore", "snapshot", "snapshots", "quarantine", "trash", "old", "copies", "release_freeze"}
+CONTAMINATION_PARTS = {
+    ".git", ".venv", "venv", "node_modules", "vendor", "dist", "build", "__pycache__",
+    "backup", "backups", "archive", "archives", "rollback", "restore", "snapshot", "snapshots",
+    "quarantine", "trash", "old", "copies", "release_freeze", "release-freeze", "frozen",
+}
+NON_SOURCE_PARTS = {
+    "data", "runtime", "evidence", "journal", "processed", "failed", "rejected", "work",
+    "paper", "state", "logs", "log", "cache", "tmp",
+}
+CONTAMINATION_FRAGMENT = re.compile(
+    r"(?:^|[._-])(backup|backups|bak|archive|archives|rollback|restore|snapshot|snapshots|"
+    r"quarantine|trash|old|copy|copies|release[_-]?freeze|frozen)(?:[._-]|$)",
+    re.I,
+)
 SUPPORT_PARTS = {"test", "tests", "tool", "tools", "script", "scripts"}
 SUPPORT_PREFIXES = ("test_", "verify_", "apply_", "install_", "bootstrap_", "run_", "audit_", "probe_", "smoke_", "check_")
 DIRECT_EXECUTION_CALLS = {"create_order", "place_order", "submit_order", "send_order", "cancel_order", "private_api", "private_endpoint"}
 SENSITIVE_KEY = re.compile(r"(?:BINGX|BITGET|KRAKEN|MEXC|BYBIT|BINANCE|OKX).*(?:API[_-]?KEY|SECRET|PASSPHRASE|PRIVATE[_-]?KEY)", re.I)
-CANONICAL_SOURCE_PREFIXES = ("cf:", "sheets:")
 AUDIT_SCHEMA = "q4r3_team_advisor_r41_lico_sgrade_gap_audit_v1"
 
 SURFACES: dict[str, tuple[str, ...]] = {
@@ -40,6 +52,11 @@ SURFACES: dict[str, tuple[str, ...]] = {
     "shadow_paper_calibration": ("actual_vs_simulated", "fill_price_error_bps", "fill_latency_error_ms", "partial_fill_match", "net_r_gap", "calibration"),
     "fail_closed_authority_boundary": ("fail_closed", "abstain", "hold", "route_change", "execution_authority", "runtime_enabled", "order_enabled"),
 }
+
+LICO_TEXT_IDENTITY = re.compile(
+    r"(?:\bclass\s+Lico\w*\b|\bLicoContext\w*\b|\blico_(?:owner|manifest|context|snapshot|market|source|adapter|contract)\b|"
+    r"\bLICO_(?:OWNER|MANIFEST|CONTEXT|SNAPSHOT|MARKET|SOURCE|ADAPTER|CONTRACT)\b|\"component\"\s*:\s*\"Lico\")"
+)
 
 
 def now_iso() -> str:
@@ -69,7 +86,17 @@ def sha256(path: Path) -> str:
 
 
 def contaminated(path: Path) -> bool:
-    return any(part.lower() in CONTAMINATION_PARTS for part in path.parts)
+    for part in path.parts:
+        lower = part.lower()
+        if lower in CONTAMINATION_PARTS or CONTAMINATION_FRAGMENT.search(lower):
+            return True
+        if lower.endswith((".bak", ".old", ".orig")):
+            return True
+    return False
+
+
+def non_source(path: Path) -> bool:
+    return any(part.lower() in NON_SOURCE_PARTS for part in path.parts)
 
 
 def support_surface(path: Path) -> bool:
@@ -83,7 +110,6 @@ def roots(root: Path) -> tuple[Path, ...]:
         root / "config",
         root / "services",
         root / "systemd",
-        root / "tools",
         Path("/usr/local/bin"),
     )
     return tuple(path for path in values if path.exists())
@@ -94,7 +120,13 @@ def iter_files(root: Path) -> Iterable[Path]:
     for base in roots(root):
         iterator = [base] if base.is_file() else base.rglob("*")
         for path in iterator:
-            if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES or contaminated(path):
+            if (
+                not path.is_file()
+                or path.suffix.lower() not in TEXT_SUFFIXES
+                or contaminated(path)
+                or non_source(path)
+                or support_surface(path)
+            ):
                 continue
             key = str(path)
             if key in seen:
@@ -139,20 +171,40 @@ def authority_evidence(path: Path, text: str) -> tuple[list[str], list[str]]:
     return sorted(set(calls)), sorted(set(credentials))
 
 
+def identifier_char(value: str) -> bool:
+    return value.isalnum() or value == "_"
+
+
+def marker_present(marker: str, text: str) -> bool:
+    start = 0
+    while True:
+        index = text.find(marker, start)
+        if index < 0:
+            return False
+        end = index + len(marker)
+        left_ok = index == 0 or not (identifier_char(marker[0]) and identifier_char(text[index - 1]))
+        right_ok = end == len(text) or not (identifier_char(marker[-1]) and identifier_char(text[end]))
+        if left_ok and right_ok:
+            return True
+        start = index + 1
+
+
 def surface_hits(text_lower: str, path_lower: str) -> dict[str, list[str]]:
     combined = f"{path_lower}\n{text_lower}"
     return {
-        surface: sorted({pattern for pattern in patterns if pattern in combined})
+        surface: sorted({pattern for pattern in patterns if marker_present(pattern, combined)})
         for surface, patterns in SURFACES.items()
     }
 
 
-def is_candidate(path: Path, hits: Mapping[str, list[str]]) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", str(path).lower())
-    if "lico" in normalized:
+def lico_affiliated(path: Path, text: str) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    name = path.name.lower()
+    if "/canonical/lico/" in normalized or normalized.endswith("/canonical/lico.py"):
         return True
-    functional_hits = sum(bool(values) for key, values in hits.items() if key != "unique_canonical_owner")
-    return functional_hits >= 4
+    if "lico" in path.stem.lower() or "lico" in name:
+        return True
+    return bool(LICO_TEXT_IDENTITY.search(text))
 
 
 def git_metadata(root: Path, path: Path) -> dict[str, Any]:
@@ -177,29 +229,32 @@ def analyze(root: Path, r36_path: Path) -> dict[str, Any]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hits = surface_hits(text.lower(), str(path).lower())
-        if not is_candidate(path, hits):
+        if not lico_affiliated(path, text):
             continue
+        hits = surface_hits(text.lower(), str(path).lower())
         direct_calls, credential_access = authority_evidence(path, text)
         record = {
             "path": str(path),
             "sha256": sha256(path),
             "git": git_metadata(root, path),
-            "support_surface": support_surface(path),
+            "support_surface": False,
             "surface_hits": {key: value for key, value in hits.items() if value},
             "direct_execution_calls": direct_calls,
             "sensitive_credential_access": credential_access,
         }
         candidates.append(record)
-        if not record["support_surface"]:
-            for surface, values in hits.items():
-                if values:
-                    coverage[surface].append(str(path))
-            normalized = str(path).replace("\\", "/").lower()
-            if "/canonical/lico/" in normalized or normalized.endswith("/canonical/lico.py"):
-                owner_paths.append(str(path))
+        for surface, values in hits.items():
+            if values:
+                coverage[surface].append(str(path))
+        normalized = str(path).replace("\\", "/").lower()
+        if "/canonical/lico/" in normalized or normalized.endswith("/canonical/lico.py"):
+            owner_paths.append(str(path))
         if direct_calls or credential_access:
-            forbidden_hits.append({"path": str(path), "direct_execution_calls": direct_calls, "sensitive_credential_access": credential_access})
+            forbidden_hits.append({
+                "path": str(path),
+                "direct_execution_calls": direct_calls,
+                "sensitive_credential_access": credential_access,
+            })
 
     owner_paths = sorted(set(owner_paths))
     coverage = {key: sorted(set(values)) for key, values in coverage.items()}
@@ -252,7 +307,7 @@ def analyze(root: Path, r36_path: Path) -> dict[str, Any]:
             "execution_authority": "none",
             "sgrade_ready": state == "PASS",
             "next_route": "R4.2_LICO_CANONICAL_OWNER_SOURCE_CONSENSUS" if state == "HOLD" else "R4.6_LICO_SGRADE_LOCK",
-            "candidates": sorted(candidates, key=lambda item: (item["support_surface"], item["path"])),
+            "candidates": sorted(candidates, key=lambda item: item["path"]),
         },
     }
 

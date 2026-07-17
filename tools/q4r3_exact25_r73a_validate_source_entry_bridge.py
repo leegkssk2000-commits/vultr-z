@@ -80,9 +80,12 @@ def fail_closed_count(source: dict[str, Any], projection: dict[str, Any]) -> int
     bad = copy.deepcopy(source); bad["entry_price"] = 0; cases.append((bad, projection, "ENTRY_PRICE_INVALID"))
     bad = copy.deepcopy(source); bad["source_sequence"] = -1; cases.append((bad, projection, "SOURCE_SEQUENCE_INVALID"))
     bad = copy.deepcopy(source); bad["strategy_source_sha256"] = ""; cases.append((bad, projection, "SOURCE_FIELD_MISSING:strategy_source_sha256"))
+    bad = copy.deepcopy(source); bad["strategy_source_sha256"] = "sha256:bad"; cases.append((bad, projection, "STRATEGY_DIGEST_INVALID"))
+    bad = copy.deepcopy(source); bad["observed_at_ms"] = bad["entry_ts_ms"] + 300001; cases.append((bad, projection, "SOURCE_ENTRY_STALE"))
+    bad = copy.deepcopy(source); bad["source_ref"] = "unknown:fixture"; cases.append((bad, projection, "SOURCE_REF_INVALID"))
     bad = copy.deepcopy(source); bad["strategy_id"] = "unknown"; cases.append((bad, projection, "FOUR_EXIT_TEMPLATES_NOT_FOUND"))
-    bad_projection = copy.deepcopy(projection); bad_projection["templates"][0]["skill_set"] = ["SK_EXIT_PARTIAL_30"]
-    cases.append((source, bad_projection, "RAW_SKILL_CONTAMINATION"))
+    contaminated = copy.deepcopy(projection); contaminated["templates"][0]["skill_set"] = ["SK_EXIT_PARTIAL_30"]
+    cases.append((source, contaminated, "RAW_SKILL_CONTAMINATION"))
     bad = copy.deepcopy(source); bad["cost_model_ref"] = "other"; cases.append((bad, projection, "COST_MODEL_MISMATCH"))
     return sum(expected in build_lane_events(src, proj)["reason_codes"] for src, proj, expected in cases)
 
@@ -103,7 +106,6 @@ def validate(contract_path: Path, r72_path: Path, projection_path: Path, bridge_
         blockers.append("R72_RUNTIME_BOUNDARY_OPEN")
     if projection.get("formal_ledger_write_allowed") is not False:
         blockers.append("R72_LEDGER_WRITE_OPEN")
-
     source = fixture(projection) if projection.get("templates") else {}
     result = build_lane_events(source, projection) if source else {"state": "HOLD", "lane_event_count": 0, "lane_events": []}
     if result.get("state") != "BRIDGE_READY" or result.get("lane_event_count") != 4:
@@ -114,7 +116,7 @@ def validate(contract_path: Path, r72_path: Path, projection_path: Path, bridge_
         if len(values) != len(set(values)):
             blockers.append("LANE_ISOLATION_INVALID:" + key)
     failed_closed = fail_closed_count(source, projection) if source else 0
-    if failed_closed != 8:
+    if failed_closed != 11:
         blockers.append("FAIL_CLOSED_SCENARIOS_INCOMPLETE")
     atomic_json(bridge_output, result)
     state = "PASS" if not blockers else "HOLD"

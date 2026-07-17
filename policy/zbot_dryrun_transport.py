@@ -87,7 +87,7 @@ def contains_secret_material(value: Any) -> bool:
         return any(contains_secret_material(item) for item in value)
     if isinstance(value, str):
         lowered = value.lower()
-        return lowered.startswith("bearer ") or "sk-" in lowered
+        return lowered.startswith(("bearer ", "sk-"))
     return False
 
 
@@ -258,3 +258,4 @@ def compile_dryrun_packets(
         network_call_count=sum(1 for packet in packets if packet.network_call_performed),
         fail_closed=True,
     )
+

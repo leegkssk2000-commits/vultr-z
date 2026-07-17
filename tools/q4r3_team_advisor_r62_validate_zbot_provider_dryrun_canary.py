@@ -37,12 +37,12 @@ def sample_observer():
     previous = ShadowSnapshot(
         "r62.prev", "shadow.r62", 9900, "r62-validator",
         "cf:shadow:r62", "cf:market:r62", "cf:position:r62", "sheets:ledger:r62",
-        10, 1, 5, 4.0, 100, "a" * 64,
+        10, 1, 5, 4.0, 100, "sha256:" + "a" * 64,
     )
     current = ShadowSnapshot(
         "r62.current", "shadow.r62", 10000, "r62-validator",
         "cf:shadow:r62", "cf:market:r62", "cf:position:r62", "sheets:ledger:r62",
-        11, 1, 6, 4.5, 101, "b" * 64,
+        11, 1, 6, 4.5, 101, "sha256:" + "b" * 64,
     )
     return build_shadow_observer_plan(
         current,
@@ -117,23 +117,35 @@ def evaluate(observer_value=None, *, budget=None, transport=None, arbitration=No
 
 
 def fail_closed_count() -> int:
-    passed = 0
-    if evaluate(budget=budget_policy(daily_token_limit=1000)).state == "HOLD":
-        passed += 1
-    baseline = evaluate()
-    if evaluate(prior_keys=(baseline.route_results[0].idempotency_key,)).state == "HOLD":
-        passed += 1
     observer = sample_observer()
+    baseline = evaluate(observer)
+    if (
+        observer.state != "PLAN_READY"
+        or len(observer.route_plans) != 4
+        or baseline.state != "PASS"
+        or not baseline.route_results
+    ):
+        return 0
+
+    passed = 0
+    if evaluate(observer, budget=budget_policy(daily_token_limit=1000)).state == "HOLD":
+        passed += 1
+    if evaluate(observer, prior_keys=(baseline.route_results[0].idempotency_key,)).state == "HOLD":
+        passed += 1
     if evaluate(replace(observer, provider_invocation_enabled=True)).state == "HOLD":
         passed += 1
     if evaluate(replace(observer, route_plans=(observer.route_plans[0], observer.route_plans[0]))).state == "HOLD":
         passed += 1
-    first = replace(observer.route_plans[0], required_providers=("openai", "unknown"), provider_request_count=2)
+    first = replace(
+        observer.route_plans[0],
+        required_providers=("openai", "unknown"),
+        provider_request_count=2,
+    )
     if evaluate(replace(observer, route_plans=(first, *observer.route_plans[1:]))).state == "HOLD":
         passed += 1
-    if evaluate(transport=transport_policy(requested_output_tokens=0)).state == "HOLD":
+    if evaluate(observer, transport=transport_policy(requested_output_tokens=0)).state == "HOLD":
         passed += 1
-    if evaluate(arbitration=arbitration_policy(max_confidence_spread=0.0)).state == "HOLD":
+    if evaluate(observer, arbitration=arbitration_policy(max_confidence_spread=0.0)).state == "HOLD":
         passed += 1
     if contains_secret_material({"authorization": "Bearer blocked"}):
         passed += 1

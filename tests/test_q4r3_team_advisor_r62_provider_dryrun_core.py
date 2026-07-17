@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from q4r3_r62_fixture import evaluate
+from q4r3_r62_fixture import evaluate, observer
+
+
+def test_observer_fixture_is_plan_ready() -> None:
+    source = observer()
+    assert source.state == "PLAN_READY"
+    assert len(source.route_plans) == 4
+    assert source.point_in_time_valid is True
+    assert source.source_lineage_valid is True
+    assert source.count_integrity_valid is True
+    assert source.ledger_integrity_valid is True
+    assert source.sgrade_valid is True
 
 
 def test_provider_dryrun_fixture_passes() -> None:

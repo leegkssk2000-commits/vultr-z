@@ -92,3 +92,18 @@ def test_skill_contamination_holds() -> None:
 def test_cost_model_mismatch_holds() -> None:
     bad = source(); bad["cost_model_ref"] = "other"
     assert "COST_MODEL_MISMATCH" in build_lane_events(bad, projection())["reason_codes"]
+
+
+def test_bad_digest_holds() -> None:
+    bad = source(); bad["strategy_source_sha256"] = "sha256:bad"
+    assert "STRATEGY_DIGEST_INVALID" in build_lane_events(bad, projection())["reason_codes"]
+
+
+def test_stale_entry_holds() -> None:
+    bad = source(); bad["observed_at_ms"] = bad["entry_ts_ms"] + 300001
+    assert "SOURCE_ENTRY_STALE" in build_lane_events(bad, projection())["reason_codes"]
+
+
+def test_untrusted_source_ref_holds() -> None:
+    bad = source(); bad["source_ref"] = "unknown:fixture"
+    assert "SOURCE_REF_INVALID" in build_lane_events(bad, projection())["reason_codes"]

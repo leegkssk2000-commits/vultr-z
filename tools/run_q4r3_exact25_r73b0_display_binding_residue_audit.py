@@ -23,7 +23,7 @@ def main() -> int:
     r73a = args.root / "runtime/exact25_edge_v1/exact25_r73a_source_entry_bridge_prebind/status_latest.json"
     run([py, "-m", "pytest", "-q", str(args.worktree / "tests/test_q4r3_exact25_r73b0_display_binding_residue_audit.py")])
     run([
-        py, str(args.worktree / "tools/q4r3_exact25_r73b0_audit_display_binding_residue_v2.py"),
+        py, str(args.worktree / "tools/q4r3_exact25_r73b0_audit_display_binding_residue_v3.py"),
         "--root", str(args.root), "--r73a", str(r73a), "--output", str(audit),
     ])
     run([

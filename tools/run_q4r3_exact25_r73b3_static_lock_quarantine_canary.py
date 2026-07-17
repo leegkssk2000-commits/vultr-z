@@ -21,6 +21,7 @@ def main() -> int:
     py = str(args.root / ".venv/bin/python") if (args.root / ".venv/bin/python").is_file() else sys.executable
     runtime = args.root / "runtime/exact25_edge_v1/exact25_r73b3_static_lock_quarantine_canary"
     status = runtime / "status_latest.json"
+    receipt = runtime / "receipt_latest.json"
     validation = runtime / "validation_latest.json"
     contract = args.worktree / "backend/contracts/ZOS_EXACT25_R73B3_STATIC_LOCK_QUARANTINE_CANARY_v1.json"
     manifest = args.root / "runtime/exact25_edge_v1/exact25_r73b2_minimal_isolation_rollback_plan/plan_latest.json"
@@ -33,11 +34,17 @@ def main() -> int:
         "--status", str(status), "--approval-token", args.approval_token,
     ])
     run([
+        py, str(args.worktree / "tools/q4r3_exact25_r73b3_build_quarantine_receipt.py"),
+        "--manifest", str(manifest), "--status", str(status), "--output", str(receipt),
+    ])
+    run([
         py, str(args.worktree / "tools/q4r3_exact25_r73b3_validate_static_lock_quarantine_canary.py"),
-        "--contract", str(contract), "--status", str(status), "--output", str(validation),
+        "--contract", str(contract), "--status", str(status), "--receipt", str(receipt),
+        "--output", str(validation),
     ])
     print("Q4R3_EXACT25_R73B3_STATIC_LOCK_QUARANTINE_CANARY_COMPLETE")
     print(f"STATUS={status}")
+    print(f"RECEIPT={receipt}")
     print(f"VALIDATION={validation}")
     return 0
 

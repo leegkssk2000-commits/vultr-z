@@ -32,7 +32,7 @@ def main() -> int:
         str(args.worktree / "tests/test_q4r3_exact25_r73b4_binding_discovery.py"),
     ])
     collected = subprocess.run([
-        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke_v4.py"),
+        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke_v5.py"),
         "--contract", str(contract), "--parent-status", str(parent),
         "--parent-validation", str(parent_validation), "--ledger", str(ledger), "--output", str(status),
     ], check=False)

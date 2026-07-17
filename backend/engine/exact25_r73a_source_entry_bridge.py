@@ -26,8 +26,17 @@ def build_lane_events(source: Mapping[str, Any], projection: Mapping[str, Any]) 
         reasons.append("ENTRY_PRICE_INVALID")
     if int(source.get("source_sequence", -1)) < 0:
         reasons.append("SOURCE_SEQUENCE_INVALID")
-    if not str(source.get("strategy_source_sha256", "")).startswith("sha256:"):
+    source_digest = str(source.get("strategy_source_sha256", ""))
+    if not source_digest.startswith("sha256:") or len(source_digest) != 71:
         reasons.append("STRATEGY_DIGEST_INVALID")
+    entry_ts = int(source.get("entry_ts_ms", 0) or 0)
+    observed_ts = int(source.get("observed_at_ms", 0) or 0)
+    if entry_ts <= 0 or observed_ts <= 0 or entry_ts > observed_ts:
+        reasons.append("SOURCE_TIMESTAMP_INVALID")
+    elif observed_ts - entry_ts > 300000:
+        reasons.append("SOURCE_ENTRY_STALE")
+    if not str(source.get("source_ref", "")).startswith(("cf:", "sheets:", "runtime:")):
+        reasons.append("SOURCE_REF_INVALID")
     templates = [row for row in projection.get("templates", []) if row.get("strategy_id") == source.get("strategy_id")]
     if len(templates) != 4:
         reasons.append("FOUR_EXIT_TEMPLATES_NOT_FOUND")

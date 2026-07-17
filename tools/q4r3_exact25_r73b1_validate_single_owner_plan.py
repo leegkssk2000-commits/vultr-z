@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 ALLOWED = {
+    "PRESERVE_CORE_RUNTIME",
     "PRESERVE_MEASUREMENT_WRITER",
     "PRESERVE_READ_ONLY_CONSUMER",
     "PLAN_ISOLATION_BEFORE_NEW_EPOCH",
@@ -34,25 +35,40 @@ def main() -> int:
         blockers.append("FUTURE_OWNER_INVALID")
     candidates = plan.get("writer_candidates", [])
     locks = plan.get("static_locks", [])
+    if len(candidates) != plan.get("canonical_writer_unit_count"):
+        blockers.append("CANONICAL_UNIT_COUNT_INVALID")
     if len(candidates) != plan.get("writer_candidate_count"):
         blockers.append("WRITER_PLAN_COUNT_INVALID")
     if len(locks) != plan.get("static_lock_count"):
         blockers.append("STATIC_LOCK_PLAN_COUNT_INVALID")
     if any(item.get("disposition") not in ALLOWED for item in candidates + locks):
         blockers.append("DISPOSITION_INVALID")
-    if any(not item.get("path") for item in candidates + locks):
-        blockers.append("PATH_MISSING")
+    if any(not item.get("path") or not item.get("unit") for item in candidates + locks):
+        blockers.append("PATH_OR_UNIT_MISSING")
+    if any(item.get("disposition") == "REVIEW_REQUIRED" for item in candidates):
+        blockers.append("UNRESOLVED_CANONICAL_UNIT")
     if any(item.get("disposition") != "RETAIN_EVIDENCE_THEN_PLAN_ISOLATION" for item in locks):
         blockers.append("STATIC_LOCK_PROMOTION_FORBIDDEN")
+    core_units = {
+        "zico-ceo-canonical-adapter.service",
+        "q4r3-exact25-shadow-producer.service",
+        "zel-alimi-paper-control-api-w208.service",
+    }
+    for item in candidates:
+        if item.get("unit") in core_units and item.get("disposition") != "PRESERVE_CORE_RUNTIME":
+            blockers.append("CORE_RUNTIME_NOT_PRESERVED")
     result = {
-        "schema": "q4r3_exact25_r73b1_single_owner_plan_status_v1",
+        "schema": "q4r3_exact25_r73b1_single_owner_plan_status_v2",
         "state": "PASS" if not blockers else "HOLD",
-        "blockers": blockers,
-        "blocker_count": len(blockers),
+        "blockers": sorted(set(blockers)),
+        "blocker_count": len(set(blockers)),
         "future_owner_count": plan.get("future_owner_count", 0),
+        "raw_writer_candidate_count": plan.get("raw_writer_candidate_count", 0),
+        "canonical_writer_unit_count": plan.get("canonical_writer_unit_count", 0),
         "writer_candidate_count": plan.get("writer_candidate_count", 0),
         "static_lock_count": plan.get("static_lock_count", 0),
         "planned_isolation_count": plan.get("planned_isolation_count", 0),
+        "preserve_core_runtime_count": plan.get("preserve_core_runtime_count", 0),
         "preserve_measurement_writer_count": plan.get("preserve_measurement_writer_count", 0),
         "preserve_read_only_consumer_count": plan.get("preserve_read_only_consumer_count", 0),
         "mutation_count": 0,

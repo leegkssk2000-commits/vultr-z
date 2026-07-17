@@ -1,0 +1,247 @@
+{
+  "schema": "zos_exact25_skill_adjusted_shadow_matrix_v1",
+  "version": "1.0.0-candidate.1",
+  "official_stage": "R7.1",
+  "status": "CANDIDATE_CONTRACT_ONLY_NOT_BOUND",
+  "purpose": "Separate strategy entry quality, exit-policy quality, and skill incremental contribution using same-entry counterfactual Shadow lanes.",
+  "authority": {
+    "observer_only": true,
+    "runtime_binding_allowed": false,
+    "strategy_mutation_allowed": false,
+    "skill_registry_mutation_allowed": false,
+    "producer_mutation_allowed": false,
+    "writer_mutation_allowed": false,
+    "formal_ledger_mutation_allowed": false,
+    "historical_backfill_allowed": false,
+    "paper_enabled": false,
+    "live_enabled": false,
+    "order_enabled": false,
+    "order_authority": "blocked",
+    "execution_authority": "none",
+    "provider_invocation_enabled": false,
+    "same_epoch_auto_promotion": false,
+    "human_approval_required_for_promotion": true
+  },
+  "dependency_contract": {
+    "exact_strategy_count": 25,
+    "method_profile_count": 6,
+    "skill_count": 18,
+    "skill_registry": "backend/contracts/ZOS_SKILL_REGISTRY_v2_candidate.json",
+    "skill_event_contract": "backend/contracts/ZOS_SKILL_EVENT_CONTRACT_v1.json",
+    "r63_context_required": true,
+    "r64_external_canary_required_for_shadow_matrix": false,
+    "failure_learning_or_ml_light_allowed": false
+  },
+  "exit_policy_lanes": [
+    {
+      "exit_policy_id": "EXIT_NATIVE",
+      "target_r": null,
+      "loss_cap_r": null,
+      "purpose": "Preserve each strategy native exit contract as the untouched control."
+    },
+    {
+      "exit_policy_id": "EXIT_FIXED_1P5_L0P75",
+      "target_r": 1.5,
+      "loss_cap_r": -0.75,
+      "purpose": "Lower-target fixed reference lane."
+    },
+    {
+      "exit_policy_id": "EXIT_FIXED_2P0_L0P75",
+      "target_r": 2.0,
+      "loss_cap_r": -0.75,
+      "purpose": "Balanced fixed reference lane."
+    },
+    {
+      "exit_policy_id": "EXIT_FIXED_2P5_L0P75",
+      "target_r": 2.5,
+      "loss_cap_r": -0.75,
+      "purpose": "Trend and breakout tail-capture reference lane."
+    }
+  ],
+  "skill_partitions": {
+    "entry_ablation_skills": [
+      "SK_ENTRY_LONG_BEAM",
+      "SK_ENTRY_SHORT_BEAM"
+    ],
+    "single_skill_management_candidates": [
+      "SK_ADD_DCA",
+      "SK_ADD_AVG_DOWN",
+      "SK_ADD_WATER_ADD",
+      "SK_ADD_PYRAMIDING",
+      "SK_ADD_PROFITABLE_SCALE_IN",
+      "SK_EXIT_PARTIAL_30",
+      "SK_EXIT_TRAILING_STOP",
+      "SK_EXIT_MFE_RUNNER",
+      "SK_EXIT_RUNNER_HOLD",
+      "SK_EXIT_TIME_STOP",
+      "SK_EXIT_BREAK_EVEN_SHIFT",
+      "SK_RISK_REDUCE_25"
+    ],
+    "mandatory_guardrail_skills": [
+      "SK_RISK_LOSS_CAP",
+      "SK_RISK_COOLDOWN",
+      "SK_RISK_EXPOSURE_LIMITER",
+      "SK_RISK_LIQUIDATION_BUFFER_GUARD"
+    ]
+  },
+  "matrix_rules": {
+    "raw_baseline_lane_count_formula": "25 strategies * 4 exit policies = 100 lanes",
+    "same_entry_required_across_exit_lanes": true,
+    "same_market_path_required": true,
+    "same_fee_slippage_funding_model_required": true,
+    "independent_lane_position_id_required": true,
+    "lane_state_sharing_forbidden": true,
+    "cross_lane_cooldown_sharing_forbidden": true,
+    "cross_lane_next_entry_mutation_forbidden": true,
+    "single_skill_ablation_before_combinations": true,
+    "maximum_candidate_skills_per_combination": 2,
+    "maximum_combination_profiles_per_survivor": 3,
+    "sparse_event_driven_skill_lanes_only": true,
+    "no_full_25x6x18_preinstantiation": true,
+    "completed_bar_only_when_bar_features_required": true,
+    "same_bar_stop_target_ambiguity": "score_conservatively_as_stop"
+  },
+  "risk_budget_contract": {
+    "research_total_planned_loss_cap_r": 0.75,
+    "all_legs_included_in_loss_cap": true,
+    "fees_slippage_and_funding_included_in_net_r": true,
+    "single_skill_ablation_max_add_count": 1,
+    "loss_direction_adds_observer_only": true,
+    "loss_direction_adds_mutually_exclusive": true,
+    "loss_and_profit_direction_add_combination_forbidden": true,
+    "structural_invalidation_blocks_all_adds": true,
+    "missing_liquidation_buffer_blocks_all_adds": true,
+    "missing_risk_context_action": "HOLD",
+    "risk_cap_is_research_reference_not_production_promotion": true
+  },
+  "required_lane_identity": [
+    "matrix_epoch_id",
+    "source_position_id",
+    "source_entry_event_id",
+    "strategy_id",
+    "strategy_source_sha256",
+    "method_id",
+    "exit_policy_id",
+    "skill_set",
+    "skill_set_hash",
+    "lane_position_id",
+    "symbol",
+    "side",
+    "entry_ts",
+    "entry_price",
+    "market_path_id"
+  ],
+  "required_outcome_metrics": [
+    "gross_r",
+    "fee_r",
+    "slippage_r",
+    "funding_r",
+    "net_r",
+    "mfe_r",
+    "mae_r",
+    "mfe_capture_pct",
+    "giveback_r",
+    "exposure_time_min",
+    "minimum_liquidation_buffer_pct",
+    "planned_loss_r",
+    "realized_loss_r",
+    "tail_loss_r",
+    "avoided_loss_r",
+    "missed_profit_r"
+  ],
+  "evaluation_dimensions": [
+    "strategy_id",
+    "strategy_family",
+    "method_id",
+    "skill_id",
+    "exit_policy_id",
+    "symbol",
+    "side",
+    "regime",
+    "batch_id",
+    "position_size_pct",
+    "leverage"
+  ],
+  "gates": [
+    {
+      "stage": "R7.1",
+      "name": "contract_and_matrix_identity",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.2",
+      "name": "raw_100_lane_shadow_projection",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.3",
+      "name": "20C_integrity_and_cost_parity",
+      "requirements": [
+        "lineage_coverage_pct=100",
+        "duplicate_event_count=0",
+        "cross_lane_state_leak_count=0",
+        "lookahead_violation_count=0",
+        "cost_model_mismatch_count=0"
+      ],
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.4",
+      "name": "single_skill_sparse_ablation",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.5",
+      "name": "100C_strategy_exit_skill_decomposition",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.6",
+      "name": "ten_to_twelve_survivor_candidate_gate",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.7",
+      "name": "maximum_two_skill_combination_ablation",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.8",
+      "name": "200C_midpoint_deep_audit",
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.9",
+      "name": "300C_family_ensemble_synthesis",
+      "target_internal_survivors": "8-10",
+      "target_family_ensembles": "4-5",
+      "target_active_ensembles": 3,
+      "promotion_allowed": false
+    },
+    {
+      "stage": "R7.10",
+      "name": "independent_holdout_and_paper_canary_readiness",
+      "promotion_allowed": "human_approval_only"
+    }
+  ],
+  "selection_policy": {
+    "pnl_only_ranking_forbidden": true,
+    "same_sample_tuning_and_promotion_forbidden": true,
+    "minimum_required_metrics": [
+      "net_expectancy_r",
+      "profit_factor",
+      "max_drawdown_r",
+      "consecutive_loss_count",
+      "mfe_capture_pct",
+      "tail_loss_r",
+      "cost_r",
+      "exposure_time_min",
+      "regime_stability",
+      "incremental_delta_r",
+      "signal_overlap_pct"
+    ],
+    "original_25_archived_as_immutable_controls": true,
+    "automatic_deletion_forbidden": true
+  },
+  "next_stage": "R7.2_EXACT25_RAW_100_LANE_SHADOW_PROJECTION"
+}

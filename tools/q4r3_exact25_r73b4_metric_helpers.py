@@ -94,7 +94,7 @@ def text_metrics(text: str) -> dict[str, Any]:
         "closed_count": r"\b(?:closed(?:\s+count|\s+positions?)?|closed_count)\s*[:=|]?\s*(\d+)\b",
         "winrate_pct": r"\b(?:win\s*rate|winrate|wr)\s*[:=|]?\s*([0-9]+(?:\.[0-9]+)?)\s*%",
         "total_r": r"\b(?:total\s*r|total_r|net\s*r|net_r|pnl_r|pnl)\s*[:=|]?\s*([+-]?\d+(?:\.\d+)?)\s*R?\b",
-        "latest_trace_id": r"\b(?:latest\s*trace|latest_trace_id|trace_id|latest\s*position|position_id)\s*[:=|]?\s*([A-Za-z0-9_.:-]+)",
+        "latest_trace_id": r"\b(?:latest\s*trace|trace|latest_trace_id|trace_id|latest\s*position|position_id)\s*[:=|]?\s*([A-Za-z0-9_.:-]+)",
     }
     result: dict[str, Any] = {}
     for key, expression in expressions.items():

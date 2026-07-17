@@ -18,6 +18,11 @@ UNITS = {
     "WRITER_PID": "q4r3-exact25-persistent-single-event-writer.service",
 }
 HOST_ZBOT = Path("/usr/local/bin/zel_alimi_w210_zbot_control_advisor.py")
+SYSTEMD_ROOTS = (
+    Path("/etc/systemd/system"),
+    Path("/usr/lib/systemd/system"),
+    Path("/lib/systemd/system"),
+)
 
 
 def run(command: list[str], *, cwd: Path | None = None) -> None:
@@ -32,10 +37,37 @@ def pids() -> dict[str, str]:
     return {name: output(["systemctl", "show", unit, "-p", "MainPID", "--value"]) for name, unit in UNITS.items()}
 
 
-def systemd_snapshot() -> str:
-    services = output(["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--no-pager"])
-    timers = output(["systemctl", "list-timers", "--all", "--no-legend", "--no-pager"])
-    return hashlib.sha256((services + "\n--TIMERS--\n" + timers).encode()).hexdigest()
+def systemd_config_snapshot() -> str:
+    """Hash stable unit files and enablement symlinks, not volatile runtime state."""
+    digest = hashlib.sha256()
+    seen_real_roots: set[str] = set()
+    for root in SYSTEMD_ROOTS:
+        if not root.exists():
+            continue
+        try:
+            real_root = str(root.resolve())
+        except OSError:
+            real_root = str(root)
+        if real_root in seen_real_roots:
+            continue
+        seen_real_roots.add(real_root)
+        digest.update(f"ROOT:{root}:{real_root}\n".encode())
+        for path in sorted(root.rglob("*"), key=lambda item: str(item)):
+            try:
+                relative = path.relative_to(root)
+                if path.is_symlink():
+                    digest.update(f"L:{root}:{relative}:{os.readlink(path)}\n".encode())
+                elif path.is_file():
+                    stat = path.stat()
+                    digest.update(f"F:{root}:{relative}:{stat.st_mode & 0o7777}:{stat.st_size}\n".encode())
+                    with path.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                elif path.is_dir():
+                    digest.update(f"D:{root}:{relative}\n".encode())
+            except OSError as exc:
+                digest.update(f"E:{root}:{path}:{type(exc).__name__}\n".encode())
+    return digest.hexdigest()
 
 
 def sha(path: Path) -> str:
@@ -76,7 +108,7 @@ def main() -> int:
         if not path.is_file():
             raise SystemExit(f"REQUIRED_INPUT_MISSING={path}")
     before_pids = pids()
-    before_systemd = systemd_snapshot()
+    before_systemd = systemd_config_snapshot()
     before_hashes = {name: sha(path) for name, path in protected.items()}
     with tempfile.NamedTemporaryFile(prefix="q4r3_r73b0_ledger_", delete=False) as handle:
         ledger_copy = Path(handle.name)
@@ -93,12 +125,12 @@ def main() -> int:
             "--root", str(root), "--worktree", str(worktree),
         ])
         after_pids = pids()
-        after_systemd = systemd_snapshot()
+        after_systemd = systemd_config_snapshot()
         after_hashes = {name: sha(path) for name, path in protected.items()}
         if after_pids != before_pids:
             raise RuntimeError(f"SERVICE_PID_CHANGED:{before_pids}:{after_pids}")
         if after_systemd != before_systemd:
-            raise RuntimeError("SYSTEMD_INVENTORY_CHANGED")
+            raise RuntimeError("SYSTEMD_UNIT_FILES_CHANGED")
         if after_hashes != before_hashes:
             raise RuntimeError(f"PROTECTED_SURFACE_CHANGED:{before_hashes}:{after_hashes}")
         with ledger.open("rb") as current, ledger_copy.open("rb") as previous:

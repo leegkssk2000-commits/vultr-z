@@ -128,8 +128,10 @@ def validate(
     r63_authority = r63.get("authority", {})
     if r63_authority.get("provider_invocation_enabled") is not False:
         blockers.append("R63_PROVIDER_BOUNDARY_INVALID")
-    if r63_authority.get("network_access_enabled") is not False:
+    if r63_authority.get("network_call_enabled") is not False:
         blockers.append("R63_NETWORK_BOUNDARY_INVALID")
+    if r63_authority.get("external_canary_approved") is not False:
+        blockers.append("R63_EXTERNAL_CANARY_STATE_INVALID")
 
     entries = sample_entries(strategy_ids, manifest_sha) if len(strategy_ids) == 25 and len(manifest_sha) == 64 else []
     plan = build_raw_baseline_plan(entries, contract, registry) if contract and registry else None
@@ -156,7 +158,7 @@ def validate(
             "writer_mutation_performed": False,
             "formal_ledger_mutation_performed": False,
             "provider_invocation_enabled": False,
-            "network_access_enabled": False,
+            "network_call_enabled": False,
             "paper_enabled": False,
             "live_enabled": False,
             "order_enabled": False,

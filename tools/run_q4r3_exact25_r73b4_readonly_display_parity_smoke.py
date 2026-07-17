@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -24,16 +25,36 @@ def main() -> int:
     parent = args.root / "runtime/exact25_edge_v1/exact25_r73b3_static_lock_quarantine_canary/status_latest.json"
     parent_validation = args.root / "runtime/exact25_edge_v1/exact25_r73b3_static_lock_quarantine_canary/validation_latest.json"
     ledger = args.root / "runtime/exact25_edge_v1/formal_exact5_measurement/forward_r_ledger.jsonl"
-    run([py, "-m", "pytest", "-q", str(args.worktree / "tests/test_q4r3_exact25_r73b4_readonly_display_parity_smoke.py")])
     run([
-        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke.py"),
+        py, "-m", "pytest", "-q",
+        str(args.worktree / "tests/test_q4r3_exact25_r73b4_readonly_display_parity_smoke.py"),
+        str(args.worktree / "tests/test_q4r3_exact25_r73b4_metric_helpers_v2.py"),
+    ])
+    collected = subprocess.run([
+        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke_v2.py"),
         "--contract", str(contract), "--parent-status", str(parent),
         "--parent-validation", str(parent_validation), "--ledger", str(ledger), "--output", str(status),
-    ])
-    run([
+    ], check=False)
+    if status.is_file():
+        payload = json.loads(status.read_text(encoding="utf-8"))
+        print("R73B4_DETAIL=" + json.dumps({
+            "blockers": payload.get("blockers", []),
+            "canonical_metrics": payload.get("canonical_metrics", {}),
+            "view_url": payload.get("view_url", ""),
+            "view_metrics": payload.get("view_metrics", {}),
+            "view_problems": payload.get("view_problems", []),
+            "telegram_artifact_path": payload.get("telegram_artifact_path", ""),
+            "telegram_artifact_metrics": payload.get("telegram_artifact_metrics", {}),
+            "telegram_problems": payload.get("telegram_problems", []),
+        }, sort_keys=True))
+    if collected.returncode != 0:
+        return collected.returncode
+    validated = subprocess.run([
         py, str(args.worktree / "tools/q4r3_exact25_r73b4_validate_readonly_display_parity_smoke.py"),
         "--contract", str(contract), "--status", str(status), "--output", str(validation),
-    ])
+    ], check=False)
+    if validated.returncode != 0:
+        return validated.returncode
     print("Q4R3_EXACT25_R73B4_READONLY_DISPLAY_PARITY_SMOKE_COMPLETE")
     print(f"STATUS={status}")
     print(f"VALIDATION={validation}")

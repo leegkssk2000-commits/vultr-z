@@ -11,20 +11,23 @@ def observer():
     previous = ShadowSnapshot(
         "r62.prev", "shadow.r62", 9900, "r62-test",
         "cf:shadow:r62", "cf:market:r62", "cf:position:r62", "sheets:ledger:r62",
-        10, 1, 5, 4.0, 100, "a" * 64,
+        10, 1, 5, 4.0, 100, "sha256:" + "a" * 64,
     )
     current = ShadowSnapshot(
         "r62.current", "shadow.r62", 10000, "r62-test",
         "cf:shadow:r62", "cf:market:r62", "cf:position:r62", "sheets:ledger:r62",
-        11, 1, 6, 4.5, 101, "b" * 64,
+        11, 1, 6, 4.5, 101, "sha256:" + "b" * 64,
     )
-    return build_shadow_observer_plan(
+    plan = build_shadow_observer_plan(
         current,
         now_ms=10020,
         policy=ShadowObserverPolicy(1000, 0, 6, "sheets:zbot:shadow-observer"),
         sgrade_ready=True,
         previous_snapshot=previous,
     )
+    assert plan.state == "PLAN_READY", plan.reason_codes
+    assert len(plan.route_plans) == 4, plan.reason_codes
+    return plan
 
 
 def usage():

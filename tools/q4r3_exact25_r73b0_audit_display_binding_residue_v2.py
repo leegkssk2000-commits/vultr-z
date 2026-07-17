@@ -9,6 +9,12 @@ SPEC = importlib.util.spec_from_file_location("r73b0_base", BASE)
 assert SPEC and SPEC.loader
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+MAX_BYTES = module.MAX_BYTES
+
+
+def matching_lines(path: Path) -> list[dict[str, object]]:
+    module.MAX_BYTES = MAX_BYTES
+    return module.matching_lines(path)
 
 
 def classify(path: str, hits: list[dict[str, object]], active_names: set[str]) -> str:

@@ -54,4 +54,11 @@ def test_unknown_provider_holds() -> None:
 def test_secret_material_detector_blocks_auth_and_keys() -> None:
     assert contains_secret_material({"authorization": "Bearer abc"}) is True
     assert contains_secret_material({"api_key": "abc"}) is True
+    assert contains_secret_material("sk-live-example") is True
     assert contains_secret_material({"headers": {"content-type": "application/json"}}) is False
+
+
+def test_secret_material_detector_does_not_flag_risk_prompt_hash() -> None:
+    benign = "sha256:risk-review-r53-1"
+    assert contains_secret_material(benign) is False
+    assert contains_secret_material({"prompt_template_hash": benign}) is False

@@ -29,9 +29,10 @@ def main() -> int:
         py, "-m", "pytest", "-q",
         str(args.worktree / "tests/test_q4r3_exact25_r73b4_readonly_display_parity_smoke.py"),
         str(args.worktree / "tests/test_q4r3_exact25_r73b4_metric_helpers_v3.py"),
+        str(args.worktree / "tests/test_q4r3_exact25_r73b4_binding_discovery.py"),
     ])
     collected = subprocess.run([
-        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke_v3.py"),
+        py, str(args.worktree / "tools/q4r3_exact25_r73b4_readonly_display_parity_smoke_v4.py"),
         "--contract", str(contract), "--parent-status", str(parent),
         "--parent-validation", str(parent_validation), "--ledger", str(ledger), "--output", str(status),
     ], check=False)
@@ -43,9 +44,11 @@ def main() -> int:
             "view_url": payload.get("view_url", ""),
             "view_metrics": payload.get("view_metrics", {}),
             "view_problems": payload.get("view_problems", []),
+            "view_read_errors": payload.get("view_read_errors", []),
             "telegram_artifact_path": payload.get("telegram_artifact_path", ""),
             "telegram_artifact_metrics": payload.get("telegram_artifact_metrics", {}),
             "telegram_problems": payload.get("telegram_problems", []),
+            "binding_discovery": payload.get("binding_discovery", {}),
         }, sort_keys=True))
     if collected.returncode != 0:
         return collected.returncode

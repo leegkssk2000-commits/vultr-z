@@ -105,6 +105,9 @@ def main() -> int:
             subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(worktree)], check=False)
             shutil.rmtree(worktree, ignore_errors=True)
         run(["git", "-C", str(root), "worktree", "add", "--detach", str(worktree), args.sha])
+        runtime.mkdir(parents=True, exist_ok=True)
+        for stale in (status, receipt, validation):
+            stale.unlink(missing_ok=True)
         run([
             python_bin(root), str(worktree / "tools/run_q4r3_exact25_r73b3_static_lock_quarantine_canary.py"),
             "--root", str(root), "--worktree", str(worktree), "--approval-token", APPROVAL_TOKEN,

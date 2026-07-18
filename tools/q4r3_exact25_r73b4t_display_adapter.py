@@ -30,16 +30,18 @@ STALE_SOURCE_TOKENS = (
 )
 
 
-def atomic_json(path: Path, payload: Any) -> None:
+def atomic_json(path: Path, payload: Any, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     os.close(fd)
     tmp = Path(tmp_name)
     try:
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.chmod(mode)
         with tmp.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        path.chmod(mode)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -172,8 +174,8 @@ def main() -> int:
         raise SystemExit("SNAPSHOT_OWNER_INVALID")
     alimi = build_payload(load_json(args.alimi_template), snapshot, "alimi")
     telegram = build_payload(load_json(args.telegram_template), snapshot, "telegram")
-    atomic_json(args.alimi_output, alimi)
-    atomic_json(args.telegram_output, telegram)
+    atomic_json(args.alimi_output, alimi, 0o644)
+    atomic_json(args.telegram_output, telegram, 0o644)
     print(json.dumps({
         "state": "PASS",
         "source": str(args.snapshot),

@@ -13,7 +13,7 @@ BRANCH = "q4r3-exact25-r73b4u2-rendered-surface-diagnosis-v1"
 FILES = (
     "backend/contracts/ZOS_EXACT25_R73B4U2_RENDERED_SURFACE_DIAGNOSIS_v1.json",
     "tools/q4r3_exact25_r73b4u2_rendered_surface_diagnosis.py",
-    "tests/test_q4r3_exact25_r73B4U2_rendered_surface_diagnosis.py",
+    "tests/test_q4r3_exact25_r73b4u2_rendered_surface_diagnosis.py",
 )
 STATUS = Path("/home/z/z/runtime/exact25_edge_v1/exact25_r73b4u2_rendered_surface_diagnosis/status_latest.json")
 
@@ -36,7 +36,10 @@ def python_bin(root: Path) -> str:
 def materialize(root: Path, sha: str, worktree: Path, repo_path: str) -> Path:
     target = worktree / repo_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(output(["git", "-C", str(root), "-c", f"safe.directory={root}", "show", f"{sha}:{repo_path}"]) + "\n", encoding="utf-8")
+    target.write_text(
+        output(["git", "-C", str(root), "-c", f"safe.directory={root}", "show", f"{sha}:{repo_path}"]) + "\n",
+        encoding="utf-8",
+    )
     return target
 
 
@@ -58,9 +61,11 @@ def main() -> int:
 
         subprocess.run([py, "-m", "pytest", "-q", str(test)], check=True, cwd=worktree)
         STATUS.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run([
-            py, str(tool), "--contract", str(contract), "--status", str(STATUS)
-        ], text=True, capture_output=True)
+        result = subprocess.run(
+            [py, str(tool), "--contract", str(contract), "--status", str(STATUS)],
+            text=True,
+            capture_output=True,
+        )
         if result.stdout:
             print(result.stdout.rstrip())
         if result.stderr:

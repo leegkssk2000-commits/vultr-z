@@ -55,7 +55,9 @@ def unit_record(item: dict[str, Any], snapshot: Path, forbidden: Path, quarantin
     fragment_text = fragment.read_text(encoding="utf-8", errors="ignore") if fragment and fragment.is_file() else ""
     combined = "\n".join((exec_start, working, environment, fragment_text, source_text))
     required_commands = [str(value) for value in item.get("required_commands", [])]
-    needles = required_commands + (["/view", "@app", "@router", "add_url_rule"] if item["name"] == "ALIMI_VIEW" else [])
+    required_anchor_any = [str(value) for value in item.get("required_anchor_any", [])]
+    needles = required_commands + required_anchor_any
+    source_anchors = anchor_lines(source_text, needles)
     backup = quarantine / "backup" / (source.name if source else unit + ".missing")
     snapshot_markers = (str(snapshot), str(snapshot.parent), "shadow_aggregate_snapshot")
     return {
@@ -70,7 +72,9 @@ def unit_record(item: dict[str, Any], snapshot: Path, forbidden: Path, quarantin
         "source_path": str(source or ""),
         "source_sha256": sha256(source) if source else "",
         "source_mode_octal": oct(source.stat().st_mode & 0o777) if source else "",
-        "source_anchor_lines": anchor_lines(source_text, needles),
+        "source_anchor_lines": source_anchors,
+        "required_anchor_any": required_anchor_any,
+        "resolved_anchor_any_count": sum(bool(source_anchors.get(value)) for value in required_anchor_any),
         "required_commands": required_commands,
         "required_command_count": len(required_commands),
         "resolved_command_count": sum(command_name in combined for command_name in required_commands),
@@ -112,9 +116,9 @@ def build(contract: dict[str, Any], snapshot_payload: dict[str, Any], records: l
     if telegram.get("resolved_command_count") != telegram.get("required_command_count"):
         blockers.append("TELEGRAM_COMMAND_BINDING_INCOMPLETE")
     alimi = next((row for row in records if row.get("name") == "ALIMI_VIEW"), {})
-    anchors = alimi.get("source_anchor_lines", {}) if isinstance(alimi.get("source_anchor_lines"), dict) else {}
-    if not any(anchors.get(key) for key in ("/view", "@app", "@router", "add_url_rule")):
-        blockers.append("ALIMI_VIEW_ANCHOR_UNRESOLVED")
+    required_anchor_any = alimi.get("required_anchor_any", [])
+    if not required_anchor_any or int(alimi.get("resolved_anchor_any_count", 0)) < 1:
+        blockers.append("ALIMI_VIEW_CONTRACT_API_ANCHOR_UNRESOLVED")
     return {
         "schema": "q4r3_exact25_r73b4s_explicit_binding_plan_status_v1",
         "state": "PASS" if not blockers else "HOLD",

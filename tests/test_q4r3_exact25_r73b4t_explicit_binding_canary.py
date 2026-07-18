@@ -56,8 +56,20 @@ def test_adapter_removes_legacy_metrics_and_rows() -> None:
     assert payload["nested"]["total_r"] == 0.0
 
 
+def test_adapter_output_is_world_readable(tmp_path: Path) -> None:
+    target = tmp_path / "view_contract.json"
+    adapter.atomic_json(target, {"closed_count": 0})
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
 def test_caddy_route_is_inserted_before_generic_api() -> None:
-    original = """alimi.z-os.vip {\n    encode gzip\n    handle_path /api/* {\n        root * /var/www/z-os-alimi/api\n    }\n}\n"""
+    original = """alimi.z-os.vip {
+    encode gzip
+    handle_path /api/* {
+        root * /var/www/z-os-alimi/api
+    }
+}
+"""
     patched, count = canary.patch_caddy(original)
     assert count == 1
     assert patched.index(canary.ROUTE_BEGIN) < patched.index("handle_path /api/*")
@@ -67,7 +79,9 @@ def test_caddy_route_is_inserted_before_generic_api() -> None:
 
 
 def test_telegram_all_legacy_literals_are_rewired() -> None:
-    source = """A = 'telegram_pos_status_latest.json'\nB = \"/var/www/z-os-alimi/telegram_pos_status_latest.json\"\n"""
+    source = """A = 'telegram_pos_status_latest.json'
+B = "/var/www/z-os-alimi/telegram_pos_status_latest.json"
+"""
     patched, count = canary.patch_telegram_source(source)
     assert count == 2
     assert "telegram_pos_status_latest.json" not in patched

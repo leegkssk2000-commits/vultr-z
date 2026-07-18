@@ -35,11 +35,11 @@ def metric_score(text: str) -> int:
 
 
 def fetch_url(url: str) -> tuple[str, str]:
-    command = ["curl", "-fsSL", "--max-time", "10"]
+    command = ["curl", "-fsSL", "--max-time", "3"]
     if "127.0.0.1" in url or "localhost" in url:
         command.extend(["-H", "Host: alimi.vip"])
     try:
-        result = subprocess.run(command + [url], text=True, capture_output=True, check=False, timeout=13)
+        result = subprocess.run(command + [url], text=True, capture_output=True, check=False, timeout=5)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "", type(exc).__name__
     if result.returncode == 0 and result.stdout:
@@ -49,7 +49,7 @@ def fetch_url(url: str) -> tuple[str, str]:
 
 def local_http_bases() -> list[str]:
     try:
-        result = subprocess.run(["ss", "-ltnH"], text=True, capture_output=True, check=False, timeout=8)
+        result = subprocess.run(["ss", "-ltnH"], text=True, capture_output=True, check=False, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return []
     ports: list[int] = []
@@ -58,7 +58,9 @@ def local_http_bases() -> list[str]:
         if port in {80, 443, 2019} or port in ports:
             continue
         ports.append(port)
-    return [f"http://127.0.0.1:{port}" for port in ports]
+    preferred = [port for port in (8000, 8787, 8792, 8799) if port in ports]
+    preferred.extend(port for port in ports if port not in preferred)
+    return [f"http://127.0.0.1:{port}" for port in preferred[:8]]
 
 
 def endpoint_candidates(page_url: str, page_text: str) -> tuple[list[str], list[str]]:
@@ -83,7 +85,7 @@ def endpoint_candidates(page_url: str, page_text: str) -> tuple[list[str], list[
     for value in re.findall(route_pattern, page_text, flags=re.I):
         add_endpoint(value, page_url)
 
-    for asset in assets[:30]:
+    for asset in assets[:20]:
         text, _ = fetch_url(asset)
         if not text:
             continue
@@ -93,8 +95,8 @@ def endpoint_candidates(page_url: str, page_text: str) -> tuple[list[str], list[
             add_endpoint(value, asset)
 
     common = (
-        "/api/view", "/api/status", "/api/summary", "/api/shadow", "/api/shadow/summary",
-        "/api/pnl", "/api/closed", "/api/truth", "/view.json", "/status.json", "/summary.json",
+        "/api/view", "/api/status", "/api/summary", "/api/shadow",
+        "/api/pnl", "/api/closed", "/api/truth", "/view.json", "/status.json",
     )
     bases = ([origin] if origin else []) + local_http_bases()
     for base_url in bases:
@@ -115,7 +117,7 @@ def resolve_view(urls: list[str]) -> tuple[str, str, list[str]]:
     if page_url and page_text:
         assets, endpoints = endpoint_candidates(page_url, page_text)
     best: tuple[int, str, str] = (0, "", "")
-    for endpoint in endpoints[:120]:
+    for endpoint in endpoints[:60]:
         text, error = fetch_url(endpoint)
         score = metric_score(text) if text else 0
         attempts.append({"url": endpoint, "score": score, "error": error})
@@ -126,8 +128,8 @@ def resolve_view(urls: list[str]) -> tuple[str, str, list[str]]:
     DIAGNOSTICS.update({
         "view_binding_mode": "DISCOVERED_METRIC_ENDPOINT" if best[0] >= 3 else "METRIC_SOURCE_UNRESOLVED",
         "view_page_url": page_url,
-        "view_asset_urls": assets[:30],
-        "view_endpoint_attempts": attempts[:120],
+        "view_asset_urls": assets[:20],
+        "view_endpoint_attempts": attempts[:60],
         "view_metric_source": best[1],
     })
     if best[0] >= 3:

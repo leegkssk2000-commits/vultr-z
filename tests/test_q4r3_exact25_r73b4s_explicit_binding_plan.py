@@ -31,7 +31,9 @@ def records() -> list[dict[str, object]]:
             "name": "ALIMI_VIEW", "active": "active", "source_path": "/x/alimi.py",
             "rollback_ready": True, "current_snapshot_bound": False,
             "current_formal_ledger_bound": False,
-            "source_anchor_lines": {"/view": [10]},
+            "required_anchor_any": ["/api/view_contract_latest.json", "view_contract_latest.json"],
+            "resolved_anchor_any_count": 1,
+            "source_anchor_lines": {"/api/view_contract_latest.json": [10]},
         },
         {
             "name": "TELEGRAM_COMMANDS", "active": "active", "source_path": "/x/telegram.py",
@@ -67,6 +69,14 @@ def test_missing_telegram_command_holds() -> None:
     result = module.build(CONTRACT, SNAPSHOT, rows)
     assert result["state"] == "HOLD"
     assert "TELEGRAM_COMMAND_BINDING_INCOMPLETE" in result["blockers"]
+
+
+def test_missing_alimi_contract_api_anchor_holds() -> None:
+    rows = records()
+    rows[0]["resolved_anchor_any_count"] = 0
+    result = module.build(CONTRACT, SNAPSHOT, rows)
+    assert result["state"] == "HOLD"
+    assert "ALIMI_VIEW_CONTRACT_API_ANCHOR_UNRESOLVED" in result["blockers"]
 
 
 def test_nonzero_snapshot_holds() -> None:

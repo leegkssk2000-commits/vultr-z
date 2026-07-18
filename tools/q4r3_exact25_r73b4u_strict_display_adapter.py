@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any
 
 CANONICAL_SOURCE = "shadow_aggregate_snapshot/latest.json"
+WRITER_REGISTRY = (
+    ("VV", "vwap_revert"),
+    ("TR", "trend_rider"),
+    ("LS", "liquidity_sweep"),
+    ("MO", "momentum_driver"),
+    ("VB", "vol_breakout"),
+    ("MS", "market_structure"),
+    ("SR", "support_resistance"),
+)
 STALE_MARKERS = (
     "q4r3_shadow_closed_ledger_latest.json",
     "telegram_pos_status_latest.json",
@@ -21,15 +30,20 @@ ZERO_NUMERIC_KEYS = {
     "wins", "losses", "breakeven", "row_count", "rows_count", "rows",
     "recent_rows", "candidate", "candidate_count", "admitted", "admitted_count",
     "open", "open_count", "active_count", "shadow_open", "paper_open", "live_open",
-    "writer_count", "last12", "last12_r", "ev", "ev_r", "expectancy", "expectancy_r",
+    "active_writer_count", "last12", "last12_r", "ev", "ev_r", "expectancy", "expectancy_r",
     "pnl", "pnl_r", "total_r", "net_r", "gross_r", "winrate", "winrate_pct",
-    "wr", "wr_pct", "win_rate"
+    "wr", "wr_pct", "win_rate", "chart_rows", "chart_point_count"
 }
 EMPTY_KEYS = {
     "recent_ledger_trace", "ledger_rows", "trace_rows", "recent_rows_data",
     "closed_trades", "recent_trades", "events", "positions", "current_positions",
-    "trade_rows", "closed_rows", "history_rows"
+    "trade_rows", "closed_rows", "history_rows", "chart", "chart_data", "chart_rows_data",
+    "candles", "ohlc", "ohlcv", "price_series", "price_points", "trace_series",
+    "sparkline", "series", "market_trace", "team_lanes", "lane_ranking", "team_lane_rows",
+    "writers", "writer_registry"
 }
+LAST_EVENT_KEYS = {"last_close", "last_closed", "last_trade", "last_event"}
+CURRENT_KEYS = {"current", "current_position", "position_current"}
 TRACE_KEYS = {"latest_trace_id", "last_trace_id", "trace_id"}
 SOURCE_KEYS = {"src", "source", "display_source", "ledger_source", "source_path"}
 
@@ -65,6 +79,15 @@ def trade_like_list(value: list[Any]) -> bool:
     return False
 
 
+def list_must_clear(normalized: str, value: list[Any]) -> bool:
+    if normalized in EMPTY_KEYS or trade_like_list(value):
+        return True
+    return any(token in normalized for token in (
+        "ledger", "closed_trade", "recent_trade", "trade_trace", "chart", "candle",
+        "ohlc", "price_series", "trace_series", "sparkline"
+    ))
+
+
 def scrub_text(value: str) -> str:
     for marker in STALE_MARKERS:
         value = value.replace(marker, CANONICAL_SOURCE)
@@ -82,19 +105,19 @@ def scrub_text(value: str) -> str:
 
 def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
     normalized = norm(key)
-    if isinstance(value, dict):
-        cleaned = {child_key: scrub(child_value, snapshot, str(child_key)) for child_key, child_value in value.items()}
-        return cleaned
-    if isinstance(value, list):
-        if normalized in EMPTY_KEYS or trade_like_list(value):
-            return []
-        return [scrub(item, snapshot, key) for item in value]
+
+    # Terminal-key handling must precede container recursion. The B4U v1 bug
+    # recursively preserved current.last_close when it was a dict.
+    if normalized in LAST_EVENT_KEYS:
+        return "none"
+    if normalized in CURRENT_KEYS and isinstance(value, dict):
+        return {}
     if normalized in TRACE_KEYS or "trace_id" in normalized:
         return None
     if normalized in SOURCE_KEYS or normalized.endswith("_source"):
         return CANONICAL_SOURCE
-    if normalized in {"last_close", "last_closed", "last_trade", "last_event"}:
-        return "none"
+    if normalized in {"team_lane", "team_lane_label"}:
+        return None
     if normalized in {"epoch", "epoch_id"}:
         return snapshot.get("epoch_id")
     if normalized == "runtime_active":
@@ -105,10 +128,18 @@ def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
         return "none"
     if normalized in {"state", "status"} and isinstance(value, str):
         return "PREBIND"
+
+    if isinstance(value, dict):
+        return {child_key: scrub(child_value, snapshot, str(child_key)) for child_key, child_value in value.items()}
+    if isinstance(value, list):
+        if list_must_clear(normalized, value):
+            return []
+        return [scrub(item, snapshot, key) for item in value]
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)) and (
-        normalized in ZERO_NUMERIC_KEYS or normalized.endswith("_count") or
+        normalized in ZERO_NUMERIC_KEYS or
+        (normalized.endswith("_count") and normalized not in {"writer_count", "configured_writer_count"}) or
         normalized.endswith("_pct") or normalized.endswith("_r")
     ):
         return 0.0 if isinstance(value, float) else 0
@@ -117,13 +148,31 @@ def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
     return value
 
 
+def writer_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "writer_id": writer_id,
+            "strategy": strategy,
+            "state": "PREBIND",
+            "active": False,
+            "closed_count": 0,
+            "pnl_r": 0.0,
+            "winrate_pct": 0.0,
+            "last_event": "none",
+        }
+        for writer_id, strategy in WRITER_REGISTRY
+    ]
+
+
 def build_payload(template: Any, snapshot: dict[str, Any], surface: str) -> dict[str, Any]:
     base = scrub(deepcopy(template), snapshot) if isinstance(template, dict) else {}
+    writers = writer_rows()
     base.update({
-        "schema": f"q4r3_exact25_{surface}_display_contract_v2",
+        "schema": f"q4r3_exact25_{surface}_display_contract_v3",
         "display_source": CANONICAL_SOURCE,
         "source": CANONICAL_SOURCE,
         "src": CANONICAL_SOURCE,
+        "source_label": CANONICAL_SOURCE,
         "source_snapshot_sha256": snapshot.get("snapshot_sha256"),
         "epoch_id": snapshot.get("epoch_id"),
         "mode": "shadow",
@@ -152,6 +201,28 @@ def build_payload(template: Any, snapshot: dict[str, Any], surface: str) -> dict
         "net_r": 0.0,
         "latest_trace_id": None,
         "last_close": "none",
+        "current": {},
+        "symbol": "—",
+        "strategy": "—",
+        "side": "—",
+        "reason": "—",
+        "team_lane": None,
+        "team_lanes": [],
+        "lane_ranking": [],
+        "writer_count": len(writers),
+        "configured_writer_count": len(writers),
+        "active_writer_count": 0,
+        "writers": writers,
+        "writer_registry": writers,
+        "chart_rows": 0,
+        "chart_point_count": 0,
+        "chart": [],
+        "chart_data": [],
+        "candles": [],
+        "ohlc": [],
+        "ohlcv": [],
+        "price_series": [],
+        "trace_series": [],
         "order_authority": "blocked",
         "execution_authority": "none",
         "runtime_active": False,
@@ -190,7 +261,13 @@ def main() -> int:
     telegram = build_payload(load_json(args.telegram_template), snapshot, "telegram")
     atomic_json(args.alimi_output, alimi)
     atomic_json(args.telegram_output, telegram)
-    print(json.dumps({"state": "PASS", "alimi_rows": alimi["rows"], "telegram_recent_rows": telegram["recent_rows"]}, sort_keys=True))
+    print(json.dumps({
+        "state": "PASS",
+        "alimi_rows": alimi["rows"],
+        "telegram_recent_rows": telegram["recent_rows"],
+        "writer_count": alimi["writer_count"],
+        "chart_point_count": alimi["chart_point_count"],
+    }, sort_keys=True))
     return 0
 
 

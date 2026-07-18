@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import Any
 
 CANONICAL_SOURCE = "shadow_aggregate_snapshot/latest.json"
+EXPECTED_WRITERS = {
+    "VV": "vwap_revert",
+    "TR": "trend_rider",
+    "LS": "liquidity_sweep",
+    "MO": "momentum_driver",
+    "VB": "vol_breakout",
+    "MS": "market_structure",
+    "SR": "support_resistance",
+}
+CONFIG_COUNT_KEYS = {"writer_count": 7, "configured_writer_count": 7}
+CHART_KEYS = {
+    "chart", "chart_data", "chart_rows_data", "candles", "ohlc", "ohlcv",
+    "price_series", "price_points", "trace_series", "sparkline", "series", "market_trace"
+}
 STALE_MARKERS = (
     "q4r3_shadow_closed_ledger_latest.json",
     "telegram_pos_status_latest.json",
@@ -24,11 +38,11 @@ ZERO_KEYS = {
     "sample_count", "closed_count", "closed", "rows", "row_count", "rows_count",
     "recent_rows", "wins", "losses", "breakeven", "candidate", "candidate_count",
     "admitted", "admitted_count", "open", "open_count", "active_count", "shadow_open",
-    "paper_open", "live_open", "last12", "last12_r", "ev", "ev_r", "expectancy_r",
-    "pnl", "pnl_r", "net_r", "total_r", "gross_r", "wr", "wr_pct", "winrate",
-    "winrate_pct", "win_rate"
+    "paper_open", "live_open", "active_writer_count", "last12", "last12_r", "ev", "ev_r",
+    "expectancy_r", "pnl", "pnl_r", "net_r", "total_r", "gross_r", "wr", "wr_pct",
+    "winrate", "winrate_pct", "win_rate", "chart_rows", "chart_point_count"
 }
-SOURCE_KEYS = {"src", "source", "display_source", "ledger_source", "source_path"}
+SOURCE_KEYS = {"src", "source", "display_source", "ledger_source", "source_path", "source_label"}
 
 
 def norm(key: str) -> str:
@@ -63,8 +77,10 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 def fetch_json(url: str) -> tuple[int, dict[str, Any]]:
     probe = f"{url}{'&' if '?' in url else '?'}r73b4u={time.time_ns()}"
-    command = ["curl", "-sS", "-L", "--max-time", "15", "-H", "Cache-Control: no-cache",
-               "-w", "\n%{http_code}"]
+    command = [
+        "curl", "-sS", "-L", "--max-time", "15", "-H", "Cache-Control: no-cache",
+        "-w", "\n%{http_code}"
+    ]
     if url.startswith("https://alimi.z-os.vip/"):
         command.extend(["--resolve", "alimi.z-os.vip:443:127.0.0.1"])
     command.append(probe)
@@ -102,8 +118,17 @@ def residuals(payload: Any, path: str = "$") -> list[str]:
             if normalized in {"last_close", "last_closed", "last_trade", "last_event"}:
                 if str(value).strip().lower() not in {"", "none", "null"}:
                     found.append(f"STALE_LAST_EVENT:{child}={value}")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if (normalized in ZERO_KEYS or normalized.endswith("_count") or normalized.endswith("_pct") or normalized.endswith("_r")) and float(value) != 0.0:
+            if normalized in CHART_KEYS and isinstance(value, list) and value:
+                found.append(f"STALE_CHART_DATA:{child}:{len(value)}")
+            if normalized in CONFIG_COUNT_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+                if int(value) != CONFIG_COUNT_KEYS[normalized]:
+                    found.append(f"CONFIG_COUNT_MISMATCH:{child}={value}")
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                if (
+                    normalized in ZERO_KEYS or
+                    (normalized.endswith("_count") and normalized not in CONFIG_COUNT_KEYS) or
+                    normalized.endswith("_pct") or normalized.endswith("_r")
+                ) and float(value) != 0.0:
                     found.append(f"NONZERO_METRIC:{child}={value}")
             found.extend(residuals(value, child))
         return found
@@ -118,6 +143,34 @@ def residuals(payload: Any, path: str = "$") -> list[str]:
             if marker in payload:
                 found.append(f"STALE_MARKER:{path}:{marker}")
     return found
+
+
+def writer_registry_errors(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    rows = payload.get("writers")
+    if not isinstance(rows, list) or len(rows) != 7:
+        return [f"WRITER_REGISTRY_COUNT={0 if not isinstance(rows, list) else len(rows)}"]
+    actual: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append("WRITER_ROW_NOT_OBJECT")
+            continue
+        writer_id = str(row.get("writer_id", ""))
+        strategy = str(row.get("strategy", ""))
+        if writer_id in actual:
+            errors.append(f"WRITER_DUPLICATE={writer_id}")
+        actual[writer_id] = strategy
+        if row.get("state") != "PREBIND" or row.get("active") is not False:
+            errors.append(f"WRITER_NOT_PREBIND={writer_id}")
+        if int(row.get("closed_count", -1)) != 0 or float(row.get("pnl_r", -1.0)) != 0.0:
+            errors.append(f"WRITER_NOT_ZERO={writer_id}")
+    if actual != EXPECTED_WRITERS:
+        errors.append(f"WRITER_REGISTRY_MISMATCH={actual}")
+    if int(payload.get("writer_count", -1)) != 7 or int(payload.get("configured_writer_count", -1)) != 7:
+        errors.append("WRITER_CONFIG_COUNT_INVALID")
+    if int(payload.get("active_writer_count", -1)) != 0:
+        errors.append("ACTIVE_WRITER_COUNT_NONZERO")
+    return errors
 
 
 def restore(path: Path, backup: Path | None, existed: bool) -> None:
@@ -178,12 +231,17 @@ def main() -> int:
         shutil.copy2(args.adapter_source, adapter_target)
         adapter_target.chmod(0o755)
         mutations.append("STRICT_DISPLAY_ADAPTER_INSTALLED")
-        result = run([str(adapter_target), "--snapshot", str(snapshot),
-                      "--alimi-template", str(alimi_template), "--telegram-template", str(telegram_template),
-                      "--alimi-output", str(alimi_output), "--telegram-output", str(telegram_output)], check=False)
+        result = run([
+            str(adapter_target), "--snapshot", str(snapshot),
+            "--alimi-template", str(alimi_template), "--telegram-template", str(telegram_template),
+            "--alimi-output", str(alimi_output), "--telegram-output", str(telegram_output)
+        ], check=False)
         if result.returncode != 0:
             raise RuntimeError("STRICT_ADAPTER_RUN_FAILED:" + result.stderr[-300:])
-        mutations.extend(["ALIMI_RESIDUALS_PURGED", "TELEGRAM_RESIDUALS_PURGED"])
+        mutations.extend([
+            "ALIMI_RESIDUALS_PURGED", "TELEGRAM_RESIDUALS_PURGED",
+            "VIEW_CHART_ZEROED", "WRITERS7_PREBIND_PROJECTED", "TEAM_LANE_CLEARED"
+        ])
         run(["systemctl", "start", contract["display_service"]])
         run(["systemctl", "restart", contract["telegram_unit"]])
         mutations.extend(["DISPLAY_SERVICE_REFRESHED", "TELEGRAM_RESTARTED"])
@@ -192,12 +250,18 @@ def main() -> int:
         telegram = json.loads(telegram_output.read_text(encoding="utf-8"))
         alimi_residuals = residuals(alimi)
         telegram_residuals = residuals(telegram)
+        alimi_writer_errors = writer_registry_errors(alimi)
+        telegram_writer_errors = writer_registry_errors(telegram)
         if http_status != 200:
             raise RuntimeError(f"ALIMI_ENDPOINT_HTTP_{http_status}")
         if alimi_residuals:
             raise RuntimeError("ALIMI_RESIDUALS:" + "|".join(alimi_residuals[:12]))
         if telegram_residuals:
             raise RuntimeError("TELEGRAM_RESIDUALS:" + "|".join(telegram_residuals[:12]))
+        if alimi_writer_errors:
+            raise RuntimeError("ALIMI_WRITERS7:" + "|".join(alimi_writer_errors[:12]))
+        if telegram_writer_errors:
+            raise RuntimeError("TELEGRAM_WRITERS7:" + "|".join(telegram_writer_errors[:12]))
         if alimi.get("source_snapshot_sha256") != telegram.get("source_snapshot_sha256"):
             raise RuntimeError("DISPLAY_SNAPSHOT_HASH_MISMATCH")
         if alimi.get("epoch_id") != telegram.get("epoch_id"):
@@ -205,7 +269,7 @@ def main() -> int:
         if ledger_before and sha256(ledger) != ledger_before:
             raise RuntimeError("FORMAL_LEDGER_CHANGED")
         payload = {
-            "schema": "q4r3_exact25_r73b4u_zero_epoch_display_parity_status_v1",
+            "schema": "q4r3_exact25_r73b4u_zero_epoch_display_parity_status_v2",
             "state": "PASS", "blockers": [], "blocker_count": 0,
             "mutation_count": len(mutations), "mutations": mutations,
             "rollback_performed": False, "endpoint_http_status": http_status,
@@ -214,6 +278,10 @@ def main() -> int:
             "telegram_closed_count": telegram.get("closed_count"),
             "alimi_rows": alimi.get("rows"), "telegram_recent_rows": telegram.get("recent_rows"),
             "alimi_pnl_r": alimi.get("pnl_r"), "telegram_pnl_r": telegram.get("pnl_r"),
+            "writer_registry_count": len(alimi.get("writers", [])),
+            "active_writer_count": alimi.get("active_writer_count"),
+            "chart_point_count": alimi.get("chart_point_count"),
+            "team_lane_count": len(alimi.get("team_lanes", [])),
             "source_snapshot_sha256": alimi.get("source_snapshot_sha256"),
             "formal_ledger_change_count": 0, "runtime_active": False,
             "next_stage": contract["next_stage"]
@@ -232,7 +300,7 @@ def main() -> int:
         run(["systemctl", "start", contract["display_service"]], check=False)
         run(["systemctl", "restart", contract["telegram_unit"]], check=False)
         payload = {
-            "schema": "q4r3_exact25_r73b4u_zero_epoch_display_parity_status_v1",
+            "schema": "q4r3_exact25_r73b4u_zero_epoch_display_parity_status_v2",
             "state": "HOLD", "blockers": blockers, "blocker_count": len(blockers),
             "mutation_count": len(mutations), "mutations": mutations,
             "rollback_performed": rollback_performed, "runtime_active": False,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -47,25 +48,61 @@ def normalize_key(key: str) -> str:
     return key.strip().lower().replace("-", "_")
 
 
+def scrub_string(value: str, snapshot: dict[str, Any]) -> str:
+    if any(token in value for token in STALE_SOURCE_TOKENS):
+        value = value.replace("q4r3_shadow_closed_ledger_latest.json", "shadow_aggregate_snapshot/latest.json")
+        value = value.replace("telegram_pos_status_latest.json", "shadow_aggregate_snapshot/latest.json")
+        value = value.replace("forward_r_ledger.jsonl", "shadow_aggregate_snapshot/latest.json")
+    value = re.sub(r"\bclosed\s*=\s*-?\d+", "closed=0", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bclosed\s*/\s*shadow\s*[:=]?\s*-?\d+", "Closed / shadow: 0", value, flags=re.IGNORECASE)
+    value = re.sub(r"\brecent_rows\s*=\s*-?\d+", "recent_rows=0", value, flags=re.IGNORECASE)
+    value = re.sub(r"\brows\s*=\s*-?\d+", "rows=0", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bpnl(?:_r)?\s*=\s*[+-]?\d+(?:\.\d+)?R?", "pnl=0R", value, flags=re.IGNORECASE)
+    value = re.sub(r"\blast12\s*=\s*[+-]?\d+(?:\.\d+)?R?", "last12=0R", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bev\s*=\s*[+-]?\d+(?:\.\d+)?R?", "ev=0R", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bwr\s*=\s*[+-]?\d+(?:\.\d+)?%?", "wr=0%", value, flags=re.IGNORECASE)
+    value = re.sub(r"\blast_close\s*=.*?(?=\s(?:state|action|recent_rows|order|src)=|$)", "last_close=none", value, flags=re.IGNORECASE)
+    return value
+
+
+def list_must_clear(normalized: str) -> bool:
+    return normalized in EMPTY_LIST_KEYS or any(
+        token in normalized for token in ("ledger", "closed_trade", "trade_trace", "recent_trace", "recent_event")
+    )
+
+
+def numeric_override(normalized: str, value: int | float, snapshot: dict[str, Any]) -> int | float | None:
+    if normalized in COUNT_KEYS or any(token in normalized for token in ("closed_count", "closed_shadow", "candidate_count", "admitted_count")):
+        if "closed" in normalized:
+            return int(snapshot.get("closed_count", 0))
+        return 0
+    if normalized in PNL_KEYS or "pnl" in normalized or normalized.endswith("_r"):
+        return float(snapshot.get("net_r", 0.0))
+    if normalized in WINRATE_KEYS or "winrate" in normalized or normalized.endswith("_wr"):
+        return float(snapshot.get("winrate_pct") or 0.0)
+    if normalized in {"wins", "losses", "breakeven"}:
+        return int(snapshot.get(normalized, 0))
+    if any(token in normalized for token in ("shadow_open", "paper_open", "live_open", "open_count")):
+        return 0
+    return None
+
+
 def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
     normalized = normalize_key(key)
-    if normalized in EMPTY_LIST_KEYS:
-        return []
-    if normalized in COUNT_KEYS:
-        if normalized == "sample_count":
-            return int(snapshot.get("sample_count", 0))
-        if normalized in {"closed_count", "closed", "closed_shadow", "shadow_closed"}:
-            return int(snapshot.get("closed_count", 0))
-        if normalized in {"open", "open_count", "shadow_open"}:
-            return int(snapshot.get("active_count", 0))
-        if normalized in {"wins", "losses", "breakeven"}:
-            return int(snapshot.get(normalized, 0))
-        return 0
-    if normalized in PNL_KEYS:
-        return float(snapshot.get("net_r", 0.0))
-    if normalized in WINRATE_KEYS:
-        return float(snapshot.get("winrate_pct") or 0.0)
-    if normalized in TRACE_KEYS:
+    if isinstance(value, list):
+        if list_must_clear(normalized):
+            return []
+        return [scrub(item, snapshot, key) for item in value]
+    if isinstance(value, dict):
+        return {child_key: scrub(child_value, snapshot, child_key) for child_key, child_value in value.items()}
+    if isinstance(value, bool):
+        if normalized == "runtime_active":
+            return bool(snapshot.get("runtime_active", False))
+        return value
+    if isinstance(value, (int, float)):
+        override = numeric_override(normalized, value, snapshot)
+        return value if override is None else override
+    if normalized in TRACE_KEYS or "trace_id" in normalized:
         return snapshot.get("latest_trace_id")
     if normalized in {"epoch", "epoch_id"}:
         return snapshot.get("epoch_id")
@@ -75,19 +112,10 @@ def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
         return "blocked"
     if normalized in {"execution_authority", "exec"}:
         return "none"
-    if normalized == "runtime_active":
-        return bool(snapshot.get("runtime_active", False))
     if normalized in {"state", "status"} and isinstance(value, str):
         return "PREBIND" if not snapshot.get("runtime_active") else snapshot.get("state", value)
-    if normalized in {"source", "src", "source_path", "ledger_source"} and isinstance(value, str):
-        if any(token in value for token in STALE_SOURCE_TOKENS):
-            return "shadow_aggregate_snapshot/latest.json"
-    if isinstance(value, dict):
-        return {child_key: scrub(child_value, snapshot, child_key) for child_key, child_value in value.items()}
-    if isinstance(value, list):
-        return [scrub(item, snapshot, key) for item in value]
-    if isinstance(value, str) and any(token in value for token in STALE_SOURCE_TOKENS):
-        return "shadow_aggregate_snapshot/latest.json"
+    if isinstance(value, str):
+        return scrub_string(value, snapshot)
     return value
 
 

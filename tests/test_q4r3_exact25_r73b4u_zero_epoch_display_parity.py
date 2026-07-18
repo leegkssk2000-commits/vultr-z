@@ -37,12 +37,25 @@ def dirty_template() -> dict:
         "wr": 37.209,
         "ev": 0.459302,
         "pnl_r": 53.613052,
-        "last_close": "BTCUSDT breakout long SL_TOUCH_CLOSED -0.75R",
+        "last_close": {
+            "symbol": "BTCUSDT",
+            "strategy": "breakout",
+            "side": "long",
+            "reason": "SL_TOUCH_CLOSED",
+            "pnl_r": -0.75,
+        },
+        "current": {
+            "last_close": {"symbol": "BTCUSDT", "reason": "SL_TOUCH_CLOSED", "pnl_r": -0.75}
+        },
         "ledger_source": "q4r3_shadow_closed_ledger_latest.json",
         "recent": [
             {"symbol": "BTCUSDT", "strategy": "breakout", "side": "long", "reason": "SL_TOUCH_CLOSED", "pnl_r": -0.75}
         ],
+        "chart_data": [[1, 2, 3, 4], [2, 3, 4, 5]],
+        "candles": [[1, 2, 3, 4]],
         "summary": {"closed": 68, "rows": 43, "total_r": 53.613052},
+        "team_lane": "A/B/G/D team lane",
+        "writer_count": 0,
     }
 
 
@@ -55,19 +68,33 @@ def test_strict_adapter_removes_all_visible_residue() -> None:
     assert payload["wr"] == 0.0
     assert payload["ev"] == 0.0
     assert payload["last_close"] == "none"
+    assert payload["current"] == {}
     assert payload["recent"] == []
+    assert payload["chart_data"] == []
+    assert payload["candles"] == []
     assert payload["summary"]["closed"] == 0
     assert payload["summary"]["rows"] == 0
     assert payload["summary"]["total_r"] == 0.0
+    assert payload["team_lane"] is None
     assert canary.residuals(payload) == []
 
 
-def test_residual_scanner_catches_trade_rows_and_old_source() -> None:
+def test_writers7_is_exact_static_prebind_registry() -> None:
+    payload = adapter.build_payload({}, SNAPSHOT, "alimi")
+    assert payload["writer_count"] == 7
+    assert payload["configured_writer_count"] == 7
+    assert payload["active_writer_count"] == 0
+    assert {row["writer_id"]: row["strategy"] for row in payload["writers"]} == canary.EXPECTED_WRITERS
+    assert canary.writer_registry_errors(payload) == []
+
+
+def test_residual_scanner_catches_trade_rows_old_source_chart_and_nested_last_event() -> None:
     found = canary.residuals(dirty_template())
     assert any(item.startswith("STALE_TRADE_ROWS") for item in found)
     assert any(item.startswith("STALE_SOURCE") for item in found)
     assert any(item.startswith("NONZERO_METRIC") for item in found)
     assert any(item.startswith("STALE_LAST_EVENT") for item in found)
+    assert any(item.startswith("STALE_CHART_DATA") for item in found)
 
 
 def test_output_permission_is_0644(tmp_path: Path) -> None:
@@ -76,6 +103,12 @@ def test_output_permission_is_0644(tmp_path: Path) -> None:
     assert target.stat().st_mode & 0o777 == 0o644
 
 
-def test_market_candle_array_is_not_mistaken_for_trade_rows() -> None:
-    payload = {"candles": [[1, 2, 3, 4], [2, 3, 4, 5]], "closed_count": 0, "display_source": adapter.CANONICAL_SOURCE}
-    assert canary.residuals(payload) == []
+def test_market_candle_array_is_forbidden_during_zero_epoch_prebind() -> None:
+    payload = {
+        "candles": [[1, 2, 3, 4], [2, 3, 4, 5]],
+        "closed_count": 0,
+        "display_source": adapter.CANONICAL_SOURCE,
+        "writer_count": 7,
+        "configured_writer_count": 7,
+    }
+    assert any(item.startswith("STALE_CHART_DATA") for item in canary.residuals(payload))

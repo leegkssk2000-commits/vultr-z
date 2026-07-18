@@ -11,7 +11,7 @@ from typing import Any
 
 COUNT_KEYS = {
     "sample_count", "closed_count", "closed", "closed_shadow", "shadow_closed",
-    "wins", "losses", "breakeven", "recent_rows", "row_count", "rows_count",
+    "wins", "losses", "breakeven", "row_count", "rows_count",
     "candidate", "candidate_count", "admitted", "admitted_count", "open", "open_count",
     "shadow_open", "paper_open", "live_open", "writer_count"
 }
@@ -20,7 +20,7 @@ WINRATE_KEYS = {"winrate_pct", "wr_pct", "win_rate", "winrate", "wr"}
 TRACE_KEYS = {"latest_trace_id", "last_trace_id", "trace_id"}
 EMPTY_LIST_KEYS = {
     "rows", "events", "closed_trades", "recent_trades", "recent_ledger_trace",
-    "ledger_rows", "recent_rows_data", "trace_rows", "positions", "current_positions"
+    "ledger_rows", "recent_rows", "recent_rows_data", "trace_rows", "positions", "current_positions"
 }
 STALE_SOURCE_TOKENS = (
     "q4r3_shadow_closed_ledger_latest.json",
@@ -52,7 +52,7 @@ def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
     if normalized in EMPTY_LIST_KEYS:
         return []
     if normalized in COUNT_KEYS:
-        if normalized in {"sample_count"}:
+        if normalized == "sample_count":
             return int(snapshot.get("sample_count", 0))
         if normalized in {"closed_count", "closed", "closed_shadow", "shadow_closed"}:
             return int(snapshot.get("closed_count", 0))
@@ -69,13 +69,13 @@ def scrub(value: Any, snapshot: dict[str, Any], key: str = "") -> Any:
         return snapshot.get("latest_trace_id")
     if normalized in {"epoch", "epoch_id"}:
         return snapshot.get("epoch_id")
-    if normalized in {"mode"}:
+    if normalized == "mode":
         return "shadow"
     if normalized in {"order_authority", "order"}:
         return "blocked"
     if normalized in {"execution_authority", "exec"}:
         return "none"
-    if normalized in {"runtime_active"}:
+    if normalized == "runtime_active":
         return bool(snapshot.get("runtime_active", False))
     if normalized in {"state", "status"} and isinstance(value, str):
         return "PREBIND" if not snapshot.get("runtime_active") else snapshot.get("state", value)

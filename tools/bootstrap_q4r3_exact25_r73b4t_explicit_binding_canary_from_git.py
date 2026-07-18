@@ -62,7 +62,7 @@ def main() -> int:
     status.parent.mkdir(parents=True, exist_ok=True)
     status.unlink(missing_ok=True)
     run = subprocess.run([
-        py, str(worktree / "tools/q4r3_exact25_r73b4t_explicit_binding_canary.py"),
+        py, str(worktree / "tools/q4r3_exact25_r73b4t_explicit_binding_canary_v2.py"),
         "--contract", str(worktree / "backend/contracts/ZOS_EXACT25_R73B4T_EXPLICIT_BINDING_CANARY_v1.json"),
         "--adapter-source", str(worktree / "tools/q4r3_exact25_r73b4t_display_adapter.py"),
         "--status", str(status),

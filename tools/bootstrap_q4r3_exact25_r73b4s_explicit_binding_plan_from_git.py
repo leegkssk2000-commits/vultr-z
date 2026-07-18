@@ -53,6 +53,36 @@ def python_bin(root: Path) -> str:
     return sys.executable
 
 
+def print_plan_detail(plan: Path, run_rc: int) -> None:
+    if not plan.is_file():
+        print(f"R73B4S_DETAIL={{\"run_rc\":{run_rc},\"plan_present\":false}}")
+        return
+    try:
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print("R73B4S_DETAIL=" + json.dumps({"run_rc": run_rc, "plan_read_error": str(exc)}, sort_keys=True))
+        return
+    consumers = []
+    for row in payload.get("consumers", []):
+        consumers.append({
+            "name": row.get("name"),
+            "unit": row.get("unit"),
+            "source_path": row.get("source_path"),
+            "required_command_count": row.get("required_command_count"),
+            "resolved_command_count": row.get("resolved_command_count"),
+            "source_anchor_lines": row.get("source_anchor_lines"),
+            "current_snapshot_bound": row.get("current_snapshot_bound"),
+            "current_formal_ledger_bound": row.get("current_formal_ledger_bound"),
+            "rollback_ready": row.get("rollback_ready"),
+        })
+    print("R73B4S_DETAIL=" + json.dumps({
+        "run_rc": run_rc,
+        "state": payload.get("state"),
+        "blockers": payload.get("blockers", []),
+        "consumers": consumers,
+    }, sort_keys=True))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("/home/z/z"))
@@ -99,6 +129,7 @@ def main() -> int:
         "--snapshot", str(snapshot), "--output", str(plan),
     ], check=False)
     if run.returncode != 0 or not plan.is_file():
+        print_plan_detail(plan, run.returncode)
         print(f"R73B4S_HOLD=PLAN_NOT_PASS:rc={run.returncode}")
         return 2
     payload = json.loads(plan.read_text(encoding="utf-8"))
@@ -112,6 +143,7 @@ def main() -> int:
         if not source.is_file() or sha256(source) != row.get("source_sha256"):
             blockers.append(f"SOURCE_CHANGED:{row.get('unit')}")
     if blockers:
+        print_plan_detail(plan, 0)
         print("R73B4S_HOLD=" + ",".join(blockers))
         return 2
     evidence = worktree / "evidence/q4r3_exact25_r73b4s_explicit_binding_plan_latest.json"

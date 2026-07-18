@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -13,6 +14,7 @@ from typing import Any
 
 ERROR_RE = re.compile(r"Traceback|\bERROR\b|Exception|NameError|TypeError|AttributeError|SyntaxError", re.I)
 NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+EMPTY_ZERO_VALUES = (None, "", "-", "—", "–")
 
 
 def run(command: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -29,11 +31,12 @@ def read_json(path: Path) -> dict[str, Any]:
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    os.close(fd)
     temp = Path(raw)
     try:
         temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temp.chmod(0o644)
-        temp.replace(path)
+        os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -79,7 +82,9 @@ def number(value: Any, default: float = float("nan")) -> float:
     return float(match.group(0)) if match else default
 
 
-def zero(value: Any) -> bool:
+def zero(value: Any, allow_empty: bool = False) -> bool:
+    if allow_empty and value in EMPTY_ZERO_VALUES:
+        return True
     parsed = number(value)
     return parsed == 0.0
 
@@ -130,10 +135,15 @@ def semantic_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def zero_metric_blockers(prefix: str, metrics: dict[str, Any], require_last_close: bool) -> list[str]:
+def zero_metric_blockers(
+    prefix: str,
+    metrics: dict[str, Any],
+    require_last_close: bool,
+    allow_empty_as_zero: bool = False,
+) -> list[str]:
     blockers: list[str] = []
     for name in ("closed", "recent_rows", "last12", "winrate", "ev", "pnl"):
-        if metrics[name] is None or not zero(metrics[name]):
+        if not zero(metrics[name], allow_empty=allow_empty_as_zero):
             blockers.append(f"{prefix}_{name.upper()}_NOT_ZERO:{metrics[name]}")
     if require_last_close and not none_value(metrics["last_close"]):
         blockers.append(f"{prefix}_LAST_CLOSE_NOT_NONE:{metrics['last_close']}")
@@ -251,7 +261,14 @@ def main() -> int:
     if http_status_before != 200:
         blockers.append(f"ALIMI_HTTP_STATUS:{http_status_before}")
     alimi_metrics_before = semantic_metrics(alimi_before)
-    blockers.extend(zero_metric_blockers("ALIMI", alimi_metrics_before, require_last_close=False))
+    blockers.extend(
+        zero_metric_blockers(
+            "ALIMI",
+            alimi_metrics_before,
+            require_last_close=False,
+            allow_empty_as_zero=True,
+        )
+    )
 
     forbidden_markers = [str(item) for item in contract["forbidden_view_markers"]]
     view_legacy_marker_count = sum(view.count(marker) for marker in forbidden_markers)

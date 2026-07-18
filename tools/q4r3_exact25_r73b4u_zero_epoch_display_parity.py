@@ -43,6 +43,7 @@ ZERO_KEYS = {
     "winrate", "winrate_pct", "win_rate", "chart_rows", "chart_point_count"
 }
 SOURCE_KEYS = {"src", "source", "display_source", "ledger_source", "source_path", "source_label"}
+WRITER_KEYS = {"writers", "writer_registry"}
 
 
 def norm(key: str) -> str:
@@ -130,6 +131,10 @@ def residuals(payload: Any, path: str = "$") -> list[str]:
                     normalized.endswith("_pct") or normalized.endswith("_r")
                 ) and float(value) != 0.0:
                     found.append(f"NONZERO_METRIC:{child}={value}")
+            # Writers 7 is configuration, not a trade-history array. It is
+            # validated separately by writer_registry_errors().
+            if normalized in WRITER_KEYS:
+                continue
             found.extend(residuals(value, child))
         return found
     if isinstance(payload, list):

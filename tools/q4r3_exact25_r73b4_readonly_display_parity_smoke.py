@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
 import q4r3_exact25_r73b4_metric_helpers as metrics
 
 MAX_BYTES = 2_000_000

@@ -57,6 +57,7 @@ def unit_record(item: dict[str, Any], snapshot: Path, forbidden: Path, quarantin
     required_commands = [str(value) for value in item.get("required_commands", [])]
     needles = required_commands + (["/view", "@app", "@router", "add_url_rule"] if item["name"] == "ALIMI_VIEW" else [])
     backup = quarantine / "backup" / (source.name if source else unit + ".missing")
+    snapshot_markers = (str(snapshot), str(snapshot.parent), "shadow_aggregate_snapshot")
     return {
         "name": item["name"],
         "unit": unit,
@@ -73,7 +74,7 @@ def unit_record(item: dict[str, Any], snapshot: Path, forbidden: Path, quarantin
         "required_commands": required_commands,
         "required_command_count": len(required_commands),
         "resolved_command_count": sum(command_name in combined for command_name in required_commands),
-        "current_snapshot_bound": str(snapshot) in combined or snapshot.name in combined,
+        "current_snapshot_bound": any(marker in combined for marker in snapshot_markers),
         "current_formal_ledger_bound": str(forbidden) in combined or forbidden.name in combined,
         "planned_backup_path": str(backup),
         "planned_binding_env": f"ZEL_SHADOW_AGGREGATE_SNAPSHOT={snapshot}",

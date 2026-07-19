@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT=/home/z/z
-C6B_SHA=e90ee1d18141a80a864cda076b8477d6e233b167
+C6B_SHA=6d3782e530c09dae0a7327b76dbd1c762cf2fd1b
 C6B_BRANCH=r7a1a6-deployment-parity-command-smoke-v1
 C6B_PATH=tools/bootstrap_r7a1a6c6b_writer_count_contract_correction.sh
 TEMPLATE="$ROOT/runtime/exact25_edge_v1/display_adapter/templates/telegram_legacy_schema_template.json"

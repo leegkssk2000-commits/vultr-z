@@ -1,0 +1,620 @@
+{
+  "schema": "zos_r7a2_seven_axis_s_grade_contract_freeze_v1",
+  "official_stage": "R7.A2",
+  "mode": "READ_ONLY_SEVEN_AXIS_S_GRADE_CONTRACT_FREEZE",
+  "read_only": true,
+  "runtime_mutation_allowed": false,
+  "service_mutation_allowed": false,
+  "telegram_command_send_allowed": false,
+  "paper_live_order_allowed": false,
+  "status_path": "runtime/r7a2_seven_axis_s_grade_contract_freeze/status_latest.json",
+  "prior_receipts": {
+    "c6b": "runtime/exact25_edge_v1/r7a1a6c6b_writer_count_contract_correction/status_latest.json",
+    "c6c": "runtime/exact25_edge_v1/r7a1a6c6c_telegram_contract_lock/verify_latest.json"
+  },
+  "protected_paths": [
+    "/home/z/z/runtime/exact25_edge_v1/formal_exact5_measurement/forward_r_ledger.jsonl",
+    "/home/z/z/runtime/exact25_edge_v1/shadow_aggregate_snapshot/latest.json",
+    "/home/z/z/runtime/exact25_edge_v1/display_adapter/telegram_status_latest.json",
+    "/etc/caddy/Caddyfile"
+  ],
+  "required_axis_fields": [
+    "axis_id",
+    "next_stage",
+    "objective",
+    "inputs",
+    "outputs",
+    "required_components",
+    "authority_contract",
+    "persistence_contract",
+    "receipt_contract",
+    "rollback_contract",
+    "activation_gate"
+  ],
+  "axes": [
+    {
+      "axis_id": "strategy25",
+      "next_stage": "R7.A3_STRATEGY25_S_GRADE",
+      "objective": "Freeze the immutable Exact25 universe and per-strategy S-grade evidence schema.",
+      "inputs": [
+        "market_event",
+        "regime",
+        "side",
+        "point_in_time_features"
+      ],
+      "outputs": [
+        "strategy_signal",
+        "invalidation",
+        "native_risk",
+        "strategy_receipt"
+      ],
+      "required_components": [
+        {
+          "id": "exact25_manifest",
+          "patterns": [
+            "exact25",
+            "strategy.*25",
+            "strategy_universe"
+          ]
+        },
+        {
+          "id": "strategy_runtime",
+          "patterns": [
+            "strategy_id",
+            "setup",
+            "trigger",
+            "invalidation"
+          ]
+        },
+        {
+          "id": "strategy_tests",
+          "patterns": [
+            "test_.*strategy",
+            "replay.*strategy"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "decision": "strategy_signal_only",
+        "order": "none",
+        "ledger_write": "none"
+      },
+      "persistence_contract": {
+        "immutable_originals": 25,
+        "source_sha_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "strategy_id",
+          "source_sha",
+          "event_id",
+          "feature_ts",
+          "signal",
+          "invalidation"
+        ]
+      },
+      "rollback_contract": {
+        "target": "immutable_original",
+        "automatic_mutation": false
+      },
+      "activation_gate": [
+        "lookahead_zero",
+        "runtime_replay_parity",
+        "cost_model_bound"
+      ]
+    },
+    {
+      "axis_id": "trade_lifecycle",
+      "next_stage": "R7.A4_TRADE_LIFECYCLE_S_GRADE",
+      "objective": "Freeze one candidate-to-ledger lineage and one authority per transition.",
+      "inputs": [
+        "strategy_signal",
+        "risk_decision",
+        "skill_resolution",
+        "team_proposal"
+      ],
+      "outputs": [
+        "candidate",
+        "admitted",
+        "open",
+        "managed",
+        "closed",
+        "ledger_append"
+      ],
+      "required_components": [
+        {
+          "id": "candidate_admission",
+          "patterns": [
+            "candidate",
+            "admission"
+          ]
+        },
+        {
+          "id": "open_close",
+          "patterns": [
+            "open_requested",
+            "open_confirmed",
+            "close_requested",
+            "closed_verified"
+          ]
+        },
+        {
+          "id": "idempotency",
+          "patterns": [
+            "idempot",
+            "duplicate_open",
+            "duplicate_close"
+          ]
+        },
+        {
+          "id": "formal_ledger",
+          "patterns": [
+            "formal.*ledger",
+            "forward_r_ledger"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "per_transition_max": 1,
+        "order": "blocked_until_paper_gate",
+        "ledger_writer_max": 1
+      },
+      "persistence_contract": {
+        "position_id_required": true,
+        "event_chain_required": true,
+        "restart_recovery_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "decision_id",
+          "position_id",
+          "event_id",
+          "parent_event_id",
+          "state",
+          "owner"
+        ]
+      },
+      "rollback_contract": {
+        "target": "last_verified_state",
+        "force_close": false
+      },
+      "activation_gate": [
+        "duplicate_zero",
+        "restart_recovery",
+        "formal_ledger_join"
+      ]
+    },
+    {
+      "axis_id": "exit4",
+      "next_stage": "R7.A5_EXIT4_S_GRADE",
+      "objective": "Freeze four exit lanes and their conflict/precedence rules.",
+      "inputs": [
+        "position_state",
+        "mfe",
+        "mae",
+        "risk_budget",
+        "market_event"
+      ],
+      "outputs": [
+        "hold",
+        "partial30",
+        "trailing",
+        "mfe_runner",
+        "close"
+      ],
+      "required_components": [
+        {
+          "id": "exit_policy4",
+          "patterns": [
+            "exit.*policy",
+            "partial30",
+            "trailing",
+            "mfe.*runner"
+          ]
+        },
+        {
+          "id": "stop_loss",
+          "patterns": [
+            "stop_loss",
+            "loss_cap",
+            "sl"
+          ]
+        },
+        {
+          "id": "take_profit",
+          "patterns": [
+            "take_profit",
+            "tp_hit",
+            "full_tp"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "close_decision_max": 1,
+        "order": "none_in_shadow"
+      },
+      "persistence_contract": {
+        "raw_pnl_immutable": true,
+        "adjusted_pnl_sidecar": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "policy_id",
+          "trigger",
+          "precedence",
+          "raw_pnl_r",
+          "adjusted_pnl_r"
+        ]
+      },
+      "rollback_contract": {
+        "target": "native_exit",
+        "raw_pnl_preserved": true
+      },
+      "activation_gate": [
+        "precedence_total_order",
+        "cost_adjusted",
+        "ablation_pass"
+      ]
+    },
+    {
+      "axis_id": "skill18",
+      "next_stage": "R7.A6_SKILL18_S_GRADE",
+      "objective": "Freeze Skill18 registry, dependency, conflict and risk-override contracts.",
+      "inputs": [
+        "strategy_signal",
+        "position_state",
+        "risk_budget"
+      ],
+      "outputs": [
+        "skill_resolution",
+        "skill_receipt"
+      ],
+      "required_components": [
+        {
+          "id": "skill18_registry",
+          "patterns": [
+            "skill.*18",
+            "skill_registry"
+          ]
+        },
+        {
+          "id": "dependency_conflict",
+          "patterns": [
+            "dependency",
+            "conflict",
+            "incompatible"
+          ]
+        },
+        {
+          "id": "risk_override",
+          "patterns": [
+            "risk_override",
+            "activation_allowed",
+            "candidate_only"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "advisory": "resolution_only",
+        "order": "none",
+        "max_promoted_skills": 2
+      },
+      "persistence_contract": {
+        "registry_version_required": true,
+        "skill_id_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "skill_id",
+          "registry_sha",
+          "dependencies",
+          "conflicts",
+          "risk_delta"
+        ]
+      },
+      "rollback_contract": {
+        "target": "no_skill_baseline",
+        "automatic_mutation": false
+      },
+      "activation_gate": [
+        "single_skill_ablation",
+        "conflict_zero",
+        "risk_budget_bound"
+      ]
+    },
+    {
+      "axis_id": "team_advisors",
+      "next_stage": "R7.A7_TEAM_ADVISORS_S_GRADE",
+      "objective": "Freeze L/M/O/S Bot and ZBot/Zico/Lico/Zlice caller-callee and authority boundaries.",
+      "inputs": [
+        "strategy_signal",
+        "method",
+        "skill_resolution",
+        "market_context"
+      ],
+      "outputs": [
+        "team_proposal",
+        "advisor_review",
+        "lifecycle_decision",
+        "evidence_chain"
+      ],
+      "required_components": [
+        {
+          "id": "lbot",
+          "patterns": [
+            "LBot",
+            "lead_bot"
+          ]
+        },
+        {
+          "id": "mbot",
+          "patterns": [
+            "MBot",
+            "method_bot"
+          ]
+        },
+        {
+          "id": "obot",
+          "patterns": [
+            "OBot",
+            "observer_bot"
+          ]
+        },
+        {
+          "id": "sbot",
+          "patterns": [
+            "SBot",
+            "safety_bot"
+          ]
+        },
+        {
+          "id": "zbot",
+          "patterns": [
+            "ZBot",
+            "advisor_only"
+          ]
+        },
+        {
+          "id": "zico",
+          "patterns": [
+            "Zico",
+            "lifecycle"
+          ]
+        },
+        {
+          "id": "lico",
+          "patterns": [
+            "Lico",
+            "source_disagreement",
+            "venue_health"
+          ]
+        },
+        {
+          "id": "zlice",
+          "patterns": [
+            "Zlice",
+            "previous_hash",
+            "parent_event_id"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "team": "advisory_only",
+        "sbot_veto": true,
+        "zbot_order": "none",
+        "zico_transition_gate": true
+      },
+      "persistence_contract": {
+        "zico_restart_recovery_required": true,
+        "zlice_persistent_chain_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "team_id",
+          "bot_votes",
+          "advisor_id",
+          "event_id",
+          "evidence_hash"
+        ]
+      },
+      "rollback_contract": {
+        "target": "hold",
+        "fail_closed": true
+      },
+      "activation_gate": [
+        "same_lineage",
+        "sbot_veto",
+        "persistent_evidence"
+      ]
+    },
+    {
+      "axis_id": "data_math_replay",
+      "next_stage": "R7.A8_DATA_MATH_REPLAY_S_GRADE",
+      "objective": "Freeze source priority, point-in-time math, costs and deterministic replay contracts.",
+      "inputs": [
+        "cf",
+        "sheets",
+        "bingx_market",
+        "historical_events"
+      ],
+      "outputs": [
+        "validated_features",
+        "cost_adjusted_metrics",
+        "replay_receipt"
+      ],
+      "required_components": [
+        {
+          "id": "source_priority",
+          "patterns": [
+            "cloudflare",
+            "google.*sheets",
+            "source_priority",
+            "stale"
+          ]
+        },
+        {
+          "id": "cost_model",
+          "patterns": [
+            "fee",
+            "slippage",
+            "funding",
+            "latency"
+          ]
+        },
+        {
+          "id": "excursions",
+          "patterns": [
+            "mfe",
+            "mae",
+            "drawdown",
+            "cvar"
+          ]
+        },
+        {
+          "id": "validation",
+          "patterns": [
+            "walk_forward",
+            "purged",
+            "embargo",
+            "monte_carlo",
+            "parameter_perturbation"
+          ]
+        },
+        {
+          "id": "replay",
+          "patterns": [
+            "deterministic.*replay",
+            "event_replay",
+            "simulation"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "data": "CF>Sheets>other",
+        "execution": "none"
+      },
+      "persistence_contract": {
+        "input_sha_required": true,
+        "availability_ts_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "dataset_sha",
+          "availability_ts",
+          "cost_model_sha",
+          "seed",
+          "metrics"
+        ]
+      },
+      "rollback_contract": {
+        "target": "prior_dataset_and_model",
+        "replay_reproducible": true
+      },
+      "activation_gate": [
+        "no_lookahead",
+        "cost_2x_survival",
+        "holdout_pass",
+        "runtime_parity"
+      ]
+    },
+    {
+      "axis_id": "ledger_display_observability",
+      "next_stage": "R7.A9_LEDGER_DISPLAY_OBSERVABILITY_S_GRADE",
+      "objective": "Freeze Formal Ledger SSOT and read-only View/Telegram/ALIMI projection lineage.",
+      "inputs": [
+        "closed_verified",
+        "formal_ledger",
+        "runtime_health"
+      ],
+      "outputs": [
+        "view_contract",
+        "telegram_projection",
+        "alimi_projection",
+        "observability_receipt"
+      ],
+      "required_components": [
+        {
+          "id": "formal_ledger",
+          "patterns": [
+            "formal.*ledger",
+            "forward_r_ledger"
+          ]
+        },
+        {
+          "id": "view_contract",
+          "patterns": [
+            "view_contract_latest",
+            "typed.*view"
+          ]
+        },
+        {
+          "id": "telegram",
+          "patterns": [
+            "telegram",
+            "/pos",
+            "/pnl",
+            "/view"
+          ]
+        },
+        {
+          "id": "alimi",
+          "patterns": [
+            "alimi",
+            "api/view_contract"
+          ]
+        },
+        {
+          "id": "single_owner",
+          "patterns": [
+            "single_owner",
+            "writer_binding",
+            "configured_writer_count"
+          ]
+        }
+      ],
+      "authority_contract": {
+        "ledger_writer_max": 1,
+        "projection_writers_max": 1,
+        "renderers": "read_only"
+      },
+      "persistence_contract": {
+        "ledger_tail_hash_required": true,
+        "snapshot_sha_required": true
+      },
+      "receipt_contract": {
+        "keys": [
+          "ledger_tail_hash",
+          "snapshot_sha",
+          "source_sha",
+          "writer_id",
+          "generated_at"
+        ]
+      },
+      "rollback_contract": {
+        "target": "last_verified_projection",
+        "ledger_immutable": true
+      },
+      "activation_gate": [
+        "http_local_parity",
+        "telegram_alimi_same_snapshot",
+        "restart_recovery"
+      ]
+    }
+  ],
+  "material_funnel": {
+    "immutable_originals": 25,
+    "first_survivors_min": 10,
+    "first_survivors_max": 15,
+    "s_material_min": 6,
+    "s_material_max": 10,
+    "standalone_s_min": 4,
+    "standalone_s_max": 7,
+    "s_ensemble_min": 3,
+    "s_ensemble_max": 5,
+    "controls_min": 2,
+    "controls_max": 3,
+    "shadow_lanes_min": 9,
+    "shadow_lanes_max": 15
+  },
+  "next_stage_on_pass": "R7.A3_STRATEGY25_S_GRADE"
+}

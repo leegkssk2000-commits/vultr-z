@@ -1,0 +1,47 @@
+{
+  "schema": "zos_r7a1a4c_environment_binding_canary_v1",
+  "official_stage": "R7.A1A4C",
+  "mode": "CONTROLLED_CANARY_WITH_AUTOMATIC_ROLLBACK",
+  "purpose": "Bind the canonical Telegram token and allowed-chat environment keys through a root-only EnvironmentFile and systemd drop-in before source cutover.",
+  "unit": "zel-q4r3-telegram-pos-adapter-v2.service",
+  "environment_file": "/etc/zel/telegram-pos-adapter.env",
+  "dropin": "/etc/systemd/system/zel-q4r3-telegram-pos-adapter-v2.service.d/20-canonical-environment.conf",
+  "required_environment_keys": [
+    "ZEL_TELEGRAM_BOT_TOKEN",
+    "ZEL_TELEGRAM_ALLOWED_CHAT_ID"
+  ],
+  "interactive_fallback_command": "/bind",
+  "required_invariants": {
+    "credential_values_never_printed": true,
+    "formal_ledger_change_count": 0,
+    "shadow_snapshot_change_count": 0,
+    "view_contract_change_count": 0,
+    "deployed_source_change_count": 0,
+    "order_authority": "blocked",
+    "execution_authority": "none"
+  },
+  "pass_conditions": {
+    "preflight_state": "PASS",
+    "token_candidate_count": 1,
+    "chat_id_candidate_count": 1,
+    "environment_file_mode": "0600",
+    "environment_file_owner": "root:root",
+    "dropin_bound": true,
+    "target_unit_active": true,
+    "target_process_environment_key_count": 2,
+    "telegram_api_probe": true,
+    "rollback_performed": false,
+    "blocker_count": 0
+  },
+  "rollback_conditions": [
+    "credential discovery ambiguity",
+    "Telegram API probe failure",
+    "interactive /bind timeout",
+    "environment file or drop-in write failure",
+    "daemon-reload failure",
+    "target service restart failure",
+    "process environment key verification failure",
+    "protected runtime mutation"
+  ],
+  "next_stage": "R7.A1A5_SYSTEMD_SOURCE_CUTOVER_CANARY"
+}

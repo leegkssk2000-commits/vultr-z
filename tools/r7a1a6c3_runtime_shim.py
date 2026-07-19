@@ -107,12 +107,48 @@ def install_safe_watcher(module: Any) -> None:
 def install_identity_safety(module: Any) -> None:
     def identity_safe(unit: str, command: str, allowed: tuple[str, ...], forbidden: tuple[str, ...]) -> bool:
         exec_start = module.systemctl_value(unit, "ExecStart") if unit else ""
-        identity = f"{unit} {exec_start or command}".lower()
+        short_command = command if "\n" not in command and len(command) <= 1200 else ""
+        identity = f"{unit} {exec_start} {short_command}".lower()
         if any(term.lower() in identity for term in forbidden):
             return False
         return any(term.lower() in identity for term in allowed)
 
     module.safe_display_unit = identity_safe
+
+
+def install_candidate_expansion(module: Any) -> None:
+    def expanded_candidates() -> list[str]:
+        proc = module.run([
+            "systemctl", "list-units", "--type=service", "--type=timer",
+            "--all", "--no-legend", "--no-pager",
+        ], 30)
+        if proc.returncode != 0:
+            return []
+        inspect: set[str] = set()
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            unit, load_state, active_state = parts[:3]
+            if load_state != "loaded" or active_state not in {"active", "activating"}:
+                continue
+            inspect.add(unit)
+            if unit.endswith(".timer"):
+                inspect.update(
+                    item for item in module.systemctl_value(unit, "Triggers").split()
+                    if item.endswith(".service")
+                )
+                derived = unit[:-6] + "service"
+                if module.systemctl_value(derived, "LoadState") == "loaded":
+                    inspect.add(derived)
+        candidates: list[str] = []
+        for unit in sorted(inspect):
+            text = module.source_text_for_unit(unit)
+            if module.looks_like_target_writer(text):
+                candidates.append(unit)
+        return sorted(set(candidates))
+
+    module.active_candidate_units = expanded_candidates
 
 
 def main() -> int:
@@ -129,6 +165,7 @@ def main() -> int:
     module = load_module(Path(args.base))
     install_safe_watcher(module)
     install_identity_safety(module)
+    install_candidate_expansion(module)
     original_repair = module.repair
 
     def quiet_repair(command: str, runner: Path, root: Path, contract: Path) -> int:

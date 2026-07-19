@@ -104,6 +104,17 @@ def install_safe_watcher(module: Any) -> None:
     module.FanotifyWatcher = SafeWatcher
 
 
+def install_identity_safety(module: Any) -> None:
+    def identity_safe(unit: str, command: str, allowed: tuple[str, ...], forbidden: tuple[str, ...]) -> bool:
+        exec_start = module.systemctl_value(unit, "ExecStart") if unit else ""
+        identity = f"{unit} {exec_start or command}".lower()
+        if any(term.lower() in identity for term in forbidden):
+            return False
+        return any(term.lower() in identity for term in allowed)
+
+    module.safe_display_unit = identity_safe
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -117,6 +128,7 @@ def main() -> int:
 
     module = load_module(Path(args.base))
     install_safe_watcher(module)
+    install_identity_safety(module)
     original_repair = module.repair
 
     def quiet_repair(command: str, runner: Path, root: Path, contract: Path) -> int:

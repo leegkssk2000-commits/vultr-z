@@ -45,7 +45,7 @@ def numeric_zero(value: Any) -> bool:
 def zero_semantics(value: Any) -> bool:
     watched = {
         "closed", "closed_count", "shadow_closed", "pnl_r", "net_r",
-        "shadow_pnl_r", "recent_rows", "row_count", "rows",
+        "shadow_pnl_r", "recent_rows", "row_count",
     }
     if isinstance(value, dict):
         for key, child in value.items():

@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+from types import SimpleNamespace
 import pytest
 
 
@@ -30,3 +31,36 @@ def test_rejects_ambiguous_sources():
             "/a/zel_q4r3_telegram_pos_adapter_v2.py",
             "/b/zel_q4r3_telegram_pos_adapter_v2.py",
         ])
+
+
+def test_clean_a1a5a_requires_pass_and_none():
+    assert MODULE.clean_a1a5a({"state": "PASS", "runtime_error_class": "NONE"}) is True
+    assert MODULE.clean_a1a5a({"state": "HOLD", "runtime_error_class": "NONE"}) is False
+    assert MODULE.clean_a1a5a({"state": "PASS", "runtime_error_class": "NETWORK_TIMEOUT"}) is False
+
+
+def test_first_a1a5_gate_is_recovered_but_later_status_is_real(tmp_path):
+    a1a5 = (tmp_path / MODULE.A1A5_STATUS_REL).resolve()
+    a1a5a = (tmp_path / MODULE.A1A5A_STATUS_REL).resolve()
+    calls = []
+
+    def load_json(path):
+        resolved = Path(path).resolve()
+        calls.append(resolved)
+        if resolved == a1a5a:
+            return {"state": "PASS", "runtime_error_class": "NONE"}
+        if resolved == a1a5:
+            return {"state": "HOLD", "blockers": ["OLD_CANARY_HOLD"]}
+        return {}
+
+    fake = SimpleNamespace(load_json=load_json)
+    state = MODULE.install_first_gate_recovery(fake, tmp_path)
+
+    first = fake.load_json(a1a5)
+    second = fake.load_json(a1a5)
+
+    assert first["state"] == "PASS"
+    assert first["gate_source"] == "R7A1A5A_CLEAN_PASS"
+    assert second["state"] == "HOLD"
+    assert state["used"] is True
+    assert calls.count(a1a5a) == 1

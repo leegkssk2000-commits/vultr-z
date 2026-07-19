@@ -57,6 +57,33 @@ def test_prior_rejects_missing_binding_or_mutation():
     assert not m.prior_false_positive_valid(bad)
 
 
+def test_boundary_prefers_current_exact_proof():
+    current = valid_prior()
+    archived = valid_prior()
+    selected, source = m.select_boundary_prior(current, archived)
+    assert selected is current
+    assert source == "current_c6_status"
+
+
+def test_boundary_falls_back_to_immutable_archive_after_c6_rerun():
+    current = {
+        "official_stage": "R7.A1A6C6",
+        "state": "HOLD",
+        "blocker_count": 1,
+        "blockers": ["TELEGRAM_ZERO_EPOCH_SEMANTICS_FAILED:REAL_ORDER_ENABLED_NOT_FALSE"],
+    }
+    archived = valid_prior()
+    selected, source = m.select_boundary_prior(current, archived)
+    assert selected is archived
+    assert source == "immutable_c6_status_before_correction"
+
+
+def test_boundary_rejects_when_neither_receipt_is_exact():
+    selected, source = m.select_boundary_prior({}, {"state": "HOLD"})
+    assert selected == {}
+    assert source == "none"
+
+
 def test_corrected_semantic_disables_projection_writer_count_requirement():
     seen = []
 

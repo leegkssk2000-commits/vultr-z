@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ def load_module(path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError("BASE_MODULE_IMPORT_FAILED")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -68,6 +70,40 @@ def quick_verify(module: Any) -> bool:
     return True
 
 
+def install_safe_watcher(module: Any) -> None:
+    original = module.FanotifyWatcher
+
+    class SafeWatcher:
+        def __init__(self, directory: Path):
+            self.inner = None
+            self.available = False
+            try:
+                self.inner = original(directory)
+                self.available = bool(getattr(self.inner, "available", False))
+            except Exception:
+                self.inner = None
+                self.available = False
+
+        def read_events(self, timeout: float = 0.2):
+            if self.inner is None:
+                time.sleep(timeout)
+                return []
+            try:
+                return self.inner.read_events(timeout)
+            except Exception:
+                time.sleep(timeout)
+                return []
+
+        def close(self) -> None:
+            if self.inner is not None:
+                try:
+                    self.inner.close()
+                except Exception:
+                    pass
+
+    module.FanotifyWatcher = SafeWatcher
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -80,6 +116,7 @@ def main() -> int:
     args = parser.parse_args()
 
     module = load_module(Path(args.base))
+    install_safe_watcher(module)
     original_repair = module.repair
 
     def quiet_repair(command: str, runner: Path, root: Path, contract: Path) -> int:

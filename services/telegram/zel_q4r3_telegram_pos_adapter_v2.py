@@ -172,6 +172,7 @@ def pos_text():
 
 def main():
     token = os.environ.get("ZEL_TELEGRAM_BOT_TOKEN", "")
+    src = "env:ZEL_TELEGRAM_BOT_TOKEN"
     if not token:
         awrite(REPORT,{"owner":OWNER,"updated_at":now(),"status":"HOLD_TOKEN_NOT_FOUND","token_source":src})
         time.sleep(60)

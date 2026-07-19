@@ -92,6 +92,17 @@ def prior_false_positive_valid(prior: dict[str, Any]) -> bool:
     )
 
 
+def select_boundary_prior(
+    current: dict[str, Any], archived: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """Use current proof when exact; otherwise use the immutable first-correction archive."""
+    if prior_false_positive_valid(current):
+        return current, "current_c6_status"
+    if prior_false_positive_valid(archived):
+        return archived, "immutable_c6_status_before_correction"
+    return {}, "none"
+
+
 def corrected_semantic(
     base_fn: Callable[[dict[str, Any], bool], tuple[bool, list[str]]],
     payload: dict[str, Any],
@@ -120,10 +131,13 @@ def main() -> int:
     ))
     before_path = out_path.parent / "c6_status_before_correction.json"
     prior = load_json(prior_path)
+    archived_prior = load_json(before_path)
+    boundary_prior, boundary_source = select_boundary_prior(prior, archived_prior)
+
     blockers: list[str] = []
     if not contract_valid(contract):
         blockers.append("CONTRACT_INVALID")
-    if not prior_false_positive_valid(prior):
+    if boundary_source == "none":
         blockers.append("C6_FALSE_POSITIVE_BOUNDARY_NOT_PROVEN")
 
     if blockers:
@@ -133,7 +147,8 @@ def main() -> int:
             "state": "HOLD",
             "blocker_count": len(blockers),
             "blockers": blockers,
-            "prior_c6_false_positive_valid": prior_false_positive_valid(prior),
+            "prior_c6_false_positive_valid": False,
+            "boundary_proof_source": boundary_source,
             "writer_count_projection_required": False,
             "writer_binding_required": True,
             "runtime_mutation_count": 0,
@@ -143,11 +158,16 @@ def main() -> int:
         print("R7A1A6C6B_WRITER_COUNT_CONTRACT_CORRECTION_COMPLETE")
         print("STATE=HOLD")
         print(f"BLOCKERS={json.dumps(blockers, ensure_ascii=False)}")
+        print(f"BOUNDARY_PROOF_SOURCE={boundary_source}")
         print(f"EVIDENCE_JSON={out_path}")
         print("RC=2")
         return 2
 
-    atomic_json(before_path, prior)
+    # Preserve the exact original C6 false-positive receipt once. Never replace it
+    # with a later C6 rerun receipt that may contain a different blocker.
+    if boundary_source == "current_c6_status" and not before_path.exists():
+        atomic_json(before_path, boundary_prior)
+
     c6 = load_module("r7a1a6c6_base", HERE / "r7a1a6c6_exact_semantic_stability_verify.py")
     base_semantic = c6.semantic_zero_epoch
 
@@ -197,6 +217,7 @@ def main() -> int:
         "blocker_count": len(final_blockers),
         "blockers": final_blockers,
         "prior_c6_false_positive_valid": True,
+        "boundary_proof_source": boundary_source,
         "writer_count_projection_required": False,
         "writer_binding_required": True,
         "corrected_c6_state": corrected.get("state"),
@@ -222,6 +243,7 @@ def main() -> int:
         ("BLOCKER_COUNT", len(final_blockers)),
         ("BLOCKERS", json.dumps(final_blockers, ensure_ascii=False)),
         ("PRIOR_C6_FALSE_POSITIVE_VALID", "true"),
+        ("BOUNDARY_PROOF_SOURCE", boundary_source),
         ("WRITER_COUNT_PROJECTION_REQUIRED", "false"),
         ("CANONICAL_WRITER_BOUND", str(corrected.get("writer_binding_valid") is True).lower()),
         ("CANONICAL_ROUTE_BOUND", str(corrected.get("canonical_route_bound") is True).lower()),

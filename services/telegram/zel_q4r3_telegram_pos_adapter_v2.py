@@ -1,230 +1,309 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 
-# R7.3B4U9 final outbound ZEL POS single-source boundary
-import json as _r73b4u9_json
-import re as _r73b4u9_re
-from pathlib import Path as _R73B4U9Path
-_R73B4U9_ARTIFACT = _R73B4U9Path('/home/z/z/runtime/exact25_edge_v1/display_adapter/telegram_status_latest.json')
+import json
+import os
+import re
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
 
-def _r73b4u9_first(payload, *keys, default=None):
+API = Path("/var/www/z-os-alimi/api")
+DISPLAY_STATUS = Path("/home/z/z/runtime/exact25_edge_v1/display_adapter/telegram_status_latest.json")
+STATE = API / "q4r3_telegram_pos_adapter_v2_state.json"
+REPORT = API / "q4r3_telegram_pos_adapter_v2_latest.json"
+LEDGER = API / "q4r3_shadow_closed_ledger_latest.json"
+TRACE = API / "q4r3_recent_ledger_trace_latest.json"
+VIEW = API / "view_contract_latest.json"
+OWNER = "ZEL_Q4R3_TELEGRAM_POS_ADAPTER_V2"
+SUPPORTED_COMMANDS = ("/pos", "/pnl", "/view")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def awrite(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o644)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def first(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
-        if key in payload:
+        if key in payload and payload[key] is not None:
             return payload[key]
     return default
 
-def _r73b4u9_number(value, default=0.0):
+
+def nested_first(value: Any, keys: set[str], default: Any = None) -> Any:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower() in keys and child is not None:
+                return child
+        for child in value.values():
+            found = nested_first(child, keys, default=None)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = nested_first(child, keys, default=None)
+            if found is not None:
+                return found
+    return default
+
+
+def number(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, str):
+        value = value.strip().rstrip("Rr%").strip()
     try:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
 
-def _r73b4u9_plain(value):
-    number = _r73b4u9_number(value)
-    return str(int(number)) if number.is_integer() else (f"{number:.9f}".rstrip("0").rstrip("."))
 
-def _r73b4u9_r(value):
-    return _r73b4u9_plain(value) + "R"
+def plain(value: Any, default: float = 0.0) -> str:
+    result = number(value, default)
+    if result.is_integer():
+        return str(int(result))
+    return f"{result:.9f}".rstrip("0").rstrip(".")
 
-def _r73b4u9_pct(value):
-    return _r73b4u9_plain(value) + "%"
 
-def _r73b4u9_last_close(value):
-    if value in (None, "", "none", "None") or value == {}:
+def fmt_r(value: Any) -> str:
+    return plain(value) + "R"
+
+
+def fmt_pct(value: Any) -> str:
+    return plain(value) + "%"
+
+
+def last_close_text(value: Any) -> str:
+    if value in (None, "", "none", "None", {}):
         return "none"
-    if isinstance(value, dict):
-        fields = []
-        for key in ("symbol", "strategy", "side", "reason"):
-            if value.get(key) not in (None, ""):
-                fields.append(str(value[key]))
-        pnl = _r73b4u9_first(value, "pnl_r", "net_r", "pnl")
-        if pnl is not None:
-            fields.append(_r73b4u9_r(pnl))
-        return " ".join(fields) if fields else "none"
-    return str(value)
+    if not isinstance(value, dict):
+        return str(value)
+    parts = [str(value[key]) for key in ("symbol", "strategy", "side", "reason") if value.get(key) not in (None, "")]
+    pnl = first(value, "realized_r", "pnl_r", "net_r", "pnl")
+    if pnl is not None:
+        parts.append(fmt_r(pnl))
+    return " ".join(parts) if parts else "none"
 
-def _r73b4u9_visible_pos(text):
-    if not isinstance(text, str) or "ZEL POS" not in text:
-        return text
-    try:
-        payload = _r73b4u9_json.loads(_R73B4U9_ARTIFACT.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            payload = {}
-    except Exception:
-        payload = {}
-    closed = _r73b4u9_first(payload, "closed_count", "closed", default=0)
-    pnl = _r73b4u9_first(payload, "pnl_r", "net_r", "pnl", default=0)
-    last_close = _r73b4u9_last_close(_r73b4u9_first(payload, "last_close", "last_closed", default="none"))
-    rows = _r73b4u9_first(payload, "recent_rows", "rows", default=0)
-    last12 = _r73b4u9_first(payload, "last12_r", "last12", default=0)
-    winrate = _r73b4u9_first(payload, "winrate_pct", "wr_pct", "wr", "winrate", "win_rate", default=0)
-    ev = _r73b4u9_first(payload, "ev_r", "ev", "expectancy_r", "expectancy", default=0)
-    state = _r73b4u9_first(payload, "state", default=None)
-    action = _r73b4u9_first(payload, "action", default=None)
-    rendered = []
-    for line in text.splitlines():
-        if line.startswith("last_close="):
-            rendered.append("last_close=" + last_close)
-            continue
-        if line.startswith("recent_rows="):
-            rendered.append(
-                "recent_rows=" + _r73b4u9_plain(rows)
-                + " last12=" + _r73b4u9_r(last12)
-                + " wr=" + _r73b4u9_pct(winrate)
-                + " ev=" + _r73b4u9_r(ev)
-            )
-            continue
-        if "telegram_status_latest.json" in line and (line.startswith("/") or line.startswith("src=")):
-            rendered.append("src=telegram_status_latest.json")
-            continue
-        line = _r73b4u9_re.sub(r"\bclosed=[^\s]+", "closed=" + _r73b4u9_plain(closed), line)
-        line = _r73b4u9_re.sub(r"\bpnl=[^\s]+", "pnl=" + _r73b4u9_r(pnl), line)
-        if line.startswith("state="):
-            if state is not None:
-                line = _r73b4u9_re.sub(r"\bstate=[^\s]+", "state=" + str(state), line)
-            if action is not None:
-                line = _r73b4u9_re.sub(r"\baction=[^\s]+", "action=" + str(action), line)
-        rendered.append(line)
-    return "\n".join(rendered)
-import json, os, re, time, tempfile, urllib.parse, urllib.request
-from pathlib import Path
-from datetime import datetime, timezone
 
-API=Path("/var/www/z-os-alimi/api")
-STATE=API/"q4r3_telegram_pos_adapter_v2_state.json"
-REPORT=API/"q4r3_telegram_pos_adapter_v2_latest.json"
-OWNER="ZEL_Q4R3_TELEGRAM_POS_ADAPTER_V2"
+def canonical_inputs() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return load(DISPLAY_STATUS), load(LEDGER), load(TRACE), load(VIEW)
 
-def now(): return datetime.now(timezone.utc).isoformat()
 
-def load(p):
-    try: return json.loads(p.read_text(errors="ignore"))
-    except Exception: return {}
+def common_safety(status: dict[str, Any], view: dict[str, Any]) -> tuple[str, str, bool]:
+    order = first(status, "order_authority", default=nested_first(view, {"order_authority"}, "blocked"))
+    execution = first(status, "execution_authority", default=nested_first(view, {"execution_authority"}, "none"))
+    real_order = nested_first(view, {"real_order_enabled"}, False)
+    return str(order or "blocked"), str(execution or "none"), bool(real_order)
 
-def awrite(p,o):
-    fd,tmp=tempfile.mkstemp(prefix=p.name+".",dir=str(p.parent))
-    with os.fdopen(fd,"w",encoding="utf-8") as f:
-        json.dump(o,f,ensure_ascii=False,indent=2); f.write("\n"); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp,p); os.chmod(p,0o644)
 
-def find_token():
-    env=os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
-    if env and re.match(r"^\d+:[A-Za-z0-9_-]{20,}$",env):
-        return env, "env"
-    roots=[Path("/etc"),Path("/var/www/z-os-alimi"),Path("/home/z/z"),Path("/usr/local/bin")]
-    pat=re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b")
-    for root in roots:
-        if not root.exists(): continue
-        for p in root.rglob("*"):
-            if not p.is_file(): continue
-            s=str(p)
-            if any(x in s.lower() for x in ["backup","graveyard","archive",".bak",".dead","node_modules","__pycache__"]): continue
-            if p.stat().st_size > 2_000_000: continue
-            try: txt=p.read_text(errors="ignore")
-            except Exception: continue
-            m=pat.search(txt)
-            if m:
-                return m.group(0), str(p)
-    return None, "not_found"
+def pos_text() -> str:
+    status, ledger, trace, view = canonical_inputs()
+    closed = first(status, "closed_count", "closed", default=first(ledger, "closed_count", "closed", default=0))
+    pnl = first(status, "pnl_r", "net_r", "pnl", default=first(ledger, "pnl_r", "net_r", "pnl", default=0))
+    last_close = first(status, "last_close", "last_closed", default=first(ledger, "last_close", "last_closed", default="none"))
+    active = number(first(status, "open", default=0)) == 1 and number(first(status, "shadow_open", default=0)) == 1
+    order, execution, _ = common_safety(status, view)
 
-def api(token, method, params=None):
-    url=f"https://api.telegram.org/bot{token}/{method}"
-    data=urllib.parse.urlencode(params or {}).encode()
-    req=urllib.request.Request(url,data=data,headers={"User-Agent":"ZEL-Q4R3-TG-POS-V2/1.0"})
-    raw=urllib.request.urlopen(req,timeout=15).read().decode("utf-8","ignore")
-    return json.loads(raw)
-
-def pos_text():
-    d=load(API/"/home/z/z/runtime/exact25_edge_v1/display_adapter/telegram_status_latest.json")
-    led=load(API/"q4r3_shadow_closed_ledger_latest.json")
-    tr=load(API/"q4r3_recent_ledger_trace_latest.json")
-
-    closed=d.get("closed",led.get("closed"))
-    pnl=d.get("pnl_r",led.get("pnl_r"))
-    last=d.get("last_close") if isinstance(d.get("last_close"),dict) else led.get("last_close") if isinstance(led.get("last_close"),dict) else {}
-    rows=tr.get("rows") if isinstance(tr.get("rows"),list) else led.get("rows") if isinstance(led.get("rows"),list) else []
-    active = d.get("open")==1 and d.get("shadow_open")==1 and d.get("admitted")==1
-
-    lines=[
-      "ZEL POS",
-      f"lane={d.get('lane','ZEL_FOCUS')} mode={d.get('mode','shadow')} epoch={d.get('epoch','Q4R3')}",
-      f"candidate={d.get('candidate',0)} admitted={d.get('admitted',0)} open={d.get('open',0)} closed={closed} pnl={pnl}R",
-      f"shadow_open={d.get('shadow_open',0)} paper_open={d.get('paper_open',0)} live_open={d.get('live_open',0)}",
+    lines = [
+        "ZEL POS",
+        f"lane={first(status, 'lane', default='ZEL_FOCUS')} mode={first(status, 'mode', default='shadow')} epoch={first(status, 'epoch', default='Q4R3')}",
+        f"candidate={plain(first(status, 'candidate', default=0))} admitted={plain(first(status, 'admitted', default=0))} open={plain(first(status, 'open', default=0))} closed={plain(closed)} pnl={fmt_r(pnl)}",
+        f"shadow_open={plain(first(status, 'shadow_open', default=0))} paper_open={plain(first(status, 'paper_open', default=0))} live_open={plain(first(status, 'live_open', default=0))}",
     ]
     if active:
-        lines += [
-          f"current={{'entry': {d.get('entry')}, 'price': {d.get('price')}, 'rr': {d.get('rr')}, 'side': '{d.get('side')}', 'sl': {d.get('sl')}, 'strategy': '{d.get('strategy')}', 'symbol': '{d.get('symbol')}', 'tp': {d.get('tp')}}}",
-          f"symbol={d.get('symbol')} strategy={d.get('strategy')} side={d.get('side')}",
-          f"entry={d.get('entry')} sl={d.get('sl')} tp={d.get('tp')} price={d.get('price')}",
-          f"state={d.get('status')} action={d.get('action','hold')}",
-        ]
+        lines.extend([
+            f"symbol={first(status, 'symbol', default='none')} strategy={first(status, 'strategy', default='none')} side={first(status, 'side', default='none')}",
+            f"entry={first(status, 'entry', default='none')} sl={first(status, 'sl', default='none')} tp={first(status, 'tp', default='none')} price={first(status, 'price', default='none')}",
+        ])
     else:
-        lines += [
-          "current={}",
-          f"last_close={last.get('symbol')} {last.get('strategy')} {last.get('side')} {last.get('reason')} {last.get('realized_r')}R",
-          f"state={d.get('status')} action={d.get('action','hold')}",
-        ]
-    lines += [
-      f"recent_rows={len(rows)} last12={d.get('last12_pnl_r', tr.get('last12_pnl_r'))}R wr={d.get('wr_pct', tr.get('wr_pct'))}% ev={d.get('ev_r', tr.get('ev_r'))}R",
-      f"order={d.get('order_authority','blocked')} exec={d.get('execution_authority','none')}",
-      "/home/z/z/runtime/exact25_edge_v1/display_adapter/telegram_status_latest.json"
-    ]
-    return _r73b4u9_visible_pos("\n".join(lines))
+        lines.append("last_close=" + last_close_text(last_close))
+    lines.extend([
+        f"state={first(status, 'state', 'status', default='HOLD_ZERO_EPOCH_PENDING')} action={first(status, 'action', default='hold')}",
+        f"order={order} exec={execution}",
+        "src=telegram_status_latest.json",
+    ])
+    return "\n".join(lines)
 
-def main():
+
+def pnl_text() -> str:
+    status, ledger, trace, view = canonical_inputs()
+    rows = first(trace, "rows", default=first(ledger, "rows", default=[]))
+    row_count = len(rows) if isinstance(rows, list) else plain(first(trace, "recent_rows", "row_count", default=0))
+    closed = first(status, "closed_count", "closed", default=first(ledger, "closed_count", "closed", default=0))
+    pnl = first(status, "pnl_r", "net_r", "pnl", default=first(ledger, "pnl_r", "net_r", "pnl", default=0))
+    last12 = first(status, "last12_r", "last12_pnl_r", default=first(trace, "last12_r", "last12_pnl_r", default=0))
+    winrate = first(status, "winrate_pct", "wr_pct", "wr", default=first(trace, "winrate_pct", "wr_pct", "wr", default=0))
+    ev = first(status, "ev_r", "ev", default=first(trace, "ev_r", "ev", default=0))
+    last_close = first(status, "last_close", "last_closed", default=first(ledger, "last_close", "last_closed", default="none"))
+    order, execution, _ = common_safety(status, view)
+    return "\n".join([
+        "ZEL PNL",
+        f"epoch={first(status, 'epoch', default='Q4R3')} mode={first(status, 'mode', default='shadow')}",
+        f"closed={plain(closed)} pnl={fmt_r(pnl)}",
+        f"recent_rows={row_count} last12={fmt_r(last12)} wr={fmt_pct(winrate)} ev={fmt_r(ev)}",
+        "last_close=" + last_close_text(last_close),
+        f"state={first(status, 'state', 'status', default='HOLD_ZERO_EPOCH_PENDING')} action={first(status, 'action', default='hold')}",
+        f"order={order} exec={execution}",
+        "src=telegram_status_latest.json",
+    ])
+
+
+def view_text() -> str:
+    status, ledger, trace, view = canonical_inputs()
+    configured = nested_first(view, {"configured_writer_count", "writer_registry_count", "configured_count"}, 7)
+    active_writers = nested_first(view, {"active_writer_count", "writer_count", "active_count"}, 0)
+    closed = first(status, "closed_count", "closed", default=first(ledger, "closed_count", "closed", default=0))
+    rows = first(trace, "rows", default=[])
+    row_count = len(rows) if isinstance(rows, list) else first(trace, "recent_rows", "row_count", default=0)
+    order, execution, real_order = common_safety(status, view)
+    return "\n".join([
+        "ZEL VIEW",
+        f"epoch={first(status, 'epoch', default='Q4R3')} lane={first(status, 'lane', default='ZEL_FOCUS')} mode={first(status, 'mode', default='shadow')}",
+        f"candidate={plain(first(status, 'candidate', default=0))} admitted={plain(first(status, 'admitted', default=0))} open={plain(first(status, 'open', default=0))} closed={plain(closed)}",
+        f"shadow_open={plain(first(status, 'shadow_open', default=0))} paper_open={plain(first(status, 'paper_open', default=0))} live_open={plain(first(status, 'live_open', default=0))}",
+        f"writers_configured={plain(configured)} writers_active={plain(active_writers)} recent_rows={plain(row_count)}",
+        f"state={first(status, 'state', 'status', default='HOLD_ZERO_EPOCH_PENDING')} action={first(status, 'action', default='hold')}",
+        f"order={order} exec={execution} real_order={str(real_order).lower()}",
+        "src=view_contract_latest.json",
+    ])
+
+
+def normalize_command(text: str) -> str:
+    head = (text or "").strip().split(maxsplit=1)[0].lower()
+    return head.split("@", 1)[0]
+
+
+def render_command(command: str) -> tuple[str, str]:
+    renderers: dict[str, tuple[str, Callable[[], str]]] = {
+        "/pos": ("POS", pos_text),
+        "/pnl": ("PNL", pnl_text),
+        "/view": ("VIEW", view_text),
+    }
+    response_kind, renderer = renderers[command]
+    return response_kind, renderer()
+
+
+def api(token: str, method: str, params: dict[str, Any] | None = None, request_timeout: int = 15) -> dict[str, Any]:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = urllib.parse.urlencode(params or {}).encode()
+    request = urllib.request.Request(url, data=data, headers={"User-Agent": "ZEL-Q4R3-TG-POS-V2/1.1"})
+    raw = urllib.request.urlopen(request, timeout=request_timeout).read().decode("utf-8", "ignore")
+    value = json.loads(raw)
+    return value if isinstance(value, dict) else {}
+
+
+def main() -> None:
     token = os.environ.get("ZEL_TELEGRAM_BOT_TOKEN", "")
-    src = "env:ZEL_TELEGRAM_BOT_TOKEN"
-    if not token:
-        awrite(REPORT,{"owner":OWNER,"updated_at":now(),"status":"HOLD_TOKEN_NOT_FOUND","token_source":src})
-        time.sleep(60)
+    allowed_chat_id = os.environ.get("ZEL_TELEGRAM_ALLOWED_CHAT_ID", "")
+    source = "env:ZEL_TELEGRAM_BOT_TOKEN"
+    if not token or not allowed_chat_id:
+        awrite(REPORT, {
+            "owner": OWNER,
+            "updated_at": now(),
+            "status": "HOLD_CANONICAL_ENVIRONMENT_NOT_BOUND",
+            "token_source": source,
+            "sent_count": 0,
+            "order_authority": "blocked",
+            "execution_authority": "none",
+            "real_order_enabled": False,
+        })
+        time.sleep(5)
         return
 
     try:
-        # polling 전환. webhook stale이면 getUpdates가 막힘.
-        api(token,"deleteWebhook",{"drop_pending_updates":"false"})
+        api(token, "deleteWebhook", {"drop_pending_updates": "false"}, request_timeout=15)
     except Exception:
         pass
 
-    st=load(STATE)
-    offset=int(st.get("offset",0) or 0)
-    sent=0
-    err=None
+    state = load(STATE)
+    offset = int(state.get("offset", 0) or 0)
+    sent = 0
+    error: str | None = None
+    last_command: str | None = None
+    last_response_kind: str | None = None
+    last_response_title: str | None = None
 
     try:
-        res=api(token,"getUpdates",{"timeout":25,"offset":offset,"allowed_updates":json.dumps(["message"])})
-        if res.get("ok"):
-            for upd in res.get("result",[]):
-                offset=max(offset, int(upd.get("update_id",0))+1)
-                msg=upd.get("message") or {}
-                text=(msg.get("text") or "").strip()
-                chat=msg.get("chat") or {}
-                chat_id = os.environ.get("ZEL_TELEGRAM_ALLOWED_CHAT_ID", "")
-                if not chat_id:
+        result = api(
+            token,
+            "getUpdates",
+            {"timeout": 25, "offset": offset, "allowed_updates": json.dumps(["message"])},
+            request_timeout=35,
+        )
+        if result.get("ok"):
+            for update in result.get("result", []):
+                offset = max(offset, int(update.get("update_id", 0)) + 1)
+                message = update.get("message") or {}
+                command = normalize_command(str(message.get("text") or ""))
+                incoming_chat_id = str((message.get("chat") or {}).get("id") or "")
+                if command not in SUPPORTED_COMMANDS or incoming_chat_id != str(allowed_chat_id):
                     continue
-                if text.startswith("/pos") or text.startswith("/view") or text.startswith("/pnl"):
-                    api(token,"sendMessage",{
-                        "chat_id":chat_id,
-                        "text":pos_text(),
-                        "disable_web_page_preview":"true"
-                    })
-                    sent+=1
-    except Exception as e:
-        err=str(e)[:300]
+                response_kind, response_text = render_command(command)
+                api(token, "sendMessage", {
+                    "chat_id": allowed_chat_id,
+                    "text": response_text,
+                    "disable_web_page_preview": "true",
+                }, request_timeout=15)
+                sent += 1
+                last_command = command
+                last_response_kind = response_kind
+                last_response_title = response_text.splitlines()[0] if response_text else None
+    except Exception as exc:
+        error = str(exc)[:300]
 
-    awrite(STATE,{"offset":offset,"updated_at":now()})
-    awrite(REPORT,{
-        "owner":OWNER,
-        "updated_at":now(),
-        "status":"PASS_TELEGRAM_POS_ADAPTER_V2_RUNNING" if err is None else "HOLD_TELEGRAM_POS_ADAPTER_V2_ERROR",
-        "token_source":src,
-        "offset":offset,
-        "sent_count":sent,
-        "error":err,
-        "order_authority":"blocked",
-        "execution_authority":"none",
-        "real_order_enabled":False,
-        "next_if_pass":"SEND_/pos_AND_EXPECT_V2_REPLY"
+    awrite(STATE, {"offset": offset, "updated_at": now()})
+    awrite(REPORT, {
+        "owner": OWNER,
+        "updated_at": now(),
+        "status": "PASS_TELEGRAM_POS_ADAPTER_V2_RUNNING" if error is None else "HOLD_TELEGRAM_POS_ADAPTER_V2_ERROR",
+        "token_source": source,
+        "offset": offset,
+        "sent_count": sent,
+        "error": error,
+        "last_command": last_command,
+        "last_response_kind": last_response_kind,
+        "last_response_title": last_response_title,
+        "supported_commands": list(SUPPORTED_COMMANDS),
+        "order_authority": "blocked",
+        "execution_authority": "none",
+        "real_order_enabled": False,
+        "next_if_pass": "SEND_/pos_/pnl_/view_AND_EXPECT_DISTINCT_REPLIES",
     })
 
-while True:
-    main()
-    time.sleep(1)
+
+def run_forever() -> None:
+    while True:
+        main()
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    run_forever()

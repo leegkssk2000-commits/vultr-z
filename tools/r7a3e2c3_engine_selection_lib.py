@@ -26,8 +26,9 @@ def module_variants(path: str) -> set[str]:
     parts = value.split(".")
     variants = {value}
     for index in range(1, min(4, len(parts))):
-        variants.add(".".join(parts[index:]))
-    variants.add(Path(path).stem)
+        candidate = ".".join(parts[index:])
+        if "." in candidate:
+            variants.add(candidate)
     return {item for item in variants if item}
 
 
@@ -37,15 +38,16 @@ def import_hits(source: str, candidate_path: str) -> int:
     except SyntaxError:
         return 0
     variants = module_variants(candidate_path)
+    leaf = Path(candidate_path).stem
     hits = 0
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name == item or alias.name.endswith("." + item) for item in variants):
+                if alias.name == leaf or any(alias.name == item or alias.name.endswith("." + item) for item in variants):
                     hits += 1
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if any(module == item or module.endswith("." + item) or item.endswith("." + module) for item in variants):
+            if module == leaf or any(module == item or module.endswith("." + item) or item.endswith("." + module) for item in variants):
                 hits += 1
     return hits
 
@@ -54,7 +56,7 @@ def literal_hits(source: str, candidate_path: str, strategy_id: str) -> tuple[in
     modules = module_variants(candidate_path)
     normalized = candidate_path.replace("/", ".").removesuffix(".py")
     candidate_hits = source.count(candidate_path) + source.count(normalized)
-    candidate_hits += sum(source.count(module) for module in modules if len(module) >= 6)
+    candidate_hits += sum(source.count(module) for module in modules if len(module) >= 8)
     strategy_hits = source.count(strategy_id)
     return candidate_hits, strategy_hits
 

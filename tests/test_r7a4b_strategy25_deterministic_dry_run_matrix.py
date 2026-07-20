@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from collections import namedtuple
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 
@@ -19,6 +20,11 @@ spec.loader.exec_module(module)
 class SampleDataclass:
     intent: str
     confidence: float
+
+
+class SampleIntent(str, Enum):
+    HOLD = "hold"
+    ENTER_LONG = "enter_long"
 
 
 class PlainObject:
@@ -80,6 +86,12 @@ def test_normalized_hash_is_stable_for_attrbox() -> None:
     assert normalized_a == normalized_b
     assert digest_a == digest_b
     assert normalized_a["intent"] == "hold"
+
+
+def test_string_enum_intent_normalizes_to_value() -> None:
+    normalized, _ = module.normalized_hash({"intent": SampleIntent.HOLD})
+    assert normalized == {"intent": "hold"}
+    assert module.extract_intent(normalized) == "hold"
 
 
 def test_normalize_handles_missing_asdict_without_calling_none() -> None:

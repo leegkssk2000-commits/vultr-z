@@ -201,6 +201,9 @@ def normalize(value: Any, seen: set[int] | None = None) -> Any:
         result = {str(key): normalize(item, seen) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
         seen.remove(object_id)
         return result
+    namedtuple_asdict = getattr(value, "_asdict", None)
+    if callable(namedtuple_asdict):
+        return normalize(namedtuple_asdict(), seen)
     if isinstance(value, (list, tuple)):
         seen.add(object_id)
         result = [normalize(item, seen) for item in value]
@@ -210,9 +213,6 @@ def normalize(value: Any, seen: set[int] | None = None) -> Any:
         return sorted((normalize(item, seen) for item in value), key=lambda item: json.dumps(item, sort_keys=True))
     if dataclasses.is_dataclass(value):
         return normalize(dataclasses.asdict(value), seen)
-    namedtuple_asdict = getattr(value, "_asdict", None)
-    if callable(namedtuple_asdict):
-        return normalize(namedtuple_asdict(), seen)
     item = getattr(value, "item", None)
     if callable(item):
         try:

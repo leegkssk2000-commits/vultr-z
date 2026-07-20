@@ -16,7 +16,8 @@ for path in \
   tools/r7_restore25_canonical_source_recovery.py \
   tools/r7_restore25_git_object_driver.py \
   backend/contracts/ZOS_R7_RESTORE25_CANONICAL_SOURCE_RECOVERY_v1.json \
-  tests/test_r7_restore25_canonical_source_recovery.py
+  tests/test_r7_restore25_canonical_source_recovery.py \
+  tests/test_r7_restore25_git_object_driver.py
 do
   mkdir -p "$TMP/$(dirname "$path")"
   git -C "$ROOT" -c safe.directory="$ROOT" show "$SHA:$path" > "$TMP/$path" || RC=2
@@ -26,7 +27,9 @@ if [[ "$RC" -eq 0 ]]; then
   python3 -m py_compile \
     "$TMP/tools/r7_restore25_canonical_source_recovery.py" \
     "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
-  python3 -m pytest -q "$TMP/tests/test_r7_restore25_canonical_source_recovery.py" || RC=2
+  python3 -m pytest -q \
+    "$TMP/tests/test_r7_restore25_canonical_source_recovery.py" \
+    "$TMP/tests/test_r7_restore25_git_object_driver.py" || RC=2
 fi
 if [[ "$RC" -eq 0 ]]; then
   grep -q 'TARGET_SHA_GIT_OBJECT_ARTIFACT_AST_IDENTICAL' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2

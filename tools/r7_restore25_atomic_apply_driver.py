@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import py_compile
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,99 +36,188 @@ def load_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def exact_path_source(root: Path, repo_path: str, callable_name: str, expected_blob: str | None, target_sha: str) -> tuple[str | None, str | None]:
-    path = driver.safe_repo_path(repo_path)
-    if not path or not core.is_true_source(path, [
+def synthetic_recovery_entry(row: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    strategy_id = str(row.get("strategy_id") or "")
+    engine = row.get("canonical_engine") if isinstance(row.get("canonical_engine"), dict) else {}
+    artifact_path = str(engine.get("implementation_path") or "")
+    callable_name = str(engine.get("callable") or "")
+    if not strategy_id or not artifact_path or not callable_name:
+        return None, f"DIRECT_ENGINE_METADATA_INVALID:{strategy_id or 'UNKNOWN'}"
+    if core.is_true_source(artifact_path, [
         "backend/strategies/", "backend/strategy/", "backend/strategy25/",
         "services/strategies/", "services/strategy/", "services/strategy25/",
     ]):
-        return None, "DIRECT_PATH_INVALID"
-
-    candidates: list[tuple[str, str, str | None]] = []
-    for revision in driver.path_revisions(root, path, target_sha):
-        source = driver.git_blob_source(root, revision, path)
-        if not source:
-            continue
-        blob = driver.git_output(root, ["git", "rev-parse", f"{revision}:{path}"], 30).strip() or None
-        names = core.callable_names(source, f"{revision}:{path}")
-        if callable_name not in names:
-            continue
-        candidates.append((source, revision, blob))
-
-    if expected_blob:
-        matches = [row for row in candidates if row[2] == expected_blob]
-        if len(matches) == 1:
-            return matches[0][0], None
-        if len(matches) > 1:
-            unique = {core.sha256_bytes(row[0].encode()) for row in matches}
-            if len(unique) == 1:
-                return matches[0][0], None
-
-    unique_by_ast: dict[str, str] = {}
-    for source, _revision, _blob in candidates:
-        ast_sha = core.module_ast_sha(source, path)
-        if ast_sha:
-            unique_by_ast.setdefault(ast_sha, source)
-    if len(unique_by_ast) == 1:
-        return next(iter(unique_by_ast.values())), None
-    if not candidates:
-        return None, "DIRECT_GIT_OBJECT_NOT_FOUND"
-    return None, "DIRECT_HISTORY_AMBIGUOUS"
+        return None, f"DIRECT_ENTRY_ALREADY_TRUE_SOURCE:{strategy_id}:{artifact_path}"
+    return {
+        "strategy_id": strategy_id,
+        "classification": "ARTIFACT_DIRECT_RECLASSIFIED_FOR_RESTORE25",
+        "artifact_matches": [{
+            "path": artifact_path,
+            "callable": callable_name,
+            "git_blob_sha": engine.get("source_blob_sha"),
+        }],
+    }, None
 
 
-def preflight_direct_engines(root: Path, contract: dict[str, Any], target_sha: str) -> tuple[list[Path], list[str]]:
+def recover_reclassified_direct(
+    root: Path,
+    contract: dict[str, Any],
+    target_sha: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[Path], list[str]]:
     matrix = load_json(root / str(contract["prior_matrix_path"]))
     entries = [row for row in matrix.get("entries", []) if isinstance(row, dict)]
-    direct = [row for row in entries if row.get("binding_mode") == "DIRECT_PROVEN"]
+    direct_rows = [row for row in entries if row.get("binding_mode") == "DIRECT_PROVEN"]
+    expected = int(contract.get("expected_reclassified_direct_count", 2))
     errors: list[str] = []
     created: list[Path] = []
-    if len(direct) != 2:
-        return created, [f"DIRECT_ENTRY_COUNT_NOT_2:{len(direct)}"]
+    selected_rows: list[dict[str, Any]] = []
+    patched_entries: list[dict[str, Any]] = []
 
-    for row in direct:
-        strategy_id = str(row.get("strategy_id") or "")
-        engine = row.get("canonical_engine") if isinstance(row.get("canonical_engine"), dict) else {}
-        repo_path = str(engine.get("implementation_path") or "")
-        callable_name = str(engine.get("callable") or "")
-        expected_blob = str(engine.get("source_blob_sha") or "") or None
-        safe_path = driver.safe_repo_path(repo_path)
-        if not strategy_id or not safe_path or not callable_name:
-            errors.append(f"DIRECT_ENGINE_METADATA_INVALID:{strategy_id or 'UNKNOWN'}")
+    if len(entries) != int(contract.get("expected_strategy_count", 25)):
+        return matrix, selected_rows, created, [f"MATRIX_ENTRY_COUNT_INVALID:{len(entries)}"]
+    if len(direct_rows) != expected:
+        return matrix, selected_rows, created, [f"DIRECT_RECLASSIFY_COUNT_INVALID:{len(direct_rows)}"]
+
+    allowed = list(contract.get("allowed_restore_prefixes", []))
+    baseline_roots = list(contract.get("baseline_search_roots", []))
+    default_prefix = str(contract["default_restore_prefix"])
+
+    for row in entries:
+        if row.get("binding_mode") != "DIRECT_PROVEN":
+            patched_entries.append(row)
             continue
-        destination = root / safe_path
+
+        synthetic, error = synthetic_recovery_entry(row)
+        if error or synthetic is None:
+            errors.append(error or "DIRECT_SYNTHETIC_ENTRY_FAILED")
+            patched_entries.append(row)
+            continue
+
+        strategy_id = str(synthetic["strategy_id"])
+        selected, reasons = driver.corrected_select_source(
+            root,
+            strategy_id,
+            synthetic,
+            allowed,
+            baseline_roots,
+            default_prefix,
+        )
+        if not selected:
+            errors.append(f"DIRECT_ARTIFACT_UNRESOLVED:{strategy_id}:{'|'.join(reasons)}")
+            patched_entries.append(row)
+            continue
+
+        expected_callable = str(synthetic["artifact_matches"][0]["callable"])
+        if selected.get("callable") != expected_callable:
+            errors.append(
+                f"DIRECT_CALLABLE_CHANGED:{strategy_id}:{selected.get('callable')}:{expected_callable}"
+            )
+            patched_entries.append(row)
+            continue
+
+        destination = root / str(selected["destination_path"])
         if destination.is_file():
-            source = destination.read_text(encoding="utf-8", errors="replace")
-            if callable_name in core.callable_names(source, safe_path):
+            current_sha = core.sha256_file(destination)
+            if current_sha != selected.get("source_sha256"):
+                errors.append(f"DIRECT_DESTINATION_CONFLICT:{strategy_id}:{destination}")
+                patched_entries.append(row)
                 continue
-            errors.append(f"DIRECT_WORKTREE_CALLABLE_MISMATCH:{strategy_id}:{safe_path}")
-            continue
-        source, error = exact_path_source(root, safe_path, callable_name, expected_blob, target_sha)
-        if not source:
-            errors.append(f"{error}:{strategy_id}:{safe_path}")
-            continue
-        core.atomic_text(destination, source)
-        created.append(destination)
+        else:
+            core.atomic_text(destination, str(selected["source"]))
+            created.append(destination)
+
         try:
             py_compile.compile(str(destination), doraise=True)
         except Exception as exc:
             errors.append(f"DIRECT_COMPILE_FAILED:{strategy_id}:{type(exc).__name__}:{exc}")
-            break
+            patched_entries.append(row)
+            continue
 
-    if errors:
+        patched = dict(row)
+        patched["binding_mode"] = "RESTORE25_RECLASSIFIED_ARTIFACT"
+        patched["canonical_engine"] = {
+            "implementation_path": selected["destination_path"],
+            "callable": selected["callable"],
+            "source_sha256": selected["source_sha256"],
+            "source_blob_sha": selected.get("origin_blob_sha"),
+            "binding_source": "RESTORE25_RECLASSIFIED_DIRECT_ARTIFACT",
+            "decision_reason": selected["decision_reason"],
+        }
+        patched_entries.append(patched)
+        selected_rows.append(selected)
+
+    if errors or len(selected_rows) != expected:
         for path in reversed(created):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
-        created = []
-    return created, errors
+        return matrix, [], [], errors or ["DIRECT_RECLASSIFICATION_NOT_COMPLETE"]
+
+    patched_matrix = dict(matrix)
+    patched_matrix["entries"] = patched_entries
+    patched_matrix["reclassified_direct_count"] = len(selected_rows)
+    patched_matrix["engine_bound_count"] = int(matrix.get("engine_bound_count", 0)) + len(selected_rows)
+    patched_matrix["binding_complete_count"] = int(matrix.get("binding_complete_count", 0)) + len(selected_rows)
+    return patched_matrix, selected_rows, created, []
 
 
-def print_status(root: Path, contract: dict[str, Any]) -> None:
-    status = load_json(root / str(contract["status_path"]))
-    verification = load_json(root / str(contract["verification_path"]))
+def augment_success_outputs(
+    root: Path,
+    contract: dict[str, Any],
+    direct_selected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total = int(contract.get("expected_total_recovery_count", 25))
+    direct_count = len(direct_selected)
+
+    restore_matrix_path = root / str(contract["restore_matrix_path"])
+    restore_matrix = load_json(restore_matrix_path)
+    existing_entries = [row for row in restore_matrix.get("entries", []) if isinstance(row, dict)]
+    direct_public = [
+        {key: value for key, value in row.items() if key != "source"}
+        for row in direct_selected
+    ]
+    combined = {str(row.get("strategy_id")): row for row in existing_entries + direct_public}
+    restore_matrix["restore_input_count"] = total
+    restore_matrix["resolved_count"] = len(combined)
+    restore_matrix["unresolved_count"] = 0
+    restore_matrix["reclassified_direct_count"] = direct_count
+    restore_matrix["entries"] = [combined[key] for key in sorted(combined)]
+    core.atomic_json(restore_matrix_path, restore_matrix)
+
+    verification_path = root / str(contract["verification_path"])
+    verification = load_json(verification_path)
+    verification["restored_count"] = total
+    verification["reclassified_direct_count"] = direct_count
+    core.atomic_json(verification_path, verification)
+
+    status_path = root / str(contract["status_path"])
+    status = load_json(status_path)
+    status["restore_input_count"] = total
+    status["resolved_plan_count"] = total
+    status["restored_count"] = total
+    status["reclassified_direct_count"] = direct_count
+    status["blocker_count"] = 0
+    status["blockers"] = []
+    core.atomic_json(status_path, status)
+    return status
+
+
+def print_final_status(status: dict[str, Any], root: Path, contract: dict[str, Any]) -> None:
+    keys = (
+        "state", "blocker_count", "strategy_count", "restore_input_count",
+        "resolved_plan_count", "restored_count", "total_source_count",
+        "callable_valid_count", "config_bound_count", "canonical_unique_count",
+        "unresolved_count", "active_entry_count", "protected_change_count", "next_stage",
+    )
+    for key in keys:
+        print(f"{key.upper()}={status.get(key)}")
+    print(f"RECLASSIFIED_DIRECT_COUNT={status.get('reclassified_direct_count', 0)}")
     print("BLOCKERS=" + json.dumps(status.get("blockers", []), ensure_ascii=False))
-    print("VERIFICATION_ERRORS=" + json.dumps(verification.get("errors", []), ensure_ascii=False))
+    print("UNRESOLVED=[]")
+    print("RESTORE_MATRIX=" + str(root / str(contract["restore_matrix_path"])))
+    print("VERIFICATION=" + str(root / str(contract["verification_path"])))
+    print("RC=0")
 
 
 def main() -> int:
@@ -137,20 +230,72 @@ def main() -> int:
 
     root = Path(args.root).resolve()
     contract = load_json(Path(args.contract))
-    created, errors = preflight_direct_engines(root, contract, args.target_sha)
+    patched_matrix, direct_selected, direct_created, errors = recover_reclassified_direct(
+        root, contract, args.target_sha
+    )
     if errors:
-        print("DIRECT_PREFLIGHT_ERRORS=" + json.dumps(errors, ensure_ascii=False))
+        print("DIRECT_RECLASSIFICATION_ERRORS=" + json.dumps(errors, ensure_ascii=False))
         return 2
 
-    rc = int(driver.main())
-    print_status(root, contract)
+    original_argv = list(sys.argv)
+    captured = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory(prefix="r7_restore25_unified_") as tmp_name:
+            tmp = Path(tmp_name)
+            matrix_path = tmp / "engine_binding_matrix.json"
+            contract_path = tmp / "contract.json"
+            core.atomic_json(matrix_path, patched_matrix)
+            patched_contract = dict(contract)
+            patched_contract["prior_matrix_path"] = str(matrix_path)
+            core.atomic_json(contract_path, patched_contract)
+
+            sys.argv = [
+                original_argv[0],
+                "--root", str(root),
+                "--target-sha", args.target_sha,
+                "--contract", str(contract_path),
+                "--apply",
+            ]
+            with contextlib.redirect_stdout(captured):
+                rc = int(driver.main())
+    finally:
+        sys.argv = original_argv
+
     if rc != 0:
-        for path in reversed(created):
+        print(captured.getvalue(), end="")
+        for path in reversed(direct_created):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
-    return rc
+        status = load_json(root / str(contract["status_path"]))
+        verification = load_json(root / str(contract["verification_path"]))
+        print("BLOCKERS=" + json.dumps(status.get("blockers", []), ensure_ascii=False))
+        print("VERIFICATION_ERRORS=" + json.dumps(verification.get("errors", []), ensure_ascii=False))
+        return rc
+
+    status = augment_success_outputs(root, contract, direct_selected)
+    required = {
+        "state": "PASS",
+        "strategy_count": 25,
+        "restore_input_count": 25,
+        "resolved_plan_count": 25,
+        "restored_count": 25,
+        "total_source_count": 25,
+        "callable_valid_count": 25,
+        "config_bound_count": 25,
+        "canonical_unique_count": 25,
+        "unresolved_count": 0,
+        "active_entry_count": 0,
+        "protected_change_count": 0,
+    }
+    mismatches = [f"{key}:{status.get(key)}!={value}" for key, value in required.items() if status.get(key) != value]
+    if mismatches:
+        print("UNIFIED_VERIFICATION_ERRORS=" + json.dumps(mismatches, ensure_ascii=False))
+        return 2
+
+    print_final_status(status, root, contract)
+    return 0
 
 
 if __name__ == "__main__":

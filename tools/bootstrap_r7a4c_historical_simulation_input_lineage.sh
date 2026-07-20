@@ -104,6 +104,147 @@ else:
     print("REJECTED_MARKET_REASON_HISTOGRAM=" + json.dumps(sorted(histogram.items(), key=lambda pair: (-pair[1], pair[0])), ensure_ascii=False))
     print("REJECTED_MARKET_SAMPLE=" + json.dumps(normalized[:20], ensure_ascii=False))
 PY
+
+  python3 - "$ROOT" "$MANIFEST" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+root = Path(sys.argv[1]).resolve()
+manifest_path = Path(sys.argv[2])
+max_bytes = 16 * 1024 * 1024
+max_depth = 4
+max_nodes = 200
+max_candidates = 24
+
+aliases = {
+    "open", "o", "high", "h", "low", "l", "close", "c",
+    "timestamp", "time", "ts", "datetime", "date",
+    "volume", "vol", "v", "symbol", "timeframe", "interval",
+}
+ohlc = {"open", "high", "low", "close"}
+
+
+def norm_key(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def type_name(value: Any) -> str:
+    return type(value).__name__
+
+
+def first_non_null(items: list[Any]) -> Any:
+    for item in items[:20]:
+        if item is not None:
+            return item
+    return None
+
+
+def inspect_payload(payload: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "root_type": type_name(payload),
+        "root_keys": sorted(str(key) for key in payload.keys())[:40] if isinstance(payload, dict) else [],
+        "root_length": len(payload) if isinstance(payload, (dict, list)) else None,
+        "array_candidates": [],
+        "columnar_candidates": [],
+    }
+    stack: list[tuple[str, Any, int]] = [("$", payload, 0)]
+    visited = 0
+    while stack and visited < max_nodes:
+        path, node, depth = stack.pop()
+        visited += 1
+        if depth > max_depth:
+            continue
+        if isinstance(node, dict):
+            normalized_keys = {norm_key(key): key for key in node.keys()}
+            key_hits = sorted(key for key in normalized_keys if key in aliases)
+            ohlc_hits = sorted(key for key in normalized_keys if key in ohlc)
+            list_lengths = {
+                norm_key(key): len(value)
+                for key, value in node.items()
+                if isinstance(value, list)
+            }
+            if len(ohlc_hits) >= 4 and list_lengths:
+                result["columnar_candidates"].append({
+                    "path": path,
+                    "keys": sorted(normalized_keys)[:40],
+                    "ohlc_hits": ohlc_hits,
+                    "list_lengths": dict(sorted(list_lengths.items())[:20]),
+                })
+            for key, child in list(node.items())[:80]:
+                if isinstance(child, (dict, list)):
+                    stack.append((f"{path}.{key}", child, depth + 1))
+        elif isinstance(node, list):
+            sample = first_non_null(node)
+            sample_keys: list[str] = []
+            key_hits: list[str] = []
+            ohlc_hits: list[str] = []
+            if isinstance(sample, dict):
+                normalized_keys = {norm_key(key) for key in sample.keys()}
+                sample_keys = sorted(normalized_keys)[:40]
+                key_hits = sorted(key for key in normalized_keys if key in aliases)
+                ohlc_hits = sorted(key for key in normalized_keys if key in ohlc)
+            result["array_candidates"].append({
+                "path": path,
+                "length": len(node),
+                "sample_type": type_name(sample),
+                "sample_keys": sample_keys,
+                "key_hits": key_hits,
+                "ohlc_hits": ohlc_hits,
+            })
+            if isinstance(sample, (dict, list)):
+                stack.append((f"{path}[0]", sample, depth + 1))
+        if len(result["array_candidates"]) >= max_candidates and len(result["columnar_candidates"]) >= max_candidates:
+            break
+    result["array_candidates"] = result["array_candidates"][:max_candidates]
+    result["columnar_candidates"] = result["columnar_candidates"][:max_candidates]
+    result["visited_nodes"] = visited
+    return result
+
+
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print("JSON_SHAPE_PROBE_ERROR=" + json.dumps(f"MANIFEST:{type(exc).__name__}:{exc}"))
+    raise SystemExit(0)
+
+rows = manifest.get("rejected_market_sources", [])
+probes: list[dict[str, Any]] = []
+for row in rows if isinstance(rows, list) else []:
+    if not isinstance(row, dict):
+        continue
+    reason = str(row.get("reason") or "")
+    if "MARKET_COLUMNS_MISSING" not in reason:
+        continue
+    repo_path = str(row.get("path") or "")
+    item: dict[str, Any] = {"path": repo_path, "prior_reason": reason}
+    try:
+        candidate = (root / repo_path).resolve()
+        if root != candidate and root not in candidate.parents:
+            raise ValueError("PATH_OUTSIDE_ROOT")
+        item["exists"] = candidate.is_file()
+        if not candidate.is_file():
+            item["probe_error"] = "FILE_MISSING"
+            probes.append(item)
+            continue
+        size = candidate.stat().st_size
+        item["size_bytes"] = size
+        if size > max_bytes:
+            item["probe_error"] = f"FILE_TOO_LARGE:{size}"
+            probes.append(item)
+            continue
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        item.update(inspect_payload(payload))
+    except Exception as exc:
+        item["probe_error"] = f"{type(exc).__name__}:{exc}"
+    probes.append(item)
+
+print("JSON_SHAPE_PROBE_COUNT=" + str(len(probes)))
+print("JSON_SHAPE_PROBE=" + json.dumps(probes, ensure_ascii=False, sort_keys=True))
+PY
 fi
 
 echo 'R7A4C_BOOTSTRAP_COMPLETE'

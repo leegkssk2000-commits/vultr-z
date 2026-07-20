@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -67,11 +68,19 @@ def sha256_file(path: Path) -> str:
 
 
 def resolve_entrypoint(path: Path, preferred: str | None = None) -> tuple[str, Callable[..., Any]]:
-    spec = importlib.util.spec_from_file_location(f"zel_strategy_{path.stem}", path)
+    resolved = path.resolve()
+    module_suffix = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    module_name = f"zel_strategy_{resolved.stem}_{module_suffix}"
+    spec = importlib.util.spec_from_file_location(module_name, resolved)
     if spec is None or spec.loader is None:
-        raise ImportError(f"STRATEGY_IMPORT_FAILED:{path}")
+        raise ImportError(f"STRATEGY_IMPORT_FAILED:{resolved}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
 
     names = [preferred] if preferred else []
     names += ["evaluate", "generate_signal", "signal", "run", "decide"]
@@ -88,7 +97,7 @@ def resolve_entrypoint(path: Path, preferred: str | None = None) -> tuple[str, C
     ]
     if len(candidates) == 1:
         return candidates[0]
-    raise LookupError(f"ENTRYPOINT_NOT_UNIQUE:{path}:{[name for name, _ in candidates]}")
+    raise LookupError(f"ENTRYPOINT_NOT_UNIQUE:{resolved}:{[name for name, _ in candidates]}")
 
 
 def build_binding(strategy_id: str, implementation_path: str, preferred_entrypoint: str | None = None) -> StrategyBinding:

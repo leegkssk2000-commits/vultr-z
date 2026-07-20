@@ -4,12 +4,21 @@ import importlib.util
 import sys
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py"
+ROOT = Path(__file__).resolve().parents[1]
+MODULE_PATH = ROOT / "tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py"
+STRICT_PATH = ROOT / "tools/r7a3d_strict_lineage_postprocess.py"
+
 spec = importlib.util.spec_from_file_location("r7a3d_lineage", MODULE_PATH)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+
+strict_spec = importlib.util.spec_from_file_location("r7a3d_strict", STRICT_PATH)
+assert strict_spec and strict_spec.loader
+strict = importlib.util.module_from_spec(strict_spec)
+sys.modules[strict_spec.name] = strict
+strict_spec.loader.exec_module(strict)
 
 
 def analyze(path: str, text: str, ids: list[str], tree=None):
@@ -35,6 +44,7 @@ def test_direct_strategy_module_is_strong():
     assert row["kind"] == "DIRECT_STRATEGY_MODULE"
     assert row["strength"] == "strong"
     assert row["target_callable"] == "evaluate"
+    assert strict.eligible_strong(row) is True
 
 
 def test_explicit_registry_callable_is_strong():
@@ -44,8 +54,9 @@ def evaluate(context):
 STRATEGIES = {'alpha_combo': evaluate}
 """
     found = analyze("backend/strategy_registry.py", text, ["alpha_combo"])
-    rows = found["alpha_combo"]
-    assert any(row["kind"] == "PYTHON_LITERAL_REGISTRY_KEY" and row["strength"] == "strong" for row in rows)
+    row = next(row for row in found["alpha_combo"] if row["kind"] == "PYTHON_LITERAL_REGISTRY_KEY")
+    assert row["strength"] == "strong"
+    assert strict.eligible_strong(row) is True
 
 
 def test_config_registry_requires_shared_engine():
@@ -58,6 +69,17 @@ STRATEGIES = {'range_fade': {'trigger': 'x', 'invalidation': 'y', 'risk': 'z'}}
     row = next(row for row in found["range_fade"] if row["kind"] == "PYTHON_LITERAL_REGISTRY_KEY")
     assert row["strength"] == "strong"
     assert row["callable"] == "evaluate"
+    assert strict.eligible_strong(row) is True
+
+
+def test_arbitrary_string_mapping_is_downgraded():
+    found = analyze("backend/strategy_registry.py", "STRATEGIES={'bb_revert':'active'}\n", ["bb_revert"])
+    row = found["bb_revert"][0]
+    assert row["strength"] == "strong"
+    mapping = {"strategy_id": "bb_revert", "evidence": [row]}
+    result = strict.strict_mapping(mapping)
+    assert result["lineage_status"] == "PARTIAL"
+    assert result["strict_downgraded_evidence_count"] == 1
 
 
 def test_json_mentions_remain_partial():

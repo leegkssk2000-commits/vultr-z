@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "backend/strategy25/shared_s
 spec = importlib.util.spec_from_file_location("shared_strategy_adapter", MODULE_PATH)
 assert spec and spec.loader
 adapter = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = adapter
 spec.loader.exec_module(adapter)
 
 

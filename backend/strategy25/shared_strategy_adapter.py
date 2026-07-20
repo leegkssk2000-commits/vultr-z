@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import inspect
@@ -18,6 +19,7 @@ REQUIRED_RECEIPT_KEYS = (
     "signal",
     "invalidation",
 )
+ENTRYPOINT_NAMES = ("evaluate", "generate_signal", "signal", "run", "decide")
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class StrategyBinding:
     implementation_path: str
     source_sha: str
     entrypoint: str
+    entrypoint_kind: str = "module_function"
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,54 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_entrypoint(path: Path, preferred: str | None = None) -> tuple[str, Callable[..., Any]]:
+def resolve_entrypoint_descriptor(path: Path, preferred: str | None = None) -> tuple[str, str]:
+    """Resolve the source-level entrypoint without importing production code.
+
+    This is the A3 static contract boundary. Runtime construction/invocation is
+    intentionally deferred to lifecycle/runtime integration gates.
+    """
+    resolved = path.resolve()
+    try:
+        tree = ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved))
+    except Exception as exc:
+        raise ValueError(f"STRATEGY_AST_PARSE_FAILED:{resolved}:{type(exc).__name__}") from exc
+
+    preferred_names = tuple(name for name in ([preferred] if preferred else []) if name) + ENTRYPOINT_NAMES
+    module_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+    }
+    class_methods: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
+            continue
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and not child.name.startswith("_"):
+                class_methods.append(f"{node.name}.{child.name}")
+
+    preferred_module = [name for name in preferred_names if name in module_functions]
+    preferred_class = [qualified for qualified in class_methods if qualified.rsplit(".", 1)[-1] in preferred_names]
+    exact = [(name, "module_function") for name in preferred_module]
+    exact += [(name, "class_method") for name in preferred_class]
+    exact = list(dict.fromkeys(exact))
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise LookupError(f"ENTRYPOINT_AMBIGUOUS:{resolved}:{[name for name, _ in exact]}")
+
+    public_module = sorted(module_functions)
+    public_class = sorted(class_methods)
+    fallback = [(name, "module_function") for name in public_module]
+    fallback += [(name, "class_method") for name in public_class]
+    if len(fallback) == 1:
+        return fallback[0]
+    raise LookupError(f"ENTRYPOINT_NOT_UNIQUE:{resolved}:{[name for name, _ in fallback]}")
+
+
+def resolve_runtime_callable(path: Path, entrypoint: str, entrypoint_kind: str) -> Callable[..., Any]:
+    if entrypoint_kind != "module_function" or "." in entrypoint:
+        raise RuntimeError(f"ENTRYPOINT_REQUIRES_RUNTIME_FACTORY_BINDING:{entrypoint}")
     resolved = path.resolve()
     module_suffix = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
     module_name = f"zel_strategy_{resolved.stem}_{module_suffix}"
@@ -81,35 +131,23 @@ def resolve_entrypoint(path: Path, preferred: str | None = None) -> tuple[str, C
     except Exception:
         sys.modules.pop(module_name, None)
         raise
-
-    names = [preferred] if preferred else []
-    names += ["evaluate", "generate_signal", "signal", "run", "decide"]
-    for name in names:
-        if name and hasattr(module, name) and callable(getattr(module, name)):
-            return name, getattr(module, name)
-
-    candidates = [
-        (name, value)
-        for name, value in vars(module).items()
-        if callable(value)
-        and not name.startswith("_")
-        and getattr(value, "__module__", None) == module.__name__
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    raise LookupError(f"ENTRYPOINT_NOT_UNIQUE:{resolved}:{[name for name, _ in candidates]}")
+    value = getattr(module, entrypoint, None)
+    if not callable(value):
+        raise LookupError(f"RUNTIME_ENTRYPOINT_MISSING:{resolved}:{entrypoint}")
+    return value
 
 
 def build_binding(strategy_id: str, implementation_path: str, preferred_entrypoint: str | None = None) -> StrategyBinding:
     path = Path(implementation_path).resolve()
     if not path.is_file():
         raise FileNotFoundError(f"IMPLEMENTATION_MISSING:{path}")
-    entrypoint, _ = resolve_entrypoint(path, preferred_entrypoint)
+    entrypoint, entrypoint_kind = resolve_entrypoint_descriptor(path, preferred_entrypoint)
     return StrategyBinding(
         strategy_id=strategy_id,
         implementation_path=str(path),
         source_sha=sha256_file(path),
         entrypoint=entrypoint,
+        entrypoint_kind=entrypoint_kind,
     )
 
 
@@ -119,12 +157,9 @@ def invoke(binding: StrategyBinding, *, event_id: str, feature_ts: str, context:
     current_sha = sha256_file(path)
     if current_sha != binding.source_sha:
         raise ValueError("SOURCE_SHA_DRIFT")
-    _, entrypoint = resolve_entrypoint(path, binding.entrypoint)
+    entrypoint = resolve_runtime_callable(path, binding.entrypoint, binding.entrypoint_kind)
     signature = inspect.signature(entrypoint)
-    if len(signature.parameters) == 0:
-        raw = entrypoint()
-    else:
-        raw = entrypoint(context)
+    raw = entrypoint() if len(signature.parameters) == 0 else entrypoint(context)
 
     if isinstance(raw, dict):
         signal = raw.get("signal") or raw.get("action") or raw.get("decision") or "hold"
@@ -144,26 +179,41 @@ def invoke(binding: StrategyBinding, *, event_id: str, feature_ts: str, context:
     )
 
 
-def load_bindings_from_a3_status(status_path: str | Path) -> list[StrategyBinding]:
+def diagnose_bindings_from_a3_status(status_path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(status_path).read_text(encoding="utf-8"))
     rows = data.get("strategies")
     if not isinstance(rows, list) or len(rows) != 25:
-        raise ValueError("A3_STRATEGY_ROWS_INVALID")
+        return {"ok": False, "strategy_count": 0, "bindings": [], "failures": [{"error": "A3_STRATEGY_ROWS_INVALID"}]}
     bindings: list[StrategyBinding] = []
+    failures: list[dict[str, Any]] = []
     for row in rows:
         strategy_id = str(row.get("strategy_id", "")).strip()
         refs = [str(x) for x in row.get("implementation_refs", []) if str(x).endswith(".py")]
+        attempts: list[dict[str, str]] = []
         if not strategy_id or not refs:
-            raise ValueError(f"STRATEGY_BINDING_INCOMPLETE:{strategy_id}")
-        errors: list[str] = []
+            failures.append({"strategy_id": strategy_id, "refs": refs, "error": "STRATEGY_BINDING_INCOMPLETE"})
+            continue
         for ref in refs:
             try:
-                bindings.append(build_binding(strategy_id, ref))
+                binding = build_binding(strategy_id, ref)
+                bindings.append(binding)
                 break
             except Exception as exc:
-                errors.append(f"{ref}:{type(exc).__name__}")
+                attempts.append({"path": ref, "error": f"{type(exc).__name__}:{exc}"})
         else:
-            raise ValueError(f"NO_RESOLVABLE_ENTRYPOINT:{strategy_id}:{errors}")
-    if len({binding.strategy_id for binding in bindings}) != 25:
-        raise ValueError("STRATEGY_BINDING_COUNT_NOT_25")
-    return bindings
+            failures.append({"strategy_id": strategy_id, "refs": refs, "attempts": attempts, "error": "NO_RESOLVABLE_ENTRYPOINT"})
+    unique_ids = {binding.strategy_id for binding in bindings}
+    return {
+        "ok": not failures and len(unique_ids) == 25,
+        "strategy_count": len(rows),
+        "binding_count": len(bindings),
+        "bindings": [asdict(binding) for binding in bindings],
+        "failures": failures,
+    }
+
+
+def load_bindings_from_a3_status(status_path: str | Path) -> list[StrategyBinding]:
+    diagnosis = diagnose_bindings_from_a3_status(status_path)
+    if not diagnosis["ok"]:
+        raise ValueError("STRATEGY_BINDING_DIAGNOSIS_FAILED:" + json.dumps(diagnosis["failures"], ensure_ascii=False))
+    return [StrategyBinding(**row) for row in diagnosis["bindings"]]

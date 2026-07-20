@@ -1,0 +1,595 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+
+try:
+    from backend.engine.lbot_models import DecisionContext, StrategyDecision, StrategyIntent
+    from backend.engine.lbot_strategy_base import LBotStrategyBase
+    _LBOT_AVAILABLE = True
+except Exception:
+    _LBOT_AVAILABLE = False
+
+    class LBotStrategyBase: # type: ignore
+        strategy_name = "turtle_trend"
+
+    class StrategyIntent: # type: ignore
+        HOLD = "hold"
+        ENTER_LONG = "enter_long"
+        EXIT_LONG = "exit_long"
+        REDUCE = "reduce"
+        BLOCK = "block"
+
+    class StrategyDecision: # type: ignore
+        def __init__(
+            self,
+            ok: bool,
+            intent: str,
+            confidence: float = 0.0,
+            reason: str = "",
+            target_qty: float = 0.0,
+            target_price: float = 0.0,
+            tags: Optional[List[str]] = None,
+            payload: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            self.ok = ok
+            self.intent = intent
+            self.confidence = confidence
+            self.reason = reason
+            self.target_qty = target_qty
+            self.target_price = target_price
+            self.tags = tags or []
+            self.payload = payload or {}
+
+    DecisionContext = Any # type: ignore
+
+
+@dataclass
+class TurtleTrendConfig:
+    donchian_len: int = 20
+    atr_len: int = 20
+    ema_fast_len: int = 20
+    ema_slow_len: int = 55
+    min_bars: int = 80
+
+    min_atr_pct: float = 0.35
+    max_atr_pct: float = 6.00
+
+    base_rr: float = 2.60
+    beam_rr: float = 3.20
+    stop_atr_mult: float = 2.00
+    trail_atr_mult: float = 1.20
+
+    long_base_size: float = 0.55
+    short_base_size: float = 0.35
+
+    long_beam_bonus: float = 0.20
+    short_beam_bonus: float = 0.15
+
+    long_scale_in_size: float = 0.30
+    short_scale_in_size: float = 0.20
+
+    long_dip_add_size: float = 0.25
+    short_dip_add_size: float = 0.15
+
+    max_pyramiding: int = 4
+    max_add_count: int = 3
+
+    beam_body_ratio_min: float = 0.55
+    beam_range_atr_min: float = 1.10
+    beam_close_location_min: float = 0.70
+
+    scale_in_step_atr: float = 0.80
+    dip_reclaim_atr: float = 0.35
+    max_adverse_atr_for_dip: float = 1.20
+
+
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        if pd.isna(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+
+
+def _atr(df: pd.DataFrame, length: int) -> pd.Series:
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    prev_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    return tr.rolling(length, min_periods=length).mean()
+
+
+def _donchian_high(series: pd.Series, length: int) -> pd.Series:
+    return series.shift(1).rolling(length, min_periods=length).max()
+
+
+def _donchian_low(series: pd.Series, length: int) -> pd.Series:
+    return series.shift(1).rolling(length, min_periods=length).min()
+
+
+def _close_location(close: float, low: float, high: float) -> float:
+    width = max(high - low, 1e-9)
+    return (close - low) / width
+
+
+def _body_ratio(open_: float, close: float, low: float, high: float) -> float:
+    width = max(high - low, 1e-9)
+    return abs(close - open_) / width
+
+
+def _infer_position_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    state = dict(state or {})
+    return {
+        "position_side": str(state.get("position_side") or "").lower(),
+        "position_qty": _to_float(state.get("position_qty")),
+        "avg_entry": _to_float(state.get("avg_entry")),
+        "add_count": int(state.get("add_count") or 0),
+        "last_add_price": _to_float(state.get("last_add_price")),
+    }
+
+
+def _build_result(
+    *,
+    side: Optional[str],
+    action: str,
+    size: float,
+    entry: float,
+    sl: float,
+    tp: float,
+    pyramiding: int,
+    why: str,
+    skill: str,
+    confidence: float,
+    tags: List[str],
+    indicators: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "side": side,
+        "action": action,
+        "size": float(max(size, 0.0)),
+        "entry": float(entry),
+        "sl": float(sl),
+        "tp": float(tp),
+        "pyramiding": int(pyramiding),
+        "why": why,
+        "skill": skill,
+        "confidence": float(confidence),
+        "tags": tags,
+        "indicators": indicators,
+    }
+
+
+def strategy(
+    df: pd.DataFrame,
+    *,
+    state: Optional[Dict[str, Any]] = None,
+    risk_action: str = "hold",
+    config: Optional[TurtleTrendConfig] = None,
+) -> Dict[str, Any]:
+    cfg = config or TurtleTrendConfig()
+
+    required_cols = {"open", "high", "low", "close"}
+    if df is None or df.empty or not required_cols.issubset(df.columns):
+        return {
+            "side": None,
+            "action": "hold",
+            "size": 0.0,
+            "entry": 0.0,
+            "sl": 0.0,
+            "tp": 0.0,
+            "pyramiding": cfg.max_pyramiding,
+            "why": "turtle_invalid_input",
+            "skill": "none",
+            "confidence": 0.0,
+            "tags": ["invalid_input"],
+            "indicators": {},
+        }
+
+    if len(df) < cfg.min_bars:
+        return {
+            "side": None,
+            "action": "hold",
+            "size": 0.0,
+            "entry": 0.0,
+            "sl": 0.0,
+            "tp": 0.0,
+            "pyramiding": cfg.max_pyramiding,
+            "why": "turtle_not_enough_bars",
+            "skill": "none",
+            "confidence": 0.0,
+            "tags": ["warmup"],
+            "indicators": {},
+        }
+
+    if str(risk_action or "hold").lower() in ("block", "stop", "rollback"):
+        return {
+            "side": None,
+            "action": "hold",
+            "size": 0.0,
+            "entry": 0.0,
+            "sl": 0.0,
+            "tp": 0.0,
+            "pyramiding": cfg.max_pyramiding,
+            "why": f"risk_gate_{risk_action}",
+            "skill": "none",
+            "confidence": 0.0,
+            "tags": ["risk_gated"],
+            "indicators": {},
+        }
+
+    df = df.copy()
+    df["open"] = df["open"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["close"] = df["close"].astype(float)
+
+    df["atr"] = _atr(df, cfg.atr_len)
+    df["ema_fast"] = _ema(df["close"], cfg.ema_fast_len)
+    df["ema_slow"] = _ema(df["close"], cfg.ema_slow_len)
+    df["dc_high"] = _donchian_high(df["high"], cfg.donchian_len)
+    df["dc_low"] = _donchian_low(df["low"], cfg.donchian_len)
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    price = _to_float(last["close"])
+    high = _to_float(last["high"])
+    low = _to_float(last["low"])
+    open_ = _to_float(last["open"])
+    atr_now = _to_float(last["atr"])
+    ema_fast = _to_float(last["ema_fast"])
+    ema_slow = _to_float(last["ema_slow"])
+    ema_fast_prev = _to_float(prev["ema_fast"])
+    dc_high = _to_float(last["dc_high"])
+    dc_low = _to_float(last["dc_low"])
+
+    if min(atr_now, ema_fast, ema_slow, dc_high, dc_low) <= 0:
+        return {
+            "side": None,
+            "action": "hold",
+            "size": 0.0,
+            "entry": 0.0,
+            "sl": 0.0,
+            "tp": 0.0,
+            "pyramiding": cfg.max_pyramiding,
+            "why": "turtle_indicator_nan",
+            "skill": "none",
+            "confidence": 0.0,
+            "tags": ["indicator_nan"],
+            "indicators": {},
+        }
+
+    atr_pct = (atr_now / max(price, 1e-9)) * 100.0
+    ema_slope_up = ema_fast > ema_fast_prev
+    ema_slope_down = ema_fast < ema_fast_prev
+
+    trend_long = price > ema_fast > ema_slow and ema_slope_up
+    trend_short = price < ema_fast < ema_slow and ema_slope_down
+
+    breakout_long = price > dc_high
+    breakout_short = price < dc_low
+
+    candle_body_ratio = _body_ratio(open_, price, low, high)
+    range_atr = (high - low) / max(atr_now, 1e-9)
+    close_loc = _close_location(price, low, high)
+
+    beam_long = (
+        breakout_long
+        and trend_long
+        and candle_body_ratio >= cfg.beam_body_ratio_min
+        and range_atr >= cfg.beam_range_atr_min
+        and close_loc >= cfg.beam_close_location_min
+    )
+
+    beam_short = (
+        breakout_short
+        and trend_short
+        and candle_body_ratio >= cfg.beam_body_ratio_min
+        and range_atr >= cfg.beam_range_atr_min
+        and (1.0 - close_loc) >= cfg.beam_close_location_min
+    )
+
+    vol_ok = cfg.min_atr_pct <= atr_pct <= cfg.max_atr_pct
+    pos = _infer_position_state(state)
+
+    indicators = {
+        "price": round(price, 6),
+        "atr": round(atr_now, 6),
+        "atr_pct": round(atr_pct, 6),
+        "ema_fast": round(ema_fast, 6),
+        "ema_slow": round(ema_slow, 6),
+        "dc_high": round(dc_high, 6),
+        "dc_low": round(dc_low, 6),
+        "trend_long": trend_long,
+        "trend_short": trend_short,
+        "breakout_long": breakout_long,
+        "breakout_short": breakout_short,
+        "beam_long": beam_long,
+        "beam_short": beam_short,
+        "body_ratio": round(candle_body_ratio, 6),
+        "range_atr": round(range_atr, 6),
+        "close_location": round(close_loc, 6),
+        "position_side": pos["position_side"],
+        "position_qty": pos["position_qty"],
+        "avg_entry": pos["avg_entry"],
+        "add_count": pos["add_count"],
+    }
+
+    if not vol_ok:
+        return _build_result(
+            side=None,
+            action="hold",
+            size=0.0,
+            entry=price,
+            sl=price,
+            tp=price,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_volatility_out_of_range",
+            skill="none",
+            confidence=0.0,
+            tags=["volatility_gate"],
+            indicators=indicators,
+        )
+
+    long_stop = min(price - cfg.stop_atr_mult * atr_now, ema_fast - cfg.trail_atr_mult * atr_now, dc_low)
+    short_stop = max(price + cfg.stop_atr_mult * atr_now, ema_fast + cfg.trail_atr_mult * atr_now, dc_high)
+
+    long_risk = max(price - long_stop, atr_now * 0.5)
+    short_risk = max(short_stop - price, atr_now * 0.5)
+
+    long_tp = price + long_risk * (cfg.beam_rr if beam_long else cfg.base_rr)
+    short_tp = price - short_risk * (cfg.beam_rr if beam_short else cfg.base_rr)
+
+    in_long = pos["position_side"] == "long" and pos["position_qty"] > 0
+    in_short = pos["position_side"] == "short" and pos["position_qty"] > 0
+
+    can_add_more = pos["add_count"] < cfg.max_add_count
+
+    long_scale_in = False
+    short_scale_in = False
+    long_dip_add = False
+    short_dip_add = False
+
+    if in_long and can_add_more and trend_long:
+        ref_price = pos["last_add_price"] if pos["last_add_price"] > 0 else pos["avg_entry"]
+        long_scale_in = price >= ref_price + atr_now * cfg.scale_in_step_atr
+        long_dip_add = (
+            low <= ema_fast
+            and price >= ema_fast + atr_now * cfg.dip_reclaim_atr
+            and price >= pos["avg_entry"] - atr_now * cfg.max_adverse_atr_for_dip
+        )
+
+    if in_short and can_add_more and trend_short:
+        ref_price = pos["last_add_price"] if pos["last_add_price"] > 0 else pos["avg_entry"]
+        short_scale_in = price <= ref_price - atr_now * cfg.scale_in_step_atr
+        short_dip_add = (
+            high >= ema_fast
+            and price <= ema_fast - atr_now * cfg.dip_reclaim_atr
+            and price <= pos["avg_entry"] + atr_now * cfg.max_adverse_atr_for_dip
+        )
+
+    if breakout_long and trend_long and not in_long and not in_short:
+        size = cfg.long_base_size + (cfg.long_beam_bonus if beam_long else 0.0)
+        return _build_result(
+            side="long",
+            action="enter",
+            size=size,
+            entry=price,
+            sl=long_stop,
+            tp=long_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_long_breakout",
+            skill="long_beam" if beam_long else "breakout_entry",
+            confidence=0.86 if beam_long else 0.72,
+            tags=["turtle", "breakout", "trend", "long"],
+            indicators=indicators,
+        )
+
+    if breakout_short and trend_short and not in_long and not in_short:
+        size = cfg.short_base_size + (cfg.short_beam_bonus if beam_short else 0.0)
+        return _build_result(
+            side="short",
+            action="enter",
+            size=size,
+            entry=price,
+            sl=short_stop,
+            tp=short_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_short_breakout",
+            skill="short_beam" if beam_short else "breakout_entry",
+            confidence=0.82 if beam_short else 0.68,
+            tags=["turtle", "breakout", "trend", "short"],
+            indicators=indicators,
+        )
+
+    if long_scale_in:
+        return _build_result(
+            side="long",
+            action="add",
+            size=cfg.long_scale_in_size,
+            entry=price,
+            sl=long_stop,
+            tp=long_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_long_scale_in",
+            skill="scale_in",
+            confidence=0.74,
+            tags=["turtle", "scale_in", "trend", "long"],
+            indicators=indicators,
+        )
+
+    if long_dip_add:
+        return _build_result(
+            side="long",
+            action="add",
+            size=cfg.long_dip_add_size,
+            entry=price,
+            sl=long_stop,
+            tp=long_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_long_dip_add",
+            skill="dip_add",
+            confidence=0.69,
+            tags=["turtle", "dip_add", "trend", "long"],
+            indicators=indicators,
+        )
+
+    if short_scale_in:
+        return _build_result(
+            side="short",
+            action="add",
+            size=cfg.short_scale_in_size,
+            entry=price,
+            sl=short_stop,
+            tp=short_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_short_scale_in",
+            skill="scale_in",
+            confidence=0.70,
+            tags=["turtle", "scale_in", "trend", "short"],
+            indicators=indicators,
+        )
+
+    if short_dip_add:
+        return _build_result(
+            side="short",
+            action="add",
+            size=cfg.short_dip_add_size,
+            entry=price,
+            sl=short_stop,
+            tp=short_tp,
+            pyramiding=cfg.max_pyramiding,
+            why="turtle_short_dip_add",
+            skill="dip_add",
+            confidence=0.66,
+            tags=["turtle", "dip_add", "trend", "short"],
+            indicators=indicators,
+        )
+
+    hold_reason = "turtle_no_setup"
+    if breakout_long and not trend_long:
+        hold_reason = "long_breakout_but_trend_filter_failed"
+    elif breakout_short and not trend_short:
+        hold_reason = "short_breakout_but_trend_filter_failed"
+    elif in_long or in_short:
+        hold_reason = "position_active_but_no_add_signal"
+
+    return _build_result(
+        side=None,
+        action="hold",
+        size=0.0,
+        entry=price,
+        sl=price,
+        tp=price,
+        pyramiding=cfg.max_pyramiding,
+        why=hold_reason,
+        skill="none",
+        confidence=0.0,
+        tags=["hold"],
+        indicators=indicators,
+    )
+
+
+def _payload_to_df(payload: Dict[str, Any]) -> pd.DataFrame:
+    candidates = [
+        payload.get("ohlcv"),
+        payload.get("candles"),
+        payload.get("bars"),
+        payload.get("df"),
+    ]
+
+    rows = None
+    for candidate in candidates:
+        if isinstance(candidate, list) and candidate:
+            rows = candidate
+            break
+
+    if rows is None:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    if "timestamp" in df.columns and "ts" not in df.columns:
+        df["ts"] = df["timestamp"]
+    return df
+
+
+class TurtleTrendLBotStrategy(LBotStrategyBase):
+    strategy_name = "turtle_trend"
+
+    def decide(self, ctx: DecisionContext) -> StrategyDecision:
+        payload = dict(getattr(ctx.signal, "payload", {}) or {})
+        df = _payload_to_df(payload)
+
+        state = {
+            "position_side": payload.get("position_side") or payload.get("current_side"),
+            "position_qty": payload.get("position_qty") or payload.get("qty"),
+            "avg_entry": payload.get("avg_entry") or payload.get("entry_price"),
+            "add_count": payload.get("add_count") or 0,
+            "last_add_price": payload.get("last_add_price") or payload.get("avg_entry"),
+        }
+
+        result = strategy(
+            df,
+            state=state,
+            risk_action=str(getattr(ctx.risk, "action", "hold") or "hold"),
+            config=TurtleTrendConfig(),
+        )
+
+        side = result.get("side")
+        action = result.get("action")
+        reason = str(result.get("why") or "turtle_no_reason")
+        confidence = _to_float(result.get("confidence"))
+        size = _to_float(result.get("size"))
+        entry = _to_float(result.get("entry"))
+        tags = list(result.get("tags") or [])
+
+        if side == "long" and action in ("enter", "add"):
+            intent = StrategyIntent.ENTER_LONG
+            return StrategyDecision(
+                ok=True,
+                intent=intent,
+                confidence=confidence,
+                reason=reason,
+                target_qty=size,
+                target_price=entry,
+                tags=tags,
+                payload={"legacy_signal": result},
+            )
+
+        if side == "short" and action in ("enter", "add"):
+            return StrategyDecision(
+                ok=True,
+                intent=StrategyIntent.HOLD,
+                confidence=0.0,
+                reason="short_signal_generated_but_core_is_long_only",
+                target_qty=0.0,
+                target_price=entry,
+                tags=tags + ["short_pending_core_upgrade"],
+                payload={"legacy_signal": result},
+            )
+
+        return StrategyDecision(
+            ok=True,
+            intent=StrategyIntent.HOLD,
+            confidence=0.0,
+            reason=reason,
+            target_qty=0.0,
+            target_price=entry,
+            tags=tags,
+            payload={"legacy_signal": result},
+        )

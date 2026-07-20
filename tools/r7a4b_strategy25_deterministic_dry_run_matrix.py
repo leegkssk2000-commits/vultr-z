@@ -183,6 +183,8 @@ def build_context(strategy_id: str, rows: list[dict[str, Any]]) -> AttrBox:
 def normalize(value: Any, seen: set[int] | None = None) -> Any:
     if seen is None:
         seen = set()
+    if isinstance(value, Enum):
+        return normalize(value.value, seen)
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -191,8 +193,6 @@ def normalize(value: Any, seen: set[int] | None = None) -> Any:
         if math.isinf(value):
             return "Infinity" if value > 0 else "-Infinity"
         return round(value, 12)
-    if isinstance(value, Enum):
-        return normalize(value.value, seen)
     object_id = id(value)
     if object_id in seen:
         return "<cycle>"
@@ -264,7 +264,13 @@ def extract_intent(value: Any) -> str | None:
     if isinstance(value, dict):
         for key in ("intent", "action", "decision"):
             if key in value and value[key] is not None:
-                return str(value[key]).lower()
+                raw = value[key]
+                if isinstance(raw, Enum):
+                    raw = raw.value
+                text = str(raw).lower()
+                if "." in text and text.split(".", 1)[0].endswith("intent"):
+                    text = text.rsplit(".", 1)[-1]
+                return text
         for child in value.values():
             found = extract_intent(child)
             if found is not None:

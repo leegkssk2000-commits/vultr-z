@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections import namedtuple
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -11,6 +13,27 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+
+
+@dataclass
+class SampleDataclass:
+    intent: str
+    confidence: float
+
+
+class PlainObject:
+    def __init__(self) -> None:
+        self.intent = "hold"
+        self.payload = {"b": 2, "a": 1}
+
+
+class MissingAsdictObject:
+    def __init__(self) -> None:
+        self.intent = "hold"
+        self.payload = {"b": 2, "a": 1}
+
+    def __getattr__(self, name: str):
+        return None
 
 
 def complete_a4_status() -> dict:
@@ -50,12 +73,25 @@ def test_fixtures_are_deterministic_and_distinct() -> None:
     assert {"open", "high", "low", "close", "volume", "timestamp"}.issubset(first[0])
 
 
-def test_normalized_hash_is_stable() -> None:
+def test_normalized_hash_is_stable_for_attrbox() -> None:
     value = module.AttrBox(intent="hold", confidence=0.5, payload={"b": 2, "a": 1})
     normalized_a, digest_a = module.normalized_hash(value)
     normalized_b, digest_b = module.normalized_hash(value)
     assert normalized_a == normalized_b
     assert digest_a == digest_b
+    assert normalized_a["intent"] == "hold"
+
+
+def test_normalize_handles_missing_asdict_without_calling_none() -> None:
+    normalized, _ = module.normalized_hash(MissingAsdictObject())
+    assert normalized == {"intent": "hold", "payload": {"a": 1, "b": 2}}
+
+
+def test_normalize_handles_dataclass_namedtuple_and_plain_object() -> None:
+    Pair = namedtuple("Pair", ["intent", "confidence"])
+    assert module.normalize(SampleDataclass("hold", 0.5)) == {"confidence": 0.5, "intent": "hold"}
+    assert module.normalize(Pair("hold", 0.5)) == {"confidence": 0.5, "intent": "hold"}
+    assert module.normalize(PlainObject()) == {"intent": "hold", "payload": {"a": 1, "b": 2}}
 
 
 def test_dangerous_true_detection_is_recursive() -> None:

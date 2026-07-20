@@ -5,6 +5,8 @@ ROOT="${1:-/home/z/z}"
 SHA="${2:-}"
 RC=0
 TMP=""
+CONTRACT_REL="backend/contracts/ZOS_R7A3D_STRATEGY25_CANONICAL_IMPLEMENTATION_LINEAGE_AUDIT_v1.json"
+STATUS="$ROOT/runtime/r7a3d_strategy25_canonical_lineage_audit/status_latest.json"
 
 cleanup() {
   [[ -n "$TMP" ]] && rm -rf "$TMP"
@@ -23,14 +25,17 @@ git -C "$ROOT" -c safe.directory="$ROOT" cat-file -e "$SHA^{commit}" || exit 2
 TMP="$(mktemp -d /tmp/r7a3d.XXXXXXXX)"
 for path in \
   tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py \
+  tools/r7a3d_strict_lineage_postprocess.py \
   tests/test_r7a3d_strategy25_canonical_implementation_lineage_audit.py \
-  backend/contracts/ZOS_R7A3D_STRATEGY25_CANONICAL_IMPLEMENTATION_LINEAGE_AUDIT_v1.json
+  "$CONTRACT_REL"
  do
   show_file "$path" "$TMP/$path" || RC=2
 done
 
 if [[ "$RC" -eq 0 ]]; then
-  python3 -m py_compile "$TMP/tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py" || RC=2
+  python3 -m py_compile \
+    "$TMP/tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py" \
+    "$TMP/tools/r7a3d_strict_lineage_postprocess.py" || RC=2
 fi
 if [[ "$RC" -eq 0 ]]; then
   python3 -m pytest -q "$TMP/tests/test_r7a3d_strategy25_canonical_implementation_lineage_audit.py" || RC=2
@@ -47,7 +52,12 @@ if [[ "$RC" -eq 0 ]]; then
   python3 "$TMP/tools/r7a3d_strategy25_canonical_implementation_lineage_audit.py" \
     --root "$ROOT" \
     --target-sha "$SHA" \
-    --contract "$TMP/backend/contracts/ZOS_R7A3D_STRATEGY25_CANONICAL_IMPLEMENTATION_LINEAGE_AUDIT_v1.json" || RC=$?
+    --contract "$TMP/$CONTRACT_REL" || RC=$?
+fi
+if [[ "$RC" -eq 0 ]]; then
+  python3 "$TMP/tools/r7a3d_strict_lineage_postprocess.py" \
+    --status "$STATUS" \
+    --contract "$TMP/$CONTRACT_REL" || RC=$?
 fi
 
 echo R7A3D_BOOTSTRAP_COMPLETE

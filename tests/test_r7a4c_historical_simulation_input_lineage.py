@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 MODULE_PATH = Path(__file__).parents[1] / "tools/r7a4c_historical_simulation_input_lineage.py"
@@ -44,6 +45,15 @@ def complete_a4b_status() -> dict:
     }
 
 
+def market_contract() -> dict:
+    return {
+        "market_required_columns": ["open", "high", "low", "close"],
+        "timestamp_aliases": ["timestamp", "ts"],
+        "symbol_aliases": ["symbol"],
+        "timeframe_aliases": ["timeframe"],
+    }
+
+
 def test_prior_gate_is_exact() -> None:
     status = complete_a4b_status()
     assert module.prior_gate(status, 25) is True
@@ -63,17 +73,35 @@ def test_market_frame_normalization() -> None:
             "Timeframe": ["5m"] * 4,
         }
     )
-    contract = {
-        "market_required_columns": ["open", "high", "low", "close"],
-        "timestamp_aliases": ["timestamp", "ts"],
-        "symbol_aliases": ["symbol"],
-        "timeframe_aliases": ["timeframe"],
-    }
-    normalized, metadata = module.normalize_market_frame(frame, contract)
+    normalized, metadata = module.normalize_market_frame(frame, market_contract())
     assert len(normalized) == 3
     assert normalized["__timestamp"].tolist() == [1, 2, 3]
     assert metadata["symbol"] == "BTCUSDT"
     assert metadata["timeframe"] == "5m"
+
+
+def test_market_frame_normalization_accepts_mixed_case() -> None:
+    frame = pd.DataFrame(
+        {
+            "Ts": [1, 2],
+            "oPeN": [100, 101],
+            "HIGH": [102, 103],
+            "low": [99, 100],
+            "Close": [101, 102],
+        }
+    )
+    normalized, metadata = module.normalize_market_frame(frame, market_contract())
+    assert normalized[["open", "high", "low", "close"]].shape == (2, 4)
+    assert metadata["timestamp_column"] == "ts"
+
+
+def test_market_frame_normalization_rejects_casefold_collision() -> None:
+    frame = pd.DataFrame(
+        [[1, 100, 101, 102, 99, 101]],
+        columns=["timestamp", "Open", "open", "High", "Low", "Close"],
+    )
+    with pytest.raises(ValueError, match="MARKET_COLUMN_COLLISION:open"):
+        module.normalize_market_frame(frame, market_contract())
 
 
 def make_segment(index: int, ret: float, trend: float, drawdown: float, recovery: float) -> dict:

@@ -77,6 +77,35 @@ PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4c_historical_simulation_input_li
   --contract "$TMP/backend/contracts/ZOS_R7A4C_HISTORICAL_SIMULATION_INPUT_LINEAGE_v1.json"
 RC=$?
 
+MANIFEST="$ROOT/runtime/r7a4c_historical_simulation_input_lineage/selected_input_manifest_v1.json"
+if [[ -f "$MANIFEST" ]]; then
+  python3 - "$MANIFEST" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print("MARKET_REJECTION_DIAGNOSTIC_ERROR=" + json.dumps(f"{type(exc).__name__}:{exc}"))
+else:
+    rows = payload.get("rejected_market_sources", [])
+    normalized = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("reason") or "UNKNOWN")
+        category = reason.split(":", 2)[1] if reason.startswith(("ValueError:", "TypeError:", "ParserError:")) and ":" in reason else reason.split(":", 1)[0]
+        normalized.append({"path": str(row.get("path") or ""), "reason": reason, "category": category})
+    histogram = Counter(item["category"] for item in normalized)
+    print("REJECTED_MARKET_COUNT=" + str(len(normalized)))
+    print("REJECTED_MARKET_REASON_HISTOGRAM=" + json.dumps(sorted(histogram.items(), key=lambda pair: (-pair[1], pair[0])), ensure_ascii=False))
+    print("REJECTED_MARKET_SAMPLE=" + json.dumps(normalized[:20], ensure_ascii=False))
+PY
+fi
+
 echo 'R7A4C_BOOTSTRAP_COMPLETE'
 echo "RC=$RC"
 exit "$RC"

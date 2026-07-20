@@ -136,6 +136,15 @@ def first_column(columns: list[str], aliases: list[str]) -> str | None:
 
 
 def normalize_market_frame(frame: pd.DataFrame, contract: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if not isinstance(frame, pd.DataFrame):
+        raise ValueError("MARKET_DATA_NOT_FRAME")
+    frame = frame.copy()
+    normalized_columns = [str(column).strip().lower() for column in frame.columns]
+    collisions = sorted(column for column, count in Counter(normalized_columns).items() if count > 1)
+    if collisions:
+        raise ValueError("MARKET_COLUMN_COLLISION:" + ",".join(collisions))
+    frame.columns = normalized_columns
+
     required = [str(item).lower() for item in contract.get("market_required_columns", [])]
     missing = [column for column in required if column not in frame.columns]
     if missing:

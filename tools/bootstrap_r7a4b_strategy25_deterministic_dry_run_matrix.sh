@@ -76,6 +76,52 @@ PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4b_strategy25_deterministic_dry_r
   --contract "$TMP/backend/contracts/ZOS_R7A4B_STRATEGY25_DETERMINISTIC_DRY_RUN_MATRIX_v1.json"
 RC=$?
 
+MATRIX="$ROOT/runtime/r7a4b_strategy25_deterministic_dry_run/dry_run_matrix_v1.json"
+if [[ -f "$MATRIX" ]]; then
+  python3 - "$MATRIX" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    matrix = json.loads(path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print("DRY_RUN_DIAGNOSTIC_ERROR=" + json.dumps(f"{type(exc).__name__}:{exc}"))
+    raise SystemExit(0)
+
+strategies = [row for row in matrix.get("strategies", []) if isinstance(row, dict)]
+failed = [row for row in strategies if not row.get("pass")]
+exact = Counter()
+category = Counter()
+fixture = Counter()
+for row in failed:
+    for raw in row.get("errors", []) if isinstance(row.get("errors"), list) else []:
+        text = str(raw)
+        exact[text] += 1
+        if ":" in text:
+            fixture_name, remainder = text.split(":", 1)
+            fixture[fixture_name] += 1
+        else:
+            remainder = text
+        category[remainder.split(":", 1)[0]] += 1
+
+sample = [
+    {
+        "strategy_id": row.get("strategy_id"),
+        "errors": list(row.get("errors", []))[:8],
+    }
+    for row in failed[:5]
+]
+print(f"FAILED_STRATEGY_COUNT={len(failed)}")
+print("DRY_RUN_ERROR_CATEGORY_HISTOGRAM=" + json.dumps(category.most_common(), ensure_ascii=False))
+print("DRY_RUN_ERROR_EXACT_HISTOGRAM=" + json.dumps(exact.most_common(20), ensure_ascii=False))
+print("DRY_RUN_FIXTURE_HISTOGRAM=" + json.dumps(fixture.most_common(), ensure_ascii=False))
+print("FAILED_STRATEGY_SAMPLE=" + json.dumps(sample, ensure_ascii=False))
+PY
+fi
+
 echo 'R7A4B_BOOTSTRAP_COMPLETE'
 echo "RC=$RC"
 exit "$RC"

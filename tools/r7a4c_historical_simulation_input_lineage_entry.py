@@ -46,7 +46,7 @@ def _timestamp_index(matrix: np.ndarray) -> int:
     return candidates[0][1]
 
 
-def _mapping_score(matrix: np.ndarray, mapping: tuple[int, int, int, int, int]) -> tuple[float, float]:
+def _mapping_score(matrix: np.ndarray, mapping: tuple[int, int, int, int, int]) -> tuple[float, float, float]:
     open_i, high_i, low_i, close_i, volume_i = mapping
     open_v = matrix[:, open_i]
     high_v = matrix[:, high_i]
@@ -66,18 +66,25 @@ def _mapping_score(matrix: np.ndarray, mapping: tuple[int, int, int, int, int]) 
     valid_ratio = float(np.mean(valid))
     scale = max(float(np.median(np.abs(close_v))), 1e-12)
     continuity = float(np.median(np.abs(open_v[1:] - close_v[:-1])) / scale)
-    return valid_ratio, continuity
+    valid_prices = np.column_stack((open_v, high_v, low_v, close_v))[valid]
+    if valid_prices.size == 0:
+        price_cluster_spread = math.inf
+    else:
+        row_scale = np.maximum(np.median(np.abs(valid_prices), axis=1), 1e-12)
+        row_spread = np.max(valid_prices, axis=1) - np.min(valid_prices, axis=1)
+        price_cluster_spread = float(np.median(row_spread / row_scale))
+    return valid_ratio, continuity, price_cluster_spread
 
 
 def infer_ohlcv_array_schema(rows: list[Any]) -> dict[str, int]:
     matrix = _numeric_matrix(rows)
     timestamp_i = _timestamp_index(matrix)
     remaining = [index for index in range(matrix.shape[1]) if index != timestamp_i]
-    ranked: list[tuple[float, float, tuple[int, int, int, int, int]]] = []
+    ranked: list[tuple[float, float, float, tuple[int, int, int, int, int]]] = []
     for mapping in itertools.permutations(remaining, 5):
-        valid_ratio, continuity = _mapping_score(matrix, mapping)
-        if valid_ratio >= 0.995 and math.isfinite(continuity):
-            ranked.append((valid_ratio, -continuity, mapping))
+        valid_ratio, continuity, price_cluster_spread = _mapping_score(matrix, mapping)
+        if valid_ratio >= 0.995 and math.isfinite(continuity) and math.isfinite(price_cluster_spread):
+            ranked.append((valid_ratio, -continuity, -price_cluster_spread, mapping))
     if not ranked:
         raise ValueError("MARKET_OHLCV_SCHEMA_NOT_RESOLVED")
     ranked.sort(reverse=True)
@@ -86,9 +93,10 @@ def infer_ohlcv_array_schema(rows: list[Any]) -> dict[str, int]:
         second = ranked[1]
         valid_margin = best[0] - second[0]
         continuity_margin = best[1] - second[1]
-        if valid_margin < 1e-9 and continuity_margin < 1e-9:
+        price_cluster_margin = best[2] - second[2]
+        if valid_margin < 1e-9 and continuity_margin < 1e-9 and price_cluster_margin < 1e-9:
             raise ValueError("MARKET_OHLCV_SCHEMA_AMBIGUOUS")
-    open_i, high_i, low_i, close_i, volume_i = best[2]
+    open_i, high_i, low_i, close_i, volume_i = best[3]
     return {
         "timestamp": timestamp_i,
         "open": open_i,
@@ -109,6 +117,9 @@ def decode_nested_market_json(path: Path) -> pd.DataFrame | None:
     rows = payload["rows"]
     if not rows:
         raise ValueError("MARKET_ARRAY_ROWS_EMPTY")
+    declared_count = payload.get("row_count")
+    if declared_count is not None and int(declared_count) != len(rows):
+        raise ValueError(f"MARKET_ROW_COUNT_MISMATCH:{declared_count}:{len(rows)}")
     first = rows[0]
     if isinstance(first, dict):
         frame = pd.DataFrame(rows)
@@ -129,9 +140,6 @@ def decode_nested_market_json(path: Path) -> pd.DataFrame | None:
         frame["symbol"] = str(symbol)
     if timeframe is not None and "timeframe" not in frame.columns:
         frame["timeframe"] = str(timeframe)
-    declared_count = payload.get("row_count")
-    if declared_count is not None and int(declared_count) != len(frame):
-        raise ValueError(f"MARKET_ROW_COUNT_MISMATCH:{declared_count}:{len(frame)}")
     return frame
 
 

@@ -210,19 +210,24 @@ def normalize(value: Any, seen: set[int] | None = None) -> Any:
         return sorted((normalize(item, seen) for item in value), key=lambda item: json.dumps(item, sort_keys=True))
     if dataclasses.is_dataclass(value):
         return normalize(dataclasses.asdict(value), seen)
-    if hasattr(value, "_asdict"):
-        return normalize(value._asdict(), seen)
+    namedtuple_asdict = getattr(value, "_asdict", None)
+    if callable(namedtuple_asdict):
+        return normalize(namedtuple_asdict(), seen)
     item = getattr(value, "item", None)
     if callable(item):
         try:
             return normalize(item(), seen)
         except Exception:
             pass
-    if hasattr(value, "__dict__"):
+    try:
+        attributes = vars(value)
+    except TypeError:
+        attributes = None
+    if isinstance(attributes, dict):
         seen.add(object_id)
         result = {
             str(key): normalize(item, seen)
-            for key, item in sorted(vars(value).items())
+            for key, item in sorted(attributes.items())
             if not str(key).startswith("_")
         }
         seen.remove(object_id)

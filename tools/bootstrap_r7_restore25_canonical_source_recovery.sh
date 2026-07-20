@@ -12,26 +12,33 @@ git -C "$ROOT" -c safe.directory="$ROOT" cat-file -e "$SHA^{commit}" || exit 2
 TMP="$(mktemp -d /tmp/r7_restore25.XXXXXXXX)"
 mkdir -p "$TMP/tools" "$TMP/backend/contracts" "$TMP/tests"
 
-git -C "$ROOT" -c safe.directory="$ROOT" show "$SHA:tools/r7_restore25_canonical_source_recovery.py" \
-  > "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
-git -C "$ROOT" -c safe.directory="$ROOT" show "$SHA:backend/contracts/ZOS_R7_RESTORE25_CANONICAL_SOURCE_RECOVERY_v1.json" \
-  > "$TMP/backend/contracts/ZOS_R7_RESTORE25_CANONICAL_SOURCE_RECOVERY_v1.json" || RC=2
-git -C "$ROOT" -c safe.directory="$ROOT" show "$SHA:tests/test_r7_restore25_canonical_source_recovery.py" \
-  > "$TMP/tests/test_r7_restore25_canonical_source_recovery.py" || RC=2
+for path in \
+  tools/r7_restore25_canonical_source_recovery.py \
+  tools/r7_restore25_git_object_driver.py \
+  backend/contracts/ZOS_R7_RESTORE25_CANONICAL_SOURCE_RECOVERY_v1.json \
+  tests/test_r7_restore25_canonical_source_recovery.py
+do
+  mkdir -p "$TMP/$(dirname "$path")"
+  git -C "$ROOT" -c safe.directory="$ROOT" show "$SHA:$path" > "$TMP/$path" || RC=2
+done
 
 if [[ "$RC" -eq 0 ]]; then
-  python3 -m py_compile "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
+  python3 -m py_compile \
+    "$TMP/tools/r7_restore25_canonical_source_recovery.py" \
+    "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
   python3 -m pytest -q "$TMP/tests/test_r7_restore25_canonical_source_recovery.py" || RC=2
 fi
 if [[ "$RC" -eq 0 ]]; then
-  grep -q 'ARTIFACT_PAIR_NORMALIZED_AST_IDENTICAL' "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
-  grep -q 'HISTORICAL_GIT_BLOB_MATCHES_ARTIFACT_AST' "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
+  grep -q 'TARGET_SHA_GIT_OBJECT_ARTIFACT_AST_IDENTICAL' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
+  grep -q 'HISTORICAL_GIT_BLOB_MATCHES_ARTIFACT_AST' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
+  grep -q 'path_revisions' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
   grep -q 'rollback(created, overwritten)' "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
 fi
 
 if [[ "$RC" -eq 0 ]]; then
   echo R7_RESTORE25_START
-  echo MODE=ATOMIC_CANONICAL_SOURCE_RECOVERY
+  echo MODE=ATOMIC_CANONICAL_SOURCE_RECOVERY_GIT_OBJECT_FIRST
+  echo ARTIFACT_RESOLUTION=TARGET_SHA_THEN_GIT_HISTORY
   echo SOURCE_MUTATION_SCOPE=backend/strategies_only
   echo REGISTRY_MUTATION_SCOPE=backend/strategy25/canonical_strategy_registry_v1.json
   echo ROUTER_MUTATION_ALLOWED=false
@@ -39,7 +46,7 @@ if [[ "$RC" -eq 0 ]]; then
   echo SIMULATION_REPLAY_EXECUTION_ALLOWED=false
   echo SHADOW_START_ALLOWED=false
   echo PAPER_LIVE_ORDER_ALLOWED=false
-  python3 "$TMP/tools/r7_restore25_canonical_source_recovery.py" \
+  python3 "$TMP/tools/r7_restore25_git_object_driver.py" \
     --root "$ROOT" \
     --target-sha "$SHA" \
     --contract "$TMP/backend/contracts/ZOS_R7_RESTORE25_CANONICAL_SOURCE_RECOVERY_v1.json" \

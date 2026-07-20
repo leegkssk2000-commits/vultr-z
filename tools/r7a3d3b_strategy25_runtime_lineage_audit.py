@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_SOURCE_BYTES = 1_500_000
-REF_RE = re.compile(r"[A-Za-z0-9_@+./:-]+\.(?:py|sh|service)")
+TOKEN_RE = re.compile(r"[A-Za-z0-9_@+./:-]+")
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -85,7 +85,10 @@ def extract_archive(root: Path, commit: str, destination: Path) -> None:
     )
     assert archive.stdout is not None
     with tarfile.open(fileobj=archive.stdout, mode="r|") as stream:
-        stream.extractall(destination, filter="data")
+        try:
+            stream.extractall(destination, filter="data")
+        except TypeError:
+            stream.extractall(destination)
     stderr = archive.stderr.read().decode("utf-8", errors="replace") if archive.stderr else ""
     rc = archive.wait(timeout=180)
     if rc != 0:
@@ -115,7 +118,7 @@ def resolve_import(current_path: str, module: str | None, level: int, modules: d
 
 def source_references(text: str, root: Path, paths: set[str], by_name: dict[str, list[str]]) -> set[str]:
     found: set[str] = set()
-    for raw in REF_RE.findall(text):
+    for raw in TOKEN_RE.findall(text):
         token = raw.strip("'\"()[]{};,=")
         if token.startswith(str(root) + "/"):
             token = token[len(str(root)) + 1:]
@@ -124,7 +127,7 @@ def source_references(text: str, root: Path, paths: set[str], by_name: dict[str,
             found.add(token)
             continue
         matches = by_name.get(Path(token).name, [])
-        if len(matches) == 1:
+        if len(matches) == 1 and ("/" in raw or "." in Path(token).name):
             found.add(matches[0])
     return found
 
@@ -161,9 +164,9 @@ def build_graph(snapshot: Path, root: Path, blobs: dict[str, str]) -> dict[str, 
                     graph[path].update(resolve_import(path, alias.name, 0, modules))
             elif isinstance(node, ast.ImportFrom):
                 graph[path].update(resolve_import(path, node.module, node.level, modules))
-                if node.module:
-                    for alias in node.names:
-                        graph[path].update(resolve_import(path, f"{node.module}.{alias.name}", node.level, modules))
+                for alias in node.names:
+                    child = f"{node.module}.{alias.name}" if node.module else alias.name
+                    graph[path].update(resolve_import(path, child, node.level, modules))
     return graph
 
 
@@ -298,8 +301,10 @@ def candidate_proof(
             exact_runtime.append(row.get("unit"))
     direct = bool(candidate.get("direct_name_match"))
     hard_reasons = []
-    if path and exact_runtime:
-        hard_reasons.append("ACTIVE_EXACT_PATH")
+    if path and exact_runtime and explicit:
+        hard_reasons.append("ACTIVE_EXACT_PATH_PLUS_EXPLICIT_BINDING")
+    if path and exact_runtime and direct:
+        hard_reasons.append("ACTIVE_EXACT_PATH_PLUS_DIRECT_NAME")
     if path and chain and explicit:
         hard_reasons.append("ACTIVE_IMPORT_CHAIN_PLUS_EXPLICIT_BINDING")
     if path and chain and direct:

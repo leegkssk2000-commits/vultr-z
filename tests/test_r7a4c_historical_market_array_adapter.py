@@ -43,6 +43,21 @@ def test_infer_standard_six_column_ohlcv_schema() -> None:
     }
 
 
+def test_price_cluster_prevents_volume_high_confusion() -> None:
+    shuffled = []
+    for timestamp, open_, high, low, close, volume in build_rows():
+        shuffled.append([timestamp, open_, volume, low, close, high])
+    schema = module.infer_ohlcv_array_schema(shuffled)
+    assert schema == {
+        "timestamp": 0,
+        "open": 1,
+        "high": 5,
+        "low": 3,
+        "close": 4,
+        "volume": 2,
+    }
+
+
 def test_decode_root_rows_with_metadata(tmp_path: Path) -> None:
     path = tmp_path / "market.json"
     rows = build_rows()

@@ -38,16 +38,17 @@ fi
 if [[ "$RC" -eq 0 ]]; then
   grep -q 'TARGET_SHA_GIT_OBJECT_ARTIFACT_AST_IDENTICAL' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
   grep -q 'HISTORICAL_GIT_BLOB_MATCHES_ARTIFACT_AST' "$TMP/tools/r7_restore25_git_object_driver.py" || RC=2
-  grep -q 'DIRECT_GIT_OBJECT_NOT_FOUND' "$TMP/tools/r7_restore25_atomic_apply_driver.py" || RC=2
-  grep -q 'VERIFICATION_ERRORS=' "$TMP/tools/r7_restore25_atomic_apply_driver.py" || RC=2
+  grep -q 'ARTIFACT_DIRECT_RECLASSIFIED_FOR_RESTORE25' "$TMP/tools/r7_restore25_atomic_apply_driver.py" || RC=2
+  grep -q 'expected_total_recovery_count' "$TMP/tools/r7_restore25_atomic_apply_driver.py" || RC=2
   grep -q 'rollback(created, overwritten)' "$TMP/tools/r7_restore25_canonical_source_recovery.py" || RC=2
 fi
 
 if [[ "$RC" -eq 0 ]]; then
   echo R7_RESTORE25_START
-  echo MODE=ATOMIC_CANONICAL_SOURCE_RECOVERY_GIT_OBJECT_FIRST
+  echo MODE=ATOMIC_CANONICAL_SOURCE_RECOVERY_25_UNIFIED
   echo ARTIFACT_RESOLUTION=TARGET_SHA_THEN_GIT_HISTORY
-  echo DIRECT_ENGINE_PREFLIGHT=EXACT_PATH_GIT_OBJECT
+  echo DIRECT_ARTIFACT_RECLASSIFICATION=2_TO_CANONICAL_SOURCE
+  echo TOTAL_RECOVERY_TARGET=25
   echo SOURCE_MUTATION_SCOPE=backend/strategies_only
   echo REGISTRY_MUTATION_SCOPE=backend/strategy25/canonical_strategy_registry_v1.json
   echo ROUTER_MUTATION_ALLOWED=false

@@ -29,10 +29,18 @@ TARGET_SHA = _target_sha(sys.argv)
 
 
 def safe_repo_path(value: str) -> str | None:
-    path = value.strip().replace("\\", "/").lstrip("./")
-    if not path or path.startswith("/"):
+    raw = value.strip().replace("\\", "/")
+    if not raw or "\x00" in raw or raw.startswith("/"):
         return None
-    parts = Path(path).parts
+    # Reject traversal before stripping an optional leading './'. Using
+    # lstrip('./') would incorrectly turn '../../etc/passwd' into 'etc/passwd'.
+    if any(segment == ".." for segment in raw.split("/")):
+        return None
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if not raw or raw.startswith("/"):
+        return None
+    parts = Path(raw).parts
     if any(part in {"", ".", ".."} for part in parts):
         return None
     return Path(*parts).as_posix()

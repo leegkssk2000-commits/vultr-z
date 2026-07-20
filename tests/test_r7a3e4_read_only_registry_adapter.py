@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ ADAPTER_PATH = Path(__file__).parents[1] / "backend/strategy25/read_only_registr
 spec = importlib.util.spec_from_file_location("r7a3e4_adapter_test", ADAPTER_PATH)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 ReadOnlyStrategy25RegistryAdapter = module.ReadOnlyStrategy25RegistryAdapter
 RegistryContractError = module.RegistryContractError

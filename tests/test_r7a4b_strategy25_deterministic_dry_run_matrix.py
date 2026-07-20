@@ -70,7 +70,8 @@ def test_side_effect_guard_blocks_writes(tmp_path: Path) -> None:
     target = tmp_path / "blocked.txt"
     try:
         with module.side_effect_guard(attempts):
-            target.write_text("x", encoding="utf-8")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("x")
     except module.SideEffectBlocked:
         pass
     assert attempts

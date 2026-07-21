@@ -78,6 +78,41 @@ for path in \
   fi
 done
 
+if ! python3 - "$TMP/tools/r7a4d2_short_rr_sidecar_counterfactual_verify.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = 'samples.append({key: value for key, value in trade.items() if key != "side"})'
+new = '''samples.append({
+                key: value
+                for key, value in trade.items()
+                if key not in {
+                    "side",
+                    "raw_strategy_stop",
+                    "raw_strategy_tp",
+                    "policy_stop",
+                    "policy_tp",
+                    "raw_r_distance_pct",
+                    "policy_loss_cap_r",
+                    "policy_full_tp_r",
+                }
+            })'''
+count = source.count(old)
+if count != 1:
+    raise SystemExit(f"LONG_PROJECTION_PATCH_ANCHOR_INVALID:{count}")
+path.write_text(source.replace(old, new, 1), encoding="utf-8")
+print("STATE=PASS_LONG_PROJECTION_SIDECAR_FIELD_EXCLUSION")
+PY
+then
+  echo 'STATE=HOLD_SHORT_RR_COUNTERFACTUAL_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["LONG_PROJECTION_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_entry_chain_minimal_patch.py" \
   "$TMP/tools/r7a4d2_short_execution_harness_minimal_patch.py" \

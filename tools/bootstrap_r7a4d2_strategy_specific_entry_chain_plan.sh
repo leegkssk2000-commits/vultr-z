@@ -37,7 +37,13 @@ fi
 TMP="$(mktemp -d /tmp/r7a4d2-plan.XXXXXX)" || exit 2
 for path in \
   tools/r7a4d2_strategy_specific_entry_chain_plan.py \
-  tests/test_r7a4d2_strategy_specific_entry_chain_plan.py
+  tests/test_r7a4d2_strategy_specific_entry_chain_plan.py \
+  tools/r7a4d_historical_simulation_3600.py \
+  backend/strategies/break_and_continue.py \
+  backend/strategies/rbreaker_like.py \
+  backend/strategies/squeeze_break.py \
+  backend/strategies/trend_ma_macd.py \
+  backend/strategies/vwap_revert.py
  do
   mkdir -p "$TMP/$(dirname "$path")"
   if ! git -C "$ROOT" show "$SHA:$path" > "$TMP/$path"; then
@@ -65,7 +71,9 @@ if ! PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q "$TMP/tests/test_r7a4d2_strate
   exit 2
 fi
 
-PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_strategy_specific_entry_chain_plan.py" --root "$ROOT"
+PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_strategy_specific_entry_chain_plan.py" \
+  --root "$ROOT" \
+  --source-root "$TMP"
 RC=$?
 echo 'R7A4D2_STRATEGY_SPECIFIC_ENTRY_CHAIN_PLAN_COMPLETE'
 echo "RC=$RC"

@@ -20,7 +20,7 @@ printf '%s\n' \
   'PERTURBATION_AXIS_COUNT=2' \
   'TARGETED_CELL_COUNT=66' \
   'AXIS_REPEATS_CREATE_INDEPENDENT_SAMPLES=false' \
-  'BASELINE_PARITY_REQUIRED=true' \
+  'FULL_11_CANDIDATE_BASELINE_PARITY_REQUIRED=true' \
   'GRID_REBALANCE_QUARANTINED=true' \
   'NEGATIVE_PAIR_ADMISSION_ALLOWED=false' \
   'PRODUCTION_ADMISSION_EXPANSION_ALLOWED=false' \
@@ -47,7 +47,8 @@ for required in \
   "$ROOT/runtime/r7a4d2_short_admission_allowlist_plan/allowlist_plan_v1.json" \
   "$ROOT/runtime/r7a4d2_short_signal_frequency_admission_closure/admission_closure_v1.json" \
   "$ROOT/runtime/r7a4d2_no_trigger_market_coverage_diagnose/coverage_diagnose_v1.json" \
-  "$ROOT/runtime/r7a4d2_short_execution_harness_plan/short_execution_harness_plan_v1.json"
+  "$ROOT/runtime/r7a4d2_short_execution_harness_plan/short_execution_harness_plan_v1.json" \
+  "$ROOT/runtime/r7a4d2_short_rr_sidecar_counterfactual/policy_results_600_v1.jsonl"
  do
   if [[ ! -f "$required" ]]; then
     echo 'STATE=HOLD_SHORT_ADMISSION_CANDIDATE_STRESS_INPUT'
@@ -67,6 +68,7 @@ for path in \
   tools/r7a4d2_short_rr_exact_math_patch.py \
   tools/r7a4d2_short_observer_target_patch.py \
   tools/r7a4d2_short_admission_candidate_stress_66.py \
+  tools/r7a4d2_short_stress66_baseline_parity_audit.py \
   tests/test_r7a4d2_short_rr_sidecar_counterfactual.py \
   tests/test_r7a4d2_short_admission_candidate_stress_66.py \
   backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json
@@ -87,7 +89,8 @@ if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_rr_sidecar_patch.py" \
   "$TMP/tools/r7a4d2_short_rr_exact_math_patch.py" \
   "$TMP/tools/r7a4d2_short_observer_target_patch.py" \
-  "$TMP/tools/r7a4d2_short_admission_candidate_stress_66.py"; then
+  "$TMP/tools/r7a4d2_short_admission_candidate_stress_66.py" \
+  "$TMP/tools/r7a4d2_short_stress66_baseline_parity_audit.py"; then
   echo 'STATE=HOLD_SHORT_ADMISSION_CANDIDATE_STRESS_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PY_COMPILE_FAILED"]'
@@ -147,6 +150,14 @@ PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_short_admission_candidate_str
   --root "$ROOT" \
   --runner "$TMP/tools/r7a4d2_stress66_runner.py" \
   --contract "$TMP/backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json"
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  echo 'R7A4D2_SHORT_ADMISSION_CANDIDATE_STRESS_66_COMPLETE'
+  echo "RC=$RC"
+  exit "$RC"
+fi
+
+python3 "$TMP/tools/r7a4d2_short_stress66_baseline_parity_audit.py" --root "$ROOT"
 RC=$?
 
 echo 'R7A4D2_SHORT_ADMISSION_CANDIDATE_STRESS_66_COMPLETE'

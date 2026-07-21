@@ -15,7 +15,7 @@ def load_module():
 
 def test_transform_is_exact_and_idempotent() -> None:
     module = load_module()
-    source = "prefix\n" + module.OLD_BLOCK + "suffix\n"
+    source = "def strategy_fixture():\n" + module.OLD_BLOCK + "    return None\n"
 
     transformed, changed = module.transform_source(source)
     assert changed is True

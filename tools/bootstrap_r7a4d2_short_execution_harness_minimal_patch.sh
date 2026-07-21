@@ -57,6 +57,32 @@ for path in \
   fi
 done
 
+if ! python3 - "$TMP/tools/r7a4d2_short_execution_harness_verify.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = 'if int(entry_proof.get("blocker_count") or -1) != 0:'
+new = 'if int(entry_proof.get("blocker_count", -1)) != 0:'
+count = source.count(old)
+if count != 1:
+    raise SystemExit(f"SHORT_VERIFIER_ZERO_GATE_ANCHOR_INVALID:{count}")
+patched = source.replace(old, new, 1)
+if old in patched or patched.count(new) != 1:
+    raise SystemExit("SHORT_VERIFIER_ZERO_GATE_PATCH_INVALID")
+path.write_text(patched, encoding="utf-8")
+print("STATE=PASS_SHORT_VERIFIER_ZERO_GATE_FIX")
+print("ENTRY_CHAIN_BLOCKER_ZERO_PRESERVED=true")
+PY
+then
+  echo 'STATE=HOLD_SHORT_EXECUTION_HARNESS_MINIMAL_PATCH'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["SHORT_VERIFIER_ZERO_GATE_FIX_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_entry_chain_minimal_patch.py" \
   "$TMP/tools/r7a4d2_short_execution_harness_minimal_patch.py" \

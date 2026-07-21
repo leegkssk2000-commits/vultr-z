@@ -16,11 +16,11 @@ TARGETS = {
 }
 
 STRATEGY_MARKERS = {
-    "break_and_continue": ("why=\"bnc_long\"", "why=\"bnc_long_add\""),
-    "rbreaker_like": ("why=\"rbr_breakout_long\"", "why=\"rbr_long_retest_add\""),
-    "squeeze_break": ("why=\"squeeze_break_long\"", "why=\"squeeze_break_long_retest_add\""),
-    "trend_ma_macd": ("why=\"trend_ma_macd_long_entry\"", "why=\"trend_ma_macd_long_scale_in\""),
-    "vwap_revert": ("why=\"vwap_revert_long_entry\"", "why=\"vwap_revert_long_scale_in\""),
+    "break_and_continue": ('why="bnc_long"', 'why="bnc_long_add"'),
+    "rbreaker_like": ('why="rbr_breakout_long"', 'why="rbr_long_retest_add"'),
+    "squeeze_break": ('why="squeeze_break_long"', 'why="squeeze_break_long_retest_add"'),
+    "trend_ma_macd": ('why="trend_ma_macd_long_entry"', 'why="trend_ma_macd_long_scale_in"'),
+    "vwap_revert": ('why="vwap_revert_long_entry"', 'why="vwap_revert_long_scale_in"'),
 }
 
 
@@ -85,9 +85,10 @@ def validate_registry(registry: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_sources(root: Path) -> list[str]:
+def validate_sources(source_root: Path) -> list[str]:
     errors: list[str] = []
-    runner = (root / "tools/r7a4d_historical_simulation_3600.py").read_text(encoding="utf-8")
+    runner_path = source_root / "tools/r7a4d_historical_simulation_3600.py"
+    runner = runner_path.read_text(encoding="utf-8")
     for marker in (
         "def simulate_scenario(",
         "segment_frames[segment_id] = sample",
@@ -97,7 +98,8 @@ def validate_sources(root: Path) -> list[str]:
         if marker not in runner:
             errors.append(f"RUNNER_MARKER_MISSING:{marker}")
     for strategy_id, markers in STRATEGY_MARKERS.items():
-        source = (root / f"backend/strategies/{strategy_id}.py").read_text(encoding="utf-8")
+        source_path = source_root / f"backend/strategies/{strategy_id}.py"
+        source = source_path.read_text(encoding="utf-8")
         for marker in markers:
             if marker not in source:
                 errors.append(f"STRATEGY_MARKER_MISSING:{strategy_id}:{marker}")
@@ -171,8 +173,10 @@ def build_plan() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="/home/z/z")
+    parser.add_argument("--source-root", default=None)
     args = parser.parse_args()
     root = Path(args.root).resolve()
+    source_root = Path(args.source_root).resolve() if args.source_root else root
 
     evidence_path = root / "runtime/r7a4d2_entry_trigger_chain_causality/entry_trigger_chain_causality_v1.json"
     registry_path = root / "backend/strategy25/canonical_strategy_registry_v1.json"
@@ -180,7 +184,7 @@ def main() -> int:
     try:
         errors.extend(validate_evidence(load_json(evidence_path)))
         errors.extend(validate_registry(load_json(registry_path)))
-        errors.extend(validate_sources(root))
+        errors.extend(validate_sources(source_root))
     except Exception as exc:
         errors.append(f"INPUT_OR_SOURCE_FAILED:{type(exc).__name__}:{exc}")
 
@@ -203,6 +207,7 @@ def main() -> int:
     print("LINEAGE_TARGET_STRATEGY_COUNT=5")
     print("ENTRY_THRESHOLD_RELAXATION_ALLOWED=false")
     print("FULL_3600_REEXECUTION_ALLOWED=false")
+    print("SOURCE_VALIDATION_ROOT=" + str(source_root))
     print("PLAN_JSON=" + str(output))
     print("NEXT_STAGE=" + str(plan["next_stage"]))
     print("RC=0")

@@ -75,7 +75,6 @@ def test_plan_preserves_long_and_defines_short_math() -> None:
 def test_runner_markers_fail_closed() -> None:
     source = '''
 short_shadow_signal_count = 0
-short_signal_generated_but_core_is_long_only = True
 if kind in {"enter", "add"}:
     pass
 if intent == "enter_long":

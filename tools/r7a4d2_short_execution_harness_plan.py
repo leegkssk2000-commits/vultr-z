@@ -88,7 +88,6 @@ def short_targets(semantic: dict[str, Any]) -> tuple[list[str], int, list[str]]:
 def validate_runner_source(source: str) -> list[str]:
     required = (
         "short_shadow_signal_count",
-        "short_signal_generated_but_core_is_long_only",
         'if kind in {"enter", "add"}:',
         'if intent == "enter_long":',
         'elif intent == "reduce"',

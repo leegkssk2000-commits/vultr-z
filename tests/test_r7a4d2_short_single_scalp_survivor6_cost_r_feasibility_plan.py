@@ -32,8 +32,10 @@ def prior_plan() -> dict:
     return {
         "state": "PASS_SHORT_SELECTIVE_CHART_GATE_AND_GEOMETRY_COUNTERFACTUAL_PLAN",
         "blocker_count": 0,
-        "scalp_counterfactual_candidate_count": 4,
-        "scalp_counterfactual_execution_cell_count": 24,
+        "scalp_counterfactual": {
+            "candidate_count": 4,
+            "execution_cell_count": 24,
+        },
     }
 
 
@@ -42,8 +44,10 @@ def prior_proof() -> dict:
         "state": "PASS_SHORT_SCALP_GEOMETRY_COUNTERFACTUAL_24_AND_BASELINE_CLUSTER_EXPANSION_36",
         "blocker_count": 0,
         "failure_count": 0,
-        "scalp_counterfactual_completed_cell_count": 24,
-        "scalp_invalid_geometry_count": 0,
+        "scalp_counterfactual": {
+            "completed_cell_count": 24,
+            "invalid_geometry_count": 0,
+        },
     }
 
 

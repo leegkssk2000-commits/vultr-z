@@ -26,10 +26,32 @@ def apply_patch(source: str) -> str:
 ''',
         '''TOL = 1e-9
 GROSS_LOSS_CAP_AUDIT_V1 = True
+CAPITAL_RISK_AND_PRICE_RISK_DENOMINATORS_SEPARATED = True
 
 
 ''',
         "MARKER",
+    )
+    source = replace_once(
+        source,
+        '''def trade_r_values(trade: dict[str, Any]) -> tuple[float, float, float, float]:
+    risk_pct = max(finite(trade.get("raw_r_distance_pct")), 1e-12)
+    gross_r = finite(trade.get("gross_pnl_pct")) / risk_pct
+    net_r = finite(trade.get("net_pnl_pct")) / risk_pct
+    mfe_r = finite(trade.get("mfe_pct")) / risk_pct
+    mae_r = abs(finite(trade.get("mae_pct"))) / risk_pct
+    return gross_r, net_r, mfe_r, mae_r
+''',
+        '''def trade_r_values(trade: dict[str, Any]) -> tuple[float, float, float, float]:
+    price_risk_pct = max(finite(trade.get("raw_r_distance_pct")), 1e-12)
+    capital_risk_pct = max(finite(trade.get("risk_capital_pct"), price_risk_pct), 1e-12)
+    gross_r = finite(trade.get("gross_pnl_pct")) / capital_risk_pct
+    net_r = finite(trade.get("pnl_r"), finite(trade.get("net_pnl_pct")) / capital_risk_pct)
+    mfe_r = finite(trade.get("mfe_pct")) / price_risk_pct
+    mae_r = abs(finite(trade.get("mae_pct"))) / price_risk_pct
+    return gross_r, net_r, mfe_r, mae_r
+''',
+        "R_DENOMINATORS",
     )
     source = replace_once(
         source,
@@ -59,16 +81,6 @@ GROSS_LOSS_CAP_AUDIT_V1 = True
         blockers.append("BASELINE_AXIS_MISSING")
 ''',
         "BASELINE_AXIS_GUARD",
-    )
-    source = replace_once(
-        source,
-        '''    protected_inputs = [
-        counter_plan_path,
-''',
-        '''    protected_inputs = [
-        counter_plan_path,
-''',
-        "PROTECTED_LIST_ANCHOR",
     )
     source = replace_once(
         source,
@@ -114,6 +126,7 @@ def main() -> int:
     py_compile.compile(str(output_path), doraise=True)
     print("STATE=PASS_COUNTERFACTUAL_EXPANSION_INTEGRITY_PATCH")
     print("GROSS_LOSS_CAP_AND_NET_PAYOFF_SEPARATED=true")
+    print("CAPITAL_RISK_AND_PRICE_RISK_DENOMINATORS_SEPARATED=true")
     print("FROZEN_MARKET_SOURCE_INTEGRITY_GUARDED=true")
     print("RC=0")
     return 0

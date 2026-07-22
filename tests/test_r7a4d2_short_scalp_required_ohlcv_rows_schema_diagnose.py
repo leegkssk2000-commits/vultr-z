@@ -16,14 +16,16 @@ def load_module():
 
 def binance_rows(count: int = 700) -> list[list[float]]:
     rows = []
+    previous_close = 100.0
     for index in range(count):
         timestamp = 1_700_000_000_000 + index * 60_000
-        open_v = 100.0 + index * 0.01
+        open_v = previous_close
         close_v = open_v + (0.03 if index % 2 == 0 else -0.02)
         high_v = max(open_v, close_v) + 0.05
         low_v = min(open_v, close_v) - 0.05
         volume = 1000.0 + index
         rows.append([timestamp, open_v, high_v, low_v, close_v, volume])
+        previous_close = close_v
     return rows
 
 
@@ -37,6 +39,18 @@ def test_binance_matrix_layout_is_identified() -> None:
     assert top["high_index"] == 2
     assert top["low_index"] == 3
     assert top["close_index"] == 4
+    assert top["continuity_profile"]["exact_link_ratio"] == 1.0
+
+
+def test_open_close_swap_is_resolved_by_bar_continuity() -> None:
+    module = load_module()
+    altered_rows = [[row[0], row[4], row[2], row[3], row[1], row[5]] for row in binance_rows()]
+    result = module.diagnose_matrix_rows(altered_rows)
+    assert result["layout_ready"] is True
+    top = result["layout_candidates"][0]
+    assert top["open_index"] == 4
+    assert top["close_index"] == 1
+    assert top["continuity_profile"]["exact_link_ratio"] == 1.0
 
 
 def test_dict_rows_are_not_guessed_as_matrix() -> None:
@@ -75,9 +89,7 @@ def test_shared_layout_passes_audit() -> None:
 def test_layout_divergence_blocks() -> None:
     module = load_module()
     first = module.diagnose_matrix_rows(binance_rows())
-    altered_rows = []
-    for row in binance_rows():
-        altered_rows.append([row[0], row[4], row[2], row[3], row[1], row[5]])
+    altered_rows = [[row[0], row[4], row[2], row[3], row[1], row[5]] for row in binance_rows()]
     second = module.diagnose_matrix_rows(altered_rows)
     inspected = [{"path": "A", **first}, {"path": "B", **second}]
     selected = {"state": "PASS", "selected_segments": [{"source_path": "A"}, {"source_path": "B"}]}

@@ -82,6 +82,33 @@ do
   fi
 done
 
+python3 - "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+replacements = {
+    'float(finite(severe.get("max_drawdown_pct"), 1e100) or 1e100)': 'float(finite(severe.get("max_drawdown_pct"), 1e100))',
+    'float(finite(native_severe.get("max_drawdown_pct"), 1e100) or 1e100)': 'float(finite(native_severe.get("max_drawdown_pct"), 1e100))',
+    'float(finite(row["severe_metrics"].get("expectancy_r"), -1e100) or -1e100)': 'float(finite(row["severe_metrics"].get("expectancy_r"), -1e100))',
+    'float(finite(row["severe_metrics"].get("profit_factor"), -1e100) or -1e100)': 'float(finite(row["severe_metrics"].get("profit_factor"), -1e100))',
+    'float(finite(row["severe_metrics"].get("net_pnl_sum_pct"), -1e100) or -1e100)': 'float(finite(row["severe_metrics"].get("net_pnl_sum_pct"), -1e100))',
+    'float(finite(row["severe_metrics"].get("max_drawdown_pct"), 1e100) or 1e100)': 'float(finite(row["severe_metrics"].get("max_drawdown_pct"), 1e100))',
+}
+for old, new in replacements.items():
+    if old not in text:
+        raise SystemExit(f"PATCH_PATTERN_MISSING:{old}")
+    text = text.replace(old, new)
+path.write_text(text, encoding="utf-8")
+PY
+if [[ $? -ne 0 ]]; then
+  echo 'STATE=HOLD_SHORT_SELECTIVE_VWAP_REPAIR_EXECUTION_54_AND_REMAINING_UPLIFT_AUDIT_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["ZERO_DRAWDOWN_GUARD_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" \
   "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \

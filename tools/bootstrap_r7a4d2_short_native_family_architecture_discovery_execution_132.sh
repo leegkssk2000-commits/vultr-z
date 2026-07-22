@@ -76,8 +76,43 @@ do
   fi
 done
 
+PATCH_TARGET="$TMP/tools/r7a4d2_short_native_family_architecture_discovery_execution_132.py"
+if ! python3 - "$PATCH_TARGET" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = '''    alias_groups: list[list[str]] = []; fingerprint_groups: dict[frozenset[tuple[str, int]], list[str]] = defaultdict(list)
+    for bundle_id, fingerprint in signal_fingerprints.items():
+        if fingerprint: fingerprint_groups[frozenset(fingerprint)].append(bundle_id)
+    for group in fingerprint_groups.values():
+        if len(group) > 1: alias_groups.append(sorted(group))
+'''
+new = '''    alias_groups: list[list[str]] = []; fingerprint_groups: dict[frozenset[tuple[str, int]], list[str]] = defaultdict(list)
+    bundle_strategy = {str(row["bundle_id"]): str(row["strategy_id"]) for row in bundles}
+    for bundle_id, fingerprint in signal_fingerprints.items():
+        if fingerprint: fingerprint_groups[frozenset(fingerprint)].append(bundle_id)
+    for group in fingerprint_groups.values():
+        if len({bundle_strategy[item] for item in group}) > 1: alias_groups.append(sorted(group))
+'''
+if text.count(old) != 1:
+    raise SystemExit(f"ALIAS_GUARD_PATCH_TARGET_INVALID:{text.count(old)}")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+print("STATE=PASS_SHORT_NATIVE_FAMILY_ALIAS_GUARD_PATCH")
+print("CROSS_STRATEGY_ONLY_ALIAS_GUARD=true")
+print("PATCH_SCOPE=temporary_execution_copy_only")
+print("RC=0")
+PY
+then
+  echo 'STATE=HOLD_SHORT_NATIVE_FAMILY_ARCHITECTURE_DISCOVERY_EXECUTION_132_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["ALIAS_GUARD_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
-  "$TMP/tools/r7a4d2_short_native_family_architecture_discovery_execution_132.py" \
+  "$PATCH_TARGET" \
   "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \
   "$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py"
 then
@@ -88,7 +123,7 @@ then
   exit 2
 fi
 
-if ! python3 "$TMP/tools/r7a4d2_short_native_family_architecture_discovery_execution_132.py" --self-test; then
+if ! python3 "$PATCH_TARGET" --self-test; then
   echo 'STATE=HOLD_SHORT_NATIVE_FAMILY_ARCHITECTURE_DISCOVERY_EXECUTION_132_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["NATIVE_FAMILY_DISCOVERY_SELF_TEST_FAILED"]'
@@ -96,7 +131,7 @@ if ! python3 "$TMP/tools/r7a4d2_short_native_family_architecture_discovery_execu
   exit 2
 fi
 
-python3 "$TMP/tools/r7a4d2_short_native_family_architecture_discovery_execution_132.py" \
+python3 "$PATCH_TARGET" \
   --root "$ROOT" \
   --target-sha "$SHA" \
   --raw-module "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \

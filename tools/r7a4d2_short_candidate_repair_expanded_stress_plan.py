@@ -125,7 +125,8 @@ def build_plan(
         if unique_sources != int(row.get("selected_unique_source_count", unique_sources)):
             blockers.append(f"BUCKET_UNIQUE_SOURCE_PARITY_FAILED:{bucket}")
         segment_counts = Counter(str(item.get("segment_id") or "") for item in candidates)
-        max_segment_share = max(segment_counts.values()) / len(candidates) if candidates else 0.0
+        max_segment_count = max(segment_counts.values()) if candidates else 0
+        max_segment_share = max_segment_count / len(candidates) if candidates else 0.0
         bucket_summary.append({
             "bucket": bucket,
             "strategy_id": str(row.get("strategy_id") or ""),
@@ -134,6 +135,7 @@ def build_plan(
             "unique_segment_count": unique_segments,
             "unique_source_count": unique_sources,
             "candidate_count_by_segment": dict(sorted(segment_counts.items())),
+            "max_segment_count": max_segment_count,
             "max_segment_share": round(max_segment_share, 10),
         })
         for candidate in candidates:
@@ -158,7 +160,7 @@ def build_plan(
     vol = summary_by_bucket.get("vol_spike_fade_shock_recovery", {})
     if int(baseline.get("unique_segment_count", 0)) != 12 or int(baseline.get("unique_source_count", 0)) < 3:
         blockers.append("BASELINE_DIVERSITY_GATE_FAILED")
-    if int(scalp.get("unique_segment_count", 0)) < 10 or float(scalp.get("max_segment_share", 1.0)) > (2 / 12):
+    if int(scalp.get("unique_segment_count", 0)) < 10 or int(scalp.get("max_segment_count", 999)) > 2:
         blockers.append("SCALP_DIVERSITY_GATE_FAILED")
     if int(vol.get("unique_segment_count", 0)) != 4:
         blockers.append("VOL_DISCOVERY_DIVERSITY_GATE_FAILED")

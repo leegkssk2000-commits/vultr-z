@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${1:-/home/z/z}"
+TARGET_SHA="${2:-UNKNOWN}"
+
+cd "$ROOT"
+
+echo "R7A4D2_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_PLAN_START"
+echo "MODE=READ_ONLY_ELEVEN_FAILED_EXCHANGE_BOT_LANES_CAUSAL_UPLIFT_PLAN"
+echo "EXPECTED_FAILED_LANE_COUNT=11"
+echo "EXPECTED_REPAIR_VARIANT_PER_LANE=2"
+echo "EXPECTED_REPAIR_BUNDLE_COUNT=22"
+echo "EXPECTED_STRESS_CELL_PER_BUNDLE=6"
+echo "EXPECTED_DISCOVERY_CELL_TARGET=132"
+echo "REFERENCE_PASS_LANE_ID=dual_donchian_trend_bot:15m"
+echo "PARAMETER_OPTIMIZATION_ALLOWED=false"
+echo "BLIND_STOP_WIDENING_ALLOWED=false"
+echo "ENTRY_THRESHOLD_RELAXATION_ALLOWED=false"
+echo "DISCOVERY_S_GRADE_LABEL_ALLOWED=false"
+echo "STRATEGY_MUTATION_ALLOWED=false"
+echo "REGISTRY_MUTATION_ALLOWED=false"
+echo "CONFIG_MUTATION_ALLOWED=false"
+echo "ROUTER_MUTATION_ALLOWED=false"
+echo "SERVICE_MUTATION_ALLOWED=false"
+echo "SHADOW_START_ALLOWED=false"
+echo "PAPER_LIVE_ORDER_ALLOWED=false"
+
+if [[ "$TARGET_SHA" == "UNKNOWN" ]]; then
+  echo "STATE=HOLD_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_PLAN_INPUT"
+  echo "BLOCKER_COUNT=1"
+  echo 'BLOCKERS=["TARGET_SHA_REQUIRED"]'
+  echo "RC=2"
+  exit 2
+fi
+
+SOURCE_PATH="tools/r7a4d2_exchange_bot_v2_remaining_11_lane_uplift_plan.py"
+TMPDIR="$(mktemp -d /tmp/r7a4d2-uplift-plan.XXXXXX)"
+trap 'rm -rf "$TMPDIR"' EXIT
+RUNNER="$TMPDIR/r7a4d2_exchange_bot_v2_remaining_11_lane_uplift_plan.py"
+
+git cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null || {
+  echo "STATE=HOLD_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_PLAN_INPUT"
+  echo "BLOCKER_COUNT=1"
+  echo 'BLOCKERS=["TARGET_COMMIT_NOT_FOUND"]'
+  echo "RC=2"
+  exit 2
+}
+
+git show "${TARGET_SHA}:${SOURCE_PATH}" > "$RUNNER" || {
+  echo "STATE=HOLD_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_PLAN_INPUT"
+  echo "BLOCKER_COUNT=1"
+  echo 'BLOCKERS=["PLAN_RUNNER_NOT_FOUND_AT_TARGET_SHA"]'
+  echo "RC=2"
+  exit 2
+}
+
+python3 -m py_compile "$RUNNER"
+python3 "$RUNNER" --self-test
+python3 "$RUNNER" --root "$ROOT" --target-sha "$TARGET_SHA"
+
+RC=$?
+echo "R7A4D2_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_PLAN_BOOTSTRAP_COMPLETE"
+echo "RC=$RC"
+exit "$RC"

@@ -20,6 +20,7 @@ printf '%s\n' \
   'MATRIX_ROW_LAYOUT_DIAGNOSIS=true' \
   'TIMESTAMP_MONOTONICITY_REQUIRED=true' \
   'OHLC_GEOMETRY_RATIO_REQUIRED=0.99' \
+  'OHLC_SAME_PRICE_SCALE_RATIO_REQUIRED=0.99' \
   'UNIQUE_LAYOUT_REQUIRED=true' \
   'SHARED_LAYOUT_ACROSS_REQUIRED_SOURCES=true' \
   'COLUMN_ORDER_GUESSING_ALLOWED=false' \
@@ -72,6 +73,107 @@ for path in \
     exit 2
   fi
 done
+
+python3 - "$TMP/tools/r7a4d2_short_scalp_required_ohlcv_rows_schema_diagnose.py" "$TMP/tests/test_r7a4d2_short_scalp_required_ohlcv_rows_schema_diagnose.py" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+test = Path(sys.argv[2])
+text = source.read_text(encoding="utf-8")
+
+patches = [
+    (
+        """    numeric_count = 0
+    positive_count = 0
+    geometry_count = 0
+    nonzero_spread_count = 0
+""",
+        """    numeric_count = 0
+    positive_count = 0
+    geometry_count = 0
+    nonzero_spread_count = 0
+    same_price_scale_count = 0
+    price_scale_ratios: list[float] = []
+""",
+    ),
+    (
+        """        open_v, high_v, low_v, close_v = [float(value) for value in values]
+        numeric_count += 1
+""",
+        """        open_v, high_v, low_v, close_v = [float(value) for value in values]
+        numeric_count += 1
+        price_floor = min(abs(open_v), abs(high_v), abs(low_v), abs(close_v))
+        price_ceiling = max(abs(open_v), abs(high_v), abs(low_v), abs(close_v))
+        if price_floor > 0:
+            price_scale_ratio = price_ceiling / price_floor
+            price_scale_ratios.append(price_scale_ratio)
+            if price_scale_ratio <= 1.25:
+                same_price_scale_count += 1
+""",
+    ),
+    (
+        """        \"nonzero_spread_ratio\": ratio(nonzero_spread_count, total),
+    }
+""",
+        """        \"nonzero_spread_ratio\": ratio(nonzero_spread_count, total),
+        \"same_price_scale_ratio\": ratio(same_price_scale_count, total),
+        \"median_price_scale_ratio\": statistics.median(price_scale_ratios) if price_scale_ratios else None,
+        \"p95_price_scale_ratio\": percentile(price_scale_ratios, 0.95),
+    }
+""",
+    ),
+    (
+        """            if ohlc[\"numeric_ratio\"] < 0.95 or ohlc[\"geometry_ratio\"] < 0.95 or ohlc[\"positive_ratio\"] < 0.95:
+""",
+        """            if (
+                ohlc[\"numeric_ratio\"] < 0.95
+                or ohlc[\"geometry_ratio\"] < 0.95
+                or ohlc[\"positive_ratio\"] < 0.95
+                or ohlc[\"same_price_scale_ratio\"] < 0.95
+            ):
+""",
+    ),
+    (
+        """        and float(top[0][\"ohlc_profile\"][\"geometry_ratio\"]) >= 0.99
+        and float(top[0][\"timestamp_profile\"][\"strict_increase_ratio\"]) >= 0.99
+""",
+        """        and float(top[0][\"ohlc_profile\"][\"geometry_ratio\"]) >= 0.99
+        and float(top[0][\"ohlc_profile\"][\"same_price_scale_ratio\"]) >= 0.99
+        and float(top[0][\"timestamp_profile\"][\"strict_increase_ratio\"]) >= 0.99
+""",
+    ),
+]
+
+for old, new in patches:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"PRICE_SCALE_PATCH_ANCHOR_INVALID:{count}:{old[:48]!r}")
+    text = text.replace(old, new, 1)
+source.write_text(text, encoding="utf-8")
+
+test_text = test.read_text(encoding="utf-8")
+old_test = """        # Auxiliary zero-volume column must not be eligible as a positive OHLC price.
+        volume = 0.0
+"""
+new_test = """        # Positive auxiliary volume must still be rejected as an OHLC price by scale parity.
+        volume = 1000.0 + index
+"""
+if test_text.count(old_test) != 1:
+    raise SystemExit(f"POSITIVE_VOLUME_TEST_PATCH_ANCHOR_INVALID:{test_text.count(old_test)}")
+test.write_text(test_text.replace(old_test, new_test, 1), encoding="utf-8")
+PY
+PATCH_RC=$?
+if [[ "$PATCH_RC" != "0" ]]; then
+  echo 'STATE=HOLD_SHORT_SCALP_REQUIRED_OHLCV_ROWS_SCHEMA_DIAGNOSE_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["OHLC_PRICE_SCALE_RUNTIME_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+echo 'STATE=PASS_OHLC_PRICE_SCALE_RUNTIME_PATCH'
+echo 'POSITIVE_VOLUME_COLUMN_EXCLUDED_FROM_OHLC=true'
 
 if ! python3 -m py_compile "$TMP/tools/r7a4d2_short_scalp_required_ohlcv_rows_schema_diagnose.py"; then
   echo 'STATE=HOLD_SHORT_SCALP_REQUIRED_OHLCV_ROWS_SCHEMA_DIAGNOSE_INPUT'

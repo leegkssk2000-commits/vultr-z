@@ -70,6 +70,7 @@ for path in \
   tools/r7a4d2_short_rr_exact_math_patch.py \
   tools/r7a4d2_short_candidate_trace_patch.py \
   tools/r7a4d2_short_discovery_trace_only_patch.py \
+  tools/r7a4d2_market_expansion_failure_audit_patch.py \
   tools/r7a4d2_market_segment_expansion_for_short_candidates.py \
   tests/test_r7a4d2_short_rr_sidecar_counterfactual.py \
   tests/test_r7a4d2_short_discovery_trace_only_patch.py \
@@ -94,6 +95,7 @@ if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_rr_exact_math_patch.py" \
   "$TMP/tools/r7a4d2_short_candidate_trace_patch.py" \
   "$TMP/tools/r7a4d2_short_discovery_trace_only_patch.py" \
+  "$TMP/tools/r7a4d2_market_expansion_failure_audit_patch.py" \
   "$TMP/tools/r7a4d2_market_segment_expansion_for_short_candidates.py"; then
   echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
   echo 'BLOCKER_COUNT=1'
@@ -157,7 +159,20 @@ if ! grep -q 'SHORT_DISCOVERY_TRACE_ONLY_V1 = True' "$TMP/tools/r7a4d2_discovery
   exit 2
 fi
 
-if ! R7A4D2_MARKET_EXPANSION="$TMP/tools/r7a4d2_market_segment_expansion_for_short_candidates.py" \
+python3 "$TMP/tools/r7a4d2_market_expansion_failure_audit_patch.py" \
+  --input "$TMP/tools/r7a4d2_market_segment_expansion_for_short_candidates.py" \
+  --output "$TMP/tools/r7a4d2_market_segment_expansion_audited.py" || exit 2
+
+if ! grep -q '"failure_error_histogram"' "$TMP/tools/r7a4d2_market_segment_expansion_audited.py" || \
+   ! grep -q 'FAILURE_ERROR_HISTOGRAM=' "$TMP/tools/r7a4d2_market_segment_expansion_audited.py"; then
+  echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["FAILURE_AUDIT_MARKER_MISSING"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+if ! R7A4D2_MARKET_EXPANSION="$TMP/tools/r7a4d2_market_segment_expansion_audited.py" \
   PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q \
   "$TMP/tests/test_r7a4d2_market_segment_expansion_for_short_candidates.py"; then
   echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
@@ -167,7 +182,7 @@ if ! R7A4D2_MARKET_EXPANSION="$TMP/tools/r7a4d2_market_segment_expansion_for_sho
   exit 2
 fi
 
-PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_market_segment_expansion_for_short_candidates.py" \
+PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_market_segment_expansion_audited.py" \
   --root "$ROOT" \
   --runner "$TMP/tools/r7a4d2_discovery_trace_runner.py" \
   --a4c-contract "$TMP/backend/contracts/ZOS_R7A4C_HISTORICAL_SIMULATION_INPUT_LINEAGE_v1.json" \

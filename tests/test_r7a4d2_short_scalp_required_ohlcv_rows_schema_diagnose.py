@@ -23,7 +23,8 @@ def binance_rows(count: int = 700) -> list[list[float]]:
         close_v = open_v + (0.03 if index % 2 == 0 else -0.02)
         high_v = max(open_v, close_v) + 0.05
         low_v = min(open_v, close_v) - 0.05
-        volume = 1000.0 + index
+        # Auxiliary zero-volume column must not be eligible as a positive OHLC price.
+        volume = 0.0
         rows.append([timestamp, open_v, high_v, low_v, close_v, volume])
         previous_close = close_v
     return rows

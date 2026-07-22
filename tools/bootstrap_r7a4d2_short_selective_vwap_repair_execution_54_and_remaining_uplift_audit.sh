@@ -82,9 +82,11 @@ do
   fi
 done
 
-python3 - "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" <<'PY'
+PATCH_TARGET="$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py"
+if ! python3 - "$PATCH_TARGET" <<'PY'
 from pathlib import Path
 import sys
+
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 replacements = {
@@ -99,18 +101,43 @@ for old, new in replacements.items():
     if old not in text:
         raise SystemExit(f"PATCH_PATTERN_MISSING:{old}")
     text = text.replace(old, new)
+
+needle = '''                    "fold": int(segment.get("fold") or 0),
+                    "signal_bar_index": int(signal["signal_bar_index"]),
+'''
+replacement = '''                    "fold": int(segment.get("fold") or 0),
+                    "symbol": str(frame.iloc[int(signal["signal_bar_index"])].get("symbol") or segment.get("symbol") or ""),
+                    "signal_bar_index": int(signal["signal_bar_index"]),
+'''
+count = text.count(needle)
+if count != 1:
+    raise SystemExit(f"SYMBOL_PROVENANCE_PATCH_TARGET_COUNT_INVALID:{count}")
+text = text.replace(needle, replacement, 1)
 path.write_text(text, encoding="utf-8")
+print("STATE=PASS_SHORT_VWAP_RUNTIME_GUARD_PATCH")
+print("ZERO_DRAWDOWN_GUARD_PATCHED=true")
+print("SYMBOL_FIELD_BOUND=true")
+print("PATCH_SCOPE=temporary_execution_copy_only")
+print("RC=0")
 PY
-if [[ $? -ne 0 ]]; then
+then
   echo 'STATE=HOLD_SHORT_SELECTIVE_VWAP_REPAIR_EXECUTION_54_AND_REMAINING_UPLIFT_AUDIT_INPUT'
   echo 'BLOCKER_COUNT=1'
-  echo 'BLOCKERS=["ZERO_DRAWDOWN_GUARD_PATCH_FAILED"]'
+  echo 'BLOCKERS=["VWAP_RUNTIME_GUARD_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+if ! grep -q '"symbol": str(frame.iloc\[int(signal\["signal_bar_index"\])\].get("symbol")' "$PATCH_TARGET"; then
+  echo 'STATE=HOLD_SHORT_SELECTIVE_VWAP_REPAIR_EXECUTION_54_AND_REMAINING_UPLIFT_AUDIT_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["VWAP_SYMBOL_PROVENANCE_PATCH_VERIFY_FAILED"]'
   echo 'RC=2'
   exit 2
 fi
 
 if ! python3 -m py_compile \
-  "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" \
+  "$PATCH_TARGET" \
   "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \
   "$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py"
 then
@@ -121,7 +148,7 @@ then
   exit 2
 fi
 
-if ! python3 "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" --self-test; then
+if ! python3 "$PATCH_TARGET" --self-test; then
   echo 'STATE=HOLD_SHORT_SELECTIVE_VWAP_REPAIR_EXECUTION_54_AND_REMAINING_UPLIFT_AUDIT_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["VWAP_ECONOMIC_EXECUTION_SELF_TEST_FAILED"]'
@@ -129,7 +156,7 @@ if ! python3 "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_rem
   exit 2
 fi
 
-python3 "$TMP/tools/r7a4d2_short_selective_vwap_repair_execution_54_and_remaining_uplift_audit.py" \
+python3 "$PATCH_TARGET" \
   --root "$ROOT" \
   --target-sha "$SHA" \
   --raw-module "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \

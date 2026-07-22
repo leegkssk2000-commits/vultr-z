@@ -21,9 +21,10 @@ SHORT_POLICY_ALLOWED_REGIMES = frozenset({"trend_down"})
 def simulate():
     short_candidate_trace: list[dict[str, Any]] = []
     strategy_call_count = 0
-    intent_histogram[intent] += 1
-    if intent not in allowed_intents:
-        raise ValueError(f"OUTPUT_INTENT_NOT_ALLOWED:{intent}")
+    for _ in [0]:
+        intent_histogram[intent] += 1
+        if intent not in allowed_intents:
+            raise ValueError(f"OUTPUT_INTENT_NOT_ALLOWED:{intent}")
     return {
         "short_candidate_trace": short_candidate_trace,
         "short_closed_trade_count": sum(

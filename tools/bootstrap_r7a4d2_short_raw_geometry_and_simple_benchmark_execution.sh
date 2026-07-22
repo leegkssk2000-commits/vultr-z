@@ -76,6 +76,30 @@ for path in \
   fi
 done
 
+if ! python3 - "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = "1_700_000_000_000 + index * 60_000"
+new = "1_700_000_100_000 + index * 60_000"
+count = source.count(old)
+if count != 1:
+    raise SystemExit(f"SELF_TEST_TIMESTAMP_PATCH_ANCHOR_INVALID:{count}")
+path.write_text(source.replace(old, new, 1), encoding="utf-8")
+print("STATE=PASS_RAW_GEOMETRY_SELF_TEST_TIME_ALIGNMENT_PATCH")
+print("SELF_TEST_5M_BUCKET_ALIGNMENT=true")
+print("PATCH_SCOPE=temporary_execution_copy_only")
+PY
+then
+  echo 'STATE=HOLD_SHORT_RAW_GEOMETRY_AND_SIMPLE_BENCHMARK_EXECUTION_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["RAW_GEOMETRY_SELF_TEST_TIME_ALIGNMENT_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py" \
   "$TMP/tools/r7a4d_historical_simulation_3600.py"; then

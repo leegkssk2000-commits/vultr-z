@@ -21,6 +21,8 @@ printf '%s\n' \
   'MAX_SIGNALS_PER_SEGMENT=4' \
   'SHORT_EXECUTION_ALLOWED=false' \
   'LONG_EXECUTION_ALLOWED=false' \
+  'CANONICAL_LONG_INTENTS_TRACE_SKIPPED=true' \
+  'UNKNOWN_INTENT_FAIL_CLOSED=true' \
   'SIGNAL_TRACE_ALLOWED=true' \
   'PERFORMANCE_BASED_SEGMENT_SELECTION_ALLOWED=false' \
   'PRODUCTION_ADMISSION_EXPANSION_ALLOWED=false' \
@@ -70,6 +72,7 @@ for path in \
   tools/r7a4d2_short_discovery_trace_only_patch.py \
   tools/r7a4d2_market_segment_expansion_for_short_candidates.py \
   tests/test_r7a4d2_short_rr_sidecar_counterfactual.py \
+  tests/test_r7a4d2_short_discovery_trace_only_patch.py \
   tests/test_r7a4d2_market_segment_expansion_for_short_candidates.py \
   backend/contracts/ZOS_R7A4C_HISTORICAL_SIMULATION_INPUT_LINEAGE_v1.json \
   backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json
@@ -95,6 +98,16 @@ if ! python3 -m py_compile \
   echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PY_COMPILE_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+if ! R7A4D2_DISCOVERY_PATCH="$TMP/tools/r7a4d2_short_discovery_trace_only_patch.py" \
+  PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q \
+  "$TMP/tests/test_r7a4d2_short_discovery_trace_only_patch.py"; then
+  echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["DISCOVERY_PATCH_TEST_FAILED"]'
   echo 'RC=2'
   exit 2
 fi
@@ -134,7 +147,9 @@ python3 "$TMP/tools/r7a4d2_short_discovery_trace_only_patch.py" \
   --output "$TMP/tools/r7a4d2_discovery_trace_runner.py" || exit 2
 
 if ! grep -q 'SHORT_DISCOVERY_TRACE_ONLY_V1 = True' "$TMP/tools/r7a4d2_discovery_trace_runner.py" || \
-   ! grep -q 'SHORT_POLICY_ALLOWED_REGIMES = frozenset()' "$TMP/tools/r7a4d2_discovery_trace_runner.py"; then
+   ! grep -q 'SHORT_POLICY_ALLOWED_REGIMES = frozenset()' "$TMP/tools/r7a4d2_discovery_trace_runner.py" || \
+   ! grep -q 'DISCOVERY_NON_SHORT_INTENTS = frozenset' "$TMP/tools/r7a4d2_discovery_trace_runner.py" || \
+   ! grep -q 'discovery_non_short_intent_skip_count += 1' "$TMP/tools/r7a4d2_discovery_trace_runner.py"; then
   echo 'STATE=HOLD_MARKET_SEGMENT_EXPANSION_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["DISCOVERY_RUNNER_FAIL_CLOSED_MARKER_MISSING"]'

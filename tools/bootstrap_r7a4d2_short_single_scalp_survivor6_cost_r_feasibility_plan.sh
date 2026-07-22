@@ -37,7 +37,8 @@ printf '%s\n' \
   'PAPER_LIVE_ORDER_ALLOWED=false' \
   'FULL_3600_REEXECUTION_ALLOWED=false' \
   'EVENT_REPLAY_2880_ALLOWED=false' \
-  'COUNTERFACTUAL_PLAN_SSOT_PATH=runtime/r7a4d2_short_selective_chart_gate_geometry_counterfactual_plan/counterfactual_plan_v1.json'
+  'COUNTERFACTUAL_PLAN_SSOT_PATH=runtime/r7a4d2_short_selective_chart_gate_geometry_counterfactual_plan/counterfactual_plan_v1.json' \
+  'COUNTERFACTUAL_SCHEMA_BIND=nested_scalp_counterfactual'
 
 if [[ -z "$SHA" ]] || ! git -C "$ROOT" cat-file -e "$SHA^{commit}" 2>/dev/null; then
   echo 'STATE=HOLD_SHORT_SINGLE_SCALP_SURVIVOR_6_AND_COST_R_FEASIBILITY_PLAN_INPUT'
@@ -77,20 +78,51 @@ for path in \
   fi
 done
 
-OLD_PLAN_PATH='runtime/r7a4d2_short_selective_counterfactual_plan/counterfactual_plan_v1.json'
-NEW_PLAN_PATH='runtime/r7a4d2_short_selective_chart_gate_geometry_counterfactual_plan/counterfactual_plan_v1.json'
-if [[ "$(grep -Foc "$OLD_PLAN_PATH" "$TMP/tools/r7a4d2_short_single_scalp_survivor6_cost_r_feasibility_plan.py")" != "1" ]]; then
+python3 - "$TMP/tools/r7a4d2_short_single_scalp_survivor6_cost_r_feasibility_plan.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+replacements = {
+    'root / "runtime/r7a4d2_short_selective_counterfactual_plan/counterfactual_plan_v1.json"':
+        'root / "runtime/r7a4d2_short_selective_chart_gate_geometry_counterfactual_plan/counterfactual_plan_v1.json"',
+    'int(prior_plan.get("scalp_counterfactual_candidate_count", -1))':
+        'int(prior_plan_scalp.get("candidate_count", -1))',
+    'int(prior_plan.get("scalp_counterfactual_execution_cell_count", -1))':
+        'int(prior_plan_scalp.get("execution_cell_count", -1))',
+    'int(prior_proof.get("scalp_counterfactual_completed_cell_count", -1))':
+        'int(prior_proof_scalp.get("completed_cell_count", -1))',
+    'int(prior_proof.get("scalp_invalid_geometry_count", -1))':
+        'int(prior_proof_scalp.get("invalid_geometry_count", -1))',
+}
+for old, new in replacements.items():
+    if text.count(old) != 1:
+        raise SystemExit(f"SCHEMA_PATCH_ANCHOR_INVALID:{old}:{text.count(old)}")
+    text = text.replace(old, new, 1)
+anchor = '    blockers: list[str] = []\n'
+insert = (
+    '    blockers: list[str] = []\n'
+    '    prior_plan_scalp = prior_plan.get("scalp_counterfactual") if isinstance(prior_plan.get("scalp_counterfactual"), dict) else {}\n'
+    '    prior_proof_scalp = prior_proof.get("scalp_counterfactual") if isinstance(prior_proof.get("scalp_counterfactual"), dict) else {}\n'
+)
+if text.count(anchor) != 1:
+    raise SystemExit(f"SCHEMA_BIND_INSERT_ANCHOR_INVALID:{text.count(anchor)}")
+text = text.replace(anchor, insert, 1)
+path.write_text(text, encoding="utf-8")
+PY
+PATCH_RC=$?
+if [[ "$PATCH_RC" != "0" ]]; then
   echo 'STATE=HOLD_SHORT_SINGLE_SCALP_SURVIVOR_6_AND_COST_R_FEASIBILITY_PLAN_INPUT'
   echo 'BLOCKER_COUNT=1'
-  echo 'BLOCKERS=["COUNTERFACTUAL_PLAN_PATH_PATCH_ANCHOR_INVALID"]'
+  echo 'BLOCKERS=["COUNTERFACTUAL_SCHEMA_BIND_FAILED"]'
   echo 'RC=2'
   exit 2
 fi
-sed -i "s#${OLD_PLAN_PATH}#${NEW_PLAN_PATH}#" \
-  "$TMP/tools/r7a4d2_short_single_scalp_survivor6_cost_r_feasibility_plan.py"
 
-echo 'STATE=PASS_SURVIVOR_FEASIBILITY_EVIDENCE_PATH_BIND'
+echo 'STATE=PASS_SURVIVOR_FEASIBILITY_SCHEMA_BIND'
 echo 'COUNTERFACTUAL_PLAN_SSOT_PATH_BOUND=true'
+echo 'COUNTERFACTUAL_NESTED_SCHEMA_BOUND=true'
 
 if ! python3 -m py_compile "$TMP/tools/r7a4d2_short_single_scalp_survivor6_cost_r_feasibility_plan.py"; then
   echo 'STATE=HOLD_SHORT_SINGLE_SCALP_SURVIVOR_6_AND_COST_R_FEASIBILITY_PLAN_INPUT'

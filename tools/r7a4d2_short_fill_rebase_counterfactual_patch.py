@@ -17,19 +17,21 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 def apply_patch(source: str) -> str:
     if "SHORT_RR_SIDECAR_V1 = True" not in source:
         raise RuntimeError("SHORT_RR_SIDECAR_REQUIRED")
-    if "SHORT_RETURN_SPACE_RR_EXACT" in source:
-        raise RuntimeError("UNEXPECTED_MARKER_IN_RUNNER")
+    if "SHORT_OBSERVER_TARGET_V1 = True" not in source:
+        raise RuntimeError("SHORT_OBSERVER_TARGET_REQUIRED")
     if "SHORT_FILL_REBASE_V1" in source:
         raise RuntimeError("RUNNER_ALREADY_FILL_REBASE_PATCHED")
 
     source = replace_once(
         source,
         '''SHORT_RR_SIDECAR_V1 = True
+SHORT_OBSERVER_TARGET_V1 = True
 SHORT_POLICY_ALLOWED_REGIMES = frozenset({"trend_down"})
 
 
 ''',
         '''SHORT_RR_SIDECAR_V1 = True
+SHORT_OBSERVER_TARGET_V1 = True
 SHORT_FILL_REBASE_V1 = True
 SHORT_POLICY_ALLOWED_REGIMES = frozenset({"trend_down"})
 
@@ -62,9 +64,17 @@ def short_fill_rebased_geometry(
     source = replace_once(
         source,
         '''    short_policy_full_tp_r = float(contract.get("short_policy_full_tp_r", 2.5))
+    short_observer_target_enabled = bool(contract.get("short_observer_target_enabled", False))
+    short_observer_target_scenario_id = str(contract.get("short_observer_target_scenario_id") or "")
+    short_observer_target_strategy_id = str(contract.get("short_observer_target_strategy_id") or "")
+    short_observer_target_bar_index = int(contract.get("short_observer_target_bar_index", -1))
     if short_rr_sidecar_enabled and not (
 ''',
         '''    short_policy_full_tp_r = float(contract.get("short_policy_full_tp_r", 2.5))
+    short_observer_target_enabled = bool(contract.get("short_observer_target_enabled", False))
+    short_observer_target_scenario_id = str(contract.get("short_observer_target_scenario_id") or "")
+    short_observer_target_strategy_id = str(contract.get("short_observer_target_strategy_id") or "")
+    short_observer_target_bar_index = int(contract.get("short_observer_target_bar_index", -1))
     short_fill_rebase_enabled = bool(contract.get("short_fill_rebase_enabled", False))
     if short_fill_rebase_enabled and not short_rr_sidecar_enabled:
         raise ValueError("SHORT_FILL_REBASE_REQUIRES_RR_SIDECAR")
@@ -208,6 +218,7 @@ def main() -> int:
     py_compile.compile(str(output_path), doraise=True)
     print("STATE=PASS_SHORT_FILL_REBASE_COUNTERFACTUAL_PATCH")
     print("SHORT_FILL_REBASE_DEFAULT_ENABLED=false")
+    print("OBSERVER_TARGET_COMPATIBLE=true")
     print("RAW_SIGNAL_PREDICATES_PRESERVED=true")
     print("RC=0")
     return 0

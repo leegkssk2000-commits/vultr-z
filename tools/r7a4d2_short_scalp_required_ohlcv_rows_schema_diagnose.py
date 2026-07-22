@@ -11,7 +11,6 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-MINIMUM_SOURCE_ROWS = 640
 SAMPLE_LIMIT = 256
 OUTPUT_SAMPLE_ROWS = 3
 MAX_ROW_WIDTH = 24
@@ -61,6 +60,19 @@ def ratio(numerator: int, denominator: int) -> float:
     return round(numerator / max(denominator, 1), 6)
 
 
+def percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * q
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
 def timestamp_profile(values: list[Any]) -> dict[str, Any]:
     numeric = [finite(value) for value in values]
     valid = [value for value in numeric if value is not None]
@@ -76,15 +88,13 @@ def timestamp_profile(values: list[Any]) -> dict[str, Any]:
     increases = sum(1 for left, right in zip(valid, valid[1:]) if right > left)
     deltas = [right - left for left, right in zip(valid, valid[1:]) if right > left]
     median_value = statistics.median(valid)
-    median_delta = statistics.median(deltas) if deltas else None
-    plausible_epoch = 1e8 <= abs(median_value) <= 1e16
     return {
         "finite_ratio": ratio(len(valid), len(values)),
         "strict_increase_ratio": ratio(increases, len(valid) - 1),
         "unique_ratio": ratio(len(set(valid)), len(valid)),
         "median_value": median_value,
-        "median_delta": median_delta,
-        "plausible_epoch": plausible_epoch,
+        "median_delta": statistics.median(deltas) if deltas else None,
+        "plausible_epoch": 1e8 <= abs(median_value) <= 1e16,
     }
 
 
@@ -114,7 +124,49 @@ def ohlc_profile(rows: list[list[Any]], open_i: int, high_i: int, low_i: int, cl
     }
 
 
-def candidate_score(timestamp: dict[str, Any], ohlc: dict[str, Any]) -> float:
+def continuity_profile(rows: list[list[Any]], open_i: int, high_i: int, low_i: int, close_i: int) -> dict[str, Any]:
+    gap_pcts: list[float] = []
+    gap_to_ranges: list[float] = []
+    exact_count = 0
+    valid_count = 0
+    for previous, current in zip(rows, rows[1:]):
+        if max(open_i, high_i, low_i, close_i) >= min(len(previous), len(current)):
+            continue
+        previous_close = finite(previous[close_i])
+        current_open = finite(current[open_i])
+        previous_high = finite(previous[high_i])
+        previous_low = finite(previous[low_i])
+        current_high = finite(current[high_i])
+        current_low = finite(current[low_i])
+        if any(value is None for value in (previous_close, current_open, previous_high, previous_low, current_high, current_low)):
+            continue
+        previous_close = float(previous_close)
+        current_open = float(current_open)
+        gap = abs(current_open - previous_close)
+        price_scale = max(abs(previous_close), 1e-12)
+        range_scale = max(
+            abs(float(previous_high) - float(previous_low)),
+            abs(float(current_high) - float(current_low)),
+            price_scale * 1e-10,
+        )
+        gap_pcts.append(gap / price_scale)
+        gap_to_ranges.append(gap / range_scale)
+        if gap <= price_scale * 1e-10:
+            exact_count += 1
+        valid_count += 1
+    return {
+        "valid_pair_ratio": ratio(valid_count, max(len(rows) - 1, 1)),
+        "exact_link_ratio": ratio(exact_count, valid_count),
+        "median_gap_pct": statistics.median(gap_pcts) if gap_pcts else None,
+        "p95_gap_pct": percentile(gap_pcts, 0.95),
+        "median_gap_to_range": statistics.median(gap_to_ranges) if gap_to_ranges else None,
+        "p95_gap_to_range": percentile(gap_to_ranges, 0.95),
+    }
+
+
+def candidate_score(timestamp: dict[str, Any], ohlc: dict[str, Any], continuity: dict[str, Any]) -> float:
+    median_gap_to_range = continuity.get("median_gap_to_range")
+    continuity_quality = 0.0 if median_gap_to_range is None else 1.0 / (1.0 + float(median_gap_to_range))
     score = (
         2.0 * float(timestamp["finite_ratio"])
         + 2.0 * float(timestamp["strict_increase_ratio"])
@@ -124,8 +176,26 @@ def candidate_score(timestamp: dict[str, Any], ohlc: dict[str, Any]) -> float:
         + 2.0 * float(ohlc["positive_ratio"])
         + 4.0 * float(ohlc["geometry_ratio"])
         + 1.0 * float(ohlc["nonzero_spread_ratio"])
+        + 3.0 * float(continuity["exact_link_ratio"])
+        + 3.0 * continuity_quality
     )
-    return round(score, 6)
+    return round(score, 9)
+
+
+def orientation_is_resolved(best: dict[str, Any], second: dict[str, Any] | None) -> bool:
+    if second is None:
+        return True
+    best_cont = best["continuity_profile"]
+    second_cont = second["continuity_profile"]
+    exact_advantage = float(best_cont["exact_link_ratio"]) - float(second_cont["exact_link_ratio"])
+    best_gap = best_cont.get("median_gap_to_range")
+    second_gap = second_cont.get("median_gap_to_range")
+    gap_advantage = False
+    if best_gap is not None and second_gap is not None:
+        best_gap = float(best_gap)
+        second_gap = float(second_gap)
+        gap_advantage = second_gap > 0 and best_gap <= second_gap * 0.8 and (second_gap - best_gap) >= 1e-9
+    return exact_advantage >= 0.05 or gap_advantage or float(best["score"]) - float(second["score"]) >= 0.25
 
 
 def diagnose_matrix_rows(rows: list[Any]) -> dict[str, Any]:
@@ -164,12 +234,14 @@ def diagnose_matrix_rows(rows: list[Any]) -> dict[str, Any]:
             timestamp_candidates.append((index, profile))
 
     layouts: list[dict[str, Any]] = []
-    indices = range(modal_width)
     for timestamp_i, timestamp in timestamp_candidates:
-        price_indices = [index for index in indices if index != timestamp_i]
+        price_indices = [index for index in range(modal_width) if index != timestamp_i]
         for open_i, high_i, low_i, close_i in itertools.permutations(price_indices, 4):
             ohlc = ohlc_profile(consistent_rows, open_i, high_i, low_i, close_i)
             if ohlc["numeric_ratio"] < 0.95 or ohlc["geometry_ratio"] < 0.95 or ohlc["positive_ratio"] < 0.95:
+                continue
+            continuity = continuity_profile(consistent_rows, open_i, high_i, low_i, close_i)
+            if continuity["valid_pair_ratio"] < 0.95:
                 continue
             layouts.append({
                 "timestamp_index": timestamp_i,
@@ -179,11 +251,13 @@ def diagnose_matrix_rows(rows: list[Any]) -> dict[str, Any]:
                 "close_index": close_i,
                 "timestamp_profile": timestamp,
                 "ohlc_profile": ohlc,
-                "score": candidate_score(timestamp, ohlc),
+                "continuity_profile": continuity,
+                "score": candidate_score(timestamp, ohlc, continuity),
             })
     layouts.sort(
         key=lambda row: (
             -float(row["score"]),
+            float(row["continuity_profile"].get("median_gap_to_range") or 0.0),
             row["timestamp_index"],
             row["open_index"],
             row["high_index"],
@@ -192,17 +266,13 @@ def diagnose_matrix_rows(rows: list[Any]) -> dict[str, Any]:
         )
     )
     top = layouts[:10]
-    unique_best = False
-    if top:
-        if len(top) == 1:
-            unique_best = True
-        else:
-            unique_best = float(top[0]["score"]) - float(top[1]["score"]) >= 0.25
+    unique_best = bool(top and orientation_is_resolved(top[0], top[1] if len(top) > 1 else None))
     layout_ready = bool(
         top
         and unique_best
         and float(top[0]["ohlc_profile"]["geometry_ratio"]) >= 0.99
         and float(top[0]["timestamp_profile"]["strict_increase_ratio"]) >= 0.99
+        and float(top[0]["continuity_profile"]["valid_pair_ratio"]) >= 0.99
     )
     return {
         "matrix_row_count": len(matrix_rows),
@@ -274,15 +344,14 @@ def build_audit(frozen: dict[str, Any], selected: dict[str, Any], inspected: lis
         if not top:
             continue
         candidate = top[0]
-        signature = (
+        layout_signatures.append((
             int(row.get("modal_width", -1)),
             int(candidate["timestamp_index"]),
             int(candidate["open_index"]),
             int(candidate["high_index"]),
             int(candidate["low_index"]),
             int(candidate["close_index"]),
-        )
-        layout_signatures.append(signature)
+        ))
     unique_signatures = sorted(set(layout_signatures))
     shared_layout = len(ready) == len(required_paths) and len(unique_signatures) == 1
     if ready and not shared_layout:
@@ -366,9 +435,8 @@ def main() -> int:
     mutation_paths = sorted(path for path in before if before[path] != after[path])
     if mutation_paths:
         blockers.append("PROTECTED_INPUT_MUTATION_DETECTED")
-        blockers = list(dict.fromkeys(blockers))
-        audit["blockers"] = blockers
-        audit["blocker_count"] = len(blockers)
+        audit["blockers"] = list(dict.fromkeys(blockers))
+        audit["blocker_count"] = len(audit["blockers"])
         audit["state"] = "HOLD_SHORT_SCALP_REQUIRED_OHLCV_ROWS_SCHEMA_DIAGNOSE_INPUT"
         audit["next_stage"] = "R7.A4D2_SHORT_SCALP_REQUIRED_OHLCV_ROWS_SCHEMA_DIAGNOSE"
     audit["protected_mutation_path_count"] = len(mutation_paths)

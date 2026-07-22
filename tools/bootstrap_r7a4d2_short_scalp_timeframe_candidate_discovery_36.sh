@@ -25,6 +25,7 @@ printf '%s\n' \
   'EXECUTION_CELL_TARGET_COUNT=216' \
   'CONDITIONAL_REQUIRED_RAW_DISTANCE_PCT=0.9696969697' \
   'ROBUST_REQUIRED_RAW_DISTANCE_PCT=1.28' \
+  'SCENARIO_FOLD_SOURCE=window_enumeration' \
   'FUTURE_PNL_SELECTION_ALLOWED=false' \
   'SHORT_EXECUTION_ALLOWED=false' \
   'LONG_EXECUTION_ALLOWED=false' \
@@ -65,9 +66,11 @@ for path in \
   tools/r7a4d2_short_rr_exact_math_patch.py \
   tools/r7a4d2_short_candidate_trace_patch.py \
   tools/r7a4d2_short_discovery_trace_only_patch.py \
+  tools/r7a4d2_short_scalp_discovery_fold_patch.py \
   tools/r7a4d2_short_scalp_required_ohlcv_schema_adapter_bind.py \
   tools/r7a4d2_short_scalp_timeframe_candidate_discovery_36.py \
   tests/test_r7a4d2_short_discovery_trace_only_patch.py \
+  tests/test_r7a4d2_short_scalp_discovery_fold_patch.py \
   tests/test_r7a4d2_short_scalp_timeframe_candidate_discovery_36.py \
   backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json
  do
@@ -88,6 +91,7 @@ if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_rr_exact_math_patch.py" \
   "$TMP/tools/r7a4d2_short_candidate_trace_patch.py" \
   "$TMP/tools/r7a4d2_short_discovery_trace_only_patch.py" \
+  "$TMP/tools/r7a4d2_short_scalp_discovery_fold_patch.py" \
   "$TMP/tools/r7a4d2_short_scalp_required_ohlcv_schema_adapter_bind.py" \
   "$TMP/tools/r7a4d2_short_scalp_timeframe_candidate_discovery_36.py"; then
   echo 'STATE=HOLD_SHORT_SCALP_TIMEFRAME_CANDIDATE_DISCOVERY_36'
@@ -115,11 +119,16 @@ python3 "$TMP/tools/r7a4d2_short_candidate_trace_patch.py" \
 python3 "$TMP/tools/r7a4d2_short_discovery_trace_only_patch.py" \
   --input "$TMP/tools/runner_trace.py" \
   --output "$TMP/tools/runner_discovery.py" || exit 2
+python3 "$TMP/tools/r7a4d2_short_scalp_discovery_fold_patch.py" \
+  --input "$TMP/tools/r7a4d2_short_scalp_timeframe_candidate_discovery_36.py" \
+  --output "$TMP/tools/scalp_discovery_fold_bound.py" || exit 2
 
-if ! python3 -m py_compile "$TMP/tools/runner_discovery.py"; then
+if ! python3 -m py_compile \
+  "$TMP/tools/runner_discovery.py" \
+  "$TMP/tools/scalp_discovery_fold_bound.py"; then
   echo 'STATE=HOLD_SHORT_SCALP_TIMEFRAME_CANDIDATE_DISCOVERY_36'
   echo 'BLOCKER_COUNT=1'
-  echo 'BLOCKERS=["DISCOVERY_RUNNER_COMPILE_FAILED"]'
+  echo 'BLOCKERS=["DISCOVERY_PATCHED_COMPILE_FAILED"]'
   echo 'RC=2'
   exit 2
 fi
@@ -134,7 +143,17 @@ if ! R7A4D2_DISCOVERY_PATCH="$TMP/tools/r7a4d2_short_discovery_trace_only_patch.
   exit 2
 fi
 
-if ! R7A4D2_SCALP_DISCOVERY_36="$TMP/tools/r7a4d2_short_scalp_timeframe_candidate_discovery_36.py" \
+if ! R7A4D2_SCALP_DISCOVERY_FOLD_PATCH="$TMP/tools/r7a4d2_short_scalp_discovery_fold_patch.py" \
+  PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q \
+  "$TMP/tests/test_r7a4d2_short_scalp_discovery_fold_patch.py"; then
+  echo 'STATE=HOLD_SHORT_SCALP_TIMEFRAME_CANDIDATE_DISCOVERY_36'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["SCALP_DISCOVERY_FOLD_PATCH_TEST_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+if ! R7A4D2_SCALP_DISCOVERY_36="$TMP/tools/scalp_discovery_fold_bound.py" \
   PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q \
   "$TMP/tests/test_r7a4d2_short_scalp_timeframe_candidate_discovery_36.py"; then
   echo 'STATE=HOLD_SHORT_SCALP_TIMEFRAME_CANDIDATE_DISCOVERY_36'
@@ -144,7 +163,7 @@ if ! R7A4D2_SCALP_DISCOVERY_36="$TMP/tools/r7a4d2_short_scalp_timeframe_candidat
   exit 2
 fi
 
-PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/r7a4d2_short_scalp_timeframe_candidate_discovery_36.py" \
+PYTHONPATH="$ROOT:$TMP" python3 "$TMP/tools/scalp_discovery_fold_bound.py" \
   --root "$ROOT" \
   --runner "$TMP/tools/runner_discovery.py" \
   --adapter "$TMP/tools/r7a4d2_short_scalp_required_ohlcv_schema_adapter_bind.py" \

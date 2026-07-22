@@ -36,7 +36,16 @@ def candidate(bucket: str, strategy: str, regime: str, index: int, segment: int 
 
 def fixtures():
     baseline = [candidate("baseline_trend_down", "grid_rebalance", "trend_down", i) for i in range(12)]
-    scalp = [candidate("scalp_snap_trend_up", "scalp_snap", "trend_up", 100 + i, 100 + min(i, 9)) for i in range(12)]
+    scalp = [
+        candidate(
+            "scalp_snap_trend_up",
+            "scalp_snap",
+            "trend_up",
+            100 + i,
+            100 + (i if i < 10 else i - 10),
+        )
+        for i in range(12)
+    ]
     vol = [candidate("vol_spike_fade_shock_recovery", "vol_spike_fade", "shock_recovery", 200 + i) for i in range(4)]
     rows = [
         {

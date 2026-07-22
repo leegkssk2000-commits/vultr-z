@@ -19,10 +19,14 @@ def apply_patch(source: str) -> str:
         raise RuntimeError("SHORT_CANDIDATE_TRACE_RUNNER_REQUIRED")
     if "SHORT_DISCOVERY_TRACE_ONLY_V1" in source:
         raise RuntimeError("RUNNER_ALREADY_DISCOVERY_PATCHED")
+
     source = replace_once(
         source,
         "SHORT_CANDIDATE_TRACE_V1 = True\n",
-        "SHORT_CANDIDATE_TRACE_V1 = True\nSHORT_DISCOVERY_TRACE_ONLY_V1 = True\n",
+        '''SHORT_CANDIDATE_TRACE_V1 = True
+SHORT_DISCOVERY_TRACE_ONLY_V1 = True
+DISCOVERY_NON_SHORT_INTENTS = frozenset({"enter_long", "reduce", "exit_long"})
+''',
         "DISCOVERY_MARKER",
     )
     source = replace_once(
@@ -30,6 +34,43 @@ def apply_patch(source: str) -> str:
         'SHORT_POLICY_ALLOWED_REGIMES = frozenset({"trend_down"})',
         'SHORT_POLICY_ALLOWED_REGIMES = frozenset()',
         "BLOCK_ALL_SHORT_EXECUTION",
+    )
+    source = replace_once(
+        source,
+        '''    short_candidate_trace: list[dict[str, Any]] = []
+    strategy_call_count = 0
+''',
+        '''    short_candidate_trace: list[dict[str, Any]] = []
+    discovery_non_short_intent_skip_count = 0
+    strategy_call_count = 0
+''',
+        "DISCOVERY_SKIP_COUNTER",
+    )
+    source = replace_once(
+        source,
+        '''        intent_histogram[intent] += 1
+        if intent not in allowed_intents:
+            raise ValueError(f"OUTPUT_INTENT_NOT_ALLOWED:{intent}")
+''',
+        '''        intent_histogram[intent] += 1
+        if SHORT_DISCOVERY_TRACE_ONLY_V1 and intent in DISCOVERY_NON_SHORT_INTENTS:
+            discovery_non_short_intent_skip_count += 1
+            continue
+        if intent not in allowed_intents:
+            raise ValueError(f"OUTPUT_INTENT_NOT_ALLOWED:{intent}")
+''',
+        "DISCOVERY_SKIP_NON_SHORT_INTENT",
+    )
+    source = replace_once(
+        source,
+        '''        "short_candidate_trace": short_candidate_trace,
+        "short_closed_trade_count": sum(
+''',
+        '''        "short_candidate_trace": short_candidate_trace,
+        "discovery_non_short_intent_skip_count": discovery_non_short_intent_skip_count,
+        "short_closed_trade_count": sum(
+''',
+        "DISCOVERY_SKIP_RESULT_FIELD",
     )
     return source
 
@@ -52,6 +93,9 @@ def main() -> int:
     py_compile.compile(str(output_path), doraise=True)
     print("STATE=PASS_SHORT_DISCOVERY_TRACE_ONLY_PATCH")
     print("SHORT_EXECUTION_ALLOWED=false")
+    print("LONG_EXECUTION_ALLOWED=false")
+    print("CANONICAL_LONG_INTENTS_TRACE_SKIPPED=true")
+    print("UNKNOWN_INTENT_FAIL_CLOSED=true")
     print("SHORT_CANDIDATE_TRACE_ALLOWED=true")
     print("MUTATION_SCOPE=temporary_runner_only")
     print("RC=0")

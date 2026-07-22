@@ -5,6 +5,7 @@ ROOT="${1:-/home/z/z}"
 SHA="${2:-}"
 TMP=""
 RC=2
+PATCHED_DIAG=""
 
 cleanup() {
   [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"
@@ -23,6 +24,7 @@ printf '%s\n' \
   'BASELINE_LEAVE_ONE_SOURCE_OUT_REQUIRED=true' \
   'SCALP_GEOMETRY_STRESS_PROOF_PARITY_REQUIRED=true' \
   'SCALP_REBASE_IS_COUNTERFACTUAL_ONLY=true' \
+  'JSON_SAFE_NUMPY_SCALAR_RECURSION_REQUIRED=true' \
   'GRID_REBALANCE_STRATEGY_QUARANTINED=true' \
   'VOL_SHOCK_PERMANENT_BLOCK=true' \
   'VOL_COMPONENTS_OBSERVER_ONLY=true' \
@@ -66,6 +68,7 @@ TMP="$(mktemp -d /tmp/r7a4d2-chart-causal-cluster.XXXXXX)" || exit 2
 for path in \
   tools/r7a4d_historical_simulation_3600.py \
   tools/r7a4d2_short_chart_causal_cluster_diagnose.py \
+  tools/r7a4d2_chart_causal_cluster_json_safe_patch.py \
   tests/test_r7a4d2_short_chart_causal_cluster_diagnose.py \
   backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json
  do
@@ -79,9 +82,21 @@ for path in \
   fi
 done
 
+PATCHED_DIAG="$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnose_jsonsafe.py"
+if ! python3 "$TMP/tools/r7a4d2_chart_causal_cluster_json_safe_patch.py" \
+  --input "$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnose.py" \
+  --output "$PATCHED_DIAG"; then
+  echo 'STATE=HOLD_SHORT_CHART_CAUSAL_CLUSTER_DIAGNOSE_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["JSON_SAFE_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d_historical_simulation_3600.py" \
-  "$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnose.py"; then
+  "$TMP/tools/r7a4d2_chart_causal_cluster_json_safe_patch.py" \
+  "$PATCHED_DIAG"; then
   echo 'STATE=HOLD_SHORT_CHART_CAUSAL_CLUSTER_DIAGNOSE_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PY_COMPILE_FAILED"]'
@@ -89,7 +104,7 @@ if ! python3 -m py_compile \
   exit 2
 fi
 
-if ! R7A4D2_CAUSAL_CLUSTER="$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnose.py" \
+if ! R7A4D2_CAUSAL_CLUSTER="$PATCHED_DIAG" \
   PYTHONPATH="$TMP:$ROOT" python3 -m pytest -q \
   "$TMP/tests/test_r7a4d2_short_chart_causal_cluster_diagnose.py"; then
   echo 'STATE=HOLD_SHORT_CHART_CAUSAL_CLUSTER_DIAGNOSE_INPUT'
@@ -99,7 +114,7 @@ if ! R7A4D2_CAUSAL_CLUSTER="$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnos
   exit 2
 fi
 
-PYTHONPATH="$TMP:$ROOT" python3 "$TMP/tools/r7a4d2_short_chart_causal_cluster_diagnose.py" \
+PYTHONPATH="$TMP:$ROOT" python3 "$PATCHED_DIAG" \
   --root "$ROOT" \
   --runner "$TMP/tools/r7a4d_historical_simulation_3600.py" \
   --contract "$TMP/backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json"

@@ -29,6 +29,7 @@ printf '%s\n' \
   'NOMINAL_LOSS_CAP_R=0.75' \
   'NOMINAL_FULL_TP_R=2.5' \
   'GROSS_LOSS_CAP_AND_NET_PAYOFF_SEPARATED=true' \
+  'CAPITAL_RISK_AND_PRICE_RISK_DENOMINATORS_SEPARATED=true' \
   'REALIZED_PAYOFF_RATIO_AUDIT_REQUIRED=true' \
   'PERFORMANCE_BASED_SEGMENT_SELECTION_ALLOWED=false' \
   'SCALP_ENTRY_PREDICATE_MUTATION_ALLOWED=false' \
@@ -134,11 +135,11 @@ python3 "$TMP/tools/r7a4d2_short_rr_exact_math_patch.py" \
   --input "$TMP/tools/r7a4d2_rr_linear_runner.py" \
   --output "$TMP/tools/r7a4d2_rr_exact_runner.py" || exit 2
 
-python3 "$TMP/tools/r7a4d2_short_fill_rebase_counterfactual_patch.py" \
-  --input "$TMP/tools/r7a4d2_rr_exact_runner.py" \
-  --output "$TMP/tools/r7a4d2_fill_rebase_runner.py" || exit 2
 python3 "$TMP/tools/r7a4d2_short_observer_target_patch.py" \
-  --input "$TMP/tools/r7a4d2_fill_rebase_runner.py" \
+  --input "$TMP/tools/r7a4d2_rr_exact_runner.py" \
+  --output "$TMP/tools/r7a4d2_observer_runner.py" || exit 2
+python3 "$TMP/tools/r7a4d2_short_fill_rebase_counterfactual_patch.py" \
+  --input "$TMP/tools/r7a4d2_observer_runner.py" \
   --output "$TMP/tools/r7a4d2_scalp_cf24_runner.py" || exit 2
 
 python3 "$TMP/tools/r7a4d2_short_candidate_trace_patch.py" \
@@ -155,7 +156,8 @@ python3 "$TMP/tools/r7a4d2_short_counterfactual_expansion_integrity_patch.py" \
 if ! grep -q 'SHORT_FILL_REBASE_V1 = True' "$TMP/tools/r7a4d2_scalp_cf24_runner.py" || \
    ! grep -q 'SHORT_OBSERVER_TARGET_V1 = True' "$TMP/tools/r7a4d2_scalp_cf24_runner.py" || \
    ! grep -q 'SHORT_DISCOVERY_TRACE_ONLY_V1 = True' "$TMP/tools/r7a4d2_baseline_expand36_runner.py" || \
-   ! grep -q 'GROSS_LOSS_CAP_AUDIT_V1 = True' "$TMP/tools/r7a4d2_counterfactual_expansion_audited.py"; then
+   ! grep -q 'GROSS_LOSS_CAP_AUDIT_V1 = True' "$TMP/tools/r7a4d2_counterfactual_expansion_audited.py" || \
+   ! grep -q 'CAPITAL_RISK_AND_PRICE_RISK_DENOMINATORS_SEPARATED = True' "$TMP/tools/r7a4d2_counterfactual_expansion_audited.py"; then
   echo 'STATE=HOLD_SHORT_SCALP_GEOMETRY_COUNTERFACTUAL_24_AND_BASELINE_CLUSTER_EXPANSION_36_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PATCH_MARKER_MISSING"]'

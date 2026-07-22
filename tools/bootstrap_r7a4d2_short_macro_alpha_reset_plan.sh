@@ -61,7 +61,8 @@ done
 TMP="$(mktemp -d /tmp/r7a4d2-short-macro-alpha-reset.XXXXXX)" || exit 2
 mkdir -p "$TMP/tools"
 
-if ! git -C "$ROOT" show "$SHA:tools/r7a4d2_short_macro_alpha_reset_plan.py" > "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py"; then
+TARGET="$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py"
+if ! git -C "$ROOT" show "$SHA:tools/r7a4d2_short_macro_alpha_reset_plan.py" > "$TARGET"; then
   echo 'STATE=HOLD_SHORT_MACRO_ALPHA_RESET_PLAN_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["MATERIALIZE_FAILED:tools/r7a4d2_short_macro_alpha_reset_plan.py"]'
@@ -69,7 +70,32 @@ if ! git -C "$ROOT" show "$SHA:tools/r7a4d2_short_macro_alpha_reset_plan.py" > "
   exit 2
 fi
 
-if ! python3 -m py_compile "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py"; then
+if ! python3 - "$TARGET" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = 'int(validation.get("validated_strict_survivor_count") or -1)'
+new = 'int(validation.get("validated_strict_survivor_count", -1))'
+count = text.count(old)
+if count != 1:
+    raise SystemExit(f"ZERO_SURVIVOR_GUARD_PATCH_TARGET_INVALID:{count}")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+print("STATE=PASS_SHORT_MACRO_ALPHA_RESET_ZERO_SURVIVOR_GUARD_PATCH")
+print("ZERO_VALIDATED_SURVIVOR_PRESERVED=true")
+print("PATCH_SCOPE=temporary_execution_copy_only")
+print("RC=0")
+PY
+then
+  echo 'STATE=HOLD_SHORT_MACRO_ALPHA_RESET_PLAN_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["ZERO_SURVIVOR_GUARD_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+if ! python3 -m py_compile "$TARGET"; then
   echo 'STATE=HOLD_SHORT_MACRO_ALPHA_RESET_PLAN_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PY_COMPILE_FAILED"]'
@@ -77,7 +103,7 @@ if ! python3 -m py_compile "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py"; 
   exit 2
 fi
 
-if ! python3 "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py" --self-test; then
+if ! python3 "$TARGET" --self-test; then
   echo 'STATE=HOLD_SHORT_MACRO_ALPHA_RESET_PLAN_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["MACRO_ALPHA_RESET_PLAN_SELF_TEST_FAILED"]'
@@ -85,7 +111,7 @@ if ! python3 "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py" --self-test; th
   exit 2
 fi
 
-python3 "$TMP/tools/r7a4d2_short_macro_alpha_reset_plan.py" \
+python3 "$TARGET" \
   --root "$ROOT" \
   --target-sha "$SHA"
 RC=$?

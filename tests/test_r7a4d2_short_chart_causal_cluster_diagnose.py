@@ -58,10 +58,10 @@ def test_json_safe_normalizes_numpy_scalars_recursively() -> None:
         "flag": np.bool_(True),
         "count": np.int64(3),
         "score": np.float64(1.25),
-        "array": np.asarray([np.bool_(False), np.int64(2)]),
+        "array": np.asarray([1, 2], dtype=np.int64),
     }
     normalized = module.json_safe(raw)
-    assert normalized == {"flag": True, "count": 3, "score": 1.25, "array": [False, 2]}
+    assert normalized == {"flag": True, "count": 3, "score": 1.25, "array": [1, 2]}
     assert json.loads(json.dumps(normalized)) == normalized
 
 

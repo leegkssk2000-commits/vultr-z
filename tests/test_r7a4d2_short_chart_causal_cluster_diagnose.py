@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+
+import numpy as np
 
 
 def load_module():
@@ -47,6 +50,19 @@ def test_rebased_short_geometry_is_valid() -> None:
     result = module.rebased_geometry(fill=97.5, signal_entry=100.0, raw_stop=101.0)
     assert result["geometry_ok"] is True
     assert result["tp"] < 97.5 < result["stop"]
+
+
+def test_json_safe_normalizes_numpy_scalars_recursively() -> None:
+    module = load_module()
+    raw = {
+        "flag": np.bool_(True),
+        "count": np.int64(3),
+        "score": np.float64(1.25),
+        "array": np.asarray([np.bool_(False), np.int64(2)]),
+    }
+    normalized = module.json_safe(raw)
+    assert normalized == {"flag": True, "count": 3, "score": 1.25, "array": [False, 2]}
+    assert json.loads(json.dumps(normalized)) == normalized
 
 
 def test_unsupervised_cluster_finds_separated_core() -> None:

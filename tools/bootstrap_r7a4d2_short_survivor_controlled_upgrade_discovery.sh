@@ -27,6 +27,7 @@ printf '%s\n' \
   'OVERLAPPING_POSITION_ALLOWED=false' \
   'FUTURE_VALIDATION_SELECTION_ALLOWED=false' \
   'STRATEGY_MUTATION_ALLOWED=false' \
+  'MARKET_SOURCE_MUTATION_ALLOWED=false' \
   'REGISTRY_MUTATION_ALLOWED=false' \
   'CONFIG_MUTATION_ALLOWED=false' \
   'ROUTER_MUTATION_ALLOWED=false' \
@@ -75,6 +76,45 @@ do
     exit 2
   fi
 done
+
+if ! python3 - "$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+old = '''    protected_paths = [Path(str(value)) for value in contract.get("protected_paths", [])]
+    before = snapshot(canonical_paths + protected_paths)
+
+    source_sha_by_path = {
+        str(row.get("source_path")): str(row.get("source_sha256") or "")
+        for row in manifest.get("selected_segments", []) if isinstance(row, dict)
+    }
+'''
+new = '''    source_sha_by_path = {
+        str(row.get("source_path")): str(row.get("source_sha256") or "")
+        for row in manifest.get("selected_segments", []) if isinstance(row, dict)
+    }
+    for source_path in sorted({str(row["source_path"]) for row in segments.values()}):
+        canonical_paths.append(root / safe_repo_path(source_path))
+    protected_paths = [Path(str(value)) for value in contract.get("protected_paths", [])]
+    before = snapshot(canonical_paths + protected_paths)
+'''
+count = source.count(old)
+if count != 1:
+    raise SystemExit(f"MARKET_SOURCE_SNAPSHOT_PATCH_ANCHOR_INVALID:{count}")
+path.write_text(source.replace(old, new, 1), encoding="utf-8")
+print("STATE=PASS_SURVIVOR_UPGRADE_MARKET_SOURCE_SNAPSHOT_PATCH")
+print("MARKET_SOURCE_MUTATION_GUARDED=true")
+print("PATCH_SCOPE=temporary_execution_copy_only")
+PY
+then
+  echo 'STATE=HOLD_SHORT_SURVIVOR_CONTROLLED_UPGRADE_DISCOVERY_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["MARKET_SOURCE_SNAPSHOT_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
 
 if ! python3 -m py_compile \
   "$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py" \

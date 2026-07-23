@@ -202,7 +202,7 @@ def main() -> int:
         "strategy_count": len(reports),
         "reports": reports,
         "blockers": blockers,
-        "strategy_mutation_allowed": false if False else False,
+        "strategy_mutation_allowed": False,
         "performance_upgrade_allowed": False,
         "next_stage": "R7.A4D2_CANONICAL25_SOURCE_TO_CODE_RULE_AUDIT_WAVES"
     }

@@ -74,7 +74,7 @@ TMP="$(mktemp -d /tmp/r7a4d2-third-wave-targeted.XXXXXX)" || exit 2
 for path in \
   tools/r7a4d2_exchange_bot_v2_third_wave_targeted_repair_plan.py \
   tools/r7a4d2_exchange_bot_v2_third_wave_targeted_repair_execution_132.py \
-  tools/r7a4d2_exchange_bot_v2_all_11_second_wave_execution_132.py \
+  tools/r7a4d2_exchange_bot_v2_remaining_11_lane_uplift_execution_132.py \
   tools/r7a4d2_short_exchange_bot_benchmark_v2_execution_72.py \
   tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py \
   tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py \
@@ -92,7 +92,7 @@ done
 
 PLAN="$TMP/tools/r7a4d2_exchange_bot_v2_third_wave_targeted_repair_plan.py"
 TARGET="$TMP/tools/r7a4d2_exchange_bot_v2_third_wave_targeted_repair_execution_132.py"
-OLD="$TMP/tools/r7a4d2_exchange_bot_v2_all_11_second_wave_execution_132.py"
+INDICATOR_HELPER="$TMP/tools/r7a4d2_exchange_bot_v2_remaining_11_lane_uplift_execution_132.py"
 BENCHMARK="$TMP/tools/r7a4d2_short_exchange_bot_benchmark_v2_execution_72.py"
 RAW="$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py"
 HELPER="$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py"
@@ -123,13 +123,43 @@ fi
 echo 'STATE=PASS_EXCHANGE_BOT_V2_THIRD_WAVE_DIFF_SNAPSHOT_COMPAT_PATCH'
 echo 'PATCH_SCOPE=temporary_helper_copy_only'
 
-if ! python3 -m py_compile "$PLAN" "$TARGET" "$OLD" "$BENCHMARK" "$RAW" "$HELPER"; then
+if ! python3 -m py_compile "$PLAN" "$TARGET" "$INDICATOR_HELPER" "$BENCHMARK" "$RAW" "$HELPER"; then
   echo 'STATE=HOLD_EXCHANGE_BOT_V2_THIRD_WAVE_TARGETED_REPAIR_EXECUTION_132_INPUT'
   echo 'BLOCKER_COUNT=1'
   echo 'BLOCKERS=["PY_COMPILE_FAILED"]'
   echo 'RC=2'
   exit 2
 fi
+
+if ! python3 - "$INDICATOR_HELPER" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+path = Path(sys.argv[1]).resolve()
+spec = importlib.util.spec_from_file_location("r7a4d2_indicator_helper_contract", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("INDICATOR_HELPER_SPEC_FAILED")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+required = (
+    "atr", "volume_z", "ema", "context_columns",
+    "edge", "retest_after_break", "rolling_vwap", "anchored_vwap",
+)
+missing = [name for name in required if not callable(getattr(module, name, None))]
+if missing:
+    raise SystemExit("INDICATOR_HELPER_API_MISSING:" + ",".join(missing))
+PY
+then
+  echo 'STATE=HOLD_EXCHANGE_BOT_V2_THIRD_WAVE_TARGETED_REPAIR_EXECUTION_132_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["INDICATOR_HELPER_API_CONTRACT_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+echo 'STATE=PASS_EXCHANGE_BOT_V2_THIRD_WAVE_INDICATOR_HELPER_BIND'
+echo 'INDICATOR_HELPER_SOURCE=r7a4d2_exchange_bot_v2_remaining_11_lane_uplift_execution_132.py'
+echo 'INDICATOR_HELPER_API_COUNT=8'
 
 if ! python3 "$PLAN" --self-test; then
   echo 'STATE=HOLD_EXCHANGE_BOT_V2_THIRD_WAVE_TARGETED_REPAIR_EXECUTION_132_INPUT'
@@ -149,7 +179,7 @@ fi
 
 if ! python3 "$TARGET" \
   --self-test \
-  --old-module "$OLD" \
+  --old-module "$INDICATOR_HELPER" \
   --benchmark-module "$BENCHMARK"
 then
   echo 'STATE=HOLD_EXCHANGE_BOT_V2_THIRD_WAVE_TARGETED_REPAIR_EXECUTION_132_INPUT'
@@ -165,7 +195,7 @@ python3 "$TARGET" \
   --raw-module "$RAW" \
   --helper-module "$HELPER" \
   --benchmark-module "$BENCHMARK" \
-  --old-module "$OLD" \
+  --old-module "$INDICATOR_HELPER" \
   --a4d-contract "$CONTRACT"
 RC=$?
 

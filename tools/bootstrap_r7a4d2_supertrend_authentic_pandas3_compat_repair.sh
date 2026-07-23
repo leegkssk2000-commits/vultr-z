@@ -36,6 +36,7 @@ echo "ROUTER_MUTATION_ALLOWED=false"
 echo "SERVICE_MUTATION_ALLOWED=false"
 echo "SHADOW_START_ALLOWED=false"
 echo "PAPER_LIVE_ORDER_ALLOWED=false"
+echo "FORCED_STAGE_SCOPE=$CHILD_REL"
 
 git -C "$ROOT" fetch --no-tags origin "$BRANCH" >>"$LOG" 2>&1 || fail "GITHUB_FETCH_FAILED"
 REMOTE_SHA="$(git -C "$ROOT" rev-parse FETCH_HEAD 2>/dev/null || true)"
@@ -73,7 +74,12 @@ grep -Fq 'values.apply(lambda column: column.map(_is_finite))' "$CHILD" || fail 
 AFTER_SHA="$(sha256sum "$CHILD" | awk '{print $1}')"
 [[ "$BEFORE_SHA" != "$AFTER_SHA" ]] || fail "CHILD_HASH_UNCHANGED"
 
-git -C "$WT" add "$CHILD_REL" || fail "GIT_ADD_FAILED"
+# backend/strategies is intentionally ignored in this branch. Force-stage only the
+# exact already-audited research child path; never stage the directory or any sibling.
+git -C "$WT" add -f -- "$CHILD_REL" || fail "GIT_ADD_FAILED"
+STAGED_FILES="$(git -C "$WT" diff --cached --name-only)"
+[[ "$STAGED_FILES" == "$CHILD_REL" ]] || fail "STAGED_SCOPE_INVALID"
+
 git -C "$WT" -c user.name='Z Ops Assistant' -c user.email='z-ops@local.invalid' commit -m 'R7.A4D2 repair pandas 3 DataFrame applymap compatibility' >>"$LOG" 2>&1 || fail "GIT_COMMIT_FAILED"
 REPAIR_SHA="$(git -C "$WT" rev-parse HEAD)"
 echo "REPAIR_SHA=$REPAIR_SHA"
@@ -86,7 +92,6 @@ VERIFY_RC=${PIPESTATUS[0]}
 set -e
 [[ "$VERIFY_RC" -eq 0 ]] || fail "POST_REPAIR_FIXTURE_VERIFY_FAILED_RC_${VERIFY_RC}"
 
-git -C "$WT" diff --quiet "$REMOTE_SHA" -- "$CHILD_REL" || true
 CHANGED_FILES="$(git -C "$WT" diff-tree --no-commit-id --name-only -r "$REPAIR_SHA")"
 [[ "$CHANGED_FILES" == "$CHILD_REL" ]] || fail "PATCH_SCOPE_INVALID"
 
@@ -98,6 +103,7 @@ FINAL_REMOTE_SHA="$(git -C "$ROOT" ls-remote origin "refs/heads/$BRANCH" | awk '
 echo "STATE=PASS_SUPERTREND_AUTHENTIC_PANDAS3_COMPAT_REPAIR"
 echo "PATCH_SCOPE=$CHILD_REL"
 echo "PATCH_SEMANTICS=ELEMENTWISE_FINITE_CHECK_ONLY"
+echo "FORCED_STAGE_EXACT_PATH_ONLY=true"
 echo "FORMULA_MUTATION_COUNT=0"
 echo "LEGACY_PARENT_MUTATION_COUNT=0"
 echo "REGISTRY_MUTATION_COUNT=0"

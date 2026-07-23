@@ -159,10 +159,10 @@ def persistent_cluster(rows: list[dict[str, Any]], lane: str, min_remaining: int
             base_cluster = [row for row in base if cluster_value(row, axes) == value]
             adverse_cluster = [row for row in adverse if cluster_value(row, axes) == value]
             severe_cluster = [row for row in severe if cluster_value(row, axes) == value]
-            severe_discovery = [row for row in severe_cluster if int(row.get("fold") or -1) in DISCOVERY_FOLDS]
-            severe_validation = [row for row in severe_cluster if int(row.get("fold") or -1) in VALIDATION_FOLDS]
-            adverse_discovery = [row for row in adverse_cluster if int(row.get("fold") or -1) in DISCOVERY_FOLDS]
-            adverse_validation = [row for row in adverse_cluster if int(row.get("fold") or -1) in VALIDATION_FOLDS]
+            severe_discovery = [row for row in severe_cluster if int(row.get("fold") if row.get("fold") is not None else -1) in DISCOVERY_FOLDS]
+            severe_validation = [row for row in severe_cluster if int(row.get("fold") if row.get("fold") is not None else -1) in VALIDATION_FOLDS]
+            adverse_discovery = [row for row in adverse_cluster if int(row.get("fold") if row.get("fold") is not None else -1) in DISCOVERY_FOLDS]
+            adverse_validation = [row for row in adverse_cluster if int(row.get("fold") if row.get("fold") is not None else -1) in VALIDATION_FOLDS]
             remaining = len(base) - len(base_cluster)
             if remaining < min_remaining:
                 continue
@@ -172,7 +172,7 @@ def persistent_cluster(rows: list[dict[str, Any]], lane: str, min_remaining: int
                 continue
             if pnl(adverse_discovery) + pnl(adverse_validation) >= 0:
                 continue
-            folds = {int(row.get("fold") or -1) for row in severe_cluster}
+            folds = {int(row.get("fold") if row.get("fold") is not None else -1) for row in severe_cluster}
             if len(folds) < 2:
                 continue
             harm = -(pnl(severe_cluster) + 0.5 * pnl(adverse_cluster))

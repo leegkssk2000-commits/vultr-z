@@ -117,7 +117,7 @@ def risk_score(metrics: dict[str, Any]) -> float:
     return expectancy + 0.20 * (pnl / drawdown) + 0.10 * (pf - 1.0) + 0.03 * folds
 
 def signal_attributes(signal: dict[str, Any], frame: pd.DataFrame, regime: str) -> dict[str, str]:
-    index = int(signal.get("signal_bar_index") or -1)
+    index = int(signal.get("signal_bar_index") if signal.get("signal_bar_index") is not None else -1)
     symbol = ""
     if 0 <= index < len(frame):
         symbol = str(frame.iloc[index].get("symbol") or "")

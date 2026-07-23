@@ -372,7 +372,7 @@ def annotate_reentry_churn(groups: dict[tuple[str, str, str, int], list[dict[str
                 if (
                     bool(previous.get("is_loss"))
                     and bool(row.get("is_loss"))
-                    and gap_bars <= 3.0
+                    and 0.0 <= gap_bars <= 3.0
                     and str(previous.get("side") or "") == str(row.get("side") or "")
                     and str(previous.get("signal_reason") or "") == str(row.get("signal_reason") or "")
                 ):

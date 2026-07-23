@@ -88,6 +88,33 @@ RAW="$TMP/tools/r7a4d2_short_raw_geometry_and_simple_benchmark_execution.py"
 HELPER="$TMP/tools/r7a4d2_short_survivor_controlled_upgrade_discovery.py"
 CONTRACT="$TMP/backend/contracts/ZOS_R7A4D_HISTORICAL_SIMULATION_3600_v1.json"
 
+if ! python3 - "$HELPER" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if "def snapshot(paths: list[Path])" not in text:
+    raise SystemExit("SNAPSHOT_API_MISSING")
+if "def diff_snapshot(" in text:
+    raise SystemExit("DIFF_SNAPSHOT_ALREADY_PRESENT_UNEXPECTED")
+marker = "\ndef classify_mutation(path_value: str, root: Path) -> str:\n"
+if text.count(marker) != 1:
+    raise SystemExit("DIFF_SNAPSHOT_PATCH_ANCHOR_INVALID")
+compat = "\n\ndef diff_snapshot(before: dict[str, str], after: dict[str, str]) -> list[str]:\n    keys = set(before) | set(after)\n    return sorted(key for key in keys if before.get(key) != after.get(key))\n"
+path.write_text(text.replace(marker, compat + marker, 1), encoding="utf-8")
+PY
+then
+  echo 'STATE=HOLD_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_EXECUTION_132_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["HELPER_DIFF_SNAPSHOT_COMPAT_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+echo 'STATE=PASS_EXCHANGE_BOT_V2_UPLIFT_DIFF_SNAPSHOT_COMPAT_PATCH'
+echo 'DIFF_SNAPSHOT_COMPAT_BOUND=true'
+echo 'PATCH_SCOPE=temporary_helper_copy_only'
+
 if ! python3 -m py_compile "$TARGET" "$BENCHMARK" "$RAW" "$HELPER"; then
   echo 'STATE=HOLD_EXCHANGE_BOT_V2_REMAINING_11_LANE_UPLIFT_EXECUTION_132_INPUT'
   echo 'BLOCKER_COUNT=1'

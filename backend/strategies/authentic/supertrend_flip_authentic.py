@@ -93,7 +93,7 @@ def _validated_ohlc(frame: pd.DataFrame) -> pd.DataFrame:
         result[column] = pd.to_numeric(result[column], errors="coerce")
 
     values = result.loc[:, list(required)]
-    finite_mask = values.applymap(_is_finite)
+    finite_mask = values.apply(lambda column: column.map(_is_finite))
     if not bool(finite_mask.to_numpy().all()):
         raise ValueError("OHLC_NONFINITE")
     if bool((result["high"] < result["low"]).any()):

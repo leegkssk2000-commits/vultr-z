@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT="${1:-/home/z/z}"
+SHA="${2:-}"
+TMP=""
+RC=2
+
+cleanup() {
+  [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"
+}
+trap cleanup EXIT
+export PYTHONDONTWRITEBYTECODE=1
+
+printf '%s\n' \
+  'R7A4D2_INCREMENTAL_DEFECT_ABLATION_AUDIT_START' \
+  'MODE=READ_ONLY_SECOND_WAVE_BEST_VS_THIRD_WAVE_EXACT_ENTRY_LOCUS_CAUSAL_DELTA' \
+  'EXPECTED_LANE_COUNT=11' \
+  'MAX_ACTIVE_REPAIR_LANES=6' \
+  'ONE_DEFECT_CHANGE_PER_SELECTED_LANE_REQUIRED=true' \
+  'SECOND_WAVE_BEST_SOFAR_PRESERVED=true' \
+  'THIRD_WAVE_BUNDLE_SET_REJECTED=true' \
+  'ATR5_CONTROL_PRESERVED=true' \
+  'DONCHIAN15_REFERENCE_PRESERVED=true' \
+  'KEEP14_UNTOUCHED=true' \
+  'SIGNAL_ENTRY_LOCUS_MATCH_REQUIRED=true' \
+  'ADDED_LOSS_REMOVED_WINNER_SHARED_EXIT_DELTA_REQUIRED=true' \
+  'SAME_FROZEN_DATA_AND_COSTS_REQUIRED=true' \
+  'NO_STOP_WIDENING=true' \
+  'NO_ENTRY_THRESHOLD_RELAXATION=true' \
+  'NO_PARAMETER_OPTIMIZATION=true' \
+  'STRATEGY_MUTATION_ALLOWED=false' \
+  'MARKET_SOURCE_MUTATION_ALLOWED=false' \
+  'REGISTRY_MUTATION_ALLOWED=false' \
+  'CONFIG_MUTATION_ALLOWED=false' \
+  'ROUTER_MUTATION_ALLOWED=false' \
+  'SERVICE_MUTATION_ALLOWED=false' \
+  'SHADOW_START_ALLOWED=false' \
+  'PAPER_LIVE_ORDER_ALLOWED=false'
+
+if [[ -z "$SHA" ]]; then
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["TARGET_SHA_REQUIRED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+cd "$ROOT" || {
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["ROOT_CD_FAILED"]'
+  echo 'RC=2'
+  exit 2
+}
+
+if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["TARGET_COMMIT_MISSING"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+TMP="$(mktemp -d /tmp/r7a4d2-incremental-ablation.XXXXXX)"
+AUDIT="$TMP/r7a4d2_incremental_defect_ablation_audit.py"
+
+git show "$SHA:tools/r7a4d2_incremental_defect_ablation_audit.py" > "$AUDIT" || {
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["AUDIT_SCRIPT_MATERIALIZE_FAILED"]'
+  echo 'RC=2'
+  exit 2
+}
+
+python3 -m py_compile "$AUDIT" || {
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["AUDIT_SCRIPT_COMPILE_FAILED"]'
+  echo 'RC=2'
+  exit 2
+}
+
+python3 "$AUDIT" --self-test
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+  echo 'STATE=HOLD_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["AUDIT_SELF_TEST_FAILED"]'
+  echo "RC=$RC"
+  exit "$RC"
+fi
+
+python3 "$AUDIT" --root "$ROOT" --target-sha "$SHA"
+RC=$?
+
+echo 'R7A4D2_INCREMENTAL_DEFECT_ABLATION_AUDIT_BOOTSTRAP_COMPLETE'
+echo "RC=$RC"
+exit "$RC"

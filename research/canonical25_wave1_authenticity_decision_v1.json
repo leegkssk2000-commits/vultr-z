@@ -1,0 +1,251 @@
+{
+  "schema": "canonical25_wave1_authenticity_decision_v1",
+  "official_stage": "R7.A4D2_CANONICAL25_WAVE1_AUTHENTICITY_DECISION_GATE",
+  "source_audit": "research/canonical25_source_to_code_wave1_v1.json",
+  "decision_policy": {
+    "legacy_parent_immutable": true,
+    "authentic_baseline_child_only": true,
+    "zel_extensions_after_authentic_edge_proof_only": true,
+    "parameter_optimization_allowed": false,
+    "threshold_relaxation_allowed": false,
+    "parallel_redesign_allowed": false,
+    "performance_upgrade_allowed": false,
+    "promotion_allowed": false,
+    "shadow_start_allowed": false,
+    "paper_live_order_allowed": false
+  },
+  "common_contracts": [
+    {
+      "contract_id": "BidirectionalIntentContract",
+      "purpose": "Represent long and short entries, reductions, exits, and reversals without converting short signals to HOLD.",
+      "required_semantics": [
+        "ENTER_LONG",
+        "ENTER_SHORT",
+        "REDUCE_LONG",
+        "REDUCE_SHORT",
+        "EXIT_LONG",
+        "EXIT_SHORT",
+        "REVERSE_TO_LONG",
+        "REVERSE_TO_SHORT",
+        "HOLD"
+      ],
+      "fail_closed_rules": [
+        "unsupported intent is rejected, never silently remapped",
+        "position-side mismatch is rejected",
+        "entry and exit authority remain simulation-only in authenticity stages"
+      ]
+    },
+    {
+      "contract_id": "NativeExitContract",
+      "purpose": "Preserve the strategy's original exit state instead of replacing it with a common fixed-R target.",
+      "required_fields": [
+        "exit_reason",
+        "exit_trigger_type",
+        "exit_level_or_state",
+        "strategy_native_stop",
+        "forced_segment_exit_flag"
+      ],
+      "fail_closed_rules": [
+        "fixed profit target cannot substitute for an original channel, flip, session, or momentum exit",
+        "segment-end close is reported separately and cannot count as strategy-native performance"
+      ]
+    },
+    {
+      "contract_id": "StrategyStateContract",
+      "purpose": "Persist deterministic strategy state required by prior-event, release, reversal, or pyramiding logic.",
+      "state_key": [
+        "strategy_id",
+        "symbol",
+        "timeframe",
+        "replay_fold_id"
+      ],
+      "required_controls": [
+        "versioned state schema",
+        "deterministic transition log",
+        "no cross-fold or cross-symbol leakage",
+        "explicit reset reason",
+        "state snapshot before and after each decision"
+      ]
+    },
+    {
+      "contract_id": "SessionBoundaryContract",
+      "purpose": "Support strategies whose levels and resets depend on a previous exchange session.",
+      "required_fields": [
+        "exchange_timezone",
+        "session_id",
+        "session_open_ts",
+        "session_close_ts",
+        "previous_session_high",
+        "previous_session_low",
+        "previous_session_close",
+        "levels_frozen_before_current_session"
+      ],
+      "fail_closed_rules": [
+        "no rolling-window substitute for previous-session HLC",
+        "no current-session data leakage into frozen levels"
+      ]
+    },
+    {
+      "contract_id": "PortfolioHeatContract",
+      "purpose": "Support strategy-native account-risk sizing and cross-market heat limits.",
+      "required_fields": [
+        "account_equity",
+        "risk_fraction_per_unit",
+        "instrument_point_value",
+        "volatility_unit_n",
+        "unit_quantity",
+        "strategy_units_open",
+        "market_group_units_open",
+        "directional_units_open",
+        "portfolio_heat_pct"
+      ],
+      "fail_closed_rules": [
+        "fixed position fraction cannot impersonate N-based sizing",
+        "missing point value or equity blocks sizing",
+        "heat-limit breach blocks add and entry"
+      ]
+    },
+    {
+      "contract_id": "StrategySpecificReplayProfile",
+      "purpose": "Prevent unlike daily, session, event, and portfolio strategies from being forced through one generic replay horizon.",
+      "required_fields": [
+        "native_timeframe",
+        "minimum_lookback_bars",
+        "session_model",
+        "state_horizon",
+        "long_short_mode",
+        "multi_market_required",
+        "segment_end_policy",
+        "event_uniqueness_key",
+        "cost_application_stage"
+      ],
+      "fail_closed_rules": [
+        "profile mismatch blocks economic classification",
+        "forced segment close is prohibited as a native exit unless the source strategy specifies it"
+      ]
+    }
+  ],
+  "strategy_decisions": [
+    {
+      "strategy_id": "supertrend_pullback",
+      "legacy_action": "FREEZE_AS_ZEL_DERIVATIVE",
+      "authentic_child_id": "supertrend_flip_authentic",
+      "decision": "SELECT_FIRST_CONTROL_BASELINE",
+      "priority": 1,
+      "reason": "The recursive Supertrend formula is already materially aligned; the smallest isolated repair is removal of synthetic pullback and fixed-target logic plus restoration of bidirectional flip entry and opposite-flip exit.",
+      "required_contracts": [
+        "BidirectionalIntentContract",
+        "NativeExitContract",
+        "StrategyStateContract",
+        "StrategySpecificReplayProfile"
+      ],
+      "authentic_child_rules": [
+        "retain formula-locked recursive final bands",
+        "enter long only on direction flip to long",
+        "enter short only on direction flip to short",
+        "exit or reverse only on opposite direction flip",
+        "remove EMA50 slope, swing, pullback, reclaim, candle filters, fixed targets, adds, reductions, and beam logic",
+        "record every direction transition and adapter intent without silent remapping"
+      ],
+      "verification_order": [
+        "formula parity fixtures",
+        "state-transition determinism",
+        "long-short intent parity",
+        "opposite-flip native exit",
+        "untouched strict-forward gross-edge replay",
+        "cost stress only after gross-edge gate"
+      ]
+    },
+    {
+      "strategy_id": "squeeze_break",
+      "legacy_action": "FREEZE_AS_LEGACY_PARTIAL",
+      "authentic_child_id": "ttm_squeeze_authentic",
+      "decision": "QUEUE_AFTER_SUPERTREND_CONTROL",
+      "priority": 2,
+      "required_contracts": [
+        "BidirectionalIntentContract",
+        "NativeExitContract",
+        "StrategyStateContract",
+        "StrategySpecificReplayProfile"
+      ],
+      "authentic_child_rules": [
+        "formula-lock Bollinger and Keltner variants",
+        "implement squeeze on and first-release state",
+        "implement Donchian-midpoint and SMA-delta linear-regression momentum histogram",
+        "separate momentum-direction entry from momentum-decay exit",
+        "remove fixed targets, chase filters, adds, reductions, and beam logic from baseline"
+      ]
+    },
+    {
+      "strategy_id": "rbreaker_like",
+      "legacy_action": "FREEZE_AND_LABEL_SYNTHETIC_DERIVATIVE",
+      "authentic_child_id": "rbreaker_authentic",
+      "decision": "QUEUE_AFTER_SESSION_CONTRACT",
+      "priority": 3,
+      "required_contracts": [
+        "BidirectionalIntentContract",
+        "NativeExitContract",
+        "StrategyStateContract",
+        "SessionBoundaryContract",
+        "StrategySpecificReplayProfile"
+      ],
+      "authentic_child_rules": [
+        "freeze previous-session HLC before the current session",
+        "calculate all six ordered R-Breaker levels",
+        "require observation/setup excursion before reversal entry",
+        "arbitrate breakout and reversal modes in one session state machine",
+        "remove rolling 48-bar substitutes, EMA filters, fixed targets, adds, and chase logic"
+      ]
+    },
+    {
+      "strategy_id": "turtle_trend",
+      "legacy_action": "FREEZE_AS_CRITICAL_APPROXIMATION",
+      "authentic_child_id": "turtle_authentic",
+      "decision": "QUEUE_AFTER_PORTFOLIO_CONTRACT",
+      "priority": 4,
+      "required_contracts": [
+        "BidirectionalIntentContract",
+        "NativeExitContract",
+        "StrategyStateContract",
+        "PortfolioHeatContract",
+        "StrategySpecificReplayProfile"
+      ],
+      "authentic_child_rules": [
+        "separate System 1 and System 2",
+        "persist previous-breakout result for the System 1 skip rule",
+        "implement 20-day and 55-day entries",
+        "implement N-based account-risk unit sizing",
+        "add equal units every 0.5N after favorable movement, maximum four",
+        "implement 2N stops per unit",
+        "implement 10-day and 20-day opposite-channel exits without fixed TP",
+        "enforce market-group and directional portfolio heat"
+      ]
+    },
+    {
+      "strategy_id": "bb_revert",
+      "legacy_action": "FREEZE_AS_OSCILLATOR_FADE",
+      "authentic_child_ids": [
+        "bb_pattern_reversal_authentic",
+        "bb_breakout_continuation_authentic"
+      ],
+      "decision": "SPLIT_CONFLICTING_HYPOTHESES",
+      "priority": 5,
+      "required_contracts": [
+        "BidirectionalIntentContract",
+        "NativeExitContract",
+        "StrategyStateContract",
+        "StrategySpecificReplayProfile"
+      ],
+      "authentic_child_rules": [
+        "never mix reversal and continuation trades",
+        "reversal child requires W-bottom or M-top geometry or independent confirmation plus return-inside-band confirmation",
+        "continuation child treats the initial outside close as continuation evidence with bandwidth expansion",
+        "both children expose percent-b, bandwidth, and regime diagnostics",
+        "remove water-add and common fixed-target substitution from authenticity baselines"
+      ]
+    }
+  ],
+  "selected_first_child": "supertrend_flip_authentic",
+  "selected_first_stage": "R7.A4D2_SUPERTREND_AUTHENTIC_CONTRACT_AND_CHILD_SPEC",
+  "next_stage": "R7.A4D2_SUPERTREND_AUTHENTIC_CONTRACT_AND_CHILD_SPEC"
+}

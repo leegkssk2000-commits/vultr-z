@@ -120,6 +120,59 @@ fi
 echo 'STATE=PASS_EXCHANGE_BOT_V2_SECOND_WAVE_DIFF_SNAPSHOT_COMPAT_PATCH'
 echo 'PATCH_SCOPE=temporary_helper_copy_only'
 
+if ! python3 - "$TARGET" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = '''    lane_best:dict[str,dict[str,Any]]={}
+    for row in bundle_rows:
+        lane_id=str(row["source_lane_id"])
+        if lane_id not in lane_best or finite(row["candidate_risk_score"],-1e9)>finite(lane_best[lane_id]["candidate_risk_score"],-1e9): lane_best[lane_id]=row
+'''
+new = '''    lane_best:dict[str,dict[str,Any]]={}
+    def lane_selection_key(row: dict[str, Any]) -> tuple[int, int, int, float, int]:
+        return (
+            int(bool(row.get("uplift_discovery_pass"))),
+            int(bool(row.get("base_and_adverse_positive"))),
+            int(row.get("positive_primary_cell_count") or 0),
+            finite(row.get("candidate_risk_score"), -1e9),
+            int(row.get("signal_count") or 0),
+        )
+    for row in bundle_rows:
+        lane_id=str(row["source_lane_id"])
+        if lane_id not in lane_best or lane_selection_key(row)>lane_selection_key(lane_best[lane_id]): lane_best[lane_id]=row
+'''
+if text.count(old) != 1:
+    raise SystemExit("PASS_FIRST_AGGREGATION_PATCH_ANCHOR_INVALID")
+text = text.replace(old, new, 1)
+path.write_text(text, encoding="utf-8")
+
+invalid = {"uplift_discovery_pass": False, "base_and_adverse_positive": True, "positive_primary_cell_count": 4, "candidate_risk_score": 999.0, "signal_count": 1}
+valid = {"uplift_discovery_pass": True, "base_and_adverse_positive": True, "positive_primary_cell_count": 3, "candidate_risk_score": 1.0, "signal_count": 24}
+def key(row):
+    return (
+        int(bool(row.get("uplift_discovery_pass"))),
+        int(bool(row.get("base_and_adverse_positive"))),
+        int(row.get("positive_primary_cell_count") or 0),
+        float(row.get("candidate_risk_score") or -1e9),
+        int(row.get("signal_count") or 0),
+    )
+if not key(valid) > key(invalid):
+    raise SystemExit("PASS_FIRST_AGGREGATION_CONTRACT_FAILED")
+PY
+then
+  echo 'STATE=HOLD_EXCHANGE_BOT_V2_ALL_11_SECOND_WAVE_EXECUTION_132_INPUT'
+  echo 'BLOCKER_COUNT=1'
+  echo 'BLOCKERS=["PASS_FIRST_LANE_AGGREGATION_PATCH_FAILED"]'
+  echo 'RC=2'
+  exit 2
+fi
+
+echo 'STATE=PASS_EXCHANGE_BOT_V2_SECOND_WAVE_PASS_FIRST_LANE_AGGREGATION_PATCH'
+echo 'LANE_SELECTION_ORDER=UPLIFT_PASS,BASE_ADVERSE_POSITIVE,PRIMARY_PASS_CELLS,RISK_SCORE,SIGNAL_COUNT'
+echo 'PATCH_SCOPE=temporary_execution_copy_only'
+
 if ! python3 -m py_compile "$PLAN" "$TARGET" "$OLD" "$BENCHMARK" "$RAW" "$HELPER"; then
   echo 'STATE=HOLD_EXCHANGE_BOT_V2_ALL_11_SECOND_WAVE_EXECUTION_132_INPUT'
   echo 'BLOCKER_COUNT=1'

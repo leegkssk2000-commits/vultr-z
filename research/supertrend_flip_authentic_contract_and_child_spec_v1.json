@@ -1,0 +1,305 @@
+{
+  "schema": "r7a4d2_supertrend_flip_authentic_contract_and_child_spec_v1",
+  "official_stage": "R7.A4D2_SUPERTREND_AUTHENTIC_CONTRACT_AND_CHILD_SPEC",
+  "status": "DESIGN_ONLY_FAIL_CLOSED",
+  "source_authority": {
+    "primary_formula": {
+      "title": "TradingView Supertrend",
+      "url": "https://www.tradingview.com/support/solutions/43000634738-supertrend/",
+      "role": "official_formula_and_direction_state"
+    },
+    "primary_strategy": {
+      "title": "TradingView Supertrend Strategy",
+      "url": "https://www.tradingview.com/support/solutions/43000645068-supertrend-strategy/",
+      "role": "official_flip_entry_reference"
+    },
+    "atr_reference": {
+      "title": "TradingView ATR calculation",
+      "url": "https://www.tradingview.com/support/solutions/43000734653-how-are-adr-and-atr-calculated/",
+      "role": "official_true_range_wilder_rma_reference"
+    },
+    "community_sources_performance_authority": false
+  },
+  "legacy_parent": {
+    "strategy_id": "supertrend_pullback",
+    "implementation_path": "backend/strategies/supertrend_pullback.py",
+    "source_sha256": "b5398dfce04260422f04a758736d210763dc8c6097eeca953af82a56eb80fe25",
+    "preservation": "IMMUTABLE_EVIDENCE_PARENT",
+    "identity": "ZEL_SYNTHETIC_PULLBACK_DERIVATIVE",
+    "known_material_deviations": [
+      "legacy ATR helper uses a simple rolling mean of true range instead of the official TradingView ATR RMA definition",
+      "EMA50 slope, swing lookback, pullback depth, reclaim and candle filters replace flip-only entry",
+      "fixed 2.4R and 3.0R targets replace opposite-flip native exit",
+      "scale-in, dip-add, beam and fixed side-size logic are injected before authentic baseline edge proof",
+      "short entries are generated but silently remapped to HOLD by the legacy LBot adapter",
+      "no explicit opposite-flip exit or atomic reversal intent is emitted"
+    ]
+  },
+  "authentic_child": {
+    "strategy_id": "supertrend_flip_authentic",
+    "parent_strategy_id": "supertrend_pullback",
+    "implementation_target": "backend/strategies/authentic/supertrend_flip_authentic.py",
+    "registry_target": "backend/strategy25/authentic_child_registry_v1.json",
+    "implementation_allowed_in_this_stage": false,
+    "purpose": "Formula-locked bidirectional Supertrend flip control baseline with no ZEL entry, exit, sizing or add logic.",
+    "identity_guards": [
+      "child name must not contain pullback",
+      "legacy parent source must not be edited",
+      "authentic child must remain inactive and fail-closed until replay gates pass",
+      "no performance claim is permitted from contract verification"
+    ]
+  },
+  "formula_contract": {
+    "parameters": {
+      "atr_length": 10,
+      "factor": 3.0,
+      "parameter_optimization_allowed": false,
+      "threshold_relaxation_allowed": false,
+      "parameter_change_requires_new_strategy_identity": true
+    },
+    "true_range": "max(high-low, abs(high-prev_close), abs(low-prev_close))",
+    "atr": {
+      "method": "WILDER_RMA",
+      "source": "true_range",
+      "seed": "SMA_OF_FIRST_ATR_LENGTH_TRUE_RANGES",
+      "recurrence": "atr_t=(atr_prev*(length-1)+tr_t)/length",
+      "legacy_simple_rolling_mean_allowed": false
+    },
+    "basic_bands": {
+      "hl2": "(high+low)/2",
+      "basic_upper": "hl2+factor*atr",
+      "basic_lower": "hl2-factor*atr"
+    },
+    "recursive_final_bands": {
+      "upper": "basic_upper if basic_upper<prev_final_upper or prev_close>prev_final_upper else prev_final_upper",
+      "lower": "basic_lower if basic_lower>prev_final_lower or prev_close<prev_final_lower else prev_final_lower"
+    },
+    "direction": {
+      "warmup_direction": "DOWN",
+      "when_previous_supertrend_is_upper": "UP if close>final_upper else DOWN",
+      "otherwise": "DOWN if close<final_lower else UP",
+      "supertrend_line": "final_lower when direction=UP else final_upper",
+      "decision_time": "CONFIRMED_BAR_CLOSE_ONLY"
+    },
+    "forbidden_formula_substitutions": [
+      "EMA trend filter",
+      "swing high or low filter",
+      "pullback percentage",
+      "reclaim threshold",
+      "candle body or close-location filter",
+      "ATR percentage regime filter",
+      "fixed profit target",
+      "fixed ATR stop order",
+      "beam classification",
+      "scale-in",
+      "dip-add",
+      "pyramiding"
+    ]
+  },
+  "bidirectional_intent_contract": {
+    "contract_id": "BidirectionalIntentContract",
+    "allowed_intents": [
+      "HOLD",
+      "ENTER_LONG",
+      "ENTER_SHORT",
+      "EXIT_LONG",
+      "EXIT_SHORT",
+      "REVERSE_TO_LONG",
+      "REVERSE_TO_SHORT"
+    ],
+    "silent_remap_allowed": false,
+    "unsupported_intent_action": "BLOCK",
+    "position_side_mismatch_action": "BLOCK",
+    "reversal_accounting": {
+      "execution_semantics": "ATOMIC_AT_CONFIRMED_BAR_CLOSE",
+      "ledger_semantics": "TWO_LEGS_EXIT_THEN_ENTRY_WITH_SAME_SIGNAL_TS",
+      "fee_application": "APPLY_TO_BOTH_LEGS_ONLY_AFTER_GROSS_EDGE_GATE"
+    }
+  },
+  "strategy_state_contract": {
+    "contract_id": "StrategyStateContract",
+    "state_schema": "supertrend_flip_authentic_state_v1",
+    "state_key": [
+      "strategy_id",
+      "symbol",
+      "timeframe",
+      "replay_fold_id"
+    ],
+    "required_state_fields": [
+      "bar_close_ts",
+      "atr",
+      "basic_upper",
+      "basic_lower",
+      "final_upper",
+      "final_lower",
+      "supertrend_line",
+      "previous_direction",
+      "current_direction",
+      "position_side",
+      "last_flip_ts",
+      "warmup_complete",
+      "reset_reason"
+    ],
+    "states": [
+      "WARMUP",
+      "FLAT",
+      "LONG",
+      "SHORT"
+    ],
+    "transition_table": [
+      {
+        "from": "WARMUP",
+        "event": "ATR_BECOMES_VALID",
+        "to": "FLAT",
+        "intent": "HOLD",
+        "rule": "initial valid direction is state initialization and is never counted as a flip entry"
+      },
+      {
+        "from": "FLAT",
+        "event": "DIRECTION_DOWN_TO_UP",
+        "to": "LONG",
+        "intent": "ENTER_LONG"
+      },
+      {
+        "from": "FLAT",
+        "event": "DIRECTION_UP_TO_DOWN",
+        "to": "SHORT",
+        "intent": "ENTER_SHORT"
+      },
+      {
+        "from": "LONG",
+        "event": "DIRECTION_UP_TO_DOWN",
+        "to": "SHORT",
+        "intent": "REVERSE_TO_SHORT"
+      },
+      {
+        "from": "SHORT",
+        "event": "DIRECTION_DOWN_TO_UP",
+        "to": "LONG",
+        "intent": "REVERSE_TO_LONG"
+      },
+      {
+        "from": "FLAT|LONG|SHORT",
+        "event": "NO_DIRECTION_CHANGE",
+        "to": "UNCHANGED",
+        "intent": "HOLD"
+      }
+    ],
+    "determinism_controls": [
+      "one decision per confirmed bar close",
+      "state snapshot before and after every decision",
+      "no cross-symbol leakage",
+      "no cross-timeframe leakage",
+      "no cross-fold leakage",
+      "segment boundaries inside one fold do not reset state",
+      "fold boundary reset is explicit and logged"
+    ]
+  },
+  "native_exit_contract": {
+    "contract_id": "NativeExitContract",
+    "native_exit": "OPPOSITE_CONFIRMED_SUPERTREND_DIRECTION_FLIP",
+    "fixed_target_allowed": false,
+    "intrabar_stop_order_allowed": false,
+    "supertrend_line_role": "DIRECTION_STATE_AND_TRAILING_REFERENCE_NOT_AN_INTRABAR_FILL_ASSUMPTION",
+    "required_exit_fields": [
+      "exit_reason",
+      "exit_trigger_type",
+      "exit_level_or_state",
+      "strategy_native_stop",
+      "forced_segment_exit_flag"
+    ],
+    "field_semantics": {
+      "exit_reason": "OPPOSITE_FLIP",
+      "exit_trigger_type": "CONFIRMED_BAR_CLOSE_STATE_CHANGE",
+      "exit_level_or_state": "new_direction_and_close_price",
+      "strategy_native_stop": null,
+      "forced_segment_exit_flag": false
+    },
+    "segment_end_policy": {
+      "within_fold": "CARRY_POSITION_AND_STATE",
+      "fold_end": "FORCED_EVALUATION_EXIT_RECORDED_SEPARATELY",
+      "forced_exit_in_native_metrics": false
+    }
+  },
+  "measurement_sizing_contract": {
+    "strategy_native_sizing_claimed": false,
+    "control_notional": 1.0,
+    "purpose": "Measure signal and exit edge without pretending that a reference Supertrend strategy defines account-risk sizing.",
+    "position_size_optimization_allowed": false,
+    "leverage_allowed": false,
+    "adds_allowed": false,
+    "partial_reductions_allowed": false
+  },
+  "strategy_specific_replay_profile": {
+    "contract_id": "StrategySpecificReplayProfile",
+    "profile_id": "supertrend_flip_authentic_replay_v1",
+    "native_timeframes": [
+      "5m",
+      "15m"
+    ],
+    "timeframe_result_pooling_allowed": false,
+    "best_timeframe_selection_allowed": false,
+    "minimum_lookback_bars": 100,
+    "session_model": "CONTINUOUS_24X7_UTC",
+    "state_horizon": "PERSIST_ACROSS_SEGMENTS_WITHIN_FOLD",
+    "long_short_mode": "BIDIRECTIONAL_REVERSAL",
+    "multi_market_required": false,
+    "minimum_symbols": 3,
+    "minimum_folds": 6,
+    "minimum_unique_flip_events_per_timeframe": 24,
+    "segment_end_policy": "NO_NATIVE_CLOSE",
+    "fold_end_policy": "FORCED_EXIT_EXCLUDED_FROM_NATIVE_METRICS",
+    "event_uniqueness_key": [
+      "strategy_id",
+      "symbol",
+      "timeframe",
+      "bar_close_ts",
+      "previous_direction",
+      "current_direction"
+    ],
+    "gross_edge_first": true,
+    "cost_application_stage": "AFTER_GROSS_EDGE_GATE",
+    "performance_reselection_allowed": false,
+    "parameter_search_allowed": false
+  },
+  "verification_plan": {
+    "formula_fixture_classes": [
+      "ATR_WARMUP_AND_RMA_SEED",
+      "MONOTONIC_UPTREND",
+      "MONOTONIC_DOWNTREND",
+      "SINGLE_UP_FLIP",
+      "SINGLE_DOWN_FLIP",
+      "WHIPSAW_MULTI_FLIP",
+      "GAP_ACROSS_BAND",
+      "EQUAL_BAND_BOUNDARY",
+      "MISSING_OR_NONFINITE_INPUT_FAIL_CLOSED"
+    ],
+    "required_checks": [
+      "official formula parity for ATR, recursive bands, direction and line",
+      "initial valid direction emits HOLD",
+      "long and short flip counts match raw direction transitions",
+      "no short signal is remapped to HOLD",
+      "opposite flip emits atomic reversal and two ledger legs",
+      "legacy-only filters and targets are absent from child AST",
+      "parent source hash remains unchanged",
+      "state is deterministic under identical replay",
+      "no segment-end native exit",
+      "gross metrics reported separately by timeframe, symbol, side and fold"
+    ],
+    "numeric_tolerance": 1e-10,
+    "economic_test_allowed_in_this_stage": false
+  },
+  "authority": {
+    "legacy_parent_mutation_allowed": false,
+    "authentic_child_implementation_allowed": false,
+    "registry_mutation_allowed": false,
+    "config_mutation_allowed": false,
+    "router_mutation_allowed": false,
+    "service_mutation_allowed": false,
+    "shadow_start_allowed": false,
+    "paper_live_order_allowed": false,
+    "promotion_allowed": false,
+    "performance_upgrade_allowed": false
+  },
+  "next_stage": "R7.A4D2_SUPERTREND_AUTHENTIC_CHILD_IMPLEMENTATION_AND_FORMULA_FIXTURES"
+}

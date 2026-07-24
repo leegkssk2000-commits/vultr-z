@@ -28,6 +28,7 @@ from strategies.authentic.integrated_supertrend_pullback_v1 import (  # noqa: E4
 )
 
 REPLAY_PROFILE_ID = "integrated_supertrend_pullback_replay_v1"
+ANATOMY_SCHEMA_VERSION = 1
 
 
 def _finite(value: Any) -> bool:
@@ -67,6 +68,116 @@ def _max_drawdown_pct(returns: List[float]) -> float:
     return max_dd
 
 
+def _bool_at(frame: pd.DataFrame, column: str, position: int) -> bool:
+    return bool(frame[column].iloc[position]) if column in frame.columns else False
+
+
+def _float_at(frame: pd.DataFrame, column: str, position: int) -> Optional[float]:
+    if column not in frame.columns:
+        return None
+    value = frame[column].iloc[position]
+    return float(value) if _finite(value) else None
+
+
+def _signal_context(
+    validated: pd.DataFrame,
+    features: pd.DataFrame,
+    position: int,
+    side: str,
+) -> Dict[str, Any]:
+    feature = features.iloc[position]
+    close = float(validated["close"].iloc[position])
+    dema = float(feature["dema200"]) if _finite(feature["dema200"]) else None
+    atr = _float_at(validated, "atr14_geometry", position)
+
+    if side == LONG:
+        confirmation_names = (
+            ("bullish_engulfing", bool(feature["bullish_engulfing"])),
+            ("hammer", bool(feature["hammer"])),
+            ("rsi_cross_up", bool(feature["rsi_cross_up"])),
+            ("counter_trend_break_up", _bool_at(validated, "counter_trend_break_up", position)),
+        )
+        trigger_names = [
+            name
+            for name, active in (
+                ("supertrend_flip", bool(feature["supertrend_flip_up"])),
+                (
+                    "dema_cross",
+                    position > 0
+                    and _finite(features["dema200"].iloc[position - 1])
+                    and close > float(feature["dema200"])
+                    and float(validated["close"].iloc[position - 1])
+                    <= float(features["dema200"].iloc[position - 1]),
+                ),
+                (
+                    "confirmation_edge",
+                    bool(feature["long_confirmation"])
+                    and (position == 0 or not bool(features["long_confirmation"].iloc[position - 1])),
+                ),
+            )
+            if active
+        ]
+        structure = _bool_at(validated, "structure_long", position)
+    else:
+        confirmation_names = (
+            ("bearish_engulfing", bool(feature["bearish_engulfing"])),
+            ("rsi_cross_down", bool(feature["rsi_cross_down"])),
+            ("counter_trend_break_down", _bool_at(validated, "counter_trend_break_down", position)),
+        )
+        trigger_names = [
+            name
+            for name, active in (
+                ("supertrend_flip", bool(feature["supertrend_flip_down"])),
+                (
+                    "dema_cross",
+                    position > 0
+                    and _finite(features["dema200"].iloc[position - 1])
+                    and close < float(feature["dema200"])
+                    and float(validated["close"].iloc[position - 1])
+                    >= float(features["dema200"].iloc[position - 1]),
+                ),
+                (
+                    "confirmation_edge",
+                    bool(feature["short_confirmation"])
+                    and (position == 0 or not bool(features["short_confirmation"].iloc[position - 1])),
+                ),
+            )
+            if active
+        ]
+        structure = _bool_at(validated, "structure_short", position)
+
+    confluence = [
+        name
+        for name in ("sr_touch", "trendline_touch", "ma50_touch")
+        if _bool_at(validated, name, position)
+    ]
+    confirmations = [name for name, active in confirmation_names if active]
+    dema_distance_pct = ((close - dema) / dema * 100.0) if dema not in (None, 0.0) else None
+    dema_distance_atr = ((close - dema) / atr) if dema is not None and atr not in (None, 0.0) else None
+
+    return {
+        "signal_bar": position,
+        "signal_ts": _timestamp(validated, position),
+        "signal_close": close,
+        "side": side,
+        "trigger_components": trigger_names,
+        "trigger_signature": "+".join(trigger_names) if trigger_names else "UNRESOLVED",
+        "confirmation_components": confirmations,
+        "confirmation_signature": "+".join(confirmations) if confirmations else "UNRESOLVED",
+        "confluence_components": confluence,
+        "confluence_signature": "+".join(confluence) if confluence else "NONE",
+        "confluence_count": int(feature["confluence_count"]),
+        "structure_valid": structure,
+        "dema200": dema,
+        "dema_distance_pct": dema_distance_pct,
+        "dema_distance_atr": dema_distance_atr,
+        "rsi14": float(feature["rsi14"]) if _finite(feature["rsi14"]) else None,
+        "supertrend_line": float(feature["supertrend_line"]),
+        "supertrend_direction": int(feature["supertrend_direction"]),
+        "atr14_geometry": atr,
+    }
+
+
 def run_replay(
     frame: pd.DataFrame,
     *,
@@ -91,14 +202,42 @@ def run_replay(
     position_side = FLAT
     entry_price: Optional[float] = None
     entry_ts: Any = None
+    entry_bar: Optional[int] = None
+    entry_signal_bar: Optional[int] = None
+    entry_context: Optional[Dict[str, Any]] = None
     active_stop: Optional[float] = None
+    initial_stop: Optional[float] = None
+    max_favorable_pct = 0.0
+    max_adverse_pct = 0.0
     pending: Optional[Dict[str, Any]] = None
     trades: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
 
-    def close_trade(position: int, price: float, reason: str) -> None:
-        nonlocal position_side, entry_price, entry_ts, active_stop
+    def update_excursion(position: int) -> None:
+        nonlocal max_favorable_pct, max_adverse_pct
         if position_side == FLAT or entry_price is None:
+            return
+        high = float(validated["high"].iloc[position])
+        low = float(validated["low"].iloc[position])
+        if position_side == LONG:
+            favorable = (high - entry_price) / entry_price * 100.0
+            adverse = (low - entry_price) / entry_price * 100.0
+        else:
+            favorable = (entry_price - low) / entry_price * 100.0
+            adverse = (entry_price - high) / entry_price * 100.0
+        max_favorable_pct = max(max_favorable_pct, favorable)
+        max_adverse_pct = min(max_adverse_pct, adverse)
+
+    def close_trade(
+        position: int,
+        price: float,
+        reason: str,
+        *,
+        intrabar_path_unknown: bool = False,
+    ) -> None:
+        nonlocal position_side, entry_price, entry_ts, entry_bar, entry_signal_bar
+        nonlocal entry_context, active_stop, initial_stop, max_favorable_pct, max_adverse_pct
+        if position_side == FLAT or entry_price is None or entry_bar is None:
             raise RuntimeError("CLOSE_WITHOUT_OPEN_POSITION")
         if position_side == LONG:
             gross_pct = (price - entry_price) / entry_price * 100.0
@@ -106,6 +245,17 @@ def run_replay(
             gross_pct = (entry_price - price) / entry_price * 100.0
         round_trip_cost_pct = (2.0 * float(cost_bps_per_side)) / 100.0
         net_pct = gross_pct - round_trip_cost_pct
+        context = dict(entry_context or {})
+        stop_distance_pct = None
+        invalid_initial_stop = None
+        if initial_stop is not None:
+            if position_side == LONG:
+                stop_distance_pct = (entry_price - initial_stop) / entry_price * 100.0
+                invalid_initial_stop = initial_stop >= entry_price
+            else:
+                stop_distance_pct = (initial_stop - entry_price) / entry_price * 100.0
+                invalid_initial_stop = initial_stop <= entry_price
+        giveback_from_mfe_pct = max_favorable_pct - gross_pct
         trades.append(
             {
                 "strategy_id": STRATEGY_ID,
@@ -115,18 +265,38 @@ def run_replay(
                 "side": position_side,
                 "entry_ts": entry_ts,
                 "exit_ts": _timestamp(validated, position),
+                "entry_bar": entry_bar,
+                "entry_signal_bar": entry_signal_bar,
+                "exit_bar": position,
+                "hold_bars": position - entry_bar + 1,
                 "entry_price": entry_price,
                 "exit_price": float(price),
+                "initial_stop": initial_stop,
+                "initial_stop_distance_pct": stop_distance_pct,
+                "invalid_initial_stop": invalid_initial_stop,
                 "exit_reason": reason,
                 "gross_return_pct": gross_pct,
+                "round_trip_cost_pct": round_trip_cost_pct,
                 "net_return_pct": net_pct,
                 "cost_bps_per_side": float(cost_bps_per_side),
+                "mfe_pct": max_favorable_pct,
+                "mae_pct": max_adverse_pct,
+                "mae_abs_pct": abs(max_adverse_pct),
+                "giveback_from_mfe_pct": giveback_from_mfe_pct,
+                "intrabar_path_unknown": bool(intrabar_path_unknown),
+                "entry_context": context,
             }
         )
         position_side = FLAT
         entry_price = None
         entry_ts = None
+        entry_bar = None
+        entry_signal_bar = None
+        entry_context = None
         active_stop = None
+        initial_stop = None
+        max_favorable_pct = 0.0
+        max_adverse_pct = 0.0
 
     for i in range(len(validated)):
         row = validated.iloc[i]
@@ -139,13 +309,31 @@ def run_replay(
                 position_side = LONG
                 entry_price = open_price
                 entry_ts = _timestamp(validated, i)
-                active_stop = float(pending["stop"])
+                entry_bar = i
+                entry_signal_bar = int(pending["signal_bar"])
+                entry_context = dict(pending["context"])
+                initial_stop = float(pending["stop"])
+                active_stop = initial_stop
+                entry_context["next_open_gap_pct"] = (
+                    (open_price - float(entry_context["signal_close"]))
+                    / float(entry_context["signal_close"])
+                    * 100.0
+                )
                 events.append({"bar": i, "event": ENTER_LONG, "fill_price": open_price, "signal_bar": pending["signal_bar"]})
             elif action == ENTER_SHORT and position_side == FLAT:
                 position_side = SHORT
                 entry_price = open_price
                 entry_ts = _timestamp(validated, i)
-                active_stop = float(pending["stop"])
+                entry_bar = i
+                entry_signal_bar = int(pending["signal_bar"])
+                entry_context = dict(pending["context"])
+                initial_stop = float(pending["stop"])
+                active_stop = initial_stop
+                entry_context["next_open_gap_pct"] = (
+                    (float(entry_context["signal_close"]) - open_price)
+                    / float(entry_context["signal_close"])
+                    * 100.0
+                )
                 events.append({"bar": i, "event": ENTER_SHORT, "fill_price": open_price, "signal_bar": pending["signal_bar"]})
             elif action == EXIT_LONG and position_side == LONG:
                 close_trade(i, open_price, "OPPOSITE_SUPERTREND_FLIP_NEXT_OPEN")
@@ -155,13 +343,15 @@ def run_replay(
                 events.append({"bar": i, "event": EXIT_SHORT, "fill_price": open_price, "signal_bar": pending["signal_bar"]})
             pending = None
 
+        update_excursion(i)
+
         if position_side == LONG and active_stop is not None and float(row["low"]) <= active_stop:
             stop_fill = min(open_price, active_stop)
-            close_trade(i, stop_fill, "SUPERTREND_TRAILING_STOP")
+            close_trade(i, stop_fill, "SUPERTREND_TRAILING_STOP", intrabar_path_unknown=True)
             events.append({"bar": i, "event": EXIT_LONG, "fill_price": stop_fill, "reason": "SUPERTREND_TRAILING_STOP"})
         elif position_side == SHORT and active_stop is not None and float(row["high"]) >= active_stop:
             stop_fill = max(open_price, active_stop)
-            close_trade(i, stop_fill, "SUPERTREND_TRAILING_STOP")
+            close_trade(i, stop_fill, "SUPERTREND_TRAILING_STOP", intrabar_path_unknown=True)
             events.append({"bar": i, "event": EXIT_SHORT, "fill_price": stop_fill, "reason": "SUPERTREND_TRAILING_STOP"})
 
         if _finite(feature["supertrend_line"]):
@@ -180,9 +370,19 @@ def run_replay(
         elif position_side == SHORT and bool(feature["supertrend_flip_up"]):
             pending = {"action": EXIT_SHORT, "signal_bar": i}
         elif position_side == FLAT and bool(feature["long_entry_signal"]):
-            pending = {"action": ENTER_LONG, "signal_bar": i, "stop": float(feature["supertrend_line"])}
+            pending = {
+                "action": ENTER_LONG,
+                "signal_bar": i,
+                "stop": float(feature["supertrend_line"]),
+                "context": _signal_context(validated, features, i, LONG),
+            }
         elif position_side == FLAT and bool(feature["short_entry_signal"]):
-            pending = {"action": ENTER_SHORT, "signal_bar": i, "stop": float(feature["supertrend_line"])}
+            pending = {
+                "action": ENTER_SHORT,
+                "signal_bar": i,
+                "stop": float(feature["supertrend_line"]),
+                "context": _signal_context(validated, features, i, SHORT),
+            }
 
     gross_returns = [float(trade["gross_return_pct"]) for trade in trades]
     net_returns = [float(trade["net_return_pct"]) for trade in trades]
@@ -191,6 +391,7 @@ def run_replay(
         "strategy_id": STRATEGY_ID,
         "canonical_strategy_count": 1,
         "replay_profile_id": REPLAY_PROFILE_ID,
+        "anatomy_schema_version": ANATOMY_SCHEMA_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,
         "replay_fold_id": replay_fold_id,
@@ -211,7 +412,13 @@ def run_replay(
             "side": position_side,
             "entry_price": entry_price,
             "entry_ts": entry_ts,
+            "entry_bar": entry_bar,
+            "entry_signal_bar": entry_signal_bar,
             "active_stop": active_stop,
+            "initial_stop": initial_stop,
+            "mfe_pct": max_favorable_pct if position_side != FLAT else None,
+            "mae_pct": max_adverse_pct if position_side != FLAT else None,
+            "entry_context": entry_context,
         },
         "pending_order": pending,
         "trades": trades,

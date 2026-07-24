@@ -1,0 +1,189 @@
+class ClosedTrade:
+    side: int
+    entry_index: int
+    exit_index: int
+    entry_price: float
+    exit_price: float
+    gross_return: float
+    mfe_return: float
+    mae_return: float
+
+
+def excursions(frame: pd.DataFrame, side: int, entry_index: int, exit_index: int, entry_price: float) -> Tuple[float, float]:
+    window = frame.iloc[entry_index:exit_index]
+    if window.empty:
+        return 0.0, 0.0
+    high = float(window["high"].max())
+    low = float(window["low"].min())
+    if side == 1:
+        return high / entry_price - 1.0, low / entry_price - 1.0
+    return entry_price / low - 1.0, entry_price / high - 1.0
+
+
+def maximum_drawdown(equity: Sequence[float]) -> float:
+    peak = equity[0] if equity else 0.0
+    worst = 0.0
+    for value in equity:
+        peak = max(peak, value)
+        worst = min(worst, value - peak)
+    return abs(float(worst))
+
+
+def replay(frame: pd.DataFrame, indicator: pd.DataFrame, cost_bps: float) -> Dict[str, Any]:
+    targets: Dict[int, int] = {}
+    for index in range(len(frame) - 1):
+        if bool(indicator["flip_up"].iloc[index]):
+            targets[index + 1] = 1
+        elif bool(indicator["flip_down"].iloc[index]):
+            targets[index + 1] = -1
+
+    position = 0
+    entry_index: Optional[int] = None
+    entry_price: Optional[float] = None
+    trades: List[ClosedTrade] = []
+    fill_count = 0
+    cost_rate = float(cost_bps) / 10_000.0
+    equity = 0.0
+    equity_path = [0.0]
+    exposure_bars = 0
+    previous_close: Optional[float] = None
+
+    for index in range(len(frame)):
+        open_price = float(frame["open"].iloc[index])
+        close_price = float(frame["close"].iloc[index])
+        if previous_close is not None and position:
+            equity += position * (open_price / previous_close - 1.0)
+        target = targets.get(index)
+        if target is not None and target != position:
+            if position:
+                if entry_index is None or entry_price is None:
+                    raise AuditError("ENTRY_STATE_MISSING")
+                gross = open_price / entry_price - 1.0 if position == 1 else entry_price / open_price - 1.0
+                mfe, mae = excursions(frame, position, entry_index, index, entry_price)
+                trades.append(ClosedTrade(position, entry_index, index, entry_price, open_price, gross, mfe, mae))
+                fill_count += 1
+                equity -= cost_rate
+            position = int(target)
+            entry_index = index
+            entry_price = open_price
+            fill_count += 1
+            equity -= cost_rate
+        if position:
+            exposure_bars += 1
+            equity += position * (close_price / open_price - 1.0)
+        equity_path.append(float(equity))
+        previous_close = close_price
+
+    gross_returns = [trade.gross_return for trade in trades]
+    net_returns = [value - 2.0 * cost_rate for value in gross_returns]
+    winners = [value for value in net_returns if value > 0]
+    losers = [value for value in net_returns if value < 0]
+    profit_factor = sum(winners) / abs(sum(losers)) if losers else (float("inf") if winners else 0.0)
+    terminal_unrealized = 0.0
+    if position and entry_price is not None:
+        final_close = float(frame["close"].iloc[-1])
+        terminal_unrealized = final_close / entry_price - 1.0 if position == 1 else entry_price / final_close - 1.0
+    gross_total = float(sum(gross_returns))
+    return {
+        "cost_bps_per_fill": float(cost_bps),
+        "closed_trade_count": int(len(trades)),
+        "fill_count": int(fill_count),
+        "long_trade_count": int(sum(trade.side == 1 for trade in trades)),
+        "short_trade_count": int(sum(trade.side == -1 for trade in trades)),
+        "win_rate_pct": 100.0 * len(winners) / len(trades) if trades else 0.0,
+        "profit_factor": float(profit_factor),
+        "gross_realized_return_pct": gross_total * 100.0,
+        "net_realized_return_pct": float(sum(net_returns) * 100.0),
+        "bar_marked_net_return_pct": float(equity * 100.0),
+        "max_drawdown_pct": maximum_drawdown(equity_path) * 100.0,
+        "expectancy_bps_per_trade": statistics.fmean(net_returns) * 10_000.0 if net_returns else 0.0,
+        "median_mfe_pct": statistics.median([trade.mfe_return for trade in trades]) * 100.0 if trades else 0.0,
+        "median_mae_pct": statistics.median([trade.mae_return for trade in trades]) * 100.0 if trades else 0.0,
+        "exposure_pct": 100.0 * exposure_bars / len(frame),
+        "terminal_position": "long" if position == 1 else "short" if position == -1 else "flat",
+        "terminal_unrealized_pct": terminal_unrealized * 100.0,
+        "break_even_cost_bps_per_fill": gross_total * 10_000.0 / (2.0 * len(trades)) if trades else 0.0,
+        "winner_sum": float(sum(winners)),
+        "loser_sum_abs": float(abs(sum(losers))),
+        "r_metric_defined": False,
+        "r_metric_reason": "NATIVE_STOP_ABSENT",
+    }
+
+def optional_platform_csv(root: Path, symbol: str, minutes: int, frame: pd.DataFrame, child: pd.DataFrame) -> Dict[str, Any]:
+    oracle_root = root / "runtime" / "tradingview_supertrend_oracle"
+    candidates = sorted(oracle_root.glob(f"*{symbol.lower()}*{minutes}m*.csv")) if oracle_root.exists() else []
+    if not candidates:
+        return {
+            "executed": False,
+            "reason": "TRADINGVIEW_PLATFORM_EXPORT_NOT_PRESENT",
+            "expected_directory": str(oracle_root),
+        }
+    path = candidates[-1]
+    csv = pd.read_csv(path)
+    time_key = next((key for key in ("time", "timestamp", "ts", "open_time") if key in csv.columns), None)
+    line_key = next((key for key in ("supertrend", "supertrend_line", "ST", "plot_0") if key in csv.columns), None)
+    direction_key = next((key for key in ("direction_norm", "direction", "dir_norm", "plot_1") if key in csv.columns), None)
+    if not time_key or not line_key or not direction_key:
+        raise AuditError(f"TRADINGVIEW_CSV_COLUMNS_MISSING:{path}")
+    csv["ts_ms"] = csv[time_key].map(timestamp_ms)
+    csv = csv.set_index("ts_ms")
+    left = pd.DataFrame(
+        {
+            "ts_ms": frame["ts_ms"].astype("int64"),
+            "child_line": child["supertrend_line"].to_numpy(float),
+            "child_direction": child["direction"].to_numpy(float),
+        }
+    ).set_index("ts_ms")
+    right = csv[[line_key, direction_key]].rename(columns={line_key: "tv_line", direction_key: "tv_direction"})
+    joined = left.join(right, how="inner")
+    if joined.empty:
+        raise AuditError(f"TRADINGVIEW_CSV_NO_OVERLAP:{path}")
+    line_result = compare_numeric(joined["child_line"], pd.to_numeric(joined["tv_line"], errors="coerce"))
+    direction_mismatch = int(
+        (
+            joined["child_direction"].fillna(0).astype(int)
+            != pd.to_numeric(joined["tv_direction"], errors="coerce").fillna(0).astype(int)
+        ).sum()
+    )
+    passed = (
+        line_result["nan_mismatch_count"] == 0
+        and line_result["finite_mismatch_count"] == 0
+        and direction_mismatch == 0
+    )
+    return {
+        "executed": True,
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "overlap_rows": int(len(joined)),
+        "line_result": line_result,
+        "direction_mismatch_count": direction_mismatch,
+        "pass": passed,
+    }
+
+
+def aggregate_profile(symbol_results: Mapping[str, Mapping[str, Any]], cost_key: str) -> Dict[str, Any]:
+    profiles = [value["cost_profiles"][cost_key] for value in symbol_results.values()]
+    returns = [float(profile["net_realized_return_pct"]) for profile in profiles]
+    winner_sum = sum(float(profile["winner_sum"]) for profile in profiles)
+    loser_sum = sum(float(profile["loser_sum_abs"]) for profile in profiles)
+    profit_factor = winner_sum / loser_sum if loser_sum else (float("inf") if winner_sum else 0.0)
+    positive = sum(value > 0 for value in returns)
+    result = {
+        "cost_bps_per_fill": float(cost_key),
+        "symbol_count": len(profiles),
+        "positive_symbol_count": int(positive),
+        "portfolio_mean_net_return_pct": float(statistics.fmean(returns)),
+        "portfolio_median_net_return_pct": float(statistics.median(returns)),
+        "worst_symbol_net_return_pct": float(min(returns)),
+        "best_symbol_net_return_pct": float(max(returns)),
+        "maximum_symbol_drawdown_pct": float(max(float(profile["max_drawdown_pct"]) for profile in profiles)),
+        "pooled_closed_trade_count": int(sum(int(profile["closed_trade_count"]) for profile in profiles)),
+        "pooled_profit_factor": float(profit_factor),
+    }
+    if result["portfolio_mean_net_return_pct"] > 0 and profit_factor > 1 and positive >= 3:
+        result["classification"] = "BROAD_POSITIVE"
+    elif result["portfolio_mean_net_return_pct"] > 0 and profit_factor > 1:
+        result["classification"] = "CONCENTRATED_POSITIVE"
+    else:
+        result["classification"] = "NEGATIVE_OR_NO_EDGE"
+    return result

@@ -26,6 +26,11 @@ from strategies.authentic.integrated_supertrend_pullback_v1 import (  # noqa: E4
     IntegratedSupertrendPullbackConfig,
     compute_features,
 )
+from strategies.authentic.objective_pullback_geometry_v1 import (  # noqa: E402
+    GEOMETRY_ID,
+    REQUIRED_OUTPUT_COLUMNS,
+    attach_objective_geometry,
+)
 
 REPLAY_PROFILE_ID = "integrated_supertrend_pullback_replay_v1"
 
@@ -83,8 +88,12 @@ def run_replay(
     if not _finite(cost_bps_per_side) or float(cost_bps_per_side) < 0:
         raise ValueError("COST_BPS_INVALID")
 
-    features = compute_features(frame, cfg)
-    validated = frame.copy()
+    geometry_missing = [column for column in REQUIRED_OUTPUT_COLUMNS if column not in frame.columns]
+    geometry_attached = bool(geometry_missing)
+    replay_frame = attach_objective_geometry(frame) if geometry_attached else frame.copy()
+
+    features = compute_features(replay_frame, cfg)
+    validated = replay_frame.copy()
     for column in ("open", "high", "low", "close"):
         validated[column] = pd.to_numeric(validated[column], errors="raise").astype(float)
 
@@ -191,6 +200,9 @@ def run_replay(
         "strategy_id": STRATEGY_ID,
         "canonical_strategy_count": 1,
         "replay_profile_id": REPLAY_PROFILE_ID,
+        "geometry_id": GEOMETRY_ID,
+        "geometry_attached": geometry_attached,
+        "geometry_missing_before_attach": geometry_missing,
         "symbol": symbol,
         "timeframe": timeframe,
         "replay_fold_id": replay_fold_id,

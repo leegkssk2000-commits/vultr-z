@@ -43,7 +43,7 @@ def _profit_factor(values: Iterable[float]) -> float | None:
     gains = sum(value for value in materialized if value > 0)
     losses = abs(sum(value for value in materialized if value < 0))
     if losses == 0:
-        return None if gains == 0 else float("inf")
+        return None
     return gains / losses
 
 

@@ -1,0 +1,190 @@
+
+def public_profile(profile: Mapping[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in profile.items() if key not in {"winner_sum", "loser_sum_abs"}}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-root", required=True)
+    parser.add_argument("--code-root", required=True)
+    parser.add_argument("--target-sha", required=True)
+    parser.add_argument("--output-dir", required=True)
+    args = parser.parse_args()
+
+    data_root = Path(args.data_root).resolve()
+    code_root = Path(args.code_root).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    module, child_path = load_child(code_root)
+    market_files = select_files(data_root)
+
+    summary: Dict[str, Any] = {
+        "schema": "r7a4d2_supertrend_external_parity_and_oos_replay_v1",
+        "target_sha": args.target_sha,
+        "child_path": str(child_path.relative_to(code_root)),
+        "child_sha256": sha256_file(child_path),
+        "official_sources": {
+            "indicator_formula": "https://www.tradingview.com/support/solutions/43000634738-supertrend/",
+            "strategy_direction": "https://www.tradingview.com/support/solutions/43000645068-supertrend-strategy/",
+            "atr_rma": "https://www.tradingview.com/support/solutions/43000734653-how-are-adr-and-atr-calculated/",
+            "default_fill_timing": "https://www.tradingview.com/pine-script-docs/concepts/strategies/",
+            "bingx_public_klines": "https://open-api.bingx.com/openApi/swap/v3/quote/klines",
+        },
+        "parity_class": "OFFICIAL_TRADINGVIEW_PUBLISHED_FORMULA_ORACLE",
+        "execution_model": {
+            "signal": "CONFIRMED_BAR_CLOSE",
+            "fill": "NEXT_BAR_OPEN_TRADINGVIEW_DEFAULT",
+            "reversal": "EXIT_AND_OPPOSITE_ENTRY_SAME_NEXT_BAR_OPEN",
+            "terminal_force_close": False,
+            "pyramiding": False,
+            "cost_profiles_bps_per_fill": list(COSTS_BPS),
+            "r_metric_defined": False,
+            "r_metric_reason": "SUPERTREND_HAS_NO_NATIVE_FIXED_STOP_DISTANCE",
+        },
+        "symbols": {},
+        "timeframe_aggregate": {},
+        "blockers": [],
+    }
+    parity_failures: List[str] = []
+    platform_failures: List[str] = []
+
+    for symbol, source_path in market_files.items():
+        frame_1m = load_market(source_path)
+        symbol_result: Dict[str, Any] = {
+            "source_path": str(source_path),
+            "source_sha256": sha256_file(source_path),
+            "source_quality": source_quality(frame_1m),
+            "timeframes": {},
+        }
+        for minutes in TIMEFRAMES:
+            frame, aggregation_info = aggregate(frame_1m, minutes)
+            parity, child_indicator = parity_check(module, frame)
+            prefix = prefix_check(module, frame, child_indicator)
+            platform = optional_platform_csv(data_root, symbol, minutes, frame, child_indicator)
+            if not parity["pass"]:
+                parity_failures.append(f"{symbol}:{minutes}m:OFFICIAL_FORMULA")
+            if not prefix["pass"]:
+                parity_failures.append(f"{symbol}:{minutes}m:PREFIX")
+            if platform.get("executed") and not platform.get("pass"):
+                platform_failures.append(f"{symbol}:{minutes}m")
+            profiles = {str(cost): replay(frame, child_indicator, cost) for cost in COSTS_BPS}
+            symbol_result["timeframes"][f"{minutes}m"] = {
+                "aggregation": aggregation_info,
+                "official_formula_parity": parity,
+                "prefix_no_lookahead": prefix,
+                "tradingview_platform_csv_parity": platform,
+                "raw_flip_up_count": int(child_indicator["flip_up"].sum()),
+                "raw_flip_down_count": int(child_indicator["flip_down"].sum()),
+                "cost_profiles": profiles,
+            }
+        summary["symbols"][symbol] = symbol_result
+
+    if parity_failures:
+        summary["blockers"].append({"code": "OFFICIAL_PARITY_FAILED", "items": parity_failures})
+    if platform_failures:
+        summary["blockers"].append({"code": "TRADINGVIEW_PLATFORM_CSV_PARITY_FAILED", "items": platform_failures})
+
+    for minutes in TIMEFRAMES:
+        symbol_results = {
+            symbol: summary["symbols"][symbol]["timeframes"][f"{minutes}m"] for symbol in SYMBOLS
+        }
+        profiles = {str(cost): aggregate_profile(symbol_results, str(cost)) for cost in COSTS_BPS}
+        gross_class = profiles["0.0"]["classification"]
+        cost4_class = profiles["4.0"]["classification"]
+        if gross_class == "NEGATIVE_OR_NO_EDGE":
+            economic_class = "GROSS_EDGE_FAIL"
+        elif cost4_class == "BROAD_POSITIVE":
+            economic_class = "COST_4BPS_BROAD_SURVIVOR"
+        elif cost4_class == "CONCENTRATED_POSITIVE":
+            economic_class = "COST_4BPS_CONCENTRATED_SURVIVOR"
+        else:
+            economic_class = "GROSS_POSITIVE_COST_FRAGILE"
+        summary["timeframe_aggregate"][f"{minutes}m"] = {
+            "profiles": profiles,
+            "economic_classification": economic_class,
+        }
+
+    summary["official_formula_parity_pass"] = not parity_failures
+    summary["platform_csv_parity_executed_count"] = sum(
+        int(bool(timeframe["tradingview_platform_csv_parity"].get("executed")))
+        for symbol in summary["symbols"].values()
+        for timeframe in symbol["timeframes"].values()
+    )
+    summary["platform_csv_parity_failure_count"] = len(platform_failures)
+    summary["economic_test_executed"] = not parity_failures
+    summary["input_mutation_count"] = 0
+    summary["strategy_mutation_count"] = 0
+    summary["registry_mutation_count"] = 0
+    summary["paper_live_order_allowed"] = False
+    summary["next_stage"] = "R7.A4D2_SUPERTREND_AUTHENTIC_EXTERNAL_PARITY_AND_OOS_RESULT_REVIEW_GATE"
+    rc = 0 if not summary["blockers"] else 2
+    summary["state"] = (
+        "PASS_SUPERTREND_AUTHENTIC_EXTERNAL_PARITY_AND_OOS_REPLAY"
+        if rc == 0
+        else "HOLD_SUPERTREND_AUTHENTIC_EXTERNAL_PARITY_AND_OOS_REPLAY"
+    )
+    summary["rc"] = rc
+
+    output = json.loads(json.dumps(summary, allow_nan=True))
+    for symbol in output["symbols"].values():
+        for timeframe in symbol["timeframes"].values():
+            timeframe["cost_profiles"] = {
+                key: public_profile(value) for key, value in timeframe["cost_profiles"].items()
+            }
+    output_path = output_dir / "supertrend_external_parity_and_oos_replay_summary_v1.json"
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True, allow_nan=True) + "\n", encoding="utf-8")
+
+    print(f"STATE={summary['state']}")
+    print(f"BLOCKER_COUNT={len(summary['blockers'])}")
+    print(f"OFFICIAL_FORMULA_PARITY_PASS={str(summary['official_formula_parity_pass']).lower()}")
+    print(f"PLATFORM_CSV_PARITY_EXECUTED_COUNT={summary['platform_csv_parity_executed_count']}")
+    print(f"PLATFORM_CSV_PARITY_FAILURE_COUNT={summary['platform_csv_parity_failure_count']}")
+    for symbol in SYMBOLS:
+        for minutes in TIMEFRAMES:
+            timeframe = summary["symbols"][symbol]["timeframes"][f"{minutes}m"]
+            gross = timeframe["cost_profiles"]["0.0"]
+            cost4 = timeframe["cost_profiles"]["4.0"]
+            print(
+                "REPLAY_RESULT="
+                f"{symbol}|{minutes}m|BARS={timeframe['aggregation']['complete_buckets']}"
+                f"|UP_FLIPS={timeframe['raw_flip_up_count']}|DOWN_FLIPS={timeframe['raw_flip_down_count']}"
+                f"|TRADES={gross['closed_trade_count']}|GROSS_PCT={gross['net_realized_return_pct']:.6f}"
+                f"|GROSS_PF={gross['profit_factor']:.6f}|GROSS_DD_PCT={gross['max_drawdown_pct']:.6f}"
+                f"|NET4BPS_PCT={cost4['net_realized_return_pct']:.6f}|NET4BPS_PF={cost4['profit_factor']:.6f}"
+                f"|BE_COST_BPS={gross['break_even_cost_bps_per_fill']:.6f}"
+                f"|LONG={gross['long_trade_count']}|SHORT={gross['short_trade_count']}"
+                f"|TERMINAL={gross['terminal_position']}"
+            )
+    for minutes in TIMEFRAMES:
+        result = summary["timeframe_aggregate"][f"{minutes}m"]
+        gross = result["profiles"]["0.0"]
+        cost4 = result["profiles"]["4.0"]
+        print(
+            "TIMEFRAME_RESULT="
+            f"{minutes}m|CLASS={result['economic_classification']}"
+            f"|GROSS_MEAN_PCT={gross['portfolio_mean_net_return_pct']:.6f}"
+            f"|GROSS_PF={gross['pooled_profit_factor']:.6f}"
+            f"|GROSS_POS_SYMBOLS={gross['positive_symbol_count']}/{gross['symbol_count']}"
+            f"|NET4BPS_MEAN_PCT={cost4['portfolio_mean_net_return_pct']:.6f}"
+            f"|NET4BPS_PF={cost4['pooled_profit_factor']:.6f}"
+            f"|NET4BPS_POS_SYMBOLS={cost4['positive_symbol_count']}/{cost4['symbol_count']}"
+            f"|WORST4BPS_PCT={cost4['worst_symbol_net_return_pct']:.6f}"
+        )
+    print(f"SUMMARY_JSON={output_path}")
+    print("INPUT_MUTATION_COUNT=0")
+    print("STRATEGY_MUTATION_COUNT=0")
+    print(f"NEXT_STAGE={summary['next_stage']}")
+    print(f"BLOCKERS={json.dumps(summary['blockers'], separators=(',', ':'))}")
+    print(f"RC={rc}")
+    return rc
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AuditError as exc:
+        print("STATE=HOLD_SUPERTREND_AUTHENTIC_EXTERNAL_PARITY_AND_OOS_REPLAY")
+        print("BLOCKER_COUNT=1")
+        print(f"BLOCKERS=[\"{str(exc)}\"]")
+        print("RC=2")
+        raise SystemExit(2)

@@ -1,0 +1,152 @@
+{
+  "contract_id": "ZOS_R7A4D_INTEGRATED_SUPERTREND_PULLBACK_v1",
+  "strategy_id": "integrated_supertrend_pullback_v1",
+  "status": "HOLD_UNTIL_OBJECTIVE_GEOMETRY_IS_LOCKED",
+  "purpose": "Represent the three user-supplied videos as one executable strategy with three source roles, never as three independently registered strategies.",
+  "source_videos": [
+    {
+      "video_id": "R2hZlnh37fQ",
+      "role": "CONTEXT_AND_LOCATION_GATE",
+      "derived_module_id": "pullback_confluence_context",
+      "must_not_register_as_strategy": true,
+      "supported_rules": {
+        "trend": ["HH_HL_UPTREND", "LH_LL_DOWNTREND"],
+        "pullback_locations": ["SUPPORT_RESISTANCE", "TRENDLINE", "MA_50"],
+        "minimum_confluence_count": 2,
+        "confirmation_families": ["REVERSAL_CANDLE", "COUNTER_TRENDLINE_BREAK"],
+        "stop_reference": "RECENT_SWING_OR_CONFLUENCE_LEVEL",
+        "target_reference": "NEXT_KEY_SUPPORT_RESISTANCE"
+      },
+      "unsupported_or_missing": [
+        "OBJECTIVE_SUPPORT_RESISTANCE_PIVOT_FORMULA",
+        "OBJECTIVE_TRENDLINE_FORMULA",
+        "MAXIMUM_DISTANCE_TO_CONFLUENCE",
+        "MA_TYPE_SMA_OR_EMA",
+        "EXACT_POSITION_SIZING"
+      ]
+    },
+    {
+      "video_id": "g-PLctW8aU0",
+      "role": "EXECUTABLE_TREND_AND_POSITION_CORE",
+      "derived_module_id": "dema200_supertrend12x3_core",
+      "must_not_register_as_strategy": true,
+      "supported_rules": {
+        "timeframe": "15m",
+        "dema_length": 200,
+        "supertrend_atr_length": 12,
+        "supertrend_factor": 3.0,
+        "long_regime": "CLOSE_GT_DEMA200",
+        "short_regime": "CLOSE_LT_DEMA200",
+        "long_signal": "SUPERTREND_FLIP_TO_BUY_CONFIRMED_CLOSE",
+        "short_signal": "SUPERTREND_FLIP_TO_SELL_CONFIRMED_CLOSE",
+        "entry_fill": "NEXT_BAR_OPEN",
+        "initial_stop": "SUPERTREND_LINE_AT_ENTRY_SIGNAL",
+        "trailing_stop": "CURRENT_SUPERTREND_LINE",
+        "mandatory_exit": "OPPOSITE_SUPERTREND_FLIP",
+        "early_entry": "DEMA200_CROSS_WHILE_SUPERTREND_ALREADY_ALIGNED",
+        "fibonacci_bollinger_exit": "DISABLED"
+      },
+      "unsupported_or_missing": ["POSITION_SIZING", "COMMISSION", "SLIPPAGE"]
+    },
+    {
+      "video_id": "cKKLujAdvzk",
+      "role": "ENTRY_CONFIRMATION_OVERLAY",
+      "derived_module_id": "pullback_confirmation_overlay",
+      "must_not_register_as_strategy": true,
+      "supported_rules": {
+        "ma_length": 50,
+        "rsi_length": 14,
+        "long_confirmations": [
+          "BULLISH_ENGULFING_OR_HAMMER_CLOSE",
+          "COUNTER_TRENDLINE_BREAK_UP",
+          "RSI_CROSS_ABOVE_50"
+        ],
+        "short_confirmations": [
+          "BEARISH_ENGULFING_CLOSE",
+          "COUNTER_TRENDLINE_BREAK_DOWN",
+          "RSI_CROSS_BELOW_50"
+        ]
+      },
+      "unsupported_or_missing": [
+        "OBJECTIVE_SUPPORT_RESISTANCE_PIVOT_FORMULA",
+        "OBJECTIVE_TRENDLINE_FORMULA",
+        "EXIT_CONTRACT",
+        "MA_TYPE_SMA_OR_EMA"
+      ]
+    }
+  ],
+  "single_strategy_pipeline": {
+    "order": [
+      "REGIME_GATE",
+      "PULLBACK_LOCATION_GATE",
+      "SUPERTREND_DIRECTION_GATE",
+      "CONFIRMATION_GATE",
+      "CONFIRMED_CLOSE",
+      "NEXT_BAR_OPEN_FILL",
+      "POSITION_MANAGEMENT"
+    ],
+    "regime_gate": {
+      "long": "CLOSE_GT_DEMA200_AND_HH_HL_UPTREND",
+      "short": "CLOSE_LT_DEMA200_AND_LH_LL_DOWNTREND"
+    },
+    "pullback_location_gate": {
+      "required": true,
+      "minimum_confluence_count": 2,
+      "candidates": ["SUPPORT_RESISTANCE", "TRENDLINE", "MA_50"]
+    },
+    "supertrend_direction_gate": {
+      "long": "SUPERTREND_BUY",
+      "short": "SUPERTREND_SELL"
+    },
+    "confirmation_gate": {
+      "minimum_count": 1,
+      "long_candidates": [
+        "BULLISH_ENGULFING_OR_HAMMER_CLOSE",
+        "COUNTER_TRENDLINE_BREAK_UP",
+        "RSI_CROSS_ABOVE_50"
+      ],
+      "short_candidates": [
+        "BEARISH_ENGULFING_CLOSE",
+        "COUNTER_TRENDLINE_BREAK_DOWN",
+        "RSI_CROSS_BELOW_50"
+      ]
+    },
+    "entry": {
+      "signal_time": "CONFIRMED_BAR_CLOSE",
+      "fill_time": "NEXT_BAR_OPEN",
+      "long": "ALL_LONG_GATES_TRUE",
+      "short": "ALL_SHORT_GATES_TRUE"
+    },
+    "position_management": {
+      "initial_stop": "SUPERTREND_LINE_AT_ENTRY_SIGNAL_WITH_STRUCTURE_VALIDATION",
+      "trailing_stop": "CURRENT_SUPERTREND_LINE",
+      "profit_reference": "NEXT_KEY_SUPPORT_RESISTANCE",
+      "mandatory_exit": "OPPOSITE_SUPERTREND_FLIP",
+      "partial_take_profit": "DISABLED_UNTIL_EXPLICIT_RULE_EXISTS",
+      "break_even": "DISABLED_UNTIL_EXPLICIT_RULE_EXISTS"
+    }
+  },
+  "registration_invariants": {
+    "canonical_strategy_count": 1,
+    "canonical_strategy_ids": ["integrated_supertrend_pullback_v1"],
+    "forbidden_strategy_ids": [
+      "manual_pullback_confluence_v1",
+      "manual_pullback_confluence_rsi_v1",
+      "tradinglab_dema200_supertrend12x3_video_v1"
+    ],
+    "source_modules_are_non_promotable": true,
+    "independent_source_backtests_are_diagnostic_only": true,
+    "aggregate_result_must_be_emitted_under_canonical_strategy_id": true
+  },
+  "implementation_guards": {
+    "legacy_strategy_mutation_allowed": false,
+    "registry_mutation_allowed": false,
+    "router_mutation_allowed": false,
+    "shadow_start_allowed": false,
+    "paper_live_order_allowed": false,
+    "parameter_optimization_allowed": false,
+    "performance_claim_allowed": false,
+    "unknown_geometry_must_fail_closed": true
+  },
+  "next_required_step": "IMPLEMENT_ONE_CHILD_MODULE_AND_ONE_REPLAY_RUNNER_THAT_CONSUME_THIS_CONTRACT; DO_NOT CREATE THREE STRATEGIES"
+}

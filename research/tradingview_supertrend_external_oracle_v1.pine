@@ -1,0 +1,20 @@
+//@version=6
+indicator("ZEL Supertrend External Oracle v1", overlay=true)
+
+factor = input.float(3.0, "Factor", minval=0.0001)
+atrLength = input.int(10, "ATR Length", minval=1)
+
+[supertrendLine, directionRaw] = ta.supertrend(factor, atrLength)
+// TradingView ta.supertrend uses directionRaw < 0 for uptrend and > 0 for downtrend.
+// Normalize to the ZEL authentic-child contract: +1 = uptrend, -1 = downtrend.
+directionNorm = directionRaw < 0 ? 1 : directionRaw > 0 ? -1 : 0
+flipUp = directionNorm == 1 and directionNorm[1] == -1
+flipDown = directionNorm == -1 and directionNorm[1] == 1
+
+plot(supertrendLine, "supertrend_line", color=directionNorm == 1 ? color.green : color.red, linewidth=2)
+plot(directionNorm, "direction_norm", display=display.data_window)
+plot(flipUp ? 1 : 0, "flip_up", display=display.data_window)
+plot(flipDown ? 1 : 0, "flip_down", display=display.data_window)
+
+// Export chart data with Time, Open, High, Low, Close and the four named plots.
+// The Python parity runner accepts the exported columns supertrend_line and direction_norm.

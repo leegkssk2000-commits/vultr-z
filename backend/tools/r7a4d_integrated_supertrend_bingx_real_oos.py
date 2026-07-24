@@ -12,6 +12,7 @@ from r7a4d_integrated_supertrend_pullback_replay import run_replay
 
 INTERVAL = "15m"
 INTERVAL_MS = 900_000
+REQUEST_LIMIT = 1000
 ENDPOINTS = (
     "https://open-api.bingx.com/openApi/swap/v3/quote/klines",
     "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
@@ -75,22 +76,33 @@ def parse_row(row: Any) -> tuple[int, float, float, float, float, float] | None:
 def fetch(symbol: str, bars: int) -> tuple[pd.DataFrame, str]:
     end = (int(datetime.now(timezone.utc).timestamp() * 1000) // INTERVAL_MS - 2) * INTERVAL_MS
     start = end - (bars - 1) * INTERVAL_MS
+    request_start = start - INTERVAL_MS
+    request_end = end + INTERVAL_MS
+    max_requests = max(8, math.ceil((bars + 2) / max(REQUEST_LIMIT - 1, 1)) + 4)
     errors: list[str] = []
     for endpoint in ENDPOINTS:
         try:
             found: dict[int, tuple[int, float, float, float, float, float]] = {}
-            cursor = start
-            while cursor <= end:
-                window_end = min(end, cursor + 999 * INTERVAL_MS)
-                query = urllib.parse.urlencode({"symbol": symbol[:-4] + "-USDT", "interval": INTERVAL, "limit": 1000, "startTime": cursor, "endTime": window_end})
+            cursor = request_start
+            requests = 0
+            while cursor <= request_end and requests < max_requests:
+                window_end = min(request_end, cursor + REQUEST_LIMIT * INTERVAL_MS)
+                query = urllib.parse.urlencode({"symbol": symbol[:-4] + "-USDT", "interval": INTERVAL, "limit": REQUEST_LIMIT, "startTime": cursor, "endTime": window_end})
                 payload = request_json(endpoint + "?" + query)
                 if payload.get("code") not in (None, 0, "0"): raise RuntimeError(f"BINGX_CODE:{payload.get('code')}:{payload.get('msg')}")
                 data: Any = payload.get("data")
                 if isinstance(data, dict):
                     data = next((data[k] for k in ("data", "rows", "klines", "list") if isinstance(data.get(k), list)), [])
-                for item in (parse_row(row) for row in (data if isinstance(data, list) else [])):
-                    if item and start <= item[0] <= end: found[item[0]] = item
-                cursor = window_end + INTERVAL_MS
+                page = [item for item in (parse_row(row) for row in (data if isinstance(data, list) else [])) if item is not None]
+                requests += 1
+                if not page: raise ValueError(f"EMPTY_PAGE:{cursor}:{window_end}")
+                for item in page:
+                    if start <= item[0] <= end: found[item[0]] = item
+                if len(found) >= bars and min(found) == start and max(found) == end:
+                    break
+                max_seen = max(item[0] for item in page)
+                if max_seen <= cursor: raise ValueError(f"PAGINATION_STALLED:{cursor}:{max_seen}")
+                cursor = max_seen
             frame = pd.DataFrame([found[k] for k in sorted(found)], columns=("timestamp_ms", "open", "high", "low", "close", "volume"))
             validate(frame, bars)
             frame["timestamp"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True)

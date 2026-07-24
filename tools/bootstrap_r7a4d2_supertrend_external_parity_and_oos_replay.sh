@@ -5,7 +5,7 @@ ROOT="${1:-/home/z/z}"
 EXPECTED_SHA="${2:-}"
 BRANCH='r7a4d-historical-simulation-3600-v1'
 PART_BASE='tools/payloads/r7a4d2_supertrend_external_parity_and_oos_replay.py.part'
-EXPECTED_RUNNER_SHA='30b7bb00f3659f5aeea71e3015021802760c3e5e24b8279c7f6b7f60673bf6c87'
+EXPECTED_RUNNER_SHA='30b7bb00f3659f5aeea71e3015021802760c3e5e248279c7f6b7f60673bf6c87'
 OUTDIR="$ROOT/runtime/r7a4d2_supertrend_external_parity_and_oos_replay"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$OUTDIR/supertrend_external_parity_oos_${STAMP}.log"
@@ -64,6 +64,10 @@ done
 RUNNER_SHA="$(sha256sum "$RUNNER" | awk '{print $1}')"
 echo "RUNNER_SHA256=$RUNNER_SHA"
 echo "EXPECTED_RUNNER_SHA256=$EXPECTED_RUNNER_SHA"
+echo "RUNNER_SHA_LENGTH=${#RUNNER_SHA}"
+echo "EXPECTED_RUNNER_SHA_LENGTH=${#EXPECTED_RUNNER_SHA}"
+[[ ${#RUNNER_SHA} -eq 64 ]] || fail 'RUNNER_SHA_LENGTH_INVALID'
+[[ ${#EXPECTED_RUNNER_SHA} -eq 64 ]] || fail 'EXPECTED_RUNNER_SHA_LENGTH_INVALID'
 [[ "$RUNNER_SHA" == "$EXPECTED_RUNNER_SHA" ]] || fail 'RUNNER_SHA_MISMATCH'
 python3 -m py_compile "$RUNNER" || fail 'RUNNER_PY_COMPILE_FAILED'
 [[ -f "$WT/backend/strategies/authentic/supertrend_flip_authentic.py" ]] || fail 'AUTHENTIC_CHILD_MISSING'

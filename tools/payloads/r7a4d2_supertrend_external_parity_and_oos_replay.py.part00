@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import math
+import statistics
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+SYMBOLS = ("XRPUSDT", "LINKUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT")
+TIMEFRAMES = (5, 15)
+COSTS_BPS = (0.0, 2.0, 4.0, 6.0, 8.0, 10.0)
+ATR_LENGTH = 10
+FACTOR = 3.0
+UP, DOWN = 1, -1
+
+
+class AuditError(RuntimeError):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def normalize_symbol(value: str) -> str:
+    return "".join(char for char in str(value).upper() if char.isalnum())
+
+
+def timestamp_ms(value: Any) -> int:
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            numeric = float(text)
+        except ValueError:
+            parsed = pd.Timestamp(text)
+            parsed = parsed.tz_localize("UTC") if parsed.tzinfo is None else parsed.tz_convert("UTC")
+            return int(parsed.timestamp() * 1000)
+    else:
+        numeric = float(value)
+    if not math.isfinite(numeric):
+        raise AuditError("TIMESTAMP_NONFINITE")
+    if abs(numeric) < 10_000_000_000:
+        numeric *= 1000.0
+    return int(round(numeric))
+
+
+def find_rows(payload: Any) -> List[Any]:
+    if isinstance(payload, list):
+        return payload
+    queue: List[Any] = [payload]
+    seen: set[int] = set()
+    while queue:
+        item = queue.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, list):
+            return item
+        if isinstance(item, Mapping):
+            for key in ("data", "rows", "candles", "klines", "list", "result"):
+                if key not in item:
+                    continue
+                value = item[key]
+                if isinstance(value, list):
+                    return value
+                if isinstance(value, Mapping):
+                    queue.append(value)
+            queue.extend(value for value in item.values() if isinstance(value, (list, Mapping)))
+    raise AuditError("MARKET_ROWS_NOT_FOUND")
+
+
+def row_record(row: Any) -> Dict[str, Any]:
+    if isinstance(row, Mapping):
+        ts_value = next(
+            (row[key] for key in ("time", "timestamp", "ts", "open_time", "openTime", "start", "startTime", "t") if key in row),
+            None,
+        )
+        if ts_value is None:
+            raise AuditError("ROW_TIMESTAMP_MISSING")
+
+        def pick(*keys: str) -> Any:
+            for key in keys:
+                if key in row:
+                    return row[key]
+            raise AuditError(f"ROW_FIELD_MISSING:{keys[0]}")
+
+        return {
+            "ts_ms": timestamp_ms(ts_value),
+            "open": float(pick("open", "o")),
+            "high": float(pick("high", "h")),
+            "low": float(pick("low", "l")),
+            "close": float(pick("close", "c")),
+            "volume": float(row.get("volume", row.get("v", 0.0)) or 0.0),
+        }
+    if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)) and len(row) >= 5:
+        return {
+            "ts_ms": timestamp_ms(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5]) if len(row) > 5 and row[5] not in (None, "") else 0.0,
+        }
+    raise AuditError("ROW_UNSUPPORTED")
+
+
+def load_market(path: Path) -> pd.DataFrame:
+    rows = find_rows(json.loads(path.read_text(encoding="utf-8")))
+    frame = pd.DataFrame.from_records([row_record(row) for row in rows])
+    frame = frame.drop_duplicates("ts_ms", keep="last").sort_values("ts_ms").reset_index(drop=True)
+    if frame.empty:
+        raise AuditError(f"MARKET_EMPTY:{path}")
+    for column in ("open", "high", "low", "close", "volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if not np.isfinite(frame[["open", "high", "low", "close"]].to_numpy(float)).all():
+        raise AuditError(f"MARKET_NONFINITE:{path}")
+    if (frame["high"] < frame["low"]).any():
+        raise AuditError(f"HIGH_BELOW_LOW:{path}")
+    if ((frame["open"] < frame["low"]) | (frame["open"] > frame["high"])).any():
+        raise AuditError(f"OPEN_OUTSIDE_RANGE:{path}")
+    if ((frame["close"] < frame["low"]) | (frame["close"] > frame["high"])).any():
+        raise AuditError(f"CLOSE_OUTSIDE_RANGE:{path}")
+    frame.index = pd.to_datetime(frame["ts_ms"], unit="ms", utc=True)
+    frame.index.name = "bar_open_time"
+    return frame
+
+
+def select_files(root: Path) -> Dict[str, Path]:
+    preferred = root / "runtime" / "r7a4d2_ma5_oos_market_source_coverage_expansion" / "market_data"
+    candidates = list(preferred.glob("bingx_*_1m_oos_*.json")) if preferred.exists() else []
+    candidates += [
+        path
+        for path in (root / "runtime").glob("**/market_data/bingx_*_1m_oos_*.json")
+        if path not in candidates
+    ]
+    selected: Dict[str, Path] = {}
+    for symbol in SYMBOLS:
+        matches = [
+            path
+            for path in candidates
+            if normalize_symbol(symbol).lower() in normalize_symbol(path.name).lower()
+        ]
+        if not matches:
+            raise AuditError(f"MARKET_FILE_MISSING:{symbol}")
+        matches.sort(key=lambda path: (path.stat().st_mtime_ns, path.name))
+        selected[symbol] = matches[-1]
+    return selected
+
+
+def source_quality(frame: pd.DataFrame) -> Dict[str, Any]:
+    timestamps = frame["ts_ms"].to_numpy(np.int64)
+    deltas = np.diff(timestamps)
+    return {
+        "rows": int(len(frame)),
+        "start_ms": int(timestamps[0]),
+        "end_ms": int(timestamps[-1]),
+        "duplicate_count": int(frame["ts_ms"].duplicated().sum()),
+        "non_1m_delta_count": int(np.sum(deltas != 60_000)),
+        "largest_gap_ms": int(deltas.max()) if len(deltas) else 0,
+    }
+
+
+def aggregate(frame: pd.DataFrame, minutes: int) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    grouped = frame.resample(f"{minutes}min", label="left", closed="left")
+    result = grouped.agg(
+        open=("open", "first"),
+        high=("high", "max"),
+        low=("low", "min"),
+        close=("close", "last"),
+        volume=("volume", "sum"),

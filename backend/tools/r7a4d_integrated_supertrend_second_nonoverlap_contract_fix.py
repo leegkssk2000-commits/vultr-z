@@ -10,6 +10,13 @@ import r7a4d_integrated_supertrend_bingx_real_oos as source
 import r7a4d_integrated_supertrend_second_nonoverlap_oos as target
 
 
+def _parsed_timestamp_ms(series: pd.Series) -> pd.Series:
+    timestamps = pd.to_datetime(series, utc=True, errors="raise")
+    return timestamps.map(
+        lambda value: int(pd.Timestamp(value).value // 1_000_000)
+    ).astype("int64")
+
+
 def _canonical_timestamp_ms(frame: pd.DataFrame, path: Path) -> pd.Series:
     if "timestamp_ms" in frame.columns:
         numeric = pd.to_numeric(frame["timestamp_ms"], errors="raise")
@@ -17,8 +24,7 @@ def _canonical_timestamp_ms(frame: pd.DataFrame, path: Path) -> pd.Series:
             raise ValueError(f"FIRST_WINDOW_TIMESTAMP_MS_NULL:{path}")
         values = numeric.astype("int64")
     elif "timestamp" in frame.columns:
-        timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="raise")
-        values = (timestamps.astype("int64") // 1_000_000).astype("int64")
+        values = _parsed_timestamp_ms(frame["timestamp"])
     else:
         raise ValueError(f"FIRST_WINDOW_TIMESTAMP_COLUMN_MISSING:{path}")
 
@@ -42,8 +48,7 @@ def _canonical_timestamp_ms(frame: pd.DataFrame, path: Path) -> pd.Series:
         )
 
     if "timestamp" in frame.columns and "timestamp_ms" in frame.columns:
-        parsed = pd.to_datetime(frame["timestamp"], utc=True, errors="raise")
-        parsed_ms = (parsed.astype("int64") // 1_000_000).astype("int64")
+        parsed_ms = _parsed_timestamp_ms(frame["timestamp"])
         mismatch = parsed_ms != values
         if mismatch.any():
             index = int(mismatch[mismatch].index[0])

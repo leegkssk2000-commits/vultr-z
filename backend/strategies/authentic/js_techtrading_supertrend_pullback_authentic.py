@@ -115,7 +115,8 @@ def pine_rsi(source: pd.Series, length: int) -> pd.Series:
     only_loss_zero = valid & (average_loss == 0.0) & (average_gain > 0.0)
     only_gain_zero = valid & (average_gain == 0.0) & (average_loss > 0.0)
     ordinary = valid & ~(both_zero | only_loss_zero | only_gain_zero)
-    result.loc[both_zero] = 50.0
+    # Pine RSI checks zero downside first; a 0/0 flat window therefore resolves to 100.
+    result.loc[both_zero] = 100.0
     result.loc[only_loss_zero] = 100.0
     result.loc[only_gain_zero] = 0.0
     rs = average_gain.loc[ordinary] / average_loss.loc[ordinary]

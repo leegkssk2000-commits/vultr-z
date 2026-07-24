@@ -1,0 +1,1 @@
+Research-only audit. Validates one side-adjusted DEMA-distance ATR gate on the frozen survivor and decomposes remaining entry-quality and exit-capture losses. No strategy, registry, service, shadow, paper, or live mutation.

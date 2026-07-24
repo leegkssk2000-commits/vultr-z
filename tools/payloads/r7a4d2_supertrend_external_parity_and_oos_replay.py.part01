@@ -1,0 +1,190 @@
+        source_count=("open", "count"),
+    )
+    total = len(result)
+    incomplete = result["source_count"] != minutes
+    dropped = int(incomplete.sum())
+    result = result.loc[~incomplete].copy()
+    result["ts_ms"] = (result.index.astype("int64") // 1_000_000).astype("int64")
+    result["bar_close_ts"] = result["ts_ms"] + minutes * 60_000
+    if len(result) < ATR_LENGTH + 3:
+        raise AuditError(f"AGGREGATED_ROWS_INSUFFICIENT:{minutes}")
+    return result, {
+        "timeframe_min": minutes,
+        "total_buckets": int(total),
+        "complete_buckets": int(len(result)),
+        "dropped_incomplete_buckets": dropped,
+    }
+
+
+def tv_true_range(frame: pd.DataFrame) -> pd.Series:
+    high = frame["high"].astype(float)
+    low = frame["low"].astype(float)
+    close = frame["close"].astype(float)
+    previous_close = close.shift(1)
+    values = np.maximum.reduce(
+        [
+            (high - low).to_numpy(float),
+            (high - previous_close).abs().fillna(high - low).to_numpy(float),
+            (low - previous_close).abs().fillna(high - low).to_numpy(float),
+        ]
+    )
+    return pd.Series(values, index=frame.index, dtype="float64", name="true_range")
+
+
+def tv_rma(values: pd.Series, length: int) -> pd.Series:
+    result = pd.Series(np.nan, index=values.index, dtype="float64", name="atr")
+    if len(values) < length:
+        return result
+    seed_index = length - 1
+    previous = float(values.iloc[:length].mean())
+    result.iloc[seed_index] = previous
+    alpha = 1.0 / float(length)
+    for position in range(seed_index + 1, len(values)):
+        previous = alpha * float(values.iloc[position]) + (1.0 - alpha) * previous
+        result.iloc[position] = previous
+    return result
+
+def tradingview_oracle(frame: pd.DataFrame) -> pd.DataFrame:
+    """Independent transcription of TradingView's published Supertrend equations."""
+    true_range = tv_true_range(frame)
+    atr = tv_rma(true_range, ATR_LENGTH)
+    hl2 = (frame["high"].astype(float) + frame["low"].astype(float)) / 2.0
+    basic_upper = hl2 + FACTOR * atr
+    basic_lower = hl2 - FACTOR * atr
+    upper = pd.Series(np.nan, index=frame.index, dtype="float64")
+    lower = pd.Series(np.nan, index=frame.index, dtype="float64")
+    direction = pd.Series(np.nan, index=frame.index, dtype="float64")
+    line = pd.Series(np.nan, index=frame.index, dtype="float64")
+    valid_positions = np.flatnonzero(np.isfinite(atr.to_numpy(float)))
+    if len(valid_positions):
+        seed = int(valid_positions[0])
+        upper.iloc[seed] = float(basic_upper.iloc[seed])
+        lower.iloc[seed] = float(basic_lower.iloc[seed])
+        direction.iloc[seed] = float(DOWN)
+        line.iloc[seed] = float(upper.iloc[seed])
+        for position in range(seed + 1, len(frame)):
+            upper_now = float(basic_upper.iloc[position])
+            lower_now = float(basic_lower.iloc[position])
+            previous_upper = float(upper.iloc[position - 1])
+            previous_lower = float(lower.iloc[position - 1])
+            previous_close = float(frame["close"].iloc[position - 1])
+            current_upper = upper_now if upper_now < previous_upper or previous_close > previous_upper else previous_upper
+            current_lower = lower_now if lower_now > previous_lower or previous_close < previous_lower else previous_lower
+            upper.iloc[position] = current_upper
+            lower.iloc[position] = current_lower
+            previous_line = float(line.iloc[position - 1])
+            previous_was_upper = math.isclose(previous_line, previous_upper, rel_tol=1e-13, abs_tol=1e-13)
+            current_close = float(frame["close"].iloc[position])
+            if previous_was_upper:
+                current_direction = UP if current_close > current_upper else DOWN
+            else:
+                current_direction = DOWN if current_close < current_lower else UP
+            direction.iloc[position] = float(current_direction)
+            line.iloc[position] = current_lower if current_direction == UP else current_upper
+    previous_direction = direction.shift(1)
+    return pd.DataFrame(
+        {
+            "true_range": true_range,
+            "atr": atr,
+            "hl2": hl2,
+            "basic_upper": basic_upper,
+            "basic_lower": basic_lower,
+            "final_upper": upper,
+            "final_lower": lower,
+            "direction": direction,
+            "supertrend_line": line,
+            "flip_up": ((previous_direction == DOWN) & (direction == UP)).fillna(False),
+            "flip_down": ((previous_direction == UP) & (direction == DOWN)).fillna(False),
+        },
+        index=frame.index,
+    )
+
+
+def load_child(code_root: Path) -> Tuple[Any, Path]:
+    path = code_root / "backend" / "strategies" / "authentic" / "supertrend_flip_authentic.py"
+    if not path.is_file():
+        raise AuditError(f"CHILD_FILE_MISSING:{path}")
+    spec = importlib.util.spec_from_file_location("supertrend_flip_authentic_runtime", path)
+    if spec is None or spec.loader is None:
+        raise AuditError("CHILD_IMPORT_SPEC_FAILED")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module, path
+
+
+def compare_numeric(actual: pd.Series, expected: pd.Series) -> Dict[str, Any]:
+    left = actual.to_numpy(float)
+    right = expected.to_numpy(float)
+    nan_mismatch = np.isnan(left) ^ np.isnan(right)
+    mask = np.isfinite(left) & np.isfinite(right)
+    differences = np.abs(left[mask] - right[mask])
+    scales = np.maximum(1.0, np.abs(right[mask]))
+    mismatch = differences > (1e-12 + 1e-10 * scales)
+    return {
+        "nan_mismatch_count": int(nan_mismatch.sum()),
+        "finite_mismatch_count": int(mismatch.sum()),
+        "maximum_abs_error": float(differences.max()) if len(differences) else 0.0,
+        "maximum_relative_error": float((differences / scales).max()) if len(differences) else 0.0,
+    }
+
+
+def parity_check(module: Any, frame: pd.DataFrame) -> Tuple[Dict[str, Any], pd.DataFrame]:
+    config = module.SupertrendFlipAuthenticConfig(atr_length=ATR_LENGTH, factor=FACTOR, control_notional=1.0)
+    child = module.compute_supertrend(frame, config)
+    oracle = tradingview_oracle(frame)
+    fields = ("true_range", "atr", "hl2", "basic_upper", "basic_lower", "final_upper", "final_lower", "supertrend_line")
+    field_results = {field: compare_numeric(child[field], oracle[field]) for field in fields}
+    numeric_mismatch_count = sum(
+        item["nan_mismatch_count"] + item["finite_mismatch_count"] for item in field_results.values()
+    )
+    direction_mismatch = int((child["direction"].fillna(0).astype(int) != oracle["direction"].fillna(0).astype(int)).sum())
+    flip_up_mismatch = int((child["flip_up"].fillna(False).astype(bool) != oracle["flip_up"].astype(bool)).sum())
+    flip_down_mismatch = int((child["flip_down"].fillna(False).astype(bool) != oracle["flip_down"].astype(bool)).sum())
+    result = {
+        "official_source_class": "TRADINGVIEW_PUBLISHED_FORMULA",
+        "numeric_mismatch_count": int(numeric_mismatch_count),
+        "direction_mismatch_count": direction_mismatch,
+        "flip_up_mismatch_count": flip_up_mismatch,
+        "flip_down_mismatch_count": flip_down_mismatch,
+        "maximum_abs_error": max(item["maximum_abs_error"] for item in field_results.values()),
+        "field_results": field_results,
+    }
+    result["pass"] = all(
+        value == 0
+        for value in (numeric_mismatch_count, direction_mismatch, flip_up_mismatch, flip_down_mismatch)
+    )
+    return result, child
+
+
+def prefix_check(module: Any, frame: pd.DataFrame, full: pd.DataFrame) -> Dict[str, Any]:
+    valid = np.flatnonzero(np.isfinite(full["direction"].to_numpy(float)))
+    if len(valid) < 2:
+        raise AuditError("PREFIX_CHECK_NO_VALID_DIRECTION")
+    start = int(valid[0])
+    points = np.unique(np.linspace(start, len(frame) - 1, num=min(64, len(frame) - start), dtype=int))
+    config = module.SupertrendFlipAuthenticConfig(atr_length=ATR_LENGTH, factor=FACTOR, control_notional=1.0)
+    mismatches = 0
+    maximum_error = 0.0
+    for position in points.tolist():
+        prefix = module.compute_supertrend(frame.iloc[: position + 1], config)
+        for field in ("atr", "final_upper", "final_lower", "supertrend_line"):
+            actual = float(prefix[field].iloc[-1])
+            expected = float(full[field].iloc[position])
+            if math.isnan(actual) and math.isnan(expected):
+                continue
+            error = abs(actual - expected)
+            maximum_error = max(maximum_error, error)
+            if error > 1e-12 + 1e-10 * max(1.0, abs(expected)):
+                mismatches += 1
+        if int(prefix["direction"].iloc[-1]) != int(full["direction"].iloc[position]):
+            mismatches += 1
+    return {
+        "checkpoint_count": int(len(points)),
+        "mismatch_count": int(mismatches),
+        "maximum_abs_error": float(maximum_error),
+        "pass": mismatches == 0,
+    }
+
+
+@dataclass

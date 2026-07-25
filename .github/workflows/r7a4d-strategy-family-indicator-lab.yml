@@ -1,0 +1,115 @@
+name: R7A4D Strategy Family Indicator Lab
+
+on:
+  push:
+    branches:
+      - r7a4d-strategy25-runtime-contract-census-surgery-v2
+    paths:
+      - 'backend/strategy25/strategy_family_indicator_search_v1.py'
+      - 'backend/tools/r7a4d_strategy_family_indicator_lab.py'
+      - 'backend/tools/r7a4d_strategy_family_single_cause_lab.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repair_loss_anatomy.py'
+      - 'backend/strategy25/indicator_contract_repair_adapter_v2.py'
+      - 'backend/strategy25/indicator_contract_repair_loader_v2.py'
+      - '.github/workflows/r7a4d-strategy-family-indicator-lab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  family-search:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        family:
+          - trend_following
+          - mean_reversion
+          - breakout_momentum
+          - market_structure
+          - session_volatility
+          - hybrid
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile family laboratory
+        run: |
+          PYTHONPATH=. python -m py_compile backend/strategy25/strategy_family_indicator_search_v1.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_indicator_lab.py
+      - name: Run family indicator search
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_indicator_lab.py \
+            --root . \
+            --family '${{ matrix.family }}' \
+            2>&1 | tee family_${{ matrix.family }}.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > family_${{ matrix.family }}.rc
+          exit 0
+      - name: Upload family evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-family-${{ matrix.family }}
+          path: |
+            artifacts/strategy_family_indicator_lab_v1/${{ matrix.family }}/summary.json
+            family_${{ matrix.family }}.log
+            family_${{ matrix.family }}.rc
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce family runner integrity
+        run: test "$(cat family_${{ matrix.family }}.rc)" = "0"
+
+  aggregate-and-surgery:
+    needs: family-search
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+      - name: Download family evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: strategy-family-*
+          path: family_artifacts
+          merge-multiple: false
+      - name: Compile aggregation and surgery
+        run: PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_single_cause_lab.py
+      - name: Aggregate winners and run one-cause holdout replay
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_single_cause_lab.py \
+            --root . \
+            --family-artifacts family_artifacts \
+            2>&1 | tee family_single_cause.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > family_single_cause.rc
+          exit 0
+      - name: Upload final laboratory evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-family-single-cause-final-v1
+          path: |
+            artifacts/strategy_family_single_cause_lab_v1/summary.json
+            family_single_cause.log
+            family_single_cause.rc
+            family_artifacts/**/summary.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce final runner integrity
+        run: test "$(cat family_single_cause.rc)" = "0"

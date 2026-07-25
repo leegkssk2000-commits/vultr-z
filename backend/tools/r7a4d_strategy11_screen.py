@@ -29,17 +29,21 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE_RUNNER_PATH = ROOT / "backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py"
 INTERVAL_MS = 900_000
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "LINKUSDT")
+# BingX public kline retention no longer serves the original Aug-Nov 2025 anchors.
+# These ten 900-bar windows are all mutually non-overlapping, remain before the
+# current evaluation date, and preserve the S/V/H role split without reusing a
+# window inside this funnel.
 ANCHOR_ENDS = (
-    "2025-08-15T00:00:00Z",
-    "2025-09-15T00:00:00Z",
-    "2025-10-15T00:00:00Z",
-    "2025-11-15T00:00:00Z",
     "2025-12-15T00:00:00Z",
-    "2026-01-15T00:00:00Z",
+    "2026-01-05T00:00:00Z",
+    "2026-01-25T00:00:00Z",
     "2026-02-15T00:00:00Z",
-    "2026-03-15T00:00:00Z",
+    "2026-03-05T00:00:00Z",
+    "2026-03-25T00:00:00Z",
     "2026-04-15T00:00:00Z",
-    "2026-05-15T00:00:00Z",
+    "2026-05-05T00:00:00Z",
+    "2026-05-25T00:00:00Z",
+    "2026-06-15T00:00:00Z",
 )
 WINDOW_ROLES = ("S1", "S2", "S3", "S4", "S5", "S6", "V1", "V2", "H1", "H2")
 WINDOW_BARS = 900

@@ -16,7 +16,7 @@ def ema(series: pd.Series, length: int) -> pd.Series:
 
 
 def atr(frame: pd.DataFrame, length: int) -> pd.Series:
-    """Causal true-range input with the repository's rolling-mean ATR convention."""
+    """Causal Wilder-style true-range input with the repository's rolling-mean ATR convention."""
     if int(length) <= 0:
         raise ValueError("ATR_LENGTH_INVALID")
     required = {"high", "low", "close"}

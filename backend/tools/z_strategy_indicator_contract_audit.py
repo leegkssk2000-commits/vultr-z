@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import sys
-from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,306 +17,355 @@ REPORT_DIR = ROOT / "artifacts/strategy_indicator_contract_audit_v1"
 
 TOKEN_PATTERNS: dict[str, tuple[str, ...]] = {
     "ema": (r"\bema\b", r"_ema\(", r"ewm\("),
-    "ema_ribbon": (r"ribbon", r"ema_?\d+", r"ema_(fast|mid|slow|trend)"),
+    "ema_ribbon": (r"ribbon_(?:long|short)", r"ema1_len", r"ema2_len", r"ema3_len"),
     "atr": (r"\batr\b", r"_atr\("),
     "rsi": (r"\brsi\b", r"_rsi\("),
     "bollinger": (r"bollinger", r"bb_upper", r"bb_lower", r"bb_basis"),
     "macd": (r"\bmacd\b", r"macd_hist"),
-    "vwap": (r"\bvwap\b", r"_calc_vwap"),
+    "vwap": (r"\bvwap\b", r"_vwap", r"_calc_vwap"),
     "anchor": (r"anchor", r"anchored"),
-    "breakout": (r"break(out|_)" ,),
+    "box": (r"box_high", r"box_low", r"tight_box"),
+    "breakout": (r"breakout", r"long_break", r"short_break"),
     "retest": (r"retest", r"reclaim"),
-    "volume": (r"\bvolume\b", r"vol_ma", r"volume_z"),
-    "volume_spike": (r"volume_spike", r"vol(ume)?_z", r"spike_ok", r"vol_mult"),
-    "grid": (r"\bgrid\b", r"grid_step"),
-    "trend_veto": (r"trend_veto", r"veto_(long|short)", r"adx"),
-    "keltner": (r"keltner", r"kc_upper", r"kc_lower"),
-    "swing": (r"swing_high", r"swing_low", r"lookback"),
-    "wick": (r"upper_wick", r"lower_wick", r"wick_body"),
     "reclaim": (r"reclaim",),
+    "volume": (r"\bvolume\b", r"vol_ma", r"vol_now"),
+    "volume_spike": (r"vol_spike", r"spike_ok", r"vol_mult"),
+    "grid": (r"grid_step", r"grid_rebalance", r"\bk\s*="),
+    "trend_veto": (r"trend_veto", r"long_veto", r"short_veto", r"not trend_(?:long|short)"),
+    "keltner": (r"kc_upper", r"kc_lower", r"keltner"),
+    "swing": (r"swing_high", r"swing_low"),
+    "wick": (r"upper_wick", r"lower_wick", r"wick_ratio"),
     "mfi": (r"\bmfi\b", r"_mfi\("),
     "divergence": (r"diverg", r"makes_lower_low", r"makes_higher_high"),
     "obv": (r"\bobv\b", r"_obv\("),
-    "pivot": (r"\bpivot\b", r"swing_high", r"swing_low"),
-    "range": (r"\brange\b", r"box_height", r"high_max", r"low_min"),
+    "pivot": (r"pivot", r"swing_high", r"swing_low"),
+    "range": (r"session_high", r"session_low", r"box_height", r"high_max", r"low_min", r"range_high"),
     "sideways": (r"sideways", r"ema_flat", r"max_box_pct"),
     "reversal": (r"reversal", r"rev_buy", r"rev_sell"),
     "swing_failure": (r"swing_fail", r"had_oversold", r"had_overbought"),
-    "snap_reversal": (r"snap_(long|short)", r"snap_drive", r"snap_reversal"),
-    "session": (r"session", r"asia", r"london", r"newyork"),
+    "snap_reversal": (r"snap_long", r"snap_short", r"snap_drive"),
+    "session": (r"session_name", r"asia", r"london", r"newyork"),
     "squeeze_release": (r"squeeze_on", r"released", r"prev_squeeze"),
-    "support_resistance": (r"support", r"resistance", r"sr_levels", r"swing_high", r"swing_low"),
-    "supertrend": (r"supertrend", r"\bst\b", r"st_len", r"st_mult"),
+    "support_resistance": (r"sr_levels", r"swing_high", r"swing_low"),
+    "supertrend": (r"supertrend", r"st_len", r"st_mult"),
     "pullback": (r"pullback", r"dip_add"),
-    "trend_continuation": (r"trend_cont", r"trend_(long|short)"),
+    "trend_continuation": (r"trend_long", r"trend_short", r"st_rising", r"st_falling"),
     "donchian": (r"donchian", r"dc_high", r"dc_low"),
     "pyramiding": (r"pyramiding", r"add_count"),
-    "mean_reversion": (r"mean_reversion", r"revert", r"fade"),
-    "fvg": (r"\bfvg\b", r"fair.?value.?gap", r"gap_(up|down)"),
-    "trend": (r"trend_(long|short)", r"ema_(fast|slow|trend)"),
+    "mean_reversion": (r"revert", r"fade", r"mean_reversion"),
+    "fvg": (r"fvg", r"gap_dir", r"gap_low", r"gap_high"),
 }
 
 
 @dataclass
-class SourceRecord:
+class StrategyAudit:
+    strategy_id: str
     path: str
-    strategy_ids: list[str]
-    is_wrapper: bool
-    has_strategy_function: bool
-    has_run_function: bool
-    detected: dict[str, bool]
-    structural: dict[str, bool]
+    callable: str
+    source_sha_registry: str
+    source_sha_actual: str | None
+    source_sha_match: bool
+    source_exists: bool
     syntax_ok: bool
-    syntax_error: str | None
+    callable_exists: bool
+    missing_core: list[str]
+    missing_hard_structural: list[str]
+    review_findings: list[str]
+    required_column_failures: list[str]
+    lookahead_findings: list[str]
+    authority_findings: list[str]
+    risk_contract_ok: bool
+    long_short_contract_ok: bool
+    status: str
 
 
-def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+def _read_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON_OBJECT_REQUIRED:{path}")
+    return value
 
 
-def _strategy_ids(text: str, path: Path, known: set[str]) -> list[str]:
-    found: set[str] = set()
-    for pattern in (
-        r"STRATEGY_ID\s*=\s*['\"]([^'\"]+)['\"]",
-        r"strategy_name\s*=\s*['\"]([^'\"]+)['\"]",
-        r"_impl\(\s*['\"]([^'\"]+)['\"]",
-        r"legendary_(?:mean_reversion|trend_continuation|breakout)\(\s*['\"]([^'\"]+)['\"]",
-    ):
-        found.update(re.findall(pattern, text))
-
-    stem = path.stem.lower()
-    candidates = {
-        stem,
-        re.sub(r"_(legendary|authentic|strategy|v\d+)$", "", stem),
-        re.sub(r"_(legendary|authentic|strategy|v\d+)", "", stem),
-    }
-    for candidate in candidates:
-        if candidate in known:
-            found.add(candidate)
-    return sorted(found & known)
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _detected(text: str) -> dict[str, bool]:
-    lowered = text.lower()
+def _callable_names(source: str, filename: str) -> set[str]:
+    tree = ast.parse(source, filename=filename)
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(f"{node.name}.{child.name}")
+    return names
+
+
+def _has_token(source: str, token: str) -> bool:
+    return any(re.search(pattern, source, flags=re.I) for pattern in TOKEN_PATTERNS.get(token, (re.escape(token),)))
+
+
+def _structural_checks(source: str) -> dict[str, bool]:
+    compact = re.sub(r"\s+", " ", source.lower())
+    ema_lengths = {int(v) for v in re.findall(r"ema\d*_len\s*:\s*int\s*=\s*(\d+)", source, flags=re.I)}
     return {
-        name: any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
-        for name, patterns in TOKEN_PATTERNS.items()
-    }
-
-
-def _distinct_ema_lengths(text: str) -> set[int]:
-    values: set[int] = set()
-    for match in re.finditer(r"ema(?:_[a-z]+)?_len\s*:\s*int\s*=\s*(\d+)", text, flags=re.I):
-        values.add(int(match.group(1)))
-    for match in re.finditer(r"ema(?:_[a-z]+)?_len\s*=\s*(\d+)", text, flags=re.I):
-        values.add(int(match.group(1)))
-    return values
-
-
-def _structural(text: str) -> dict[str, bool]:
-    lowered = text.lower()
-    ema_lengths = _distinct_ema_lengths(text)
-    three_candle = bool(
-        re.search(r"shift\(\s*2\s*\)", lowered)
-        or re.search(r"iloc\[\s*-3\s*\]", lowered)
-        or re.search(r"\bi\s*-\s*2\b", lowered)
-        or re.search(r"prev2", lowered)
-    )
-    explicit_overlap = bool(
-        "overlap" in lowered
-        and (
-            re.search(r"london.*newyork|newyork.*london", lowered, flags=re.S)
-            or re.search(r"if\s+.*(?:london|ny).*and.*(?:ny|london)", lowered)
-        )
-    )
-    volume_gate = bool(
-        re.search(r"(?:long|short)_(?:setup|signal|entry).*volume", lowered, flags=re.S)
-        or re.search(r"volume.*(?:long|short)_(?:setup|signal|entry)", lowered, flags=re.S)
-        or re.search(r"(?:spike_ok|volume_spike|vol_ok)\s+and", lowered)
-        or re.search(r"and\s+(?:spike_ok|volume_spike|vol_ok)", lowered)
-    )
-    confirmed_anchor = bool(
-        re.search(r"confirmed_(?:swing|anchor)|anchor_(?:ts|index|idx)", lowered)
-        and not re.search(r"(?:idxmax|idxmin)\(\).*(?:last|recent)|recent.*(?:idxmax|idxmin)\(\)", lowered, flags=re.S)
-    )
-    range_gate = bool(
-        "adx" in lowered
-        or "range_regime" in lowered
-        or "sideways" in lowered
-        or "ema_flat" in lowered
-        or ("max_atr_pct" in lowered and "trend_veto" in lowered)
-    )
-    next_bar = bool(
-        "next_bar" in lowered
-        or "pending_entry" in lowered
-        or re.search(r"signal_(?:idx|index|ts).*entry_(?:idx|index|ts)", lowered, flags=re.S)
-    )
-    return {
+        "reference_box_excludes_signal_bar": bool(
+            re.search(r"box\s*=\s*df\.iloc\[-\(cfg\.box_bars\s*\+\s*1\):-1\]", compact)
+            or re.search(r"box\s*=\s*df\.iloc\[-cfg\.box_bars\s*-\s*1:-1\]", compact)
+        ),
         "at_least_three_distinct_ema_lengths": len(ema_lengths) >= 3,
-        "scalp_specific_trigger": bool("scalp" in lowered and ("snap" in lowered or "impulse" in lowered or "reclaim" in lowered)),
-        "three_candle_fvg": three_candle,
-        "explicit_overlap_precedence": explicit_overlap,
-        "timezone_explicit": bool("zoneinfo" in lowered or "timezone" in lowered or "session_tz" in lowered),
-        "volume_spike_is_entry_gate": volume_gate,
-        "confirmed_anchor_not_rolling_extreme": confirmed_anchor,
-        "range_regime_gate": range_gate,
-        "bar_close_then_next_bar_entry": next_bar,
+        "scalp_specific_trigger": bool("ribbon_long" in compact and "body_atr" in compact and "reclaim" in compact),
+        "three_candle_fvg": bool(
+            re.search(r"i\s*-\s*2", compact)
+            and re.search(r"high.*i\s*-\s*2", compact)
+            and re.search(r"low.*i\]", compact)
+        ),
+        "reference_range_excludes_signal_bar": bool(
+            re.search(r"recent\s*=\s*df\.iloc\[-\(cfg\.range_lookback\s*\+\s*1\):-1\]", compact)
+        ),
+        "explicit_overlap_precedence": bool(
+            re.search(r"london_active\s+and\s+ny_active", compact)
+            or re.search(r"ny_active\s+and\s+london_active", compact)
+        ),
+        "timezone_explicit": bool("zoneinfo" in compact and "session_tz" in compact),
+        "reference_levels_exclude_signal_bar": bool(
+            re.search(r"recent\s*=\s*df\.iloc\[-\(cfg\.lookback\s*\+\s*1\):-1\]", compact)
+        ),
+        "volume_spike_is_entry_gate": bool(
+            re.search(r"short_fade_setup\s*=\s*spike_ok\s+and", compact)
+            and re.search(r"long_fade_setup\s*=\s*spike_ok\s+and", compact)
+        ),
     }
 
 
-def _source_records(known: set[str]) -> list[SourceRecord]:
-    records: list[SourceRecord] = []
-    base = ROOT / "backend/strategies"
-    for path in sorted(base.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        text = _read(path)
-        ids = _strategy_ids(text, path, known)
-        if not ids:
-            continue
-        syntax_ok = True
-        syntax_error = None
-        try:
-            ast.parse(text, filename=str(path))
-        except SyntaxError as exc:
-            syntax_ok = False
-            syntax_error = f"{exc.msg}:{exc.lineno}:{exc.offset}"
-        records.append(
-            SourceRecord(
-                path=str(path.relative_to(ROOT)),
-                strategy_ids=ids,
-                is_wrapper=bool(re.search(r"\b_impl\s*\(", text)),
-                has_strategy_function=bool(re.search(r"^def\s+strategy\s*\(", text, flags=re.M)),
-                has_run_function=bool(re.search(r"^def\s+run_[a-zA-Z0-9_]+\s*\(", text, flags=re.M)),
-                detected=_detected(text),
-                structural=_structural(text),
-                syntax_ok=syntax_ok,
-                syntax_error=syntax_error,
-            )
+def _lookahead_findings(source: str) -> list[str]:
+    findings: list[str] = []
+    patterns = {
+        "NEGATIVE_SHIFT": r"\.shift\(\s*-\d+",
+        "CENTERED_ROLLING": r"rolling\([^\)]*center\s*=\s*true",
+        "FUTURE_ILOC": r"iloc\[[^\]]*(?:i|idx)\s*\+\s*\d+",
+    }
+    for label, pattern in patterns.items():
+        if re.search(pattern, source, flags=re.I):
+            findings.append(label)
+    return findings
+
+
+def _authority_findings(source: str) -> list[str]:
+    findings: list[str] = []
+    patterns = {
+        "NETWORK_IMPORT": r"\bimport\s+(?:requests|httpx|aiohttp|ccxt)\b|\bfrom\s+(?:requests|httpx|aiohttp|ccxt)\b",
+        "SUBPROCESS": r"\bsubprocess\b|\bos\.system\b",
+        "ORDER_AUTHORITY": r"place_order|create_order|send_order|real_order_enabled\s*=\s*true|live_enabled\s*=\s*true",
+        "FILE_WRITE": r"write_text\(|write_bytes\(|open\([^\)]*,\s*['\"](?:w|a|x)",
+    }
+    for label, pattern in patterns.items():
+        if re.search(pattern, source, flags=re.I):
+            findings.append(label)
+    return findings
+
+
+def _required_column_failures(source: str, columns: list[str]) -> list[str]:
+    failures: list[str] = []
+    for column in columns:
+        required_patterns = (
+            rf"required(?:_cols)?\s*=\s*\{{[^\}}]*['\"]{re.escape(column)}['\"]",
+            rf"required\s*=\s*\{{[^\}}]*['\"]{re.escape(column)}['\"]",
         )
-    return records
+        if not any(re.search(pattern, source, flags=re.I | re.S) for pattern in required_patterns):
+            failures.append(column)
+    return failures
 
 
-def _audit() -> dict[str, Any]:
-    contract = json.loads(_read(CONTRACT_PATH))
-    contracts: dict[str, dict[str, Any]] = contract["strategies"]
-    known = set(contracts)
-    records = _source_records(known)
-    by_id: dict[str, list[SourceRecord]] = defaultdict(list)
-    for record in records:
-        for strategy_id in record.strategy_ids:
-            by_id[strategy_id].append(record)
+def _audit_strategy(strategy_id: str, spec: Mapping[str, Any], row: Mapping[str, Any]) -> StrategyAudit:
+    engine = row.get("canonical_engine") if isinstance(row.get("canonical_engine"), dict) else {}
+    path_value = str(engine.get("implementation_path") or "")
+    callable_name = str(engine.get("callable") or "")
+    expected_sha = str(engine.get("source_sha256") or "")
+    path = ROOT / path_value
+    source_exists = path.is_file() and not path.is_symlink()
+    actual_sha: str | None = _sha256(path) if source_exists else None
+    source = path.read_text(encoding="utf-8", errors="replace") if source_exists else ""
 
-    strategy_results: dict[str, Any] = {}
-    hard_blockers: list[str] = []
-    warnings: list[str] = []
+    syntax_ok = False
+    callable_exists = False
+    if source_exists:
+        try:
+            callable_exists = callable_name in _callable_names(source, path_value)
+            syntax_ok = True
+        except SyntaxError:
+            syntax_ok = False
 
-    for strategy_id, spec in contracts.items():
-        sources = by_id.get(strategy_id, [])
-        direct = [r for r in sources if not r.is_wrapper and r.has_strategy_function]
-        wrappers = [r for r in sources if r.is_wrapper]
-        merged_detected = {
-            key: any(record.detected.get(key, False) for record in sources)
-            for key in TOKEN_PATTERNS
-        }
-        merged_structural = {
-            key: any(record.structural.get(key, False) for record in sources)
-            for key in _structural("")
-        }
-        missing_core = [name for name in spec.get("core", []) if not merged_detected.get(name, False)]
-        missing_structural = [name for name in spec.get("structural", []) if not merged_structural.get(name, False)]
-        syntax_failures = [r.path for r in sources if not r.syntax_ok]
+    missing_core = [token for token in spec.get("core", []) if not _has_token(source, str(token))]
+    structural = _structural_checks(source)
+    missing_hard = [name for name in spec.get("hard_structural", []) if not structural.get(str(name), False)]
+    review_findings = [name for name in spec.get("review", []) if not structural.get(str(name), False)]
+    required_failures = _required_column_failures(source, [str(v) for v in spec.get("required_columns", [])])
+    lookahead = _lookahead_findings(source)
+    authority = _authority_findings(source)
+    risk_ok = bool(re.search(r"['\"]sl['\"]", source) and re.search(r"['\"]tp['\"]", source))
+    long_short_ok = bool(re.search(r"long", source, flags=re.I) and re.search(r"short", source, flags=re.I))
+    sha_match = bool(source_exists and expected_sha and actual_sha == expected_sha)
 
-        if not sources:
-            hard_blockers.append(f"{strategy_id}:NO_SOURCE")
-        if missing_core:
-            hard_blockers.append(f"{strategy_id}:MISSING_CORE:{','.join(missing_core)}")
-        if missing_structural:
-            hard_blockers.append(f"{strategy_id}:MISSING_STRUCTURAL:{','.join(missing_structural)}")
-        if syntax_failures:
-            hard_blockers.append(f"{strategy_id}:SYNTAX_ERROR:{','.join(syntax_failures)}")
-        if len(direct) > 1:
-            warnings.append(f"{strategy_id}:MULTIPLE_DIRECT_OWNERS:{','.join(r.path for r in direct)}")
-        if sources and not direct and wrappers:
-            warnings.append(f"{strategy_id}:WRAPPER_ONLY:{','.join(r.path for r in wrappers)}")
+    blockers = []
+    if not source_exists:
+        blockers.append("SOURCE_MISSING")
+    if not sha_match:
+        blockers.append("SOURCE_SHA_MISMATCH")
+    if not syntax_ok:
+        blockers.append("SYNTAX_INVALID")
+    if not callable_exists:
+        blockers.append("CALLABLE_UNRESOLVED")
+    blockers.extend(f"MISSING_CORE:{item}" for item in missing_core)
+    blockers.extend(f"MISSING_STRUCTURAL:{item}" for item in missing_hard)
+    blockers.extend(f"REQUIRED_COLUMN_NOT_FAIL_CLOSED:{item}" for item in required_failures)
+    blockers.extend(f"LOOKAHEAD:{item}" for item in lookahead)
+    blockers.extend(f"AUTHORITY:{item}" for item in authority)
+    if not risk_ok:
+        blockers.append("RISK_OUTPUT_CONTRACT_MISSING")
+    if not long_short_ok:
+        blockers.append("LONG_SHORT_CONTRACT_MISSING")
 
-        strategy_results[strategy_id] = {
-            "contract": spec,
-            "sources": [asdict(record) for record in sources],
-            "direct_owner_candidates": [r.path for r in direct],
-            "wrapper_candidates": [r.path for r in wrappers],
-            "missing_core": missing_core,
-            "missing_structural": missing_structural,
-            "syntax_failures": syntax_failures,
-            "status": "PASS" if not (missing_core or missing_structural or syntax_failures or not sources) else "HOLD",
-        }
-
-    return {
-        "schema_version": "1.0",
-        "authority": contract.get("authority"),
-        "strategy_count_expected": len(contracts),
-        "strategy_count_found": sum(bool(by_id.get(strategy_id)) for strategy_id in contracts),
-        "source_record_count": len(records),
-        "hard_blocker_count": len(hard_blockers),
-        "warning_count": len(warnings),
-        "hard_blockers": hard_blockers,
-        "warnings": warnings,
-        "strategies": strategy_results,
-        "state": "PASS" if not hard_blockers else "HOLD",
-        "next": "LOCK_RUNTIME_OWNERS_AND_REPAIR_HARD_BLOCKERS" if hard_blockers else "RUN_OOS_PARITY_VALIDATION",
-    }
+    return StrategyAudit(
+        strategy_id=strategy_id,
+        path=path_value,
+        callable=callable_name,
+        source_sha_registry=expected_sha,
+        source_sha_actual=actual_sha,
+        source_sha_match=sha_match,
+        source_exists=source_exists,
+        syntax_ok=syntax_ok,
+        callable_exists=callable_exists,
+        missing_core=missing_core,
+        missing_hard_structural=missing_hard,
+        review_findings=review_findings,
+        required_column_failures=required_failures,
+        lookahead_findings=lookahead,
+        authority_findings=authority,
+        risk_contract_ok=risk_ok,
+        long_short_contract_ok=long_short_ok,
+        status="PASS" if not blockers else "HOLD",
+    )
 
 
-def _markdown(report: dict[str, Any]) -> str:
+def _markdown(report: Mapping[str, Any]) -> str:
     lines = [
-        "# Strategy Indicator Contract Audit v1",
+        "# Strategy25 Indicator Contract Audit v1",
         "",
         f"- state: **{report['state']}**",
-        f"- strategies found: **{report['strategy_count_found']}/{report['strategy_count_expected']}**",
-        f"- source records: **{report['source_record_count']}**",
-        f"- hard blockers: **{report['hard_blocker_count']}**",
-        f"- warnings: **{report['warning_count']}**",
+        f"- canonical owners: **{report['canonical_owner_count']}/{report['expected_strategy_count']}**",
+        f"- PASS: **{report['pass_count']}**",
+        f"- HOLD: **{report['hold_count']}**",
+        f"- parameter SSOT: **{report['parameter_ssot_status']}**",
         "",
-        "## Strategy Matrix",
-        "",
-        "| strategy | status | direct owners | wrappers | missing core | missing structural |",
-        "|---|---:|---:|---:|---|---|",
+        "| strategy | status | missing core | hard structural | review | SHA |",
+        "|---|---:|---|---|---|---:|",
     ]
-    for strategy_id, item in report["strategies"].items():
+    for item in report["strategies"]:
         lines.append(
-            "| {sid} | {status} | {direct} | {wrap} | {core} | {struct} |".format(
-                sid=strategy_id,
+            "| {strategy_id} | {status} | {core} | {hard} | {review} | {sha} |".format(
+                strategy_id=item["strategy_id"],
                 status=item["status"],
-                direct=len(item["direct_owner_candidates"]),
-                wrap=len(item["wrapper_candidates"]),
                 core=", ".join(item["missing_core"]) or "-",
-                struct=", ".join(item["missing_structural"]) or "-",
+                hard=", ".join(item["missing_hard_structural"]) or "-",
+                review=", ".join(item["review_findings"]) or "-",
+                sha="PASS" if item["source_sha_match"] else "FAIL",
             )
         )
-    lines.extend(["", "## Hard Blockers", ""])
-    lines.extend(f"- `{item}`" for item in report["hard_blockers"] or ["NONE"])
-    lines.extend(["", "## Warnings", ""])
-    lines.extend(f"- `{item}`" for item in report["warnings"] or ["NONE"])
+    lines.extend(["", "## Hard blockers", ""])
+    lines.extend(f"- `{value}`" for value in report["hard_blockers"] or ["NONE"])
+    lines.extend(["", "## Review findings", ""])
+    lines.extend(f"- `{value}`" for value in report["review_findings"] or ["NONE"])
     return "\n".join(lines) + "\n"
 
 
 def main() -> int:
-    report = _audit()
+    contract = _read_json(CONTRACT_PATH)
+    registry = _read_json(ROOT / str(contract["registry_path"]))
+    config = _read_json(ROOT / str(contract["config_path"]))
+    specs = contract.get("strategies") if isinstance(contract.get("strategies"), dict) else {}
+    rows = [row for row in registry.get("entries", []) if isinstance(row, dict)]
+    row_by_id = {str(row.get("strategy_id") or ""): row for row in rows}
+
+    audits: list[StrategyAudit] = []
+    hard_blockers: list[str] = []
+    review_findings: list[str] = []
+
+    if registry.get("fail_closed") is not True or int(registry.get("active_entry_count", -1)) != 0:
+        hard_blockers.append("REGISTRY_AUTHORITY_NOT_FAIL_CLOSED")
+    if len(rows) != int(contract["expected_strategy_count"]):
+        hard_blockers.append(f"REGISTRY_COUNT:{len(rows)}")
+    if set(row_by_id) != set(specs):
+        hard_blockers.append("REGISTRY_CONTRACT_ID_SET_MISMATCH")
+
+    for strategy_id in sorted(specs):
+        row = row_by_id.get(strategy_id)
+        if row is None:
+            hard_blockers.append(f"{strategy_id}:NO_CANONICAL_OWNER")
+            continue
+        if row.get("active_allowed") is not False or row.get("fail_closed") is not True:
+            hard_blockers.append(f"{strategy_id}:AUTHORITY_NOT_FAIL_CLOSED")
+        audit = _audit_strategy(strategy_id, specs[strategy_id], row)
+        audits.append(audit)
+        if audit.status != "PASS":
+            for value in (
+                audit.missing_core
+                + audit.missing_hard_structural
+                + audit.required_column_failures
+                + audit.lookahead_findings
+                + audit.authority_findings
+            ):
+                hard_blockers.append(f"{strategy_id}:{value}")
+            if not audit.source_sha_match:
+                hard_blockers.append(f"{strategy_id}:SOURCE_SHA_MISMATCH")
+            if not audit.syntax_ok:
+                hard_blockers.append(f"{strategy_id}:SYNTAX_INVALID")
+            if not audit.callable_exists:
+                hard_blockers.append(f"{strategy_id}:CALLABLE_UNRESOLVED")
+        review_findings.extend(f"{strategy_id}:{value}" for value in audit.review_findings)
+
+    config_values = config.get("strategies") if isinstance(config.get("strategies"), dict) else {}
+    parameter_ssot_status = "PASS" if all(isinstance(v, dict) for v in config_values.values()) else "GAP_DATACLASS_DEFAULTS_NOT_EXTERNALIZED"
+    if parameter_ssot_status != "PASS":
+        review_findings.append(parameter_ssot_status)
+
+    pass_count = sum(audit.status == "PASS" for audit in audits)
+    report = {
+        "schema_version": "1.1",
+        "authority": contract.get("authority"),
+        "state": "PASS" if not hard_blockers else "HOLD",
+        "expected_strategy_count": int(contract["expected_strategy_count"]),
+        "canonical_owner_count": len(audits),
+        "pass_count": pass_count,
+        "hold_count": len(audits) - pass_count,
+        "parameter_ssot_status": parameter_ssot_status,
+        "hard_blocker_count": len(sorted(set(hard_blockers))),
+        "review_finding_count": len(sorted(set(review_findings))),
+        "hard_blockers": sorted(set(hard_blockers)),
+        "review_findings": sorted(set(review_findings)),
+        "strategies": [asdict(audit) for audit in audits],
+        "next": "RUN_CHILD_REPAIRS_AND_PARITY_TESTS" if hard_blockers else "RUN_NONOVERLAP_OOS",
+    }
+
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     (REPORT_DIR / "audit.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     (REPORT_DIR / "audit.md").write_text(_markdown(report), encoding="utf-8")
     print(json.dumps({
         "STATE": report["state"],
-        "STRATEGIES": f"{report['strategy_count_found']}/{report['strategy_count_expected']}",
-        "SOURCE_RECORDS": report["source_record_count"],
+        "OWNERS": f"{report['canonical_owner_count']}/{report['expected_strategy_count']}",
+        "PASS": report["pass_count"],
+        "HOLD": report["hold_count"],
         "HARD_BLOCKERS": report["hard_blocker_count"],
-        "WARNINGS": report["warning_count"],
+        "REVIEW": report["review_finding_count"],
+        "PARAMETER_SSOT": report["parameter_ssot_status"],
         "NEXT": report["next"],
     }, sort_keys=True))
-    for blocker in report["hard_blockers"]:
-        print(f"BLOCKER={blocker}")
-    for warning in report["warnings"]:
-        print(f"WARNING={warning}")
+    for value in report["hard_blockers"]:
+        print(f"BLOCKER={value}")
+    for value in report["review_findings"]:
+        print(f"REVIEW={value}")
     return 0
 
 

@@ -1,75 +1,13 @@
 name: R7A4D Strategy25 Single Loss Surgery
 
 on:
-  pull_request:
-    branches:
-      - master
-    paths:
-      - 'backend/tools/r7a4d_strategy25_selected_single_loss_surgery.py'
-      - 'backend/tools/r7a4d_strategy25_selected_single_loss_surgery_v2.py'
-      - 'backend/tools/r7a4d_strategy25_new_nonoverlap_baseline_census.py'
-      - 'backend/tools/r7a4d_strategy_indicator_repair_loss_anatomy.py'
-      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
-      - 'backend/strategy25/indicator_contract_repair_adapter_v2.py'
-      - 'backend/strategy25/indicator_contract_repair_loader_v2.py'
-      - 'backend/strategies/common_utils.py'
-      - '.github/workflows/r7a4d-strategy25-single-loss-surgery.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  surgery:
+  manual-only:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check pandas
-      - name: Compile census and surgery stack
-        run: |
-          PYTHONPATH=. python -m py_compile backend/strategies/common_utils.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy25_new_nonoverlap_baseline_census.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy25_selected_single_loss_surgery.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy25_selected_single_loss_surgery_v2.py
-      - name: Reproduce new nonoverlap census
-        shell: bash
-        run: |
-          set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy25_new_nonoverlap_baseline_census.py --root . 2>&1 | tee surgery_census.log
-          rc=${PIPESTATUS[0]}
-          echo "$rc" > surgery_census.rc
-          exit 0
-      - name: Run one single-cause surgery
-        shell: bash
-        run: |
-          set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy25_selected_single_loss_surgery_v2.py \
-            --root . \
-            --census-summary artifacts/strategy25_new_nonoverlap_baseline_census_v1/summary.json \
-            2>&1 | tee selected_single_loss_surgery.log
-          rc=${PIPESTATUS[0]}
-          echo "$rc" > selected_single_loss_surgery.rc
-          exit 0
-      - name: Upload surgery evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: strategy25-selected-single-loss-surgery-v2
-          path: |
-            artifacts/strategy25_new_nonoverlap_baseline_census_v1/summary.json
-            artifacts/strategy25_selected_single_loss_surgery_v2/summary.json
-            surgery_census.log
-            surgery_census.rc
-            selected_single_loss_surgery.log
-            selected_single_loss_surgery.rc
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Enforce pipeline integrity
-        run: |
-          test "$(cat surgery_census.rc)" = "0"
-          test "$(cat selected_single_loss_surgery.rc)" = "0"
+      - run: echo 'Superseded by the grouped family indicator laboratory on this research branch.'

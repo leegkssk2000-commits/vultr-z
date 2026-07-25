@@ -6,8 +6,11 @@ on:
       - r7a4d-strategy25-runtime-contract-census-surgery-v2
     paths:
       - 'backend/strategy25/strategy_family_indicator_search_v1.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v2.py'
       - 'backend/tools/r7a4d_strategy_family_indicator_lab.py'
+      - 'backend/tools/r7a4d_strategy_family_indicator_lab_v2.py'
       - 'backend/tools/r7a4d_strategy_family_single_cause_lab.py'
+      - 'backend/tools/r7a4d_strategy_family_single_cause_lab_v2.py'
       - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
       - 'backend/tools/r7a4d_strategy_indicator_repair_loss_anatomy.py'
       - 'backend/strategy25/indicator_contract_repair_adapter_v2.py'
@@ -18,8 +21,11 @@ on:
       - master
     paths:
       - 'backend/strategy25/strategy_family_indicator_search_v1.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v2.py'
       - 'backend/tools/r7a4d_strategy_family_indicator_lab.py'
+      - 'backend/tools/r7a4d_strategy_family_indicator_lab_v2.py'
       - 'backend/tools/r7a4d_strategy_family_single_cause_lab.py'
+      - 'backend/tools/r7a4d_strategy_family_single_cause_lab_v2.py'
       - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
       - 'backend/tools/r7a4d_strategy_indicator_repair_loss_anatomy.py'
       - 'backend/strategy25/indicator_contract_repair_adapter_v2.py'
@@ -52,15 +58,17 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check pandas
-      - name: Compile family laboratory
+      - name: Compile cached family laboratory
         run: |
           PYTHONPATH=. python -m py_compile backend/strategy25/strategy_family_indicator_search_v1.py
+          PYTHONPATH=. python -m py_compile backend/strategy25/strategy_family_indicator_search_v2.py
           PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_indicator_lab.py
-      - name: Run family indicator search
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_indicator_lab_v2.py
+      - name: Run cached family indicator search
         shell: bash
         run: |
           set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_indicator_lab.py \
+          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_indicator_lab_v2.py \
             --root . \
             --family '${{ matrix.family }}' \
             2>&1 | tee family_${{ matrix.family }}.log
@@ -98,13 +106,15 @@ jobs:
           pattern: strategy-family-*
           path: family_artifacts
           merge-multiple: false
-      - name: Compile aggregation and surgery
-        run: PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_single_cause_lab.py
+      - name: Compile cached aggregation and surgery
+        run: |
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_single_cause_lab.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy_family_single_cause_lab_v2.py
       - name: Aggregate winners and run one-cause holdout replay
         shell: bash
         run: |
           set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_single_cause_lab.py \
+          PYTHONPATH=. python backend/tools/r7a4d_strategy_family_single_cause_lab_v2.py \
             --root . \
             --family-artifacts family_artifacts \
             2>&1 | tee family_single_cause.log
@@ -115,7 +125,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strategy-family-single-cause-final-v1
+          name: strategy-family-single-cause-final-v2
           path: |
             artifacts/strategy_family_single_cause_lab_v1/summary.json
             family_single_cause.log

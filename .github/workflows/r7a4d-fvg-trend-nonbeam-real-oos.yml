@@ -1,0 +1,67 @@
+name: R7A4D FVG Trend Nonbeam Real OOS
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy-indicator-contract-repair-v1
+    paths:
+      - 'backend/strategy25/fvg_trend_nonbeam_child_v1.py'
+      - 'tests/test_fvg_trend_nonbeam_child_v1.py'
+      - 'backend/tools/r7a4d_fvg_trend_nonbeam_real_oos.py'
+      - 'backend/tools/r7a4d_fvg_trend_alignment_real_oos.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
+      - '.github/workflows/r7a4d-fvg-trend-nonbeam-real-oos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fvg-trend-nonbeam-oos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Compile incremental child and runner
+        run: |
+          PYTHONPATH=. python -m py_compile backend/strategy25/fvg_trend_nonbeam_child_v1.py
+          PYTHONPATH=. python -m py_compile tests/test_fvg_trend_nonbeam_child_v1.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_fvg_trend_nonbeam_real_oos.py
+
+      - name: Run incremental child tests
+        run: PYTHONPATH=. python -m unittest -v tests.test_fvg_trend_nonbeam_child_v1
+
+      - name: Run fixed two-window incremental OOS
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_fvg_trend_nonbeam_real_oos.py --root . \
+            2>&1 | tee fvg_trend_nonbeam_oos.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > fvg_trend_nonbeam_oos.rc
+          exit 0
+
+      - name: Upload incremental OOS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fvg-trend-nonbeam-real-oos-v1
+          path: |
+            artifacts/r7a4d_fvg_trend_nonbeam_real_oos_v1/summary.json
+            fvg_trend_nonbeam_oos.log
+            fvg_trend_nonbeam_oos.rc
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Enforce runner integrity
+        run: test "$(cat fvg_trend_nonbeam_oos.rc)" = "0"

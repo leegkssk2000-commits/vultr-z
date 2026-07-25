@@ -1,0 +1,59 @@
+name: R7A4D Strategy Indicator Repair Real OOS
+
+on:
+  push:
+    branches:
+      - r7a4d-strategy-indicator-repair-oos-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
+      - 'backend/strategy25/indicator_contract_repair_adapter_v1.py'
+      - 'backend/strategy25/indicator_contract_repair_loader_v1.py'
+      - '.github/workflows/r7a4d-strategy-indicator-repair-oos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-oos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Compile runner
+        run: python -m py_compile backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py
+
+      - name: Run fixed two-window BingX OOS
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py --root . \
+            2>&1 | tee strategy_indicator_repair_oos.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > strategy_indicator_repair_oos.rc
+          exit 0
+
+      - name: Upload OOS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-indicator-repair-real-oos-v1
+          path: |
+            artifacts/strategy_indicator_repair_real_oos_v1/summary.json
+            strategy_indicator_repair_oos.log
+            strategy_indicator_repair_oos.rc
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Enforce runner integrity
+        run: test "$(cat strategy_indicator_repair_oos.rc)" = "0"

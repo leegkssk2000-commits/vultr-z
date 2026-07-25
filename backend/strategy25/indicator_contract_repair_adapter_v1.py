@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -18,7 +17,95 @@ class RepairSpec:
     implementation_path: str
     expected_sha256: str
     exact_replacements: tuple[tuple[str, str], ...] = ()
-    regex_replacements: tuple[tuple[str, str], ...] = ()
+    block_replacements: tuple[tuple[str, str, str], ...] = ()
+
+
+FVG_BLOCK = (
+    "    # Contract repair: ICT-style FVG is a three-candle imbalance.\n"
+    "    # The current signal bar is excluded so a gap cannot be created and filled on the same bar.\n"
+    "    start_idx = max(2, len(df) - cfg.lookback)\n"
+    "    gap_idx = None\n"
+    "    gap_dir = None\n"
+    "    gap_low = None\n"
+    "    gap_high = None\n"
+    "    gap_size = 0.0\n\n"
+    "    for i in range(start_idx, len(df) - 1):\n"
+    "        hi_first = _to_float(df[\"high\"].iloc[i - 2])\n"
+    "        lo_first = _to_float(df[\"low\"].iloc[i - 2])\n"
+    "        hi_third = _to_float(df[\"high\"].iloc[i])\n"
+    "        lo_third = _to_float(df[\"low\"].iloc[i])\n"
+    "        gap_atr = _to_float(df[\"atr\"].iloc[i], atr_now)\n"
+    "        gap_reference = max(_to_float(df[\"close\"].iloc[i], price), 1e-9)\n\n"
+    "        up_gap_size = lo_third - hi_first\n"
+    "        down_gap_size = lo_first - hi_third\n\n"
+    "        if (\n"
+    "            lo_third > hi_first\n"
+    "            and up_gap_size >= gap_atr * cfg.min_gap_atr\n"
+    "            and (up_gap_size / gap_reference) >= cfg.min_gap_pct\n"
+    "        ):\n"
+    "            gap_idx = i\n"
+    "            gap_dir = \"up\"\n"
+    "            gap_low = hi_first\n"
+    "            gap_high = lo_third\n"
+    "            gap_size = up_gap_size\n"
+    "        elif (\n"
+    "            hi_third < lo_first\n"
+    "            and down_gap_size >= gap_atr * cfg.min_gap_atr\n"
+    "            and (down_gap_size / gap_reference) >= cfg.min_gap_pct\n"
+    "        ):\n"
+    "            gap_idx = i\n"
+    "            gap_dir = \"down\"\n"
+    "            gap_low = hi_third\n"
+    "            gap_high = lo_first\n"
+    "            gap_size = down_gap_size\n\n"
+)
+
+SESSION_RESOLVER_BLOCK = (
+    "def _session_name_from_ts(ts_value: Optional[float], tz_name: str, cfg: SessionBiasConfig) -> str:\n"
+    "    if ts_value is None:\n"
+    "        return \"unknown\"\n\n"
+    "    try:\n"
+    "        dt_utc = datetime.fromtimestamp(float(ts_value), tz=timezone.utc)\n"
+    "        dt = dt_utc.astimezone(ZoneInfo(tz_name)) if ZoneInfo is not None else dt_utc\n"
+    "    except Exception:\n"
+    "        return \"unknown\"\n\n"
+    "    hour = dt.hour\n"
+    "    asia_active = cfg.asia_start_hour <= hour < cfg.asia_end_hour\n"
+    "    london_active = cfg.london_start_hour <= hour < cfg.london_end_hour\n"
+    "    ny_active = cfg.ny_start_hour <= hour < cfg.ny_end_hour\n\n"
+    "    if london_active and ny_active:\n"
+    "        return \"overlap\"\n"
+    "    if asia_active:\n"
+    "        return \"asia\"\n"
+    "    if london_active:\n"
+    "        return \"london\"\n"
+    "    if ny_active:\n"
+    "        return \"newyork\"\n"
+    "    return \"off_session\"\n\n\n"
+)
+
+SESSION_BIAS_BLOCK = (
+    "    if session_name == \"asia\":\n"
+    "        bias_long = trend_long and price >= session_mid\n"
+    "        bias_short = trend_short and price <= session_mid\n"
+    "        bias_strength = 0.52\n"
+    "    elif session_name == \"london\":\n"
+    "        bias_long = trend_long\n"
+    "        bias_short = trend_short\n"
+    "        bias_strength = 0.70\n"
+    "    elif session_name == \"newyork\":\n"
+    "        bias_long = trend_long and long_break\n"
+    "        bias_short = trend_short and short_break\n"
+    "        bias_strength = 0.76\n"
+    "    elif session_name == \"overlap\":\n"
+    "        bias_long = trend_long and long_break\n"
+    "        bias_short = trend_short and short_break\n"
+    "        bias_strength = 0.82\n"
+    "    else:\n"
+    "        bias_long = False\n"
+    "        bias_short = False\n"
+    "        bias_strength = 0.0\n\n"
+)
 
 
 REPAIR_SPECS: Mapping[str, RepairSpec] = MappingProxyType({
@@ -41,53 +128,10 @@ REPAIR_SPECS: Mapping[str, RepairSpec] = MappingProxyType({
             "    # Fill depth is measured from the origin side of the imbalance.\n"
             "    fill_pct = ((gap_high - price) / gap_range) if gap_dir == \"up\" else ((price - gap_low) / gap_range)\n",
         ),),
-        regex_replacements=((
-            r"    start_idx = max\(1, len\(df\) - cfg\.lookback\)\n"
-            r"    gap_idx = None\n"
-            r"    gap_dir = None\n"
-            r"    gap_low = None\n"
-            r"    gap_high = None\n"
-            r"    gap_size = 0\.0\n\n"
-            r"    for i in range\(start_idx, len\(df\)\):\n"
-            r"(?:.*\n)*?"
-            r"            gap_size = down_gap_size\n",
-            "    # Contract repair: ICT-style FVG is a three-candle imbalance.\n"
-            "    # The current signal bar is excluded so a gap cannot be created and filled on the same bar.\n"
-            "    start_idx = max(2, len(df) - cfg.lookback)\n"
-            "    gap_idx = None\n"
-            "    gap_dir = None\n"
-            "    gap_low = None\n"
-            "    gap_high = None\n"
-            "    gap_size = 0.0\n\n"
-            "    for i in range(start_idx, len(df) - 1):\n"
-            "        hi_first = _to_float(df[\"high\"].iloc[i - 2])\n"
-            "        lo_first = _to_float(df[\"low\"].iloc[i - 2])\n"
-            "        hi_third = _to_float(df[\"high\"].iloc[i])\n"
-            "        lo_third = _to_float(df[\"low\"].iloc[i])\n"
-            "        gap_atr = _to_float(df[\"atr\"].iloc[i], atr_now)\n"
-            "        gap_reference = max(_to_float(df[\"close\"].iloc[i], price), 1e-9)\n\n"
-            "        up_gap_size = lo_third - hi_first\n"
-            "        down_gap_size = lo_first - hi_third\n\n"
-            "        if (\n"
-            "            lo_third > hi_first\n"
-            "            and up_gap_size >= gap_atr * cfg.min_gap_atr\n"
-            "            and (up_gap_size / gap_reference) >= cfg.min_gap_pct\n"
-            "        ):\n"
-            "            gap_idx = i\n"
-            "            gap_dir = \"up\"\n"
-            "            gap_low = hi_first\n"
-            "            gap_high = lo_third\n"
-            "            gap_size = up_gap_size\n"
-            "        elif (\n"
-            "            hi_third < lo_first\n"
-            "            and down_gap_size >= gap_atr * cfg.min_gap_atr\n"
-            "            and (down_gap_size / gap_reference) >= cfg.min_gap_pct\n"
-            "        ):\n"
-            "            gap_idx = i\n"
-            "            gap_dir = \"down\"\n"
-            "            gap_low = hi_third\n"
-            "            gap_high = lo_first\n"
-            "            gap_size = down_gap_size\n",
+        block_replacements=((
+            "    start_idx = max(1, len(df) - cfg.lookback)\n",
+            "    if gap_idx is None or gap_low is None or gap_high is None or gap_dir is None:\n",
+            FVG_BLOCK,
         ),),
     ),
     "session_bias": RepairSpec(
@@ -99,56 +143,18 @@ REPAIR_SPECS: Mapping[str, RepairSpec] = MappingProxyType({
             "    # Contract repair: session reference range is frozen before the signal bar.\n"
             "    recent = df.iloc[-(cfg.range_lookback + 1):-1]\n",
         ),),
-        regex_replacements=((
-            r"def _session_name_from_ts\(ts_value: Optional\[float\], tz_name: str, cfg: SessionBiasConfig\) -> str:\n"
-            r"(?:.*\n)*?"
-            r"    return \"overlap\"\n",
-            "def _session_name_from_ts(ts_value: Optional[float], tz_name: str, cfg: SessionBiasConfig) -> str:\n"
-            "    if ts_value is None:\n"
-            "        return \"unknown\"\n\n"
-            "    try:\n"
-            "        dt_utc = datetime.fromtimestamp(float(ts_value), tz=timezone.utc)\n"
-            "        dt = dt_utc.astimezone(ZoneInfo(tz_name)) if ZoneInfo is not None else dt_utc\n"
-            "    except Exception:\n"
-            "        return \"unknown\"\n\n"
-            "    hour = dt.hour\n"
-            "    asia_active = cfg.asia_start_hour <= hour < cfg.asia_end_hour\n"
-            "    london_active = cfg.london_start_hour <= hour < cfg.london_end_hour\n"
-            "    ny_active = cfg.ny_start_hour <= hour < cfg.ny_end_hour\n\n"
-            "    if london_active and ny_active:\n"
-            "        return \"overlap\"\n"
-            "    if asia_active:\n"
-            "        return \"asia\"\n"
-            "    if london_active:\n"
-            "        return \"london\"\n"
-            "    if ny_active:\n"
-            "        return \"newyork\"\n"
-            "    return \"off_session\"\n",
-        ), (
-            r"    if session_name == \"asia\":\n"
-            r"(?:.*\n)*?"
-            r"        bias_strength = 0\.60\n",
-            "    if session_name == \"asia\":\n"
-            "        bias_long = trend_long and price >= session_mid\n"
-            "        bias_short = trend_short and price <= session_mid\n"
-            "        bias_strength = 0.52\n"
-            "    elif session_name == \"london\":\n"
-            "        bias_long = trend_long\n"
-            "        bias_short = trend_short\n"
-            "        bias_strength = 0.70\n"
-            "    elif session_name == \"newyork\":\n"
-            "        bias_long = trend_long and long_break\n"
-            "        bias_short = trend_short and short_break\n"
-            "        bias_strength = 0.76\n"
-            "    elif session_name == \"overlap\":\n"
-            "        bias_long = trend_long and long_break\n"
-            "        bias_short = trend_short and short_break\n"
-            "        bias_strength = 0.82\n"
-            "    else:\n"
-            "        bias_long = False\n"
-            "        bias_short = False\n"
-            "        bias_strength = 0.0\n",
-        )),
+        block_replacements=(
+            (
+                "def _session_name_from_ts(ts_value: Optional[float], tz_name: str, cfg: SessionBiasConfig) -> str:\n",
+                "def _payload_session_tz(payload: Optional[Mapping[str, Any]], cfg: SessionBiasConfig) -> str:\n",
+                SESSION_RESOLVER_BLOCK,
+            ),
+            (
+                "    if session_name == \"asia\":\n",
+                "    long_beam = (\n",
+                SESSION_BIAS_BLOCK,
+            ),
+        ),
     ),
     "sr_levels": RepairSpec(
         strategy_id="sr_levels",
@@ -165,6 +171,20 @@ REPAIR_SPECS: Mapping[str, RepairSpec] = MappingProxyType({
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _replace_block(source: str, start_marker: str, end_marker: str, replacement: str, strategy_id: str) -> str:
+    start_count = source.count(start_marker)
+    end_count = source.count(end_marker)
+    if start_count != 1 or end_count != 1:
+        raise IndicatorContractRepairError(
+            f"BLOCK_MARKER_COUNT:{strategy_id}:start={start_count}:end={end_count}"
+        )
+    start = source.index(start_marker)
+    end = source.index(end_marker, start + len(start_marker))
+    if end <= start:
+        raise IndicatorContractRepairError(f"BLOCK_MARKER_ORDER:{strategy_id}")
+    return source[:start] + replacement + source[end:]
 
 
 def transformed_source(root: str | Path, strategy_id: str) -> str:
@@ -192,10 +212,8 @@ def transformed_source(root: str | Path, strategy_id: str) -> str:
             raise IndicatorContractRepairError(f"EXACT_REPLACEMENT_COUNT:{strategy_id}:{count}:{old!r}")
         source = source.replace(old, new, 1)
 
-    for pattern, replacement in spec.regex_replacements:
-        source, count = re.subn(pattern, replacement, source, count=1, flags=re.S)
-        if count != 1:
-            raise IndicatorContractRepairError(f"REGEX_REPLACEMENT_COUNT:{strategy_id}:{count}:{pattern}")
+    for start_marker, end_marker, replacement in spec.block_replacements:
+        source = _replace_block(source, start_marker, end_marker, replacement, strategy_id)
 
     compile(source, f"<repair:{strategy_id}>", "exec")
     return source

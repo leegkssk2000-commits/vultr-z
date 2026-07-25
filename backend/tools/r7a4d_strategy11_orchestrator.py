@@ -29,7 +29,7 @@ def _run(command: list[str], log_path: Path) -> tuple[int, str]:
 
 def _screen(root: Path, strategy_id: str) -> tuple[str, int, str]:
     command = [
-        sys.executable, "backend/tools/r7a4d_strategy11_screen.py",
+        sys.executable, "backend/tools/r7a4d_strategy11_screen_v2.py",
         "--root", str(root), "--strategy-id", strategy_id,
     ]
     rc, log = _run(command, root / "artifacts/strategy11_orchestrator_v1/logs" / f"screen-{strategy_id}.log")
@@ -52,16 +52,26 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=3)
     args = parser.parse_args()
     root = Path(args.root).resolve()
-    evidence: dict[str, object] = {"screen": [], "exact": [], "aggregate": None}
+    evidence: dict[str, object] = {"prepare": None, "screen": [], "exact": [], "aggregate": None}
     blockers: list[str] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-        futures = [executor.submit(_screen, root, strategy_id) for strategy_id in STRATEGIES]
-        for future in concurrent.futures.as_completed(futures):
-            strategy_id, rc, log = future.result()
-            evidence["screen"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
-            if rc != 0:
-                blockers.append(f"SCREEN:{strategy_id}:RC={rc}")
+    prepare_log = root / "artifacts/strategy11_orchestrator_v1/logs/prepare-data.log"
+    prepare_rc, prepare_path = _run(
+        [sys.executable, "backend/tools/r7a4d_strategy11_prepare_data_v2.py", "--root", str(root)],
+        prepare_log,
+    )
+    evidence["prepare"] = {"rc": prepare_rc, "log": prepare_path}
+    if prepare_rc != 0:
+        blockers.append(f"PREPARE_DATA:RC={prepare_rc}")
+
+    if not blockers:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            futures = [executor.submit(_screen, root, strategy_id) for strategy_id in STRATEGIES]
+            for future in concurrent.futures.as_completed(futures):
+                strategy_id, rc, log = future.result()
+                evidence["screen"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
+                if rc != 0:
+                    blockers.append(f"SCREEN:{strategy_id}:RC={rc}")
 
     if not blockers:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
@@ -88,7 +98,7 @@ def main() -> int:
     output = root / "artifacts/strategy11_orchestrator_v1/summary.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "state": "PASS" if not blockers else "HOLD",
         "workers": args.workers,
         "strategy_count": len(STRATEGIES),

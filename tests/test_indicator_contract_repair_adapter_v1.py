@@ -9,10 +9,10 @@ from pathlib import Path
 from backend.strategy25.indicator_contract_repair_adapter_v1 import (
     IndicatorContractRepairError,
     REPAIR_SPECS,
-    load_repaired_namespace,
     repair_manifest,
     transformed_source,
 )
+from backend.strategy25.indicator_contract_repair_loader_v1 import load_repaired_namespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,7 @@ class IndicatorContractRepairAdapterV1Test(unittest.TestCase):
     def test_manifest_is_child_only_and_fail_closed(self) -> None:
         rows = repair_manifest()
         self.assertEqual({row["strategy_id"] for row in rows}, set(REPAIR_SPECS))
+        self.assertEqual(len(rows), 5)
         for row in rows:
             self.assertTrue(row["read_only_child"])
             self.assertFalse(row["canonical_mutated"])
@@ -53,6 +54,11 @@ class IndicatorContractRepairAdapterV1Test(unittest.TestCase):
         self.assertIn("for i in range(start_idx, len(df) - 1):", source)
         self.assertIn('if gap_dir == "up"', source)
         self.assertNotIn("hi_prev = _to_float(df[\"high\"].iloc[i - 1])", source)
+
+    def test_scalp_snap_requires_real_volume(self) -> None:
+        source = transformed_source(ROOT, "scalp_snap")
+        self.assertIn('required_cols = {"open", "high", "low", "close", "volume"}', source)
+        self.assertNotIn('required_cols = {"open", "high", "low", "close"}\n', source)
 
     def test_session_overlap_has_precedence_and_off_session_is_not_overlap(self) -> None:
         namespace = load_repaired_namespace(ROOT, "session_bias")

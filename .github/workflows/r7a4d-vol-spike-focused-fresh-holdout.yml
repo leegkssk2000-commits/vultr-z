@@ -1,0 +1,60 @@
+name: R7A4D Vol Spike Focused Fresh Holdout
+
+concurrency:
+  group: r7a4d-vol-spike-focused-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'backend/tools/r7a4d_vol_spike_focused_fresh_holdout_lab.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v1.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v2.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repair_loss_anatomy.py'
+      - '.github/workflows/r7a4d-vol-spike-focused-fresh-holdout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile focused laboratory
+        run: |
+          PYTHONPATH=. python -m py_compile backend/strategy25/strategy_family_indicator_search_v1.py
+          PYTHONPATH=. python -m py_compile backend/strategy25/strategy_family_indicator_search_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_vol_spike_focused_fresh_holdout_lab.py
+      - name: Run focused variant search and fresh holdout surgery
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_vol_spike_focused_fresh_holdout_lab.py --root . \
+            2>&1 | tee vol_spike_focused_fresh_holdout.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > vol_spike_focused_fresh_holdout.rc
+          exit 0
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vol-spike-focused-fresh-holdout-v1
+          path: |
+            artifacts/vol_spike_focused_fresh_holdout_lab_v1/summary.json
+            vol_spike_focused_fresh_holdout.log
+            vol_spike_focused_fresh_holdout.rc
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce runner integrity
+        run: test "$(cat vol_spike_focused_fresh_holdout.rc)" = "0"

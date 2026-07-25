@@ -49,13 +49,27 @@ jobs:
           python -m py_compile tests/test_indicator_contract_repair_adapter_v1.py
           python -m py_compile tests/test_indicator_contract_ci_probe_v1.py
 
-      - name: Run child repair tests
+      - name: Run child repair tests and preserve diagnostics
+        shell: bash
         run: |
-          python -m unittest -v tests.test_indicator_contract_repair_adapter_v1
-          python -m unittest -v tests.test_indicator_contract_ci_probe_v1
+          set +e
+          python -m unittest -v \
+            tests.test_indicator_contract_repair_adapter_v1 \
+            tests.test_indicator_contract_ci_probe_v1 \
+            2>&1 | tee child_repair_tests.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > child_repair_tests.rc
+          exit 0
 
-      - name: Run canonical indicator audit
-        run: python backend/tools/z_strategy_indicator_contract_audit.py | tee strategy_indicator_audit.log
+      - name: Run canonical indicator audit and preserve diagnostics
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/z_strategy_indicator_contract_audit.py \
+            2>&1 | tee strategy_indicator_audit.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > strategy_indicator_audit.rc
+          exit 0
 
       - name: Upload audit artifacts
         if: always()
@@ -65,6 +79,15 @@ jobs:
           path: |
             artifacts/strategy_indicator_contract_audit_v1/audit.json
             artifacts/strategy_indicator_contract_audit_v1/audit.md
+            child_repair_tests.log
+            child_repair_tests.rc
             strategy_indicator_audit.log
-          if-no-files-found: error
+            strategy_indicator_audit.rc
+          if-no-files-found: warn
           retention-days: 30
+
+      - name: Enforce validation result
+        shell: bash
+        run: |
+          test "$(cat child_repair_tests.rc)" = "0"
+          test "$(cat strategy_indicator_audit.rc)" = "0"

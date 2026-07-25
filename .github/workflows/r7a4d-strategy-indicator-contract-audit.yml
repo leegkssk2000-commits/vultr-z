@@ -1,0 +1,46 @@
+name: R7A4D Strategy Indicator Contract Audit
+
+on:
+  push:
+    branches:
+      - r7a4d-strategy-indicator-contract-repair-v1
+    paths:
+      - 'backend/strategies/**'
+      - 'backend/contracts/ZOS_STRATEGY_INDICATOR_CONTRACTS_v1.json'
+      - 'backend/tools/z_strategy_indicator_contract_audit.py'
+      - '.github/workflows/r7a4d-strategy-indicator-contract-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile audit
+        run: python -m py_compile backend/tools/z_strategy_indicator_contract_audit.py
+
+      - name: Run audit
+        run: python backend/tools/z_strategy_indicator_contract_audit.py | tee strategy_indicator_audit.log
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-indicator-contract-audit-v1
+          path: |
+            artifacts/strategy_indicator_contract_audit_v1/audit.json
+            artifacts/strategy_indicator_contract_audit_v1/audit.md
+            strategy_indicator_audit.log
+          if-no-files-found: error
+          retention-days: 30

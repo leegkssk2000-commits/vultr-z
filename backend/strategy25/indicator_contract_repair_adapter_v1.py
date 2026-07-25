@@ -134,6 +134,16 @@ REPAIR_SPECS: Mapping[str, RepairSpec] = MappingProxyType({
             FVG_BLOCK,
         ),),
     ),
+    "scalp_snap": RepairSpec(
+        strategy_id="scalp_snap",
+        implementation_path="backend/strategies/scalp_snap.py",
+        expected_sha256="c39847a06899a2e5f7c925069dbf643078da11a8d59eea9e04722d42bc7d20a4",
+        exact_replacements=((
+            "    required_cols = {\"open\", \"high\", \"low\", \"close\"}\n",
+            "    # Contract repair: volume confirmation cannot silently pass on synthetic zero volume.\n"
+            "    required_cols = {\"open\", \"high\", \"low\", \"close\", \"volume\"}\n",
+        ),),
+    ),
     "session_bias": RepairSpec(
         strategy_id="session_bias",
         implementation_path="backend/strategies/session_bias.py",
@@ -220,22 +230,15 @@ def transformed_source(root: str | Path, strategy_id: str) -> str:
 
 
 def load_repaired_namespace(root: str | Path, strategy_id: str) -> dict[str, Any]:
-    source = transformed_source(root, strategy_id)
-    namespace: dict[str, Any] = {
-        "__name__": f"backend.strategy25.repaired_{strategy_id}_v1",
-        "__file__": str(Path(root).resolve() / REPAIR_SPECS[strategy_id].implementation_path),
-        "__package__": "backend.strategies",
-    }
-    exec(compile(source, namespace["__file__"], "exec"), namespace, namespace)
-    return namespace
+    from backend.strategy25.indicator_contract_repair_loader_v1 import load_repaired_namespace as safe_load
+
+    return safe_load(root, strategy_id)
 
 
 def load_repaired_strategy(root: str | Path, strategy_id: str) -> Callable[..., Any]:
-    namespace = load_repaired_namespace(root, strategy_id)
-    strategy = namespace.get("strategy")
-    if not callable(strategy):
-        raise IndicatorContractRepairError(f"STRATEGY_CALLABLE_MISSING:{strategy_id}")
-    return strategy
+    from backend.strategy25.indicator_contract_repair_loader_v1 import load_repaired_strategy as safe_load
+
+    return safe_load(root, strategy_id)
 
 
 def repair_manifest() -> tuple[Mapping[str, Any], ...]:

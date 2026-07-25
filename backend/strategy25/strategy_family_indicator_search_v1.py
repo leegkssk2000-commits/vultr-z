@@ -173,7 +173,12 @@ def context_flags(history: pd.DataFrame, side: str) -> dict[str, bool]:
     volume_base = float(volume_med.iloc[-1]) if pd.notna(volume_med.iloc[-1]) else 0.0
     macd_now = float(macd.iloc[-1]) if pd.notna(macd.iloc[-1]) else 0.0
     macd_sig = float(macd_signal.iloc[-1]) if pd.notna(macd_signal.iloc[-1]) else 0.0
-    hour = pd.Timestamp(last.get("timestamp"), tz="UTC").hour if "timestamp" in frame.columns else 12
+    if "timestamp" in frame.columns:
+        timestamp = pd.Timestamp(last.get("timestamp"))
+        timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+        hour = int(timestamp.hour)
+    else:
+        hour = 12
 
     long_side = str(side).lower() != "short"
     trend_long = price > ema20_now > ema50_now > ema100_now and ema20_now > ema20_prev and ema50_now >= ema50_prev

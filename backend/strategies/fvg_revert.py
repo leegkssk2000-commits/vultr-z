@@ -1,47 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
-
-try:
-    from backend.engine.lbot_models import DecisionContext, StrategyDecision, StrategyIntent
-    from backend.engine.lbot_strategy_base import LBotStrategyBase
-except Exception:
-    class LBotStrategyBase: # type: ignore
-        strategy_name = "fvg_revert"
-
-    class StrategyIntent: # type: ignore
-        HOLD = "hold"
-        ENTER_LONG = "enter_long"
-        EXIT_LONG = "exit_long"
-        REDUCE = "reduce"
-        BLOCK = "block"
-
-    class StrategyDecision: # type: ignore
-        def __init__(
-            self,
-            ok: bool,
-            intent: str,
-            confidence: float = 0.0,
-            reason: str = "",
-            target_qty: float = 0.0,
-            target_price: float = 0.0,
-            tags: Optional[List[str]] = None,
-            payload: Optional[Dict[str, Any]] = None,
-        ) -> None:
-            self.ok = ok
-            self.intent = intent
-            self.confidence = confidence
-            self.reason = reason
-            self.target_qty = target_qty
-            self.target_price = target_price
-            self.tags = tags or []
-            self.payload = payload or {}
-
-    DecisionContext = Any # type: ignore
+from backend.strategies.semantic_common import (
+    DecisionContext,
+    LBotStrategyBase,
+    StrategyDecision,
+    atr,
+    body_ratio,
+    build_result,
+    close_location,
+    decision_from_context,
+    ema,
+    infer_position_state,
+    invalid_result,
+    prepare_ohlcv,
+    to_float,
+)
 
 
 @dataclass
@@ -51,119 +29,68 @@ class FvgRevertConfig:
     ema_fast_len: int = 21
     ema_slow_len: int = 55
     min_bars: int = 100
-
     min_atr_pct: float = 0.14
     max_atr_pct: float = 5.40
-
     min_gap_atr: float = 0.32
     min_gap_pct: float = 0.0012
     fill_enter_pct: float = 0.18
     fill_mid_pct: float = 0.50
     fill_deep_pct: float = 0.78
-
     reclaim_atr_min: float = 0.10
     max_chase_dist_atr: float = 1.30
     fail_gap_break_atr: float = 0.22
-
     beam_fill_pct: float = 0.60
     beam_body_ratio_min: float = 0.36
     beam_close_location_min: float = 0.60
-
     stop_atr_mult: float = 0.44
     trail_atr_mult: float = 0.30
     base_rr: float = 1.90
     beam_rr: float = 2.40
-
     long_base_size: float = 0.44
     short_base_size: float = 0.34
     beam_bonus_long: float = 0.12
     beam_bonus_short: float = 0.10
-
     add_size_long: float = 0.12
     add_size_short: float = 0.10
     reduce_size_long: float = 0.22
     reduce_size_short: float = 0.20
-
     max_add_count: int = 1
     max_pyramiding: int = 2
 
 
-def _to_float(v: Any, default: float = 0.0) -> float:
-    try:
-        if pd.isna(v):
-            return default
-        return float(v)
-    except Exception:
-        return default
+def _latest_three_candle_gap(frame: pd.DataFrame, cfg: FvgRevertConfig, atr_now: float, price: float) -> Optional[Dict[str, Any]]:
+    start = max(2, len(frame) - cfg.lookback - 1)
+    # The signal bar is reserved for mitigation/reversion. A valid FVG is formed
+    # by candle i-2 and candle i, with candle i-1 as the displacement candle.
+    for i in range(len(frame) - 2, start - 1, -1):
+        left_high = to_float(frame["high"].iloc[i - 2])
+        left_low = to_float(frame["low"].iloc[i - 2])
+        right_high = to_float(frame["high"].iloc[i])
+        right_low = to_float(frame["low"].iloc[i])
+        middle_open = to_float(frame["open"].iloc[i - 1])
+        middle_close = to_float(frame["close"].iloc[i - 1])
+        middle_body_atr = abs(middle_close - middle_open) / max(atr_now, 1e-9)
 
-
-def _ema(series: pd.Series, length: int) -> pd.Series:
-    return series.astype(float).ewm(span=length, adjust=False, min_periods=length).mean()
-
-
-def _atr(df: pd.DataFrame, length: int) -> pd.Series:
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close = df["close"].astype(float)
-    prev_close = close.shift(1)
-
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(length, min_periods=length).mean()
-
-
-def _body_ratio(open_: float, close: float, low: float, high: float) -> float:
-    width = max(high - low, 1e-9)
-    return abs(close - open_) / width
-
-
-def _close_location(close: float, low: float, high: float) -> float:
-    width = max(high - low, 1e-9)
-    return (close - low) / width
-
-
-def _infer_position_state(state: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    state = dict(state or {})
-    return {
-        "position_side": str(state.get("position_side") or "").lower(),
-        "position_qty": _to_float(state.get("position_qty")),
-        "avg_entry": _to_float(state.get("avg_entry")),
-        "add_count": int(state.get("add_count") or 0),
-        "last_add_price": _to_float(state.get("last_add_price")),
-    }
-
-
-def _build_result(
-    *,
-    side: Optional[str],
-    action: str,
-    size: float,
-    entry: float,
-    sl: float,
-    tp: float,
-    pyramiding: int,
-    why: str,
-    skill: str,
-    confidence: float,
-    tags: List[str],
-    indicators: Dict[str, Any],
-) -> Dict[str, Any]:
-    return {
-        "side": side,
-        "action": action,
-        "size": float(max(size, 0.0)),
-        "entry": float(entry),
-        "sl": float(sl),
-        "tp": float(tp),
-        "pyramiding": int(pyramiding),
-        "why": why,
-        "skill": skill,
-        "confidence": float(confidence),
-        "tags": tags,
-        "indicators": indicators,
-    }
+        if right_low > left_high:
+            gap_low, gap_high, direction = left_high, right_low, "up"
+        elif right_high < left_low:
+            gap_low, gap_high, direction = right_high, left_low, "down"
+        else:
+            continue
+        gap_size = gap_high - gap_low
+        if gap_size < atr_now * cfg.min_gap_atr:
+            continue
+        if gap_size / max(price, 1e-9) < cfg.min_gap_pct:
+            continue
+        return {
+            "gap_index": i,
+            "gap_direction": direction,
+            "gap_low": gap_low,
+            "gap_high": gap_high,
+            "gap_size": gap_size,
+            "middle_body_atr": middle_body_atr,
+        }
+    return None
 
 
 def strategy(
@@ -174,201 +101,82 @@ def strategy(
     config: Optional[FvgRevertConfig] = None,
 ) -> Dict[str, Any]:
     cfg = config or FvgRevertConfig()
+    frame = prepare_ohlcv(df)
+    if frame is None:
+        return invalid_result("fvg_invalid_input", cfg.max_pyramiding)
+    if len(frame) < max(cfg.min_bars, cfg.lookback + 5, cfg.ema_slow_len + 5):
+        return invalid_result("fvg_short", cfg.max_pyramiding, tags=["warmup"])
+    if str(risk_action or "hold").lower() in {"block", "stop", "rollback"}:
+        return invalid_result(f"risk_gate_{risk_action}", cfg.max_pyramiding, tags=["risk_gated"])
 
-    required_cols = {"open", "high", "low", "close"}
-    if df is None or df.empty or not required_cols.issubset(df.columns):
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=0.0,
-            sl=0.0,
-            tp=0.0,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_invalid_input",
-            skill="none",
-            confidence=0.0,
-            tags=["invalid_input"],
-            indicators={},
-        )
-
-    if len(df) < max(cfg.min_bars, cfg.lookback + 5, cfg.ema_slow_len + 5):
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=0.0,
-            sl=0.0,
-            tp=0.0,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_short",
-            skill="none",
-            confidence=0.0,
-            tags=["warmup"],
-            indicators={},
-        )
-
-    if str(risk_action or "hold").lower() in ("block", "stop", "rollback"):
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=0.0,
-            sl=0.0,
-            tp=0.0,
-            pyramiding=cfg.max_pyramiding,
-            why=f"risk_gate_{risk_action}",
-            skill="none",
-            confidence=0.0,
-            tags=["risk_gated"],
-            indicators={},
-        )
-
-    df = df.copy()
-    for col in ("open", "high", "low", "close"):
-        df[col] = df[col].astype(float)
-
-    if "volume" not in df.columns:
-        df["volume"] = 0.0
-    else:
-        df["volume"] = df["volume"].astype(float)
-
-    df["atr"] = _atr(df, cfg.atr_len)
-    df["ema_fast"] = _ema(df["close"], cfg.ema_fast_len)
-    df["ema_slow"] = _ema(df["close"], cfg.ema_slow_len)
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    price = _to_float(last["close"])
-    open_ = _to_float(last["open"])
-    high = _to_float(last["high"])
-    low = _to_float(last["low"])
-    prev_close = _to_float(prev["close"])
-
-    atr_now = _to_float(last["atr"])
-    ema_fast = _to_float(last["ema_fast"])
-    ema_slow = _to_float(last["ema_slow"])
-    ema_fast_prev = _to_float(prev["ema_fast"])
-    ema_slow_prev = _to_float(prev["ema_slow"])
-
+    frame["atr"] = atr(frame, cfg.atr_len)
+    frame["ema_fast"] = ema(frame["close"], cfg.ema_fast_len)
+    frame["ema_slow"] = ema(frame["close"], cfg.ema_slow_len)
+    last, prev = frame.iloc[-1], frame.iloc[-2]
+    price = to_float(last["close"])
+    open_ = to_float(last["open"])
+    high = to_float(last["high"])
+    low = to_float(last["low"])
+    prev_close = to_float(prev["close"])
+    atr_now = to_float(last["atr"])
+    ema_fast = to_float(last["ema_fast"])
+    ema_slow = to_float(last["ema_slow"])
+    ema_fast_prev = to_float(prev["ema_fast"])
+    ema_slow_prev = to_float(prev["ema_slow"])
     if min(price, atr_now, ema_fast, ema_slow) <= 0:
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=price,
-            sl=price,
-            tp=price,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_indicator_nan",
-            skill="none",
-            confidence=0.0,
-            tags=["indicator_nan"],
-            indicators={},
-        )
+        return invalid_result("fvg_indicator_nan", cfg.max_pyramiding, tags=["indicator_nan"])
 
-    atr_pct = atr_now / max(price, 1e-9) * 100.0
+    gap = _latest_three_candle_gap(frame, cfg, atr_now, price)
+    if gap is None:
+        return build_result(side=None, action="hold", size=0.0, entry=price, sl=price, tp=price,
+                            pyramiding=cfg.max_pyramiding, why="fvg_no_three_candle_gap",
+                            skill="none", confidence=0.0, tags=["hold"],
+                            indicators={"three_candle_fvg": False})
+
+    gap_low = to_float(gap["gap_low"])
+    gap_high = to_float(gap["gap_high"])
+    gap_range = max(gap_high - gap_low, 1e-9)
+    direction = str(gap["gap_direction"])
+    in_gap = gap_low < price < gap_high
+    if direction == "up":
+        fill_pct = (gap_high - price) / gap_range
+    else:
+        fill_pct = (price - gap_low) / gap_range
+    fill_pct = max(0.0, min(fill_pct, 1.5))
+
     trend_long = price > ema_fast > ema_slow and ema_fast >= ema_fast_prev and ema_slow >= ema_slow_prev
     trend_short = price < ema_fast < ema_slow and ema_fast <= ema_fast_prev and ema_slow <= ema_slow_prev
-
-    start_idx = max(1, len(df) - cfg.lookback)
-    gap_idx = None
-    gap_dir = None
-    gap_low = None
-    gap_high = None
-    gap_size = 0.0
-
-    for i in range(start_idx, len(df)):
-        hi_prev = _to_float(df["high"].iloc[i - 1])
-        lo_prev = _to_float(df["low"].iloc[i - 1])
-        hi = _to_float(df["high"].iloc[i])
-        lo = _to_float(df["low"].iloc[i])
-
-        up_gap_size = lo - hi_prev
-        down_gap_size = lo_prev - hi
-
-        if lo > hi_prev and up_gap_size >= atr_now * cfg.min_gap_atr and (up_gap_size / max(price, 1e-9)) >= cfg.min_gap_pct:
-            gap_idx = i
-            gap_dir = "up"
-            gap_low = hi_prev
-            gap_high = lo
-            gap_size = up_gap_size
-
-        elif hi < lo_prev and down_gap_size >= atr_now * cfg.min_gap_atr and (down_gap_size / max(price, 1e-9)) >= cfg.min_gap_pct:
-            gap_idx = i
-            gap_dir = "down"
-            gap_low = hi
-            gap_high = lo_prev
-            gap_size = down_gap_size
-
-    if gap_idx is None or gap_low is None or gap_high is None or gap_dir is None:
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=price,
-            sl=price,
-            tp=price,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_no_gap",
-            skill="none",
-            confidence=0.0,
-            tags=["hold"],
-            indicators={},
-        )
-
-    gap_range = max(gap_high - gap_low, 1e-9)
-    fill_pct = (price - gap_low) / gap_range
-    body_ratio = _body_ratio(open_, price, low, high)
-    close_loc = _close_location(price, low, high)
-    dist_from_fast_atr = abs(price - ema_fast) / max(atr_now, 1e-9)
-
-    in_gap = gap_low < price < gap_high
+    long_reclaim = price > prev_close + atr_now * cfg.reclaim_atr_min
+    short_reclaim = price < prev_close - atr_now * cfg.reclaim_atr_min
+    start_fill = fill_pct >= cfg.fill_enter_pct
     deep_fill = fill_pct >= cfg.fill_deep_pct
     mid_fill = fill_pct >= cfg.fill_mid_pct
-    start_fill = fill_pct >= cfg.fill_enter_pct
 
-    short_reclaim = price < prev_close - atr_now * cfg.reclaim_atr_min
-    long_reclaim = price > prev_close + atr_now * cfg.reclaim_atr_min
-
-    short_setup = (
-        gap_dir == "up"
-        and in_gap
-        and start_fill
-        and short_reclaim
-        and not trend_long
-    )
-    long_setup = (
-        gap_dir == "down"
-        and in_gap
-        and start_fill
-        and long_reclaim
-        and not trend_short
-    )
-
+    # fvg_revert deliberately fades the imbalance toward full fill.
+    short_setup = direction == "up" and in_gap and start_fill and short_reclaim and not trend_long
+    long_setup = direction == "down" and in_gap and start_fill and long_reclaim and not trend_short
+    candle_body_ratio = body_ratio(open_, price, low, high)
+    close_loc = close_location(price, low, high)
     short_beam = (
-        short_setup
-        and fill_pct >= cfg.beam_fill_pct
-        and body_ratio >= cfg.beam_body_ratio_min
+        short_setup and fill_pct >= cfg.beam_fill_pct
+        and candle_body_ratio >= cfg.beam_body_ratio_min
         and (1.0 - close_loc) >= cfg.beam_close_location_min
     )
     long_beam = (
-        long_setup
-        and fill_pct >= cfg.beam_fill_pct
-        and body_ratio >= cfg.beam_body_ratio_min
+        long_setup and fill_pct >= cfg.beam_fill_pct
+        and candle_body_ratio >= cfg.beam_body_ratio_min
         and close_loc >= cfg.beam_close_location_min
     )
 
+    atr_pct = atr_now / max(price, 1e-9) * 100.0
+    dist_from_fast_atr = abs(price - ema_fast) / max(atr_now, 1e-9)
     vol_ok = cfg.min_atr_pct <= atr_pct <= cfg.max_atr_pct
     late_chase_block = dist_from_fast_atr > cfg.max_chase_dist_atr
-
-    failed_long = gap_dir == "down" and price < gap_low - atr_now * cfg.fail_gap_break_atr
-    failed_short = gap_dir == "up" and price > gap_high + atr_now * cfg.fail_gap_break_atr
-
-    pos = _infer_position_state(state)
-    in_long_pos = pos["position_side"] == "long" and pos["position_qty"] > 0
-    in_short_pos = pos["position_side"] == "short" and pos["position_qty"] > 0
+    failed_long = direction == "down" and price < gap_low - atr_now * cfg.fail_gap_break_atr
+    failed_short = direction == "up" and price > gap_high + atr_now * cfg.fail_gap_break_atr
+    pos = infer_position_state(state)
+    in_long = pos["position_side"] == "long" and pos["position_qty"] > 0
+    in_short = pos["position_side"] == "short" and pos["position_qty"] > 0
     can_add_more = pos["add_count"] < cfg.max_add_count
 
     indicators = {
@@ -377,315 +185,89 @@ def strategy(
         "atr_pct": round(atr_pct, 6),
         "ema_fast": round(ema_fast, 6),
         "ema_slow": round(ema_slow, 6),
-        "trend_long": trend_long,
-        "trend_short": trend_short,
-        "gap_idx": int(gap_idx),
-        "gap_dir": gap_dir,
+        "three_candle_fvg": True,
+        "gap_direction": direction,
+        "gap_index": int(gap["gap_index"]),
         "gap_low": round(gap_low, 6),
         "gap_high": round(gap_high, 6),
-        "gap_size": round(gap_size, 6),
-        "fill_pct": round(fill_pct, 6),
+        "gap_size": round(to_float(gap["gap_size"]), 6),
+        "middle_body_atr": round(to_float(gap["middle_body_atr"]), 6),
+        "signal_bar_excluded_from_gap_discovery": True,
         "in_gap": in_gap,
-        "start_fill": start_fill,
+        "fill_pct": round(fill_pct, 6),
         "mid_fill": mid_fill,
         "deep_fill": deep_fill,
-        "short_reclaim": short_reclaim,
-        "long_reclaim": long_reclaim,
-        "short_setup": short_setup,
         "long_setup": long_setup,
-        "body_ratio": round(body_ratio, 6),
-        "close_location": round(close_loc, 6),
-        "dist_from_fast_atr": round(dist_from_fast_atr, 6),
-        "late_chase_block": late_chase_block,
-        "short_beam": short_beam,
+        "short_setup": short_setup,
         "long_beam": long_beam,
+        "short_beam": short_beam,
+        "late_chase_block": late_chase_block,
         "failed_long": failed_long,
         "failed_short": failed_short,
         "position_side": pos["position_side"],
         "position_qty": pos["position_qty"],
-        "avg_entry": pos["avg_entry"],
         "add_count": pos["add_count"],
     }
-
     if not vol_ok:
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=price,
-            sl=price,
-            tp=price,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_volatility_out_of_range",
-            skill="none",
-            confidence=0.0,
-            tags=["volatility_gate"],
-            indicators=indicators,
-        )
-
+        return build_result(side=None, action="hold", size=0.0, entry=price, sl=price, tp=price,
+                            pyramiding=cfg.max_pyramiding, why="fvg_volatility_out_of_range",
+                            skill="none", confidence=0.0, tags=["volatility_gate"], indicators=indicators)
     if late_chase_block and (long_setup or short_setup):
-        return _build_result(
-            side=None,
-            action="hold",
-            size=0.0,
-            entry=price,
-            sl=price,
-            tp=price,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_late_chase_block",
-            skill="none",
-            confidence=0.0,
-            tags=["late_chase_block"],
-            indicators=indicators,
-        )
+        return build_result(side=None, action="hold", size=0.0, entry=price, sl=price, tp=price,
+                            pyramiding=cfg.max_pyramiding, why="fvg_late_chase_block",
+                            skill="none", confidence=0.0, tags=["late_chase_block"], indicators=indicators)
 
-    if long_setup:
-        long_sl = min(gap_low - atr_now * cfg.stop_atr_mult, price - atr_now * cfg.trail_atr_mult, low)
-        long_risk = max(price - long_sl, atr_now * 0.24)
-        long_tp = price + long_risk * (cfg.beam_rr if long_beam else cfg.base_rr)
-    else:
-        long_sl = price
-        long_tp = price
+    long_sl = min(gap_low - atr_now * cfg.stop_atr_mult, low)
+    short_sl = max(gap_high + atr_now * cfg.stop_atr_mult, high)
+    long_risk = max(price - long_sl, atr_now * 0.30)
+    short_risk = max(short_sl - price, atr_now * 0.30)
+    long_tp = price + long_risk * (cfg.beam_rr if long_beam else cfg.base_rr)
+    short_tp = price - short_risk * (cfg.beam_rr if short_beam else cfg.base_rr)
 
-    if short_setup:
-        short_sl = max(gap_high + atr_now * cfg.stop_atr_mult, price + atr_now * cfg.trail_atr_mult, high)
-        short_risk = max(short_sl - price, atr_now * 0.24)
-        short_tp = price - short_risk * (cfg.beam_rr if short_beam else cfg.base_rr)
-    else:
-        short_sl = price
-        short_tp = price
-
-    long_add = False
-    short_add = False
-    long_reduce = False
-    short_reduce = False
-
-    if in_long_pos and can_add_more:
-        long_add = long_setup and mid_fill and long_reclaim and not failed_long
-        long_reduce = failed_long
-
-    if in_short_pos and can_add_more:
-        short_add = short_setup and mid_fill and short_reclaim and not failed_short
-        short_reduce = failed_short
-
-    if short_setup and not in_long_pos and not in_short_pos:
-        size = cfg.short_base_size + (cfg.beam_bonus_short if short_beam else 0.0)
-        return _build_result(
-            side="short",
-            action="enter",
-            size=size,
-            entry=price,
-            sl=short_sl,
-            tp=short_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_up_fill_short",
-            skill="short_beam" if short_beam else "gap_fill_revert",
-            confidence=0.80 if short_beam else 0.66,
-            tags=["fvg", "revert", "short"],
-            indicators=indicators,
-        )
-
-    if long_setup and not in_long_pos and not in_short_pos:
-        size = cfg.long_base_size + (cfg.beam_bonus_long if long_beam else 0.0)
-        return _build_result(
-            side="long",
-            action="enter",
-            size=size,
-            entry=price,
-            sl=long_sl,
-            tp=long_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_down_fill_long",
-            skill="long_beam" if long_beam else "gap_fill_revert",
-            confidence=0.82 if long_beam else 0.68,
-            tags=["fvg", "revert", "long"],
-            indicators=indicators,
-        )
-
-    if long_add:
-        return _build_result(
-            side="long",
-            action="add",
-            size=cfg.add_size_long,
-            entry=price,
-            sl=long_sl,
-            tp=long_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_long_add",
-            skill="dip_add",
-            confidence=0.58,
-            tags=["fvg", "revert", "add", "long"],
-            indicators=indicators,
-        )
-
-    if short_add:
-        return _build_result(
-            side="short",
-            action="add",
-            size=cfg.add_size_short,
-            entry=price,
-            sl=short_sl,
-            tp=short_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_short_add",
-            skill="dip_add",
-            confidence=0.54,
-            tags=["fvg", "revert", "add", "short"],
-            indicators=indicators,
-        )
-
-    if long_reduce:
-        return _build_result(
-            side="long",
-            action="reduce",
-            size=cfg.reduce_size_long,
-            entry=price,
-            sl=long_sl,
-            tp=long_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_failed_long_reduce",
-            skill="failed_gap_reduce",
-            confidence=0.68,
-            tags=["fvg", "revert", "failed", "reduce", "long"],
-            indicators=indicators,
-        )
-
-    if short_reduce:
-        return _build_result(
-            side="short",
-            action="reduce",
-            size=cfg.reduce_size_short,
-            entry=price,
-            sl=short_sl,
-            tp=short_tp,
-            pyramiding=cfg.max_pyramiding,
-            why="fvg_failed_short_reduce",
-            skill="failed_gap_reduce",
-            confidence=0.64,
-            tags=["fvg", "revert", "failed", "reduce", "short"],
-            indicators=indicators,
-        )
-
-    hold_reason = "fvg_no_setup"
-    if gap_dir == "up" and in_gap and not short_reclaim:
-        hold_reason = "up_gap_fill_without_short_reclaim"
-    elif gap_dir == "down" and in_gap and not long_reclaim:
-        hold_reason = "down_gap_fill_without_long_reclaim"
-    elif in_long_pos or in_short_pos:
-        hold_reason = "position_active_but_no_add_signal"
-
-    return _build_result(
-        side=None,
-        action="hold",
-        size=0.0,
-        entry=price,
-        sl=price,
-        tp=price,
-        pyramiding=cfg.max_pyramiding,
-        why=hold_reason,
-        skill="none",
-        confidence=0.0,
-        tags=["hold"],
-        indicators=indicators,
-    )
-
-
-def _payload_to_df(payload: Dict[str, Any]) -> pd.DataFrame:
-    candidates = [
-        payload.get("ohlcv"),
-        payload.get("candles"),
-        payload.get("bars"),
-        payload.get("df"),
-    ]
-
-    rows = None
-    for candidate in candidates:
-        if isinstance(candidate, list) and candidate:
-            rows = candidate
-            break
-
-    if rows is None:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(rows)
-    if "timestamp" in df.columns and "ts" not in df.columns:
-        df["ts"] = df["timestamp"]
-    return df
+    if in_long and failed_long:
+        return build_result(side="long", action="reduce", size=cfg.reduce_size_long, entry=price,
+                            sl=long_sl, tp=long_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_failed_long_reduce", skill="failed_gap_reduce", confidence=0.70,
+                            tags=["fvg", "reduce", "long"], indicators=indicators)
+    if in_short and failed_short:
+        return build_result(side="short", action="reduce", size=cfg.reduce_size_short, entry=price,
+                            sl=short_sl, tp=short_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_failed_short_reduce", skill="failed_gap_reduce", confidence=0.66,
+                            tags=["fvg", "reduce", "short"], indicators=indicators)
+    if in_long and can_add_more and long_setup and deep_fill:
+        return build_result(side="long", action="add", size=cfg.add_size_long, entry=price,
+                            sl=long_sl, tp=long_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_long_deep_fill_add", skill="gap_add", confidence=0.60,
+                            tags=["fvg", "add", "long"], indicators=indicators)
+    if in_short and can_add_more and short_setup and deep_fill:
+        return build_result(side="short", action="add", size=cfg.add_size_short, entry=price,
+                            sl=short_sl, tp=short_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_short_deep_fill_add", skill="gap_add", confidence=0.56,
+                            tags=["fvg", "add", "short"], indicators=indicators)
+    if long_setup and not in_long and not in_short:
+        return build_result(side="long", action="enter",
+                            size=cfg.long_base_size + (cfg.beam_bonus_long if long_beam else 0.0),
+                            entry=price, sl=long_sl, tp=long_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_down_gap_revert_long", skill="long_beam" if long_beam else "fvg_revert",
+                            confidence=0.82 if long_beam else 0.68,
+                            tags=["fvg", "three_candle", "long"], indicators=indicators)
+    if short_setup and not in_long and not in_short:
+        return build_result(side="short", action="enter",
+                            size=cfg.short_base_size + (cfg.beam_bonus_short if short_beam else 0.0),
+                            entry=price, sl=short_sl, tp=short_tp, pyramiding=cfg.max_pyramiding,
+                            why="fvg_up_gap_revert_short", skill="short_beam" if short_beam else "fvg_revert",
+                            confidence=0.78 if short_beam else 0.64,
+                            tags=["fvg", "three_candle", "short"], indicators=indicators)
+    return build_result(side=None, action="hold", size=0.0, entry=price, sl=price, tp=price,
+                        pyramiding=cfg.max_pyramiding, why="fvg_no_setup", skill="none",
+                        confidence=0.0, tags=["hold"], indicators=indicators)
 
 
 class FvgRevertLBotStrategy(LBotStrategyBase):
     strategy_name = "fvg_revert"
 
     def decide(self, ctx: DecisionContext) -> StrategyDecision:
-        payload = dict(getattr(ctx.signal, "payload", {}) or {})
-        df = _payload_to_df(payload)
+        return decision_from_context(ctx, strategy, FvgRevertConfig(), self.strategy_name)
 
-        state = {
-            "position_side": payload.get("position_side") or payload.get("current_side"),
-            "position_qty": payload.get("position_qty") or payload.get("qty"),
-            "avg_entry": payload.get("avg_entry") or payload.get("entry_price"),
-            "add_count": payload.get("add_count") or 0,
-            "last_add_price": payload.get("last_add_price") or payload.get("avg_entry"),
-        }
 
-        result = strategy(
-            df,
-            state=state,
-            risk_action=str(getattr(ctx.risk, "action", "hold") or "hold"),
-            config=FvgRevertConfig(),
-        )
-
-        side = result.get("side")
-        action = result.get("action")
-        reason = str(result.get("why") or "fvg_no_reason")
-        confidence = _to_float(result.get("confidence"))
-        size = _to_float(result.get("size"))
-        entry = _to_float(result.get("entry"))
-        tags = list(result.get("tags") or [])
-
-        if side == "long" and action in ("enter", "add"):
-            return StrategyDecision(
-                ok=True,
-                intent=StrategyIntent.ENTER_LONG,
-                confidence=confidence,
-                reason=reason,
-                target_qty=size,
-                target_price=entry,
-                tags=tags,
-                payload={"legacy_signal": result},
-            )
-
-        if side == "long" and action == "reduce":
-            return StrategyDecision(
-                ok=True,
-                intent=StrategyIntent.REDUCE,
-                confidence=confidence,
-                reason=reason,
-                target_qty=size,
-                target_price=entry,
-                tags=tags,
-                payload={"legacy_signal": result},
-            )
-
-        if side == "short" and action in ("enter", "add", "reduce"):
-            return StrategyDecision(
-                ok=True,
-                intent=StrategyIntent.HOLD,
-                confidence=0.0,
-                reason="short_signal_generated_but_core_is_long_only",
-                target_qty=0.0,
-                target_price=entry,
-                tags=tags + ["short_pending_core_upgrade"],
-                payload={"legacy_signal": result},
-            )
-
-        return StrategyDecision(
-            ok=True,
-            intent=StrategyIntent.HOLD,
-            confidence=0.0,
-            reason=reason,
-            target_qty=0.0,
-            target_price=entry,
-            tags=tags,
-            payload={"legacy_signal": result},
-        )
+__all__ = ["FvgRevertConfig", "FvgRevertLBotStrategy", "strategy"]

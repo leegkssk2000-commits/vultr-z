@@ -1,0 +1,56 @@
+name: R7A4D Vol Spike Long Untouched Holdout
+
+concurrency:
+  group: r7a4d-vol-spike-long-holdout-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'backend/tools/r7a4d_vol_spike_long_untouched_holdout.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v1.py'
+      - 'backend/strategy25/strategy_family_indicator_search_v2.py'
+      - 'backend/tools/r7a4d_strategy_indicator_repairs_real_oos.py'
+      - '.github/workflows/r7a4d-vol-spike-long-untouched-holdout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  long-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile long holdout
+        run: PYTHONPATH=. python -m py_compile backend/tools/r7a4d_vol_spike_long_untouched_holdout.py
+      - name: Run long untouched robustness holdout
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_vol_spike_long_untouched_holdout.py --root . \
+            2>&1 | tee vol_spike_long_holdout.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > vol_spike_long_holdout.rc
+          exit 0
+      - name: Upload long holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vol-spike-long-untouched-holdout-v1
+          path: |
+            artifacts/vol_spike_long_untouched_holdout_v1/summary.json
+            vol_spike_long_holdout.log
+            vol_spike_long_holdout.rc
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce runner integrity
+        run: test "$(cat vol_spike_long_holdout.rc)" = "0"

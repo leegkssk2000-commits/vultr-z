@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: r7a4d-strategy11-replay-stall-diagnostic-${{ github.ref }}
@@ -33,9 +34,28 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check pandas numpy
 
-      - name: Build immutable market cache
-        timeout-minutes: 30
-        run: python backend/tools/r7a4d_strategy11_prepare_data_v2.py --root .
+      - name: Download immutable input from authority run
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v3-30209054842
+          path: artifacts
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 30209054842
+
+      - name: Verify immutable cache
+        run: |
+          test -f artifacts/strategy11_market_cache_v2/manifest.json
+          test -f artifacts/strategy11_structure_lock_v2/preflight.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('artifacts/strategy11_market_cache_v2/manifest.json').read_text())
+          preflight=json.loads(Path('artifacts/strategy11_structure_lock_v2/preflight.json').read_text())
+          assert manifest.get('state') == 'PASS', manifest.get('blockers')
+          assert preflight.get('state') == 'PASS', preflight.get('blockers')
+          print({'cache_state':manifest['state'],'preflight_state':preflight['state']})
+          PY
 
       - name: Profile alpha_combo screen
         timeout-minutes: 22
@@ -110,13 +130,14 @@ jobs:
         if: always()
         shell: bash
         run: |
+          mkdir -p diagnostic
           python - <<'PY'
           import json
           from pathlib import Path
           rows=[]
           for path in sorted(Path('diagnostic').glob('*/status.json')):
               rows.append(json.loads(path.read_text(encoding='utf-8')))
-          out={'authority':'READ_ONLY_TIMING_DIAGNOSTIC','rows':rows,'canonical_mutated':False,'runtime_mutated':False,'next':'PROFILE_EXACT_OR_BATCH_REPLAY'}
+          out={'authority':'READ_ONLY_TIMING_DIAGNOSTIC','source_run_id':30209054842,'rows':rows,'canonical_mutated':False,'runtime_mutated':False,'next':'PROFILE_EXACT_OR_BATCH_REPLAY'}
           Path('diagnostic/summary.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n',encoding='utf-8')
           print(json.dumps(out,sort_keys=True))
           PY

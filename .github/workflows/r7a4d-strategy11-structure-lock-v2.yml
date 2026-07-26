@@ -1,36 +1,40 @@
-name: R7A4D Strategy11 Structure Lock v2
+name: R7A4D Strategy11 Structure Lock V2
 
 on:
   push:
     branches:
       - r7a4d-strategy11-structure-lock-v2
-  pull_request:
-    branches:
-      - r7a4d-strategy11-shadow-funnel-v1
     paths:
-      - 'backend/tools/r7a4d_strategy11_structure_lock_v2.py'
+      - 'backend/tools/r7a4d_strategy11_structure_lock.py'
+      - 'backend/tools/r7a4d_strategy11_orchestrator.py'
+      - 'backend/tools/r7a4d_strategy11_prepare_data_v2.py'
+      - 'backend/tools/r7a4d_strategy11_screen_v2.py'
+      - 'backend/tools/r7a4d_strategy11_exact_v2.py'
+      - 'backend/tools/r7a4d_strategy11_exact.py'
+      - 'backend/tools/r7a4d_strategy11_aggregate.py'
+      - 'backend/strategy25/strategy11_feature_library_v1.py'
+      - 'tests/test_r7a4d_strategy11_structure_lock.py'
       - '.github/workflows/r7a4d-strategy11-structure-lock-v2.yml'
   workflow_dispatch:
-
-concurrency:
-  group: r7a4d-strategy11-structure-lock-v2-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  STRATEGY11_STRUCTURE_VERSION: R7A4D_STRATEGY11_STRUCTURE_LOCK_V2
+
 jobs:
-  locked-funnel:
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 420
-    env:
-      STRUCTURE_VERSION: strategy11-structure-lock-v2
-      EXPERIMENT_ID: strategy11-lock-v2-${{ github.sha }}-${{ github.run_number }}
+    timeout-minutes: 90
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,74 +44,151 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check pandas numpy
 
-      - name: Compile structure and funnel
+      - name: Compile structure and funnel code
         run: |
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_structure_lock_v2.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_prepare_data_v2.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_screen_v2.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_exact_v2.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_aggregate.py
-          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_orchestrator.py
+          python -m py_compile backend/tools/r7a4d_strategy11_structure_lock.py
+          python -m py_compile backend/tools/r7a4d_strategy11_orchestrator.py
+          python -m py_compile backend/tools/r7a4d_strategy11_prepare_data_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_screen_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_exact_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_exact.py
+          python -m py_compile backend/tools/r7a4d_strategy11_aggregate.py
+          python -m py_compile tests/test_r7a4d_strategy11_structure_lock.py
 
-      - name: Preflight STRUCTURE_LOCK
-        run: |
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
-            --root . --phase pre \
-            --structure-version "$STRUCTURE_VERSION" \
-            --experiment-id "$EXPERIMENT_ID"
+      - name: Run golden fixture and invariant tests
+        run: python -m unittest -v tests.test_r7a4d_strategy11_structure_lock
 
-      - name: Run full simulation and replay funnel
+      - name: Capture owner source and protected SHA lock
+        run: python backend/tools/r7a4d_strategy11_structure_lock.py capture --root .
+
+      - name: Build exact market cache
+        run: python backend/tools/r7a4d_strategy11_prepare_data_v2.py --root .
+
+      - name: Enforce data and preflight lock
+        run: python backend/tools/r7a4d_strategy11_structure_lock.py pre --root .
+
+      - name: Upload immutable experiment input
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-input-v2
+          path: |
+            artifacts/strategy11_market_cache_v2
+            artifacts/strategy11_structure_lock_v2
+          if-no-files-found: error
+          retention-days: 30
+
+  deterministic-funnel:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        replay: [A, B]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download immutable experiment input
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v2
+          path: .
+
+      - name: Run full simulation and replay ${{ matrix.replay }}
         shell: bash
         run: |
           set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 \
-            2>&1 | tee strategy11-locked-funnel.log
+          python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 \
+            2>&1 | tee strategy11-funnel-${{ matrix.replay }}.log
           rc=${PIPESTATUS[0]}
-          echo "$rc" > strategy11-locked-funnel.rc
+          echo "$rc" > strategy11-funnel-${{ matrix.replay }}.rc
           exit 0
 
-      - name: Postflight STRUCTURE_LOCK and deterministic replay
-        shell: bash
-        run: |
-          set +e
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
-            --root . --phase post \
-            --structure-version "$STRUCTURE_VERSION" \
-            --experiment-id "$EXPERIMENT_ID" \
-            2>&1 | tee strategy11-structure-lock.log
-          rc=${PIPESTATUS[0]}
-          echo "$rc" > strategy11-structure-lock.rc
-          exit 0
-
-      - name: Upload locked evidence
+      - name: Upload replay evidence ${{ matrix.replay }}
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strategy11-structure-lock-v2
+          name: strategy11-structure-run-${{ matrix.replay }}-v2
           path: |
-            artifacts/strategy11_structure_lock_v2
-            artifacts/strategy11_market_cache_v2
             artifacts/strategy11_screen_v1
             artifacts/strategy11_exact_v1
             artifacts/strategy11_final_roster_v1
             artifacts/strategy11_orchestrator_v1
-            strategy11-locked-funnel.log
-            strategy11-locked-funnel.rc
-            strategy11-structure-lock.log
-            strategy11-structure-lock.rc
+            strategy11-funnel-${{ matrix.replay }}.log
+            strategy11-funnel-${{ matrix.replay }}.rc
           if-no-files-found: error
           retention-days: 30
 
-      - name: Enforce funnel and structure integrity
+      - name: Enforce replay process integrity
+        run: test "$(cat strategy11-funnel-${{ matrix.replay }}.rc)" = "0"
+
+  compare-and-lock:
+    if: always()
+    needs: [preflight, deterministic-funnel]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download preflight evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v2
+          path: .
+
+      - name: Download replay A
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v2
+          path: compare/A
+
+      - name: Download replay B
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-B-v2
+          path: compare/B
+
+      - name: Compare deterministic replay and protected SHA
+        shell: bash
         run: |
-          test "$(cat strategy11-locked-funnel.rc)" = "0"
-          test "$(cat strategy11-structure-lock.rc)" = "0"
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          p = Path('artifacts/strategy11_structure_lock_v2/post.json')
-          d = json.loads(p.read_text())
-          assert d['state'] == 'PASS', d.get('blockers')
-          assert d['performance_evidence_valid'] is True
-          assert not d['protected_mutations']
-          PY
+          set +e
+          python backend/tools/r7a4d_strategy11_structure_lock.py compare --root . \
+            --run-a compare/A --run-b compare/B 2>&1 | tee strategy11-structure-lock-v2.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > strategy11-structure-lock-v2.rc
+          exit 0
+
+      - name: Upload final structure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v2
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            strategy11-structure-lock-v2.log
+            strategy11-structure-lock-v2.rc
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce final STRUCTURE_LOCK
+        run: test "$(cat strategy11-structure-lock-v2.rc)" = "0"

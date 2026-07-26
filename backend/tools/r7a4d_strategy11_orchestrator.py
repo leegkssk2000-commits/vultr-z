@@ -8,6 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from backend.tools.r7a4d_strategy11_structure_lock import (
+    STRUCTURE_VERSION,
+    protected_diff,
+    protected_snapshot,
+)
+
 
 STRATEGIES = (
     "alpha_combo", "anchor_vwap_trend", "bb_revert", "break_and_continue", "ema_ribbon_scalp",
@@ -46,6 +52,17 @@ def _exact(root: Path, strategy_id: str) -> tuple[str, int, str]:
     return strategy_id, rc, log
 
 
+def _experiment_id(root: Path) -> str:
+    path = root / "artifacts/strategy11_structure_lock_v2/preflight.json"
+    if not path.is_file():
+        return f"{STRUCTURE_VERSION}:MISSING_PREFLIGHT"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return str(payload.get("experiment_id") or f"{STRUCTURE_VERSION}:UNKNOWN")
+    except Exception:
+        return f"{STRUCTURE_VERSION}:INVALID_PREFLIGHT"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -55,14 +72,32 @@ def main() -> int:
     evidence: dict[str, object] = {"prepare": None, "screen": [], "exact": [], "aggregate": None}
     blockers: list[str] = []
 
+    try:
+        protected_before = protected_snapshot(root)
+    except Exception as exc:
+        protected_before = {}
+        blockers.append(f"STRUCTURE_CAPTURE:{type(exc).__name__}:{exc}")
+
+    preflight = root / "artifacts/strategy11_structure_lock_v2/preflight.json"
+    if not preflight.is_file():
+        blockers.append("STRUCTURE_PREFLIGHT_MISSING")
+    else:
+        try:
+            preflight_payload = json.loads(preflight.read_text(encoding="utf-8"))
+            if preflight_payload.get("state") != "PASS" or preflight_payload.get("blockers"):
+                blockers.append("STRUCTURE_PREFLIGHT_NOT_PASS")
+        except Exception as exc:
+            blockers.append(f"STRUCTURE_PREFLIGHT_INVALID:{type(exc).__name__}:{exc}")
+
     prepare_log = root / "artifacts/strategy11_orchestrator_v1/logs/prepare-data.log"
-    prepare_rc, prepare_path = _run(
-        [sys.executable, "backend/tools/r7a4d_strategy11_prepare_data_v2.py", "--root", str(root)],
-        prepare_log,
-    )
-    evidence["prepare"] = {"rc": prepare_rc, "log": prepare_path}
-    if prepare_rc != 0:
-        blockers.append(f"PREPARE_DATA:RC={prepare_rc}")
+    if not blockers:
+        prepare_rc, prepare_path = _run(
+            [sys.executable, "backend/tools/r7a4d_strategy11_prepare_data_v2.py", "--root", str(root)],
+            prepare_log,
+        )
+        evidence["prepare"] = {"rc": prepare_rc, "log": prepare_path}
+        if prepare_rc != 0:
+            blockers.append(f"PREPARE_DATA:RC={prepare_rc}")
 
     if not blockers:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
@@ -72,6 +107,7 @@ def main() -> int:
                 evidence["screen"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
                 if rc != 0:
                     blockers.append(f"SCREEN:{strategy_id}:RC={rc}")
+        evidence["screen"] = sorted(evidence["screen"], key=lambda row: row["strategy_id"])
 
     if not blockers:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
@@ -81,6 +117,7 @@ def main() -> int:
                 evidence["exact"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
                 if rc != 0:
                     blockers.append(f"EXACT:{strategy_id}:RC={rc}")
+        evidence["exact"] = sorted(evidence["exact"], key=lambda row: row["strategy_id"])
 
     aggregate_log = root / "artifacts/strategy11_orchestrator_v1/logs/aggregate.log"
     if not blockers:
@@ -95,22 +132,50 @@ def main() -> int:
         if rc != 0:
             blockers.append(f"AGGREGATE:RC={rc}")
 
+    try:
+        protected_after = protected_snapshot(root)
+        protected_mutations = protected_diff(protected_before, protected_after)
+    except Exception as exc:
+        protected_after = {}
+        protected_mutations = [f"SNAPSHOT_FAILED:{type(exc).__name__}:{exc}"]
+    if protected_mutations:
+        blockers.append("PROTECTED_MUTATION:" + ",".join(protected_mutations[:20]))
+
+    canonical_mutated = any(path.startswith("backend/strategies/") for path in protected_mutations)
+    registry_mutated = "backend/strategy25/canonical_strategy_registry_v1.json" in protected_mutations
+    runtime_authority_mutated = any(
+        path.startswith(("backend/engine/", "services/", "canonical/", "policy/"))
+        for path in protected_mutations
+    )
+
     output = root / "artifacts/strategy11_orchestrator_v1/summary.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({
-        "schema_version": "2.1",
+        "schema_version": "3.0",
+        "structure_version": STRUCTURE_VERSION,
+        "experiment_id": _experiment_id(root),
         "state": "PASS" if not blockers else "HOLD",
         "workers": args.workers,
         "strategy_count": len(STRATEGIES),
         "evidence": evidence,
         "blockers": blockers,
-        "canonical_mutated": False,
-        "registry_mutated": False,
+        "protected_before_count": len(protected_before),
+        "protected_after_count": len(protected_after),
+        "protected_mutations": protected_mutations,
+        "canonical_mutated": canonical_mutated,
+        "registry_mutated": registry_mutated,
+        "runtime_authority_mutated": runtime_authority_mutated,
         "route_allowed": False,
         "shadow_allowed": False,
+        "paper_allowed": False,
+        "live_allowed": False,
         "execution_allowed": False,
-    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"STATE": "PASS" if not blockers else "HOLD", "BLOCKERS": blockers}, sort_keys=True))
+    }, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    print(json.dumps({
+        "STATE": "PASS" if not blockers else "HOLD",
+        "BLOCKERS": blockers,
+        "PROTECTED_MUTATIONS": protected_mutations,
+    }, sort_keys=True))
     return 0 if not blockers else 1
 
 

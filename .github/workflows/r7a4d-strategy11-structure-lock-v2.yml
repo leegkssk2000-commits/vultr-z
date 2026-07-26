@@ -1,0 +1,116 @@
+name: R7A4D Strategy11 Structure Lock V2
+
+on:
+  push:
+    branches:
+      - r7a4d-strategy11-structure-lock-v2d
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  structure-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile lock and funnel
+        run: |
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_structure_lock_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_orchestrator.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_prepare_data_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_screen_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_exact_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_aggregate.py
+
+      - name: Pre-run structure lock
+        run: |
+          mkdir -p artifacts/strategy11_structure_lock_v2
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
+            --root . --phase pre \
+            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
+            --output artifacts/strategy11_structure_lock_v2/pre.json
+
+      - name: First full funnel replay
+        run: |
+          rm -rf artifacts/strategy11_market_cache_v2 artifacts/strategy11_screen_v1 artifacts/strategy11_exact_v1 artifacts/strategy11_final_roster_v1 artifacts/strategy11_orchestrator_v1
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 2>&1 | tee strategy11-funnel-a.log
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          roots = [Path('artifacts/strategy11_market_cache_v2'), Path('artifacts/strategy11_screen_v1'), Path('artifacts/strategy11_exact_v1'), Path('artifacts/strategy11_final_roster_v1'), Path('artifacts/strategy11_orchestrator_v1')]
+          rows = {}
+          for root in roots:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file() and p.suffix in {'.json', '.csv'}:
+                      rows[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
+          Path('artifacts/strategy11_structure_lock_v2/replay-a-sha.json').write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
+          PY
+          cp -a artifacts/strategy11_final_roster_v1 artifacts/strategy11_structure_lock_v2/roster-a
+
+      - name: Post-run structure lock A
+        run: |
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
+            --root . --phase post \
+            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
+            --output artifacts/strategy11_structure_lock_v2/post-a.json
+
+      - name: Second deterministic replay
+        run: |
+          rm -rf artifacts/strategy11_screen_v1 artifacts/strategy11_exact_v1 artifacts/strategy11_final_roster_v1 artifacts/strategy11_orchestrator_v1
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 2>&1 | tee strategy11-funnel-b.log
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          roots = [Path('artifacts/strategy11_market_cache_v2'), Path('artifacts/strategy11_screen_v1'), Path('artifacts/strategy11_exact_v1'), Path('artifacts/strategy11_final_roster_v1'), Path('artifacts/strategy11_orchestrator_v1')]
+          rows = {}
+          for root in roots:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file() and p.suffix in {'.json', '.csv'}:
+                      rows[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
+          out = Path('artifacts/strategy11_structure_lock_v2/replay-b-sha.json')
+          out.write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
+          a = json.loads(Path('artifacts/strategy11_structure_lock_v2/replay-a-sha.json').read_text())
+          if a != rows:
+              only_a = sorted(set(a)-set(rows)); only_b = sorted(set(rows)-set(a)); changed = sorted(k for k in set(a)&set(rows) if a[k] != rows[k])
+              raise SystemExit(f'DETERMINISM_FAIL only_a={only_a[:5]} only_b={only_b[:5]} changed={changed[:20]}')
+          PY
+
+      - name: Post-run structure lock B
+        run: |
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
+            --root . --phase post \
+            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
+            --output artifacts/strategy11_structure_lock_v2/post-b.json
+
+      - name: Upload locked evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-v2
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            artifacts/strategy11_market_cache_v2
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_final_roster_v1
+            artifacts/strategy11_orchestrator_v1
+            strategy11-funnel-a.log
+            strategy11-funnel-b.log
+          if-no-files-found: error
+          retention-days: 30

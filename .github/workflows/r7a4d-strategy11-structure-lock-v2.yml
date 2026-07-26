@@ -4,13 +4,24 @@ on:
   push:
     branches:
       - r7a4d-strategy11-structure-lock-v2d
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'backend/tools/r7a4d_strategy11_structure_lock_v2.py'
+      - '.github/workflows/r7a4d-strategy11-structure-lock-v2.yml'
+      - 'backend/tools/r7a4d_strategy11_orchestrator.py'
+      - 'backend/tools/r7a4d_strategy11_prepare_data_v2.py'
+      - 'backend/tools/r7a4d_strategy11_screen_v2.py'
+      - 'backend/tools/r7a4d_strategy11_exact_v2.py'
+      - 'backend/tools/r7a4d_strategy11_aggregate.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: r7a4d-strategy11-structure-lock-v2-${{ github.ref }}
+  group: r7a4d-strategy11-structure-lock-v2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,10 +52,7 @@ jobs:
       - name: Pre-run structure lock
         run: |
           mkdir -p artifacts/strategy11_structure_lock_v2
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
-            --root . --phase pre \
-            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
-            --output artifacts/strategy11_structure_lock_v2/pre.json
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py --root . --phase pre --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json --output artifacts/strategy11_structure_lock_v2/pre.json
 
       - name: First full funnel replay
         run: |
@@ -65,10 +73,7 @@ jobs:
 
       - name: Post-run structure lock A
         run: |
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
-            --root . --phase post \
-            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
-            --output artifacts/strategy11_structure_lock_v2/post-a.json
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py --root . --phase post --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json --output artifacts/strategy11_structure_lock_v2/post-a.json
 
       - name: Second deterministic replay
         run: |
@@ -83,20 +88,16 @@ jobs:
               for p in sorted(root.rglob('*')):
                   if p.is_file() and p.suffix in {'.json', '.csv'}:
                       rows[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
-          out = Path('artifacts/strategy11_structure_lock_v2/replay-b-sha.json')
-          out.write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
+          Path('artifacts/strategy11_structure_lock_v2/replay-b-sha.json').write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
           a = json.loads(Path('artifacts/strategy11_structure_lock_v2/replay-a-sha.json').read_text())
           if a != rows:
-              only_a = sorted(set(a)-set(rows)); only_b = sorted(set(rows)-set(a)); changed = sorted(k for k in set(a)&set(rows) if a[k] != rows[k])
-              raise SystemExit(f'DETERMINISM_FAIL only_a={only_a[:5]} only_b={only_b[:5]} changed={changed[:20]}')
+              changed = sorted(k for k in set(a)&set(rows) if a[k] != rows[k])
+              raise SystemExit(f'DETERMINISM_FAIL changed={changed[:20]}')
           PY
 
       - name: Post-run structure lock B
         run: |
-          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
-            --root . --phase post \
-            --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json \
-            --output artifacts/strategy11_structure_lock_v2/post-b.json
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py --root . --phase post --snapshot artifacts/strategy11_structure_lock_v2/protected-before.json --output artifacts/strategy11_structure_lock_v2/post-b.json
 
       - name: Upload locked evidence
         if: always()

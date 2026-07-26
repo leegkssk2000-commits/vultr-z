@@ -1,0 +1,160 @@
+name: R7A4D Strategy11 Slow Screen Isolation
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-lineage-symmetric
+    paths:
+      - '.github/workflows/r7a4d-strategy11-slow-screen-isolation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-slow-screen-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolate:
+    name: ${{ matrix.replay }} / ${{ matrix.strategy }} / timeout ${{ matrix.timeout }}s
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - replay: A
+            strategy: supertrend_pullback
+            timeout: 3600
+          - replay: B
+            strategy: supertrend_pullback
+            timeout: 3600
+          - replay: A
+            strategy: trend_rider
+            timeout: 2400
+          - replay: B
+            strategy: trend_rider
+            timeout: 2400
+    steps:
+      - name: Checkout exact recovery commit
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Download immutable authority input
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v3-4-30214514753-attempt-1
+          path: artifacts
+          github-token: ${{ github.token }}
+          run-id: 30214514753
+      - name: Verify immutable input
+        run: |
+          test -f artifacts/strategy11_market_cache_v2/manifest.json
+          test -f artifacts/strategy11_structure_lock_v2/preflight.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          manifest = Path('artifacts/strategy11_market_cache_v2/manifest.json')
+          preflight = Path('artifacts/strategy11_structure_lock_v2/preflight.json')
+          m = json.loads(manifest.read_text())
+          p = json.loads(preflight.read_text())
+          assert m.get('state') == 'PASS' and not m.get('blockers')
+          assert p.get('state') == 'PASS' and not p.get('blockers')
+          print(json.dumps({
+              'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+              'preflight_sha256': hashlib.sha256(preflight.read_bytes()).hexdigest(),
+              'data_set_sha256': (p.get('cache') or {}).get('data_set_sha256'),
+          }, sort_keys=True))
+          PY
+      - name: Isolate slow SCREEN strategy
+        shell: bash
+        env:
+          REPLAY: ${{ matrix.replay }}
+          STRATEGY_ID: ${{ matrix.strategy }}
+          TIMEOUT_SECONDS: ${{ matrix.timeout }}
+          AUTHORITY_RUN_ID: '30214514753'
+          AUTHORITY_RUN_ATTEMPT: '1'
+          AUTHORITY_HEAD_SHA: 'f85b5f3c4e1c889d3ac5d7645535f332703f92ba'
+          PYTHONPATH: .
+        run: |
+          set +e
+          out="artifacts/strategy11_slow_isolation/${REPLAY}/${STRATEGY_ID}"
+          mkdir -p "$out"
+          started=$(date +%s)
+          echo "CHILD_START replay=${REPLAY} strategy=${STRATEGY_ID} timeout=${TIMEOUT_SECONDS}s"
+          timeout --signal=TERM "${TIMEOUT_SECONDS}s" \
+            python backend/tools/r7a4d_strategy11_screen_v2.py \
+              --root . --strategy-id "$STRATEGY_ID" \
+              > "$out/run.log" 2>&1 &
+          child=$!
+          (
+            while kill -0 "$child" 2>/dev/null; do
+              sleep 300
+              if kill -0 "$child" 2>/dev/null; then
+                now=$(date +%s)
+                echo "CHILD_HEARTBEAT replay=${REPLAY} strategy=${STRATEGY_ID} elapsed_s=$((now-started))"
+              fi
+            done
+          ) &
+          heartbeat=$!
+          wait "$child"
+          rc=$?
+          kill "$heartbeat" 2>/dev/null || true
+          wait "$heartbeat" 2>/dev/null || true
+          ended=$(date +%s)
+          elapsed=$((ended-started))
+          timed_out=false
+          if [ "$rc" -eq 124 ]; then timed_out=true; fi
+          export RC="$rc" ELAPSED="$elapsed" TIMED_OUT="$timed_out" OUT_DIR="$out"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          out = Path(os.environ['OUT_DIR'])
+          manifest = Path('artifacts/strategy11_market_cache_v2/manifest.json')
+          preflight = Path('artifacts/strategy11_structure_lock_v2/preflight.json')
+          p = json.loads(preflight.read_text())
+          payload = {
+              'schema_version': '1.0',
+              'authority': 'READ_ONLY_SLOW_STRATEGY_ISOLATION',
+              'state': 'PASS' if int(os.environ['RC']) == 0 else 'HOLD',
+              'replay': os.environ['REPLAY'],
+              'strategy_id': os.environ['STRATEGY_ID'],
+              'timeout_seconds': int(os.environ['TIMEOUT_SECONDS']),
+              'elapsed_s': int(os.environ['ELAPSED']),
+              'rc': int(os.environ['RC']),
+              'timed_out': os.environ['TIMED_OUT'] == 'true',
+              'authority_run_id': os.environ['AUTHORITY_RUN_ID'],
+              'authority_run_attempt': os.environ['AUTHORITY_RUN_ATTEMPT'],
+              'authority_head_sha': os.environ['AUTHORITY_HEAD_SHA'],
+              'recovery_head_sha': os.environ.get('GITHUB_SHA'),
+              'data_set_sha256': (p.get('cache') or {}).get('data_set_sha256'),
+              'cache_manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+              'preflight_sha256': hashlib.sha256(preflight.read_bytes()).hexdigest(),
+              'canonical_mutated': False,
+              'registry_mutated': False,
+              'route_allowed': False,
+              'shadow_allowed': False,
+              'execution_allowed': False,
+          }
+          (out / 'status.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(payload, sort_keys=True))
+          PY
+          echo "CHILD_END replay=${REPLAY} strategy=${STRATEGY_ID} rc=${rc} elapsed_s=${elapsed} timed_out=${timed_out}"
+          exit "$rc"
+      - name: Upload isolated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-isolate-${{ matrix.replay }}-${{ matrix.strategy }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_slow_isolation/${{ matrix.replay }}/${{ matrix.strategy }}
+            artifacts/strategy11_screen_v1/${{ matrix.strategy }}
+          if-no-files-found: error
+          retention-days: 30

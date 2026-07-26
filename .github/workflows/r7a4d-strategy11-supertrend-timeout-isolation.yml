@@ -1,0 +1,142 @@
+name: R7A4D Strategy11 Supertrend Timeout Isolation
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-lineage-symmetric
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+  AUTHORITY_RUN_ID: "30214514753"
+  AUTHORITY_INPUT_ARTIFACT_ID: "8635414609"
+  AUTHORITY_HEAD_SHA: "f85b5f3c4e1c889d3ac5d7645535f332703f92ba"
+  STRATEGY_ID: supertrend_pullback
+  TIMEOUT_SECONDS: "2700"
+
+jobs:
+  isolate:
+    name: Replay ${{ matrix.replay }} / SCREEN / supertrend_pullback / 2700s
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        replay: [A, B]
+    steps:
+      - name: Checkout exact child commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download immutable authority input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUTHORITY_INPUT_ARTIFACT_ID}/zip" \
+            -o authority-input.zip
+          unzip -q authority-input.zip -d .
+          test -f artifacts/strategy11_structure_lock_v2/preflight.json
+          test -f artifacts/strategy11_market_cache_v2/manifest.json
+
+      - name: Verify authority lineage
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('artifacts/strategy11_structure_lock_v2/preflight.json').read_text())
+          m=json.loads(Path('artifacts/strategy11_market_cache_v2/manifest.json').read_text())
+          assert p.get('state')=='PASS' and not p.get('blockers')
+          assert m.get('state')=='PASS' and not m.get('blockers')
+          print(json.dumps({'state':'PASS','experiment_id':p.get('experiment_id'),'data_set_sha256':(p.get('cache') or {}).get('data_set_sha256')},sort_keys=True))
+          PY
+
+      - name: Isolated SCREEN replay
+        id: screen
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/strategy11_timeout_isolation/${{ matrix.replay }}
+          started=$(date +%s)
+          set +e
+          timeout --signal=TERM --kill-after=30s ${TIMEOUT_SECONDS}s \
+            python backend/tools/r7a4d_strategy11_screen_v2.py \
+              --root . \
+              --strategy-id ${STRATEGY_ID} \
+            > artifacts/strategy11_timeout_isolation/${{ matrix.replay }}/run.log 2>&1
+          rc=$?
+          set -e
+          ended=$(date +%s)
+          elapsed=$((ended-started))
+          timed_out=false
+          if [ "$rc" -eq 124 ]; then timed_out=true; fi
+          python - "$rc" "$elapsed" "$timed_out" <<'PY'
+          import hashlib,json,os,sys
+          from pathlib import Path
+          rc=int(sys.argv[1]); elapsed=int(sys.argv[2]); timed_out=sys.argv[3].lower()=='true'
+          pre=Path('artifacts/strategy11_structure_lock_v2/preflight.json')
+          manifest=Path('artifacts/strategy11_market_cache_v2/manifest.json')
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          pp=json.loads(pre.read_text())
+          out={
+            'schema_version':'1.0',
+            'authority':'READ_ONLY_TIMEOUT_ISOLATION',
+            'state':'PASS' if rc==0 else 'HOLD',
+            'strategy_id':os.environ['STRATEGY_ID'],
+            'replay':'${{ matrix.replay }}',
+            'rc':rc,
+            'elapsed_s':elapsed,
+            'timed_out':timed_out,
+            'timeout_seconds':int(os.environ['TIMEOUT_SECONDS']),
+            'authority_run_id':os.environ['AUTHORITY_RUN_ID'],
+            'authority_head_sha':os.environ['AUTHORITY_HEAD_SHA'],
+            'experiment_id':pp.get('experiment_id'),
+            'data_set_sha256':(pp.get('cache') or {}).get('data_set_sha256'),
+            'preflight_sha256':sha(pre),
+            'cache_manifest_sha256':sha(manifest),
+            'canonical_mutated':False,
+            'registry_mutated':False,
+            'execution_allowed':False,
+          }
+          target=Path('artifacts/strategy11_timeout_isolation/${{ matrix.replay }}/status.json')
+          target.write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+          exit "$rc"
+
+      - name: Upload isolated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-supertrend-timeout-${{ matrix.replay }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_timeout_isolation/${{ matrix.replay }}/
+            artifacts/strategy11_screen_v1/supertrend_pullback/summary.json
+          if-no-files-found: error
+
+      - name: Enforce result
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('artifacts/strategy11_timeout_isolation/${{ matrix.replay }}/status.json')
+          if not p.is_file(): raise SystemExit('STATUS_MISSING')
+          v=json.loads(p.read_text())
+          if v.get('state')!='PASS' or v.get('rc')!=0 or v.get('timed_out'):
+              raise SystemExit(f"ISOLATION_HOLD:{v}")
+          PY

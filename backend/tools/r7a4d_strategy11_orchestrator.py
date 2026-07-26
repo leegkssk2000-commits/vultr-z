@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from backend.tools.r7a4d_strategy11_structure_lock import (
@@ -22,34 +23,78 @@ STRATEGIES = (
     "scalp_snap", "session_bias", "squeeze_break", "sr_levels", "supertrend_pullback",
     "trend_ma_macd", "trend_rider", "turtle_trend", "vol_spike_fade", "vwap_revert",
 )
+DEFAULT_CHILD_TIMEOUT_S = 1800
 
 
-def _run(command: list[str], log_path: Path) -> tuple[int, str]:
+def _heartbeat(event: str, *, label: str, elapsed_s: int | None = None, rc: int | None = None) -> None:
+    payload: dict[str, object] = {"EVENT": event, "LABEL": label}
+    if elapsed_s is not None:
+        payload["ELAPSED_S"] = elapsed_s
+    if rc is not None:
+        payload["RC"] = rc
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def _run(
+    command: list[str],
+    log_path: Path,
+    *,
+    label: str,
+    timeout_s: int = DEFAULT_CHILD_TIMEOUT_S,
+) -> tuple[int, str, int]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = "."
+    started = time.monotonic()
+    _heartbeat("CHILD_START", label=label)
+    rc = 1
     with log_path.open("w", encoding="utf-8") as handle:
-        process = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, env=env, check=False)
-    return process.returncode, str(log_path)
+        try:
+            process = subprocess.run(
+                command,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                env=env,
+                check=False,
+                timeout=max(1, timeout_s),
+            )
+            rc = process.returncode
+        except subprocess.TimeoutExpired:
+            rc = 124
+            handle.write(f"\nCHILD_TIMEOUT label={label} timeout_s={timeout_s}\n")
+            handle.flush()
+    elapsed_s = int(round(time.monotonic() - started))
+    _heartbeat("CHILD_END", label=label, elapsed_s=elapsed_s, rc=rc)
+    return rc, str(log_path), elapsed_s
 
 
-def _screen(root: Path, strategy_id: str) -> tuple[str, int, str]:
+def _screen(root: Path, strategy_id: str, timeout_s: int) -> tuple[str, int, str, int]:
     command = [
         sys.executable, "backend/tools/r7a4d_strategy11_screen_v2.py",
         "--root", str(root), "--strategy-id", strategy_id,
     ]
-    rc, log = _run(command, root / "artifacts/strategy11_orchestrator_v1/logs" / f"screen-{strategy_id}.log")
-    return strategy_id, rc, log
+    rc, log, elapsed_s = _run(
+        command,
+        root / "artifacts/strategy11_orchestrator_v1/logs" / f"screen-{strategy_id}.log",
+        label=f"screen:{strategy_id}",
+        timeout_s=timeout_s,
+    )
+    return strategy_id, rc, log, elapsed_s
 
 
-def _exact(root: Path, strategy_id: str) -> tuple[str, int, str]:
+def _exact(root: Path, strategy_id: str, timeout_s: int) -> tuple[str, int, str, int]:
     summary = root / "artifacts/strategy11_screen_v1" / strategy_id / "summary.json"
     command = [
         sys.executable, "backend/tools/r7a4d_strategy11_exact_v2.py",
         "--root", str(root), "--strategy-id", strategy_id, "--screen-summary", str(summary),
     ]
-    rc, log = _run(command, root / "artifacts/strategy11_orchestrator_v1/logs" / f"exact-{strategy_id}.log")
-    return strategy_id, rc, log
+    rc, log, elapsed_s = _run(
+        command,
+        root / "artifacts/strategy11_orchestrator_v1/logs" / f"exact-{strategy_id}.log",
+        label=f"exact:{strategy_id}",
+        timeout_s=timeout_s,
+    )
+    return strategy_id, rc, log, elapsed_s
 
 
 def _experiment_id(root: Path) -> str:
@@ -67,8 +112,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--child-timeout-s", type=int, default=DEFAULT_CHILD_TIMEOUT_S)
     args = parser.parse_args()
     root = Path(args.root).resolve()
+    workers = min(len(STRATEGIES), max(1, args.workers))
+    child_timeout_s = max(1, args.child_timeout_s)
     evidence: dict[str, object] = {"prepare": None, "screen": [], "exact": [], "aggregate": None}
     blockers: list[str] = []
 
@@ -91,44 +139,58 @@ def main() -> int:
 
     prepare_log = root / "artifacts/strategy11_orchestrator_v1/logs/prepare-data.log"
     if not blockers:
-        prepare_rc, prepare_path = _run(
+        prepare_rc, prepare_path, prepare_elapsed_s = _run(
             [sys.executable, "backend/tools/r7a4d_strategy11_prepare_data_v2.py", "--root", str(root)],
             prepare_log,
+            label="prepare-data",
+            timeout_s=child_timeout_s,
         )
-        evidence["prepare"] = {"rc": prepare_rc, "log": prepare_path}
+        evidence["prepare"] = {"rc": prepare_rc, "log": prepare_path, "elapsed_s": prepare_elapsed_s}
         if prepare_rc != 0:
             blockers.append(f"PREPARE_DATA:RC={prepare_rc}")
 
     if not blockers:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-            futures = [executor.submit(_screen, root, strategy_id) for strategy_id in STRATEGIES]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_screen, root, strategy_id, child_timeout_s) for strategy_id in STRATEGIES]
             for future in concurrent.futures.as_completed(futures):
-                strategy_id, rc, log = future.result()
-                evidence["screen"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
+                strategy_id, rc, log, elapsed_s = future.result()
+                evidence["screen"].append({
+                    "strategy_id": strategy_id,
+                    "rc": rc,
+                    "log": log,
+                    "elapsed_s": elapsed_s,
+                })
                 if rc != 0:
                     blockers.append(f"SCREEN:{strategy_id}:RC={rc}")
         evidence["screen"] = sorted(evidence["screen"], key=lambda row: row["strategy_id"])
 
     if not blockers:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
-            futures = [executor.submit(_exact, root, strategy_id) for strategy_id in STRATEGIES]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_exact, root, strategy_id, child_timeout_s) for strategy_id in STRATEGIES]
             for future in concurrent.futures.as_completed(futures):
-                strategy_id, rc, log = future.result()
-                evidence["exact"].append({"strategy_id": strategy_id, "rc": rc, "log": log})
+                strategy_id, rc, log, elapsed_s = future.result()
+                evidence["exact"].append({
+                    "strategy_id": strategy_id,
+                    "rc": rc,
+                    "log": log,
+                    "elapsed_s": elapsed_s,
+                })
                 if rc != 0:
                     blockers.append(f"EXACT:{strategy_id}:RC={rc}")
         evidence["exact"] = sorted(evidence["exact"], key=lambda row: row["strategy_id"])
 
     aggregate_log = root / "artifacts/strategy11_orchestrator_v1/logs/aggregate.log"
     if not blockers:
-        rc, log = _run(
+        rc, log, elapsed_s = _run(
             [
                 sys.executable, "backend/tools/r7a4d_strategy11_aggregate.py",
                 "--exact-root", str(root / "artifacts/strategy11_exact_v1"), "--target", "11",
             ],
             aggregate_log,
+            label="aggregate",
+            timeout_s=child_timeout_s,
         )
-        evidence["aggregate"] = {"rc": rc, "log": log}
+        evidence["aggregate"] = {"rc": rc, "log": log, "elapsed_s": elapsed_s}
         if rc != 0:
             blockers.append(f"AGGREGATE:RC={rc}")
 
@@ -151,11 +213,12 @@ def main() -> int:
     output = root / "artifacts/strategy11_orchestrator_v1/summary.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({
-        "schema_version": "3.0",
+        "schema_version": "3.1",
         "structure_version": STRUCTURE_VERSION,
         "experiment_id": _experiment_id(root),
         "state": "PASS" if not blockers else "HOLD",
-        "workers": args.workers,
+        "workers": workers,
+        "child_timeout_s": child_timeout_s,
         "strategy_count": len(STRATEGIES),
         "evidence": evidence,
         "blockers": blockers,
@@ -175,7 +238,7 @@ def main() -> int:
         "STATE": "PASS" if not blockers else "HOLD",
         "BLOCKERS": blockers,
         "PROTECTED_MUTATIONS": protected_mutations,
-    }, sort_keys=True))
+    }, sort_keys=True), flush=True)
     return 0 if not blockers else 1
 
 

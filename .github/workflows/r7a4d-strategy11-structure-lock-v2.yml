@@ -1,0 +1,107 @@
+name: R7A4D Strategy11 Structure Lock v2
+
+on:
+  push:
+    branches:
+      - r7a4d-strategy11-structure-lock-v2
+  workflow_dispatch:
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  locked-funnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    env:
+      STRUCTURE_VERSION: strategy11-structure-lock-v2
+      EXPERIMENT_ID: strategy11-lock-v2-${{ github.sha }}-${{ github.run_number }}
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile structure and funnel
+        run: |
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_structure_lock_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_prepare_data_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_screen_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_exact_v2.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_aggregate.py
+          PYTHONPATH=. python -m py_compile backend/tools/r7a4d_strategy11_orchestrator.py
+
+      - name: Preflight STRUCTURE_LOCK
+        run: |
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
+            --root . --phase pre \
+            --structure-version "$STRUCTURE_VERSION" \
+            --experiment-id "$EXPERIMENT_ID"
+
+      - name: Run full simulation and replay funnel
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 \
+            2>&1 | tee strategy11-locked-funnel.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > strategy11-locked-funnel.rc
+          exit 0
+
+      - name: Postflight STRUCTURE_LOCK and deterministic replay
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=. python backend/tools/r7a4d_strategy11_structure_lock_v2.py \
+            --root . --phase post \
+            --structure-version "$STRUCTURE_VERSION" \
+            --experiment-id "$EXPERIMENT_ID" \
+            2>&1 | tee strategy11-structure-lock.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > strategy11-structure-lock.rc
+          exit 0
+
+      - name: Upload locked evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-v2
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            artifacts/strategy11_market_cache_v2
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_final_roster_v1
+            artifacts/strategy11_orchestrator_v1
+            strategy11-locked-funnel.log
+            strategy11-locked-funnel.rc
+            strategy11-structure-lock.log
+            strategy11-structure-lock.rc
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce funnel and structure integrity
+        run: |
+          test "$(cat strategy11-locked-funnel.rc)" = "0"
+          test "$(cat strategy11-structure-lock.rc)" = "0"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('artifacts/strategy11_structure_lock_v2/post.json')
+          d = json.loads(p.read_text())
+          assert d['state'] == 'PASS', d.get('blockers')
+          assert d['performance_evidence_valid'] is True
+          assert not d['protected_mutations']
+          PY

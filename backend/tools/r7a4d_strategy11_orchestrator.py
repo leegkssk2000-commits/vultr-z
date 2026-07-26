@@ -39,7 +39,7 @@ def _screen(root: Path, strategy_id: str) -> tuple[str, int, str]:
 def _exact(root: Path, strategy_id: str) -> tuple[str, int, str]:
     summary = root / "artifacts/strategy11_screen_v1" / strategy_id / "summary.json"
     command = [
-        sys.executable, "backend/tools/r7a4d_strategy11_exact.py",
+        sys.executable, "backend/tools/r7a4d_strategy11_exact_v2.py",
         "--root", str(root), "--strategy-id", strategy_id, "--screen-summary", str(summary),
     ]
     rc, log = _run(command, root / "artifacts/strategy11_orchestrator_v1/logs" / f"exact-{strategy_id}.log")
@@ -98,7 +98,7 @@ def main() -> int:
     output = root / "artifacts/strategy11_orchestrator_v1/summary.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "state": "PASS" if not blockers else "HOLD",
         "workers": args.workers,
         "strategy_count": len(STRATEGIES),

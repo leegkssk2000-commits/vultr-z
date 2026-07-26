@@ -1,10 +1,10 @@
-# experiment trigger: R7A4D_S11_SL3_1_ARTIFACT_PATH_20260726T1550Z
-name: R7A4D Strategy11 Structure Lock V3.1 Minimal
+# experiment trigger: R7A4D_S11_SL3_2_PARALLEL_HEARTBEAT_20260726T1742Z
+name: R7A4D Strategy11 Structure Lock V3.2 Parallel Heartbeat
 
 on:
   push:
     branches:
-      - r7a4d-strategy11-structure-lock-v3-minimal
+      - r7a4d-strategy11-structure-lock-v3-parallel-heartbeat
     paths:
       - 'backend/tools/r7a4d_strategy11_structure_lock.py'
       - 'backend/tools/r7a4d_strategy11_structure_lock_v2.py'
@@ -13,7 +13,7 @@ on:
       - '.github/workflows/r7a4d-strategy11-structure-lock-v2.yml'
   pull_request:
     branches:
-      - r7a4d-strategy11-shadow-funnel-v1
+      - r7a4d-strategy11-structure-lock-v3-minimal
     paths:
       - 'backend/tools/r7a4d_strategy11_structure_lock.py'
       - 'backend/tools/r7a4d_strategy11_structure_lock_v2.py'
@@ -26,13 +26,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: r7a4d-strategy11-structure-lock-v3-1-minimal-${{ github.ref }}
+  group: r7a4d-strategy11-structure-lock-v3-2-parallel-heartbeat-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   PYTHONPATH: .
-  STRATEGY11_STRUCTURE_VERSION: R7A4D_STRATEGY11_STRUCTURE_LOCK_V3_1_ARTIFACT_PATH
-  STRATEGY11_EXPERIMENT_ID: R7A4D_S11_SL3_1_${{ github.sha }}
+  STRATEGY11_STRUCTURE_VERSION: R7A4D_STRATEGY11_STRUCTURE_LOCK_V3_2_PARALLEL_HEARTBEAT
+  STRATEGY11_EXPERIMENT_ID: R7A4D_S11_SL3_2_${{ github.sha }}
 
 jobs:
   preflight:
@@ -100,10 +100,14 @@ jobs:
           name: strategy11-structure-input-v3-${{ github.run_id }}
           path: artifacts
       - name: Full deterministic replay A
+        shell: bash
         run: |
+          set +e
           set -o pipefail
-          python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 1 2>&1 | tee strategy11-funnel-A.log
-          printf '0\n' > strategy11-funnel-A.rc
+          python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 --child-timeout-s 1800 2>&1 | tee strategy11-funnel-A.log
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > strategy11-funnel-A.rc
+          exit "$rc"
       - name: Upload replay A
         if: always()
         uses: actions/upload-artifact@v4
@@ -134,10 +138,14 @@ jobs:
           name: strategy11-structure-input-v3-${{ github.run_id }}
           path: artifacts
       - name: Full deterministic replay B
+        shell: bash
         run: |
+          set +e
           set -o pipefail
-          python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 1 2>&1 | tee strategy11-funnel-B.log
-          printf '0\n' > strategy11-funnel-B.rc
+          python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3 --child-timeout-s 1800 2>&1 | tee strategy11-funnel-B.log
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > strategy11-funnel-B.rc
+          exit "$rc"
       - name: Upload replay B
         if: always()
         uses: actions/upload-artifact@v4
@@ -176,10 +184,14 @@ jobs:
           name: strategy11-structure-run-B-v3-${{ github.run_id }}
           path: compare/B
       - name: Compare deterministic replay and protected SHA
+        shell: bash
         run: |
+          set +e
           set -o pipefail
           python backend/tools/r7a4d_strategy11_structure_lock.py compare --root . --run-a compare/A --run-b compare/B 2>&1 | tee strategy11-structure-lock-v3.log
-          printf '0\n' > strategy11-structure-lock-v3.rc
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > strategy11-structure-lock-v3.rc
+          exit "$rc"
       - name: Upload final structure evidence
         if: always()
         uses: actions/upload-artifact@v4

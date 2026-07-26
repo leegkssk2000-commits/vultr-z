@@ -1,0 +1,164 @@
+name: R7A4D Strategy11 Structure Lock v3
+
+on:
+  push:
+    branches:
+      - r7a4d-structure-lock-v3
+  workflow_dispatch:
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v3-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  structure-lock-and-funnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      STRUCTURE_VERSION: '3.0'
+      EXPERIMENT_ID: structure-v3-${{ github.sha }}-${{ github.run_id }}
+    steps:
+      - name: Checkout exact child commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile locked funnel and fixtures
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_structure_lock_v3.py
+          python -m py_compile backend/tools/r7a4d_strategy11_prepare_data_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_orchestrator.py
+          python -m py_compile backend/tools/r7a4d_strategy11_screen_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_exact_v2.py
+          python -m py_compile backend/tools/r7a4d_strategy11_aggregate.py
+
+      - name: Remove all prior Strategy11 performance evidence
+        run: |
+          rm -rf artifacts/strategy11_market_cache_v2 \
+                 artifacts/strategy11_screen_v1 \
+                 artifacts/strategy11_exact_v1 \
+                 artifacts/strategy11_final_roster_v1 \
+                 artifacts/strategy11_orchestrator_v1 \
+                 artifacts/strategy11_structure_lock_v3
+          mkdir -p artifacts/strategy11_structure_lock_v3
+
+      - name: Fetch fresh exact market windows
+        run: python backend/tools/r7a4d_strategy11_prepare_data_v2.py --root .
+
+      - name: Preflight data owner causality metric and replay lock
+        run: |
+          python backend/tools/r7a4d_strategy11_structure_lock_v3.py \
+            --root . --phase pre \
+            --snapshot artifacts/strategy11_structure_lock_v3/protected-before.json \
+            --output artifacts/strategy11_structure_lock_v3/preflight.json \
+            --experiment-id "$EXPERIMENT_ID"
+
+      - name: Full deterministic replay A
+        run: python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3
+
+      - name: Freeze replay A and digest semantic artifacts
+        run: |
+          mkdir -p artifacts/strategy11_structure_lock_v3/run-a
+          cp -a artifacts/strategy11_screen_v1 artifacts/strategy11_structure_lock_v3/run-a/
+          cp -a artifacts/strategy11_exact_v1 artifacts/strategy11_structure_lock_v3/run-a/
+          cp -a artifacts/strategy11_final_roster_v1 artifacts/strategy11_structure_lock_v3/run-a/
+          python backend/tools/r7a4d_strategy11_structure_lock_v3.py \
+            --root . --phase digest \
+            --run-root artifacts/strategy11_structure_lock_v3/run-a \
+            --output artifacts/strategy11_structure_lock_v3/digest-a.json \
+            --experiment-id "$EXPERIMENT_ID"
+
+      - name: Clear performance outputs but preserve exact data
+        run: |
+          rm -rf artifacts/strategy11_screen_v1 \
+                 artifacts/strategy11_exact_v1 \
+                 artifacts/strategy11_final_roster_v1 \
+                 artifacts/strategy11_orchestrator_v1
+
+      - name: Full deterministic replay B
+        run: python backend/tools/r7a4d_strategy11_orchestrator.py --root . --workers 3
+
+      - name: Freeze replay B and digest semantic artifacts
+        run: |
+          mkdir -p artifacts/strategy11_structure_lock_v3/run-b
+          cp -a artifacts/strategy11_screen_v1 artifacts/strategy11_structure_lock_v3/run-b/
+          cp -a artifacts/strategy11_exact_v1 artifacts/strategy11_structure_lock_v3/run-b/
+          cp -a artifacts/strategy11_final_roster_v1 artifacts/strategy11_structure_lock_v3/run-b/
+          python backend/tools/r7a4d_strategy11_structure_lock_v3.py \
+            --root . --phase digest \
+            --run-root artifacts/strategy11_structure_lock_v3/run-b \
+            --output artifacts/strategy11_structure_lock_v3/digest-b.json \
+            --experiment-id "$EXPERIMENT_ID"
+
+      - name: Enforce complete deterministic artifact parity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a = json.loads(Path('artifacts/strategy11_structure_lock_v3/digest-a.json').read_text())
+          b = json.loads(Path('artifacts/strategy11_structure_lock_v3/digest-b.json').read_text())
+          if a.get('state') != 'PASS' or b.get('state') != 'PASS':
+              raise SystemExit('DIGEST_STATE_NOT_PASS')
+          if a.get('digests') != b.get('digests'):
+              ak, bk = a.get('digests', {}), b.get('digests', {})
+              changed = sorted(k for k in set(ak) | set(bk) if ak.get(k) != bk.get(k))
+              raise SystemExit('DETERMINISTIC_PARITY_FAILED:' + ','.join(changed))
+          Path('artifacts/strategy11_structure_lock_v3/deterministic-parity.json').write_text(
+              json.dumps({'state':'PASS','structure_version':'3.0','artifact_count':len(a['digests']),'digests':a['digests']}, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+      - name: Enforce protected path mutation zero
+        run: |
+          python backend/tools/r7a4d_strategy11_structure_lock_v3.py \
+            --root . --phase post \
+            --snapshot artifacts/strategy11_structure_lock_v3/protected-before.json \
+            --output artifacts/strategy11_structure_lock_v3/postflight.json \
+            --experiment-id "$EXPERIMENT_ID"
+
+      - name: Publish structure lock receipt
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('artifacts/strategy11_structure_lock_v3')
+          pre = json.loads((root/'preflight.json').read_text())
+          post = json.loads((root/'postflight.json').read_text())
+          parity = json.loads((root/'deterministic-parity.json').read_text())
+          receipt = {
+              'schema_version':'1.0', 'structure_version':'3.0',
+              'experiment_id':os.environ['EXPERIMENT_ID'],
+              'state':'PASS' if pre['state']==post['state']==parity['state']=='PASS' else 'HOLD',
+              'fresh_cache_only':True, 'prior_performance_artifacts_reused':False,
+              'deterministic_replays':2, 'semantic_artifact_count':parity['artifact_count'],
+              'canonical_mutated':False, 'registry_mutated':False,
+              'route_allowed':False, 'shadow_allowed':False, 'execution_allowed':False,
+          }
+          (root/'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True)+'\n')
+          if receipt['state'] != 'PASS': raise SystemExit('STRUCTURE_LOCK_RECEIPT_HOLD')
+          PY
+
+      - name: Upload complete lock and fresh funnel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-v3-${{ github.run_id }}
+          path: |
+            artifacts/strategy11_structure_lock_v3
+            artifacts/strategy11_market_cache_v2/manifest.json
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_final_roster_v1
+            artifacts/strategy11_orchestrator_v1
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,138 @@
+name: Gemini API Read-Only Smoke
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/gemini-api-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-api-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Verify secret and call Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        shell: bash
+        run: |
+          mkdir -p gemini-smoke
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          key = os.environ.get('GEMINI_API_KEY', '').strip()
+          result = {
+              'status': 'UNKNOWN',
+              'secret_present': bool(key),
+              'model': None,
+              'response': None,
+              'error': None,
+          }
+
+          try:
+              if not key:
+                  result['status'] = 'MISSING_SECRET'
+              else:
+                  list_req = urllib.request.Request(
+                      'https://generativelanguage.googleapis.com/v1beta/models',
+                      headers={'x-goog-api-key': key},
+                      method='GET',
+                  )
+                  with urllib.request.urlopen(list_req, timeout=30) as response:
+                      models_payload = json.load(response)
+
+                  eligible = []
+                  for item in models_payload.get('models', []):
+                      methods = item.get('supportedGenerationMethods', [])
+                      name = item.get('name', '')
+                      if 'generateContent' in methods and name:
+                          eligible.append(name)
+
+                  preferred = [
+                      'models/gemini-2.5-flash',
+                      'models/gemini-2.5-flash-lite',
+                      'models/gemini-2.0-flash',
+                  ]
+                  model = next((name for name in preferred if name in eligible), None)
+                  if model is None and eligible:
+                      model = eligible[0]
+                  if model is None:
+                      raise RuntimeError('No model supporting generateContent was returned')
+
+                  result['model'] = model
+                  payload = {
+                      'contents': [{
+                          'parts': [{
+                              'text': 'Reply with exactly GEMINI_SMOKE_OK and nothing else.'
+                          }]
+                      }],
+                      'generationConfig': {
+                          'temperature': 0,
+                          'maxOutputTokens': 16,
+                      },
+                  }
+                  body = json.dumps(payload).encode('utf-8')
+                  generate_req = urllib.request.Request(
+                      f'https://generativelanguage.googleapis.com/v1beta/{model}:generateContent',
+                      data=body,
+                      headers={
+                          'x-goog-api-key': key,
+                          'Content-Type': 'application/json',
+                      },
+                      method='POST',
+                  )
+                  with urllib.request.urlopen(generate_req, timeout=60) as response:
+                      generated = json.load(response)
+
+                  texts = []
+                  for candidate in generated.get('candidates', []):
+                      for part in candidate.get('content', {}).get('parts', []):
+                          if isinstance(part.get('text'), str):
+                              texts.append(part['text'])
+                  text = '\n'.join(texts).strip()
+                  result['response'] = text[:500]
+                  result['status'] = 'PASS' if text == 'GEMINI_SMOKE_OK' else 'BAD_RESPONSE'
+          except urllib.error.HTTPError as exc:
+              try:
+                  detail = exc.read().decode('utf-8', errors='replace')
+              except Exception:
+                  detail = str(exc)
+              result['status'] = 'HTTP_ERROR'
+              result['error'] = f'HTTP {exc.code}: {detail[:1000]}'
+          except Exception as exc:
+              result['status'] = 'ERROR'
+              result['error'] = f'{type(exc).__name__}: {exc}'[:1000]
+
+          with open('gemini-smoke/status.json', 'w', encoding='utf-8') as handle:
+              json.dump(result, handle, ensure_ascii=False, indent=2)
+
+          print(json.dumps({
+              'status': result['status'],
+              'secret_present': result['secret_present'],
+              'model': result['model'],
+          }, ensure_ascii=False))
+          PY
+
+      - name: Upload smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-api-smoke-${{ github.run_id }}
+          path: gemini-smoke/status.json
+          if-no-files-found: error
+          retention-days: 7

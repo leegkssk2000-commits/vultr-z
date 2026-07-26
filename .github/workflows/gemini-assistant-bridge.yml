@@ -1,0 +1,58 @@
+name: Gemini Assistant Bridge
+
+on:
+  push:
+    branches:
+      - gemini/assistant-bridge
+    paths:
+      - '.gemini-bridge/request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-assistant-bridge
+  cancel-in-progress: false
+
+jobs:
+  gemini-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact request commit
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Run isolated Gemini bridge
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python3 scripts/gemini_bridge.py
+
+      - name: Ensure status artifact exists
+        if: always()
+        run: |
+          mkdir -p .gemini-bridge/out
+          if [ ! -f .gemini-bridge/out/status.json ]; then
+            printf '%s\n' '{"ok":false,"request_id":"unknown","message":"Gemini bridge produced no status artifact.","error":"missing_status_artifact"}' > .gemini-bridge/out/status.json
+          fi
+          if [ ! -f .gemini-bridge/out/result.md ]; then
+            printf '%s\n' 'Gemini bridge produced no readable result.' > .gemini-bridge/out/result.md
+          fi
+
+      - name: Upload Gemini evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-bridge-${{ github.run_id }}
+          path: .gemini-bridge/out/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep GitHub run notification silent
+        if: always()
+        run: |
+          echo 'The bridge reports success/failure through status.json.'
+          echo 'The workflow itself intentionally exits 0 to avoid duplicate GitHub failure emails.'

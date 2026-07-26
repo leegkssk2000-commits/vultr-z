@@ -65,17 +65,17 @@ jobs:
                           eligible.append(name)
 
                   preferred = [
-                      'models/gemini-2.5-flash',
-                      'models/gemini-2.5-flash-lite',
-                      'models/gemini-2.0-flash',
+                      'models/gemini-3.6-flash',
+                      'models/gemini-3.5-flash',
+                      'models/gemini-3.5-flash-lite',
+                      'models/gemini-3.1-flash-lite',
+                      'models/gemini-3-flash-preview',
                   ]
-                  model = next((name for name in preferred if name in eligible), None)
-                  if model is None and eligible:
-                      model = eligible[0]
-                  if model is None:
+                  ordered = [name for name in preferred if name in eligible]
+                  ordered.extend(name for name in eligible if name not in ordered)
+                  if not ordered:
                       raise RuntimeError('No model supporting generateContent was returned')
 
-                  result['model'] = model
                   payload = {
                       'contents': [{
                           'parts': [{
@@ -88,26 +88,43 @@ jobs:
                       },
                   }
                   body = json.dumps(payload).encode('utf-8')
-                  generate_req = urllib.request.Request(
-                      f'https://generativelanguage.googleapis.com/v1beta/{model}:generateContent',
-                      data=body,
-                      headers={
-                          'x-goog-api-key': key,
-                          'Content-Type': 'application/json',
-                      },
-                      method='POST',
-                  )
-                  with urllib.request.urlopen(generate_req, timeout=60) as response:
-                      generated = json.load(response)
+                  last_error = None
 
-                  texts = []
-                  for candidate in generated.get('candidates', []):
-                      for part in candidate.get('content', {}).get('parts', []):
-                          if isinstance(part.get('text'), str):
-                              texts.append(part['text'])
-                  text = '\n'.join(texts).strip()
-                  result['response'] = text[:500]
-                  result['status'] = 'PASS' if text == 'GEMINI_SMOKE_OK' else 'BAD_RESPONSE'
+                  for model in ordered:
+                      try:
+                          generate_req = urllib.request.Request(
+                              f'https://generativelanguage.googleapis.com/v1beta/{model}:generateContent',
+                              data=body,
+                              headers={
+                                  'x-goog-api-key': key,
+                                  'Content-Type': 'application/json',
+                              },
+                              method='POST',
+                          )
+                          with urllib.request.urlopen(generate_req, timeout=60) as response:
+                              generated = json.load(response)
+
+                          texts = []
+                          for candidate in generated.get('candidates', []):
+                              for part in candidate.get('content', {}).get('parts', []):
+                                  if isinstance(part.get('text'), str):
+                                      texts.append(part['text'])
+                          text = '\n'.join(texts).strip()
+                          result['model'] = model
+                          result['response'] = text[:500]
+                          result['status'] = 'PASS' if text == 'GEMINI_SMOKE_OK' else 'BAD_RESPONSE'
+                          break
+                      except urllib.error.HTTPError as exc:
+                          try:
+                              detail = exc.read().decode('utf-8', errors='replace')
+                          except Exception:
+                              detail = str(exc)
+                          last_error = f'{model}: HTTP {exc.code}: {detail[:500]}'
+                          continue
+
+                  if result['status'] == 'UNKNOWN':
+                      result['status'] = 'HTTP_ERROR'
+                      result['error'] = last_error or 'All eligible models failed'
           except urllib.error.HTTPError as exc:
               try:
                   detail = exc.read().decode('utf-8', errors='replace')

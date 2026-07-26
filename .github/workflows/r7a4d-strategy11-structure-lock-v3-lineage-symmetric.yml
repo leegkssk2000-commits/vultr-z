@@ -1,0 +1,402 @@
+name: R7A4D Strategy11 Structure Lock V3.4 Lineage Symmetric
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-job-batches
+    paths:
+      - 'backend/tools/r7a4d_strategy11_batch_runner_v2.py'
+      - '.github/workflows/r7a4d-strategy11-structure-lock-v3-lineage-symmetric.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v3-4-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  STRATEGY11_STRUCTURE_VERSION: R7A4D_STRATEGY11_STRUCTURE_LOCK_V3_4_LINEAGE_SYMMETRIC
+  STRATEGY11_EXPERIMENT_ID: R7A4D_S11_SL3_4_${{ github.sha }}
+  INPUT_ARTIFACT: strategy11-structure-input-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+
+jobs:
+  preflight:
+    name: Preflight / immutable input / attempt ${{ github.run_attempt }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile lock and lineage batch runner
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_structure_lock.py
+          python -m py_compile backend/tools/r7a4d_strategy11_batch_runner_v2.py
+          python -m py_compile tests/test_r7a4d_strategy11_structure_lock.py
+      - name: Run fixtures and invariants
+        run: python -m unittest -v tests.test_r7a4d_strategy11_structure_lock
+      - name: Capture owner source and protected SHA lock
+        run: python backend/tools/r7a4d_strategy11_structure_lock.py capture --root .
+      - name: Build immutable market cache
+        run: python backend/tools/r7a4d_strategy11_prepare_data_v2.py --root .
+      - name: Enforce data and preflight lock
+        run: python backend/tools/r7a4d_strategy11_structure_lock.py pre --root .
+      - name: Write experiment identity
+        run: |
+          mkdir -p artifacts/strategy11_structure_lock_v2
+          printf '%s\n' "$STRATEGY11_STRUCTURE_VERSION" > artifacts/strategy11_structure_lock_v2/structure_version.txt
+          printf '%s\n' "$STRATEGY11_EXPERIMENT_ID" > artifacts/strategy11_structure_lock_v2/experiment_id.txt
+          printf '%s\n' "${{ github.run_id }}" > artifacts/strategy11_structure_lock_v2/run_id.txt
+          printf '%s\n' "${{ github.run_attempt }}" > artifacts/strategy11_structure_lock_v2/run_attempt.txt
+          printf '%s\n' "${{ github.sha }}" > artifacts/strategy11_structure_lock_v2/head_sha.txt
+      - name: Summarize preflight lineage
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = json.loads(Path('artifacts/strategy11_structure_lock_v2/preflight.json').read_text())
+          c = p.get('cache', {})
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as h:
+              h.write('## Preflight lineage\n\n')
+              h.write(f"- state: `{p.get('state')}`\n")
+              h.write(f"- experiment: `{p.get('experiment_id')}`\n")
+              h.write(f"- data SHA: `{c.get('data_set_sha256')}`\n")
+              h.write(f"- run: `${{ github.run_id }}` attempt `${{ github.run_attempt }}`\n")
+          PY
+      - name: Upload immutable experiment input
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: |
+            artifacts/strategy11_market_cache_v2
+            artifacts/strategy11_structure_lock_v2
+          if-no-files-found: error
+          retention-days: 30
+
+  screen_a:
+    name: Replay A / SCREEN / batch ${{ matrix.batch }}/5
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        batch: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - name: Run Replay A SCREEN batch ${{ matrix.batch }}/5
+        run: |
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py run-batch \
+            --root . --replay A --phase screen --batch-index "${{ matrix.batch }}" \
+            --timeout-seconds 1800 --workers 3
+      - name: Upload Replay A SCREEN evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-A-screen-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_batch_v2/A/screen
+          if-no-files-found: error
+          retention-days: 30
+
+  screen_b:
+    name: Replay B / SCREEN / batch ${{ matrix.batch }}/5
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        batch: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - name: Run Replay B SCREEN batch ${{ matrix.batch }}/5
+        run: |
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py run-batch \
+            --root . --replay B --phase screen --batch-index "${{ matrix.batch }}" \
+            --timeout-seconds 1800 --workers 3
+      - name: Upload Replay B SCREEN evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-B-screen-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_batch_v2/B/screen
+          if-no-files-found: error
+          retention-days: 30
+
+  exact_a:
+    name: Replay A / EXACT / batch ${{ matrix.batch }}/5
+    needs: [preflight, screen_a, screen_b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        batch: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-A-screen-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - name: Run Replay A EXACT batch ${{ matrix.batch }}/5
+        run: |
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py run-batch \
+            --root . --replay A --phase exact --batch-index "${{ matrix.batch }}" \
+            --timeout-seconds 1800 --workers 3
+      - name: Upload Replay A EXACT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-A-exact-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_batch_v2/A/exact
+          if-no-files-found: error
+          retention-days: 30
+
+  exact_b:
+    name: Replay B / EXACT / batch ${{ matrix.batch }}/5
+    needs: [preflight, screen_a, screen_b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        batch: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-B-screen-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - name: Run Replay B EXACT batch ${{ matrix.batch }}/5
+        run: |
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py run-batch \
+            --root . --replay B --phase exact --batch-index "${{ matrix.batch }}" \
+            --timeout-seconds 1800 --workers 3
+      - name: Upload Replay B EXACT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-B-exact-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_batch_v2/B/exact
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate_a:
+    name: Replay A / AGGREGATE / 25+25 verification
+    needs: [preflight, exact_a, exact_b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-A-screen-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-A-exact-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - name: Finalize Replay A
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py finalize-replay --root . --replay A \
+            2>&1 | tee strategy11-replay-A-v3-4.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > strategy11-replay-A-v3-4.rc
+          exit "$rc"
+      - name: Upload complete Replay A
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_final_roster_v1
+            artifacts/strategy11_orchestrator_v1
+            artifacts/strategy11_batch_v2/A
+            strategy11-replay-A-v3-4.log
+            strategy11-replay-A-v3-4.rc
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate_b:
+    name: Replay B / AGGREGATE / 25+25 verification
+    needs: [preflight, exact_a, exact_b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-B-screen-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-B-exact-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - name: Finalize Replay B
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy11_batch_runner_v2.py finalize-replay --root . --replay B \
+            2>&1 | tee strategy11-replay-B-v3-4.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > strategy11-replay-B-v3-4.rc
+          exit "$rc"
+      - name: Upload complete Replay B
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-run-B-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_screen_v1
+            artifacts/strategy11_exact_v1
+            artifacts/strategy11_final_roster_v1
+            artifacts/strategy11_orchestrator_v1
+            artifacts/strategy11_batch_v2/B
+            strategy11-replay-B-v3-4.log
+            strategy11-replay-B-v3-4.rc
+          if-no-files-found: error
+          retention-days: 30
+
+  compare_and_lock:
+    name: Compare A/B / final STRUCTURE_LOCK
+    needs: [preflight, aggregate_a, aggregate_b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: compare/A
+      - uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-B-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: compare/B
+      - name: Compare deterministic replay and protected SHA
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy11_structure_lock.py compare \
+            --root . --run-a compare/A --run-b compare/B \
+            2>&1 | tee strategy11-structure-lock-v3-4.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > strategy11-structure-lock-v3-4.rc
+          exit "$rc"
+      - name: Summarize final STRUCTURE_LOCK
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('artifacts/strategy11_structure_lock_v2/final.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as h:
+              h.write('## Final STRUCTURE_LOCK\n\n')
+              if not p.is_file():
+                  h.write('- state: `MISSING_FINAL`\n')
+              else:
+                  d = json.loads(p.read_text())
+                  h.write(f"- state: `{d.get('state')}`\n")
+                  h.write(f"- deterministic: `{d.get('deterministic_full_replay')}`\n")
+                  h.write(f"- protected mutations: `{len(d.get('protected_mutations') or [])}`\n")
+                  h.write(f"- blockers: `{' ; '.join(d.get('blockers') or []) or 'none'}`\n")
+          PY
+      - name: Upload final structure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v3-4-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            strategy11-structure-lock-v3-4.log
+            strategy11-structure-lock-v3-4.rc
+          if-no-files-found: error
+          retention-days: 30

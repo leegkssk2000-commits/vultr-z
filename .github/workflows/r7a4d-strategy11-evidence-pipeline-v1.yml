@@ -1,0 +1,422 @@
+name: R7A4D Strategy11 Fresh Evidence Pipeline V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-postlock-audit-v1
+    paths:
+      - 'backend/research/strategy11_improvement_ssot_v1.json'
+      - 'backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py'
+      - 'backend/tools/r7a4d_strategy11_gemini_research_v1.py'
+      - '.github/workflows/r7a4d-strategy11-evidence-pipeline-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-evidence-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  AUTHORITY_RUN_ID: '30228371687'
+  AUTHORITY_RUN_ATTEMPT: '1'
+  AUTHORITY_SOURCE_HEAD_SHA: '8bd55dc85be478800a88f5a494555c574b7c589d'
+  AUTHORITY_DATA_SET_SHA256: 'a95c912db2f8e1525262cf142f0de4709be17a2144931985ae7547f77766f300'
+  STRUCTURE_LOCK_RUN_ID: '30245926090'
+
+jobs:
+  prepare_data:
+    name: Prepare 3 fresh + 2 sealed windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      data_state: ${{ steps.state.outputs.data_state }}
+    steps:
+      - name: Checkout evidence child
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile evidence tools
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_gemini_research_v1.py
+          python -m json.tool backend/research/strategy11_improvement_ssot_v1.json >/dev/null
+
+      - name: Download immutable authority input
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v3-6-30228371687-attempt-1
+          path: authority/input
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download immutable authority Replay A
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+          path: authority/run-A
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download final STRUCTURE_LOCK PASS
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v3-7-30245926090-attempt-1
+          path: authority/lock
+          github-token: ${{ github.token }}
+          run-id: 30245926090
+
+      - name: Verify authority and repo SSOT
+        run: |
+          test -f authority/input/strategy11_market_cache_v2/manifest.json
+          test -f authority/run-A/strategy11_orchestrator_v1/summary.json
+          test -f authority/run-A/strategy11_exact_v1/alpha_combo/summary.json
+          test -f authority/lock/artifacts/strategy11_structure_lock_v2/final.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads(Path('authority/input/strategy11_market_cache_v2/manifest.json').read_text())
+          orchestrator = json.loads(Path('authority/run-A/strategy11_orchestrator_v1/summary.json').read_text())
+          final = json.loads(Path('authority/lock/artifacts/strategy11_structure_lock_v2/final.json').read_text())
+          assert manifest.get('state') == 'PASS' and not manifest.get('blockers'), manifest
+          assert manifest.get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], manifest
+          assert (orchestrator.get('lineage') or {}).get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], orchestrator
+          assert orchestrator.get('strategy_count') == 25 and orchestrator.get('state') == 'PASS', orchestrator
+          assert final.get('state') == 'PASS' and not final.get('blockers'), final
+          assert final.get('deterministic_full_replay') is True, final
+          assert final.get('protected_mutations') == [], final
+          PY
+
+      - name: Fetch new non-overlap data and funding evidence
+        run: |
+          python backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py prepare-data \
+            --root . \
+            --authority-manifest authority/input/strategy11_market_cache_v2/manifest.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_evidence_data_v1 \
+            --evaluation-bars 480 \
+            --warmup-bars 220
+
+      - name: Export data state
+        id: state
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path('artifacts/strategy11_evidence_data_v1/summary.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f"data_state={data['state']}\n")
+          PY
+
+      - name: Write prepare summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('artifacts/strategy11_evidence_data_v1/summary.json')
+          if not path.is_file():
+              raise SystemExit('DATA_SUMMARY_MISSING')
+          data = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 fresh evidence data\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Fresh files: {data.get('fresh_file_count', 0)}/15\n")
+              out.write(f"- Sealed files: {data.get('sealed_file_count', 0)}/10\n")
+              out.write(f"- Authority last end: {data.get('authority_last_end')}\n")
+              out.write(f"- Latest closed end: {data.get('latest_closed_end')}\n")
+              if data.get('blockers'):
+                  out.write('\n## Blockers\n')
+                  for blocker in data['blockers']:
+                      out.write(f"- `{blocker}`\n")
+          PY
+
+      - name: Upload fresh research data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-fresh-data-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/fresh
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload sealed final holdback data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-SEALED-ONE-SHOT-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/sealed
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload sealed contract only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-sealed-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/sealed/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload prepare status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-evidence-prepare-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+  evidence_batches:
+    name: Baseline evidence / batch ${{ matrix.batch }}/5
+    needs: prepare_data
+    if: needs.prepare_data.outputs.data_state == 'PASS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        batch: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout evidence child
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download immutable authority Replay A
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+          path: authority/run-A
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download fresh data only
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/fresh
+
+      - name: Verify sealed holdback is absent
+        run: test ! -e artifacts/strategy11_evidence_data_v1/sealed
+
+      - name: Evaluate baseline MFE/MAE and stress grid
+        run: |
+          python backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py evaluate-batch \
+            --root . \
+            --authority-root authority/run-A \
+            --data-root artifacts/strategy11_evidence_data_v1/fresh \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_evidence_v1 \
+            --batch-index "${{ matrix.batch }}"
+
+      - name: Upload batch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-evidence-batch-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_v1
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate_gate:
+    name: Aggregate / DATA_ADEQUACY gate
+    needs: [prepare_data, evidence_batches]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      data_adequacy: ${{ steps.gate.outputs.data_adequacy }}
+    steps:
+      - name: Checkout evidence child
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/fresh
+
+      - name: Download sealed contract only
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-sealed-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_data_v1/sealed-contract
+
+      - name: Download evidence batches
+        if: needs.prepare_data.outputs.data_state == 'PASS'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: s11-evidence-batch-*-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_v1
+          merge-multiple: true
+
+      - name: Run aggregate gate
+        id: gate
+        shell: bash
+        env:
+          PREPARE_STATE: ${{ needs.prepare_data.outputs.data_state }}
+          EVIDENCE_RESULT: ${{ needs.evidence_batches.result }}
+        run: |
+          if [ "$PREPARE_STATE" = "PASS" ] && [ "$EVIDENCE_RESULT" = "success" ]; then
+            python backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py aggregate \
+              --evidence-root artifacts/strategy11_evidence_v1 \
+              --fresh-manifest artifacts/strategy11_evidence_data_v1/fresh/manifest.json \
+              --sealed-manifest artifacts/strategy11_evidence_data_v1/sealed-contract/manifest.json \
+              --ssot backend/research/strategy11_improvement_ssot_v1.json \
+              --out artifacts/strategy11_data_gate_v1
+          else
+            mkdir -p artifacts/strategy11_data_gate_v1
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          fresh_path = Path('artifacts/strategy11_evidence_data_v1/fresh/manifest.json')
+          fresh = json.loads(fresh_path.read_text()) if fresh_path.is_file() else {}
+          blockers = list(fresh.get('blockers') or [])
+          blockers.append('PREPARE_OR_EVIDENCE_JOB_NOT_SUCCESS:' + os.environ.get('PREPARE_STATE', '') + ':' + os.environ.get('EVIDENCE_RESULT', ''))
+          payload = {
+              'schema_version': '1.0', 'state': 'HOLD', 'data_adequacy_pass': False,
+              'gemini_allowed': False, 'auto_improvement_allowed': False,
+              'shadow_allowed': False, 'execution_allowed': False,
+              'blockers': blockers, 'next': 'WAIT_NEW_DATA_OR_EVIDENCE_REPAIR'
+          }
+          Path('artifacts/strategy11_data_gate_v1/summary.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          Path('artifacts/strategy11_data_gate_v1/candidate_queue.json').write_text(json.dumps({'state': 'HOLD', 'rows': [], 'gemini_allowed': False}, indent=2, sort_keys=True) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write('data_adequacy=HOLD\n')
+          PY
+          fi
+
+      - name: Write data gate summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('artifacts/strategy11_data_gate_v1/summary.json')
+          if not path.is_file():
+              raise SystemExit('DATA_GATE_SUMMARY_MISSING')
+          data = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 DATA_ADEQUACY\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Fresh windows: {data.get('fresh_window_count')}\n")
+              out.write(f"- Sealed windows: {data.get('sealed_window_count')}\n")
+              out.write(f"- Fresh trades: {data.get('total_fresh_trades')}\n")
+              out.write(f"- Eligible candidates: {data.get('eligible_candidate_count')}\n")
+              out.write(f"- MFE/MAE complete: {data.get('mfe_mae_completeness_100')}\n")
+              out.write(f"- Stress grid complete: {data.get('stress_grid_complete')}\n")
+              out.write(f"- Statistics complete: {data.get('statistics_complete')}\n")
+              out.write(f"- Gemini allowed: {data.get('gemini_allowed')}\n")
+              out.write(f"- Next: `{data.get('next')}`\n")
+              if data.get('blockers'):
+                  out.write('\n## Blockers\n')
+                  for blocker in data['blockers']:
+                      out.write(f"- `{blocker}`\n")
+          PY
+
+      - name: Upload data gate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-data-adequacy-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_gate_v1
+          if-no-files-found: error
+          retention-days: 30
+
+  gemini_multi_source:
+    name: Gemini high-view multi-source research
+    needs: aggregate_gate
+    if: needs.aggregate_gate.outputs.data_adequacy == 'PASS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout evidence child
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install free research tools
+        run: python -m pip install --disable-pip-version-check yt-dlp
+
+      - name: Download data gate
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-adequacy-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_gate_v1
+
+      - name: Run Gemini multi-source analysis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_research_v1.py \
+            --gate-summary artifacts/strategy11_data_gate_v1/summary.json \
+            --candidate-queue artifacts/strategy11_data_gate_v1/candidate_queue.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_gemini_research_v1
+
+      - name: Upload Gemini audit and repair queue
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-multisource-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_gemini_research_v1
+          if-no-files-found: error
+          retention-days: 30
+
+  routine_status:
+    name: Routine status / next safe step
+    needs: [prepare_data, evidence_batches, aggregate_gate, gemini_multi_source]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write routine status
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          # Strategy11 automated routine
+
+          - Prepare data: `${{ needs.prepare_data.result }}` / `${{ needs.prepare_data.outputs.data_state }}`
+          - Evidence batches: `${{ needs.evidence_batches.result }}`
+          - DATA_ADEQUACY: `${{ needs.aggregate_gate.result }}` / `${{ needs.aggregate_gate.outputs.data_adequacy }}`
+          - Gemini multi-source: `${{ needs.gemini_multi_source.result }}`
+          - Sealed holdback was not downloaded by evidence or Gemini jobs.
+          - Canonical/registry/router/runtime/Shadow/Paper/Live/order authority remained unchanged.
+          EOF

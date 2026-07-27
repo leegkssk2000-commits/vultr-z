@@ -78,32 +78,45 @@ jobs:
           github-token: ${{ github.token }}
           run-id: 30245926090
 
-      - name: Verify authority and repo SSOT
+      - name: Verify authority and derive lineage-locked manifest
         run: |
           test -f authority/input/strategy11_market_cache_v2/manifest.json
+          test -f authority/input/strategy11_structure_lock_v2/preflight.json
           test -f authority/run-A/strategy11_orchestrator_v1/summary.json
           test -f authority/run-A/strategy11_exact_v1/alpha_combo/summary.json
           test -f authority/lock/artifacts/strategy11_structure_lock_v2/final.json
           python - <<'PY'
           import json, os
           from pathlib import Path
-          manifest = json.loads(Path('authority/input/strategy11_market_cache_v2/manifest.json').read_text())
+          manifest_path = Path('authority/input/strategy11_market_cache_v2/manifest.json')
+          preflight_path = Path('authority/input/strategy11_structure_lock_v2/preflight.json')
+          manifest = json.loads(manifest_path.read_text())
+          preflight = json.loads(preflight_path.read_text())
           orchestrator = json.loads(Path('authority/run-A/strategy11_orchestrator_v1/summary.json').read_text())
           final = json.loads(Path('authority/lock/artifacts/strategy11_structure_lock_v2/final.json').read_text())
+          data_sha = (preflight.get('cache') or {}).get('data_set_sha256')
           assert manifest.get('state') == 'PASS' and not manifest.get('blockers'), manifest
-          assert manifest.get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], manifest
-          assert (orchestrator.get('lineage') or {}).get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], orchestrator
+          assert preflight.get('state') == 'PASS' and not preflight.get('blockers'), preflight
+          assert data_sha == os.environ['AUTHORITY_DATA_SET_SHA256'], preflight
+          assert (orchestrator.get('lineage') or {}).get('data_set_sha256') == data_sha, orchestrator
           assert orchestrator.get('strategy_count') == 25 and orchestrator.get('state') == 'PASS', orchestrator
           assert final.get('state') == 'PASS' and not final.get('blockers'), final
           assert final.get('deterministic_full_replay') is True, final
           assert final.get('protected_mutations') == [], final
+          derived = dict(manifest)
+          derived['data_set_sha256'] = data_sha
+          derived['source_manifest_sha256'] = __import__('hashlib').sha256(manifest_path.read_bytes()).hexdigest()
+          derived['source_preflight_sha256'] = __import__('hashlib').sha256(preflight_path.read_bytes()).hexdigest()
+          output = Path('authority/derived/manifest.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(derived, indent=2, sort_keys=True) + '\n')
           PY
 
       - name: Fetch new non-overlap data and funding evidence
         run: |
           python backend/tools/r7a4d_strategy11_evidence_pipeline_v1.py prepare-data \
             --root . \
-            --authority-manifest authority/input/strategy11_market_cache_v2/manifest.json \
+            --authority-manifest authority/derived/manifest.json \
             --ssot backend/research/strategy11_improvement_ssot_v1.json \
             --out artifacts/strategy11_evidence_data_v1 \
             --evaluation-bars 480 \
@@ -135,6 +148,7 @@ jobs:
               out.write(f"- State: **{data['state']}**\n")
               out.write(f"- Fresh files: {data.get('fresh_file_count', 0)}/15\n")
               out.write(f"- Sealed files: {data.get('sealed_file_count', 0)}/10\n")
+              out.write(f"- Authority data SHA: `{data.get('authority_data_set_sha256')}`\n")
               out.write(f"- Authority last end: {data.get('authority_last_end')}\n")
               out.write(f"- Latest closed end: {data.get('latest_closed_end')}\n")
               if data.get('blockers'):

@@ -147,15 +147,38 @@ jobs:
         with:
           name: s11-data-adequacy-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: artifacts/strategy11_data_gate_v1_1
-      - name: Run free-only multi-source analysis
+      - name: Run free-only multi-source analysis with fail-closed audit
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        shell: bash
         run: |
+          mkdir -p artifacts/strategy11_gemini_research_v1_1
+          set +e
           python backend/tools/r7a4d_strategy11_gemini_research_v1.py \
             --gate-summary artifacts/strategy11_data_gate_v1_1/summary.json \
             --candidate-queue artifacts/strategy11_data_gate_v1_1/candidate_queue.json \
             --ssot backend/research/strategy11_improvement_ssot_v1.json \
-            --out artifacts/strategy11_gemini_research_v1_1
+            --out artifacts/strategy11_gemini_research_v1_1 \
+            >artifacts/strategy11_gemini_research_v1_1/runner.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            GEMINI_RC="$rc" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('artifacts/strategy11_gemini_research_v1_1')
+          log = (root / 'runner.log').read_text(encoding='utf-8', errors='replace')
+          payload = {
+              'schema_version': '1.1', 'state': 'HOLD', 'GEMINI_USED': False,
+              'free_only': True, 'result_status': 'HOLD',
+              'blockers': [f"GEMINI_RUNNER_RC:{os.environ['GEMINI_RC']}"],
+              'error_tail': log[-6000:], 'execution_allowed': False,
+              'next': 'REPAIR_EXTERNAL_RESEARCH_SINGLE_CAUSE'
+          }
+          (root / 'summary.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+          PY
+          fi
+          test -f artifacts/strategy11_gemini_research_v1_1/summary.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

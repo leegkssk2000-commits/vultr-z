@@ -1,0 +1,154 @@
+name: R7A4D Strategy11 Gemini Direct Video V2
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-data-wait-pool-compute-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_gemini_direct_video_v2.py
+      - backend/research/strategy11_gemini_video_registry_v2.json
+      - .github/workflows/r7a4d-strategy11-gemini-direct-video-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-gemini-direct-video-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  direct-video-research:
+    name: Gemini direct YouTube research escalation
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile direct-video runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_gemini_direct_video_v2.py
+
+      - name: Download previous Gemini HOLD authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-multisource-v1-1-30255639710-attempt-1
+          path: input/previous-gemini
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30255639710'
+
+      - name: Download alpha sealed authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-sealed-one-shot-v1-30279647167-attempt-1
+          path: input/alpha
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30279647167'
+
+      - name: Download turtle repair authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-turtle-repair-v1-30280820928-attempt-1
+          path: input/turtle
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30280820928'
+
+      - name: Download EMA repair iteration 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v1-30281595921-attempt-1
+          path: input/ema1
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30281595921'
+
+      - name: Download EMA repair iteration 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v2-30282056363-attempt-1
+          path: input/ema2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30282056363'
+
+      - name: Download EMA repair iteration 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v3-30282593225-attempt-1
+          path: input/ema3
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: '30282593225'
+
+      - name: Run Gemini direct public-video analysis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_direct_video_v2.py \
+            --registry backend/research/strategy11_gemini_video_registry_v2.json \
+            --alpha input/alpha/summary.json \
+            --turtle input/turtle/summary.json \
+            --ema1 input/ema1/summary.json \
+            --ema2 input/ema2/summary.json \
+            --ema3 input/ema3/summary.json \
+            --previous-gemini input/previous-gemini/summary.json \
+            --out out
+
+      - name: Assert actual Gemini use and safe output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row = json.loads(Path('out/summary.json').read_text())
+          assert row['GEMINI_USED'] is True, row
+          assert row['free_only'] is True, row
+          assert row['source_count'] >= 3, row
+          assert row['independent_channel_count'] >= 2, row
+          assert row['canonical_mutated'] is False, row
+          assert row['registry_mutated'] is False, row
+          assert row['execution_allowed'] is False, row
+          assert row['actual_model'].endswith('gemini-3.6-flash') or 'flash' in row['actual_model'].lower(), row
+          print(json.dumps({
+              'state': row['state'],
+              'GEMINI_USED': row['GEMINI_USED'],
+              'model': row['actual_model'],
+              'sources': row['source_count'],
+              'hypotheses': row['hypothesis_count'],
+              'next': row['next'],
+          }, sort_keys=True))
+          PY
+
+      - name: Write research summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('out/summary.json')
+          if not path.exists():
+              raise SystemExit(0)
+          row = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 Gemini direct-video research\n\n')
+              out.write(f"- State: **{row.get('state')}**\n")
+              out.write(f"- GEMINI_USED: `{row.get('GEMINI_USED')}`\n")
+              out.write(f"- Model: `{row.get('actual_model')}`\n")
+              out.write(f"- Sources/channels: `{row.get('source_count')}/{row.get('independent_channel_count')}`\n")
+              out.write(f"- Hypotheses: `{row.get('hypothesis_count')}`\n")
+              out.write(f"- Next: `{row.get('next')}`\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-direct-video-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

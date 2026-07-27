@@ -1,0 +1,102 @@
+name: R7A4D Strategy11 Evidence Builder V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-postlock-audit-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy11_evidence_builder_v1.py'
+      - '.github/workflows/r7a4d-strategy11-evidence-builder-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-evidence-builder-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    name: Build fresh MFE MAE cost statistics evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      AUTHORITY_RUN_ID: '30228371687'
+      AUTHORITY_RUN_ATTEMPT: '1'
+      AUTHORITY_DATA_SET_SHA256: 'a95c912db2f8e1525262cf142f0de4709be17a2144931985ae7547f77766f300'
+    steps:
+      - name: Checkout evidence child
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deterministic research dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile evidence builder
+        run: python -m py_compile backend/tools/r7a4d_strategy11_evidence_builder_v1.py
+
+      - name: Download immutable authority Replay A
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+          path: authority/run-A
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Verify authority and SSOT
+        run: |
+          test -f authority/run-A/strategy11_orchestrator_v1/summary.json
+          test -f authority/run-A/strategy11_exact_v1/alpha_combo/summary.json
+          test -f backend/research/strategy11_improvement_ssot_v1.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = json.loads(Path('authority/run-A/strategy11_orchestrator_v1/summary.json').read_text())
+          assert p.get('state') == 'PASS', p
+          assert p.get('strategy_count') == 25, p
+          assert (p.get('lineage') or {}).get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], p
+          assert len(list(Path('authority/run-A/strategy11_exact_v1').glob('*/summary.json'))) == 25
+          PY
+
+      - name: Build baseline no-change evidence
+        run: |
+          python backend/tools/r7a4d_strategy11_evidence_builder_v1.py \
+            --authority-root authority/run-A \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_evidence_builder_v1
+
+      - name: Write evidence summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('artifacts/strategy11_evidence_builder_v1/summary.json')
+          if not path.is_file():
+              raise SystemExit('EVIDENCE_SUMMARY_MISSING')
+          data = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 evidence builder\n\n')
+              for key in ('state','fresh_window_count','sealed_holdback_count','candidate_count','candidates_with_min_fresh_trades','trade_count_total','mfe_mae_complete','cost_grid_rows','funding_snapshot_complete','gemini_allowed','auto_improvement_allowed','next'):
+                  out.write(f'- {key}: `{data.get(key)}`\n')
+              if data.get('blockers'):
+                  out.write('\n## Blockers\n')
+                  for value in data['blockers']:
+                      out.write(f'- `{value}`\n')
+          PY
+
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-evidence-builder-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_builder_v1
+          if-no-files-found: error
+          retention-days: 30

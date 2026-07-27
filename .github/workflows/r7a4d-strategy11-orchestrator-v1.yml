@@ -1,0 +1,135 @@
+name: R7A4D Strategy11 GitHub Orchestrator V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-active-research-v3
+    paths:
+      - backend/research/strategy11_orchestrator_v1.json
+      - backend/tools/r7a4d_strategy11_orchestrator_v1.py
+      - .github/workflows/r7a4d-strategy11-orchestrator-v1.yml
+  workflow_dispatch:
+    inputs:
+      allow_mutations:
+        description: Allow rerun-failed-jobs recovery actions
+        required: false
+        default: false
+        type: boolean
+  workflow_run:
+    workflows:
+      - R7A4D Strategy11 Gemini Active Research V3.1
+      - R7A4D Strategy11 Turtle Gemini Trailing V1
+      - R7A4D Strategy11 DATA WAIT POOL Compute V1
+    types:
+      - completed
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: strategy11-github-orchestrator-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  orchestrate:
+    name: Strategy11 state-machine orchestration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile orchestrator
+        run: python -m py_compile backend/tools/r7a4d_strategy11_orchestrator_v1.py
+
+      - name: Resolve mutation mode
+        id: mode
+        shell: bash
+        env:
+          DISPATCH_MUTATIONS: ${{ inputs.allow_mutations || false }}
+        run: |
+          allow=false
+          case "${GITHUB_EVENT_NAME}" in
+            schedule|workflow_run) allow=true ;;
+            workflow_dispatch)
+              if [[ "${DISPATCH_MUTATIONS}" == "true" ]]; then allow=true; fi
+              ;;
+          esac
+          echo "allow_mutations=${allow}" >> "$GITHUB_OUTPUT"
+
+      - name: Run fail-closed orchestrator
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python backend/tools/r7a4d_strategy11_orchestrator_v1.py \
+            --config backend/research/strategy11_orchestrator_v1.json \
+            --out artifacts/strategy11_orchestrator_v1 \
+            --allow-mutations "${{ steps.mode.outputs.allow_mutations }}" \
+            --workflow-path .github/workflows/r7a4d-strategy11-orchestrator-v1.yml
+
+      - name: Assert safety contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('artifacts/strategy11_orchestrator_v1/summary.json')
+          d = json.loads(p.read_text())
+          assert d['github_native'] is True, d
+          assert d['canonical_mutated'] is False, d
+          assert d['registry_mutated'] is False, d
+          assert d['protected_mutations'] == 0, d
+          assert d['merge_performed'] is False, d
+          assert d['execution_authority'] == 'NONE', d
+          assert d['order_authority'] == 'BLOCKED', d
+          assert len(d['stages']) >= 10, d
+          print(json.dumps({
+              'state': d['state'],
+              'activation_mode': d['activation_mode'],
+              'active': d['active_stage_count'],
+              'wait_data': d['wait_data_stage_count'],
+              'next': (d.get('next_stage_request') or {}).get('stage_id'),
+          }, sort_keys=True))
+          PY
+
+      - name: Write GitHub Step Summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('artifacts/strategy11_orchestrator_v1/summary.json')
+          if not path.exists():
+              raise SystemExit(0)
+          d = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 GitHub Orchestrator V1\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Activation: `{d['activation_mode']}`\n")
+              out.write(f"- Active stages: `{d['active_stage_count']}`\n")
+              out.write(f"- WAIT_DATA stages: `{d['wait_data_stage_count']}`\n")
+              out.write(f"- Pre-W1 pending: `{d['pre_w1_pending_count']}`\n")
+              request = d.get('next_stage_request') or {}
+              out.write(f"- Next implementation request: `{request.get('stage_id', 'NONE')}`\n")
+              out.write(f"- Protected mutations: `{d['protected_mutations']}`\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-orchestrator-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_orchestrator_v1
+          if-no-files-found: error
+          retention-days: 90

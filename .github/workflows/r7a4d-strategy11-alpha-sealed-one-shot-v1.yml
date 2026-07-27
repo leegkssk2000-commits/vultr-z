@@ -1,0 +1,210 @@
+name: R7A4D Strategy11 Alpha Sealed One Shot V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-cost-aware-stop-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy11_alpha_sealed_one_shot_v1.py'
+      - '.github/workflows/r7a4d-strategy11-alpha-sealed-one-shot-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-sealed-one-shot-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  WINNER_RUN_ID: '30278422559'
+
+jobs:
+  preflight:
+    name: sealed runner preflight on non-sealed roles
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile sealed one-shot runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_sealed_one_shot_v1.py
+      - name: Download immutable fresh data for preflight only
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_fresh_source/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha_combo authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download verified cost-aware winner
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-cost-aware-stop-v1-30278422559-attempt-1
+          path: artifacts/strategy11_alpha_cost_aware_authority
+          github-token: ${{ github.token }}
+          run-id: 30278422559
+      - name: Verify winner contract without reading sealed data
+        run: |
+          test -f artifacts/strategy11_fresh_source/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/alpha_combo/summary.json
+          test -f artifacts/strategy11_alpha_cost_aware_authority/summary.json
+          test ! -e artifacts/strategy11_sealed_source
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_alpha_cost_aware_authority/summary.json').read_text())
+          assert d['state']=='PASS_TO_SEALED'
+          assert d['winner']=='STOP_MULT_065_REFERENCE_R'
+          assert d['eligible_for_sealed_one_shot']==['STOP_MULT_065_REFERENCE_R']
+          assert d['sealed_holdback_read'] is False
+          assert d['blockers']==[]
+          PY
+      - name: Run sealed runner preflight on F1 and F2
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_sealed_one_shot_v1.py \
+            --mode preflight \
+            --root . \
+            --data-root artifacts/strategy11_fresh_source/fresh \
+            --funding-root artifacts/strategy11_fresh_source/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/alpha_combo/summary.json \
+            --winner-summary artifacts/strategy11_alpha_cost_aware_authority/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_alpha_sealed_preflight_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Assert preflight PASS
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_alpha_sealed_preflight_v1/summary.json').read_text())
+          assert d['state']=='PASS'
+          assert d['sealed_holdback_read'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-alpha-sealed-preflight-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_sealed_preflight_v1
+          if-no-files-found: error
+          retention-days: 30
+
+  sealed_one_shot:
+    name: alpha_combo SEALED_HOLDBACK one-shot
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Download funding evidence only from fresh source
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_fresh_source/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha_combo authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download verified cost-aware winner
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-cost-aware-stop-v1-30278422559-attempt-1
+          path: artifacts/strategy11_alpha_cost_aware_authority
+          github-token: ${{ github.token }}
+          run-id: 30278422559
+      - name: Download SEALED_HOLDBACK one-shot source
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-SEALED-ONE-SHOT-v1-30252022416-attempt-1
+          path: artifacts/strategy11_sealed_source/sealed
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify sealed contract immediately before consumption
+        run: |
+          test -f artifacts/strategy11_sealed_source/sealed/manifest.json
+          test -f artifacts/strategy11_fresh_source/fresh/funding/BTCUSDT.json
+          test -f artifacts/strategy11_alpha_cost_aware_authority/summary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('artifacts/strategy11_sealed_source/sealed/manifest.json').read_text())
+          w=json.loads(Path('artifacts/strategy11_alpha_cost_aware_authority/summary.json').read_text())
+          assert m['state']=='PASS' and m['sealed'] is True
+          assert m['one_shot_only'] is True and m['repair_read_allowed'] is False
+          assert m['window_count']==2 and [x['window_id'] for x in m['windows']]==['Z1','Z2']
+          assert w['state']=='PASS_TO_SEALED' and w['winner']=='STOP_MULT_065_REFERENCE_R'
+          assert w['sealed_holdback_read'] is False
+          PY
+      - name: Consume sealed data exactly once
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_sealed_one_shot_v1.py \
+            --mode sealed \
+            --root . \
+            --data-root artifacts/strategy11_sealed_source/sealed \
+            --funding-root artifacts/strategy11_fresh_source/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/alpha_combo/summary.json \
+            --winner-summary artifacts/strategy11_alpha_cost_aware_authority/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_alpha_sealed_one_shot_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Write sealed one-shot summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_alpha_sealed_one_shot_v1/summary.json')
+          if not p.exists():
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# alpha_combo SEALED_HOLDBACK one-shot\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Classification: {d['classification']}\n")
+              out.write(f"- One-shot consumed: {d['sealed_one_shot_consumed']}\n")
+              out.write(f"- Next: {d['next']}\n")
+              if d.get('blockers'):
+                  out.write('- Blockers: ' + ', '.join(d['blockers']) + '\n')
+              for row in d['variants']:
+                  loss=row['loss_metrics']
+                  stress=row['stress_2x_p95_plus_one']['loss_metrics']
+                  out.write(
+                      f"- {row['variant_id']}: trades={row['trade_count']} WR={row['win_rate_pct']} "
+                      f"Net={row['net_return_pct_sum']} PF={row['net_profit_factor']} payoff={row['payoff_ratio']} DD={row['max_drawdown_pct']} "
+                      f"worstR={loss['worst_net_loss_R']} stressWorstR={stress['worst_net_loss_R']}\n"
+                  )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-sealed-one-shot-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_sealed_one_shot_v1
+          if-no-files-found: error
+          retention-days: 90

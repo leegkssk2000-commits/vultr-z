@@ -1,0 +1,130 @@
+name: R7A4D Strategy11 Turtle Gemini Trailing V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-active-research-v3
+    paths:
+      - 'backend/tools/r7a4d_strategy11_turtle_gemini_trailing_v1.py'
+      - '.github/workflows/r7a4d-strategy11-turtle-gemini-trailing-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-turtle-gemini-trailing-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  RESEARCH_RUN_ID: '30301475688'
+
+jobs:
+  turtle_gemini_trailing:
+    name: turtle_trend Gemini-derived ATR trailing
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_turtle_gemini_trailing_v1.py
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_fresh_source/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download turtle authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download Gemini active research authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-active-research-v3-30301475688-attempt-1
+          path: artifacts/strategy11_gemini_active_v3
+          github-token: ${{ github.token }}
+          run-id: 30301475688
+      - name: Verify immutable inputs and approved queue
+        run: |
+          test -f artifacts/strategy11_fresh_source/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/turtle_trend/summary.json
+          test -f artifacts/strategy11_gemini_active_v3/summary.json
+          test -f artifacts/strategy11_gemini_active_v3/repair_queue.json
+          test ! -e artifacts/strategy11_sealed_source
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          b=json.loads(Path('artifacts/strategy11_evidence_v1/turtle_trend/summary.json').read_text())
+          r=json.loads(Path('artifacts/strategy11_gemini_active_v3/summary.json').read_text())
+          q=json.loads(Path('artifacts/strategy11_gemini_active_v3/repair_queue.json').read_text())
+          assert b['state']=='PASS' and b['strategy_id']=='turtle_trend'
+          assert r['GEMINI_USED'] is True and r['free_only'] is True
+          assert r['gemini_call_count']>=5 and r['approved_strategies']==['turtle_trend']
+          rows=[x for x in q['rows'] if x.get('strategy_id')=='turtle_trend']
+          assert len(rows)==1 and rows[0]['label']=='HYPOTHESIS_EXTERNAL'
+          assert r['canonical_mutated'] is False and r['registry_mutated'] is False
+          PY
+      - name: Run research-derived trailing validation
+        run: |
+          python backend/tools/r7a4d_strategy11_turtle_gemini_trailing_v1.py \
+            --root . \
+            --fresh-root artifacts/strategy11_fresh_source/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/turtle_trend/summary.json \
+            --research-summary artifacts/strategy11_gemini_active_v3/summary.json \
+            --repair-queue artifacts/strategy11_gemini_active_v3/repair_queue.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_turtle_gemini_trailing_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Assert safe result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_turtle_gemini_trailing_v1/summary.json').read_text())
+          assert d['existing_sealed_reused'] is False
+          assert d['sealed_holdback_read'] is False
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False
+          assert d['execution_allowed'] is False
+          assert len(d['variants'])==3
+          assert d['single_cause_contract']['only_changed_axis']=='trail_atr_mult'
+          print(json.dumps({'state':d['state'],'winner':d['winner'],'next':d['next']}, sort_keys=True))
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_turtle_gemini_trailing_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# turtle_trend Gemini-derived trailing\n\n')
+              out.write(f"- State: **{d['state']}**\n- Winner: `{d['winner']}`\n- Next: `{d['next']}`\n")
+              for row in d['variants']:
+                  c=row.get('comparison_to_incumbent') or {}
+                  out.write(f"- {row['variant_id']}: trades={row['trade_count']} WR={row['win_rate_pct']} Net={row['net_return_pct_sum']} PF={row['net_profit_factor']} payoff={row['payoff_ratio']} DD={row['max_drawdown_pct']} pass={c.get('pass_to_sealed')}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-turtle-gemini-trailing-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_turtle_gemini_trailing_v1
+          if-no-files-found: error
+          retention-days: 90

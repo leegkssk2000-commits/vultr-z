@@ -1,0 +1,138 @@
+name: R7A4D Strategy11 Structure Lock V3.7 Compare Layout Fix
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-6-symmetric-timeouts
+    paths:
+      - '.github/workflows/r7a4d-strategy11-structure-lock-v3-7-compare-layout-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v3-7-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AUTHORITY_RUN_ID: '30228371687'
+  AUTHORITY_ATTEMPT: '1'
+  AUTHORITY_HEAD_SHA: '8bd55dc85be478800a88f5a494555c574b7c589d'
+  INPUT_ARTIFACT: strategy11-structure-input-v3-6-30228371687-attempt-1
+  RUN_A_ARTIFACT: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+  RUN_B_ARTIFACT: strategy11-structure-run-B-v3-6-30228371687-attempt-1
+
+jobs:
+  compare_layout_recovery:
+    name: Normalize A/B artifact layout / final STRUCTURE_LOCK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact authority commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.AUTHORITY_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download immutable authority input
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT }}
+          path: artifacts
+          run-id: ${{ env.AUTHORITY_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Download complete Replay A
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.RUN_A_ARTIFACT }}
+          path: compare/A
+          run-id: ${{ env.AUTHORITY_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Download complete Replay B
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.RUN_B_ARTIFACT }}
+          path: compare/B
+          run-id: ${{ env.AUTHORITY_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Normalize upload-artifact common-root layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for replay in A B; do
+            mkdir -p "compare/${replay}/artifacts"
+            for dir in \
+              strategy11_screen_v1 \
+              strategy11_exact_v1 \
+              strategy11_final_roster_v1 \
+              strategy11_orchestrator_v1 \
+              strategy11_batch_v2; do
+              test -d "compare/${replay}/${dir}"
+              mv "compare/${replay}/${dir}" "compare/${replay}/artifacts/${dir}"
+            done
+          done
+          test "$(find compare/A/artifacts/strategy11_screen_v1 -name summary.json | wc -l)" -eq 25
+          test "$(find compare/B/artifacts/strategy11_screen_v1 -name summary.json | wc -l)" -eq 25
+          test "$(find compare/A/artifacts/strategy11_exact_v1 -name summary.json | wc -l)" -eq 25
+          test "$(find compare/B/artifacts/strategy11_exact_v1 -name summary.json | wc -l)" -eq 25
+
+      - name: Verify authority identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat artifacts/strategy11_structure_lock_v2/run_id.txt)" = "$AUTHORITY_RUN_ID"
+          test "$(cat artifacts/strategy11_structure_lock_v2/run_attempt.txt)" = "$AUTHORITY_ATTEMPT"
+          test "$(cat artifacts/strategy11_structure_lock_v2/head_sha.txt)" = "$AUTHORITY_HEAD_SHA"
+
+      - name: Compare deterministic replay and protected SHA
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy11_structure_lock.py compare \
+            --root . --run-a compare/A --run-b compare/B \
+            2>&1 | tee strategy11-structure-lock-v3-7.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > strategy11-structure-lock-v3-7.rc
+          exit "$rc"
+
+      - name: Summarize final STRUCTURE_LOCK
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('artifacts/strategy11_structure_lock_v2/final.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as h:
+              h.write('## V3.7 final STRUCTURE_LOCK\n\n')
+              if not p.is_file():
+                  h.write('- state: `MISSING_FINAL`\n')
+              else:
+                  d = json.loads(p.read_text())
+                  h.write(f"- state: `{d.get('state')}`\n")
+                  h.write(f"- deterministic: `{d.get('deterministic_full_replay')}`\n")
+                  h.write(f"- A screen/exact: `{d.get('run_a',{}).get('screen_summary_count')}/25`, `{d.get('run_a',{}).get('exact_summary_count')}/25`\n")
+                  h.write(f"- B screen/exact: `{d.get('run_b',{}).get('screen_summary_count')}/25`, `{d.get('run_b',{}).get('exact_summary_count')}/25`\n")
+                  h.write(f"- protected mutations: `{len(d.get('protected_mutations') or [])}`\n")
+                  h.write(f"- blockers: `{' ; '.join(d.get('blockers') or []) or 'none'}`\n")
+          PY
+
+      - name: Upload corrected final structure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v3-7-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            strategy11-structure-lock-v3-7.log
+            strategy11-structure-lock-v3-7.rc
+          if-no-files-found: error
+          retention-days: 30

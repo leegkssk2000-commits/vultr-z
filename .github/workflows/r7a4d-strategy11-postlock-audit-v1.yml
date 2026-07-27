@@ -1,0 +1,130 @@
+name: R7A4D Strategy11 Post-Lock Audit V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-7-compare-path-repair
+    paths:
+      - 'backend/research/strategy11_improvement_ssot_v1.json'
+      - 'backend/tools/r7a4d_strategy11_postlock_audit_v1.py'
+      - '.github/workflows/r7a4d-strategy11-postlock-audit-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-postlock-audit-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Post-lock data adequacy and ranking safety audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AUTHORITY_RUN_ID: '30228371687'
+      AUTHORITY_RUN_ATTEMPT: '1'
+      AUTHORITY_SOURCE_HEAD_SHA: '8bd55dc85be478800a88f5a494555c574b7c589d'
+      AUTHORITY_DATA_SET_SHA256: 'a95c912db2f8e1525262cf142f0de4709be17a2144931985ae7547f77766f300'
+      PYTHONPATH: .
+    steps:
+      - name: Checkout post-lock audit child
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile audit tool
+        run: python -m py_compile backend/tools/r7a4d_strategy11_postlock_audit_v1.py
+
+      - name: Download authority Replay A aggregate
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+          path: authority/run-A
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download final STRUCTURE_LOCK PASS
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v3-7-30245926090-attempt-1
+          path: authority/lock
+          github-token: ${{ github.token }}
+          run-id: 30245926090
+
+      - name: Verify immutable authority lineage
+        run: |
+          test -f authority/lock/final.json
+          test -f authority/run-A/strategy11_orchestrator_v1/summary.json
+          test -f authority/run-A/strategy11_final_roster_v1/summary.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          final = json.loads(Path('authority/lock/final.json').read_text())
+          orchestrator = json.loads(Path('authority/run-A/strategy11_orchestrator_v1/summary.json').read_text())
+          assert final.get('state') == 'PASS', final
+          assert not final.get('blockers'), final
+          assert final.get('deterministic_full_replay') is True, final
+          assert final.get('protected_mutations') == [], final
+          lineage = orchestrator.get('lineage') or {}
+          assert lineage.get('data_set_sha256') == os.environ['AUTHORITY_DATA_SET_SHA256'], lineage
+          assert orchestrator.get('strategy_count') == 25, orchestrator
+          assert orchestrator.get('state') == 'PASS', orchestrator
+          print(json.dumps({
+            'structure_lock': final.get('state'),
+            'data_set_sha256': lineage.get('data_set_sha256'),
+            'strategy_count': orchestrator.get('strategy_count'),
+          }, sort_keys=True))
+          PY
+
+      - name: Run read-only post-lock audit
+        run: |
+          python backend/tools/r7a4d_strategy11_postlock_audit_v1.py \
+            --run-root authority/run-A \
+            --lock-root authority/lock \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_postlock_audit_v1
+
+      - name: Write audit summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('artifacts/strategy11_postlock_audit_v1/summary.json')
+          if not path.is_file():
+              raise SystemExit('AUDIT_SUMMARY_MISSING')
+          data = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 post-lock audit\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Exact summaries: {data['exact_summary_count']}/25\n")
+              out.write(f"- Candidate results: {data['candidate_result_count']}\n")
+              out.write(f"- Accepted candidates: {data['accepted_candidate_count']}\n")
+              out.write(f"- Final roster: {data['final_roster_count']}\n")
+              out.write(f"- Fresh trades: total={data['fresh_trade_count_total']}, max/candidate={data['fresh_trade_count_max_per_candidate']}\n")
+              out.write(f"- MFE/MAE: {data['mfe_present']}/{data['mae_present']}\n")
+              out.write(f"- Cost/funding/latency stress: {data['cost_stress_grid_present']}/{data['funding_stress_present']}/{data['latency_stress_present']}\n")
+              out.write(f"- Low-sample metric explosions: {data['low_sample_metric_explosion_count']}\n")
+              out.write(f"- Gemini allowed: {data['gemini_allowed']}\n")
+              out.write(f"- Auto-improvement allowed: {data['auto_improvement_allowed']}\n")
+              out.write(f"- Next: `{data['next']}`\n")
+              if data['blockers']:
+                  out.write('\n## Blockers\n')
+                  for blocker in data['blockers']:
+                      out.write(f"- `{blocker}`\n")
+          PY
+
+      - name: Upload post-lock audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-postlock-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_postlock_audit_v1
+          if-no-files-found: error
+          retention-days: 30

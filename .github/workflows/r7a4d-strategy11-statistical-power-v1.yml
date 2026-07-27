@@ -1,0 +1,129 @@
+name: R7A4D Strategy11 Statistical Power V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-evidence-visualization-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_statistical_power_v1.py
+      - .github/workflows/r7a4d-strategy11-statistical-power-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-statistical-power-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  power_plan:
+    name: Strategy11 statistical power and window plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile power planner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_statistical_power_v1.py
+      - name: Download pre-diagnosis authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-wait-pool-pre-diagnosis-v1-30313492251-attempt-1
+          path: artifacts/pre_diagnosis
+          github-token: ${{ github.token }}
+          run-id: 30313492251
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify inputs
+        run: |
+          test -f artifacts/pre_diagnosis/strategies.json
+          test "$(find artifacts/evidence -mindepth 2 -maxdepth 2 -name baseline_trades.json | wc -l)" -eq 25
+      - name: Compute data-rate and power plan
+        run: |
+          python backend/tools/r7a4d_strategy11_statistical_power_v1.py \
+            --pre-diagnosis artifacts/pre_diagnosis/strategies.json \
+            --evidence-root artifacts/evidence \
+            --out artifacts/strategy11_statistical_power_v1
+      - name: Assert planning contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/strategy11_statistical_power_v1')
+          d=json.loads((root/'summary.json').read_text())
+          rows=json.loads((root/'strategies.json').read_text())['rows']
+          assert d['state']=='PASS_STATISTICAL_WINDOW_PLAN', d
+          assert d['pool_size']==22 and len(rows)==22, d
+          assert d['zero_signal_strategy_count']==13, d
+          assert d['performance_claim_allowed'] is False, d
+          assert d['window_contract']['bars']==480 and d['window_contract']['days']==5.0, d
+          assert all(row['bh_fdr_contract']['state']=='COHORT_DEPENDENT' for row in rows), d
+          assert all(row['mean_detection_target']['authority_gate'] is False for row in rows), d
+          assert d['next']=='ORCHESTRATION_FAILURE_INJECTION', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_statistical_power_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 statistical power/window plan\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Pool: `{d['pool_size']}`\n")
+              out.write(f"- Finite ETA diagnostics: `{d['finite_eta_strategy_count']}`\n")
+              out.write(f"- Unbounded current evidence: `{d['unbounded_eta_strategy_count']}`\n")
+              out.write(f"- Next by rate: `{d['next_five_by_data_rate']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-statistical-power-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_statistical_power_v1
+          if-no-files-found: error
+          retention-days: 90

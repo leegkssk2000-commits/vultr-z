@@ -1,0 +1,87 @@
+name: R7A4D Strategy11 W1 Pipeline Dry Run V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-data-wait-pool-pre-diagnosis-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_w1_pipeline_dry_run_v1.py
+      - .github/workflows/r7a4d-strategy11-w1-pipeline-dry-run-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-w1-pipeline-dry-run-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract_dry_run:
+    name: W1 pipeline fixture contract dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deterministic dependencies
+        run: python -m pip install --disable-pip-version-check numpy pandas
+      - name: Compile W1 dry-run
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_data_wait_pool_compute_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_w1_pipeline_dry_run_v1.py
+      - name: Execute synthetic fixture only
+        run: |
+          python backend/tools/r7a4d_strategy11_w1_pipeline_dry_run_v1.py \
+            --out artifacts/strategy11_w1_pipeline_dry_run_v1 \
+            --compute-source backend/tools/r7a4d_strategy11_data_wait_pool_compute_v1.py
+      - name: Assert fixture-only safety contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_w1_pipeline_dry_run_v1/summary.json').read_text())
+          assert d['state']=='PASS_PIPELINE_CONTRACT', d
+          assert d['fixture_only'] is True and d['performance_claim_allowed'] is False, d
+          assert d['ready_contract']['evaluation_bars']==480, d
+          assert d['ready_contract']['warmup_bars']==220, d
+          assert len(d['ready_contract']['symbols'])==5, d
+          assert d['ready_contract']['rows_per_symbol']==[700,700,700,700,700], d
+          assert set(d['funding_scenarios'])=={'OBSERVED','ADVERSE_P75','ADVERSE_P95'}, d
+          assert len(d['negative_fixture_blocks'])==4, d
+          assert d['pool_contract']['pool_count']==22, d
+          assert d['static_contract']['active_candidate_cap_3'] is True, d
+          assert d['static_contract']['candidate_zero_to_next_window'] is True, d
+          assert d['next']=='EVIDENCE_VISUALIZATION_READY', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_w1_pipeline_dry_run_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 W1 pipeline dry-run\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Fixture only: `{d['fixture_only']}`\n")
+              out.write(f"- Window: `{d['ready_contract']['evaluation_bars']}+{d['ready_contract']['warmup_bars']}` bars\n")
+              out.write(f"- Symbols: `{len(d['ready_contract']['symbols'])}`\n")
+              out.write(f"- Defects blocked: `{len(d['negative_fixture_blocks'])}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-w1-pipeline-dry-run-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_w1_pipeline_dry_run_v1
+          if-no-files-found: error
+          retention-days: 90

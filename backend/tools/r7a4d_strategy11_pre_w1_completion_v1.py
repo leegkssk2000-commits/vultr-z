@@ -16,6 +16,7 @@ SPECS = (
         "run_id": 30302007460,
         "head_sha": "764560062989c58e4c27430e799a78d43c34b997",
         "expected_states": ["PASS"],
+        "legacy_protected_field_optional": True,
     },
     {
         "stage_id": "TURTLE_GEMINI_TRAILING_V1_EVIDENCE_ONLY",

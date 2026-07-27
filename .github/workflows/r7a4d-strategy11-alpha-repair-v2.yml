@@ -1,0 +1,119 @@
+name: R7A4D Strategy11 Alpha Repair V2
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-repair-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy11_alpha_repair_v2.py'
+      - '.github/workflows/r7a4d-strategy11-alpha-repair-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-repair-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  ITERATION1_RUN_ID: '30262701736'
+
+jobs:
+  alpha_repair_v2:
+    name: alpha_combo partial30 and trailing repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile iteration 2 runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_repair_v2.py
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_data_v1/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha_combo authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download verified iteration 1 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-repair-v1-30262701736-attempt-1
+          path: artifacts/strategy11_alpha_repair_v1
+          github-token: ${{ github.token }}
+          run-id: 30262701736
+      - name: Verify immutable inputs and iteration lineage
+        run: |
+          test -f artifacts/strategy11_evidence_data_v1/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/alpha_combo/summary.json
+          test -f artifacts/strategy11_alpha_repair_v1/summary.json
+          test ! -e artifacts/strategy11_evidence_data_v1/sealed/market
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path('artifacts/strategy11_alpha_repair_v1/summary.json').read_text())
+          assert p['strategy_id'] == 'alpha_combo'
+          assert p['state'] == 'HOLD'
+          assert p['eligible_for_sealed_one_shot'] == []
+          assert p['sealed_holdback_read'] is False
+          assert p['next'] == 'ITERATION_2_PARTIAL_OR_TRAILING'
+          PY
+      - name: Run alpha_combo repair iteration 2
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_repair_v2.py \
+            --root . \
+            --fresh-root artifacts/strategy11_evidence_data_v1/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/alpha_combo/summary.json \
+            --iteration1-summary artifacts/strategy11_alpha_repair_v1/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_alpha_repair_v2 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Write iteration 2 summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('artifacts/strategy11_alpha_repair_v2/summary.json')
+          if not p.exists():
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# alpha_combo repair iteration 2\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Eligible for sealed: {data['eligible_for_sealed_one_shot']}\n")
+              out.write(f"- Sealed read: {data['sealed_holdback_read']}\n")
+              for row in data['variants']:
+                  loss = row['loss_metrics']
+                  out.write(
+                      f"- {row['variant_id']}: trades={row['trade_count']} WR={row['win_rate_pct']} "
+                      f"Net={row['net_return_pct_sum']} PF={row['net_profit_factor']} payoff={row['payoff_ratio']} "
+                      f"avg_loss_R={loss['avg_loss_R']} worst_R={loss['worst_net_loss_R']} "
+                      f"breaches={loss['loss_cap_breach_count']} parity={row['parity']['state']}\n"
+                  )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-repair-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_repair_v2
+          if-no-files-found: error
+          retention-days: 30

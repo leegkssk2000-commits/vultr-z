@@ -1,0 +1,115 @@
+name: R7A4D Strategy11 EMA Causal Hold V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-expected-r-feasibility-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_ema_causal_hold_v1.py
+      - .github/workflows/r7a4d-strategy11-ema-causal-hold-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-ema-causal-hold-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ema_causal_hold:
+    name: ema_ribbon_scalp causal hold package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile hold package
+        run: python -m py_compile backend/tools/r7a4d_strategy11_ema_causal_hold_v1.py
+      - name: Download EMA iteration 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v1-30281595921-attempt-1
+          path: artifacts/ema_v1
+          github-token: ${{ github.token }}
+          run-id: 30281595921
+      - name: Download EMA iteration 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v2-30282056363-attempt-1
+          path: artifacts/ema_v2
+          github-token: ${{ github.token }}
+          run-id: 30282056363
+      - name: Download EMA iteration 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v3-30282593225-attempt-1
+          path: artifacts/ema_v3
+          github-token: ${{ github.token }}
+          run-id: 30282593225
+      - name: Download Gemini V3.1 authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-active-research-v3-1-30302007460-attempt-1
+          path: artifacts/gemini_v3_1
+          github-token: ${{ github.token }}
+          run-id: 30302007460
+      - name: Verify immutable inputs
+        run: |
+          test -f artifacts/ema_v1/summary.json
+          test -f artifacts/ema_v2/summary.json
+          test -f artifacts/ema_v3/summary.json
+          test -f artifacts/gemini_v3_1/summary.json
+          test -f artifacts/gemini_v3_1/strategy_analysis/C.json
+      - name: Build causal hold package
+        run: |
+          python backend/tools/r7a4d_strategy11_ema_causal_hold_v1.py \
+            --ema-v1-root artifacts/ema_v1 \
+            --ema-v2-root artifacts/ema_v2 \
+            --ema-v3-root artifacts/ema_v3 \
+            --gemini-root artifacts/gemini_v3_1 \
+            --out artifacts/strategy11_ema_causal_hold_v1
+      - name: Assert hold contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_ema_causal_hold_v1/summary.json').read_text())
+          assert d['state']=='PASS_HOLD_PACKAGE', d
+          assert d['classification']=='RESEARCH_EXHAUSTED_HOLD', d
+          assert d['internal_iteration_budget']['used']==3, d
+          assert d['reopen_conditions']['new_non_overlap_window_required'] is True, d
+          assert d['reopen_conditions']['same_axis_numeric_retuning_forbidden'] is True, d
+          assert d['next']=='DATA_WAIT_POOL_PRE_DIAGNOSIS_22', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_ema_causal_hold_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# ema_ribbon_scalp causal hold package\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Classification: `{d['classification']}`\n")
+              out.write(f"- Tested axes: `{len(d['tested_axes'])}`\n")
+              out.write(f"- Reopen: `{d['current_action']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-ema-causal-hold-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_ema_causal_hold_v1
+          if-no-files-found: error
+          retention-days: 90

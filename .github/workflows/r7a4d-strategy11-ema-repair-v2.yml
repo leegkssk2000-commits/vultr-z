@@ -1,0 +1,128 @@
+name: R7A4D Strategy11 EMA Repair V2
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-ema-repair-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy11_ema_repair_v2.py'
+      - '.github/workflows/r7a4d-strategy11-ema-repair-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-ema-repair-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  ITERATION1_RUN_ID: '30281595921'
+
+jobs:
+  ema_repair_v2:
+    name: ema_ribbon_scalp gate and cost-aware stop
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile EMA iteration 2 runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_ema_repair_v2.py
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_fresh_source/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download ema_ribbon_scalp authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download EMA iteration 1 authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v1-30281595921-attempt-1
+          path: artifacts/strategy11_ema_repair_v1_authority
+          github-token: ${{ github.token }}
+          run-id: 30281595921
+      - name: Verify immutable inputs and iteration lineage
+        run: |
+          test -f artifacts/strategy11_fresh_source/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/ema_ribbon_scalp/summary.json
+          test -f artifacts/strategy11_evidence_v1/ema_ribbon_scalp/baseline_trades.json
+          test -f artifacts/strategy11_ema_repair_v1_authority/summary.json
+          test ! -e artifacts/strategy11_sealed_source
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_ema_repair_v1_authority/summary.json').read_text())
+          assert d['state']=='HOLD'
+          assert d['next']=='EMA_ITERATION_2_GATE_OR_STOP'
+          assert d['sealed_holdback_read'] is False
+          assert d['iteration_budget']['used_iterations']==1
+          assert d['source_run_id']=='30252022416'
+          PY
+      - name: Run EMA repair iteration 2
+        run: |
+          python backend/tools/r7a4d_strategy11_ema_repair_v2.py \
+            --root . \
+            --fresh-root artifacts/strategy11_fresh_source/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/ema_ribbon_scalp/summary.json \
+            --baseline-trades artifacts/strategy11_evidence_v1/ema_ribbon_scalp/baseline_trades.json \
+            --iteration1-summary artifacts/strategy11_ema_repair_v1_authority/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_ema_repair_v2 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Write EMA iteration 2 summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_ema_repair_v2/summary.json')
+          if not p.exists():
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# ema_ribbon_scalp repair iteration 2\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Winner: {d['winner']}\n")
+              out.write(f"- Eligible for sealed: {d['eligible_for_sealed_one_shot']}\n")
+              out.write(f"- Sealed read: {d['sealed_holdback_read']}\n")
+              out.write(f"- Next: {d['next']}\n")
+              if d.get('blockers'):
+                  out.write('- Blockers: ' + ', '.join(d['blockers']) + '\n')
+              for row in d['variants']:
+                  loss=row['loss_metrics']
+                  stress=row['stress_2x_p95_plus_one']['loss_metrics']
+                  comparison=row.get('comparison_to_incumbent') or {}
+                  out.write(
+                      f"- {row['variant_id']}: trades={row['trade_count']} WR={row['win_rate_pct']} "
+                      f"Net={row['net_return_pct_sum']} PF={row['net_profit_factor']} payoff={row['payoff_ratio']} DD={row['max_drawdown_pct']} "
+                      f"avgLossR={loss['avg_loss_R']} worstR={loss['worst_net_loss_R']} breaches={loss['loss_cap_breach_count']} "
+                      f"stressWorstR={stress['worst_net_loss_R']} stressBreaches={stress['loss_cap_breach_count']} "
+                      f"passToSealed={comparison.get('pass_to_sealed')}\n"
+                  )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-ema-repair-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_ema_repair_v2
+          if-no-files-found: error
+          retention-days: 30

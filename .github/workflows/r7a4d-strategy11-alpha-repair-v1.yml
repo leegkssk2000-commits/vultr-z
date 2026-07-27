@@ -1,0 +1,100 @@
+name: R7A4D Strategy11 Alpha Repair V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-data-gate-v1-1
+    paths:
+      - 'backend/research/strategy11_improvement_ssot_v1.json'
+      - 'backend/tools/r7a4d_strategy11_alpha_repair_v1.py'
+      - '.github/workflows/r7a4d-strategy11-alpha-repair-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-repair-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  alpha_repair:
+    name: alpha_combo parity-locked single-axis repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile repair runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_repair_v1.py
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_data_v1/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha_combo authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify immutable inputs
+        run: |
+          test -f artifacts/strategy11_evidence_data_v1/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/alpha_combo/summary.json
+          test ! -e artifacts/strategy11_evidence_data_v1/sealed/market
+      - name: Run alpha_combo repair iteration 1
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_repair_v1.py \
+            --root . \
+            --fresh-root artifacts/strategy11_evidence_data_v1/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/alpha_combo/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_alpha_repair_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Write repair summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('artifacts/strategy11_alpha_repair_v1/summary.json')
+          if not p.exists():
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# alpha_combo repair iteration 1\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Eligible for sealed: {data['eligible_for_sealed_one_shot']}\n")
+              out.write(f"- Sealed read: {data['sealed_holdback_read']}\n")
+              for row in data['variants']:
+                  loss = row['loss_metrics']
+                  out.write(
+                      f"- {row['variant_id']}: trades={row['trade_count']} WR={row['win_rate_pct']} "
+                      f"Net={row['net_return_pct_sum']} PF={row['net_profit_factor']} payoff={row['payoff_ratio']} "
+                      f"avg_loss_R={loss['avg_loss_R']} worst_R={loss['worst_net_loss_R']} "
+                      f"breaches={loss['loss_cap_breach_count']} parity={row['parity']['state']}\n"
+                  )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-repair-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_repair_v1
+          if-no-files-found: error
+          retention-days: 30

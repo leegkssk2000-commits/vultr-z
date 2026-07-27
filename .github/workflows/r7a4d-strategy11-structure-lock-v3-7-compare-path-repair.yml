@@ -1,0 +1,168 @@
+name: R7A4D Strategy11 Structure Lock V3.7 Compare Path Repair
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-structure-lock-v3-6-symmetric-timeouts
+    paths:
+      - '.github/workflows/r7a4d-strategy11-structure-lock-v3-7-compare-path-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-structure-lock-v3-7-compare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare_path_repair:
+    name: Compare-only / restore artifact common root
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact repair commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download immutable V3.6 input
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-input-v3-6-30228371687-attempt-1
+          path: artifacts
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download complete Replay A
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-A-v3-6-30228371687-attempt-1
+          path: compare/raw-A
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Download complete Replay B
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-structure-run-B-v3-6-30228371687-attempt-1
+          path: compare/raw-B
+          github-token: ${{ github.token }}
+          run-id: 30228371687
+
+      - name: Verify authority lineage and restore common root
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import shutil
+          from pathlib import Path
+
+          authority = {
+              'run_id': '30228371687',
+              'run_attempt': '1',
+              'head_sha': '8ced413e434b0192e946d99c68f0917fceb1df0a',
+              'structure_version': 'R7A4D_STRATEGY11_STRUCTURE_LOCK_V3_6_SYMMETRIC_TIMEOUTS',
+              'data_set_sha256': 'a95c912db2f8e1525262cf142f0de4709be17a2144931985ae7547f77766f300',
+          }
+          required = (
+              'strategy11_screen_v1',
+              'strategy11_exact_v1',
+              'strategy11_final_roster_v1',
+              'strategy11_orchestrator_v1',
+          )
+
+          input_root = Path('artifacts/strategy11_structure_lock_v2')
+          assert (input_root / 'capture.json').is_file()
+          assert (input_root / 'preflight.json').is_file()
+          assert (input_root / 'run_id.txt').read_text().strip() == authority['run_id']
+          assert (input_root / 'run_attempt.txt').read_text().strip() == authority['run_attempt']
+          assert (input_root / 'head_sha.txt').read_text().strip() == authority['head_sha']
+          preflight = json.loads((input_root / 'preflight.json').read_text())
+          assert preflight.get('state') == 'PASS' and not preflight.get('blockers')
+          assert (preflight.get('cache') or {}).get('data_set_sha256') == authority['data_set_sha256']
+
+          audit = {
+              'schema_version': '1.0',
+              'authority': 'READ_ONLY_COMPARE_PATH_REPAIR',
+              'authority_run_id': authority['run_id'],
+              'authority_run_attempt': authority['run_attempt'],
+              'authority_head_sha': authority['head_sha'],
+              'replays': {},
+              'canonical_mutated': False,
+              'registry_mutated': False,
+              'runtime_authority_mutated': False,
+          }
+
+          for replay in ('A', 'B'):
+              raw = Path(f'compare/raw-{replay}')
+              target = Path(f'compare/{replay}/artifacts')
+              target.mkdir(parents=True, exist_ok=True)
+              for directory in required:
+                  source = raw / directory
+                  assert source.is_dir(), f'MISSING_RAW_DIR:{replay}:{directory}'
+                  shutil.move(str(source), str(target / directory))
+
+              screen_count = len(list((target / 'strategy11_screen_v1').glob('*/summary.json')))
+              exact_count = len(list((target / 'strategy11_exact_v1').glob('*/summary.json')))
+              assert screen_count == 25, f'SCREEN_COUNT:{replay}:{screen_count}'
+              assert exact_count == 25, f'EXACT_COUNT:{replay}:{exact_count}'
+
+              statuses = []
+              for phase in ('screen', 'exact'):
+                  paths = sorted((raw / 'strategy11_batch_v2' / replay / phase).glob('batch-*.json'))
+                  assert len(paths) == 5, f'BATCH_COUNT:{replay}:{phase}:{len(paths)}'
+                  for path in paths:
+                      payload = json.loads(path.read_text())
+                      assert payload.get('state') == 'PASS' and not payload.get('blockers')
+                      lineage = payload.get('lineage') or {}
+                      for key, value in authority.items():
+                          assert str(lineage.get(key)) == value, f'LINEAGE:{replay}:{phase}:{path.name}:{key}'
+                      statuses.append(hashlib.sha256(path.read_bytes()).hexdigest())
+
+              orchestrator = json.loads((target / 'strategy11_orchestrator_v1/summary.json').read_text())
+              roster = json.loads((target / 'strategy11_final_roster_v1/summary.json').read_text())
+              assert orchestrator.get('state') == 'PASS' and not orchestrator.get('blockers')
+              assert roster.get('state') == 'PASS' and not roster.get('blockers')
+              audit['replays'][replay] = {
+                  'screen_summary_count': screen_count,
+                  'exact_summary_count': exact_count,
+                  'batch_status_count': len(statuses),
+                  'batch_status_sha256': sorted(statuses),
+              }
+
+          out = Path('artifacts/strategy11_structure_lock_v2/compare_path_repair.json')
+          out.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(audit, sort_keys=True))
+          PY
+
+      - name: Compare deterministic replay and protected SHA
+        shell: bash
+        run: |
+          set +e
+          python backend/tools/r7a4d_strategy11_structure_lock.py compare \
+            --root . --run-a compare/A --run-b compare/B \
+            2>&1 | tee strategy11-structure-lock-v3-7.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > strategy11-structure-lock-v3-7.rc
+          exit "$rc"
+
+      - name: Upload repaired final structure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-structure-lock-final-v3-7-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_structure_lock_v2
+            strategy11-structure-lock-v3-7.log
+            strategy11-structure-lock-v3-7.rc
+          if-no-files-found: error
+          retention-days: 30

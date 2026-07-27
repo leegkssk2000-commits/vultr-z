@@ -1,0 +1,145 @@
+name: R7A4D Strategy11 Evidence Visualization V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-w1-pipeline-dry-run-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_evidence_visualization_v1.py
+      - .github/workflows/r7a4d-strategy11-evidence-visualization-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-evidence-visualization-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  visualization:
+    name: Strategy11 evidence visualization readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile visualization generator
+        run: python -m py_compile backend/tools/r7a4d_strategy11_evidence_visualization_v1.py
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/evidence
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download immutable F1/F2/F3 candles
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/fresh_data
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify immutable source set
+        run: |
+          test "$(find artifacts/evidence -mindepth 2 -maxdepth 2 -name summary.json | wc -l)" -eq 25
+          test "$(find artifacts/evidence -mindepth 2 -maxdepth 2 -name baseline_trades.json | wc -l)" -eq 25
+          test -f artifacts/fresh_data/manifest.json
+          test "$(find artifacts/fresh_data/market -name '*.csv' | wc -l)" -eq 15
+      - name: Generate chart and candle evidence
+        run: |
+          python backend/tools/r7a4d_strategy11_evidence_visualization_v1.py \
+            --evidence-root artifacts/evidence \
+            --fresh-root artifacts/fresh_data \
+            --out artifacts/strategy11_evidence_visualization_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Assert visualization contract
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('artifacts/strategy11_evidence_visualization_v1')
+          d=json.loads((root/'summary.json').read_text())
+          assert d['state']=='PASS_VISUALIZATION_READY', d
+          assert d['strategy_count']==25, d
+          assert d['chart_json_svg_pair_count']==100, d
+          assert d['candlestick_evidence_count']>=2, d
+          assert d['performance_claim_allowed'] is False, d
+          assert d['next']=='STATISTICAL_POWER_WINDOW_PLAN', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          for strategy in d['strategy_indexes']:
+              assert Path(strategy['strategy_id']).name == strategy['strategy_id']
+              for item in strategy['visuals']:
+                  if item.get('data_path'):
+                      path=Path(item['data_path'])
+                      assert path.exists(), path
+                      assert hashlib.sha256(path.read_bytes()).hexdigest()==item['data_sha256'], item
+                  if item.get('visual_path'):
+                      path=Path(item['visual_path'])
+                      assert path.exists(), path
+                      assert hashlib.sha256(path.read_bytes()).hexdigest()==item['visual_sha256'], item
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_evidence_visualization_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 evidence visualization\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Strategies: `{d['strategy_count']}`\n")
+              out.write(f"- Chart pairs: `{d['chart_json_svg_pair_count']}`\n")
+              out.write(f"- Candlestick evidence: `{d['candlestick_evidence_count']}`\n")
+              out.write(f"- Performance claim: `{d['performance_claim_allowed']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-evidence-visualization-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_visualization_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -6,12 +6,17 @@ import hashlib
 import json
 import math
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from backend.tools import r7a4d_strategy11_evidence_pipeline_v1 as evidence
 from backend.tools import r7a4d_strategy11_exact as exact

@@ -1,0 +1,126 @@
+name: R7A4D Strategy11 DATA WAIT POOL Pre-Diagnosis V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-ema-causal-hold-v1-1-package
+    paths:
+      - backend/tools/r7a4d_strategy11_data_wait_pool_pre_diagnosis_v1.py
+      - .github/workflows/r7a4d-strategy11-data-wait-pool-pre-diagnosis-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-data-wait-pool-pre-diagnosis-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  pre_diagnosis:
+    name: Strategy11 22-strategy pre-diagnosis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile pre-diagnosis
+        run: python -m py_compile backend/tools/r7a4d_strategy11_data_wait_pool_pre_diagnosis_v1.py
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify immutable evidence set
+        run: |
+          test "$(find artifacts/strategy11_evidence_v1 -mindepth 2 -maxdepth 2 -name summary.json | wc -l)" -eq 25
+          test "$(find artifacts/strategy11_evidence_v1 -mindepth 2 -maxdepth 2 -name baseline_trades.json | wc -l)" -eq 25
+      - name: Run DATA_WAIT_POOL pre-diagnosis
+        run: |
+          python backend/tools/r7a4d_strategy11_data_wait_pool_pre_diagnosis_v1.py \
+            --evidence-root artifacts/strategy11_evidence_v1 \
+            --out artifacts/strategy11_data_wait_pool_pre_diagnosis_v1 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - name: Assert diagnosis contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/strategy11_data_wait_pool_pre_diagnosis_v1')
+          d=json.loads((root/'summary.json').read_text())
+          rows=json.loads((root/'strategies.json').read_text())['rows']
+          assert d['state']=='PASS_PRE_DIAGNOSIS', d
+          assert d['pool_size']==22 and len(rows)==22, d
+          assert d['counts']['total_existing_fresh_trades']==37, d
+          assert d['counts']['zero_signal_strategy_count']==13, d
+          assert set(d['primary_excluded'])=={'alpha_combo','turtle_trend','ema_ribbon_scalp'}, d
+          assert all(row['strategy_id'] not in d['primary_excluded'] for row in rows), d
+          assert d['next']=='W1_PIPELINE_DRY_RUN', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_data_wait_pool_pre_diagnosis_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 DATA_WAIT_POOL pre-diagnosis\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Pool: `{d['pool_size']}`\n")
+              out.write(f"- Existing trades: `{d['counts']['total_existing_fresh_trades']}`\n")
+              out.write(f"- Zero-signal strategies: `{d['counts']['zero_signal_strategy_count']}`\n")
+              out.write(f"- Next likely: `{d['next_likely_to_reach_12_by_observed_rate']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-data-wait-pool-pre-diagnosis-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_wait_pool_pre_diagnosis_v1
+          if-no-files-found: error
+          retention-days: 90

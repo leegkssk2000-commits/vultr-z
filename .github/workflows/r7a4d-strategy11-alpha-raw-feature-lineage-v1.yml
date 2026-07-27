@@ -1,0 +1,92 @@
+name: R7A4D Strategy11 Alpha Raw Feature Lineage V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-cost-aware-gate-causal-audit-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_alpha_raw_feature_lineage_v1.py
+      - .github/workflows/r7a4d-strategy11-alpha-raw-feature-lineage-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-raw-feature-lineage-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  raw_feature_lineage:
+    name: alpha_combo raw feature lineage audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile lineage runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_raw_feature_lineage_v1.py
+      - name: Download immutable alpha replay authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-cost-aware-stop-v1-30278422559-attempt-1
+          path: artifacts/strategy11_alpha_cost_aware_stop_v1
+          github-token: ${{ github.token }}
+          run-id: 30278422559
+      - name: Verify authority files
+        run: |
+          test -f artifacts/strategy11_alpha_cost_aware_stop_v1/INCUMBENT_CONTROL/replay-A.json
+          test -f artifacts/strategy11_alpha_cost_aware_stop_v1/INCUMBENT_CONTROL/replay-B.json
+          test -f artifacts/strategy11_alpha_cost_aware_stop_v1/summary.json
+      - name: Audit raw feature lineage
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_raw_feature_lineage_v1.py \
+            --alpha-root artifacts/strategy11_alpha_cost_aware_stop_v1 \
+            --out artifacts/strategy11_alpha_raw_feature_lineage_v1
+      - name: Assert corrected source contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_alpha_raw_feature_lineage_v1/summary.json').read_text())
+          assert d['state']=='PASS_FEATURE_LINEAGE', d
+          assert d['audit']['trade_count']==30, d
+          assert d['audit']['replay_parity'] is True, d
+          assert d['audit']['feature_snapshot_completeness_pct']==100.0, d
+          assert d['audit']['per_trade_lineage_completeness_pct']==100.0, d
+          assert d['audit']['feature_key_count']>=30, d
+          assert d['audit']['gemini_profile_feature_omission_confirmed'] is True, d
+          assert d['next']=='BUILD_LEAKAGE_SAFE_EXPECTED_R_ESTIMATOR', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_alpha_raw_feature_lineage_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# alpha_combo raw feature lineage\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Trades: `{d['audit']['trade_count']}`\n")
+              out.write(f"- Feature completeness: `{d['audit']['feature_snapshot_completeness_pct']}%`\n")
+              out.write(f"- Feature keys: `{d['audit']['feature_key_count']}`\n")
+              out.write(f"- Existing expected-return scalar rows: `{d['audit']['expected_return_scalar_rows']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-raw-feature-lineage-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_raw_feature_lineage_v1
+          if-no-files-found: error
+          retention-days: 90

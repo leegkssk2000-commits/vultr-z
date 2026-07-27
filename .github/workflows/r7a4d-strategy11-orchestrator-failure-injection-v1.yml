@@ -1,0 +1,82 @@
+name: R7A4D Strategy11 Orchestrator Failure Injection V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_orchestrator_failure_injection_v1.py
+      - .github/workflows/r7a4d-strategy11-orchestrator-failure-injection-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-orchestrator-failure-injection-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  failure_injection:
+    name: Strategy11 orchestrator fail-closed fixture suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile control plane and fixture suite
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_orchestrator_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_orchestrator_failure_injection_v1.py
+      - name: Run failure injection suite
+        run: |
+          python backend/tools/r7a4d_strategy11_orchestrator_failure_injection_v1.py \
+            --config backend/research/strategy11_orchestrator_v1.json \
+            --workflow .github/workflows/r7a4d-strategy11-orchestrator-v1.yml \
+            --out artifacts/strategy11_orchestrator_failure_injection_v1
+      - name: Assert fail-closed matrix
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_orchestrator_failure_injection_v1/summary.json').read_text())
+          assert d['state']=='PASS_FAILURE_INJECTION', d
+          assert d['case_count']>=13, d
+          assert d['passed_count']==d['case_count'] and d['failed_count']==0, d
+          required={'REQUIRED_ARTIFACT_MISSING','RUN_HEAD_SHA_MISMATCH','TIMED_OUT','API_429','QUEUED_STALE','IN_PROGRESS_STALE','WAIT_DATA','DEPENDENCY_HOLD'}
+          assert required.issubset(set(d['injected_classes'])), d
+          assert d['next']=='PRE_W1_COMPLETION_AUDIT', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_orchestrator_failure_injection_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 orchestrator failure injection\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Cases: `{d['case_count']}`\n")
+              out.write(f"- Passed: `{d['passed_count']}`\n")
+              out.write(f"- Failed: `{d['failed_count']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-orchestrator-failure-injection-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_orchestrator_failure_injection_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,185 @@
+name: R7A4D Strategy11 Gemini Active Research V3
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-direct-video-v2
+    paths:
+      - backend/tools/r7a4d_strategy11_gemini_active_research_v3.py
+      - backend/research/strategy11_gemini_active_research_v3.json
+      - .github/workflows/r7a4d-strategy11-gemini-active-research-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-gemini-active-research-v3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  active-research:
+    name: Gemini sources charts ledgers and red-team
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check matplotlib pandas
+
+      - name: Compile active research runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_gemini_active_research_v3.py
+
+      - name: Download actual Gemini V2 authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-direct-video-v2-30299621045-attempt-1
+          path: input/gemini-v2
+          github-token: ${{ github.token }}
+          run-id: '30299621045'
+
+      - name: Download alpha authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-sealed-one-shot-v1-30279647167-attempt-1
+          path: input/alpha
+          github-token: ${{ github.token }}
+          run-id: '30279647167'
+
+      - name: Download turtle authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-turtle-repair-v1-30280820928-attempt-1
+          path: input/turtle
+          github-token: ${{ github.token }}
+          run-id: '30280820928'
+
+      - name: Download EMA terminal authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v3-30282593225-attempt-1
+          path: input/ema
+          github-token: ${{ github.token }}
+          run-id: '30282593225'
+
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: '30252022416'
+
+      - name: Run active Gemini research
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_active_research_v3.py \
+            --policy backend/research/strategy11_gemini_active_research_v3.json \
+            --registry backend/research/strategy11_gemini_video_registry_v2.json \
+            --prior-gemini input/gemini-v2/analysis.json \
+            --alpha-root input/alpha \
+            --turtle-root input/turtle \
+            --ema-root input/ema \
+            --evidence-root input/evidence \
+            --out out
+
+      - name: Assert aggressive but safe research coverage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row = json.loads(Path('out/summary.json').read_text())
+          assert row['GEMINI_USED'] is True, row
+          assert row['free_only'] is True, row
+          assert row['gemini_call_count'] >= 5, row
+          assert row['video_analysis_call_count'] >= 1, row
+          assert row['video_attachment_count'] >= 4, row
+          assert row['image_analysis_call_count'] >= 1, row
+          assert row['public_video_count'] >= 4, row
+          assert row['independent_channel_count'] >= 4, row
+          assert row['private_code_sent'] is False, row
+          assert row['account_data_sent'] is False, row
+          assert row['exchange_credentials_sent'] is False, row
+          assert row['canonical_mutated'] is False, row
+          assert row['registry_mutated'] is False, row
+          assert row['execution_allowed'] is False, row
+          print(json.dumps({
+              'state': row['state'],
+              'calls': row['gemini_call_count'],
+              'videos': row['public_video_count'],
+              'papers': row['literature_count'],
+              'images': row['image_attachment_count'],
+              'approved': row['approved_hypothesis_count'],
+              'next': row['next'],
+          }, sort_keys=True))
+          PY
+
+      - name: Write active research summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('out/summary.json')
+          if not path.exists():
+              raise SystemExit(0)
+          row = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 Gemini Active Research V3\n\n')
+              out.write(f"- State: **{row.get('state')}**\n")
+              out.write(f"- Gemini calls: `{row.get('gemini_call_count')}`\n")
+              out.write(f"- Videos/channels: `{row.get('public_video_count')}/{row.get('independent_channel_count')}`\n")
+              out.write(f"- Literature: `{row.get('literature_count')}`\n")
+              out.write(f"- Image evidence: `{row.get('image_attachment_count')}`\n")
+              out.write(f"- Approved hypotheses: `{row.get('approved_hypothesis_count')}`\n")
+              out.write(f"- Next: `{row.get('next')}\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-active-research-v3-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

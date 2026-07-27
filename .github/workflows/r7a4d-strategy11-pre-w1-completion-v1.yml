@@ -1,0 +1,147 @@
+name: R7A4D Strategy11 Pre-W1 Completion V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_pre_w1_completion_v1.py
+      - .github/workflows/r7a4d-strategy11-pre-w1-completion-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-pre-w1-completion-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  completion_audit:
+    name: Strategy11 pre-W1 completion audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile completion audit
+        run: python -m py_compile backend/tools/r7a4d_strategy11_pre_w1_completion_v1.py
+      - name: Download Gemini authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-active-research-v3-1-30302007460-attempt-1
+          path: artifacts/authorities/gemini
+          github-token: ${{ github.token }}
+          run-id: 30302007460
+      - name: Download turtle evidence history
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-turtle-gemini-trailing-v1-30302182624-attempt-1
+          path: artifacts/authorities/turtle
+          github-token: ${{ github.token }}
+          run-id: 30302182624
+      - name: Download alpha expected-R authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-expected-r-feasibility-v1-30312526587-attempt-1
+          path: artifacts/authorities/alpha
+          github-token: ${{ github.token }}
+          run-id: 30312526587
+      - name: Download EMA hold authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-causal-hold-v1-30312995588-attempt-1
+          path: artifacts/authorities/ema
+          github-token: ${{ github.token }}
+          run-id: 30312995588
+      - name: Download pre-diagnosis authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-wait-pool-pre-diagnosis-v1-30313492251-attempt-1
+          path: artifacts/authorities/pre_diagnosis
+          github-token: ${{ github.token }}
+          run-id: 30313492251
+      - name: Download W1 dry-run authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-w1-pipeline-dry-run-v1-30314233936-attempt-1
+          path: artifacts/authorities/w1_dry_run
+          github-token: ${{ github.token }}
+          run-id: 30314233936
+      - name: Download visualization authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-visualization-v1-30314637231-attempt-1
+          path: artifacts/authorities/visualization
+          github-token: ${{ github.token }}
+          run-id: 30314637231
+      - name: Download statistical power authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-statistical-power-v1-30314841419-attempt-1
+          path: artifacts/authorities/statistical_power
+          github-token: ${{ github.token }}
+          run-id: 30314841419
+      - name: Download failure injection authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-orchestrator-failure-injection-v1-30314989121-attempt-1
+          path: artifacts/authorities/failure_injection
+          github-token: ${{ github.token }}
+          run-id: 30314989121
+      - name: Verify authority file set
+        run: |
+          for name in gemini turtle alpha ema pre_diagnosis w1_dry_run visualization statistical_power failure_injection; do
+            test -f "artifacts/authorities/$name/summary.json"
+          done
+      - name: Run pre-W1 completion audit
+        run: |
+          python backend/tools/r7a4d_strategy11_pre_w1_completion_v1.py \
+            --artifacts-root artifacts/authorities \
+            --config backend/research/strategy11_orchestrator_v1.json \
+            --out artifacts/strategy11_pre_w1_completion_v1
+      - name: Assert completion contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_pre_w1_completion_v1/summary.json').read_text())
+          assert d['state']=='PRE_W1_BACKLOG_COMPLETE', d
+          assert d['required_stage_count']==9, d
+          assert d['passed_stage_count']==9 and d['failed_stage_count']==0, d
+          assert d['blockers']==[], d
+          assert d['remaining_data_stage']['state']=='WAIT_DATA', d
+          assert d['remaining_data_stage']['not_before_utc']=='2026-08-01T08:30:00Z', d
+          assert d['next']=='WAIT_DATA_UNTIL_W1_THEN_RUN_PR219_COMPUTE', d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_pre_w1_completion_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 pre-W1 completion audit\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Passed: `{d['passed_stage_count']}/{d['required_stage_count']}`\n")
+              out.write(f"- Blockers: `{len(d['blockers'])}`\n")
+              out.write(f"- Remaining: `{d['remaining_data_stage']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-pre-w1-completion-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_pre_w1_completion_v1
+          if-no-files-found: error
+          retention-days: 90

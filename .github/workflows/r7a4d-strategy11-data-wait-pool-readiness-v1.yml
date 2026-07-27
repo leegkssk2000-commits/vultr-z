@@ -1,0 +1,152 @@
+name: R7A4D Strategy11 Data Wait Pool Readiness V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-ema-repair-v3
+    paths:
+      - 'backend/tools/r7a4d_strategy11_data_wait_pool_readiness_v1.py'
+      - '.github/workflows/r7a4d-strategy11-data-wait-pool-readiness-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-data-wait-pool-readiness-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: DATA_WAIT_POOL_REFRESH readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile readiness gate
+        run: python -m py_compile backend/tools/r7a4d_strategy11_data_wait_pool_readiness_v1.py
+      - name: Download fresh manifest authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_fresh_source/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download sealed contract only
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-sealed-contract-v1-30252022416-attempt-1
+          path: artifacts/strategy11_sealed_contract
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha terminal authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-sealed-one-shot-v1-30279647167-attempt-1
+          path: artifacts/strategy11_alpha_terminal
+          github-token: ${{ github.token }}
+          run-id: 30279647167
+      - name: Download turtle terminal authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-turtle-repair-v1-30280820928-attempt-1
+          path: artifacts/strategy11_turtle_terminal
+          github-token: ${{ github.token }}
+          run-id: 30280820928
+      - name: Download EMA terminal authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v3-30282593225-attempt-1
+          path: artifacts/strategy11_ema_terminal
+          github-token: ${{ github.token }}
+          run-id: 30282593225
+      - name: Verify contract-only sealed access
+        run: |
+          test -f artifacts/strategy11_fresh_source/fresh/manifest.json
+          test -f artifacts/strategy11_sealed_contract/manifest.json
+          test ! -e artifacts/strategy11_sealed_contract/market
+          test "$(find artifacts/strategy11_evidence_v1 -mindepth 2 -maxdepth 2 -name summary.json | wc -l)" -eq 25
+          test -f artifacts/strategy11_alpha_terminal/summary.json
+          test -f artifacts/strategy11_turtle_terminal/summary.json
+          test -f artifacts/strategy11_ema_terminal/summary.json
+      - name: Run DATA_WAIT_POOL readiness gate
+        run: |
+          python backend/tools/r7a4d_strategy11_data_wait_pool_readiness_v1.py \
+            --fresh-manifest artifacts/strategy11_fresh_source/fresh/manifest.json \
+            --sealed-contract-manifest artifacts/strategy11_sealed_contract/manifest.json \
+            --evidence-root artifacts/strategy11_evidence_v1 \
+            --alpha-terminal-summary artifacts/strategy11_alpha_terminal/summary.json \
+            --turtle-terminal-summary artifacts/strategy11_turtle_terminal/summary.json \
+            --ema-terminal-summary artifacts/strategy11_ema_terminal/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_data_wait_pool_readiness_v1
+      - name: Write readiness summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_data_wait_pool_readiness_v1/summary.json')
+          if not p.exists():
+              raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 DATA_WAIT_POOL_REFRESH readiness\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Pool: {d['data_wait_pool_count']} strategies\n")
+              out.write(f"- Available closed bars: {d['available_new_closed_bars']} / {d['required_new_closed_bars']}\n")
+              out.write(f"- Last used end: {d['last_used_evaluation_end']}\n")
+              out.write(f"- Next ready end: {d['next_window_ready_end']}\n")
+              out.write(f"- Next: {d['next']}\n")
+              if d.get('blockers'):
+                  out.write('- Blockers: ' + ', '.join(d['blockers']) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-data-wait-pool-readiness-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_wait_pool_readiness_v1
+          if-no-files-found: error
+          retention-days: 30

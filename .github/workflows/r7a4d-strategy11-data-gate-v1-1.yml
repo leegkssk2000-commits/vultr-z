@@ -1,0 +1,165 @@
+name: R7A4D Strategy11 Data Gate V1.1 Aggregate Only
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-fresh-evidence-v1
+    paths:
+      - 'backend/tools/r7a4d_strategy11_data_gate_v1_1.py'
+      - '.github/workflows/r7a4d-strategy11-data-gate-v1-1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-data-gate-v1-1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_RUN_ATTEMPT: '1'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  aggregate_only:
+    name: Reuse 5 evidence batches / corrected DATA_ADEQUACY
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      data_adequacy: ${{ steps.gate.outputs.data_adequacy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile aggregate-only gate
+        run: python -m py_compile backend/tools/r7a4d_strategy11_data_gate_v1_1.py
+      - name: Download fresh data from completed evidence run
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_data_v1/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download sealed contract only
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-sealed-contract-v1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_data_v1/sealed-contract
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Verify no replay or evidence recomputation
+        run: |
+          test ! -e artifacts/strategy11_evidence_data_v1/sealed/market
+          test "$(find artifacts/strategy11_evidence_v1 -mindepth 2 -maxdepth 2 -name summary.json | wc -l)" -eq 25
+      - name: Run corrected aggregate-only gate
+        id: gate
+        run: |
+          python backend/tools/r7a4d_strategy11_data_gate_v1_1.py \
+            --evidence-root artifacts/strategy11_evidence_v1 \
+            --fresh-manifest artifacts/strategy11_evidence_data_v1/fresh/manifest.json \
+            --sealed-manifest artifacts/strategy11_evidence_data_v1/sealed-contract/manifest.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_data_gate_v1_1
+      - name: Write corrected gate summary
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path('artifacts/strategy11_data_gate_v1_1/summary.json').read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 DATA_ADEQUACY V1.1\n\n')
+              out.write(f"- State: **{data['state']}**\n")
+              out.write(f"- Recomputed batches: {data['recomputed_batches']}\n")
+              out.write(f"- Reused evidence batches: {data['reused_evidence_batches']}\n")
+              out.write(f"- Eligible: {data['eligible_candidate_count']} {data['eligible_candidates']}\n")
+              out.write(f"- Statistics scope: {data['statistics_scope']}\n")
+              out.write(f"- PBO: {(data.get('pbo') or {}).get('pbo')}\n")
+              out.write(f"- Gemini allowed: {data['gemini_allowed']}\n")
+              if data.get('blockers'):
+                  out.write('\n## Blockers\n')
+                  for blocker in data['blockers']:
+                      out.write(f"- `{blocker}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-data-adequacy-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_gate_v1_1
+          if-no-files-found: error
+          retention-days: 30
+
+  gemini_multi_source:
+    name: Gemini high-view multi-source research
+    needs: aggregate_only
+    if: needs.aggregate_only.outputs.data_adequacy == 'PASS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check yt-dlp
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-data-adequacy-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_data_gate_v1_1
+      - name: Run free-only multi-source analysis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_research_v1.py \
+            --gate-summary artifacts/strategy11_data_gate_v1_1/summary.json \
+            --candidate-queue artifacts/strategy11_data_gate_v1_1/candidate_queue.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_gemini_research_v1_1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-multisource-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_gemini_research_v1_1
+          if-no-files-found: error
+          retention-days: 30

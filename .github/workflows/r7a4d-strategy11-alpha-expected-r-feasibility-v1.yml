@@ -1,0 +1,102 @@
+name: R7A4D Strategy11 Alpha Expected-R Feasibility V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-raw-feature-lineage-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_alpha_expected_r_feasibility_v1.py
+      - .github/workflows/r7a4d-strategy11-alpha-expected-r-feasibility-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-expected-r-feasibility-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  expected_r_feasibility:
+    name: alpha_combo leakage-safe expected-R feasibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Compile estimator audit
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_expected_r_feasibility_v1.py
+      - name: Download immutable alpha replay authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-cost-aware-stop-v1-30278422559-attempt-1
+          path: artifacts/strategy11_alpha_cost_aware_stop_v1
+          github-token: ${{ github.token }}
+          run-id: 30278422559
+      - name: Download raw feature lineage authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-raw-feature-lineage-v1-30312377783-attempt-1
+          path: artifacts/strategy11_alpha_raw_feature_lineage_v1
+          github-token: ${{ github.token }}
+          run-id: 30312377783
+      - name: Verify inputs
+        run: |
+          test -f artifacts/strategy11_alpha_cost_aware_stop_v1/INCUMBENT_CONTROL/replay-A.json
+          test -f artifacts/strategy11_alpha_cost_aware_stop_v1/summary.json
+          test -f artifacts/strategy11_alpha_raw_feature_lineage_v1/summary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_alpha_raw_feature_lineage_v1/summary.json').read_text())
+          assert d['state']=='PASS_FEATURE_LINEAGE', d
+          assert d['audit']['feature_snapshot_completeness_pct']==100.0, d
+          PY
+      - name: Run walk-forward expected-R feasibility
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_expected_r_feasibility_v1.py \
+            --alpha-root artifacts/strategy11_alpha_cost_aware_stop_v1 \
+            --lineage-summary artifacts/strategy11_alpha_raw_feature_lineage_v1/summary.json \
+            --out artifacts/strategy11_alpha_expected_r_feasibility_v1
+      - name: Assert fail-closed contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_alpha_expected_r_feasibility_v1/summary.json').read_text())
+          assert d['state'] in {'PASS_TO_ISOLATED_REPLAY','RESEARCH_HOLD'}, d
+          assert d['audit']['oof_prediction_count']>=12, d
+          assert d['estimator_contract']['lookahead'] is False, d
+          assert d['estimator_contract']['parameter_tuning'] is False, d
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False, d
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED', d
+          PY
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('artifacts/strategy11_alpha_expected_r_feasibility_v1/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# alpha_combo expected-R feasibility\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- OOF predictions: `{d['audit']['oof_prediction_count']}`\n")
+              out.write(f"- Winner: `{d['audit']['winner']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-expected-r-feasibility-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_expected_r_feasibility_v1
+          if-no-files-found: error
+          retention-days: 90

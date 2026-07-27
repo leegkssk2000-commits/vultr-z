@@ -1,0 +1,80 @@
+name: R7A4D Strategy11 Alpha Repair V3
+
+on:
+  pull_request:
+    branches: [r7a4d-strategy11-alpha-repair-v2]
+    paths:
+      - 'backend/tools/r7a4d_strategy11_alpha_repair_v3.py'
+      - '.github/workflows/r7a4d-strategy11-alpha-repair-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  ITERATION2_RUN_ID: '30264493769'
+
+jobs:
+  alpha_repair_v3:
+    name: alpha_combo time-stop repair iteration 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile iteration 3 runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_repair_v3.py
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_data_v1/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download alpha_combo authority evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: artifacts/strategy11_evidence_v1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download verified iteration 2 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-repair-v2-30264493769-attempt-1
+          path: artifacts/strategy11_alpha_repair_v2
+          github-token: ${{ github.token }}
+          run-id: 30264493769
+      - name: Verify immutable inputs and iteration lineage
+        run: |
+          test -f artifacts/strategy11_evidence_data_v1/fresh/manifest.json
+          test -f artifacts/strategy11_evidence_v1/alpha_combo/summary.json
+          test -f artifacts/strategy11_alpha_repair_v2/summary.json
+          test ! -e artifacts/strategy11_evidence_data_v1/sealed/market
+      - name: Run alpha_combo repair iteration 3
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_repair_v3.py \
+            --root . \
+            --fresh-root artifacts/strategy11_evidence_data_v1/fresh \
+            --baseline-summary artifacts/strategy11_evidence_v1/alpha_combo/summary.json \
+            --iteration2-summary artifacts/strategy11_alpha_repair_v2/summary.json \
+            --ssot backend/research/strategy11_improvement_ssot_v1.json \
+            --out artifacts/strategy11_alpha_repair_v3 \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-repair-v3-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_alpha_repair_v3
+          if-no-files-found: error
+          retention-days: 30

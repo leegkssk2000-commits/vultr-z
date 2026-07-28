@@ -1,0 +1,154 @@
+name: ZEL Active Mount Owner Minfix V1
+
+on:
+  push:
+    branches:
+      - zel-active-mount-owner-fix-v1
+    paths:
+      - backend/main.py
+      - backend/recovery/zel_active_mount_owner_fix_contract_v1.json
+      - backend/tools/zel_active_mount_owner_audit_v1.py
+      - .github/workflows/zel-active-mount-owner-minfix-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-active-mount-owner-minfix-v1
+  cancel-in-progress: false
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-active-mount-owner-fix-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact minimal patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          p = Path('backend/main.py')
+          s = p.read_text(encoding='utf-8')
+          before = s
+
+          replacements = [
+              (
+                  'def _install_visibility_middlewares(app: FastAPI) -> None:\n    _install_visibility_middlewares(app)\n',
+                  'def _install_visibility_middlewares(app: FastAPI) -> None:\n    """Reserved visibility middleware hook; intentionally no-op."""\n    return None\n',
+                  'dead_visibility_recursion',
+              ),
+              (
+                  '            logger.warning("rail-status router shim attached directly from core_api")',
+                  '            log.warning("rail-status router shim attached directly from core_api")',
+                  'undefined_logger_success_branch',
+              ),
+              (
+                  '            logger.warning("rail-status router shim import failed: %s", rail_router_shim_err)',
+                  '            log.warning("rail-status router shim import failed: %s", rail_router_shim_err)',
+                  'undefined_logger_failure_branch',
+              ),
+          ]
+          applied = []
+          for old, new, label in replacements:
+              if old in s:
+                  if s.count(old) != 1:
+                      raise SystemExit(f'FAIL_NON_UNIQUE_EXACT_REPLACEMENT:{label}:{s.count(old)}')
+                  s = s.replace(old, new)
+                  applied.append(label)
+              elif new not in s:
+                  raise SystemExit(f'FAIL_EXPECTED_SOURCE_MISSING:{label}')
+
+          blocks = [
+              (r'\n# --- ZOS_ALIMI_ROUTER_V1_START ---.*?# --- ZOS_ALIMI_ROUTER_V1_END ---\n', 'duplicate_alimi_v1'),
+              (r'\n# --- ZUI_ALIMI_ROUTER_V1_START ---.*?# --- ZUI_ALIMI_ROUTER_V1_END ---\n', 'duplicate_alimi_zui'),
+              (r'\n# --- ZOS_LICO_ROUTER_V4_START ---.*?# --- ZOS_LICO_ROUTER_V4_END ---\n', 'duplicate_lico_v4'),
+              (r'\n# ZOPS_REPLAY_API_404_INCLUDE_REPAIR_V1\ntry:.*?\n        pass\n', 'duplicate_replay_repair'),
+          ]
+          for pattern, label in blocks:
+              s2, count = re.subn(pattern, '\n', s, flags=re.S)
+              if count > 1:
+                  raise SystemExit(f'FAIL_NON_UNIQUE_BLOCK:{label}:{count}')
+              if count == 1:
+                  s = s2
+                  applied.append(label)
+
+          assertions = {
+              'alimi_direct_imports': s.count('from backend.api.alimi import router'),
+              'lico_loader_defs': s.count('lico_router, LICO_ROUTER_IMPORT_ERR'),
+              'lico_mounts': s.count('app.include_router(lico_router)'),
+              'replay_direct_imports': s.count('from backend.zops_replay_router import router'),
+              'replay_mounts': s.count('app.include_router(zops_replay_router)'),
+              'visibility_recursive_calls': s.count('    _install_visibility_middlewares(app)'),
+              'undefined_logger_rail_calls': s.count('logger.warning("rail-status router shim'),
+          }
+          expected = {
+              'alimi_direct_imports': 1,
+              'lico_loader_defs': 1,
+              'lico_mounts': 1,
+              'replay_direct_imports': 1,
+              'replay_mounts': 1,
+              'visibility_recursive_calls': 0,
+              'undefined_logger_rail_calls': 0,
+          }
+          if assertions != expected:
+              raise SystemExit(f'FAIL_POSTCONDITION:{assertions}')
+
+          if s != before:
+              p.write_text(s, encoding='utf-8')
+
+          Path('out').mkdir(exist_ok=True)
+          Path('out/minfix_status.json').write_text(json.dumps({
+              'state': 'PASS_MINFIX_SOURCE_POSTCONDITIONS',
+              'changed': s != before,
+              'applied': applied,
+              'assertions': assertions,
+              'protected_mutations': 0,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+              'deployment_allowed': False,
+              'service_restart_allowed': False,
+          }, indent=2, sort_keys=True), encoding='utf-8')
+          PY
+      - name: Compile active entrypoint and audit
+        run: |
+          python -m py_compile backend/main.py backend/tools/zel_active_mount_owner_audit_v1.py
+          python backend/tools/zel_active_mount_owner_audit_v1.py --entry backend/main.py --out out/mount_owner_audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/mount_owner_audit.json').read_text())
+          assert d['repeated_module_count'] == 0, d
+          assert d['recursive_function_count'] == 0, d
+          assert d['safety']['protected_mutations'] == 0
+          assert d['safety']['execution_allowed'] is False
+          assert d['safety']['order_authority'] == 'BLOCKED'
+          PY
+          git diff --check
+      - name: Commit source-only patch when needed
+        run: |
+          if git diff --quiet -- backend/main.py; then
+            echo 'NO_SOURCE_CHANGE_REQUIRED'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/main.py
+          git commit -m 'Fix active FastAPI mount ownership and dead recursion'
+          git push origin HEAD:zel-active-mount-owner-fix-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-active-mount-owner-minfix-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

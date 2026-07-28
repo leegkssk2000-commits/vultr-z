@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only GitHub Models reviewer for Strategy11 major research gates.
-
-This client accepts anonymized evidence, rejects private/order-bearing fields,
-performs one JSON-only independent review through GitHub Models, and emits a
-lineage artifact. It has no promotion, execution, runtime, Shadow, Paper,
-Live, registry, router, or order authority.
-"""
+"""Read-only GitHub Models reviewer for Strategy11 major research gates."""
 
 from __future__ import annotations
 
@@ -24,17 +18,8 @@ ENDPOINT = "https://models.github.ai/inference/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o"
 ALLOWED_DECISIONS = {"PASS_TO_NEXT_GATE", "REJECT", "HOLD"}
 FORBIDDEN_KEY_FRAGMENTS = {
-    "account",
-    "api_key",
-    "credential",
-    "exchange_key",
-    "order",
-    "password",
-    "position",
-    "private_key",
-    "secret",
-    "token",
-    "wallet",
+    "account", "api_key", "credential", "exchange_key", "order",
+    "password", "position", "private_key", "secret", "token", "wallet",
 }
 
 
@@ -64,9 +49,6 @@ def load_payload(input_path: str | None) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("INPUT_MUST_BE_JSON_OBJECT")
         return payload
-
-    # Deliberately incomplete non-sensitive fixture. A correct major-gate
-    # reviewer must fail closed because sample size and W2/W3 evidence are absent.
     return {
         "stage": "CORE_CLASSIFICATION_REVIEW",
         "strategy_id": "fixture_strategy",
@@ -97,8 +79,8 @@ def load_payload(input_path: str | None) -> dict[str, Any]:
     }
 
 
-def build_prompt(payload: dict[str, Any]) -> str:
-    contract = {
+def build_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+    schema = {
         "decision": "PASS_TO_NEXT_GATE|REJECT|HOLD",
         "blocker_codes": ["string"],
         "evidence_complete": False,
@@ -106,17 +88,26 @@ def build_prompt(payload: dict[str, Any]) -> str:
         "overfit_risk": "LOW|MEDIUM|HIGH",
         "reason": "one concise sentence",
     }
-    return (
-        "You are the independent third reviewer for Strategy11 major research "
-        "gates only. You have no promotion or execution authority. Return one "
-        "JSON object only and exactly match the contract. Apply these hard rules: "
-        "trades below 30 requires HOLD with LOW_SAMPLE_SIZE; missing W2 or W3 "
-        "requires HOLD with MISSING_OOS_WINDOWS; missing lineage requires HOLD; "
-        "single-score or win-rate-only evidence cannot pass; any protected or "
-        "execution authority must be rejected. Do not infer missing evidence.\n"
-        f"Contract: {canonical_json(contract)}\n"
-        f"Anonymized evidence: {canonical_json(payload)}"
+    criteria = {
+        "LOW_SAMPLE_SIZE": "Use HOLD when trades is below 30.",
+        "MISSING_OOS_WINDOWS": "Use HOLD when W2 or W3 is missing.",
+        "MISSING_LINEAGE": "Use HOLD when lineage fields are incomplete.",
+        "INSUFFICIENT_MULTIMETRIC_EVIDENCE": "Do not pass from win rate or one score alone.",
+    }
+    user_content = (
+        "Classify the anonymized research record using the supplied criteria. "
+        "Return one JSON object matching the schema.\n"
+        f"Schema: {canonical_json(schema)}\n"
+        f"Criteria: {canonical_json(criteria)}\n"
+        f"Record: {canonical_json(payload)}"
     )
+    return [
+        {
+            "role": "system",
+            "content": "Evaluate research evidence conservatively and output JSON only.",
+        },
+        {"role": "user", "content": user_content},
+    ]
 
 
 def strip_code_fence(raw: str) -> str:
@@ -135,12 +126,8 @@ def validate_review(review: Any) -> dict[str, Any]:
     if not isinstance(review, dict):
         raise ValueError("RESPONSE_NOT_JSON_OBJECT")
     required = {
-        "decision",
-        "blocker_codes",
-        "evidence_complete",
-        "oos_supported",
-        "overfit_risk",
-        "reason",
+        "decision", "blocker_codes", "evidence_complete",
+        "oos_supported", "overfit_risk", "reason",
     }
     if set(review) != required:
         raise ValueError("RESPONSE_JSON_SHAPE_MISMATCH")
@@ -161,13 +148,13 @@ def validate_review(review: Any) -> dict[str, Any]:
     return review
 
 
-def call_model(token: str, model: str, prompt: str) -> tuple[str, dict[str, Any]]:
+def call_model(token: str, model: str, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
     request_body = {
         "model": model,
         "temperature": 0,
         "max_tokens": 512,
         "response_format": {"type": "json_object"},
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
     }
     request = urllib.request.Request(
         ENDPOINT,
@@ -192,8 +179,7 @@ def call_model(token: str, model: str, prompt: str) -> tuple[str, dict[str, Any]
     choices = envelope.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ValueError("RESPONSE_CHOICES_MISSING")
-    message = choices[0].get("message", {})
-    content = message.get("content")
+    content = choices[0].get("message", {}).get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValueError("RESPONSE_CONTENT_MISSING")
     return content, envelope
@@ -233,16 +219,14 @@ def main() -> int:
     try:
         if not token:
             raise RuntimeError("HOLD_GITHUB_TOKEN_MISSING")
-
         payload = load_payload(args.input)
         assert_anonymized(payload)
         payload_text = canonical_json(payload)
-        prompt = build_prompt(payload)
+        messages = build_messages(payload)
+        prompt_text = canonical_json(messages)
         model = os.environ.get("GITHUB_MODELS_MODEL", DEFAULT_MODEL)
-
-        raw_response, envelope = call_model(token, model, prompt)
+        raw_response, envelope = call_model(token, model, messages)
         review = validate_review(json.loads(strip_code_fence(raw_response)))
-
         artifact = {
             **base_artifact,
             "status": "PASS_GITHUB_MODELS_CONNECTION",
@@ -252,7 +236,7 @@ def main() -> int:
             "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
             "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
             "input_sha": sha256_text(payload_text),
-            "prompt_sha": sha256_text(prompt),
+            "prompt_sha": sha256_text(prompt_text),
             "response_sha": sha256_text(raw_response),
             "latency_ms": round((time.monotonic() - started) * 1000),
             "usage": envelope.get("usage", {}),
@@ -264,7 +248,6 @@ def main() -> int:
             f"decision={review['decision']} artifact={output_path}"
         )
         return 0
-
     except Exception as exc:
         text = str(exc)
         blocker = text if text.startswith(("HOLD_", "FORBIDDEN_", "INPUT_", "RESPONSE_")) else type(exc).__name__

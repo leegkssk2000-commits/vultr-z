@@ -1,0 +1,87 @@
+name: R7A4D Strategy11 Pre-W1 Runner Coverage Audit V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/research/strategy11_pre_w1_runner_contract_v1.json
+      - backend/tools/r7a4d_strategy11_pre_w1_runner_coverage_audit_v1.py
+      - .github/workflows/r7a4d-strategy11-pre-w1-runner-coverage-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-pre-w1-runner-coverage-audit-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only executable runner coverage audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile audit runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_pre_w1_runner_coverage_audit_v1.py
+
+      - name: Run read-only coverage audit
+        run: |
+          python backend/tools/r7a4d_strategy11_pre_w1_runner_coverage_audit_v1.py \
+            --root . \
+            --contract backend/research/strategy11_pre_w1_runner_contract_v1.json \
+            --out artifacts/strategy11_pre_w1_runner_coverage_audit_v1
+
+      - name: Assert audit and safety contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('artifacts/strategy11_pre_w1_runner_coverage_audit_v1/status.json')
+          row = json.loads(path.read_text(encoding='utf-8'))
+          assert row['state'] in {'PASS_COVERAGE', 'IMPLEMENTATION_REQUIRED'}, row
+          assert row['blockers'] == [], row
+          assert row['required_count'] >= 10, row
+          assert row['covered_count'] + row['missing_count'] == row['required_count'], row
+          assert row['canonical_mutated'] is False, row
+          assert row['registry_mutated'] is False, row
+          assert row['protected_mutations'] == 0, row
+          assert row['execution_allowed'] is False, row
+          assert row['execution_authority'] == 'NONE', row
+          assert row['order_authority'] == 'BLOCKED', row
+          assert row['promotion_authority'] is False, row
+          assert row['merge_performed'] is False, row
+          print(json.dumps({
+              'state': row['state'],
+              'covered': row['covered_count'],
+              'missing': row['missing_count'],
+              'next': row['next'],
+          }, sort_keys=True))
+          PY
+
+      - name: Write GitHub Step Summary
+        if: always()
+        run: |
+          if [[ -f artifacts/strategy11_pre_w1_runner_coverage_audit_v1/coverage.md ]]; then
+            cat artifacts/strategy11_pre_w1_runner_coverage_audit_v1/coverage.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage audit artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-pre-w1-runner-coverage-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_pre_w1_runner_coverage_audit_v1
+          if-no-files-found: error
+          retention-days: 90

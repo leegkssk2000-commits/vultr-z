@@ -1,0 +1,195 @@
+name: ZEL Second Pass Ops Safety Audit V1
+
+on:
+  pull_request:
+    branches:
+      - zel-active-backend-recovery-v1
+    paths:
+      - backend/tools/zel_second_pass_ops_safety_audit_v1.py
+      - backend/research/strategy11_ai_quota_error_budget_v1.json
+      - .github/workflows/zel-second-pass-ops-safety-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-second-pass-ops-safety-audit-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run repository owner, DB, dependency, restore and AI bypass audit
+        run: |
+          mkdir -p out
+          python -m py_compile backend/tools/zel_second_pass_ops_safety_audit_v1.py
+          python backend/tools/zel_second_pass_ops_safety_audit_v1.py \
+            --root . \
+            --out out/repository_audit.json
+
+      - name: Verify AI quota and authority contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path=Path('backend/research/strategy11_ai_quota_error_budget_v1.json')
+          data=json.loads(path.read_text())
+          assert data['policy']=='INTERNAL_CONSERVATIVE_BUDGET_NOT_PROVIDER_LIMIT'
+          assert set(data['providers'])=={'gemini','groq','workers_ai','github_models'}
+          assert data['paid_fallback_allowed'] is False
+          assert data['promotion_authority'] is False
+          assert data['protected_mutations']==0
+          assert data['execution_allowed'] is False
+          assert data['order_authority']=='BLOCKED'
+          Path('out/ai_quota_contract.json').write_text(json.dumps({'state':'PASS_AI_QUOTA_ERROR_BUDGET_CONTRACT','contract_sha256':__import__('hashlib').sha256(path.read_bytes()).hexdigest(),'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'},indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture active service, timer, writer and DB snapshot read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" > out/remote_runtime_audit.json <<'PY'
+          import json,os,subprocess,time
+          from pathlib import Path
+
+          def run(args):
+              p=subprocess.run(args,text=True,capture_output=True,check=False,timeout=20)
+              return {'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr[:500]}
+
+          services=run(['systemctl','list-units','--type=service','--all','--no-legend','--no-pager'])
+          timers=run(['systemctl','list-timers','--all','--no-legend','--no-pager'])
+          processes=run(['ps','-eo','pid=,etimes=,args='])
+          terms=('z-backend','strategy11','telegram','alimi','writer','shadow','paper','collector')
+          selected_services=[line.strip() for line in services['stdout'].splitlines() if any(t in line.lower() for t in terms)]
+          selected_timers=[line.strip() for line in timers['stdout'].splitlines() if any(t in line.lower() for t in terms)]
+          selected_processes=[line.strip() for line in processes['stdout'].splitlines() if any(t in line.lower() for t in terms) and 'python3 -' not in line]
+
+          db_files=[]
+          root=Path('/home/z/z')
+          if root.exists():
+              for path in root.rglob('*'):
+                  try:
+                      if path.is_file() and path.suffix.lower() in {'.db','.sqlite','.sqlite3'} and not any(part in {'backup','backups','archive','archives','rollback','restore','snapshot','snapshots','.venv','venv'} for part in path.parts):
+                          st=path.stat()
+                          db_files.append({'path':str(path),'size_bytes':st.st_size,'mtime_epoch':int(st.st_mtime)})
+                  except Exception:
+                      continue
+          db_files=sorted(db_files,key=lambda r:r['path'])[:200]
+          result={
+              'state':'PASS_REMOTE_RUNTIME_AUDIT_CAPTURED',
+              'captured_at_epoch':int(time.time()),
+              'selected_services':selected_services,
+              'selected_timers':selected_timers,
+              'selected_processes':selected_processes,
+              'active_db_files':db_files,
+              'service_count':len(selected_services),
+              'timer_count':len(selected_timers),
+              'process_count':len(selected_processes),
+              'db_file_count':len(db_files),
+              'deployment_changed':False,
+              'service_changed':False,
+              'process_changed':False,
+              'database_changed':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'order_authority':'BLOCKED'
+          }
+          print(json.dumps(result,sort_keys=True))
+          PY
+
+      - name: Build combined adjudication artifact
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          repo=json.loads(Path('out/repository_audit.json').read_text())
+          remote=json.loads(Path('out/remote_runtime_audit.json').read_text())
+          quota=json.loads(Path('out/ai_quota_contract.json').read_text())
+          blockers=list(repo.get('blocker_codes',[]))
+          if remote['process_count']>12: blockers.append('HIGH_ACTIVE_WRITER_PROCESS_COUNT_REVIEW')
+          if remote['db_file_count']>8: blockers.append('MULTIPLE_ACTIVE_DB_PATHS_REVIEW')
+          result={
+              'schema_version':'zel.second_pass_ops_safety_combined.v1',
+              'state':'HOLD_SINGLE_CAUSE_ADJUDICATION_REQUIRED' if blockers else 'PASS_SECOND_PASS_OPS_SAFETY_CAPTURED',
+              'blocker_codes':sorted(set(blockers)),
+              'repository_state':repo['state'],
+              'remote_state':remote['state'],
+              'ai_quota_state':quota['state'],
+              'owner_candidate_counts':{k:v['candidate_count'] for k,v in repo['owner_candidates'].items()},
+              'db_reference_count':len(repo['db_path_references']),
+              'active_service_count':remote['service_count'],
+              'active_timer_count':remote['timer_count'],
+              'active_process_count':remote['process_count'],
+              'active_db_file_count':remote['db_file_count'],
+              'dependency_manifest_count':len(repo['surfaces']['dependency_manifests']),
+              'ai_router_bypass_candidate_count':len(repo['surfaces']['direct_ai_router_bypass_candidates']),
+              'backup_restore_fixture':repo['backup_restore_fixture']['state'],
+              'next':'READ_ONLY_SINGLE_CAUSE_ADJUDICATION_THEN_MINIMAL_PATCH_OR_FREEZE',
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'order_authority':'BLOCKED'
+          }
+          Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+              f.write('# ZEL second-pass operational safety audit\n\n')
+              f.write(f"- State: **{result['state']}**\n")
+              f.write(f"- Blockers: `{result['blocker_codes']}`\n")
+              f.write(f"- Active service/timer/process/DB: `{result['active_service_count']}/{result['active_timer_count']}/{result['active_process_count']}/{result['active_db_file_count']}`\n")
+              f.write(f"- AI router bypass candidates: `{result['ai_router_bypass_candidate_count']}`\n")
+              f.write(f"- Backup/restore fixture: `{result['backup_restore_fixture']}`\n")
+          PY
+
+      - name: Assert safety invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ('repository_audit.json','remote_runtime_audit.json','status.json'):
+              data=json.loads((Path('out')/name).read_text())
+              assert data['protected_mutations']==0
+              assert data['execution_allowed'] is False
+              assert data['order_authority']=='BLOCKED'
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-second-pass-ops-safety-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

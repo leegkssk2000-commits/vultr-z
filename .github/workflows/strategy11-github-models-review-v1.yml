@@ -1,0 +1,107 @@
+name: Strategy11 GitHub Models Review v1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'scripts/strategy11_github_models_review.py'
+      - '.github/workflows/strategy11-github-models-review-v1.yml'
+  push:
+    branches:
+      - master
+      - 'r7a4d-strategy11-github-models-review-*'
+    paths:
+      - 'scripts/strategy11_github_models_review.py'
+      - '.github/workflows/strategy11-github-models-review-v1.yml'
+
+permissions:
+  contents: read
+  models: read
+
+concurrency:
+  group: strategy11-github-models-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  github-models-review-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_MODELS_MODEL: openai/gpt-4o
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify GitHub Models token context
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GITHUB_TOKEN:-}" || {
+            echo 'HOLD_GITHUB_TOKEN_MISSING'
+            exit 1
+          }
+          echo 'PASS_GITHUB_TOKEN_PRESENT'
+
+      - name: Compile read-only reviewer
+        run: python -m py_compile scripts/strategy11_github_models_review.py
+
+      - name: Run live GitHub Models major-gate smoke
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/strategy11_github_models_review.py \
+            --output artifacts/strategy11_github_models_review_smoke.json
+
+      - name: Assert fail-closed safety contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('artifacts/strategy11_github_models_review_smoke.json')
+          if not path.exists():
+              raise SystemExit('HOLD_GITHUB_MODELS_ARTIFACT_MISSING')
+          result = json.loads(path.read_text(encoding='utf-8'))
+          expected = {
+              'promotion_authority': False,
+              'protected_mutations': 0,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+              'research_only': True,
+              'token_sha_recorded': False,
+          }
+          for key, value in expected.items():
+              if result.get(key) != value:
+                  raise SystemExit(f'HOLD_GITHUB_MODELS_SAFETY_CONTRACT:{key}')
+          if result.get('status') != 'PASS_GITHUB_MODELS_CONNECTION':
+              raise SystemExit(result.get('blocker_code', 'HOLD_GITHUB_MODELS_CONNECTION'))
+          review = result.get('review', {})
+          if review.get('decision') != 'HOLD':
+              raise SystemExit('HOLD_GITHUB_MODELS_FAIL_CLOSED_NOT_ENFORCED')
+          blockers = set(review.get('blocker_codes', []))
+          required = {'LOW_SAMPLE_SIZE', 'MISSING_OOS_WINDOWS'}
+          if not required.issubset(blockers):
+              raise SystemExit('HOLD_GITHUB_MODELS_BLOCKER_CONTRACT')
+          print('PASS_GITHUB_MODELS_SAFETY_CONTRACT')
+          PY
+
+      - name: Upload GitHub Models smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-github-models-review-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_github_models_review_smoke.json
+          if-no-files-found: error
+          retention-days: 30

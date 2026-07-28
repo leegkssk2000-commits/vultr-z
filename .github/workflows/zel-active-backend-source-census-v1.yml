@@ -1,4 +1,4 @@
-name: ZEL Active Backend Source Census V2.1
+name: ZEL Active Backend Source Census V2.2
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: zel-active-backend-source-census-v2-1-${{ github.event.pull_request.number || github.ref }}
+  group: zel-active-backend-source-census-v2-2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -123,7 +123,7 @@ jobs:
               assert safety['execution_allowed'] is False
               assert safety['order_authority'] == 'BLOCKED'
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL active backend source census v2.1\n\n')
+              out.write('# ZEL active backend source census v2.2\n\n')
               out.write(f"- Dynamic source: **{census['state']}**\n")
               out.write(f"- OpenAPI: **{openapi['state']}**\n")
               out.write(f"- Route ownership: **{routes['state']}**\n")
@@ -141,7 +141,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY_BRANCH: zel-active-backend-recovery-v1
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          trap 'rc=$?; printf "{\"state\":\"FAIL_RECOVERY_BRANCH_STAGE\",\"rc\":%s,\"line\":%s,\"deployment_changed\":false,\"service_changed\":false,\"execution_allowed\":false,\"order_authority\":\"BLOCKED\"}\n" "$rc" "$LINENO" > "$GITHUB_WORKSPACE/out/recovery_branch_status.json"; exit "$rc"' ERR
+
           python - <<'PY'
           import json
           from pathlib import Path
@@ -225,14 +227,14 @@ jobs:
           git config user.name 'ZEL Authority Recovery'
           git config user.email 'zel-authority-recovery@users.noreply.github.com'
           git add --pathspec-from-file=/tmp/recovery_paths.txt
-          git diff --cached --check
           git commit -m 'Recover active FastAPI backend source authority'
           RECOVERY_SHA="$(git rev-parse HEAD)"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "HEAD:refs/heads/$RECOVERY_BRANCH"
           COUNTS="$(cat /tmp/recovery_counts.json)"
           printf '{"state":"PASS_RECOVERY_BRANCH_CREATED","branch":"%s","commit_sha":"%s","counts":%s,"deployment_changed":false,"service_changed":false,"execution_allowed":false,"order_authority":"BLOCKED"}\n' \
-            "$RECOVERY_BRANCH" "$RECOVERY_SHA" "$COUNTS" > out/recovery_branch_status.json
+            "$RECOVERY_BRANCH" "$RECOVERY_SHA" "$COUNTS" > "$GITHUB_WORKSPACE/out/recovery_branch_status.json"
+          trap - ERR
 
       - name: Remove SSH key
         if: always()
@@ -242,7 +244,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-active-backend-source-census-v2-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-active-backend-source-census-v2-2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

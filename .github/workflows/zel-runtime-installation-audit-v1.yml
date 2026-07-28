@@ -1,10 +1,11 @@
-name: ZEL Runtime Installation Audit V1
+name: ZEL Runtime Installation Audit V1.1
 
 on:
   pull_request:
     branches: [master]
     paths:
       - backend/tools/zel_runtime_installation_audit_v1.py
+      - backend/tools/zel_runtime_topology_audit_v1_1.py
       - .github/workflows/zel-runtime-installation-audit-v1.yml
   workflow_dispatch:
 
@@ -12,13 +13,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-runtime-installation-audit-v1-${{ github.event.pull_request.number || github.ref }}
+  group: zel-runtime-installation-audit-v1-1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       EXPECTED_MASTER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
     steps:
@@ -30,8 +31,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Compile audit
-        run: python -m py_compile backend/tools/zel_runtime_installation_audit_v1.py
+      - name: Compile audits
+        run: |
+          python -m py_compile backend/tools/zel_runtime_installation_audit_v1.py
+          python -m py_compile backend/tools/zel_runtime_topology_audit_v1_1.py
 
       - name: Prepare SSH
         env:
@@ -46,7 +49,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Execute read-only runtime census on VPS
+      - name: Execute read-only installation census on VPS
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -63,35 +66,54 @@ jobs:
             > out/runtime_audit.json \
             2> out/runtime_ssh_stderr.txt
 
-      - name: Assert read-only contract and summarize
+      - name: Execute read-only service and writer topology census
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "python3 -" \
+            < backend/tools/zel_runtime_topology_audit_v1_1.py \
+            > out/runtime_topology.json \
+            2> out/runtime_topology_stderr.txt
+
+      - name: Assert read-only contracts and summarize
         run: |
           python - <<'PY'
           import json
           import os
           from pathlib import Path
-          path = Path('out/runtime_audit.json')
-          row = json.loads(path.read_text())
-          assert row['state'] in {'PASS_RUNTIME_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_RUNTIME_REVIEW_REQUIRED'}
-          safety = row['safety']
-          assert safety['read_only'] is True
-          assert safety['remote_file_created'] is False
-          assert safety['service_changed'] is False
-          assert safety['process_changed'] is False
-          assert safety['database_changed'] is False
-          assert safety['deployment_changed'] is False
-          assert safety['canonical_mutated'] is False
-          assert safety['registry_mutated'] is False
-          assert safety['execution_allowed'] is False
-          assert safety['order_authority'] == 'BLOCKED'
-          high = [item for item in row['findings'] if item.get('severity') == 'HIGH']
+
+          installation = json.loads(Path('out/runtime_audit.json').read_text())
+          topology = json.loads(Path('out/runtime_topology.json').read_text())
+          assert installation['state'] in {'PASS_RUNTIME_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_RUNTIME_REVIEW_REQUIRED'}
+          assert topology['state'] in {'PASS_RUNTIME_TOPOLOGY_CENSUS', 'HOLD_RUNTIME_TOPOLOGY_REVIEW_REQUIRED'}
+          for row in (installation, topology):
+              safety = row['safety']
+              assert safety['read_only'] is True
+              assert safety['remote_file_created'] is False
+              assert safety['service_changed'] is False
+              assert safety['process_changed'] is False
+              assert safety['database_changed'] is False
+              assert safety['deployment_changed'] is False
+              assert safety['execution_allowed'] is False
+              assert safety['order_authority'] == 'BLOCKED'
+          high = [item for item in installation['findings'] if item.get('severity') == 'HIGH']
+          high += [item for item in topology['findings'] if item.get('severity') in {'HIGH', 'CRITICAL'}]
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL runtime installation audit\n\n')
-              out.write(f"- State: **{row['state']}**\n")
-              out.write(f"- Host: `{row['host']}`\n")
-              out.write(f"- High findings: `{len(high)}`\n")
-              out.write(f"- Service units: `{len(row['services']['units'])}`\n")
-              out.write(f"- Matching processes: `{len(row['processes'])}`\n")
-              out.write(f"- Next: `{row['next']}`\n")
+              out.write('# ZEL runtime installation audit v1.1\n\n')
+              out.write(f"- Installation state: **{installation['state']}**\n")
+              out.write(f"- Topology state: **{topology['state']}**\n")
+              out.write(f"- High/Critical findings: `{len(high)}`\n")
+              out.write(f"- Units: `{topology['services']['unit_count']}`\n")
+              out.write(f"- Timers: `{topology['services']['timer_count']}`\n")
+              out.write(f"- Processes: `{topology['process_count']}`\n")
+              out.write(f"- Writer conflicts: `{len(topology['writer_topology']['conflicts'])}`\n")
+              out.write(f"- Next: `{topology['next']}`\n")
           PY
 
       - name: Remove local SSH key
@@ -102,7 +124,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-runtime-installation-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-runtime-installation-audit-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

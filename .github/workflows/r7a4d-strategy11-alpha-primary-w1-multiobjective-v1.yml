@@ -1,0 +1,231 @@
+name: R7A4D Strategy11 Alpha Primary W1 Multiobjective V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-multiobjective-auto-v1-clean
+    paths:
+      - backend/tools/r7a4d_strategy11_alpha_primary_w1_multiobjective_v1.py
+      - backend/research/alpha_primary_w1_multiobjective_v1.json
+      - .github/workflows/r7a4d-strategy11-alpha-primary-w1-multiobjective-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-alpha-primary-w1-multiobjective-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  DATA_WAIT_POOL_HEAD_SHA: d4926a6f0a3c5e9632ae74321baf21d87247445b
+
+jobs:
+  confirm-or-wait:
+    name: Shared-W1 alpha confirmation or safe WAIT_DATA
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile PRIMARY_W1_MULTIOBJECTIVE_CONFIRMATION runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_primary_w1_multiobjective_v1.py
+
+      - name: Resolve latest successful PR219 source artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          head = os.environ['DATA_WAIT_POOL_HEAD_SHA']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          def get(url):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          query = urllib.parse.urlencode({'head_sha': head, 'status': 'success', 'per_page': 100})
+          runs = get(f'https://api.github.com/repos/{repo}/actions/runs?{query}').get('workflow_runs', [])
+          runs = [row for row in runs if row.get('name') == 'R7A4D Strategy11 DATA WAIT POOL Compute V1' and row.get('conclusion') == 'success']
+          runs.sort(key=lambda row: (row.get('updated_at') or '', int(row.get('id') or 0)), reverse=True)
+          selected = None
+          selected_artifact = None
+          for row in runs:
+              artifacts = get(f"https://api.github.com/repos/{repo}/actions/runs/{row['id']}/artifacts?per_page=100").get('artifacts', [])
+              candidates = [artifact for artifact in artifacts if not artifact.get('expired') and str(artifact.get('name', '')).startswith('s11-data-wait-pool-compute-v1-')]
+              candidates.sort(key=lambda artifact: (artifact.get('updated_at') or '', int(artifact.get('id') or 0)), reverse=True)
+              if candidates:
+                  selected = row
+                  selected_artifact = candidates[0]
+                  break
+          if selected is None or selected_artifact is None:
+              raise SystemExit('NO_SUCCESSFUL_PR219_ARTIFACT')
+
+          output = os.environ['GITHUB_OUTPUT']
+          with open(output, 'a', encoding='utf-8') as handle:
+              handle.write(f"run_id={selected['id']}\n")
+              handle.write(f"head_sha={selected['head_sha']}\n")
+              handle.write(f"artifact_name={selected_artifact['name']}\n")
+              handle.write(f"artifact_id={selected_artifact['id']}\n")
+          print(json.dumps({
+              'run_id': selected['id'],
+              'head_sha': selected['head_sha'],
+              'artifact_name': selected_artifact['name'],
+              'artifact_id': selected_artifact['id'],
+          }, sort_keys=True))
+          PY
+
+      - name: Download shared PR219 W1 source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.source.outputs.artifact_name }}
+          path: input/w1-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+
+      - name: Download immutable alpha baseline authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download alpha multiobjective authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+          path: input/multiobjective
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30345463070'
+
+      - name: Verify immutable authorities
+        run: |
+          test -f input/w1-source/status.json
+          test -f input/evidence/alpha_combo/summary.json
+          test -f input/multiobjective/summary.json
+          test ! -e input/sealed
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=json.loads(Path('input/w1-source/status.json').read_text())
+          authority=json.loads(Path('input/multiobjective/summary.json').read_text())
+          assert source['state'] in {'WAIT_DATA','PASS'}, source
+          assert source['blockers'] == [], source
+          assert authority['state']=='PASS_MULTIOBJECTIVE_RESEARCH_CANDIDATES', authority
+          assert authority['promotion_authority'] is False
+          assert authority['sealed_holdback_read'] is False
+          assert authority['profit_max_control']=='TIME54'
+          assert authority['balanced_wr_control']=='TIME54'
+          assert authority['robust_control']=='TIME60'
+          PY
+
+      - name: Run shared-W1 alpha confirmation or WAIT_DATA
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_primary_w1_multiobjective_v1.py \
+            --root . \
+            --source-root input/w1-source \
+            --baseline-summary input/evidence/alpha_combo/summary.json \
+            --multiobjective-root input/multiobjective \
+            --policy backend/research/alpha_primary_w1_multiobjective_v1.json \
+            --out out \
+            --source-run-id '${{ steps.source.outputs.run_id }}' \
+            --source-head-sha '${{ steps.source.outputs.head_sha }}'
+
+      - name: Assert primary W1 safety and lineage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/status.json').read_text())
+          assert row['state'] in {'WAIT_DATA','PASS_W1_PRIMARY_CONFIRMATION','W1_LOW_SAMPLE_HOLD','W1_REJECT_RETAIN_INCUMBENT'}, row
+          assert row['blockers']==[], row
+          assert row['capability_marker']=='PRIMARY_W1_MULTIOBJECTIVE_CONFIRMATION'
+          assert row['promotion_authority'] is False
+          assert row['sealed_holdback_read'] is False
+          assert row['canonical_mutated'] is False
+          assert row['registry_mutated'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          if row['state']!='WAIT_DATA':
+              assert len(row['variants'])==4, row
+              assert row['source_w1_manifest_sha256'], row
+              for variant in row['variants']:
+                  assert variant['parity']['state']=='PASS', variant
+                  assert variant['parity']['duplicate_trade_count']==0, variant
+                  assert variant['source_w1_run_id']==row['source_w1_run_id'], variant
+          print(json.dumps({'state':row['state'],'active':row.get('active_candidate_queue',[]),'next':row['next']},sort_keys=True))
+          PY
+
+      - name: Write GitHub Step Summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path=Path('out/status.json')
+          if not path.exists():
+              raise SystemExit(0)
+          row=json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# alpha_combo PRIMARY W1 confirmation\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Source W1 run: `{row['source_w1_run_id']}`\n")
+              out.write(f"- Next: `{row['next']}`\n")
+              if row['state']=='WAIT_DATA':
+                  out.write(f"- Available: `{row['available_non_overlap_bars']}/480`\n")
+                  out.write(f"- Missing: `{row['missing_bars']}`\n")
+              else:
+                  out.write(f"- Active: `{', '.join(row['active_candidate_queue'])}`\n")
+                  for variant in row['variants']:
+                      w=variant['W1']
+                      s=variant['W1_stress_2x_p95_plus_one']
+                      gate=variant.get('W1_confirmation_gate',{})
+                      out.write(
+                          f"- {variant['variant_id']}: trades={w['trade_count']} WR={w.get('win_rate_pct')} "
+                          f"Net={w.get('net_return_pct_sum')} PF={w.get('net_profit_factor')} "
+                          f"payoff={w.get('payoff_ratio')} DD={w.get('max_drawdown_pct')} "
+                          f"worst={w['loss_metrics']['normal_worst_net_loss_R']}R "
+                          f"stressWorst={s['loss_metrics']['normal_worst_net_loss_R']}R "
+                          f"pass={gate.get('pass')}\n"
+                      )
+          PY
+
+      - name: Upload alpha primary W1 artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-alpha-primary-w1-multiobjective-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

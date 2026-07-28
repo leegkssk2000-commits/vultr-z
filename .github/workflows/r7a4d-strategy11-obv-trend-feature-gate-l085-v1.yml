@@ -39,9 +39,14 @@ jobs:
         with: {name: s11-evidence-batch-4-30252022416-attempt-1, path: input/evidence/batch-4, github-token: '${{ github.token }}', run-id: '30252022416'}
       - uses: actions/download-artifact@v4
         with: {name: s11-evidence-batch-5-30252022416-attempt-1, path: input/evidence/batch-5, github-token: '${{ github.token }}', run-id: '30252022416'}
-      - name: Replay isolated feature gate
+      - name: Replay isolated feature gate with traceback artifact
         run: |
-          python backend/tools/r7a4d_strategy11_feature_gate_l085_common_v1.py --root . --fresh-root input/fresh --evidence-root input/evidence --strategy-id obv_trend --feature atr_percentile --threshold 38 --block-when LE --surgery-id BLOCK_atr_percentile_LE_38 --out out --source-run-id 30333091607 --source-head-sha ce75a43a34df6575231ad7c7ccc5961c2387cf5d
+          mkdir -p out
+          set +e
+          python backend/tools/r7a4d_strategy11_feature_gate_l085_common_v1.py --root . --fresh-root input/fresh --evidence-root input/evidence --strategy-id obv_trend --feature atr_percentile --threshold 38 --block-when LE --surgery-id BLOCK_atr_percentile_LE_38 --out out --source-run-id 30333091607 --source-head-sha ce75a43a34df6575231ad7c7ccc5961c2387cf5d >out/execution.log 2>&1
+          rc=$?
+          cat out/execution.log
+          exit $rc
       - name: Assert research contract
         run: |
           python - <<'PY'

@@ -1,0 +1,56 @@
+name: R7A4D Strategy11 vol_spike_fade Feature Gate L085 V1
+
+on:
+  pull_request:
+    branches: [r7a4d-strategy11-gemini-22-second-causal-v1]
+    paths:
+      - backend/tools/r7a4d_strategy11_feature_gate_l085_common_v1.py
+      - backend/research/feature_gate_vol_spike_fade_l085_v1.json
+      - .github/workflows/r7a4d-strategy11-vol-spike-fade-feature-gate-l085-v1.yml
+  workflow_dispatch:
+
+permissions: {contents: read, actions: read}
+env: {PYTHONPATH: .}
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - run: python -m py_compile backend/tools/r7a4d_strategy11_feature_gate_l085_common_v1.py
+      - uses: actions/download-artifact@v4
+        with: {name: s11-fresh-data-v1-30252022416-attempt-1, path: input/fresh, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - uses: actions/download-artifact@v4
+        with: {name: s11-evidence-batch-1-30252022416-attempt-1, path: input/evidence/batch-1, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - uses: actions/download-artifact@v4
+        with: {name: s11-evidence-batch-2-30252022416-attempt-1, path: input/evidence/batch-2, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - uses: actions/download-artifact@v4
+        with: {name: s11-evidence-batch-3-30252022416-attempt-1, path: input/evidence/batch-3, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - uses: actions/download-artifact@v4
+        with: {name: s11-evidence-batch-4-30252022416-attempt-1, path: input/evidence/batch-4, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - uses: actions/download-artifact@v4
+        with: {name: s11-evidence-batch-5-30252022416-attempt-1, path: input/evidence/batch-5, github-token: '${{ github.token }}', run-id: '30252022416'}
+      - run: python backend/tools/r7a4d_strategy11_feature_gate_l085_common_v1.py --root . --fresh-root input/fresh --evidence-root input/evidence --strategy-id vol_spike_fade --feature obv_slope10 --threshold -2774.4964 --block-when GE --surgery-id BLOCK_obv_slope10_GE_-2774.5 --out out --source-run-id 30333091607 --source-head-sha ce75a43a34df6575231ad7c7ccc5961c2387cf5d
+      - run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('out/summary.json'))
+          assert d['state'] in {'PASS_L085_RESEARCH_CANDIDATE','W1_CAUSAL_WAIT'}
+          assert d['strategy_id']=='vol_spike_fade' and d['axis']=='FEATURE_GATE'
+          assert d['promotion_authority'] is False and d['sealed_holdback_read'] is False
+          assert d['protected_mutations']==0 and d['order_authority']=='BLOCKED'
+          for row in d['variants']:
+              assert row['parity']['state']=='PASS' and row['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-vol-spike-fade-feature-gate-l085-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

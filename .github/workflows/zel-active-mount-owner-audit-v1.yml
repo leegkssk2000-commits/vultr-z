@@ -1,0 +1,56 @@
+name: ZEL Active Mount Owner Audit V1
+
+on:
+  pull_request:
+    branches:
+      - zel-active-backend-recovery-v1
+    paths:
+      - backend/main.py
+      - backend/tools/zel_active_mount_owner_audit_v1.py
+      - .github/workflows/zel-active-mount-owner-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-active-mount-owner-audit-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile audit
+        run: python -m py_compile backend/tools/zel_active_mount_owner_audit_v1.py
+      - name: Audit active mount graph
+        run: python backend/tools/zel_active_mount_owner_audit_v1.py --entry backend/main.py --out out/mount_owner_audit.json
+      - name: Assert read-only safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/mount_owner_audit.json').read_text())
+          assert d['safety']['read_only'] is True
+          assert d['safety']['canonical_mutated'] is False
+          assert d['safety']['registry_mutated'] is False
+          assert d['safety']['runtime_mutated'] is False
+          assert d['safety']['execution_allowed'] is False
+          assert d['safety']['order_authority']=='BLOCKED'
+          assert d['safety']['protected_mutations']==0
+          assert d['mount_count'] > 0
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-active-mount-owner-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

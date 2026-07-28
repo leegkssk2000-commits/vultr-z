@@ -1,14 +1,10 @@
-from flask import Flask
-from flask_cors import CORS
+"""Gunicorn WSGI entrypoint.
 
-from app import create_app
-from backend.routers.portfolio import bp as portfolio_bp
+The application factory is required to return a fully bound app. There is no
+blank-app fallback because that previously hid broken blueprint wiring.
+"""
+
+from backend.app_factory import create_app
 
 
 app = create_app()
-if app is None:
-    app = Flask(__name__)
-    CORS(app)
-
-if "portfolio_api" not in app.blueprints:
-    app.register_blueprint(portfolio_bp)

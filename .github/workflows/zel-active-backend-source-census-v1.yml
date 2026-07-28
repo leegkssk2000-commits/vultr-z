@@ -1,4 +1,4 @@
-name: ZEL Active Backend Source Census V2
+name: ZEL Active Backend Source Census V2.1
 
 on:
   pull_request:
@@ -13,19 +13,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: zel-active-backend-source-census-v2-${{ github.event.pull_request.number || github.ref }}
+  group: zel-active-backend-source-census-v2-1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   census:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-python@v5
@@ -122,7 +123,7 @@ jobs:
               assert safety['execution_allowed'] is False
               assert safety['order_authority'] == 'BLOCKED'
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL active backend source census v2\n\n')
+              out.write('# ZEL active backend source census v2.1\n\n')
               out.write(f"- Dynamic source: **{census['state']}**\n")
               out.write(f"- OpenAPI: **{openapi['state']}**\n")
               out.write(f"- Route ownership: **{routes['state']}**\n")
@@ -132,8 +133,106 @@ jobs:
               out.write(f"- Owned/ambiguous/unowned: `{routes['owned_operation_count']}/{routes['ambiguous_operation_count']}/{routes['unowned_operation_count']}`\n")
               out.write(f"- Guarded export files/bytes: `{export['file_count']}/{export['total_bytes']}`\n")
               out.write(f"- Export allowed: `{export['export_allowed']}`\n")
-              out.write(f"- Next: `{export['next']}`\n")
           PY
+
+      - name: Create Git-only recovery branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'zel-active-backend-source-census-v1'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RECOVERY_BRANCH: zel-active-backend-recovery-v1
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row = json.loads(Path('out/active_source_export_guard.json').read_text())
+          assert row['state'] == 'PASS_SECRET_GUARD_EXPORT_READY', row['state']
+          assert row['export_allowed'] is True
+          Path('/tmp/active_source_export_guard.json').write_text(json.dumps(row), encoding='utf-8')
+          PY
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$RECOVERY_BRANCH" >/dev/null 2>&1; then
+            printf '{"state":"HOLD_RECOVERY_BRANCH_ALREADY_EXISTS","branch":"%s"}\n' "$RECOVERY_BRANCH" > out/recovery_branch_status.json
+            exit 0
+          fi
+
+          git fetch origin master
+          git switch --detach origin/master
+          git switch -c "$RECOVERY_BRANCH"
+
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import py_compile
+          from pathlib import Path
+
+          source = json.loads(Path('/tmp/active_source_export_guard.json').read_text())
+          allowed = ('backend/', 'engine/', 'strategies/', 'config/', 'ensemble/', 'telegram/')
+          imported = []
+          equal_existing = []
+          file_manifest = []
+          for row in source['files']:
+              relative = row['path']
+              assert relative.startswith(allowed), relative
+              assert '..' not in Path(relative).parts, relative
+              data = base64.b64decode(row['content_b64'])
+              digest = hashlib.sha256(data).hexdigest()
+              assert digest == row['sha256'], relative
+              target = Path(relative)
+              if target.exists():
+                  existing = hashlib.sha256(target.read_bytes()).hexdigest()
+                  if existing != digest:
+                      raise RuntimeError(f'MASTER_CONFLICT:{relative}:{existing}:{digest}')
+                  equal_existing.append(relative)
+              else:
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(data)
+                  imported.append(relative)
+              py_compile.compile(str(target), doraise=True)
+              file_manifest.append({'path': relative, 'sha256': digest, 'size_bytes': len(data)})
+
+          manifest = {
+              'schema_version': '1.0',
+              'version': 'ZEL_ACTIVE_BACKEND_SOURCE_RECOVERY_MANIFEST_V1',
+              'source_root': source['root'],
+              'source_entry': source['entry'],
+              'source_export_version': source['version'],
+              'source_generated_at_utc': source['generated_at_utc'],
+              'total_source_files': len(file_manifest),
+              'newly_imported_files': len(imported),
+              'master_equal_existing_files': len(equal_existing),
+              'imported_paths': imported,
+              'equal_existing_paths': equal_existing,
+              'files': file_manifest,
+              'secret_guard_blockers': [],
+              'compile_pass': True,
+              'deployed_runtime_changed': False,
+              'service_changed': False,
+              'database_changed': False,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+              'next': 'VERIFY_RECOVERY_BRANCH_HASH_PARITY_AND_ROUTE_TESTS_BEFORE_ANY_MERGE',
+          }
+          manifest_path = Path('backend/recovery/active_backend_source_manifest_v1.json')
+          manifest_path.parent.mkdir(parents=True, exist_ok=True)
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          Path('/tmp/recovery_paths.txt').write_text('\n'.join(imported + [str(manifest_path)]) + '\n', encoding='utf-8')
+          Path('/tmp/recovery_counts.json').write_text(json.dumps({'imported': len(imported), 'equal_existing': len(equal_existing)}), encoding='utf-8')
+          assert len(imported) > 0
+          PY
+
+          git config user.name 'ZEL Authority Recovery'
+          git config user.email 'zel-authority-recovery@users.noreply.github.com'
+          git add --pathspec-from-file=/tmp/recovery_paths.txt
+          git diff --cached --check
+          git commit -m 'Recover active FastAPI backend source authority'
+          RECOVERY_SHA="$(git rev-parse HEAD)"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/$RECOVERY_BRANCH"
+          COUNTS="$(cat /tmp/recovery_counts.json)"
+          printf '{"state":"PASS_RECOVERY_BRANCH_CREATED","branch":"%s","commit_sha":"%s","counts":%s,"deployment_changed":false,"service_changed":false,"execution_allowed":false,"order_authority":"BLOCKED"}\n' \
+            "$RECOVERY_BRANCH" "$RECOVERY_SHA" "$COUNTS" > out/recovery_branch_status.json
 
       - name: Remove SSH key
         if: always()
@@ -143,7 +242,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-active-backend-source-census-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-active-backend-source-census-v2-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

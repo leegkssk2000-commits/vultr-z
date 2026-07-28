@@ -6,6 +6,7 @@ on:
       - r7a4d-strategy11-gemini-22-second-causal-v1
     paths:
       - backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py
+      - backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1_1.py
       - backend/research/strategy11_multimodal_rescue_l090_v1.json
       - .github/workflows/r7a4d-strategy11-multimodal-rescue-l090-v1.yml
   workflow_dispatch:
@@ -40,7 +41,9 @@ jobs:
       - run: python -m pip install --disable-pip-version-check pandas numpy matplotlib
 
       - name: Compile planner
-        run: python -m py_compile backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1_1.py
 
       - name: Download immutable fresh data
         uses: actions/download-artifact@v4
@@ -94,12 +97,14 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py \
+          mkdir -p out
+          set -o pipefail
+          python backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1_1.py \
             --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
             --video-registry backend/research/strategy11_gemini_video_registry_v2.json \
             --fresh-root input/fresh \
             --evidence-root input/evidence \
-            --out out
+            --out out 2>&1 | tee out/run.log
 
       - name: Assert multimodal plan contract
         run: |
@@ -138,7 +143,14 @@ jobs:
           import json, os
           from pathlib import Path
           p=Path('out/plan.json')
-          if not p.exists(): raise SystemExit(0)
+          if not p.exists():
+              log=Path('out/run.log')
+              if log.exists():
+                  with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+                      out.write('# Strategy11 multimodal L090 rescue\n\n')
+                      out.write('- State: **FAIL_BEFORE_PLAN**\n')
+                      out.write('```\n'+log.read_text(encoding='utf-8', errors='replace')[-5000:]+'\n```\n')
+              raise SystemExit(0)
           d=json.loads(p.read_text())
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
               out.write('# Strategy11 multimodal L090 rescue\n\n')

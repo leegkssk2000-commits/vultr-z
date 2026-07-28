@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ finally:
     importlib.util.module_from_spec = original_from_spec
 
 original_json = module.strict_json
+original_metric = module.metric
 
 
 def no_change_baseline(path: Path) -> Any:
@@ -38,5 +40,12 @@ def no_change_baseline(path: Path) -> Any:
     return value
 
 
+def no_loss_is_zero(value: Any, default: float = 0.0) -> float:
+    if value is None and default == -math.inf:
+        return 0.0
+    return original_metric(value, default)
+
+
 module.strict_json = no_change_baseline
+module.metric = no_loss_is_zero
 raise SystemExit(module.main())

@@ -1,0 +1,117 @@
+name: R7A4D Strategy11 Gemini 22 Second Causal V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-22-prework-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_gemini_22_second_causal_v1.py
+      - .github/workflows/r7a4d-strategy11-gemini-22-second-causal-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-gemini-22-second-causal-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Second causal review all 22 no-candidate strategies
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_gemini_22_second_causal_v1.py
+
+      - name: Download 22-strategy first-pass authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-22-prework-v1-1-30328652883-attempt-1
+          path: input/first
+          github-token: ${{ github.token }}
+          run-id: '30328652883'
+
+      - name: Verify first-pass authority
+        run: |
+          test -f input/first/final/final.json
+          test -d input/first/plan/profiles
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('input/first/final/final.json').read_text())
+          assert d['state']=='PASS'
+          assert d['strategy_count']==22
+          assert d['l085_candidate_count']==0
+          assert d['active_l080_queue']==[]
+          assert d['canonical_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['protected_mutations']==0
+          PY
+
+      - name: Run Gemini second causal review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_22_second_causal_v1.py \
+            --final input/first/final/final.json \
+            --profiles input/first/plan/profiles \
+            --registry backend/research/strategy11_gemini_video_registry_v2.json \
+            --out out
+
+      - name: Assert review contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/summary.json').read_text())
+          assert d['state']=='PASS'
+          assert d['strategy_count']==22
+          assert d['GEMINI_USED'] is True
+          assert d['free_only'] is True
+          assert len(d['public_urls'])>=4
+          assert d['independent_channel_count']>=4
+          assert len(d['active_new_axis_queue'])<=3
+          assert d['promotion_authority'] is False
+          assert d['execution_allowed'] is False
+          assert d['canonical_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['protected_mutations']==0
+          assert d['order_authority']=='BLOCKED'
+          PY
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('out/summary.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# Strategy11 22 second causal review\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Active queue: `{d['active_new_axis_queue']}`\n")
+              out.write(f"- W1 wait: `{d['w1_causal_wait_count']}`\n")
+              out.write(f"- Model: `{d['actual_model']}`\n")
+              out.write(f"- Next: `{d['next']}`\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-22-second-causal-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

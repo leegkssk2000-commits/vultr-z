@@ -28,10 +28,9 @@ OWNER_TERMS = {
     "ledger": ("ledger_writer", "pnl_writer", "trade_writer", "close_writer"),
 }
 DB_SUFFIXES = (".db", ".sqlite", ".sqlite3")
-EXCLUDED_PARTS = {
-    ".git", ".venv", "venv", "node_modules", "dist", "build", "backups",
-    "backup", "archive", "archives", "rollback", "restore", "snapshot", "snapshots",
-    "_TRASH", "trash", "__pycache__",
+EXCLUDED_TOKENS = {
+    ".git", ".venv", "venv", "node_modules", "dist", "build", "backup",
+    "archive", "rollback", "restore", "snapshot", "trash", "__pycache__",
 }
 APPROVED_AI_FILES = {
     "scripts/strategy11_ai_review_router.py",
@@ -39,12 +38,19 @@ APPROVED_AI_FILES = {
     "scripts/strategy11_workers_ai_guard.py",
     "scripts/strategy11_github_models_review.py",
     ".github/workflows/strategy11-ai-review-router-v1.yml",
+    "backend/tools/zel_second_pass_ops_safety_audit_v1.py",
+    ".github/workflows/zel-second-pass-ops-safety-audit-v1.yml",
 }
 DIRECT_AI_MARKERS = (
     "api.groq.com", "CLOUDFLARE_WORKERS_AI_TOKEN", "models.github.ai",
     "strategy11_groq_redteam.py", "strategy11_workers_ai_guard.py",
     "strategy11_github_models_review.py",
 )
+DEPENDENCY_NAMES = {
+    "pyproject.toml", "poetry.lock", "uv.lock", "Pipfile", "Pipfile.lock",
+    "requirements.txt", "requirements-dev.txt", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "active_backend_dependency_lock_v1.json", "active_backend_requirements_lock_v1.txt",
+}
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -57,7 +63,11 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def allowed(path: Path) -> bool:
-    return not any(part in EXCLUDED_PARTS for part in path.parts)
+    for part in path.parts:
+        low = part.lower()
+        if any(token == low or token in low for token in EXCLUDED_TOKENS):
+            return False
+    return True
 
 
 def iter_files(root: Path):
@@ -123,11 +133,6 @@ def repository_surface_scan(root: Path) -> dict[str, Any]:
     workflow_permissions: list[dict[str, Any]] = []
     direct_ai_calls: list[dict[str, Any]] = []
 
-    dependency_names = {
-        "pyproject.toml", "poetry.lock", "uv.lock", "Pipfile", "Pipfile.lock",
-        "requirements.txt", "requirements-dev.txt", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
-    }
-
     for path in iter_files(root):
         rel = path.relative_to(root).as_posix()
         low_name = path.name.lower()
@@ -135,9 +140,6 @@ def repository_surface_scan(root: Path) -> dict[str, Any]:
             units.append(rel)
         if any(term in low_name for term in ("backup", "restore", "rollback", "snapshot")):
             backup_restore.append(rel)
-        if path.name in dependency_names or path.name.startswith("requirements") and path.suffix == ".txt":
-            raw = path.read_bytes()
-            dependency_manifests.append({"path": rel, "sha256": sha256_bytes(raw), "size_bytes": len(raw)})
 
         if rel.startswith(".github/workflows/") and path.suffix in {".yml", ".yaml"}:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -151,10 +153,20 @@ def repository_surface_scan(root: Path) -> dict[str, Any]:
             if markers and rel not in APPROVED_AI_FILES:
                 direct_ai_calls.append({"path": rel, "markers": markers})
 
+    # Dependency files may sit at repository root or outside the bounded runtime roots.
+    for path in root.rglob("*"):
+        if not path.is_file() or not allowed(path.relative_to(root)):
+            continue
+        if path.name in DEPENDENCY_NAMES or (path.name.startswith("requirements") and path.suffix == ".txt"):
+            rel = path.relative_to(root).as_posix()
+            raw = path.read_bytes()
+            dependency_manifests.append({"path": rel, "sha256": sha256_bytes(raw), "size_bytes": len(raw)})
+
+    unique_manifests = {row["path"]: row for row in dependency_manifests}
     return {
         "unit_files": sorted(units),
         "backup_restore_surfaces": sorted(set(backup_restore)),
-        "dependency_manifests": sorted(dependency_manifests, key=lambda r: r["path"]),
+        "dependency_manifests": sorted(unique_manifests.values(), key=lambda r: r["path"]),
         "workflow_permissions": sorted(workflow_permissions, key=lambda r: r["path"]),
         "direct_ai_router_bypass_candidates": sorted(direct_ai_calls, key=lambda r: r["path"]),
     }

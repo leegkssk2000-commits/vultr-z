@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Role-based, fail-closed AI review router for Strategy11 research.
 
-The router never grants promotion or execution authority. It chooses advisory
-providers by research stage, verifies anonymized inputs, invokes the installed
-Groq/Workers AI/GitHub Models clients when requested, and delegates multimodal
-Gemini generation to the existing direct-video workflow/artifact path.
+Internal routing and authority fields are never forwarded to external reviewers.
+All providers remain advisory-only; deterministic replay/statistics/hard gates
+retain sole promotion authority.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -25,17 +23,8 @@ WORKERS_CLIENT = Path("scripts/strategy11_workers_ai_guard.py")
 GITHUB_MODELS_CLIENT = Path("scripts/strategy11_github_models_review.py")
 
 FORBIDDEN_KEY_FRAGMENTS = {
-    "api_key",
-    "credential",
-    "exchange_key",
-    "password",
-    "private_key",
-    "secret",
-    "token",
-    "wallet",
-    "account_number",
-    "order_id",
-    "position_id",
+    "api_key", "credential", "exchange_key", "password", "private_key",
+    "secret", "token", "wallet", "account_number", "order_id", "position_id",
 }
 
 SAFETY = {
@@ -45,6 +34,8 @@ SAFETY = {
     "execution_allowed": False,
     "order_authority": "BLOCKED",
 }
+
+INTERNAL_ONLY_KEYS = {"routing_flags", "stage", *SAFETY.keys()}
 
 
 def canonical_json(value: Any) -> str:
@@ -79,6 +70,19 @@ def assert_anonymized(value: Any, path: str = "$") -> None:
             assert_anonymized(child, f"{path}[{index}]")
 
 
+def build_external_payload(payload: dict[str, Any], stage: str) -> dict[str, Any]:
+    """Create the smallest anonymized evidence envelope sent to AI providers."""
+    external = {key: value for key, value in payload.items() if key not in INTERNAL_ONLY_KEYS}
+    external["review_stage"] = stage
+    external["authority_contract"] = {
+        "research_only": True,
+        "promotion_authority": False,
+        "execution_allowed": False,
+    }
+    assert_anonymized(external)
+    return external
+
+
 def validate_policy(policy: dict[str, Any]) -> None:
     for key, value in SAFETY.items():
         if policy.get(key) != value:
@@ -96,14 +100,12 @@ def validate_policy(policy: dict[str, Any]) -> None:
 
 
 def resolve_directive(provider: str, directive: str, payload: dict[str, Any]) -> tuple[str, bool]:
-    """Return normalized action and whether the provider is required."""
     flags = payload.get("routing_flags", {})
     if not isinstance(flags, dict):
         raise ValueError("ROUTING_FLAGS_INVALID")
-
     if directive == "REQUIRED":
         return "RUN", True
-    if directive == "DISABLED" or directive == "FORBIDDEN":
+    if directive in {"DISABLED", "FORBIDDEN"}:
         return "SKIP", False
     if directive.startswith("DISABLED_UNLESS_NEW_FINGERPRINT_AFTER_RESULT"):
         return ("RUN", True) if flags.get("new_failure_fingerprint") else ("SKIP", False)
@@ -124,16 +126,14 @@ def resolve_directive(provider: str, directive: str, payload: dict[str, Any]) ->
     if directive == "REQUIRED_FOR_NEW_HYPOTHESES":
         return ("RUN", True) if flags.get("new_external_hypothesis") else ("SKIP", False)
     if directive.startswith("OPTIONAL"):
-        optional_flag = {
+        enabled = {
             "gemini": flags.get("visual_delta"),
-            "groq": flags.get("anomaly_review")
-            or flags.get("new_external_hypothesis")
-            or flags.get("postmortem_review")
-            or flags.get("risk_argument_review"),
+            "groq": flags.get("anomaly_review") or flags.get("new_external_hypothesis")
+                    or flags.get("postmortem_review") or flags.get("risk_argument_review"),
             "workers_ai": True,
             "github_models": flags.get("major_gate_review"),
         }.get(provider, False)
-        return ("RUN", False) if optional_flag else ("SKIP", False)
+        return ("RUN", False) if enabled else ("SKIP", False)
     raise ValueError(f"UNKNOWN_ROUTE_DIRECTIVE:{provider}:{directive}")
 
 
@@ -141,10 +141,9 @@ def build_plan(policy: dict[str, Any], stage: str, payload: dict[str, Any]) -> d
     routes = policy["stage_routes"]
     if stage not in routes:
         raise ValueError(f"UNKNOWN_STAGE:{stage}")
-    route = routes[stage]
     provider_plan: dict[str, Any] = {}
     for provider in ("gemini", "groq", "workers_ai", "github_models"):
-        directive = str(route.get(provider, "DISABLED"))
+        directive = str(routes[stage].get(provider, "DISABLED"))
         action, required = resolve_directive(provider, directive, payload)
         provider_plan[provider] = {
             "directive": directive,
@@ -163,9 +162,7 @@ def build_plan(policy: dict[str, Any], stage: str, payload: dict[str, Any]) -> d
 
 def run_client(command: list[str], artifact_path: Path) -> dict[str, Any]:
     process = subprocess.run(command, text=True, capture_output=True, check=False)
-    artifact: dict[str, Any] = {}
-    if artifact_path.exists():
-        artifact = read_json(artifact_path)
+    artifact = read_json(artifact_path) if artifact_path.exists() else {}
     return {
         "returncode": process.returncode,
         "stdout_sha": sha256_text(process.stdout),
@@ -211,14 +208,13 @@ def verify_gemini_artifact(path: Path, policy: dict[str, Any]) -> dict[str, Any]
 
 
 def execute_plan(
-    policy: dict[str, Any],
-    plan: dict[str, Any],
-    payload_path: Path,
-    payload: dict[str, Any],
-    output_dir: Path,
-    gemini_artifact: Path | None,
+    policy: dict[str, Any], plan: dict[str, Any], payload: dict[str, Any],
+    output_dir: Path, gemini_artifact: Path | None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    external_payload = build_external_payload(payload, plan["stage"])
+    external_path = output_dir / "external_input.json"
+    write_json(external_path, external_payload)
     provider_results: dict[str, Any] = {}
     blockers: list[str] = []
 
@@ -226,59 +222,41 @@ def execute_plan(
         if spec["action"] == "SKIP":
             provider_results[provider] = {"status": "SKIPPED", "required": spec["required"]}
             continue
-
         try:
             if provider == "gemini":
                 if gemini_artifact is None:
                     raise ValueError("HOLD_GEMINI_ARTIFACT_REQUIRED")
                 provider_results[provider] = verify_gemini_artifact(gemini_artifact, policy)
+                continue
 
-            elif provider == "groq":
-                artifact_path = output_dir / "groq.json"
-                result = run_client(
-                    [sys.executable, str(GROQ_CLIENT), "--input", str(payload_path), "--output", str(artifact_path)],
-                    artifact_path,
-                )
-                validate_provider_safety(provider, result)
-                provider_results[provider] = result
-                if result["returncode"] != 0:
-                    raise ValueError(result["artifact"].get("blocker_code", "HOLD_GROQ_FAILED"))
-
+            artifact_path = output_dir / f"{provider}.json"
+            if provider == "groq":
+                command = [sys.executable, str(GROQ_CLIENT), "--input", str(external_path), "--output", str(artifact_path)]
             elif provider == "workers_ai":
                 envelope = {
-                    "stage": plan["stage"],
-                    "lineage_complete": bool(payload.get("lineage")),
-                    "changed_axes": payload.get("changed_axes", []),
-                    "payload": payload,
+                    "review_stage": plan["stage"],
+                    "lineage_complete": bool(external_payload.get("lineage")),
+                    "changed_axes": external_payload.get("changed_axes", []),
+                    "payload": external_payload,
                     "prior_provider_status": {
                         name: value.get("status", value.get("artifact", {}).get("status"))
                         for name, value in provider_results.items()
                     },
                     **SAFETY,
                 }
-                envelope_path = output_dir / "workers_input.json"
-                write_json(envelope_path, envelope)
-                artifact_path = output_dir / "workers_ai.json"
-                result = run_client(
-                    [sys.executable, str(WORKERS_CLIENT), "--input", str(envelope_path), "--output", str(artifact_path)],
-                    artifact_path,
-                )
-                validate_provider_safety(provider, result)
-                provider_results[provider] = result
-                if result["returncode"] != 0:
-                    raise ValueError(result["artifact"].get("blocker_code", "HOLD_WORKERS_AI_FAILED"))
-
+                workers_input = output_dir / "workers_input.json"
+                write_json(workers_input, envelope)
+                command = [sys.executable, str(WORKERS_CLIENT), "--input", str(workers_input), "--output", str(artifact_path)]
             elif provider == "github_models":
-                artifact_path = output_dir / "github_models.json"
-                result = run_client(
-                    [sys.executable, str(GITHUB_MODELS_CLIENT), "--input", str(payload_path), "--output", str(artifact_path)],
-                    artifact_path,
-                )
-                validate_provider_safety(provider, result)
-                provider_results[provider] = result
-                if result["returncode"] != 0:
-                    raise ValueError(result["artifact"].get("blocker_code", "HOLD_GITHUB_MODELS_FAILED"))
+                command = [sys.executable, str(GITHUB_MODELS_CLIENT), "--input", str(external_path), "--output", str(artifact_path)]
+            else:
+                raise ValueError(f"UNKNOWN_PROVIDER:{provider}")
 
+            result = run_client(command, artifact_path)
+            validate_provider_safety(provider, result)
+            provider_results[provider] = result
+            if result["returncode"] != 0:
+                raise ValueError(result["artifact"].get("blocker_code", f"HOLD_{provider.upper()}_FAILED"))
         except Exception as exc:
             blocker = str(exc)[:1000]
             provider_results.setdefault(provider, {})["status"] = "HOLD"
@@ -291,6 +269,7 @@ def execute_plan(
         "status": "HOLD_AI_REVIEW_ROUTER" if blockers else "PASS_AI_REVIEW_ROUTER",
         "stage": plan["stage"],
         "input_sha": sha256_text(canonical_json(payload)),
+        "external_input_sha": sha256_text(canonical_json(external_payload)),
         "policy_sha": sha256_text(canonical_json(policy)),
         "plan_sha": sha256_text(canonical_json(plan)),
         "provider_results": provider_results,
@@ -341,14 +320,12 @@ def main() -> int:
     parser.add_argument("--mode", choices=("plan", "execute"), default="plan")
     parser.add_argument("--gemini-artifact", type=Path)
     args = parser.parse_args()
-
     try:
         policy = read_json(args.policy)
         validate_policy(policy)
         payload = read_json(args.input) if args.input else default_payload(args.stage)
         assert_anonymized(payload)
         plan = build_plan(policy, args.stage, payload)
-
         if args.mode == "plan":
             result = {
                 "status": "PASS_AI_REVIEW_ROUTER_PLAN",
@@ -358,28 +335,19 @@ def main() -> int:
                 **SAFETY,
             }
         else:
-            with tempfile.TemporaryDirectory(prefix="strategy11-ai-router-") as temp_dir:
-                payload_path = Path(temp_dir) / "payload.json"
-                write_json(payload_path, payload)
+            with tempfile.TemporaryDirectory(prefix="strategy11-ai-router-"):
                 result = execute_plan(
                     policy=policy,
                     plan=plan,
-                    payload_path=payload_path,
                     payload=payload,
                     output_dir=args.output.parent / "providers",
                     gemini_artifact=args.gemini_artifact,
                 )
-
         write_json(args.output, result)
         print(f"{result['status']} stage={args.stage} output={args.output}")
         return 0 if result["status"].startswith("PASS_") else 1
-
     except Exception as exc:
-        result = {
-            "status": "HOLD_AI_REVIEW_ROUTER",
-            "blocker_codes": [str(exc)[:1000]],
-            **SAFETY,
-        }
+        result = {"status": "HOLD_AI_REVIEW_ROUTER", "blocker_codes": [str(exc)[:1000]], **SAFETY}
         write_json(args.output, result)
         print(f"HOLD_AI_REVIEW_ROUTER blocker={exc}", file=sys.stderr)
         return 1

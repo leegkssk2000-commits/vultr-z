@@ -83,8 +83,6 @@ def main() -> int:
     baseline_summary = strict_json(baseline_path)
     if str(baseline_summary.get("strategy_id")) != args.strategy_id:
         raise RuntimeError("BASELINE_STRATEGY_MISMATCH")
-    if baseline_summary.get("surgery"):
-        raise RuntimeError("BASELINE_ALREADY_HAS_SURGERY_COMPOSITE_FORBIDDEN")
 
     candidate = baseline_summary["candidate"]
     gate = exact._gate_from(candidate)

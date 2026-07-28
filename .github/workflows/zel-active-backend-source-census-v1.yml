@@ -1,10 +1,14 @@
-name: ZEL Active Backend Source Census V1
+name: ZEL Active Backend Source Census V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - backend/tools/zel_active_backend_source_census_v1.py
+      - backend/tools/zel_active_backend_dynamic_census_v2.py
+      - backend/tools/zel_active_openapi_snapshot_v1.py
+      - backend/tools/zel_route_ownership_adjudicator_v1.py
+      - backend/tools/zel_active_source_export_guard_v1.py
       - .github/workflows/zel-active-backend-source-census-v1.yml
   workflow_dispatch:
 
@@ -12,13 +16,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-active-backend-source-census-v1-${{ github.event.pull_request.number || github.ref }}
+  group: zel-active-backend-source-census-v2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   census:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,8 +32,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Compile census
-        run: python -m py_compile backend/tools/zel_active_backend_source_census_v1.py
+      - name: Compile census tools
+        run: |
+          python -m py_compile backend/tools/zel_active_backend_dynamic_census_v2.py
+          python -m py_compile backend/tools/zel_active_openapi_snapshot_v1.py
+          python -m py_compile backend/tools/zel_route_ownership_adjudicator_v1.py
+          python -m py_compile backend/tools/zel_active_source_export_guard_v1.py
 
       - name: Prepare SSH
         env:
@@ -44,7 +52,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Census active backend import closure
+      - name: Census static and dynamic active import closure
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -53,36 +61,78 @@ jobs:
           test -n "$VPS_USER"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "Z_HOME=/home/z/z ACTIVE_BACKEND_ENTRY=/home/z/z/backend/main.py python3 -" \
-            < backend/tools/zel_active_backend_source_census_v1.py \
-            > out/active_backend_source_census.json \
-            2> out/active_backend_source_stderr.txt
+            < backend/tools/zel_active_backend_dynamic_census_v2.py \
+            > out/active_backend_dynamic_census.json \
+            2> out/active_backend_dynamic_stderr.txt
 
-      - name: Assert read-only and summarize
+      - name: Snapshot active OpenAPI
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "ACTIVE_OPENAPI_URL=http://127.0.0.1:8000/openapi.json python3 -" \
+            < backend/tools/zel_active_openapi_snapshot_v1.py \
+            > out/active_openapi_snapshot.json \
+            2> out/active_openapi_stderr.txt
+
+      - name: Adjudicate active route ownership
+        run: |
+          python backend/tools/zel_route_ownership_adjudicator_v1.py \
+            --census out/active_backend_dynamic_census.json \
+            --openapi out/active_openapi_snapshot.json \
+            --out out/route_ownership_adjudication.json
+
+      - name: Run fail-closed source export guard
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "Z_HOME=/home/z/z ACTIVE_BACKEND_ENTRY=/home/z/z/backend/main.py python3 -" \
+            < backend/tools/zel_active_source_export_guard_v1.py \
+            > out/active_source_export_guard.json \
+            2> out/active_source_export_stderr.txt
+
+      - name: Assert read-only contracts and summarize
         run: |
           python - <<'PY'
           import json
           import os
           from pathlib import Path
-          row = json.loads(Path('out/active_backend_source_census.json').read_text())
-          assert row['state'] in {'PASS_ACTIVE_SOURCE_CENSUS', 'HOLD_ACTIVE_SOURCE_NOT_IN_GIT'}
-          safety = row['safety']
-          assert safety['read_only'] is True
-          assert safety['remote_file_created'] is False
-          assert safety['service_changed'] is False
-          assert safety['process_changed'] is False
-          assert safety['database_changed'] is False
-          assert safety['deployment_changed'] is False
-          assert safety['execution_allowed'] is False
-          assert safety['order_authority'] == 'BLOCKED'
-          assert safety['secret_values_redacted'] is True
+
+          census = json.loads(Path('out/active_backend_dynamic_census.json').read_text())
+          openapi = json.loads(Path('out/active_openapi_snapshot.json').read_text())
+          routes = json.loads(Path('out/route_ownership_adjudication.json').read_text())
+          export = json.loads(Path('out/active_source_export_guard.json').read_text())
+          assert census['state'] in {'PASS_ACTIVE_DYNAMIC_SOURCE_CENSUS', 'HOLD_ACTIVE_DYNAMIC_SOURCE_NOT_IN_GIT'}
+          assert openapi['state'] in {'PASS_OPENAPI_SNAPSHOT', 'HOLD_OPENAPI_FETCH_FAILED', 'HOLD_DUPLICATE_OPERATION_IDS'}
+          assert routes['state'] in {'PASS_ROUTE_OWNERSHIP_ADJUDICATED', 'HOLD_ROUTE_OWNERSHIP_REVIEW_REQUIRED'}
+          assert export['state'] in {'PASS_SECRET_GUARD_EXPORT_READY', 'HOLD_SECRET_GUARD_BLOCKED'}
+          for row in (census, openapi, routes, export):
+              safety = row['safety']
+              assert safety['read_only'] is True
+              assert safety['remote_file_created'] is False
+              assert safety['service_changed'] is False
+              assert safety['process_changed'] is False
+              assert safety['database_changed'] is False
+              assert safety['deployment_changed'] is False
+              assert safety['execution_allowed'] is False
+              assert safety['order_authority'] == 'BLOCKED'
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL active backend source census\n\n')
-              out.write(f"- State: **{row['state']}**\n")
-              out.write(f"- Entry: `{row['entry']}`\n")
-              out.write(f"- Closure files: `{row['closure_file_count']}`\n")
-              out.write(f"- Redacted source files: `{row['source_text_file_count']}`\n")
-              out.write(f"- Findings: `{len(row['findings'])}`\n")
-              out.write(f"- Next: `{row['next']}`\n")
+              out.write('# ZEL active backend source census v2\n\n')
+              out.write(f"- Dynamic source: **{census['state']}**\n")
+              out.write(f"- OpenAPI: **{openapi['state']}**\n")
+              out.write(f"- Route ownership: **{routes['state']}**\n")
+              out.write(f"- Export guard: **{export['state']}**\n")
+              out.write(f"- Closure files: `{census['closure_file_count']}`\n")
+              out.write(f"- OpenAPI operations: `{openapi['operation_count']}`\n")
+              out.write(f"- Owned/ambiguous/unowned: `{routes['owned_operation_count']}/{routes['ambiguous_operation_count']}/{routes['unowned_operation_count']}`\n")
+              out.write(f"- Guarded export files/bytes: `{export['file_count']}/{export['total_bytes']}`\n")
+              out.write(f"- Export allowed: `{export['export_allowed']}`\n")
+              out.write(f"- Next: `{export['next']}`\n")
           PY
 
       - name: Remove SSH key
@@ -93,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-active-backend-source-census-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-active-backend-source-census-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

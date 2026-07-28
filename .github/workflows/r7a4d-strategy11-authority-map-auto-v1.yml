@@ -1,0 +1,77 @@
+name: R7A4D Strategy11 Authority Map Auto V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_authority_map_auto_v1.py
+      - backend/research/strategy11_authority_seed_v1.json
+      - .github/workflows/r7a4d-strategy11-authority-map-auto-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: r7a4d-strategy11-authority-map-auto-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authority-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile authority generator
+        run: python -m py_compile backend/tools/r7a4d_strategy11_authority_map_auto_v1.py
+
+      - name: Generate current GitHub authority map
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python backend/tools/r7a4d_strategy11_authority_map_auto_v1.py \
+            --seed backend/research/strategy11_authority_seed_v1.json \
+            --out out
+
+      - name: Assert read-only authority contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row = json.loads(Path('out/summary.json').read_text())
+          assert row['state'] == 'PASS_AUTHORITY_MAP_CURRENT', row['blockers']
+          assert row['capability_marker'] == 'AUTHORITY_MAP_AUTO_GENERATOR'
+          assert row['authority_pass_count'] == row['authority_count']
+          assert row['canonical_mutated'] is False
+          assert row['registry_mutated'] is False
+          assert row['protected_mutations'] == 0
+          assert row['execution_allowed'] is False
+          assert row['promotion_authority'] is False
+          assert row['order_authority'] == 'BLOCKED'
+          stream = row['data_stream']
+          assert stream['state'] == 'PASS'
+          assert stream['available_non_overlap_bars'] <= 480
+          assert stream['missing_to_w1_480'] >= 0
+          PY
+
+      - name: Write summary
+        if: always()
+        run: cat out/authority_map.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-authority-map-auto-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,355 @@
+name: R7A4D Strategy11 Gemini 22 Prework V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-active-research-v3-1-json-shape
+    paths:
+      - backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py
+      - .github/workflows/r7a4d-strategy11-gemini-22-prework-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-gemini-22-prework-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  analyze:
+    name: Gemini compare 22 strategies and build bounded repair plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas numpy matplotlib
+
+      - name: Compile 22-strategy runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py
+
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence/batch-1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: input/evidence/batch-2
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: input/evidence/batch-3
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: input/evidence/batch-4
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: input/evidence/batch-5
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download 22-strategy prediagnosis
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-wait-pool-pre-diagnosis-v1-30313492251-attempt-1
+          path: input/prediagnosis
+          github-token: ${{ github.token }}
+          run-id: 30313492251
+
+      - name: Download Gemini V3.1 audited source review
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-active-research-v3-1-30302007460-attempt-1
+          path: input/gemini-v31
+          github-token: ${{ github.token }}
+          run-id: 30302007460
+
+      - name: Resolve authority JSON paths
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pred=None
+          for p in Path('input/prediagnosis').rglob('*.json'):
+              try: d=json.loads(p.read_text())
+              except Exception: continue
+              text=json.dumps(d)
+              if 'data_wait_pool' in text.lower() or sum(text.count(s) for s in ('anchor_vwap_trend','bb_revert','vwap_revert')) >= 2:
+                  pred=p; break
+          if pred is None: raise SystemExit('PREDIAGNOSIS_JSON_NOT_FOUND')
+          source=next(iter(Path('input/gemini-v31').rglob('source_review.json')),None)
+          if source is None: raise SystemExit('SOURCE_REVIEW_JSON_NOT_FOUND')
+          Path('input/authority_paths.json').write_text(json.dumps({'prediagnosis':str(pred),'source_review':str(source)},indent=2))
+          PY
+
+      - name: Run Gemini-assisted comparison and planning
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          pred=$(python -c "import json;print(json.load(open('input/authority_paths.json'))['prediagnosis'])")
+          source=$(python -c "import json;print(json.load(open('input/authority_paths.json'))['source_review'])")
+          python backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py \
+            --mode analyze \
+            --registry backend/strategy25/canonical_strategy_registry_v1.json \
+            --evidence-root input/evidence \
+            --prediagnosis "$pred" \
+            --source-review "$source" \
+            --out out-plan
+
+      - name: Assert plan contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out-plan/plan.json').read_text())
+          assert d['state']=='PASS'
+          assert d['GEMINI_USED'] is True
+          assert d['free_only'] is True
+          assert d['gemini_call_count'] >= 5
+          assert d['strategy_count']==22
+          assert d['candidate_count']==44
+          assert len(d['rows'])==22
+          assert d['private_code_sent'] is False
+          assert d['account_data_sent'] is False
+          assert d['exchange_credentials_sent'] is False
+          assert d['canonical_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['protected_mutations']==0
+          for row in d['rows']:
+              assert len(row['candidate_ids'])==2
+              assert len(set(row['candidate_ids']))==2
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-22-plan-v1
+          path: out-plan
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: exploratory L085 replay batch ${{ matrix.batch }}
+    needs: analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - batch: 1
+            strategies: anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance
+          - batch: 2
+            strategies: keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal
+          - batch: 3
+            strategies: range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias
+          - batch: 4
+            strategies: squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider
+          - batch: 5
+            strategies: vol_spike_fade,vwap_revert
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-22-plan-v1
+          path: input/plan
+
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence/batch-1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: input/evidence/batch-2
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: input/evidence/batch-3
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: input/evidence/batch-4
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: input/evidence/batch-5
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Run full-state A/B exploratory replay
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py \
+            --mode replay \
+            --plan input/plan/plan.json \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out-replay
+
+      - name: Assert batch contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out-replay/batch_summary.json').read_text())
+          assert d['state']=='PASS'
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          for row in d['rows']:
+              assert row['state'] in {'PASS_L085_RESEARCH_CANDIDATE','NO_L085_CANDIDATE'}
+              assert row['promotion_authority'] is False
+              assert row['requires_w1_confirmation'] is True
+              assert row['sealed_holdback_read'] is False
+              assert row['protected_mutations']==0
+              assert len(row['variants'])==3
+              for variant in row['variants']:
+                  assert variant['parity']['state']=='PASS'
+                  assert variant['parity']['duplicate_trade_count']==0
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-22-replay-v1-batch-${{ matrix.batch }}
+          path: out-replay
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate 22-strategy exploratory results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-gemini-22-replay-v1-batch-*
+          path: input/replays
+          merge-multiple: true
+
+      - name: Aggregate global 22-strategy queue
+        run: |
+          python backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py \
+            --mode aggregate \
+            --replay-root input/replays \
+            --out out-final
+
+      - name: Assert final contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out-final/final.json').read_text())
+          assert d['state']=='PASS'
+          assert d['strategy_count']==22
+          assert len(d['rows'])==22
+          assert len(d['active_l080_queue'])<=3
+          assert d['promotion_authority'] is False
+          assert d['w1_confirmation_required'] is True
+          assert d['canonical_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          PY
+
+      - name: Write global summary
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path('out-final/final.json').read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# Strategy11 Gemini 22 prework\n\n')
+              out.write(f"- Strategies tested: {d['strategy_count']}\n")
+              out.write(f"- L085 research candidates: {d['l085_candidate_count']}\n")
+              out.write(f"- Active L080 queue: {len(d['active_l080_queue'])}/3\n")
+              out.write('- Promotion authority: false; W1 confirmation required\n')
+              for row in d['active_l080_queue']:
+                  out.write(f"- {row['strategy_id']}: {row['winner']} -> {row['next']}\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-22-final-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out-final
+          if-no-files-found: error
+          retention-days: 90

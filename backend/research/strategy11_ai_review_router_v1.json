@@ -1,0 +1,204 @@
+{
+  "schema_version": "strategy11.ai_review_router.v1",
+  "research_only": true,
+  "promotion_authority": false,
+  "protected_mutations": 0,
+  "execution_allowed": false,
+  "order_authority": "BLOCKED",
+  "final_authority": "DETERMINISTIC_REPLAY_STATISTICS_HARD_GATES",
+  "providers": {
+    "gemini": {
+      "role": "MULTIMODAL_HYPOTHESIS_GENERATOR",
+      "required_for": [
+        "NEW_FAILURE_FINGERPRINT_MULTIMODAL",
+        "GEMINI_W1_DELTA",
+        "CANDLE_CHART_VIDEO_EVIDENCE"
+      ],
+      "forbidden_for": [
+        "FINAL_PROMOTION",
+        "ORDER_DECISION",
+        "THRESHOLD_MICROTUNING",
+        "SEALED_DATA_REVIEW"
+      ],
+      "constraints": {
+        "public_video_min": 4,
+        "independent_channel_min": 4,
+        "max_hypotheses_per_strategy_epoch": 2,
+        "max_generations_per_axis_epoch": 2,
+        "direct_video_free_only": true,
+        "independent_red_team_required": true
+      }
+    },
+    "groq": {
+      "role": "SEMANTIC_RED_TEAM",
+      "required_for": [
+        "NEW_EXTERNAL_HYPOTHESIS",
+        "PRE_REPLAY_CAUSAL_REVIEW",
+        "DUPLICATE_AXIS_REVIEW",
+        "OVERFIT_REVIEW"
+      ],
+      "forbidden_for": [
+        "FINAL_PROMOTION",
+        "ORDER_DECISION"
+      ],
+      "constraints": {
+        "primary_model": "openai/gpt-oss-120b",
+        "batch_candidates_max": 10,
+        "temperature": 0,
+        "fail_closed": true
+      }
+    },
+    "workers_ai": {
+      "role": "SCHEMA_LINEAGE_SAFETY_GUARD",
+      "required_for": [
+        "ALL_EXTERNAL_AI_OUTPUTS",
+        "ALL_MAJOR_RESEARCH_ARTIFACTS",
+        "GROQ_OUTPUT",
+        "GEMINI_OUTPUT",
+        "GITHUB_MODELS_OUTPUT"
+      ],
+      "forbidden_for": [
+        "FINAL_PROMOTION",
+        "ORDER_DECISION",
+        "SEMANTIC_SUBSTITUTE_FOR_GROQ"
+      ],
+      "constraints": {
+        "primary_model": "@cf/meta/llama-3.1-8b-instruct",
+        "fail_closed": true,
+        "local_deterministic_validation_always_required": true
+      }
+    },
+    "github_models": {
+      "role": "MAJOR_GATE_INDEPENDENT_REVIEWER",
+      "required_for": [
+        "W1_GATE",
+        "W2_GATE",
+        "W3_GATE",
+        "NEW_SEALED_RESULT",
+        "GLOBAL_CLASSIFICATION",
+        "MATERIAL_SEAL",
+        "ENSEMBLE_SELECTION",
+        "SHADOW_200C",
+        "SHADOW_300C",
+        "PAPER_30D_FINAL",
+        "LIVE_READINESS"
+      ],
+      "forbidden_for": [
+        "EVERY_CANDIDATE_REVIEW",
+        "THRESHOLD_MICROTUNING",
+        "FINAL_PROMOTION",
+        "ORDER_DECISION"
+      ],
+      "constraints": {
+        "primary_model": "openai/gpt-4o",
+        "max_calls_per_gate_run": 3,
+        "fail_closed_on_required_gate": true
+      }
+    }
+  },
+  "stage_routes": {
+    "PRE_W1_INTERNAL_REPLAY": {
+      "gemini": "CONDITIONAL_NEW_MULTIMODAL_EVIDENCE_ONLY",
+      "groq": "REQUIRED_FOR_NEW_EXTERNAL_HYPOTHESIS",
+      "workers_ai": "REQUIRED",
+      "github_models": "DISABLED"
+    },
+    "PRE_REPLAY_EXTERNAL_HYPOTHESIS": {
+      "gemini": "REQUIRED_WHEN_MULTIMODAL",
+      "groq": "REQUIRED",
+      "workers_ai": "REQUIRED",
+      "github_models": "DISABLED"
+    },
+    "W1_GATE": {
+      "gemini": "DISABLED_UNLESS_NEW_FINGERPRINT_AFTER_RESULT",
+      "groq": "OPTIONAL_ANOMALY_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "W2_GATE": {
+      "gemini": "DISABLED_UNLESS_NEW_FINGERPRINT_AFTER_RESULT",
+      "groq": "OPTIONAL_ANOMALY_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "W3_GATE": {
+      "gemini": "DISABLED_UNLESS_NEW_FINGERPRINT_AFTER_RESULT",
+      "groq": "OPTIONAL_ANOMALY_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "NEW_SEALED_RESULT": {
+      "gemini": "FORBIDDEN",
+      "groq": "OPTIONAL_RED_TEAM",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "GLOBAL_CLASSIFICATION": {
+      "gemini": "DISABLED",
+      "groq": "REQUIRED_FOR_BORDERLINE_CASES",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "MATERIAL_SEAL": {
+      "gemini": "DISABLED",
+      "groq": "REQUIRED_FOR_ATTRIBUTION_CONTRADICTIONS",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "ENSEMBLE_SELECTION": {
+      "gemini": "OPTIONAL_VISUAL_DELTA_ONLY",
+      "groq": "REQUIRED_FOR_REDUNDANCY_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "SHADOW_200C": {
+      "gemini": "DISABLED",
+      "groq": "OPTIONAL_FAILURE_CLUSTER_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "SHADOW_300C": {
+      "gemini": "CONDITIONAL_NEW_FAILURE_FINGERPRINT_ONLY",
+      "groq": "REQUIRED_FOR_NEW_HYPOTHESES",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "PAPER_30D_FINAL": {
+      "gemini": "DISABLED",
+      "groq": "OPTIONAL_POSTMORTEM_RED_TEAM",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    },
+    "LIVE_READINESS": {
+      "gemini": "DISABLED",
+      "groq": "OPTIONAL_RISK_ARGUMENT_REVIEW",
+      "workers_ai": "REQUIRED",
+      "github_models": "REQUIRED"
+    }
+  },
+  "fallbacks": {
+    "gemini_unavailable": "HOLD_NEW_MULTIMODAL_HYPOTHESIS_OR_USE_INTERNAL_EVIDENCE_ONLY",
+    "groq_unavailable": "HOLD_EXTERNAL_HYPOTHESIS_SEMANTIC_APPROVAL;WORKERS_AI_MAY_VALIDATE_SCHEMA_ONLY",
+    "workers_ai_unavailable": "RUN_LOCAL_DETERMINISTIC_GUARD_AND_HOLD_EXTERNAL_AI_CHAIN_UNTIL_RETRY",
+    "github_models_unavailable": "HOLD_REQUIRED_MAJOR_GATE_REVIEW_UNTIL_NEXT_QUOTA_WINDOW",
+    "multiple_provider_agreement": "ADVISORY_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "mandatory_artifact_fields": [
+    "stage",
+    "provider",
+    "role",
+    "required",
+    "used",
+    "actual_model",
+    "run_id",
+    "input_sha",
+    "prompt_sha",
+    "response_sha",
+    "decision",
+    "blocker_codes",
+    "promotion_authority",
+    "protected_mutations",
+    "execution_allowed",
+    "order_authority"
+  ]
+}

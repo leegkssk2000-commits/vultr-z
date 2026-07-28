@@ -1,0 +1,162 @@
+name: ZEL Active Backend Recovery Verify V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/recovery/active_backend_source_manifest_v1.json
+      - backend/**/*.py
+      - .github/workflows/zel-active-backend-recovery-verify-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-active-backend-recovery-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify Git manifest hashes and compile closure
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib, json, py_compile
+          from pathlib import Path
+
+          manifest = json.loads(Path('backend/recovery/active_backend_source_manifest_v1.json').read_text())
+          rows = []
+          for item in manifest['files']:
+              path = Path(item['path'])
+              if not path.is_file():
+                  raise AssertionError(f'MISSING_GIT_FILE:{path}')
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != item['sha256']:
+                  raise AssertionError(f'GIT_SHA_MISMATCH:{path}:{digest}:{item["sha256"]}')
+              py_compile.compile(str(path), doraise=True)
+              rows.append({'path': str(path), 'sha256': digest, 'size_bytes': path.stat().st_size})
+          result = {
+              'state': 'PASS_GIT_MANIFEST_HASH_AND_COMPILE',
+              'file_count': len(rows),
+              'mismatch_count': 0,
+              'compile_pass': True,
+              'deployment_changed': False,
+              'service_changed': False,
+              'database_changed': False,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+          }
+          Path('out/git_verify.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+
+          expected = {item['path']: item['sha256'] for item in manifest['files']}
+          remote = f'''import hashlib, json\nfrom pathlib import Path\nroot=Path("/home/z/z")\nexpected={expected!r}\nrows=[]\nfor rel,want in sorted(expected.items()):\n p=root/rel\n if not p.is_file(): rows.append({{"path":rel,"state":"MISSING"}}); continue\n got=hashlib.sha256(p.read_bytes()).hexdigest()\n rows.append({{"path":rel,"state":"MATCH" if got==want else "MISMATCH","sha256":got}})\nbad=[r for r in rows if r["state"]!="MATCH"]\nprint(json.dumps({{"state":"PASS_SERVER_SHA_PARITY" if not bad else "HOLD_SERVER_SHA_DRIFT","file_count":len(rows),"bad_count":len(bad),"bad":bad,"service_changed":False,"process_changed":False,"database_changed":False,"deployment_changed":False,"execution_allowed":False,"order_authority":"BLOCKED"}},sort_keys=True))\n'''
+          Path('out/remote_verify.py').write_text(remote)
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify current server SHA parity read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" < out/remote_verify.py > out/server_verify.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/server_verify.json').read_text())
+          assert row['state']=='PASS_SERVER_SHA_PARITY', row
+          assert row['bad_count']==0, row
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+
+      - name: Verify live OpenAPI remains coherent
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" > out/openapi_verify.json <<'PY'
+          import json, urllib.request
+          doc=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=10))
+          ids=[]
+          operations=0
+          for path,row in doc.get('paths',{}).items():
+              for method,op in row.items():
+                  if method.lower() not in {'get','post','put','patch','delete','options','head'} or not isinstance(op,dict):
+                      continue
+                  operations += 1
+                  if op.get('operationId'): ids.append(op['operationId'])
+          dup=sorted({x for x in ids if ids.count(x)>1})
+          result={'state':'PASS_LIVE_OPENAPI_COHERENT' if operations>0 and not dup else 'HOLD_LIVE_OPENAPI_INCOHERENT','operation_count':operations,'duplicate_operation_ids':dup,'service_changed':False,'process_changed':False,'database_changed':False,'deployment_changed':False,'execution_allowed':False,'order_authority':'BLOCKED'}
+          print(json.dumps(result,sort_keys=True))
+          PY
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/openapi_verify.json').read_text())
+          assert row['state']=='PASS_LIVE_OPENAPI_COHERENT', row
+          assert row['operation_count']>0
+          assert row['duplicate_operation_ids']==[]
+          PY
+
+      - name: Summarize recovery verification
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          git=json.loads(Path('out/git_verify.json').read_text())
+          srv=json.loads(Path('out/server_verify.json').read_text())
+          api=json.loads(Path('out/openapi_verify.json').read_text())
+          result={'state':'PASS_ACTIVE_BACKEND_RECOVERY_VERIFIED','git_file_count':git['file_count'],'server_file_count':srv['file_count'],'server_bad_count':srv['bad_count'],'openapi_operation_count':api['operation_count'],'duplicate_operation_ids':api['duplicate_operation_ids'],'deployment_changed':False,'service_changed':False,'database_changed':False,'execution_allowed':False,'order_authority':'BLOCKED','next':'ADJUDICATE_LEGACY_DUPLICATES_AND_IMPORT_SIDE_EFFECTS_BEFORE_MERGE'}
+          Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+              f.write('# ZEL active backend recovery verification\n\n')
+              f.write(f"- State: **{result['state']}**\n")
+              f.write(f"- Git/server files: `{result['git_file_count']}/{result['server_file_count']}`\n")
+              f.write(f"- Server drift: `{result['server_bad_count']}`\n")
+              f.write(f"- OpenAPI operations: `{result['openapi_operation_count']}`\n")
+              f.write(f"- Order authority: `{result['order_authority']}`\n")
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key out/remote_verify.py
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-active-backend-recovery-verify-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

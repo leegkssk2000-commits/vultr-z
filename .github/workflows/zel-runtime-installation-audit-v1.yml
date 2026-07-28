@@ -1,0 +1,106 @@
+name: ZEL Runtime Installation Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_runtime_installation_audit_v1.py
+      - .github/workflows/zel-runtime-installation-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-runtime-installation-audit-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile audit
+        run: python -m py_compile backend/tools/zel_runtime_installation_audit_v1.py
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Execute read-only runtime census on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          MASTER_SHA="$(git rev-parse origin/master)"
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "EXPECTED_MASTER_SHA='$MASTER_SHA' python3 -" \
+            < backend/tools/zel_runtime_installation_audit_v1.py \
+            > out/runtime_audit.json
+
+      - name: Assert read-only contract and summarize
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path('out/runtime_audit.json')
+          row = json.loads(path.read_text())
+          assert row['state'] in {'PASS_RUNTIME_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_RUNTIME_REVIEW_REQUIRED'}
+          safety = row['safety']
+          assert safety['read_only'] is True
+          assert safety['remote_file_created'] is False
+          assert safety['service_changed'] is False
+          assert safety['process_changed'] is False
+          assert safety['database_changed'] is False
+          assert safety['deployment_changed'] is False
+          assert safety['canonical_mutated'] is False
+          assert safety['registry_mutated'] is False
+          assert safety['execution_allowed'] is False
+          assert safety['order_authority'] == 'BLOCKED'
+          high = [item for item in row['findings'] if item.get('severity') == 'HIGH']
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# ZEL runtime installation audit\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Host: `{row['host']}`\n")
+              out.write(f"- High findings: `{len(high)}`\n")
+              out.write(f"- Service units: `{len(row['services']['units'])}`\n")
+              out.write(f"- Matching processes: `{len(row['processes'])}`\n")
+              out.write(f"- Next: `{row['next']}`\n")
+          PY
+
+      - name: Remove local SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - name: Upload runtime evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-runtime-installation-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

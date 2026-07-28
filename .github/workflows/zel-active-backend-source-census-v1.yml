@@ -1,0 +1,99 @@
+name: ZEL Active Backend Source Census V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_active_backend_source_census_v1.py
+      - .github/workflows/zel-active-backend-source-census-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-active-backend-source-census-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile census
+        run: python -m py_compile backend/tools/zel_active_backend_source_census_v1.py
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Census active backend import closure
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "Z_HOME=/home/z/z ACTIVE_BACKEND_ENTRY=/home/z/z/backend/main.py python3 -" \
+            < backend/tools/zel_active_backend_source_census_v1.py \
+            > out/active_backend_source_census.json \
+            2> out/active_backend_source_stderr.txt
+
+      - name: Assert read-only and summarize
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          row = json.loads(Path('out/active_backend_source_census.json').read_text())
+          assert row['state'] in {'PASS_ACTIVE_SOURCE_CENSUS', 'HOLD_ACTIVE_SOURCE_NOT_IN_GIT'}
+          safety = row['safety']
+          assert safety['read_only'] is True
+          assert safety['remote_file_created'] is False
+          assert safety['service_changed'] is False
+          assert safety['process_changed'] is False
+          assert safety['database_changed'] is False
+          assert safety['deployment_changed'] is False
+          assert safety['execution_allowed'] is False
+          assert safety['order_authority'] == 'BLOCKED'
+          assert safety['secret_values_redacted'] is True
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# ZEL active backend source census\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Entry: `{row['entry']}`\n")
+              out.write(f"- Closure files: `{row['closure_file_count']}`\n")
+              out.write(f"- Redacted source files: `{row['source_text_file_count']}`\n")
+              out.write(f"- Findings: `{len(row['findings'])}`\n")
+              out.write(f"- Next: `{row['next']}`\n")
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - name: Upload source census evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-active-backend-source-census-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 30

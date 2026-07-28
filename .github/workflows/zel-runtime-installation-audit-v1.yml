@@ -1,4 +1,4 @@
-name: ZEL Runtime Installation Audit V1.2
+name: ZEL Runtime Installation Audit V1.3
 
 on:
   pull_request:
@@ -7,6 +7,8 @@ on:
       - backend/tools/zel_runtime_installation_audit_v1.py
       - backend/tools/zel_runtime_topology_audit_v1_1.py
       - backend/tools/zel_runtime_writer_observation_v1.py
+      - backend/tools/zel_writer_observation_adjudicator_v1.py
+      - backend/tools/zel_active_surface_audit_v1.py
       - .github/workflows/zel-runtime-installation-audit-v1.yml
   workflow_dispatch:
 
@@ -14,13 +16,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-runtime-installation-audit-v1-2-${{ github.event.pull_request.number || github.ref }}
+  group: zel-runtime-installation-audit-v1-3-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     env:
       EXPECTED_MASTER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
     steps:
@@ -37,6 +39,8 @@ jobs:
           python -m py_compile backend/tools/zel_runtime_installation_audit_v1.py
           python -m py_compile backend/tools/zel_runtime_topology_audit_v1_1.py
           python -m py_compile backend/tools/zel_runtime_writer_observation_v1.py
+          python -m py_compile backend/tools/zel_writer_observation_adjudicator_v1.py
+          python -m py_compile backend/tools/zel_active_surface_audit_v1.py
 
       - name: Prepare SSH
         env:
@@ -59,14 +63,10 @@ jobs:
           set -euo pipefail
           test -n "$VPS_USER"
           test -n "$EXPECTED_MASTER_SHA"
-          ssh -i ~/.ssh/vps_key \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "EXPECTED_MASTER_SHA='$EXPECTED_MASTER_SHA' python3 -" \
             < backend/tools/zel_runtime_installation_audit_v1.py \
-            > out/runtime_audit.json \
-            2> out/runtime_ssh_stderr.txt
+            > out/runtime_audit.json 2> out/runtime_ssh_stderr.txt
 
       - name: Execute read-only service topology census
         env:
@@ -74,14 +74,10 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/vps_key \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "python3 -" \
             < backend/tools/zel_runtime_topology_audit_v1_1.py \
-            > out/runtime_topology.json \
-            2> out/runtime_topology_stderr.txt
+            > out/runtime_topology.json 2> out/runtime_topology_stderr.txt
 
       - name: Observe dynamic writers for 75 seconds
         env:
@@ -89,14 +85,27 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/vps_key \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "OBSERVE_SEC=75 POLL_SEC=1 python3 -" \
             < backend/tools/zel_runtime_writer_observation_v1.py \
-            > out/runtime_writer_observation.json \
-            2> out/runtime_writer_observation_stderr.txt
+            > out/runtime_writer_observation.json 2> out/runtime_writer_observation_stderr.txt
+
+      - name: Adjudicate independent writer authorities
+        run: |
+          python backend/tools/zel_writer_observation_adjudicator_v1.py \
+            --input out/runtime_writer_observation.json \
+            --out out/runtime_writer_adjudication.json
+
+      - name: Audit active HTTP and proxy owners
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" \
+            < backend/tools/zel_active_surface_audit_v1.py \
+            > out/active_surface_audit.json 2> out/active_surface_stderr.txt
 
       - name: Assert read-only contracts and summarize
         run: |
@@ -108,10 +117,14 @@ jobs:
           installation = json.loads(Path('out/runtime_audit.json').read_text())
           topology = json.loads(Path('out/runtime_topology.json').read_text())
           writers = json.loads(Path('out/runtime_writer_observation.json').read_text())
+          adjudication = json.loads(Path('out/runtime_writer_adjudication.json').read_text())
+          surface = json.loads(Path('out/active_surface_audit.json').read_text())
           assert installation['state'] in {'PASS_RUNTIME_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_RUNTIME_REVIEW_REQUIRED'}
           assert topology['state'] in {'PASS_RUNTIME_TOPOLOGY_CENSUS', 'HOLD_RUNTIME_TOPOLOGY_REVIEW_REQUIRED'}
           assert writers['state'] in {'PASS_DYNAMIC_WRITER_OBSERVATION_WITH_REVIEW_ITEMS', 'HOLD_DIRECT_MULTI_WRITER_CONFLICT'}
-          for row in (installation, topology, writers):
+          assert adjudication['state'] in {'PASS_NO_DIRECT_INDEPENDENT_MULTI_WRITER', 'HOLD_TRUE_INDEPENDENT_MULTI_WRITER'}
+          assert surface['state'] in {'PASS_ACTIVE_SURFACE_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_ACTIVE_SURFACE_REVIEW_REQUIRED'}
+          for row in (installation, topology, writers, adjudication, surface):
               safety = row['safety']
               assert safety['read_only'] is True
               assert safety['remote_file_created'] is False
@@ -121,18 +134,18 @@ jobs:
               assert safety['deployment_changed'] is False
               assert safety['execution_allowed'] is False
               assert safety['order_authority'] == 'BLOCKED'
-          high = [item for item in installation['findings'] if item.get('severity') == 'HIGH']
-          high += [item for item in topology['findings'] if item.get('severity') in {'HIGH', 'CRITICAL'}]
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL runtime installation audit v1.2\n\n')
+              out.write('# ZEL runtime installation audit v1.3\n\n')
               out.write(f"- Installation: **{installation['state']}**\n")
               out.write(f"- Topology: **{topology['state']}**\n")
-              out.write(f"- Dynamic writers: **{writers['state']}**\n")
-              out.write(f"- Units/timers/processes: `{topology['services']['unit_count']}/{topology['services']['timer_count']}/{topology['process_count']}`\n")
-              out.write(f"- Static candidate conflicts: `{len(topology['writer_topology']['conflicts'])}`\n")
-              out.write(f"- Direct FD conflicts: `{len(writers['direct_conflicts'])}`\n")
-              out.write(f"- Changed paths observed: `{writers['changed_path_count']}`\n")
-              out.write(f"- Next: `{writers['next']}`\n")
+              out.write(f"- Raw writer observation: **{writers['state']}**\n")
+              out.write(f"- Writer adjudication: **{adjudication['state']}**\n")
+              out.write(f"- Active surface: **{surface['state']}**\n")
+              out.write(f"- Units/timers: `{topology['services']['unit_count']}/{topology['services']['timer_count']}`\n")
+              out.write(f"- True direct writer conflicts: `{adjudication['true_independent_conflict_count']}`\n")
+              out.write(f"- Unresolved changed paths: `{len(adjudication['unresolved_changed_paths'])}`\n")
+              out.write(f"- Surface findings: `{len(surface['findings'])}`\n")
+              out.write(f"- Next: `{surface['next']}`\n")
           PY
 
       - name: Remove local SSH key
@@ -143,7 +156,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-runtime-installation-audit-v1-2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-runtime-installation-audit-v1-3-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

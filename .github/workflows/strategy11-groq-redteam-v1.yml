@@ -1,0 +1,103 @@
+name: Strategy11 Groq Red-Team v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - 'r7a4d-strategy11-groq-redteam-*'
+    paths:
+      - 'scripts/strategy11_groq_redteam.py'
+      - '.github/workflows/strategy11-groq-redteam-v1.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GROQ_MODEL: openai/gpt-oss-120b
+
+concurrency:
+  group: strategy11-groq-redteam-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  groq-redteam-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Verify GROQ_API_KEY secret exists
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GROQ_API_KEY:-}" || {
+            echo 'HOLD_GROQ_API_KEY_MISSING'
+            exit 1
+          }
+          echo 'PASS_GROQ_API_KEY_PRESENT'
+
+      - name: Install Groq Python SDK
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir groq
+          python - <<'PY'
+          from importlib.metadata import version
+          print('groq_sdk_version=' + version('groq'))
+          PY
+
+      - name: Compile read-only client
+        run: python -m py_compile scripts/strategy11_groq_redteam.py
+
+      - name: Run live Groq connection and JSON-schema smoke
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          set -euo pipefail
+          python scripts/strategy11_groq_redteam.py \
+            --output artifacts/strategy11_groq_redteam_smoke.json
+
+      - name: Assert safety contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('artifacts/strategy11_groq_redteam_smoke.json')
+          if not path.exists():
+              raise SystemExit('HOLD_GROQ_ARTIFACT_MISSING')
+          result = json.loads(path.read_text(encoding='utf-8'))
+          expected = {
+              'promotion_authority': False,
+              'protected_mutations': 0,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+              'research_only': True,
+          }
+          for key, value in expected.items():
+              if result.get(key) != value:
+                  raise SystemExit(f'HOLD_GROQ_SAFETY_CONTRACT:{key}')
+          if result.get('status') != 'PASS_GROQ_REDTEAM_CONNECTION':
+              raise SystemExit(result.get('blocker_code', 'HOLD_GROQ_CONNECTION'))
+          print('PASS_GROQ_SAFETY_CONTRACT')
+          PY
+
+      - name: Upload Groq smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-groq-redteam-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_groq_redteam_smoke.json
+          if-no-files-found: error
+          retention-days: 30

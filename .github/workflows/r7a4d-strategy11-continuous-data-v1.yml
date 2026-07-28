@@ -1,0 +1,110 @@
+name: R7A4D Strategy11 Continuous Data V1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 * * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-continuous-data-v1
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: collect completed 15m bars and funding
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout append-only data branch
+        uses: actions/checkout@v4
+        with:
+          ref: strategy11-data-stream-v1
+          path: stream
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Compile collector
+        run: python -m py_compile control/backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py
+
+      - name: Collect and validate incremental public data
+        run: |
+          mkdir -p status
+          python control/backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py \
+            --data-root stream/strategy11_stream_v1 \
+            --status-out status/manifest.json
+
+      - name: Assert fail-closed contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('status/manifest.json').read_text())
+          assert d['state']=='PASS'
+          assert len(d['symbols'])==5
+          assert d['canonical_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          for row in d['symbols']:
+              assert row['rows']==d['available_non_overlap_bars']
+              assert row['market_sha256']
+              assert row['funding_sha256']
+          PY
+
+      - name: Commit append-only data update
+        working-directory: stream
+        run: |
+          git config user.name 'strategy11-data-bot'
+          git config user.email 'strategy11-data-bot@users.noreply.github.com'
+          git add strategy11_stream_v1
+          if git diff --cached --quiet; then
+            echo 'No new completed bar.'
+            exit 0
+          fi
+          available=$(python -c "import json;print(json.load(open('strategy11_stream_v1/manifest.json'))['available_non_overlap_bars'])")
+          git commit -m "data(strategy11): append completed 15m bars (${available}/480)"
+          git push origin HEAD:strategy11-data-stream-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('status/manifest.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# Strategy11 continuous data\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Available: {d['available_non_overlap_bars']}/480 bars\n")
+              out.write(f"- Missing: {d['missing_to_w1_480']} bars\n")
+              out.write(f"- Added this run: {d['total_added_rows_this_run']} symbol-rows\n")
+              out.write(f"- W1 ready: {d['w1_ready']}\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-continuous-data-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: status
+          if-no-files-found: error
+          retention-days: 30

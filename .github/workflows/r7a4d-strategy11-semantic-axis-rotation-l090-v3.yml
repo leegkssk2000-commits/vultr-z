@@ -1,0 +1,226 @@
+name: R7A4D Strategy11 Semantic Axis Rotation L090 V3
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-distinct-axis-rotation-l090-v2
+    paths:
+      - backend/tools/r7a4d_strategy11_semantic_axis_rotation_l090_v3.py
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-semantic-axis-rotation-l090-v3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  ORIGINAL_PLAN_RUN_ID: '30377925428'
+  PRIOR_ROTATION_RUN_ID: '30392333140'
+
+jobs:
+  plan:
+    name: build generation-four semantic search ledger and plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile planner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_semantic_axis_rotation_l090_v3.py
+      - name: Download original multimodal plan
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-multimodal-rescue-l090-v1-30377925428-attempt-1
+          path: input/original
+          github-token: ${{ github.token }}
+          run-id: 30377925428
+      - name: Download generation-three final and ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-distinct-axis-v2-final-30392333140-attempt-1
+          path: input/prior
+          github-token: ${{ github.token }}
+          run-id: 30392333140
+      - name: Rotate to semantic single-feature axes
+        run: |
+          python backend/tools/r7a4d_strategy11_semantic_axis_rotation_l090_v3.py \
+            --original-plan-root input/original \
+            --prior-final-root input/prior \
+            --out out/plan
+      - name: Assert semantic plan and ledger
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('out/plan/plan.json').read_text())
+          ledger=json.loads(Path('out/plan/search_ledger.json').read_text())
+          assert plan['state']=='PASS_SEMANTIC_AXIS_ROTATION_PLAN'
+          assert plan['strategy_count']==22 and plan['candidate_count']==44 and plan['generation']==4
+          assert plan['single_feature_only'] is True
+          assert ledger['state']=='PASS_SEARCH_LEDGER' and ledger['duplicate_strategy_axis_data_runs']==0
+          for row in plan['rows']:
+              assert len(row['candidate_ids'])==2
+              specs=[row['candidate_specs'][cid] for cid in row['candidate_ids']]
+              assert len({spec['axis'] for spec in specs})==2
+              for spec in specs:
+                  if spec['kind']=='GATE': assert len(spec['gate']['required'])==1
+          for payload in (plan, ledger):
+              assert payload['promotion_authority'] is False
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+          assert plan['protected_mutations']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v3-plan-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/plan
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: replay semantic axes batch ${{ matrix.batch }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: '1'
+            strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance'
+          - batch: '2'
+            strategies: 'keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal'
+          - batch: '3'
+            strategies: 'range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias'
+          - batch: '4'
+            strategies: 'squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider'
+          - batch: '5'
+            strategies: 'vol_spike_fade,vwap_revert'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile replay engine
+        run: python -m py_compile backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py
+      - name: Download generation-four plan
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v3-plan-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: input/plan
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batches
+        run: |
+          mkdir -p input/evidence
+          for b in 1 2 3 4 5; do
+            gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${b}-30252022416-attempt-1" --dir "input/evidence/batch-${b}"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Replay control and semantic-axis candidates
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode replay \
+            --root . \
+            --plan input/plan/plan.json \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out/batch-${{ matrix.batch }}
+      - name: Assert replay safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for path in Path('out').rglob('summary.json'):
+              data=json.loads(path.read_text())
+              if data.get('strategy_id') and data.get('version')=='R7A4D_STRATEGY11_MULTIMODAL_L090_REPLAY_V1': rows.append(data)
+          assert rows
+          for data in rows:
+              assert len(data['tested_candidate_ids'])==2 and len(data['variants'])==3
+              assert data['promotion_authority'] is False and data['protected_mutations']==0
+              assert data['execution_allowed'] is False and data['order_authority']=='BLOCKED'
+              for variant in data['variants']:
+                  assert variant['parity']['state']=='PASS'
+                  assert variant['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v3-replay-batch-${{ matrix.batch }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate semantic-axis L090 results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Download replay batches
+        uses: actions/download-artifact@v4
+        with:
+          pattern: s11-semantic-axis-v3-replay-batch-*
+          path: input/replays
+          merge-multiple: true
+      - name: Download search ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v3-plan-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: input/plan
+      - name: Aggregate
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode aggregate --replay-root input/replays --out out/final
+          cp input/plan/search_ledger.json out/final/search_ledger.json
+          cp input/plan/plan.json out/final/generation4_plan.json
+      - name: Assert final contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('out/final/final.json').read_text())
+          ledger=json.loads(Path('out/final/search_ledger.json').read_text())
+          assert data['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE' and data['strategy_count']==22
+          assert len(data['active_l085_queue'])<=3 and ledger['state']=='PASS_SEARCH_LEDGER'
+          assert data['promotion_authority'] is False and data['protected_mutations']==0
+          assert data['execution_allowed'] is False and data['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-semantic-axis-v3-final-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/final
+          if-no-files-found: error
+          retention-days: 90

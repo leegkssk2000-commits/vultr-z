@@ -133,12 +133,7 @@ def strict_gate(row: Mapping[str, Any], incumbent: Mapping[str, Any], policy: Ma
         "profit_factor_nonworse": deltas["profit_factor"] >= 0.0,
         "payoff_nonworse": deltas["payoff"] >= 0.0,
     }
-    return {
-        "checks": checks,
-        "pass": all(checks.values()),
-        "trade_retention_pct": retention,
-        "deltas_to_incumbent": deltas,
-    }
+    return {"checks": checks, "pass": all(checks.values()), "trade_retention_pct": retention, "deltas_to_incumbent": deltas}
 
 
 def scores(row: Mapping[str, Any], incumbent: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, float]:
@@ -147,15 +142,8 @@ def scores(row: Mapping[str, Any], incumbent: Mapping[str, Any], profile: Mappin
     payoff_delta = metric(row.get("payoff_ratio")) - metric(incumbent.get("payoff_ratio"))
     wr_delta = metric(row.get("win_rate_pct")) - metric(incumbent.get("win_rate_pct"))
     dd_delta = metric(row.get("max_drawdown_pct")) - metric(incumbent.get("max_drawdown_pct"))
-    stress_net_delta = metric(row.get("stress_2x_p95_plus_one", {}).get("net_return_pct_sum")) - metric(
-        incumbent.get("stress_2x_p95_plus_one", {}).get("net_return_pct_sum")
-    )
-    robustness = (
-        metric(profile.get("nonnegative_window_count")) * 2.0
-        + metric(profile.get("net_improved_window_count")) * 1.5
-        + metric(profile.get("win_rate_improved_window_count"))
-        + metric(profile.get("minimum_window_net_R"))
-    )
+    stress_net_delta = metric(row.get("stress_2x_p95_plus_one", {}).get("net_return_pct_sum")) - metric(incumbent.get("stress_2x_p95_plus_one", {}).get("net_return_pct_sum"))
+    robustness = metric(profile.get("nonnegative_window_count")) * 2.0 + metric(profile.get("net_improved_window_count")) * 1.5 + metric(profile.get("win_rate_improved_window_count")) + metric(profile.get("minimum_window_net_R"))
     return {
         "profit_score": net_delta * 4.0 + pf_delta * 15.0 + payoff_delta * 4.0 + wr_delta * 0.10 - dd_delta * 6.0 + stress_net_delta * 2.0 + robustness,
         "balanced_score": net_delta * 3.0 + pf_delta * 12.0 + payoff_delta * 2.0 + wr_delta * 0.65 - dd_delta * 9.0 + stress_net_delta * 2.0 + robustness * 1.5,
@@ -166,12 +154,8 @@ def scores(row: Mapping[str, Any], incumbent: Mapping[str, Any], profile: Mappin
 def dominates(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     maximize = ("net_return_pct_sum", "net_profit_factor", "payoff_ratio", "win_rate_pct")
     minimize = ("max_drawdown_pct",)
-    not_worse = all(metric(a.get(key)) >= metric(b.get(key)) for key in maximize) and all(
-        metric(a.get(key), math.inf) <= metric(b.get(key), math.inf) for key in minimize
-    )
-    strictly_better = any(metric(a.get(key)) > metric(b.get(key)) for key in maximize) or any(
-        metric(a.get(key), math.inf) < metric(b.get(key), math.inf) for key in minimize
-    )
+    not_worse = all(metric(a.get(key)) >= metric(b.get(key)) for key in maximize) and all(metric(a.get(key), math.inf) <= metric(b.get(key), math.inf) for key in minimize)
+    strictly_better = any(metric(a.get(key)) > metric(b.get(key)) for key in maximize) or any(metric(a.get(key), math.inf) < metric(b.get(key), math.inf) for key in minimize)
     return not_worse and strictly_better
 
 
@@ -197,41 +181,16 @@ def call_gemini(key: str, model: str, registry: Mapping[str, Any], catalog: Sequ
     channels = {str(row.get("channel") or "") for row in sources if row.get("channel")}
     prompt = {
         "role": "Quantitative exit-research adjudicator",
-        "task": "Select at most two distinct single-cause candidates from the allowed catalog to improve alpha_combo win rate without damaging Net, PF, payoff, DD, normal/stress -0.75R caps, or window robustness. Public videos are hypotheses only. Return strict JSON.",
+        "task": "Select zero to two distinct single-cause candidates from the allowed catalog to improve alpha_combo win rate without damaging Net, PF, payoff, DD, normal/stress -0.75R caps, or window robustness. Return zero candidates when no allowed axis has sufficient causal support. Public videos are hypotheses only. Return strict JSON.",
         "current_context": context,
         "allowed_catalog": list(catalog),
-        "constraints": {
-            "allowed_candidate_ids_only": True,
-            "max_selected": 2,
-            "prefer_distinct_axes": True,
-            "no_performance_claim": True,
-            "internal_replay_required": True,
-            "same_window_overfit_warning_required": True
-        },
-        "output_schema": {
-            "status": "PASS|HOLD",
-            "selected_candidate_ids": ["candidate_id"],
-            "reasons": [{"candidate_id": "...", "causal_reason": "...", "falsification": "..."}],
-            "rejected_axes": ["..."]
-        }
+        "constraints": {"allowed_candidate_ids_only": True, "max_selected": 2, "zero_selection_allowed": True, "prefer_distinct_axes": True, "no_performance_claim": True, "internal_replay_required": True, "same_window_overfit_warning_required": True},
+        "output_schema": {"status": "PASS|HOLD", "selected_candidate_ids": ["candidate_id"], "reasons": [{"candidate_id": "...", "causal_reason": "...", "falsification": "..."}], "rejected_axes": ["..."]},
     }
     parts: list[dict[str, Any]] = [{"text": json.dumps(prompt, ensure_ascii=False, sort_keys=True)}]
     parts.extend({"file_data": {"file_uri": str(row["url"])}} for row in sources)
-    payload = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 8192,
-            "responseMimeType": "application/json",
-            "thinkingConfig": {"thinkingLevel": "low"}
-        }
-    }
-    request = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        method="POST"
-    )
+    payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192, "responseMimeType": "application/json", "thinkingConfig": {"thinkingLevel": "low"}}}
+    request = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent", data=json.dumps(payload).encode("utf-8"), headers={"x-goog-api-key": key, "Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(request, timeout=900) as response:
         generated = json.load(response)
     texts = [str(part["text"]) for candidate in generated.get("candidates", []) for part in candidate.get("content", {}).get("parts", []) if isinstance(part.get("text"), str)]
@@ -246,8 +205,6 @@ def call_gemini(key: str, model: str, registry: Mapping[str, Any], catalog: Sequ
             selected.append(candidate_id)
         if len(selected) >= 2:
             break
-    if not selected:
-        raise RuntimeError("GEMINI_SELECTED_NO_ALLOWED_CANDIDATE")
     return {
         "GEMINI_USED": True,
         "free_only": True,
@@ -259,7 +216,7 @@ def call_gemini(key: str, model: str, registry: Mapping[str, Any], catalog: Sequ
         "response": parsed,
         "input_sha256": hashlib.sha256(json.dumps(prompt, sort_keys=True).encode("utf-8")).hexdigest(),
         "response_sha256": hashlib.sha256("\n".join(texts).encode("utf-8")).hexdigest(),
-        "status": "PASS"
+        "status": "PASS" if selected else "HOLD_NO_NEW_AXIS",
     }
 
 
@@ -321,12 +278,7 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     for variant_id, exit_spec in gen1_specs:
         print(f"MULTIOBJ_GEN1_START variant={variant_id}", flush=True)
-        row = cost.evaluate_with_reference_r(
-            variant_id=variant_id, exit_spec=exit_spec, strategy=strategy, gate=gate, surgery=surgery,
-            symbols=symbols, frames=frames, features=features, funding=funding, quantiles=quantiles,
-            manifest=manifest, market_shas=market_shas, strategy_source_sha=strategy_source_sha,
-            source_run_id=args.source_run_id, source_head_sha=args.source_head_sha, cap_r=-0.75, out=out
-        )
+        row = cost.evaluate_with_reference_r(variant_id=variant_id, exit_spec=exit_spec, strategy=strategy, gate=gate, surgery=surgery, symbols=symbols, frames=frames, features=features, funding=funding, quantiles=quantiles, manifest=manifest, market_shas=market_shas, strategy_source_sha=strategy_source_sha, source_run_id=args.source_run_id, source_head_sha=args.source_head_sha, cap_r=-0.75, out=out)
         rows.append(row)
         print(f"MULTIOBJ_GEN1_END variant={variant_id}", flush=True)
 
@@ -344,14 +296,8 @@ def main() -> int:
 
     context = {
         "incumbent": {key: incumbent.get(key) for key in ("trade_count", "win_rate_pct", "net_return_pct_sum", "net_profit_factor", "payoff_ratio", "max_drawdown_pct")},
-        "generation_1": [{
-            "variant_id": row["variant_id"], "trade_count": row.get("trade_count"), "win_rate_pct": row.get("win_rate_pct"),
-            "net_return_pct_sum": row.get("net_return_pct_sum"), "net_profit_factor": row.get("net_profit_factor"),
-            "payoff_ratio": row.get("payoff_ratio"), "max_drawdown_pct": row.get("max_drawdown_pct"),
-            "normal_worst_net_loss_R": worst(row), "stress_worst_net_loss_R": worst(row, stress=True),
-            "window_profile": row["multiobjective"]["window_profile"]
-        } for row in rows],
-        "selected_generation_2_base": base_for_gen2["variant_id"]
+        "generation_1": [{"variant_id": row["variant_id"], "trade_count": row.get("trade_count"), "win_rate_pct": row.get("win_rate_pct"), "net_return_pct_sum": row.get("net_return_pct_sum"), "net_profit_factor": row.get("net_profit_factor"), "payoff_ratio": row.get("payoff_ratio"), "max_drawdown_pct": row.get("max_drawdown_pct"), "normal_worst_net_loss_R": worst(row), "stress_worst_net_loss_R": worst(row, stress=True), "window_profile": row["multiobjective"]["window_profile"]} for row in rows],
+        "selected_generation_2_base": base_for_gen2["variant_id"],
     }
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -372,12 +318,7 @@ def main() -> int:
             raise RuntimeError(f"UNSUPPORTED_GEN2_AXIS:{spec['axis']}")
         variant_id = f"GEN2_{base_for_gen2['variant_id']}_{candidate_id}"
         print(f"MULTIOBJ_GEN2_START variant={variant_id}", flush=True)
-        row = cost.evaluate_with_reference_r(
-            variant_id=variant_id, exit_spec=exit_spec, strategy=strategy, gate=gate, surgery=surgery,
-            symbols=symbols, frames=frames, features=features, funding=funding, quantiles=quantiles,
-            manifest=manifest, market_shas=market_shas, strategy_source_sha=strategy_source_sha,
-            source_run_id=args.source_run_id, source_head_sha=args.source_head_sha, cap_r=-0.75, out=out
-        )
+        row = cost.evaluate_with_reference_r(variant_id=variant_id, exit_spec=exit_spec, strategy=strategy, gate=gate, surgery=surgery, symbols=symbols, frames=frames, features=features, funding=funding, quantiles=quantiles, manifest=manifest, market_shas=market_shas, strategy_source_sha=strategy_source_sha, source_run_id=args.source_run_id, source_head_sha=args.source_head_sha, cap_r=-0.75, out=out)
         profile = window_profile(out, variant_id, incumbent_profile["windows"])
         row["multiobjective"] = {"generation": 2, "gemini_candidate_id": candidate_id, "base_variant_id": base_for_gen2["variant_id"], "window_profile": profile, "strict": strict_gate(row, incumbent, policy), "scores": scores(row, incumbent, profile)}
         atomic_json(out / variant_id / "summary.json", row)
@@ -399,36 +340,48 @@ def main() -> int:
             break
 
     final = {
-        "schema_version": "1.0", "version": VERSION,
+        "schema_version": "1.0",
+        "version": VERSION,
         "state": "PASS_MULTIOBJECTIVE_RESEARCH_CANDIDATES" if selected else "HOLD_NO_STRICT_CANDIDATE",
-        "strategy_id": "alpha_combo", "generation_count": 2,
-        "same_dataset_generation_budget_exhausted": True, "same_window_infinite_search_forbidden": True,
-        "generation_1_candidate_count": len(gen1_specs), "generation_2_candidate_count": len(gemini_audit["selected_candidate_ids"]),
+        "strategy_id": "alpha_combo",
+        "generation_count": 2,
+        "same_dataset_generation_budget_exhausted": True,
+        "same_window_infinite_search_forbidden": True,
+        "generation_1_candidate_count": len(gen1_specs),
+        "generation_2_candidate_count": len(gemini_audit["selected_candidate_ids"]),
         "gemini_audit": gemini_audit,
         "profit_max_control": profit_max["variant_id"] if profit_max else None,
         "balanced_wr_control": balanced["variant_id"] if balanced else None,
         "robust_control": robust["variant_id"] if robust else None,
-        "pareto_frontier": frontier, "active_candidate_queue": selected,
-        "requires_w1_fresh_non_overlap": True, "requires_new_sealed_holdback": True,
-        "sealed_holdback_read": False, "promotion_authority": False,
+        "pareto_frontier": frontier,
+        "active_candidate_queue": selected,
+        "requires_w1_fresh_non_overlap": True,
+        "requires_new_sealed_holdback": True,
+        "sealed_holdback_read": False,
+        "promotion_authority": False,
         "next": "ALPHA_W1_MULTIOBJECTIVE_CONFIRMATION",
         "next_generation_triggers": ["W1_NEW_NON_OVERLAP", "NEW_CAUSAL_EVIDENCE"],
-        "source_run_id": args.source_run_id, "source_head_sha": args.source_head_sha,
-        "strategy_source_sha": strategy_source_sha, "fresh_manifest_sha256": sha256(fresh_root / "manifest.json"),
-        "baseline_summary_sha256": sha256(baseline_path), "l085_summary_sha256": sha256(l085_path),
-        "l075_summary_sha256": sha256(l075_path), "policy_sha256": sha256(policy_path),
-        "video_registry_sha256": sha256(registry_path), "variants": rows,
-        "canonical_mutated": False, "registry_mutated": False, "protected_mutations": 0,
-        "execution_allowed": False, "paper_allowed": False, "live_allowed": False,
-        "order_authority": "BLOCKED", "blockers": []
+        "source_run_id": args.source_run_id,
+        "source_head_sha": args.source_head_sha,
+        "strategy_source_sha": strategy_source_sha,
+        "fresh_manifest_sha256": sha256(fresh_root / "manifest.json"),
+        "baseline_summary_sha256": sha256(baseline_path),
+        "l085_summary_sha256": sha256(l085_path),
+        "l075_summary_sha256": sha256(l075_path),
+        "policy_sha256": sha256(policy_path),
+        "video_registry_sha256": sha256(registry_path),
+        "variants": rows,
+        "canonical_mutated": False,
+        "registry_mutated": False,
+        "protected_mutations": 0,
+        "execution_allowed": False,
+        "paper_allowed": False,
+        "live_allowed": False,
+        "order_authority": "BLOCKED",
+        "blockers": [],
     }
     atomic_json(out / "summary.json", final)
-    atomic_json(out / "next_generation_request.json", {
-        "state": "WAIT_NEW_INDEPENDENT_EVIDENCE", "strategy_id": "alpha_combo",
-        "active_candidate_queue": selected, "trigger": final["next_generation_triggers"],
-        "action_on_trigger": "RERUN_MULTIOBJECTIVE_SELECTION_THEN_OPEN_AT_MOST_ONE_NEW_SINGLE_CAUSE_AXIS",
-        "same_dataset_parameter_mining_forbidden": True, "execution_allowed": False
-    })
+    atomic_json(out / "next_generation_request.json", {"state": "WAIT_NEW_INDEPENDENT_EVIDENCE", "strategy_id": "alpha_combo", "active_candidate_queue": selected, "trigger": final["next_generation_triggers"], "action_on_trigger": "RERUN_MULTIOBJECTIVE_SELECTION_THEN_OPEN_AT_MOST_ONE_NEW_SINGLE_CAUSE_AXIS", "same_dataset_parameter_mining_forbidden": True, "execution_allowed": False})
     print(json.dumps({"state": final["state"], "profit_max": final["profit_max_control"], "balanced": final["balanced_wr_control"], "robust": final["robust_control"], "active": final["active_candidate_queue"], "next": final["next"]}, sort_keys=True))
     return 0
 

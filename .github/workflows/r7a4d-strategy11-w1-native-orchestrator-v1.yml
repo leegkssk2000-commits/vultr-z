@@ -1,0 +1,419 @@
+name: R7A4D Strategy11 W1 Native Orchestrator V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/research/strategy11_w1_native_orchestrator_v1.json
+      - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
+  push:
+    branches:
+      - master
+    paths:
+      - backend/research/strategy11_w1_native_orchestrator_v1.json
+      - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: r7a4d-strategy11-w1-native-orchestrator-v1
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    name: W1 clock gate and shared-SHA native execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Checkout append-only data stream
+        uses: actions/checkout@v4
+        with:
+          ref: strategy11-data-stream-v1
+          path: stream
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve W1 clock and stream integrity gate
+        id: gate
+        run: |
+          mkdir -p native-out
+          python - <<'PY'
+          import datetime as dt
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          contract_path=Path('control/backend/research/strategy11_w1_native_orchestrator_v1.json')
+          stream_path=Path('stream/strategy11_stream_v1/manifest.json')
+          contract=json.loads(contract_path.read_text())
+          stream=json.loads(stream_path.read_text())
+          assert stream['state']=='PASS' and stream['blockers']==[], stream
+          assert len(stream['symbols'])==5, stream
+          assert stream['canonical_mutated'] is False
+          assert stream['registry_mutated'] is False
+          assert stream['protected_mutations']==0
+          assert stream['execution_allowed'] is False
+          assert stream['order_authority']=='BLOCKED'
+          target=dt.datetime.fromisoformat(contract['w1_not_before_utc'].replace('Z','+00:00'))
+          now=dt.datetime.now(dt.timezone.utc)
+          ready=now>=target
+          output=os.environ['GITHUB_OUTPUT']
+          with open(output,'a',encoding='utf-8') as handle:
+              handle.write(f"ready={'true' if ready else 'false'}\n")
+              handle.write(f"available={int(stream['available_non_overlap_bars'])}\n")
+              handle.write(f"missing={int(stream['missing_to_w1_480'])}\n")
+              handle.write(f"stream_sha={hashlib.sha256(stream_path.read_bytes()).hexdigest()}\n")
+          wait={
+              'schema_version':'1.0',
+              'version':contract['version'],
+              'state':'READY_TO_EXECUTE' if ready else 'WAIT_DATA',
+              'blockers':[],
+              'w1_not_before_utc':contract['w1_not_before_utc'],
+              'clock_now_utc':now.isoformat().replace('+00:00','Z'),
+              'stream_available_non_overlap_bars':int(stream['available_non_overlap_bars']),
+              'stream_missing_to_w1_480':int(stream['missing_to_w1_480']),
+              'stream_manifest_sha256':hashlib.sha256(stream_path.read_bytes()).hexdigest(),
+              'stream_latest_closed_end':stream.get('latest_closed_end'),
+              'clock_ready':ready,
+              'next':'EXECUTE_SHARED_W1' if ready else 'WAIT_NEXT_HOURLY_NATIVE_RUN',
+              'promotion_authority':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+          }
+          Path('native-out/status.json').write_text(json.dumps(wait,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'state':wait['state'],'available':wait['stream_available_non_overlap_bars'],'ready':ready},sort_keys=True))
+          PY
+
+      - name: Checkout exact DATA_WAIT_POOL compute authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-data-wait-pool-compute-v1
+          path: compute
+          persist-credentials: false
+
+      - name: Checkout exact alpha PRIMARY W1 authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-alpha-primary-w1-multiobjective-v1
+          path: alpha
+          persist-credentials: false
+
+      - name: Checkout exact turtle PRIMARY W1 authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-turtle-primary-w1-causal-replay-v1
+          path: turtle
+          persist-credentials: false
+
+      - name: Verify pinned research heads
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          c=json.loads(Path('control/backend/research/strategy11_w1_native_orchestrator_v1.json').read_text())['shared_source_contract']
+          actual={
+              'data_wait_pool_head_sha':subprocess.check_output(['git','-C','compute','rev-parse','HEAD'],text=True).strip(),
+              'alpha_head_sha':subprocess.check_output(['git','-C','alpha','rev-parse','HEAD'],text=True).strip(),
+              'turtle_head_sha':subprocess.check_output(['git','-C','turtle','rev-parse','HEAD'],text=True).strip(),
+          }
+          for key,value in actual.items():
+              assert value==c[key], (key,value,c[key])
+          print(json.dumps(actual,sort_keys=True))
+          PY
+
+      - name: Install W1 runtime
+        if: steps.gate.outputs.ready == 'true'
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Compile pinned W1 runners
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          python -m py_compile compute/backend/tools/r7a4d_strategy11_data_wait_pool_compute_v1.py
+          python -m py_compile alpha/backend/tools/r7a4d_strategy11_alpha_primary_w1_multiobjective_v1.py
+          python -m py_compile turtle/backend/tools/r7a4d_strategy11_turtle_primary_w1_causal_replay_v1.py
+
+      - name: Download immutable fresh authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: inputs/fresh-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download corrected DATA_GATE authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-adequacy-v1-1-30255639710-attempt-1
+          path: inputs/data-gate-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30255639710'
+
+      - name: Download PRIMARY queue terminal authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-ema-repair-v3-30282593225-attempt-1
+          path: inputs/ema-terminal-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30282593225'
+
+      - name: Download evidence batch 1
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: inputs/evidence/batch-1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 2
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: inputs/evidence/batch-2
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 3
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: inputs/evidence/batch-3
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 4
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: inputs/evidence/batch-4
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download evidence batch 5
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: inputs/evidence/batch-5
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download alpha multiobjective authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+          path: inputs/alpha-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30345463070'
+
+      - name: Download turtle causal authority
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-turtle-gemini-trailing-v1-30302182624-attempt-1
+          path: inputs/turtle-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30302182624'
+
+      - name: Execute exact 22-strategy shared W1 source
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          PYTHONPATH: compute
+        run: |
+          python compute/backend/tools/r7a4d_strategy11_data_wait_pool_compute_v1.py \
+            --root compute \
+            --fresh-manifest inputs/fresh-authority/manifest.json \
+            --ranking inputs/data-gate-authority/global_ranking.csv \
+            --ema-terminal inputs/ema-terminal-authority/summary.json \
+            --evidence-root inputs/evidence \
+            --out shared-w1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('shared-w1/status.json').read_text())
+          assert row['state']=='PASS' and row['blockers']==[], row
+          assert row['data_wait_pool_count']==22 and row['evaluated_strategy_count']==22, row
+          assert row['canonical_mutated'] is False and row['registry_mutated'] is False
+          assert row['protected_mutations']==0 and row['execution_allowed'] is False
+          assert row['W1_manifest_sha256'], row
+          PY
+
+      - name: Execute alpha on the identical W1 artifact
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          PYTHONPATH: alpha
+        run: |
+          python alpha/backend/tools/r7a4d_strategy11_alpha_primary_w1_multiobjective_v1.py \
+            --root alpha \
+            --source-root shared-w1 \
+            --baseline-summary inputs/evidence/batch-1/alpha_combo/summary.json \
+            --multiobjective-root inputs/alpha-authority \
+            --policy alpha/backend/research/alpha_primary_w1_multiobjective_v1.json \
+            --out primary/alpha \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --source-head-sha "$GITHUB_SHA"
+
+      - name: Execute turtle on the identical W1 artifact
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          PYTHONPATH: turtle
+        run: |
+          python turtle/backend/tools/r7a4d_strategy11_turtle_primary_w1_causal_replay_v1.py \
+            --root turtle \
+            --source-root shared-w1 \
+            --baseline-summary inputs/evidence/batch-5/turtle_trend/summary.json \
+            --turtle-authority-root inputs/turtle-authority \
+            --policy turtle/backend/research/turtle_primary_w1_causal_replay_v1.json \
+            --out primary/turtle \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --source-head-sha "$GITHUB_SHA"
+
+      - name: Assert shared SHA and finalize native state
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          source=json.loads(Path('shared-w1/status.json').read_text())
+          alpha=json.loads(Path('primary/alpha/status.json').read_text())
+          turtle=json.loads(Path('primary/turtle/status.json').read_text())
+          manifest_sha=source['W1_manifest_sha256']
+          assert alpha['source_w1_manifest_sha256']==manifest_sha, (alpha['source_w1_manifest_sha256'],manifest_sha)
+          assert turtle['source_w1_manifest_sha256']==manifest_sha, (turtle['source_w1_manifest_sha256'],manifest_sha)
+          assert alpha['source_w1_run_id']==turtle['source_w1_run_id']==str(__import__('os').environ['GITHUB_RUN_ID'])
+          for row in (source,alpha,turtle):
+              assert row['canonical_mutated'] is False
+              assert row['registry_mutated'] is False
+              assert row['protected_mutations']==0
+              assert row['execution_allowed'] is False
+          final={
+              'schema_version':'1.0',
+              'version':'R7A4D_STRATEGY11_W1_NATIVE_ORCHESTRATOR_V1',
+              'state':'PASS_W1_NATIVE_PRIMARY_CHAIN',
+              'blockers':[],
+              'source_w1_run_id':str(__import__('os').environ['GITHUB_RUN_ID']),
+              'source_w1_head_sha':__import__('os').environ['GITHUB_SHA'],
+              'source_w1_manifest_sha256':manifest_sha,
+              'data_wait_pool_state':source['state'],
+              'data_wait_pool_evaluated_strategy_count':source['evaluated_strategy_count'],
+              'alpha_state':alpha['state'],
+              'alpha_active_candidate_queue':alpha.get('active_candidate_queue',[]),
+              'turtle_state':turtle['state'],
+              'turtle_active_candidate_queue':turtle.get('active_candidate_queue',[]),
+              'ema_state':'IMPLEMENTATION_REQUIRED',
+              'next':'EMA_PRIMARY_W1_CAUSAL_REPLAY',
+              'promotion_authority':False,
+              'sealed_holdback_read':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+          }
+          Path('native-out/status.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
+          Path('native-out/lineage.json').write_text(json.dumps({
+              'shared_w1_manifest_sha256':manifest_sha,
+              'shared_w1_status_sha256':hashlib.sha256(Path('shared-w1/status.json').read_bytes()).hexdigest(),
+              'alpha_status_sha256':hashlib.sha256(Path('primary/alpha/status.json').read_bytes()).hexdigest(),
+              'turtle_status_sha256':hashlib.sha256(Path('primary/turtle/status.json').read_bytes()).hexdigest(),
+          },indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'state':final['state'],'alpha':final['alpha_state'],'turtle':final['turtle_state'],'next':final['next']},sort_keys=True))
+          PY
+
+      - name: Assert native fail-closed contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('native-out/status.json').read_text())
+          assert row['state'] in {'WAIT_DATA','PASS_W1_NATIVE_PRIMARY_CHAIN'}, row
+          assert row['blockers']==[], row
+          assert row['promotion_authority'] is False
+          assert row['canonical_mutated'] is False
+          assert row['registry_mutated'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          PY
+
+      - name: Write GitHub summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          row=json.loads(Path('native-out/status.json').read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# Strategy11 W1 native orchestrator\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Next: `{row['next']}`\n")
+              if row['state']=='WAIT_DATA':
+                  out.write(f"- Stream bars: `{row['stream_available_non_overlap_bars']}/480`\n")
+                  out.write(f"- Missing: `{row['stream_missing_to_w1_480']}`\n")
+                  out.write(f"- W1 gate: `{row['w1_not_before_utc']}`\n")
+              else:
+                  out.write(f"- Manifest SHA: `{row['source_w1_manifest_sha256']}`\n")
+                  out.write(f"- 22 pool: `{row['data_wait_pool_evaluated_strategy_count']}`\n")
+                  out.write(f"- Alpha: `{row['alpha_state']}`\n")
+                  out.write(f"- Turtle: `{row['turtle_state']}`\n")
+          PY
+
+      - name: Upload native W1 evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-w1-native-orchestrator-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            native-out
+            shared-w1
+            primary
+          if-no-files-found: warn
+          retention-days: 90

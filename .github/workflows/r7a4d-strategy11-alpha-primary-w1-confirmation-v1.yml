@@ -1,0 +1,69 @@
+name: R7A4D Strategy11 Alpha Primary W1 Confirmation V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-multiobjective-auto-v1-clean
+    paths:
+      - "backend/tools/r7a4d_strategy11_alpha_primary_w1_confirmation_v1.py"
+      - ".github/workflows/r7a4d-strategy11-alpha-primary-w1-confirmation-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wait-data-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build deterministic WAIT_DATA fixture
+        run: |
+          mkdir -p /tmp/s11-alpha-primary-w1-fixture /tmp/s11-alpha-primary-w1-out
+          cat > /tmp/s11-alpha-primary-w1-fixture/manifest.json <<'JSON'
+          {
+            "state": "PASS",
+            "available_non_overlap_bars": 99,
+            "missing_to_w1_480": 381,
+            "blockers": [],
+            "protected_mutations": 0,
+            "canonical_mutated": false,
+            "registry_mutated": false,
+            "execution_allowed": false,
+            "order_authority": "BLOCKED"
+          }
+          JSON
+      - name: Compile runner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_primary_w1_confirmation_v1.py
+      - name: Execute WAIT_DATA-safe contract
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_primary_w1_confirmation_v1.py \
+            --stream-manifest /tmp/s11-alpha-primary-w1-fixture/manifest.json \
+            --out /tmp/s11-alpha-primary-w1-out
+      - name: Assert capability and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path('/tmp/s11-alpha-primary-w1-out/status.json').read_text())
+          assert p['capability_id'] == 'PRIMARY_W1_MULTIOBJECTIVE_CONFIRMATION'
+          assert p['state'] == 'WAIT_DATA'
+          assert p['available_non_overlap_bars'] == 99
+          assert p['missing_to_w1_480'] == 381
+          assert p['required_variants'] == ['INCUMBENT_CONTROL','STOP065_PROFIT_CONTROL','TIME54','TIME60']
+          assert p['promotion_authority'] is False
+          assert p['protected_mutations'] == 0
+          assert p['execution_allowed'] is False
+          assert p['order_authority'] == 'BLOCKED'
+          PY
+      - name: Upload contract artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-alpha-primary-w1-confirmation-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: /tmp/s11-alpha-primary-w1-out
+          if-no-files-found: error

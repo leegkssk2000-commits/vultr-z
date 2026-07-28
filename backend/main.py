@@ -384,7 +384,8 @@ def _ensure_frontend_route_singletons(app: FastAPI, logger: logging.Logger) -> N
 
 
 def _install_visibility_middlewares(app: FastAPI) -> None:
-    _install_visibility_middlewares(app)
+    """Reserved visibility middleware hook; intentionally no-op."""
+    return None
 
 
 def _install_logging_middlewares(app: FastAPI) -> None:
@@ -530,9 +531,9 @@ def create_app() -> FastAPI:
         )
         if rail_router_shim is not None:
             app.include_router(rail_router_shim)
-            logger.warning("rail-status router shim attached directly from core_api")
+            log.warning("rail-status router shim attached directly from core_api")
         else:
-            logger.warning("rail-status router shim import failed: %s", rail_router_shim_err)
+            log.warning("rail-status router shim import failed: %s", rail_router_shim_err)
     if lbot_router is not None:
         app.include_router(lbot_router)
     if bots_router is not None:
@@ -613,41 +614,8 @@ if z_alimi_message_router is not None:
 # --- ZOS_ALIMI_MESSAGE_ROUTER_V2_END ---
 
 
-# --- ZOS_ALIMI_ROUTER_V1_START ---
-try:
-    from backend.api.alimi import router as z_alimi_router
-except Exception:
-    from api.alimi import router as z_alimi_router
-if not any(getattr(route, "path", None) == "/api/alimi/health" for route in app.routes):
-    app.include_router(z_alimi_router)
-# --- ZOS_ALIMI_ROUTER_V1_END ---
 
-# --- ZOS_LICO_ROUTER_V4_START ---
-try:
-    from backend.api.lico import router as z_lico_router
-except Exception:
-    from api.lico import router as z_lico_router
-app.include_router(z_lico_router)
-# --- ZOS_LICO_ROUTER_V4_END ---
 
-# --- ZUI_ALIMI_ROUTER_V1_START ---
-# Read-only Alimi semantic briefing API. Safe to append: it only mounts GET routes.
-try:
-    from backend.api.alimi import router as zui_alimi_router
-except Exception:
-    try:
-        from api.alimi import router as zui_alimi_router
-    except Exception:
-        zui_alimi_router = None
-
-if zui_alimi_router is not None:
-    try:
-        _zui_alimi_paths = {getattr(route, "path", "") for route in getattr(app, "routes", [])}
-        if "/api/alimi/health" not in _zui_alimi_paths:
-            app.include_router(zui_alimi_router)
-    except Exception:
-        pass
-# --- ZUI_ALIMI_ROUTER_V1_END ---
 
 
 # ZOPS_ORDER_RISK_GATE_CONTRACT_V1_BEGIN
@@ -669,19 +637,6 @@ except Exception as _zops_replay_router_error:
     try:
         import logging
         logging.getLogger("zops.replay").warning("replay router disabled: %s", _zops_replay_router_error)
-    except Exception:
-        pass
-# ZOPS_REPLAY_API_404_INCLUDE_REPAIR_V1
-try:
-    try:
-        from zops_replay_router import router as _zops_replay_router_repair_v1
-    except Exception:
-        from backend.zops_replay_router import router as _zops_replay_router_repair_v1
-    app.include_router(_zops_replay_router_repair_v1)
-except Exception as _zops_replay_router_repair_v1_error:
-    try:
-        import logging
-        logging.getLogger("zops.replay").error("replay router include repair failed: %s", _zops_replay_router_repair_v1_error)
     except Exception:
         pass
 # ZOPS_DUAL_LEDGER_RECONCILIATION_V1_INCLUDE

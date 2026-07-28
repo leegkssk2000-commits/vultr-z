@@ -1,0 +1,295 @@
+name: Strategy11 AI Review Router v1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'backend/research/strategy11_ai_review_router_v1.json'
+      - 'scripts/strategy11_ai_review_router.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - 'scripts/strategy11_github_models_review.py'
+      - '.github/workflows/strategy11-ai-review-router-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  models: read
+
+concurrency:
+  group: strategy11-ai-review-router-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GROQ_MODEL: openai/gpt-oss-120b
+  WORKERS_AI_MODEL: '@cf/meta/llama-3.1-8b-instruct'
+  GITHUB_MODELS_MODEL: openai/gpt-4o
+
+jobs:
+  route-contract:
+    name: verify stage routing and authority contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        stage:
+          - PRE_W1_INTERNAL_REPLAY
+          - PRE_REPLAY_EXTERNAL_HYPOTHESIS
+          - W1_GATE
+          - W2_GATE
+          - W3_GATE
+          - NEW_SEALED_RESULT
+          - GLOBAL_CLASSIFICATION
+          - MATERIAL_SEAL
+          - ENSEMBLE_SELECTION
+          - SHADOW_200C
+          - SHADOW_300C
+          - PAPER_30D_FINAL
+          - LIVE_READINESS
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile router and provider clients
+        run: |
+          python -m py_compile \
+            scripts/strategy11_ai_review_router.py \
+            scripts/strategy11_groq_redteam.py \
+            scripts/strategy11_workers_ai_guard.py \
+            scripts/strategy11_github_models_review.py
+      - name: Build route plan
+        run: |
+          python scripts/strategy11_ai_review_router.py \
+            --stage '${{ matrix.stage }}' \
+            --mode plan \
+            --output 'artifacts/plans/${{ matrix.stage }}.json'
+      - name: Assert no AI authority expansion
+        run: |
+          python - '${{ matrix.stage }}' <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          stage = sys.argv[1]
+          result = json.loads(Path(f'artifacts/plans/{stage}.json').read_text())
+          assert result['status'] == 'PASS_AI_REVIEW_ROUTER_PLAN'
+          plan = result['plan']
+          assert plan['final_authority'] == 'DETERMINISTIC_REPLAY_STATISTICS_HARD_GATES'
+          for payload in (result, plan):
+              assert payload['research_only'] is True
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations'] == 0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority'] == 'BLOCKED'
+          providers = plan['provider_plan']
+          assert set(providers) == {'gemini', 'groq', 'workers_ai', 'github_models'}
+          assert providers['workers_ai']['action'] == 'RUN'
+          if stage in {'W1_GATE','W2_GATE','W3_GATE','NEW_SEALED_RESULT','GLOBAL_CLASSIFICATION','MATERIAL_SEAL','ENSEMBLE_SELECTION','SHADOW_200C','SHADOW_300C','PAPER_30D_FINAL','LIVE_READINESS'}:
+              assert providers['github_models']['action'] == 'RUN'
+              assert providers['github_models']['required'] is True
+          print('PASS_AI_ROUTE_CONTRACT', stage)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-ai-router-plan-${{ matrix.stage }}-${{ github.run_id }}
+          path: artifacts/plans/${{ matrix.stage }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  pre-replay-live-smoke:
+    name: execute Groq plus Workers AI pre-replay chain
+    needs: route-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Groq SDK
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - name: Verify provider secrets
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GROQ_API_KEY:-}" || exit 1
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || exit 1
+          test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}" || exit 1
+          echo PASS_PRE_REPLAY_PROVIDER_SECRETS_PRESENT
+      - name: Create anonymized pre-replay fixture
+        run: |
+          mkdir -p input artifacts/pre-replay
+          cat > input/pre_replay.json <<'JSON'
+          {
+            "strategy_id": "fixture_strategy",
+            "stage": "PRE_W1_INTERNAL_REPLAY",
+            "changed_axes": ["TREND_REGIME_GATE"],
+            "routing_flags": {
+              "external_hypothesis": true,
+              "multimodal": false,
+              "new_multimodal_evidence": false,
+              "new_failure_fingerprint": false,
+              "borderline_case": false,
+              "major_gate_review": false
+            },
+            "hypothesis": {
+              "axis": "TREND_REGIME_GATE",
+              "generation": 1,
+              "description": "Single-axis eligibility hypothesis for isolated replay."
+            },
+            "control": {"trades": 24, "net_pct": 1.2, "pf": 1.18, "dd_pct": 2.4},
+            "candidate": {"trades": 22, "net_pct": 1.4, "pf": 1.22, "dd_pct": 2.3},
+            "retention": 0.9167,
+            "lineage": {
+              "source_sha": "fixture-source-sha",
+              "data_sha": "fixture-data-sha",
+              "window_sha": "fixture-window-sha",
+              "candidate_sha": "fixture-candidate-sha"
+            },
+            "research_only": true,
+            "promotion_authority": false,
+            "protected_mutations": 0,
+            "execution_allowed": false,
+            "order_authority": "BLOCKED"
+          }
+          JSON
+      - name: Run pre-replay AI router
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          python scripts/strategy11_ai_review_router.py \
+            --stage PRE_W1_INTERNAL_REPLAY \
+            --mode execute \
+            --input input/pre_replay.json \
+            --output artifacts/pre-replay/router.json
+      - name: Assert pre-replay provider chain
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('artifacts/pre-replay/router.json').read_text())
+          assert data['status']=='PASS_AI_REVIEW_ROUTER'
+          assert data['final_decision']=='ADVISORY_COMPLETE_AWAIT_DETERMINISTIC_GATES'
+          providers=data['provider_results']
+          assert providers['gemini']['status']=='SKIPPED'
+          assert providers['groq']['returncode']==0
+          assert providers['workers_ai']['returncode']==0
+          assert providers['github_models']['status']=='SKIPPED'
+          assert data['promotion_authority'] is False
+          assert data['execution_allowed'] is False
+          assert data['order_authority']=='BLOCKED'
+          print('PASS_PRE_REPLAY_AI_CHAIN')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy11-ai-router-pre-replay-${{ github.run_id }}
+          path: artifacts/pre-replay
+          if-no-files-found: error
+          retention-days: 30
+
+  major-gate-live-smoke:
+    name: execute Workers AI plus GitHub Models major-gate chain
+    needs: route-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Create anonymized W1 gate fixture
+        run: |
+          mkdir -p input artifacts/major-gate
+          cat > input/w1_gate.json <<'JSON'
+          {
+            "strategy_id": "fixture_strategy",
+            "stage": "W1_GATE",
+            "changed_axes": [],
+            "routing_flags": {
+              "external_hypothesis": false,
+              "multimodal": false,
+              "new_multimodal_evidence": false,
+              "new_failure_fingerprint": false,
+              "borderline_case": false,
+              "major_gate_review": true,
+              "anomaly_review": false
+            },
+            "metrics": {
+              "trades": 18,
+              "wr_pct": 44.4,
+              "net_pct": 1.2,
+              "pf": 1.16,
+              "payoff": 1.54,
+              "dd_pct": 2.8,
+              "positive_windows": 2,
+              "normal_worst_loss_r": -0.88,
+              "stress_worst_loss_r": -0.94,
+              "retention_pct": 91.7
+            },
+            "oos_windows": ["F1", "F2", "F3", "W1"],
+            "lineage": {
+              "source_sha": "fixture-source-sha",
+              "data_sha": "fixture-data-sha",
+              "window_sha": "fixture-window-sha",
+              "candidate_sha": "fixture-candidate-sha"
+            },
+            "research_only": true,
+            "promotion_authority": false,
+            "protected_mutations": 0,
+            "execution_allowed": false,
+            "order_authority": "BLOCKED"
+          }
+          JSON
+      - name: Run major-gate AI router
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/strategy11_ai_review_router.py \
+            --stage W1_GATE \
+            --mode execute \
+            --input input/w1_gate.json \
+            --output artifacts/major-gate/router.json
+      - name: Assert major-gate provider chain
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('artifacts/major-gate/router.json').read_text())
+          assert data['status']=='PASS_AI_REVIEW_ROUTER'
+          providers=data['provider_results']
+          assert providers['gemini']['status']=='SKIPPED'
+          assert providers['groq']['status']=='SKIPPED'
+          assert providers['workers_ai']['returncode']==0
+          assert providers['github_models']['returncode']==0
+          assert data['final_authority']=='DETERMINISTIC_REPLAY_STATISTICS_HARD_GATES'
+          assert data['promotion_authority'] is False
+          assert data['protected_mutations']==0
+          assert data['execution_allowed'] is False
+          assert data['order_authority']=='BLOCKED'
+          print('PASS_MAJOR_GATE_AI_CHAIN')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy11-ai-router-major-gate-${{ github.run_id }}
+          path: artifacts/major-gate
+          if-no-files-found: error
+          retention-days: 30

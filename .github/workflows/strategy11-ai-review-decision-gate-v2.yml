@@ -1,0 +1,90 @@
+name: Strategy11 AI Review Decision Gate V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/strategy11_ai_review_router_v2.py
+      - .github/workflows/strategy11-ai-review-decision-gate-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile gate
+        run: python -m py_compile scripts/strategy11_ai_review_router_v2.py
+      - name: Create deterministic v1 result fixtures
+        run: |
+          mkdir -p input out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          safety={'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          def result(decision,single_axis=True,lineage=True):
+              provider_results={}
+              for provider in ('groq','workers_ai'):
+                  review={'decision':decision,'blocker_codes':[] if decision=='PASS_TO_REPLAY' else ['FIXTURE_REJECT'],'single_axis':single_axis,'overfit_risk':'LOW','reason':'fixture'}
+                  if provider=='workers_ai': review['lineage_complete']=lineage
+                  provider_results[provider]={'returncode':0,'artifact':{'status':'PASS_CONNECTION','review':review,**safety}}
+              return {'schema_version':'strategy11.ai_review_execution.v1','status':'PASS_AI_REVIEW_ROUTER','blocker_codes':[],'provider_results':provider_results,'final_decision':'ADVISORY_COMPLETE_AWAIT_DETERMINISTIC_GATES',**safety}
+          Path('input/pass.json').write_text(json.dumps(result('PASS_TO_REPLAY'),indent=2)+'\n')
+          Path('input/reject.json').write_text(json.dumps(result('REJECT',single_axis=False),indent=2)+'\n')
+          Path('input/major_hold.json').write_text(json.dumps(result('HOLD'),indent=2)+'\n')
+          PY
+      - name: PASS_TO_REPLAY permits pre-replay
+        run: |
+          python scripts/strategy11_ai_review_router_v2.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+            --router-result input/pass.json --output out/pass.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/pass.json'))
+          assert d['status']=='PASS_AI_REVIEW_DECISION_GATE'
+          assert d['blocker_codes']==[]
+          PY
+      - name: REJECT blocks pre-replay
+        run: |
+          if python scripts/strategy11_ai_review_router_v2.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+            --router-result input/reject.json --output out/reject.json; then
+            echo 'reject fixture incorrectly passed' >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          d=json.load(open('out/reject.json'))
+          assert d['status']=='HOLD_AI_REVIEW_DECISION_GATE'
+          assert d['final_decision']=='HOLD'
+          assert any('DECISION_REJECT' in x for x in d['blocker_codes'])
+          assert any('SINGLE_AXIS_FALSE' in x for x in d['blocker_codes'])
+          PY
+      - name: Major-gate opinions remain advisory
+        run: |
+          python scripts/strategy11_ai_review_router_v2.py \
+            --stage W1_GATE --mode execute \
+            --router-result input/major_hold.json --output out/major.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/major.json'))
+          assert d['status']=='PASS_AI_REVIEW_DECISION_GATE'
+          assert d['promotion_authority'] is False
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-ai-review-decision-gate-v2-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

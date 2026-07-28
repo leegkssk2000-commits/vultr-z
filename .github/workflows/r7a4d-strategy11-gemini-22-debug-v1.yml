@@ -1,0 +1,110 @@
+name: R7A4D Strategy11 Gemini 22 Debug V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-active-research-v3-1-json-shape
+    paths:
+      - .github/workflows/r7a4d-strategy11-gemini-22-debug-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  debug:
+    name: preserve complete Gemini 22 traceback
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy matplotlib
+
+      - name: Download evidence batches
+        uses: actions/download-artifact@v4
+        with:
+          pattern: s11-evidence-batch-*-30252022416-attempt-1
+          path: input/evidence-flat
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Normalize evidence batch paths
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          roots=sorted([p for p in Path('input/evidence-flat').iterdir() if p.is_dir()])
+          if len(roots)!=5: raise SystemExit(f'EVIDENCE_ROOTS:{len(roots)}')
+          for i,root in enumerate(roots,1):
+              target=Path(f'input/evidence/batch-{i}')
+              target.parent.mkdir(parents=True,exist_ok=True)
+              shutil.copytree(root,target,dirs_exist_ok=True)
+          PY
+
+      - name: Download prediagnosis
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-data-wait-pool-pre-diagnosis-v1-30313492251-attempt-1
+          path: input/prediagnosis
+          github-token: ${{ github.token }}
+          run-id: 30313492251
+
+      - name: Download Gemini V3.1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-gemini-active-research-v3-1-30302007460-attempt-1
+          path: input/gemini-v31
+          github-token: ${{ github.token }}
+          run-id: 30302007460
+
+      - name: Resolve authority paths
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pred=None
+          for p in Path('input/prediagnosis').rglob('*.json'):
+              try: text=json.dumps(json.loads(p.read_text()))
+              except Exception: continue
+              if sum(text.count(s) for s in ('anchor_vwap_trend','bb_revert','vwap_revert'))>=2:
+                  pred=p;break
+          source=next(iter(Path('input/gemini-v31').rglob('source_review.json')),None)
+          if pred is None or source is None: raise SystemExit(f'AUTHORITY_PATH:{pred}:{source}')
+          Path('input/authority_paths.json').write_text(json.dumps({'prediagnosis':str(pred),'source_review':str(source)}))
+          PY
+
+      - name: Run and preserve complete traceback
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          mkdir -p debug out-plan
+          pred=$(python -c "import json;print(json.load(open('input/authority_paths.json'))['prediagnosis'])")
+          source=$(python -c "import json;print(json.load(open('input/authority_paths.json'))['source_review'])")
+          set +e
+          python -u backend/tools/r7a4d_strategy11_gemini_22_prework_v1_1.py \
+            --mode analyze \
+            --registry backend/strategy25/canonical_strategy_registry_v1.json \
+            --evidence-root input/evidence \
+            --prediagnosis "$pred" \
+            --source-review "$source" \
+            --out out-plan > debug/full.log 2>&1
+          rc=$?
+          echo "$rc" > debug/rc.txt
+          cp input/authority_paths.json debug/
+          find out-plan -type f -maxdepth 4 -print > debug/generated_files.txt || true
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-22-debug-v1-${{ github.run_id }}
+          path: |
+            debug
+            out-plan
+          if-no-files-found: error
+          retention-days: 14

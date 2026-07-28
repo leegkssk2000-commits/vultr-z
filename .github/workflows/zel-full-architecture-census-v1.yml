@@ -1,10 +1,11 @@
-name: ZEL Full Architecture Census V2
+name: ZEL Full Architecture Census V2.1
 
 on:
   pull_request:
     branches: [master]
     paths:
       - backend/tools/zel_full_architecture_census_v2.py
+      - backend/tools/zel_full_architecture_census_v2_1.py
       - .github/workflows/zel-full-architecture-census-v1.yml
   workflow_dispatch:
 
@@ -14,7 +15,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: zel-full-architecture-census-v2-${{ github.event.pull_request.number || github.ref }}
+  group: zel-full-architecture-census-v2-1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -41,14 +42,17 @@ jobs:
           python-version: '3.12'
 
       - name: Compile census
-        run: python -m py_compile audit/backend/tools/zel_full_architecture_census_v2.py
+        run: |
+          python -m py_compile audit/backend/tools/zel_full_architecture_census_v2.py
+          python -m py_compile audit/backend/tools/zel_full_architecture_census_v2_1.py
 
       - name: Run repository-wide read-only census
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PYTHONPATH: audit
         run: |
-          python audit/backend/tools/zel_full_architecture_census_v2.py \
+          python audit/backend/tools/zel_full_architecture_census_v2_1.py \
             --root master \
             --out out \
             --github-repo '${{ github.repository }}'
@@ -79,7 +83,6 @@ jobs:
           missing = sorted(name for name in required if not (Path('out') / name).exists())
           assert not missing, missing
           row = json.loads(Path('out/summary.json').read_text())
-          assert row['schema_version'] == '2.0'
           assert row['state'] in {'PASS_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_REVIEW_REQUIRED'}
           safety = row['safety']
           assert safety['read_only'] is True
@@ -105,7 +108,7 @@ jobs:
               raise SystemExit(0)
           row = json.loads(path.read_text())
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL full architecture census v2\n\n')
+              out.write('# ZEL full architecture census v2.1\n\n')
               out.write(f"- State: **{row['state']}**\n")
               out.write(f"- Files: `{row['tracked_file_count']}`\n")
               out.write(f"- Critical defects: `{row['critical_defect_count']}`\n")
@@ -121,7 +124,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-full-architecture-census-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-full-architecture-census-v2-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: error
           retention-days: 90

@@ -11,7 +11,7 @@ VERSION = "R7A4D_STRATEGY11_W1_READINESS_AUDIT_V1"
 REQUIRED = {
     "master_control": [
         ".github/workflows/r7a4d-strategy11-continuous-data-v1.yml",
-        "backend/tools/r7a4d_strategy11_continuous_data_v1.py",
+        "backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py",
     ],
     "pool22_compute": [
         "backend/tools/r7a4d_strategy11_data_wait_pool_compute_v1.py",

@@ -68,6 +68,8 @@ jobs:
               data['generation']=6
               if name=='plan.json':
                   data['evidence_parent_run_id']=30400870451
+                  data['supersedes_run_id']=30407772491
+                  data['supersede_reason']='AI_REJECTED_MULTI_AXIS_BATCH_PAYLOAD'
                   for row in data['rows']:
                       row['generation']=6
                       row['evidence_lanes'].append('SEMANTIC_GENERATION5_REPLAY')
@@ -82,11 +84,12 @@ jobs:
           ledger=json.loads(Path('out/plan/search_ledger.json').read_text())
           assert plan['state']=='PASS_SEMANTIC_AXIS_ROTATION_PLAN'
           assert plan['strategy_count']==22 and plan['candidate_count']==44 and plan['generation']==6
+          assert plan['supersedes_run_id']==30407772491
           assert ledger['state']=='PASS_SEARCH_LEDGER' and ledger['duplicate_strategy_axis_data_runs']==0
           for row in plan['rows']:
               assert len(row['candidate_ids'])==2
               specs=[row['candidate_specs'][cid] for cid in row['candidate_ids']]
-              assert len({spec['axis'] for spec in specs})==2
+              assert all(len([spec['axis']])==1 for spec in specs)
           for payload in (plan,ledger):
               assert payload['promotion_authority'] is False
               assert payload['execution_allowed'] is False
@@ -101,10 +104,10 @@ jobs:
           retention-days: 90
 
   ai-review:
-    name: Groq red-team and Workers AI lineage guard
+    name: per-candidate Groq and Workers AI fail-closed review
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,80 +126,107 @@ jobs:
         with:
           name: s11-semantic-axis-v5-plan-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: input/plan
-      - name: Build anonymized AI review payload
+      - name: Build 44 anonymized single-axis review payloads
         run: |
-          mkdir -p input out/ai
+          mkdir -p input/ai out/ai
           python - <<'PY'
-          import hashlib,json
+          import hashlib,json,re
           from pathlib import Path
           plan=json.loads(Path('input/plan/plan.json').read_text())
           ledger=json.loads(Path('input/plan/search_ledger.json').read_text())
-          canonical=json.dumps(plan,sort_keys=True,separators=(',',':'))
-          axes=sorted({spec['axis'] for row in plan['rows'] for spec in row['candidate_specs'].values()})
-          payload={
-            'strategy_id':'STRATEGY11_22_BATCH_GENERATION_6',
-            'changed_axes':axes,
-            'routing_flags':{
-              'external_hypothesis':True,
-              'multimodal':False,
-              'new_multimodal_evidence':False,
-              'new_failure_fingerprint':False,
-              'borderline_case':False,
-              'major_gate_review':False
-            },
-            'hypothesis':{
-              'axis':'DISTINCT_SEMANTIC_AXIS_ROTATION',
-              'generation':6,
-              'description':'Two untested single-axis candidates per strategy selected from cumulative SEARCH_LEDGER.'
-            },
-            'evidence':{
-              'strategy_count':plan['strategy_count'],
-              'candidate_count':plan['candidate_count'],
-              'duplicate_strategy_axis_data_runs':ledger['duplicate_strategy_axis_data_runs'],
-              'semantic_axes':axes
-            },
-            'lineage':{
-              'source_sha':'64e27d16d7f28b9fae59cf2a875d195f4bca22a1',
-              'data_sha':'SOURCE_RUN_30252022416',
-              'window_sha':plan.get('prior_final_sha256',''),
-              'candidate_sha':hashlib.sha256(canonical.encode()).hexdigest()
-            }
-          }
-          Path('input/ai_review.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          count=0
+          for row in plan['rows']:
+              for candidate_id in row['candidate_ids']:
+                  spec=row['candidate_specs'][candidate_id]
+                  axis=spec['axis']
+                  candidate_text=json.dumps({'strategy_id':row['strategy_id'],'candidate_id':candidate_id,'spec':spec},sort_keys=True,separators=(',',':'))
+                  payload={
+                    'strategy_id':row['strategy_id'],
+                    'candidate_id':candidate_id,
+                    'changed_axes':[axis],
+                    'routing_flags':{
+                      'external_hypothesis':True,
+                      'multimodal':False,
+                      'new_multimodal_evidence':False,
+                      'new_failure_fingerprint':False,
+                      'borderline_case':False,
+                      'major_gate_review':False
+                    },
+                    'hypothesis':{
+                      'axis':axis,
+                      'generation':6,
+                      'description':'One existing feature changes one semantic causal axis for isolated replay.',
+                      'candidate_spec':spec
+                    },
+                    'evidence':{
+                      'strategy_count':1,
+                      'candidate_count':1,
+                      'duplicate_strategy_axis_data_runs':ledger['duplicate_strategy_axis_data_runs'],
+                      'prior_evidence_lanes':row['evidence_lanes'],
+                      'falsification_test':row['falsification_test']
+                    },
+                    'lineage':{
+                      'source_sha':'64e27d16d7f28b9fae59cf2a875d195f4bca22a1',
+                      'data_sha':'SOURCE_RUN_30252022416',
+                      'window_sha':plan.get('prior_final_sha256',''),
+                      'candidate_sha':hashlib.sha256(candidate_text.encode()).hexdigest()
+                    }
+                  }
+                  safe=re.sub(r'[^A-Za-z0-9_.-]+','_',f"{row['strategy_id']}__{candidate_id}")
+                  Path(f'input/ai/{safe}.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+                  count+=1
+          assert count==44,count
+          Path('input/ai_manifest.json').write_text(json.dumps({'state':'PASS_SINGLE_AXIS_AI_INPUTS','payload_count':count,'superseded_run_id':30407772491},indent=2,sort_keys=True)+'\n')
           PY
-      - name: Execute role-based AI router
+      - name: Execute decision gate v2 for every candidate
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
         run: |
-          cd ai-router
-          python scripts/strategy11_ai_review_router.py \
-            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
-            --mode execute \
-            --input ../input/ai_review.json \
-            --output ../out/ai/router.json
-      - name: Assert AI advisory chain
+          set -euo pipefail
+          for input in input/ai/*.json; do
+            name="$(basename "$input" .json)"
+            (
+              cd ai-router
+              python scripts/strategy11_ai_review_router_v2.py \
+                --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+                --mode execute \
+                --input "../$input" \
+                --output "../out/ai/${name}.json"
+            )
+          done
+      - name: Assert all candidate decisions permit replay
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          data=json.loads(Path('out/ai/router.json').read_text())
-          assert data['status']=='PASS_AI_REVIEW_ROUTER',data
-          providers=data['provider_results']
-          assert providers['groq']['returncode']==0
-          assert providers['workers_ai']['returncode']==0
-          assert providers['github_models']['status']=='SKIPPED'
-          assert data['promotion_authority'] is False
-          assert data['protected_mutations']==0
-          assert data['execution_allowed'] is False
-          assert data['order_authority']=='BLOCKED'
+          rows=[]
+          for path in sorted(Path('out/ai').glob('*.json')):
+              data=json.loads(path.read_text())
+              assert data['status']=='PASS_AI_REVIEW_DECISION_GATE',(path,data.get('blocker_codes'))
+              providers=data['provider_results']
+              for provider in ('groq','workers_ai'):
+                  review=providers[provider]['artifact']['review']
+                  assert review['decision']=='PASS_TO_REPLAY',(path,provider,review)
+                  assert review['single_axis'] is True
+              assert providers['workers_ai']['artifact']['review']['lineage_complete'] is True
+              assert data['promotion_authority'] is False
+              assert data['protected_mutations']==0
+              assert data['execution_allowed'] is False
+              assert data['order_authority']=='BLOCKED'
+              rows.append({'path':path.name,'input_sha':data['input_sha'],'status':data['status']})
+          assert len(rows)==44,len(rows)
+          Path('out/ai_manifest.json').write_text(json.dumps({'state':'PASS_ALL_44_SINGLE_AXIS_AI_DECISIONS','review_count':44,'rows':rows,'promotion_authority':False,'execution_allowed':False,'order_authority':'BLOCKED'},indent=2,sort_keys=True)+'\n')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: s11-semantic-axis-v5-ai-review-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: out/ai
+          path: |
+            out/ai
+            out/ai_manifest.json
+            input/ai_manifest.json
           if-no-files-found: error
           retention-days: 90
 
@@ -234,6 +264,25 @@ jobs:
         with:
           name: s11-semantic-axis-v5-plan-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: input/plan
+      - name: Download AI decision manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-ai-review-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: input/ai
+      - name: Assert AI manifest authority before data replay
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          matches=list(Path('input/ai').rglob('ai_manifest.json'))
+          assert matches,matches
+          data=json.loads(matches[0].read_text())
+          assert data['state']=='PASS_ALL_44_SINGLE_AXIS_AI_DECISIONS'
+          assert data['review_count']==44
+          assert data['promotion_authority'] is False
+          assert data['execution_allowed'] is False
+          assert data['order_authority']=='BLOCKED'
+          PY
       - name: Download immutable fresh data
         uses: actions/download-artifact@v4
         with:

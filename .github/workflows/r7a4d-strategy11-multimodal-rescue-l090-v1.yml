@@ -1,0 +1,161 @@
+name: R7A4D Strategy11 Multimodal Rescue L090 V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-gemini-22-second-causal-v1
+    paths:
+      - backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py
+      - backend/research/strategy11_multimodal_rescue_l090_v1.json
+      - .github/workflows/r7a4d-strategy11-multimodal-rescue-l090-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-multimodal-rescue-l090-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  multimodal-plan:
+    name: Gemini direct-video chart candle table rescue plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas numpy matplotlib
+
+      - name: Compile planner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py
+
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 1
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence/batch-1
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 2
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-2-30252022416-attempt-1
+          path: input/evidence/batch-2
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 3
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-3-30252022416-attempt-1
+          path: input/evidence/batch-3
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 4
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-4-30252022416-attempt-1
+          path: input/evidence/batch-4
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Download evidence batch 5
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-5-30252022416-attempt-1
+          path: input/evidence/batch-5
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+
+      - name: Build 22-strategy multimodal rescue plan
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1.py \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --video-registry backend/research/strategy11_gemini_video_registry_v2.json \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --out out
+
+      - name: Assert multimodal plan contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/plan.json').read_text())
+          assert d['state']=='PASS_MULTIMODAL_L090_PLAN'
+          assert d['strategy_count']==22
+          assert d['candidate_count']==44
+          assert d['chart_count']==22
+          assert d['table_count']==22
+          assert d['GEMINI_USED'] is True
+          assert d['free_only'] is True
+          assert d['direct_video_used'] is True
+          assert d['public_video_count']>=4
+          assert d['independent_channel_count']>=4
+          assert d['internal_chart_images_used'] is True
+          assert d['private_code_sent'] is False
+          assert d['account_data_sent'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['promotion_authority'] is False
+          assert len(d['rows'])==22
+          for row in d['rows']:
+              assert len(row['candidate_ids'])==2
+              assert len(set(row['candidate_ids']))==2
+              assert set(row['candidate_ids'])==set(row['candidate_specs'])
+          PY
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('out/plan.json')
+          if not p.exists(): raise SystemExit(0)
+          d=json.loads(p.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# Strategy11 multimodal L090 rescue\n\n')
+              out.write(f"- State: **{d['state']}**\n")
+              out.write(f"- Strategies: {d['strategy_count']}\n")
+              out.write(f"- Single-axis candidates: {d['candidate_count']}\n")
+              out.write(f"- Dashboards: {d['chart_count']}\n")
+              out.write(f"- Gemini direct-video: {d['GEMINI_USED']}\n")
+              out.write(f"- Next: {d['next']}\n")
+              for row in d['rows'][:3]:
+                  out.write(f"- {row['strategy_id']}: {', '.join(row['candidate_ids'])}\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-multimodal-rescue-l090-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,249 @@
+name: ZEL Ops Findings Adjudication V1
+
+on:
+  pull_request:
+    branches:
+      - zel-second-pass-ops-safety-audit-v1
+    paths:
+      - .github/workflows/zel-ops-findings-adjudication-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ops-findings-adjudication-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  adjudicate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture exact unit, timer, interpreter and DB evidence read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" > out/evidence.json <<'PY'
+          import hashlib,importlib.metadata,json,os,re,subprocess,time
+          from pathlib import Path
+
+          FAILED_UNITS=(
+            'q4r3-exact25-forward-measurement-writer.service',
+            'z-alimi-truth-bridge-v36-4.service',
+            'zel-q4r3-surface-writer-single-owner.service',
+            'zel-s4f18c-shadow-close-writer.service',
+          )
+          EXTRA_UNITS=('z-backend.service','z-chat.service','z-chat-backup.service')
+          TERMS=('alimi','writer','shadow','paper','collector','backend','chat')
+          PROPS=('Id','LoadState','ActiveState','SubState','Result','ExecMainCode','ExecMainStatus','NRestarts','FragmentPath','UnitFileState','TriggeredBy','Triggers','ExecStart')
+          TIMER_PROPS=('Id','LoadState','ActiveState','SubState','UnitFileState','Triggers','LastTriggerUSec','NextElapseUSecRealtime','OnUnitActiveUSec','OnUnitInactiveUSec','OnCalendar','Persistent')
+
+          def run(args,timeout=20):
+              p=subprocess.run(args,text=True,capture_output=True,check=False,timeout=timeout)
+              return p.returncode,p.stdout,p.stderr
+
+          def show(unit,props):
+              code,out,err=run(['systemctl','show',unit,*[f'--property={p}' for p in props],'--no-pager'])
+              row={'unit':unit,'returncode':code}
+              for line in out.splitlines():
+                  if '=' in line:
+                      k,v=line.split('=',1); row[k]=v
+              if err: row['stderr_sha256']=hashlib.sha256(err.encode()).hexdigest()
+              return row
+
+          def journal_signature(unit):
+              code,out,_=run(['journalctl','-u',unit,'-n','80','--no-pager','-o','cat'])
+              patterns={
+                'MODULE_NOT_FOUND':r'ModuleNotFoundError|No module named',
+                'IMPORT_ERROR':r'ImportError',
+                'NAME_ERROR':r'NameError',
+                'FILE_NOT_FOUND':r'No such file or directory|FileNotFoundError',
+                'PERMISSION_DENIED':r'Permission denied|PermissionError',
+                'ADDRESS_IN_USE':r'Address already in use',
+                'ASSERTION_ERROR':r'AssertionError',
+                'JSON_ERROR':r'JSONDecodeError|invalid json',
+                'EXEC_FAILURE':r'Failed at step EXEC|status=203/EXEC',
+              }
+              signatures=[name for name,pat in patterns.items() if re.search(pat,out,re.I)]
+              return {'returncode':code,'line_count':len(out.splitlines()),'journal_sha256':hashlib.sha256(out.encode()).hexdigest(),'error_signatures':signatures}
+
+          unit_rows=[]
+          for unit in FAILED_UNITS+EXTRA_UNITS:
+              row=show(unit,PROPS)
+              row['journal']=journal_signature(unit)
+              unit_rows.append(row)
+
+          code,out,_=run(['systemctl','list-units','--type=timer','--state=active','--no-legend','--plain','--no-pager'])
+          timer_names=[]
+          for line in out.splitlines():
+              fields=line.split()
+              if fields and fields[0].endswith('.timer') and any(term in fields[0].lower() for term in TERMS):
+                  timer_names.append(fields[0])
+          timer_rows=[show(unit,TIMER_PROPS) for unit in sorted(set(timer_names))]
+
+          code,psout,_=run(['ps','-eo','pid=,etimes=,args='])
+          processes=[line.strip() for line in psout.splitlines() if any(term in line.lower() for term in TERMS) and 'python3 -' not in line]
+
+          interpreters=[]
+          for executable in ('/usr/bin/python3','/home/z/z/.venv/bin/python'):
+              row={'executable':executable,'exists':Path(executable).exists()}
+              if row['exists']:
+                  script='''import importlib.metadata,json,sys\nnames=("fastapi","Flask","google-api-python-client","google-auth","pandas","pydantic","SQLAlchemy","starlette","uvicorn")\nrows=[]\nfor name in names:\n try: rows.append({"name":name,"version":importlib.metadata.version(name),"state":"INSTALLED"})\n except importlib.metadata.PackageNotFoundError: rows.append({"name":name,"version":None,"state":"MISSING"})\nprint(json.dumps({"python":sys.executable,"version":sys.version.split()[0],"packages":rows},sort_keys=True))'''
+                  c,o,e=run([executable,'-c',script])
+                  row['returncode']=c
+                  if c==0:
+                      row.update(json.loads(o))
+                  else:
+                      row['stderr_sha256']=hashlib.sha256(e.encode()).hexdigest()
+              interpreters.append(row)
+
+          db=Path('/home/z/z/db/z.sqlite')
+          db_row={'path':str(db),'exists':db.exists()}
+          if db.exists():
+              st=db.stat(); db_row.update({'size_bytes':st.st_size,'mtime_epoch':int(st.st_mtime),'sha256':hashlib.sha256(db.read_bytes()).hexdigest()})
+              c,o,_=run(['fuser',str(db)])
+              db_row['fuser_returncode']=c
+              db_row['open_pids']=sorted({int(x) for x in re.findall(r'\d+',o)})
+          else:
+              db_row['open_pids']=[]
+
+          backend=next(row for row in unit_rows if row['unit']=='z-backend.service')
+          result={
+            'schema_version':'zel.ops_findings_evidence.v1',
+            'captured_at_epoch':int(time.time()),
+            'failed_units_requested':list(FAILED_UNITS),
+            'units':unit_rows,
+            'active_relevant_timers':timer_rows,
+            'processes':processes,
+            'interpreters':interpreters,
+            'zero_db':db_row,
+            'backend_exec_start':backend.get('ExecStart',''),
+            'deployment_changed':False,
+            'service_changed':False,
+            'process_changed':False,
+            'database_changed':False,
+            'canonical_mutated':False,
+            'registry_mutated':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED'
+          }
+          print(json.dumps(result,sort_keys=True))
+          PY
+
+      - name: Adjudicate single causes without mutation
+        run: |
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          evidence=json.loads(Path('out/evidence.json').read_text())
+          units={row['unit']:row for row in evidence['units']}
+          timers=evidence['active_relevant_timers']
+          timer_targets={target for row in timers for target in (row.get('Triggers') or '').split() if target}
+          failure_rows=[]
+          for unit in evidence['failed_units_requested']:
+              row=units[unit]
+              failure_rows.append({
+                'unit':unit,
+                'active_state':row.get('ActiveState'),
+                'sub_state':row.get('SubState'),
+                'result':row.get('Result'),
+                'exec_main_status':row.get('ExecMainStatus'),
+                'n_restarts':int(row.get('NRestarts') or 0),
+                'fragment_path':row.get('FragmentPath'),
+                'unit_file_state':row.get('UnitFileState'),
+                'triggered_by_active_timer':unit in timer_targets,
+                'error_signatures':row['journal']['error_signatures'],
+                'journal_sha256':row['journal']['journal_sha256'],
+              })
+          chat_rows=[]
+          for unit in ('z-chat.service','z-chat-backup.service'):
+              row=units[unit]
+              chat_rows.append({'unit':unit,'active_state':row.get('ActiveState'),'sub_state':row.get('SubState'),'n_restarts':int(row.get('NRestarts') or 0),'result':row.get('Result'),'error_signatures':row['journal']['error_signatures']})
+
+          venv=next((row for row in evidence['interpreters'] if row['executable']=='/home/z/z/.venv/bin/python'),{})
+          missing_venv=[row['name'] for row in venv.get('packages',[]) if row['state']=='MISSING']
+          db=evidence['zero_db']
+          blockers=[]
+          if any(row['triggered_by_active_timer'] for row in failure_rows): blockers.append('FAILED_UNIT_ACTIVE_TIMER_LOOP')
+          if any(row['n_restarts']>=5 for row in chat_rows): blockers.append('CHAT_AUTO_RESTART_LOOP')
+          if not venv.get('exists') or venv.get('returncode',1)!=0: blockers.append('ACTIVE_VENV_UNREADABLE')
+          if missing_venv: blockers.append('ACTIVE_VENV_DEPENDENCY_GAPS')
+          if db.get('exists') and db.get('size_bytes')==0 and db.get('open_pids'): blockers.append('ZERO_DB_IN_USE')
+
+          result={
+            'schema_version':'zel.ops_findings_adjudication.v1',
+            'state':'HOLD_MINIMAL_OPS_REPAIR_REQUIRED' if blockers else 'PASS_OPS_FINDINGS_ADJUDICATED',
+            'blocker_codes':blockers,
+            'failed_units':failure_rows,
+            'chat_units':chat_rows,
+            'active_timer_count':len(timers),
+            'venv_python':venv.get('python'),
+            'venv_version':venv.get('version'),
+            'venv_packages':venv.get('packages',[]),
+            'missing_venv_packages':missing_venv,
+            'zero_db':db,
+            'zero_db_classification':'ACTIVE_REFERENCE' if db.get('open_pids') else 'DORMANT_UNREFERENCED_FILE',
+            'backend_exec_start':evidence.get('backend_exec_start'),
+            'next':'MINIMAL_UNIT_TIMER_REPAIR_PLAN_AND_DEPENDENCY_LOCK' if blockers else 'FREEZE_OPS_BASELINE',
+            'canonical_mutated':False,
+            'registry_mutated':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED'
+          }
+          Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+              f.write('# ZEL ops findings adjudication\n\n')
+              f.write(f"- State: **{result['state']}**\n")
+              f.write(f"- Blockers: `{result['blocker_codes']}`\n")
+              f.write(f"- Failed units: `{len(result['failed_units'])}`\n")
+              f.write(f"- Active relevant timers: `{result['active_timer_count']}`\n")
+              f.write(f"- Missing active-venv packages: `{result['missing_venv_packages']}`\n")
+              f.write(f"- Zero DB: `{result['zero_db_classification']}`\n")
+          PY
+
+      - name: Assert read-only authority invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ('evidence.json','status.json'):
+              d=json.loads((Path('out')/name).read_text())
+              assert d['protected_mutations']==0
+              assert d['execution_allowed'] is False
+              assert d['order_authority']=='BLOCKED'
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ops-findings-adjudication-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

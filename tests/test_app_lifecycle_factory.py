@@ -8,16 +8,17 @@ from unittest.mock import patch
 
 
 class AppLifecycleFactoryTest(unittest.TestCase):
-    def test_factory_returns_bound_app_without_starting_scheduler(self):
-        from engine import core_loop
+    def test_factory_returns_bound_app_without_importing_scheduler(self):
+        import sys
+
+        sys.modules.pop("engine.core_loop", None)
         from backend.app_factory import create_app
 
-        self.assertFalse(core_loop._sched.running)
         app = create_app({"TESTING": True})
         self.assertIsNotNone(app)
         self.assertIn("dashboard_bp", app.blueprints)
         self.assertIn("portfolio_api", app.blueprints)
-        self.assertFalse(core_loop._sched.running)
+        self.assertNotIn("engine.core_loop", sys.modules)
         self.assertFalse(app.config["ZEL_BACKGROUND_SCHEDULER_STARTED"])
         self.assertEqual(app.config["ZEL_EXECUTION_AUTHORITY"], "NONE")
         self.assertEqual(app.config["ZEL_ORDER_AUTHORITY"], "BLOCKED")

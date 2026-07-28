@@ -16,14 +16,24 @@ ORIGINAL_PATH = ROOT / "backend/tools/r7a4d_strategy11_multimodal_rescue_l090_v1
 
 
 def load_original() -> Any:
-    name = "r7a4d_strategy11_multimodal_rescue_l090_v1_normalized"
-    spec = importlib.util.spec_from_file_location(name, ORIGINAL_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("MULTIMODAL_ORIGINAL_SPEC_FAILED")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    original_factory = importlib.util.module_from_spec
+
+    def registered(spec):
+        module = original_factory(spec)
+        sys.modules[spec.name] = module
+        return module
+
+    importlib.util.module_from_spec = registered
+    try:
+        name = "r7a4d_strategy11_multimodal_rescue_l090_v1_normalized"
+        spec = importlib.util.spec_from_file_location(name, ORIGINAL_PATH)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("MULTIMODAL_ORIGINAL_SPEC_FAILED")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        importlib.util.module_from_spec = original_factory
 
 
 original = load_original()

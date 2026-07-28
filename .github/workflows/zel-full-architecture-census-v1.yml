@@ -1,0 +1,120 @@
+name: ZEL Full Architecture Census V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_full_architecture_census_v1.py
+      - .github/workflows/zel-full-architecture-census-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: zel-full-architecture-census-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout audit child
+        uses: actions/checkout@v4
+        with:
+          path: audit
+          persist-credentials: false
+
+      - name: Checkout current master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile census
+        run: python -m py_compile audit/backend/tools/zel_full_architecture_census_v1.py
+
+      - name: Run repository-wide read-only census
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python audit/backend/tools/zel_full_architecture_census_v1.py \
+            --root master \
+            --out out \
+            --github-repo '${{ github.repository }}'
+
+      - name: Assert no mutations and artifact completeness
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          required = {
+              'summary.json',
+              'file_inventory.csv',
+              'static_edges.csv',
+              'writer_conflicts.json',
+              'duplicate_groups.json',
+              'cleanup_candidates.json',
+              'integration_gaps.json',
+              'authority_files.json',
+              'open_pr_topology.json',
+              'parse_errors.json',
+              'architecture.md',
+          }
+          missing = sorted(name for name in required if not (Path('out') / name).exists())
+          assert not missing, missing
+          row = json.loads(Path('out/summary.json').read_text())
+          assert row['state'] in {'PASS_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_REVIEW_REQUIRED'}
+          safety = row['safety']
+          assert safety['read_only'] is True
+          assert safety['deletion_performed'] is False
+          assert safety['canonical_mutated'] is False
+          assert safety['registry_mutated'] is False
+          assert safety['runtime_mutated'] is False
+          assert safety['protected_mutations'] == 0
+          assert safety['execution_allowed'] is False
+          assert safety['order_authority'] == 'BLOCKED'
+          assert row['tracked_file_count'] > 0
+          PY
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path('out/summary.json')
+          if not path.exists():
+              raise SystemExit(0)
+          row = json.loads(path.read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write('# ZEL full architecture census\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Files: `{row['tracked_file_count']}`\n")
+              out.write(f"- Static edges: `{row['static_edge_count']}`\n")
+              out.write(f"- Writer conflicts: `{row['writer_conflict_count']}`\n")
+              out.write(f"- Cleanup candidates: `{row['cleanup_candidate_count']}`\n")
+              out.write(f"- Integration gaps: `{row['integration_gap_count']}`\n")
+              out.write(f"- Duplicate open PR groups: `{row['duplicate_open_pr_group_count']}`\n")
+              out.write(f"- Next: `{row['next']}`\n")
+          PY
+
+      - name: Upload architecture evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-full-architecture-census-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

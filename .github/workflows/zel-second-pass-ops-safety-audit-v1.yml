@@ -7,6 +7,7 @@ on:
     paths:
       - backend/tools/zel_second_pass_ops_safety_audit_v1.py
       - backend/research/strategy11_ai_quota_error_budget_v1.json
+      - backend/recovery/active_backend_dependency_lock_v1.json
       - .github/workflows/zel-second-pass-ops-safety-audit-v1.yml
   workflow_dispatch:
 
@@ -67,7 +68,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Capture active service, timer, writer and DB snapshot read-only
+      - name: Capture active service, timer, writer, DB and dependency snapshot read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -76,7 +77,7 @@ jobs:
           test -n "$VPS_USER"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "python3 -" > out/remote_runtime_audit.json <<'PY'
-          import json,os,subprocess,time
+          import importlib.metadata,json,subprocess,time
           from pathlib import Path
 
           def run(args):
@@ -88,31 +89,54 @@ jobs:
           processes=run(['ps','-eo','pid=,etimes=,args='])
           terms=('z-backend','strategy11','telegram','alimi','writer','shadow','paper','collector')
           selected_services=[line.strip() for line in services['stdout'].splitlines() if any(t in line.lower() for t in terms)]
+          active_services=[line for line in selected_services if ' active ' in f' {line} ' or ' activating ' in f' {line} ']
+          failed_services=[line for line in selected_services if ' failed ' in f' {line} ']
           selected_timers=[line.strip() for line in timers['stdout'].splitlines() if any(t in line.lower() for t in terms)]
+          scheduled_timers=[line for line in selected_timers if not line.startswith('n/a')]
           selected_processes=[line.strip() for line in processes['stdout'].splitlines() if any(t in line.lower() for t in terms) and 'python3 -' not in line]
 
+          excluded=('backup','archive','rollback','restore','snapshot','.venv','venv','trash')
           db_files=[]
           root=Path('/home/z/z')
           if root.exists():
               for path in root.rglob('*'):
                   try:
-                      if path.is_file() and path.suffix.lower() in {'.db','.sqlite','.sqlite3'} and not any(part in {'backup','backups','archive','archives','rollback','restore','snapshot','snapshots','.venv','venv'} for part in path.parts):
+                      parts=[part.lower() for part in path.parts]
+                      if path.is_file() and path.suffix.lower() in {'.db','.sqlite','.sqlite3'} and not any(any(token in part for token in excluded) for part in parts):
                           st=path.stat()
-                          db_files.append({'path':str(path),'size_bytes':st.st_size,'mtime_epoch':int(st.st_mtime)})
+                          db_files.append({'path':str(path),'size_bytes':st.st_size,'mtime_epoch':int(st.st_mtime),'zero_bytes':st.st_size==0})
                   except Exception:
                       continue
           db_files=sorted(db_files,key=lambda r:r['path'])[:200]
+
+          distributions=('fastapi','Flask','google-api-python-client','google-auth','pandas','pydantic','SQLAlchemy','starlette','uvicorn')
+          package_versions=[]
+          for name in distributions:
+              try:
+                  package_versions.append({'name':name,'version':importlib.metadata.version(name),'state':'INSTALLED'})
+              except importlib.metadata.PackageNotFoundError:
+                  package_versions.append({'name':name,'version':None,'state':'MISSING'})
+
           result={
               'state':'PASS_REMOTE_RUNTIME_AUDIT_CAPTURED',
               'captured_at_epoch':int(time.time()),
               'selected_services':selected_services,
+              'active_services':active_services,
+              'failed_services':failed_services,
               'selected_timers':selected_timers,
+              'scheduled_timers':scheduled_timers,
               'selected_processes':selected_processes,
               'active_db_files':db_files,
+              'runtime_package_versions':package_versions,
               'service_count':len(selected_services),
+              'active_service_count':len(active_services),
+              'failed_service_count':len(failed_services),
               'timer_count':len(selected_timers),
+              'scheduled_timer_count':len(scheduled_timers),
               'process_count':len(selected_processes),
               'db_file_count':len(db_files),
+              'zero_byte_db_count':sum(1 for row in db_files if row['zero_bytes']),
+              'missing_runtime_package_count':sum(1 for row in package_versions if row['state']=='MISSING'),
               'deployment_changed':False,
               'service_changed':False,
               'process_changed':False,
@@ -135,8 +159,10 @@ jobs:
           remote=json.loads(Path('out/remote_runtime_audit.json').read_text())
           quota=json.loads(Path('out/ai_quota_contract.json').read_text())
           blockers=list(repo.get('blocker_codes',[]))
-          if remote['process_count']>12: blockers.append('HIGH_ACTIVE_WRITER_PROCESS_COUNT_REVIEW')
-          if remote['db_file_count']>8: blockers.append('MULTIPLE_ACTIVE_DB_PATHS_REVIEW')
+          if remote['failed_service_count']>0: blockers.append('FAILED_RELEVANT_SERVICE_UNITS')
+          if remote['scheduled_timer_count']>20: blockers.append('HIGH_RELEVANT_TIMER_COUNT_REVIEW')
+          if remote['zero_byte_db_count']>0: blockers.append('ZERO_BYTE_ACTIVE_DB_PATH_REVIEW')
+          if remote['missing_runtime_package_count']>0: blockers.append('RUNTIME_DEPENDENCY_MISSING_REVIEW')
           result={
               'schema_version':'zel.second_pass_ops_safety_combined.v1',
               'state':'HOLD_SINGLE_CAUSE_ADJUDICATION_REQUIRED' if blockers else 'PASS_SECOND_PASS_OPS_SAFETY_CAPTURED',
@@ -146,11 +172,17 @@ jobs:
               'ai_quota_state':quota['state'],
               'owner_candidate_counts':{k:v['candidate_count'] for k,v in repo['owner_candidates'].items()},
               'db_reference_count':len(repo['db_path_references']),
-              'active_service_count':remote['service_count'],
-              'active_timer_count':remote['timer_count'],
+              'relevant_service_count':remote['service_count'],
+              'active_service_count':remote['active_service_count'],
+              'failed_service_count':remote['failed_service_count'],
+              'relevant_timer_count':remote['timer_count'],
+              'scheduled_timer_count':remote['scheduled_timer_count'],
               'active_process_count':remote['process_count'],
               'active_db_file_count':remote['db_file_count'],
+              'zero_byte_db_count':remote['zero_byte_db_count'],
               'dependency_manifest_count':len(repo['surfaces']['dependency_manifests']),
+              'runtime_package_count':len(remote['runtime_package_versions']),
+              'missing_runtime_package_count':remote['missing_runtime_package_count'],
               'ai_router_bypass_candidate_count':len(repo['surfaces']['direct_ai_router_bypass_candidates']),
               'backup_restore_fixture':repo['backup_restore_fixture']['state'],
               'next':'READ_ONLY_SINGLE_CAUSE_ADJUDICATION_THEN_MINIMAL_PATCH_OR_FREEZE',
@@ -165,7 +197,9 @@ jobs:
               f.write('# ZEL second-pass operational safety audit\n\n')
               f.write(f"- State: **{result['state']}**\n")
               f.write(f"- Blockers: `{result['blocker_codes']}`\n")
-              f.write(f"- Active service/timer/process/DB: `{result['active_service_count']}/{result['active_timer_count']}/{result['active_process_count']}/{result['active_db_file_count']}`\n")
+              f.write(f"- Services active/failed: `{result['active_service_count']}/{result['failed_service_count']}`\n")
+              f.write(f"- Timers relevant/scheduled: `{result['relevant_timer_count']}/{result['scheduled_timer_count']}`\n")
+              f.write(f"- Active process/DB/zero DB: `{result['active_process_count']}/{result['active_db_file_count']}/{result['zero_byte_db_count']}`\n")
               f.write(f"- AI router bypass candidates: `{result['ai_router_bypass_candidate_count']}`\n")
               f.write(f"- Backup/restore fixture: `{result['backup_restore_fixture']}`\n")
           PY

@@ -1,4 +1,4 @@
-name: ZEL Runtime Installation Audit V1.1
+name: ZEL Runtime Installation Audit V1.2
 
 on:
   pull_request:
@@ -6,6 +6,7 @@ on:
     paths:
       - backend/tools/zel_runtime_installation_audit_v1.py
       - backend/tools/zel_runtime_topology_audit_v1_1.py
+      - backend/tools/zel_runtime_writer_observation_v1.py
       - .github/workflows/zel-runtime-installation-audit-v1.yml
   workflow_dispatch:
 
@@ -13,13 +14,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-runtime-installation-audit-v1-1-${{ github.event.pull_request.number || github.ref }}
+  group: zel-runtime-installation-audit-v1-2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       EXPECTED_MASTER_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
     steps:
@@ -35,6 +36,7 @@ jobs:
         run: |
           python -m py_compile backend/tools/zel_runtime_installation_audit_v1.py
           python -m py_compile backend/tools/zel_runtime_topology_audit_v1_1.py
+          python -m py_compile backend/tools/zel_runtime_writer_observation_v1.py
 
       - name: Prepare SSH
         env:
@@ -66,7 +68,7 @@ jobs:
             > out/runtime_audit.json \
             2> out/runtime_ssh_stderr.txt
 
-      - name: Execute read-only service and writer topology census
+      - name: Execute read-only service topology census
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -81,6 +83,21 @@ jobs:
             > out/runtime_topology.json \
             2> out/runtime_topology_stderr.txt
 
+      - name: Observe dynamic writers for 75 seconds
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "OBSERVE_SEC=75 POLL_SEC=1 python3 -" \
+            < backend/tools/zel_runtime_writer_observation_v1.py \
+            > out/runtime_writer_observation.json \
+            2> out/runtime_writer_observation_stderr.txt
+
       - name: Assert read-only contracts and summarize
         run: |
           python - <<'PY'
@@ -90,9 +107,11 @@ jobs:
 
           installation = json.loads(Path('out/runtime_audit.json').read_text())
           topology = json.loads(Path('out/runtime_topology.json').read_text())
+          writers = json.loads(Path('out/runtime_writer_observation.json').read_text())
           assert installation['state'] in {'PASS_RUNTIME_CENSUS_WITH_REVIEW_ITEMS', 'HOLD_RUNTIME_REVIEW_REQUIRED'}
           assert topology['state'] in {'PASS_RUNTIME_TOPOLOGY_CENSUS', 'HOLD_RUNTIME_TOPOLOGY_REVIEW_REQUIRED'}
-          for row in (installation, topology):
+          assert writers['state'] in {'PASS_DYNAMIC_WRITER_OBSERVATION_WITH_REVIEW_ITEMS', 'HOLD_DIRECT_MULTI_WRITER_CONFLICT'}
+          for row in (installation, topology, writers):
               safety = row['safety']
               assert safety['read_only'] is True
               assert safety['remote_file_created'] is False
@@ -105,15 +124,15 @@ jobs:
           high = [item for item in installation['findings'] if item.get('severity') == 'HIGH']
           high += [item for item in topology['findings'] if item.get('severity') in {'HIGH', 'CRITICAL'}]
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
-              out.write('# ZEL runtime installation audit v1.1\n\n')
-              out.write(f"- Installation state: **{installation['state']}**\n")
-              out.write(f"- Topology state: **{topology['state']}**\n")
-              out.write(f"- High/Critical findings: `{len(high)}`\n")
-              out.write(f"- Units: `{topology['services']['unit_count']}`\n")
-              out.write(f"- Timers: `{topology['services']['timer_count']}`\n")
-              out.write(f"- Processes: `{topology['process_count']}`\n")
-              out.write(f"- Writer conflicts: `{len(topology['writer_topology']['conflicts'])}`\n")
-              out.write(f"- Next: `{topology['next']}`\n")
+              out.write('# ZEL runtime installation audit v1.2\n\n')
+              out.write(f"- Installation: **{installation['state']}**\n")
+              out.write(f"- Topology: **{topology['state']}**\n")
+              out.write(f"- Dynamic writers: **{writers['state']}**\n")
+              out.write(f"- Units/timers/processes: `{topology['services']['unit_count']}/{topology['services']['timer_count']}/{topology['process_count']}`\n")
+              out.write(f"- Static candidate conflicts: `{len(topology['writer_topology']['conflicts'])}`\n")
+              out.write(f"- Direct FD conflicts: `{len(writers['direct_conflicts'])}`\n")
+              out.write(f"- Changed paths observed: `{writers['changed_path_count']}`\n")
+              out.write(f"- Next: `{writers['next']}`\n")
           PY
 
       - name: Remove local SSH key
@@ -124,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-runtime-installation-audit-v1-1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-runtime-installation-audit-v1-2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out
           if-no-files-found: warn
           retention-days: 30

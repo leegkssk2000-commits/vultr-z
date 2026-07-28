@@ -1,0 +1,111 @@
+name: Strategy11 Workers AI Guard v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - 'r7a4d-strategy11-workers-ai-guard-*'
+    paths:
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - '.github/workflows/strategy11-workers-ai-guard-v1.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - '.github/workflows/strategy11-workers-ai-guard-v1.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  WORKERS_AI_MODEL: '@cf/meta/llama-3.1-8b-instruct'
+
+concurrency:
+  group: strategy11-workers-ai-guard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  workers-ai-guard-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify Cloudflare secrets exist
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo 'HOLD_CLOUDFLARE_ACCOUNT_ID_MISSING'
+            exit 1
+          }
+          test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}" || {
+            echo 'HOLD_CLOUDFLARE_WORKERS_AI_TOKEN_MISSING'
+            exit 1
+          }
+          echo 'PASS_CLOUDFLARE_WORKERS_AI_SECRETS_PRESENT'
+
+      - name: Compile read-only client
+        run: python -m py_compile scripts/strategy11_workers_ai_guard.py
+
+      - name: Run live Workers AI JSON guard smoke
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/strategy11_workers_ai_guard.py \
+            --output artifacts/strategy11_workers_ai_guard_smoke.json
+
+      - name: Assert fail-closed safety contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('artifacts/strategy11_workers_ai_guard_smoke.json')
+          if not path.exists():
+              raise SystemExit('HOLD_WORKERS_AI_ARTIFACT_MISSING')
+          result = json.loads(path.read_text(encoding='utf-8'))
+          expected = {
+              'research_only': True,
+              'promotion_authority': False,
+              'protected_mutations': 0,
+              'execution_allowed': False,
+              'order_authority': 'BLOCKED',
+              'secret_present': True,
+              'account_id_present': True,
+          }
+          for key, value in expected.items():
+              if result.get(key) != value:
+                  raise SystemExit(f'HOLD_WORKERS_AI_SAFETY_CONTRACT:{key}')
+          if result.get('status') != 'PASS_WORKERS_AI_CONNECTION':
+              raise SystemExit(result.get('blocker_code', 'HOLD_WORKERS_AI_CONNECTION'))
+          review = result.get('review') or {}
+          if review.get('decision') != 'HOLD':
+              raise SystemExit('HOLD_WORKERS_AI_FAIL_CLOSED_EXPECTED')
+          if 'MISSING_LINEAGE' not in review.get('blocker_codes', []):
+              raise SystemExit('HOLD_WORKERS_AI_MISSING_LINEAGE_NOT_DETECTED')
+          print('PASS_WORKERS_AI_SAFETY_CONTRACT')
+          PY
+
+      - name: Upload Workers AI smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-workers-ai-guard-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_workers_ai_guard_smoke.json
+          if-no-files-found: error
+          retention-days: 30

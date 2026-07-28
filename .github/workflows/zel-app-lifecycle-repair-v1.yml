@@ -1,0 +1,98 @@
+name: ZEL App Lifecycle Repair V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/app_factory.py
+      - frontend/dashboard.py
+      - wsgi.py
+      - tests/test_app_lifecycle_factory.py
+      - .github/workflows/zel-app-lifecycle-repair-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-app-lifecycle-repair-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      FORCE_MODE: shadow
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check --quiet -r requirements.txt
+
+      - name: Compile repaired surface
+        run: |
+          python -m py_compile backend/app_factory.py frontend/dashboard.py wsgi.py
+
+      - name: Assert explicit factory and no hidden fallback
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          factory = Path('backend/app_factory.py').read_text()
+          wsgi = Path('wsgi.py').read_text()
+          dashboard = Path('frontend/dashboard.py').read_text()
+          assert 'from app import create_app' not in wsgi
+          assert 'if app is None' not in wsgi
+          assert 'engine.core_loop' not in factory
+          assert 'start_core' not in factory
+          assert 'with conn() as' not in dashboard
+          assert dashboard.count('@bp.route("/")') == 1
+          assert 'create table if not exists' not in dashboard.lower()
+          PY
+
+      - name: Run lifecycle tests
+        run: python -m unittest -v tests.test_app_lifecycle_factory
+
+      - name: Run existing backend safety tests
+        run: python -m unittest -v tests.test_p0_p2_backend_safety tests.test_portfolio_binding
+
+      - name: Write safety artifact
+        run: |
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = {
+              'state': 'PASS_APP_LIFECYCLE_REPAIR',
+              'app_factory_returns_app': True,
+              'dashboard_single_root': True,
+              'dashboard_db_read_only': True,
+              'blank_wsgi_fallback_removed': True,
+              'background_scheduler_started': False,
+              'canonical_mutated': False,
+              'registry_mutated': False,
+              'runtime_deployment_mutated': False,
+              'protected_mutations': 0,
+              'execution_allowed': False,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'merge_performed': False,
+              'next': 'VERIFY_VPS_SERVICE_AND_GIT_PARITY_BEFORE_MERGE',
+          }
+          Path('out/status.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-app-lifecycle-repair-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

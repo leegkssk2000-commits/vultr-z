@@ -17,14 +17,24 @@ V1_PATH = ROOT / "backend/tools/r7a4d_strategy11_gemini_22_prework_v1.py"
 
 
 def load_v1() -> Any:
-    name = "r7a4d_strategy11_gemini_22_prework_v1_for_normalization"
-    spec = importlib.util.spec_from_file_location(name, V1_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("V1_IMPORT_SPEC_FAILED")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    original = importlib.util.module_from_spec
+
+    def registered(spec):
+        module = original(spec)
+        sys.modules[spec.name] = module
+        return module
+
+    importlib.util.module_from_spec = registered
+    try:
+        name = "r7a4d_strategy11_gemini_22_prework_v1_for_normalization"
+        spec = importlib.util.spec_from_file_location(name, V1_PATH)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("V1_IMPORT_SPEC_FAILED")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        importlib.util.module_from_spec = original
 
 
 v1 = load_v1()

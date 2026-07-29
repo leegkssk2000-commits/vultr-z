@@ -1,0 +1,54 @@
+name: R7A4D Strategy11 Internal Synergy Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - .github/workflows/r7a4d-strategy11-internal-synergy-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile audit
+        run: python -m py_compile backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Run read-only synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert safety and output contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json')
+          d=json.loads(p.read_text())
+          assert d['state']=='PASS_INTERNAL_SYNERGY_AUDIT'
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['constraints']['team_independence_required'] is True
+          assert d['constraints']['portfolio_governor_shadow_only'] is True
+          assert d['recommended_implementation_order']
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-internal-synergy-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

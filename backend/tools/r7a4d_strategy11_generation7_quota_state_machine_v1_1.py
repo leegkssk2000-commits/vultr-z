@@ -7,7 +7,7 @@ from typing import Any
 
 from backend.tools import r7a4d_strategy11_generation7_quota_state_machine_v1 as core
 
-VERSION = "R7A4D_STRATEGY11_GENERATION7_QUOTA_STATE_MACHINE_V1_2"
+VERSION = "R7A4D_STRATEGY11_GENERATION7_QUOTA_STATE_MACHINE_V1_3"
 MAX_DAILY_CANDIDATES = 10
 MAX_PROVIDER_RETRY_EPOCHS = 3
 QUOTA_MARKERS = (
@@ -17,10 +17,9 @@ QUOTA_MARKERS = (
     "verified_quota",
 )
 RETRYABLE_OUTPUT_MARKERS = (
-    "retryable_provider_output",
-    "response_json_recovery_exhausted",
-    "response_json_decode_failed",
-    "response_json_shape_mismatch",
+    "retryable_provider_output", "response_json_recovery_exhausted",
+    "response_json_decode_failed", "response_json_shape_mismatch",
+    "badrequesterror",
 )
 
 
@@ -34,9 +33,9 @@ def is_retryable_provider_output(value: Any) -> bool:
     return any(marker in text for marker in RETRYABLE_OUTPUT_MARKERS)
 
 
-def is_explicit_semantic_reject(value: Any) -> bool:
+def token_is(value: Any, token: str) -> bool:
     parts = str(value or "").split(":", 2)
-    return len(parts) >= 2 and parts[1] == "SEMANTIC_REJECT"
+    return len(parts) >= 2 and parts[1] == token
 
 
 def classify_payload(result: dict[str, Any]) -> str:
@@ -55,8 +54,10 @@ def classify_payload(result: dict[str, Any]) -> str:
         return "BLOCKER"
     if status == "HOLD_AI_REVIEW_DECISION_GATE":
         blockers = [str(value) for value in result.get("blocker_codes") or []]
-        if blockers and all(is_explicit_semantic_reject(blocker) for blocker in blockers):
+        if blockers and all(token_is(blocker, "SEMANTIC_REJECT") for blocker in blockers):
             return "SEMANTIC_REJECT"
+        if blockers and all(token_is(blocker, "ADVISORY_HOLD") for blocker in blockers):
+            return "ADVISORY_HOLD"
         return "BLOCKER"
     return "BLOCKER"
 
@@ -67,7 +68,11 @@ def strict_classify(path: Path) -> str:
 
 def classify_for_core(path: Path) -> str:
     state = strict_classify(path)
-    return "WAIT_QUOTA" if state == "WAIT_PROVIDER_RETRY" else state
+    if state == "WAIT_PROVIDER_RETRY":
+        return "WAIT_QUOTA"
+    if state == "ADVISORY_HOLD":
+        return "SEMANTIC_REJECT"
+    return state
 
 
 def restore_epoch_state(prior_roots: list[Path], epoch_date: str) -> dict[str, Any]:
@@ -143,7 +148,7 @@ def reserve_epoch_usage(
         if retry_attempts[path.name] > MAX_PROVIDER_RETRY_EPOCHS:
             raise RuntimeError(f"PROVIDER_OUTPUT_RETRY_BUDGET_BREACH:{path.name}:{retry_attempts[path.name]}")
     reservation = {
-        "schema_version": "strategy11.generation7.quota_epoch_reservation.v2",
+        "schema_version": "strategy11.generation7.quota_epoch_reservation.v3",
         "version": VERSION,
         "state": "QUOTA_EPOCH_CANDIDATES_RESERVED",
         "quota_epoch_date": epoch_date,
@@ -169,23 +174,32 @@ def rewrite_outputs(
     ai_root: Path,
     reservation: dict[str, Any],
 ) -> dict[str, Any]:
-    classifications = {
-        path.name: strict_classify(path)
-        for path in sorted(ai_root.glob("*.json"))
-    }
+    classifications = {path.name: strict_classify(path) for path in sorted(ai_root.glob("*.json"))}
     retry_names = {name for name, state in classifications.items() if state == "WAIT_PROVIDER_RETRY"}
     quota_names = {name for name, state in classifications.items() if state == "WAIT_QUOTA"}
+    advisory_names = {name for name, state in classifications.items() if state == "ADVISORY_HOLD"}
+
     all_wait_rows = list(manifest.get("wait_quota") or [])
     retry_rows = [row for row in all_wait_rows if row.get("file") in retry_names]
     quota_rows = [row for row in all_wait_rows if row.get("file") in quota_names]
     if len(retry_rows) != len(retry_names) or len(quota_rows) != len(quota_names):
         raise RuntimeError("WAIT_STATE_ROW_ACCOUNTING_MISMATCH")
 
+    all_rejected_rows = list(manifest.get("semantic_rejected") or [])
+    advisory_rows = [row for row in all_rejected_rows if row.get("file") in advisory_names]
+    semantic_rows = [row for row in all_rejected_rows if row.get("file") not in advisory_names]
+    if len(advisory_rows) != len(advisory_names):
+        raise RuntimeError("ADVISORY_HOLD_ROW_ACCOUNTING_MISMATCH")
+
     manifest["version"] = VERSION
     manifest["wait_quota"] = quota_rows
     manifest["wait_provider_retry"] = retry_rows
     manifest["wait_quota_count"] = len(quota_rows)
     manifest["wait_provider_retry_count"] = len(retry_rows)
+    manifest["semantic_rejected"] = semantic_rows
+    manifest["semantic_reject_count"] = len(semantic_rows)
+    manifest["advisory_held"] = advisory_rows
+    manifest["advisory_hold_count"] = len(advisory_rows)
     if retry_rows:
         manifest["state"] = "WAIT_GENERATION7_PROVIDER_RETRY"
         manifest["next"] = "RETRY_RESERVED_PROVIDER_OUTPUTS"
@@ -210,17 +224,23 @@ def rewrite_outputs(
     accepted["state"] = manifest["state"] if not manifest["all_candidates_final"] else accepted["state"]
     accepted["ai_wait_quota_count"] = len(quota_rows)
     accepted["ai_wait_provider_retry_count"] = len(retry_rows)
+    accepted["ai_semantic_reject_count"] = len(semantic_rows)
+    accepted["ai_advisory_hold_count"] = len(advisory_rows)
     accepted["state_machine_adapter_version"] = VERSION
     accepted["quota_epoch_reservation_sha"] = reservation["reservation_sha"]
 
     ledger_path = output_root / "search_ledger.json"
     ledger = core.read_json(ledger_path)
     retry_by_strategy: dict[str, list[str]] = {}
+    advisory_by_strategy: dict[str, list[str]] = {}
     for row in retry_rows:
         retry_by_strategy.setdefault(str(row["strategy_id"]), []).append(str(row["candidate_id"]))
+    for row in advisory_rows:
+        advisory_by_strategy.setdefault(str(row["strategy_id"]), []).append(str(row["candidate_id"]))
     for row in ledger.get("strategy_states") or []:
         strategy_id = str(row["strategy_id"])
         retries = sorted(retry_by_strategy.get(strategy_id, []))
+        holds = sorted(advisory_by_strategy.get(strategy_id, []))
         if retries:
             row["wait_provider_retry_candidate_ids"] = retries
             row["wait_quota_candidate_ids"] = [
@@ -228,13 +248,28 @@ def rewrite_outputs(
                 if candidate_id not in retries
             ]
             row["state"] = "WAIT_PROVIDER_RETRY"
+        if holds:
+            row["advisory_held_candidate_ids"] = holds
+            row["semantic_rejected_candidate_ids"] = [
+                candidate_id for candidate_id in row.get("semantic_rejected_candidate_ids") or []
+                if candidate_id not in holds
+            ]
     for row in ledger.get("rows") or []:
-        retries = sorted(retry_by_strategy.get(str(row["strategy_id"]), []))
+        strategy_id = str(row["strategy_id"])
+        retries = sorted(retry_by_strategy.get(strategy_id, []))
+        holds = sorted(advisory_by_strategy.get(strategy_id, []))
         if retries:
             row["rejection_reason"] = ";".join(f"{candidate_id}:WAIT_PROVIDER_OUTPUT_RETRY" for candidate_id in retries)
             row["next_axis"] = "WAIT_PROVIDER_RETRY"
+        elif holds:
+            reason = str(row.get("rejection_reason") or "")
+            for candidate_id in holds:
+                reason = reason.replace(f"{candidate_id}:AI_SEMANTIC_REJECT", f"{candidate_id}:AI_ADVISORY_HOLD")
+            row["rejection_reason"] = reason
     ledger["ai_wait_quota_count"] = len(quota_rows)
     ledger["ai_wait_provider_retry_count"] = len(retry_rows)
+    ledger["ai_semantic_reject_count"] = len(semantic_rows)
+    ledger["ai_advisory_hold_count"] = len(advisory_rows)
     ledger["state_machine_adapter_version"] = VERSION
     ledger["quota_epoch_reservation_sha"] = reservation["reservation_sha"]
 
@@ -307,6 +342,21 @@ def main() -> int:
         payload = args.payload_root / result_path.name
         core.run_router(args.router, args.policy, payload, result_path, live_prior, cache_only=False)
 
+    final_retry_failures = sorted(
+        path.name for path in retry_selected
+        if strict_classify(path) == "WAIT_PROVIDER_RETRY"
+        and int(reservation["provider_retry_attempts"].get(path.name, 0)) >= MAX_PROVIDER_RETRY_EPOCHS
+    )
+    if final_retry_failures:
+        core.write_json(args.output_root / "provider_retry_exhausted.json", {
+            "state": "HOLD_PROVIDER_OUTPUT_RETRY_EXHAUSTED",
+            "files": final_retry_failures,
+            "provider_retry_attempts": reservation["provider_retry_attempts"],
+            "provider_retry_attempt_limit": MAX_PROVIDER_RETRY_EPOCHS,
+            **core.SAFETY,
+        })
+        raise RuntimeError(f"PROVIDER_OUTPUT_RETRY_EXHAUSTED:{len(final_retry_failures)}")
+
     core.classify = classify_for_core
     manifest = core.finalize(plan, causes, ledger, args.ai_root, args.output_root, args.max_new_candidates)
     manifest = rewrite_outputs(manifest, args.output_root, args.ai_root, reservation)
@@ -314,6 +364,7 @@ def main() -> int:
         manifest["state"],
         "pass=", manifest["pass_count"],
         "reject=", manifest["semantic_reject_count"],
+        "hold=", manifest["advisory_hold_count"],
         "quota_wait=", manifest["wait_quota_count"],
         "provider_retry=", manifest["wait_provider_retry_count"],
         "epoch_used=", manifest["quota_epoch_candidates_used"],

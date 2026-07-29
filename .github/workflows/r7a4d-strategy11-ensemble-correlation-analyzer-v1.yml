@@ -1,0 +1,72 @@
+name: R7A4D Strategy11 Ensemble Correlation Analyzer V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_ensemble_correlation_analyzer_v1.py
+      - backend/tools/r7a4d_strategy11_ensemble_correlation_analyzer_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-ensemble-correlation-analyzer-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-ensemble-correlation-analyzer-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile analyzer and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_ensemble_correlation_analyzer_v1.py \
+            backend/tools/r7a4d_strategy11_ensemble_correlation_analyzer_fixture_v1.py
+      - name: Run deterministic analyzer fixtures
+        run: python backend/tools/r7a4d_strategy11_ensemble_correlation_analyzer_fixture_v1.py
+      - name: Re-run internal synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert analyzer and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          analyzer=json.loads(Path('artifacts/strategy11_ensemble_correlation_analyzer_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json').read_text())
+          assert analyzer['state']=='PASS_ENSEMBLE_CORRELATION_ANALYZER', analyzer
+          assert analyzer['duplicate_alpha_material_blocked'] is True
+          assert analyzer['blocked_pair_count']==1
+          assert analyzer['selected_combination_count'] >= 1
+          assert analyzer['target_weights_created'] is False
+          assert analyzer['production_threshold_authority'] is False
+          assert analyzer['runtime_bound'] is False
+          assert analyzer['research_only'] is True
+          assert analyzer['promotion_authority'] is False
+          assert analyzer['protected_mutations']==0
+          assert analyzer['execution_allowed'] is False
+          assert analyzer['order_authority']=='BLOCKED'
+          assert 'ENSEMBLE_CORRELATION_ANALYZER' in audit['implemented_capabilities'], audit
+          assert audit['recommended_implementation_order'][0]=='PORTFOLIO_GOVERNOR', audit
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-ensemble-correlation-analyzer-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_ensemble_correlation_analyzer_v1
+            artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

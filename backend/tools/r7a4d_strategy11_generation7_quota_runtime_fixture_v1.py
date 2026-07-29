@@ -102,15 +102,30 @@ def main() -> int:
 
     epoch = "2026-07-29"
     prior = args.root / "prior"
-    write(prior / "state" / "out" / "filter" / "ai_manifest.json", {
-        "state": "WAIT_GENERATION7_AI_QUOTA",
+    write(prior / "state" / "out" / "filter" / "quota_epoch_reservation.json", {
+        "state": "QUOTA_EPOCH_CANDIDATES_RESERVED",
         "quota_epoch_date": epoch,
         "quota_epoch_candidates_used": 7,
         **SAFETY,
     })
     used_before = adapter.restore_epoch_usage([prior], epoch)
     assert used_before == 7
+
     output_root = args.root / "budget"
+    selected = [Path("a.json"), Path("b.json"), Path("c.json")]
+    reservation = adapter.reserve_epoch_usage(
+        output_root,
+        epoch_date=epoch,
+        used_before=used_before,
+        selected=selected,
+        max_new_candidates=10,
+    )
+    assert reservation["quota_epoch_candidates_used"] == 10
+    assert reservation["quota_epoch_candidates_remaining"] == 0
+    assert len(reservation["reservation_sha"]) == 64
+    crash_restore = adapter.restore_epoch_usage([output_root], epoch)
+    assert crash_restore == 10
+
     base_manifest = {
         "state": "WAIT_GENERATION7_AI_QUOTA",
         "state_sha": "old",
@@ -121,7 +136,6 @@ def main() -> int:
     }
     write(output_root / "accepted_plan.json", {"state": "WAIT_GENERATION7_AI_QUOTA", **SAFETY})
     write(output_root / "search_ledger.json", {"state": "PASS_SEARCH_LEDGER", **SAFETY})
-    selected = [Path("a.json"), Path("b.json"), Path("c.json")]
     budgeted = adapter.rewrite_manifest(
         base_manifest,
         output_root,
@@ -132,6 +146,7 @@ def main() -> int:
     )
     assert budgeted["quota_epoch_candidates_used"] == 10
     assert budgeted["quota_epoch_candidates_remaining"] == 0
+    assert budgeted["quota_epoch_reservation_sha"] == reservation["reservation_sha"]
     assert len(budgeted["state_sha"]) == 64
 
     plan_root = args.root / "all-rejected-plan"
@@ -175,6 +190,8 @@ def main() -> int:
         "strict_classification": classified,
         "verified_quota_only": True,
         "daily_budget_persisted": True,
+        "pre_call_reservation_persisted": True,
+        "crash_restore_candidates_used": crash_restore,
         "quota_epoch_candidates_used": budgeted["quota_epoch_candidates_used"],
         "all_rejected_next": terminal["next"],
         "credential_mapping_present": True,

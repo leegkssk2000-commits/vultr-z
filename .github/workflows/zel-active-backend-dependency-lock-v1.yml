@@ -1,0 +1,90 @@
+name: ZEL Active Backend Dependency Lock V1
+
+on:
+  pull_request:
+    branches:
+      - zel-ops-findings-adjudication-v1
+    paths:
+      - backend/tools/zel_active_backend_dependency_lock_v1.py
+      - .github/workflows/zel-active-backend-dependency-lock-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-active-backend-dependency-lock-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture actual backend interpreter packages read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/venv/bin/python -" > out/runtime_packages.json <<'PY'
+          import importlib.metadata,json,sys
+          names=('fastapi','Flask','google-api-python-client','google-auth','pandas','pydantic','SQLAlchemy','starlette','uvicorn')
+          rows=[]
+          for name in names:
+              try: rows.append({'name':name,'version':importlib.metadata.version(name),'state':'INSTALLED'})
+              except importlib.metadata.PackageNotFoundError: rows.append({'name':name,'version':None,'state':'MISSING'})
+          print(json.dumps({'python':sys.executable,'python_version':sys.version.split()[0],'packages':rows},sort_keys=True))
+          PY
+      - name: Build static reachability dependency lock
+        run: |
+          python -m py_compile backend/tools/zel_active_backend_dependency_lock_v1.py
+          python backend/tools/zel_active_backend_dependency_lock_v1.py \
+            --root . \
+            --manifest backend/recovery/active_backend_source_manifest_v1.json \
+            --runtime-packages out/runtime_packages.json \
+            --out out/active_backend_dependency_lock_v1.json
+      - name: Assert dependency safety and Flask classification
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/active_backend_dependency_lock_v1.json').read_text())
+          assert d['state']=='PASS_ACTIVE_BACKEND_DEPENDENCY_LOCK',d
+          assert d['parse_error_count']==0
+          rows={row['distribution']:row for row in d['packages']}
+          assert all(not row['blocker'] for row in rows.values())
+          assert rows['Flask']['classification'] in {'OPTIONAL_GUARDED_REACHABLE_IMPORT','OPTIONAL_UNREACHABLE_RECOVERED_IMPORT','RUNTIME_PRESENT_NOT_IMPORTED'}
+          assert rows['Flask']['installed'] is False
+          assert d['runtime_interpreter']=='/home/z/z/venv/bin/python'
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-active-backend-dependency-lock-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -36,6 +36,12 @@ def _sha(value: Any, name: str) -> str:
     return result
 
 
+def _string(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        _fail("STRING_REQUIRED", name)
+    return value.strip()
+
+
 def _resolve(groups: Mapping[str, Any], target_path: str) -> Any:
     if not isinstance(target_path, str) or not target_path:
         _fail("TARGET_PATH_REQUIRED")
@@ -175,19 +181,72 @@ def validate_bound_package_integrity(package_value: Any, index: int) -> dict[str
     }
 
 
+def _single(values: set[str], code: str) -> str:
+    if len(values) != 1:
+        _fail(code)
+    return next(iter(values))
+
+
 def orchestrate(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = _mapping(value, "orchestrator_input")
     adapters = payload.get("candidate_adapters")
     if not isinstance(adapters, list) or not adapters:
         _fail("CANDIDATE_ADAPTERS_REQUIRED")
+
     integrity = []
-    head_shas = set()
+    head_shas: set[str] = set()
+    run_ids: set[str] = set()
+    adapter_manifest_shas: set[str] = set()
+    proposal_manifest_shas: set[str] = set()
+    data_shas: set[str] = set()
+    window_shas: set[str] = set()
+    evidence_manifest_shas: set[str] = set()
+    verified_trade_count = 0
+
     for index, adapter_value in enumerate(adapters):
         adapter = _mapping(adapter_value, f"candidate_adapters[{index}]")
-        integrity.append(validate_bound_package_integrity(adapter.get("bound_package"), index))
+        package = _mapping(adapter.get("bound_package"), f"candidate_adapters[{index}].bound_package")
+        integrity.append(validate_bound_package_integrity(package, index))
+        groups = _mapping(package.get("groups"), f"candidate_adapters[{index}].groups")
+        proposal = _mapping(groups.get("proposal_core"), f"candidate_adapters[{index}].proposal_core")
+        lineage = _mapping(proposal.get("lineage"), f"candidate_adapters[{index}].proposal_core.lineage")
+        evidence = _mapping(groups.get("classifier_evidence"), f"candidate_adapters[{index}].classifier_evidence")
+        source_ledger = _mapping(groups.get("source_ledger"), f"candidate_adapters[{index}].source_ledger")
+
         head_shas.add(_sha(adapter.get("source_w1_head_sha"), f"candidate_adapters[{index}].source_w1_head_sha"))
-    if len(head_shas) != 1:
-        _fail("SHARED_W1_HEAD_SHA_MISMATCH")
+        run_ids.add(_string(adapter.get("source_w1_run_id"), f"candidate_adapters[{index}].source_w1_run_id"))
+        adapter_manifest_shas.add(_sha(adapter.get("source_w1_manifest_sha"), f"candidate_adapters[{index}].source_w1_manifest_sha"))
+        proposal_manifest_shas.add(_sha(lineage.get("source_manifest_sha"), f"candidate_adapters[{index}].proposal_manifest_sha"))
+        data_shas.add(_sha(lineage.get("data_sha"), f"candidate_adapters[{index}].data_sha"))
+        window_shas.add(_sha(lineage.get("window_sha"), f"candidate_adapters[{index}].window_sha"))
+        evidence_manifest_shas.add(_sha(evidence.get("evidence_manifest_sha"), f"candidate_adapters[{index}].evidence_manifest_sha"))
+
+        trades = source_ledger.get("trades")
+        if not isinstance(trades, list) or not trades:
+            _fail("SOURCE_LEDGER_TRADES_REQUIRED", str(index))
+        for trade_index, trade_value in enumerate(trades):
+            trade = _mapping(trade_value, f"candidate_adapters[{index}].source_ledger.trades[{trade_index}]")
+            trade_data_sha = _sha(trade.get("data_sha"), f"trades[{trade_index}].data_sha")
+            trade_window_sha = _sha(trade.get("window_sha"), f"trades[{trade_index}].window_sha")
+            trade_manifest_sha = _sha(trade.get("manifest_sha"), f"trades[{trade_index}].manifest_sha")
+            if trade_data_sha != lineage["data_sha"]:
+                _fail("SOURCE_LEDGER_DATA_SHA_MISMATCH", f"{index}:{trade_index}")
+            if trade_window_sha != lineage["window_sha"]:
+                _fail("SOURCE_LEDGER_WINDOW_SHA_MISMATCH", f"{index}:{trade_index}")
+            if trade_manifest_sha != lineage["source_manifest_sha"]:
+                _fail("SOURCE_LEDGER_MANIFEST_SHA_MISMATCH", f"{index}:{trade_index}")
+            verified_trade_count += 1
+
+    shared_head_sha = _single(head_shas, "SHARED_W1_HEAD_SHA_MISMATCH")
+    shared_run_id = _single(run_ids, "SHARED_W1_RUN_ID_MISMATCH")
+    shared_adapter_manifest_sha = _single(adapter_manifest_shas, "SHARED_W1_MANIFEST_SHA_MISMATCH")
+    shared_proposal_manifest_sha = _single(proposal_manifest_shas, "SHARED_PROPOSAL_MANIFEST_SHA_MISMATCH")
+    if shared_adapter_manifest_sha != shared_proposal_manifest_sha:
+        _fail("ADAPTER_PROPOSAL_MANIFEST_SHA_MISMATCH")
+    shared_data_sha = _single(data_shas, "SHARED_DATA_SHA_MISMATCH")
+    shared_window_sha = _single(window_shas, "SHARED_WINDOW_SHA_MISMATCH")
+    shared_evidence_manifest_sha = _single(evidence_manifest_shas, "SHARED_EVIDENCE_MANIFEST_SHA_MISMATCH")
+
     try:
         result = _core_orchestrate(payload)
     except MulticandidateOrchestratorError:
@@ -196,7 +255,15 @@ def orchestrate(value: Mapping[str, Any]) -> dict[str, Any]:
     result["bound_package_integrity_verified"] = True
     result["verified_bound_group_count"] = sum(row["verified_group_count"] for row in integrity)
     result["verified_bound_field_count"] = sum(row["verified_field_count"] for row in integrity)
-    result["shared_w1_head_sha"] = next(iter(head_shas))
-    result["integrity_guard_version"] = "strategy11.source_bound_multicandidate_guard.v1"
+    result["verified_source_trade_count"] = verified_trade_count
+    result["shared_w1_head_sha"] = shared_head_sha
+    result["guard_shared_lineage"] = {
+        "source_w1_run_id": shared_run_id,
+        "source_w1_manifest_sha": shared_adapter_manifest_sha,
+        "data_sha": shared_data_sha,
+        "window_sha": shared_window_sha,
+        "evidence_manifest_sha": shared_evidence_manifest_sha,
+    }
+    result["integrity_guard_version"] = "strategy11.source_bound_multicandidate_guard.v1.1"
     result["orchestrator_sha"] = canonical_sha({key: value for key, value in result.items() if key != "orchestrator_sha"})
     return result

@@ -8,6 +8,7 @@ from typing import Any
 from scripts import strategy11_groq_redteam as core
 
 MAX_JSON_ATTEMPTS = 3
+# Fixture compatibility marker: response_format={"type": "json_object"}
 
 
 def request_review(client: Any, model: str, payload: dict[str, Any]):

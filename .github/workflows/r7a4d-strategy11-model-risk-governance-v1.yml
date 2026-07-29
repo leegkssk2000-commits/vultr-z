@@ -1,0 +1,77 @@
+name: R7A4D Strategy11 Model Risk Governance V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_model_risk_governance_v1.py
+      - backend/tools/r7a4d_strategy11_model_risk_governance_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-model-risk-governance-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-model-risk-governance-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile governance and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_model_risk_governance_v1.py \
+            backend/tools/r7a4d_strategy11_model_risk_governance_fixture_v1.py
+      - name: Run deterministic model-risk fixtures
+        run: python backend/tools/r7a4d_strategy11_model_risk_governance_fixture_v1.py
+      - name: Re-run internal synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert model risk and full chain
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          risk=json.loads(Path('artifacts/strategy11_model_risk_governance_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json').read_text())
+          assert risk['state']=='PASS_MODEL_RISK_GOVERNANCE_FIXTURES', risk
+          assert set(risk['states'])=={'PASS','HOLD','ROLLBACK','BLOCK'}
+          assert risk['drift_gate'] is True
+          assert risk['calibration_gate'] is True
+          assert risk['error_budget_gate'] is True
+          assert risk['rollback_gate'] is True
+          assert risk['shadow_gate'] is True
+          assert risk['lineage_block_gate'] is True
+          assert risk['production_threshold_authority'] is False
+          assert risk['runtime_bound'] is False
+          assert risk['shadow_only'] is True
+          assert risk['research_only'] is True
+          assert risk['promotion_authority'] is False
+          assert risk['protected_mutations']==0
+          assert risk['execution_allowed'] is False
+          assert risk['order_authority']=='BLOCKED'
+          assert 'MODEL_RISK_GOVERNANCE' in audit['implemented_capabilities'], audit
+          assert audit['missing_capabilities']==[], audit
+          assert audit['recommended_implementation_order']==[], audit
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-model-risk-governance-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_model_risk_governance_v1
+            artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

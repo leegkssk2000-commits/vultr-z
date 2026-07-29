@@ -1,0 +1,72 @@
+name: R7A4D Strategy11 Shadow200 Readonly Accumulator V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_shadow200_readonly_accumulator_v1.py
+      - backend/tools/r7a4d_strategy11_shadow200_readonly_accumulator_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-shadow200-readonly-accumulator-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-shadow200-readonly-accumulator-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile accumulator and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_shadow200_readonly_accumulator_v1.py \
+            backend/tools/r7a4d_strategy11_shadow200_readonly_accumulator_fixture_v1.py
+      - name: Run PASS HOLD ROLLBACK and integrity fixtures
+        run: python backend/tools/r7a4d_strategy11_shadow200_readonly_accumulator_fixture_v1.py
+      - name: Assert output and authority contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/strategy11_shadow200_readonly_accumulator_v1')
+          summary=json.loads((root/'summary.json').read_text())
+          passed=json.loads((root/'pass.json').read_text())
+          hold=json.loads((root/'hold_incomplete.json').read_text())
+          rollback=json.loads((root/'rollback_dd.json').read_text())
+          negatives=json.loads((root/'negative_fixtures.json').read_text())
+          assert summary['state']=='PASS_SHADOW200_READ_ONLY_ACCUMULATOR_FIXTURES'
+          assert passed['state']=='PASS_SHADOW200_READ_ONLY_ACCUMULATION'
+          assert passed['segment_count']==10 and passed['cycle_count']==200
+          assert passed['shadow_300c_allowed'] is True
+          assert hold['state']=='HOLD_SHADOW200_INCOMPLETE'
+          assert rollback['state']=='ROLLBACK_SHADOW200_READ_ONLY'
+          assert len(negatives)==4
+          for payload in (summary,passed,hold,rollback):
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+              assert payload['runtime_bound'] is False
+          assert summary['automatic_shadow_start'] is False
+          assert summary['real_shadow_started'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-shadow200-readonly-accumulator-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_shadow200_readonly_accumulator_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Bounded fault adapter for the resumable Strategy11 AI router v3."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Any
+
+from scripts import strategy11_ai_review_router_v3 as core
+
+
+def run_provider(
+    provider: str,
+    external_payload: dict[str, Any],
+    external_path: Path,
+    output_dir: Path,
+    prior_provider_results: dict[str, Any],
+    stage: str,
+) -> dict[str, Any]:
+    artifact_path = output_dir / f"{provider}.json"
+    if provider == "groq":
+        command = [
+            sys.executable,
+            str(core.v1.GROQ_CLIENT.resolve()),
+            "--input", str(external_path),
+            "--output", str(artifact_path),
+        ]
+    elif provider == "workers_ai":
+        envelope = {
+            "review_stage": stage,
+            "lineage_complete": bool(external_payload.get("lineage")),
+            "changed_axes": external_payload.get("changed_axes", []),
+            "payload": external_payload,
+            "prior_provider_status": {
+                name: value.get("status", value.get("artifact", {}).get("status"))
+                for name, value in prior_provider_results.items()
+            },
+            **core.SAFETY,
+        }
+        workers_input = output_dir / "workers_input.json"
+        core.write_json(workers_input, envelope)
+        command = [
+            sys.executable,
+            str(core.v1.WORKERS_CLIENT.resolve()),
+            "--input", str(workers_input),
+            "--output", str(artifact_path),
+        ]
+    else:
+        raise ValueError(f"UNSUPPORTED_PROVIDER:{provider}")
+
+    row = core.v1.run_client(command, artifact_path)
+    core.v1.validate_provider_safety(provider, row)
+    if row.get("returncode") != 0:
+        artifact = row.get("artifact") or {}
+        blocker = artifact.get("blocker_code") or artifact.get("status") or f"HOLD_{provider.upper()}_FAILED"
+        raise ValueError(str(blocker)[:900])
+    return row
+
+
+core.run_provider = run_provider
+
+if __name__ == "__main__":
+    raise SystemExit(core.main())

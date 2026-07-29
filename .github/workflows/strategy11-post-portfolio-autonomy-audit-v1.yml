@@ -1,0 +1,67 @@
+name: Strategy11 Post Portfolio Autonomy Audit V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/strategy11_post_portfolio_autonomy_audit_v1.py
+      - .github/workflows/strategy11-post-portfolio-autonomy-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-post-portfolio-autonomy-audit-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  autonomy-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile audit
+        run: python -m py_compile backend/tools/strategy11_post_portfolio_autonomy_audit_v1.py
+      - name: Audit executable post-portfolio capabilities
+        run: |
+          python backend/tools/strategy11_post_portfolio_autonomy_audit_v1.py \
+            --root . \
+            --head-sha "$GITHUB_SHA" \
+            --out artifacts/strategy11_post_portfolio_autonomy_audit_v1
+      - name: Assert bounded audit and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_post_portfolio_autonomy_audit_v1/summary.json').read_text())
+          assert d['state']=='PASS_POST_PORTFOLIO_AUTONOMY_AUDIT'
+          assert d['capability_count']==5,d['capability_count']
+          assert [row['capability'] for row in d['capabilities']]==[
+              'ADAPTIVE_EXECUTION','SELF_HEALING_OPERATIONS','CHAMPION_CHALLENGER',
+              'MARKET_DIGITAL_TWIN','HUMAN_GOVERNED_CAPITAL'
+          ]
+          assert d['scanned_file_count']>0
+          assert d['repository_head_sha']==__import__('os').environ['GITHUB_SHA']
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          assert d['automatic_live_enable'] is False
+          assert all(item['runtime_activation_allowed'] is False for item in d['implementation_queue'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-post-portfolio-autonomy-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_post_portfolio_autonomy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,100 @@
+name: R7A4D Strategy11 Source Bound Chain V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/contracts/strategy11_source_binding_contract_v1.py
+      - backend/tools/r7a4d_strategy11_source_bound_chain_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-source-bound-chain-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-source-bound-chain-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile strict contract and chain fixture
+        run: |
+          python -m py_compile backend/contracts/strategy11_source_binding_contract_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_source_bound_chain_fixture_v1.py
+          python -m py_compile backend/contracts/strategy11_strategy_proposal_contract_v1.py
+          python -m py_compile backend/research/strategy11_global_candidate_classifier_v1.py
+          python -m py_compile backend/research/strategy11_ensemble_correlation_analyzer_v1.py
+          python -m py_compile backend/research/strategy11_portfolio_governor_v1.py
+          python -m py_compile backend/research/strategy11_attribution_ledger_v1.py
+          python -m py_compile backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py
+          python -m py_compile backend/research/strategy11_model_risk_governance_v1.py
+
+      - name: Run strict source-bound end-to-end fixture
+        run: python backend/tools/r7a4d_strategy11_source_bound_chain_fixture_v1.py
+
+      - name: Assert complete fail-closed chain
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('artifacts/strategy11_source_bound_chain_v1')
+          row=json.loads((root/'summary.json').read_text())
+          assert row['state']=='PASS_SOURCE_BOUND_CHAIN_E2E_FIXTURE', row
+          assert row['candidate_count']==2, row
+          assert row['classification']=={'alpha_combo':'CORE','turtle_trend':'SYNTHESIS'}, row
+          assert row['selected_combination']==['alpha_combo','turtle_trend'], row
+          assert row['bound_group_count']==20, row
+          assert row['bound_field_count'] >= 150, row
+          assert row['source_history_verified'] is True
+          assert row['append_only_evidence'] is True
+          assert row['validated_role_message_count']==8
+          assert row['model_risk_states']==['PASS_MODEL_RISK_GOVERNANCE','PASS_MODEL_RISK_GOVERNANCE']
+          assert set(row['negative_cases_passed'])=={
+              'SOURCE_ARTIFACT_SHA_TAMPER',
+              'INFERENCE_FORBIDDEN',
+              'REQUIRED_GROUP_FAIL_CLOSED',
+              'EXECUTION_AUTHORITY_FAIL_CLOSED',
+          }
+          assert row['fixture_only'] is True
+          assert row['production_threshold_authority'] is False
+          assert row['real_w1_candidate_consumed'] is False
+          assert row['runtime_bound'] is False
+          assert row['research_only'] is True
+          assert row['promotion_authority'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+
+          for name in ('alpha_bound.json','turtle_bound.json'):
+              bound=json.loads((root/name).read_text())
+              assert bound['status']=='PASS_STRICT_SOURCE_BINDING'
+              assert bound['bound_group_count']==10
+              assert bound['all_values_source_bound'] is True
+              assert bound['inference_used'] is False
+              assert bound['source_history']['append_only_verified'] is True
+          PY
+
+      - name: Upload source-bound chain artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-source-bound-chain-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_source_bound_chain_v1
+          if-no-files-found: error
+          retention-days: 90

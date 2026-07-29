@@ -31,6 +31,11 @@ def is_verified_quota_failure(value: Any) -> bool:
     return any(marker in text for marker in QUOTA_MARKERS)
 
 
+def is_explicit_semantic_reject(value: Any) -> bool:
+    parts = str(value or "").split(":", 2)
+    return len(parts) >= 2 and parts[1] == "SEMANTIC_REJECT"
+
+
 def strict_classify(path: Path) -> str:
     result = core.read_json(path)
     status = str(result.get("status") or "")
@@ -46,8 +51,7 @@ def strict_classify(path: Path) -> str:
         return "BLOCKER"
     if status == "HOLD_AI_REVIEW_DECISION_GATE":
         blockers = [str(value) for value in result.get("blocker_codes") or []]
-        terminal_markers = ("SEMANTIC_REJECT", "SINGLE_AXIS_FALSE", "LINEAGE_INCOMPLETE")
-        if blockers and all(any(marker in blocker for marker in terminal_markers) for blocker in blockers):
+        if blockers and all(is_explicit_semantic_reject(blocker) for blocker in blockers):
             return "SEMANTIC_REJECT"
         return "BLOCKER"
     return "BLOCKER"

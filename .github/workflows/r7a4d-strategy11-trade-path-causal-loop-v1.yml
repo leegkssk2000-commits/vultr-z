@@ -7,8 +7,10 @@ on:
     paths:
       - backend/research/strategy11_trade_path_enricher_v1.py
       - backend/research/strategy11_pre_shadow_path_optimize_planner_v1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py
       - backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json
       - backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1.py
+      - backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1_1.py
       - .github/workflows/r7a4d-strategy11-trade-path-causal-loop-v1.yml
       - .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml
   workflow_dispatch:
@@ -39,13 +41,15 @@ jobs:
           python -m py_compile \
             backend/research/strategy11_trade_path_enricher_v1.py \
             backend/research/strategy11_pre_shadow_path_optimize_planner_v1.py \
-            backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1.py
+            backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py \
+            backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1_1.py
       - name: Execute deterministic path fixtures
         run: |
-          python backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1.py \
+          python backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1_1.py \
             --root artifacts/trade-path-causal-loop \
             --enricher backend/research/strategy11_trade_path_enricher_v1.py \
-            --planner backend/research/strategy11_pre_shadow_path_optimize_planner_v1.py \
+            --planner backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py \
             --policy backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json
       - name: Assert classification and authority
         run: |
@@ -65,6 +69,8 @@ jobs:
           assert path_index['state']=='PASS_TRADE_PATH_EVIDENCE_INDEX'
           assert path_index['hold_bundle_count']==0
           assert plan['candidate_count']==1
+          assert plan['triage_strategy_subset_of_ledger'] is True
+          assert plan['unreplayed_strategies_untouched'] is True
           assert plan['single_axis_per_strategy'] is True
           assert plan['automatic_replay_start_allowed'] is False
           assert plan['ml_light_consumed'] is False

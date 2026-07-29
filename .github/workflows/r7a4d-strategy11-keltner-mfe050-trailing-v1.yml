@@ -48,6 +48,16 @@ jobs:
           path: input/source-repair
           github-token: ${{ github.token }}
           run-id: ${{ env.SOURCE_REPAIR_RUN_ID }}
+      - name: Download exact baseline evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_DATA_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_DATA_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
       - name: Compile MFE trailing replay
         run: python -m py_compile backend/tools/r7a4d_strategy11_keltner_mfe050_trailing_v1.py
       - name: Replay no-change control and one MFE candidate
@@ -56,6 +66,7 @@ jobs:
             --root . \
             --fresh-root input/fresh \
             --source-artifact-root input/source-repair \
+            --baseline-evidence-root input/evidence \
             --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
             --source-run-id "$SOURCE_DATA_RUN_ID" \
             --source-head-sha "$SOURCE_DATA_HEAD_SHA" \
@@ -69,6 +80,8 @@ jobs:
           assert d['state']=='PASS_KELTNER_MFE050_TRAILING_DIAGNOSTIC_COMPLETE'
           assert d['strategy_id']=='keltner_trend'
           assert d['source_variant_id']=='CHANNEL_OVERSHOOT_DISTANCE'
+          assert d['baseline_symbols']==['XRPUSDT','SOLUSDT']
+          assert set(d['observed_source_trade_symbols']).issubset(set(d['baseline_symbols']))
           assert d['source_path_shape']['trade_count']==16
           assert d['source_path_shape']['loss_count']==10
           assert d['source_path_shape']['losses_mfe_ge_0_50r']==6

@@ -1,0 +1,224 @@
+name: R7A4D Strategy11 Generation7 Quota State Machine V1
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - scripts/strategy11_ai_review_router_v3.py
+      - backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1.py
+      - backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py
+      - .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml
+  schedule:
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+concurrency:
+  group: r7a4d-strategy11-generation7-quota-state-machine-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  PLAN_RUN_ID: '30424013330'
+  PLAN_ARTIFACT: 's11-cause-aware-v6-plan-30424013330'
+  RESEARCH_REF: 'r7a4d-strategy11-cause-aware-rotation-l090-v6'
+  MAX_NEW_CANDIDATES: '10'
+
+jobs:
+  resume-review-and-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RESEARCH_REF }}
+          path: research
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: input/plan
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PLAN_RUN_ID }}
+      - name: Restore immutable provider-review seeds and latest cumulative state
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/prior/seed-1 input/prior/seed-2 input/prior/seed-3 input/prior/latest
+          for pair in '8719077720:seed-1' '8719656832:seed-2' '8732890467:seed-3'; do
+            artifact_id="${pair%%:*}"
+            target="${pair##*:}"
+            if gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "/tmp/$target.zip" 2>/dev/null; then
+              unzip -qo "/tmp/$target.zip" -d "input/prior/$target"
+            fi
+          done
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false and (.name|startswith("s11-generation7-quota-state-v1-")))] | sort_by(.created_at) | last | .id // empty')"
+          if [ -n "$latest_id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$latest_id/zip" > /tmp/latest-state.zip
+            unzip -qo /tmp/latest-state.zip -d input/prior/latest
+          fi
+          if find input/prior/latest -name replay_completion.json -type f | grep -q .; then
+            echo 'complete=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'complete=false' >> "$GITHUB_OUTPUT"
+          fi
+          echo "latest_artifact_id=${latest_id:-none}"
+      - name: Run cumulative provider review with bounded new quota
+        if: steps.restore.outputs.complete != 'true'
+        run: |
+          python backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1.py \
+            --plan-root input/plan \
+            --payload-root state/payloads \
+            --ai-root state/out/ai \
+            --output-root state/out/filter \
+            --router scripts/strategy11_ai_review_router_v3.py \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --prior-root input/prior/seed-1 \
+            --prior-root input/prior/seed-2 \
+            --prior-root input/prior/seed-3 \
+            --prior-root input/prior/latest \
+            --max-new-candidates "$MAX_NEW_CANDIDATES"
+      - name: Resolve replay readiness
+        id: state
+        if: steps.restore.outputs.complete != 'true'
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('state/out/filter/ai_manifest.json'))
+          print('ready=' + ('true' if d['ready_to_replay'] else 'false'))
+          print('all_final=' + ('true' if d['all_candidates_final'] else 'false'))
+          print('wait_count=' + str(d['wait_quota_count']))
+          print('pass_count=' + str(d['pass_count']))
+          print('reject_count=' + str(d['semantic_reject_count']))
+          PY
+      - name: Download immutable replay evidence only after all AI decisions finish
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/fresh input/evidence
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-fresh-data-v1-${SOURCE_RUN_ID}-attempt-1" --dir input/fresh
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Replay only fully reviewed accepted candidates
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        run: |
+          strategy_ids="$(python - <<'PY'
+          import json
+          d=json.load(open('state/out/filter/accepted_plan.json'))
+          print(','.join(sorted(row['strategy_id'] for row in d['rows'])))
+          PY
+          )"
+          test -n "$strategy_ids"
+          (
+            cd research
+            PYTHONPATH=. python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+              --mode replay --root . \
+              --plan "$GITHUB_WORKSPACE/state/out/filter/accepted_plan.json" \
+              --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+              --fresh-root "$GITHUB_WORKSPACE/input/fresh" \
+              --evidence-root "$GITHUB_WORKSPACE/input/evidence" \
+              --strategy-ids "$strategy_ids" \
+              --source-run-id "$SOURCE_RUN_ID" \
+              --source-head-sha "$SOURCE_HEAD_SHA" \
+              --out "$GITHUB_WORKSPACE/state/replay"
+          )
+      - name: Aggregate and source-bind completed replay
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        run: |
+          (
+            cd research
+            PYTHONPATH=. python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+              --mode aggregate \
+              --replay-root "$GITHUB_WORKSPACE/state/replay" \
+              --out "$GITHUB_WORKSPACE/state/final"
+          )
+          plan_sha="$(python -c "import json;print(json.load(open('state/out/filter/accepted_plan.json'))['prior_final_sha256'])")"
+          python backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py \
+            --replay-root state/replay \
+            --run-id "${{ github.run_id }}" \
+            --source-plan-sha "$plan_sha" \
+            --out state/final/source_bound_triage
+          cp state/out/filter/accepted_plan.json state/final/generation7_accepted_plan.json
+          cp state/out/filter/search_ledger.json state/final/search_ledger.json
+          cp state/out/filter/ai_manifest.json state/final/ai_manifest.json
+          cp state/out/filter/cause_analysis.json state/final/cause_analysis.json
+      - name: Assert final replay authority and write completion seal
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          final=json.load(open('state/final/final.json'))
+          triage=json.load(open('state/final/source_bound_triage/triage.json'))
+          ai=json.load(open('state/final/ai_manifest.json'))
+          assert final['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE'
+          assert ai['all_candidates_final'] is True and ai['wait_quota_count']==0
+          assert triage['state']=='PASS_SOURCE_BOUND_REPLAY_TRIAGE'
+          assert triage['strategy_count']==final['strategy_count']
+          assert triage['duplicate_strategy_axis_config_data_count']==0
+          for payload in (final,triage,ai):
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+          raw=json.dumps({'final':final.get('final_sha256'),'triage':triage['triage_sha'],'ai':ai['state_sha']},sort_keys=True,separators=(',',':')).encode()
+          completion={
+              'state':'PASS_GENERATION7_QUOTA_STATE_MACHINE_COMPLETE',
+              'run_id':'${{ github.run_id }}',
+              'final_sha':final.get('final_sha256'),
+              'triage_sha':triage['triage_sha'],
+              'ai_state_sha':ai['state_sha'],
+              'completion_sha':hashlib.sha256(raw).hexdigest(),
+              'research_only':True,
+              'promotion_authority':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'order_authority':'BLOCKED',
+              'runtime_bound':False,
+          }
+          Path('state/replay_completion.json').write_text(json.dumps(completion,indent=2,sort_keys=True)+'\n')
+          print(completion['state'])
+          PY
+      - name: Assert WAIT_QUOTA is non-failure and bounded
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready != 'true'
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('state/out/filter/ai_manifest.json'))
+          assert d['state']=='WAIT_GENERATION7_AI_QUOTA'
+          assert 0 < d['wait_quota_count'] <= 44
+          assert d['max_new_candidates'] <= 10
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          print(d['state'],d['wait_quota_count'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.restore.outputs.complete != 'true'
+        with:
+          name: s11-generation7-quota-state-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: state
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,210 @@
+name: ZEL Ops Unit Contract Audit V2
+
+on:
+  pull_request:
+    branches:
+      - zel-second-pass-ops-safety-audit-v1
+    paths:
+      - .github/workflows/zel-ops-unit-contract-audit-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ops-unit-contract-audit-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture exact unit contracts read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" > out/evidence.json <<'PY'
+          import hashlib,importlib.metadata,json,re,subprocess,sys
+          from pathlib import Path
+
+          UNITS=(
+            'z-backend.service','z-chat.service','z-chat-backup.service','z-chat-backup.timer',
+            'zel-q4r3-surface-writer-single-owner.service','zel-q4r3-surface-writer-single-owner.timer',
+            'q4r3-exact25-forward-measurement-writer.service',
+            'q4r3-exact25-persistent-single-event-writer.service',
+            'zel-s4f18c-shadow-close-writer.service','z-alimi-truth-bridge-v36-4.service',
+          )
+          SAFE_KEYS={'Description','Type','ExecStart','Restart','RestartSec','StartLimitIntervalSec','StartLimitBurst','OnBootSec','OnActiveSec','OnUnitActiveSec','OnUnitInactiveSec','OnCalendar','AccuracySec','RandomizedDelaySec','Persistent','Unit','WantedBy'}
+          PACKAGES=('fastapi','Flask','google-api-python-client','google-auth','pandas','pydantic','SQLAlchemy','starlette','uvicorn')
+
+          def run(args,timeout=20):
+              p=subprocess.run(args,text=True,capture_output=True,check=False,timeout=timeout)
+              return p.returncode,p.stdout,p.stderr
+
+          def parse_unit_file(path):
+              row={'path':str(path),'exists':path.is_file()}
+              if not path.is_file(): return row
+              raw=path.read_bytes(); text=raw.decode('utf-8',errors='replace')
+              values={}
+              section=''
+              for source in text.splitlines():
+                  line=source.strip()
+                  if not line or line.startswith(('#',';')): continue
+                  if line.startswith('[') and line.endswith(']'):
+                      section=line[1:-1]; continue
+                  if '=' not in line: continue
+                  key,value=line.split('=',1)
+                  if key in SAFE_KEYS:
+                      values.setdefault(f'{section}.{key}',[]).append(value)
+              row.update({'sha256':hashlib.sha256(raw).hexdigest(),'size_bytes':len(raw),'safe_values':values})
+              return row
+
+          unit_rows=[]
+          script_paths=set()
+          for unit in UNITS:
+              c,o,_=run(['systemctl','show',unit,'--property=FragmentPath','--property=ActiveState','--property=SubState','--property=Result','--property=NRestarts','--property=ExecStart','--property=UnitFileState','--property=TriggeredBy','--property=Triggers','--no-pager'])
+              props={}
+              for line in o.splitlines():
+                  if '=' in line:
+                      k,v=line.split('=',1); props[k]=v
+              fragment=Path(props.get('FragmentPath','')) if props.get('FragmentPath') else Path('/nonexistent')
+              contract=parse_unit_file(fragment)
+              exec_text=props.get('ExecStart','')+' '+json.dumps(contract.get('safe_values',{}),sort_keys=True)
+              for match in re.findall(r'/(?:[^\s;"}]+)',exec_text):
+                  clean=match.rstrip(';,]}')
+                  if clean.endswith('.py') or '/bin/' in clean:
+                      script_paths.add(clean)
+              unit_rows.append({'unit':unit,'returncode':c,'properties':props,'contract':contract})
+
+          scripts=[]
+          for value in sorted(script_paths):
+              path=Path(value)
+              row={'path':value,'exists':path.is_file()}
+              if path.is_file():
+                  raw=path.read_bytes(); st=path.stat()
+                  row.update({'sha256':hashlib.sha256(raw).hexdigest(),'size_bytes':st.st_size,'executable':bool(st.st_mode & 0o111)})
+              scripts.append(row)
+
+          interpreters=[]
+          for executable in ('/usr/bin/python3','/home/z/z/venv/bin/python','/home/z/z/.venv/bin/python'):
+              path=Path(executable); row={'executable':executable,'exists':path.is_file()}
+              if path.is_file():
+                  code='''import importlib.metadata,json,sys\nnames=%r\nrows=[]\nfor name in names:\n try: rows.append({"name":name,"version":importlib.metadata.version(name),"state":"INSTALLED"})\n except importlib.metadata.PackageNotFoundError: rows.append({"name":name,"version":None,"state":"MISSING"})\nprint(json.dumps({"python":sys.executable,"python_version":sys.version.split()[0],"packages":rows},sort_keys=True))''' % (PACKAGES,)
+                  c,o,e=run([executable,'-c',code])
+                  row['returncode']=c
+                  if c==0: row.update(json.loads(o))
+                  else: row['stderr_sha256']=hashlib.sha256(e.encode()).hexdigest()
+              interpreters.append(row)
+
+          c,o,_=run(['ps','-eo','pid=,etimes=,args='])
+          active_writer_processes=[line.strip() for line in o.splitlines() if any(term in line.lower() for term in ('writer','shadow_producer','collector')) and 'python3 -' not in line]
+          result={
+            'schema_version':'zel.ops_unit_contract_evidence.v2',
+            'units':unit_rows,
+            'scripts':scripts,
+            'interpreters':interpreters,
+            'active_writer_processes':active_writer_processes,
+            'deployment_changed':False,'service_changed':False,'process_changed':False,'database_changed':False,
+            'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,
+            'execution_allowed':False,'order_authority':'BLOCKED'
+          }
+          print(json.dumps(result,sort_keys=True))
+          PY
+
+      - name: Classify exact repair candidates
+        run: |
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          d=json.loads(Path('out/evidence.json').read_text())
+          units={r['unit']:r for r in d['units']}
+          scripts={r['path']:r for r in d['scripts']}
+          actual=next(r for r in d['interpreters'] if r['executable']=='/home/z/z/venv/bin/python')
+          actual_missing=[r['name'] for r in actual.get('packages',[]) if r['state']=='MISSING']
+
+          def exec_paths(unit):
+              text=units[unit]['properties'].get('ExecStart','')
+              return [m.rstrip(';,]}') for m in re.findall(r'/(?:[^\s;"}]+)',text)]
+          def missing_exec(unit):
+              return [p for p in exec_paths(unit) if (p.endswith('.py') or '/bin/' in p) and not scripts.get(p,{'exists':False})['exists']]
+          def safe(unit,key):
+              values=units[unit]['contract'].get('safe_values',{})
+              found=[]
+              for full,rows in values.items():
+                  if full.endswith('.'+key): found.extend(rows)
+              return found
+
+          chat={u:{'missing_exec_paths':missing_exec(u),'restart':safe(u,'Restart'),'restart_sec':safe(u,'RestartSec'),'active_state':units[u]['properties'].get('ActiveState'),'n_restarts':int(units[u]['properties'].get('NRestarts') or 0)} for u in ('z-chat.service','z-chat-backup.service')}
+          surface_timer={'on_unit_active_sec':safe('zel-q4r3-surface-writer-single-owner.timer','OnUnitActiveSec'),'on_calendar':safe('zel-q4r3-surface-writer-single-owner.timer','OnCalendar'),'unit':safe('zel-q4r3-surface-writer-single-owner.timer','Unit'),'active_state':units['zel-q4r3-surface-writer-single-owner.timer']['properties'].get('ActiveState')}
+          surface_service={'type':safe('zel-q4r3-surface-writer-single-owner.service','Type'),'exec_paths':exec_paths('zel-q4r3-surface-writer-single-owner.service'),'missing_exec_paths':missing_exec('zel-q4r3-surface-writer-single-owner.service'),'result':units['zel-q4r3-surface-writer-single-owner.service']['properties'].get('Result')}
+          stale={u:{'exec_paths':exec_paths(u),'missing_exec_paths':missing_exec(u),'active_state':units[u]['properties'].get('ActiveState'),'unit_file_state':units[u]['properties'].get('UnitFileState'),'triggered_by':units[u]['properties'].get('TriggeredBy')} for u in ('q4r3-exact25-forward-measurement-writer.service','zel-s4f18c-shadow-close-writer.service','z-alimi-truth-bridge-v36-4.service')}
+
+          blockers=[]
+          if any(v['missing_exec_paths'] and v['n_restarts']>1000 for v in chat.values()): blockers.append('BROKEN_CHAT_RESTART_STORM_CONFIRMED')
+          if surface_timer['active_state']=='active' and surface_timer['on_unit_active_sec'] and any(x in {'1s','2s','3s','4s','5s'} for x in surface_timer['on_unit_active_sec']): blockers.append('SURFACE_WRITER_TIMER_TOO_FAST')
+          if actual_missing: blockers.append('ACTUAL_BACKEND_VENV_DEPENDENCY_GAPS')
+          result={
+            'schema_version':'zel.ops_unit_contract_adjudication.v2',
+            'state':'HOLD_MINIMAL_REPAIR_READY' if blockers else 'PASS_UNIT_CONTRACTS_CLEAN',
+            'blocker_codes':blockers,
+            'actual_backend_interpreter':actual,
+            'actual_backend_missing_packages':actual_missing,
+            'chat_restart_storm':chat,
+            'surface_writer_timer':surface_timer,
+            'surface_writer_service':surface_service,
+            'stale_failed_units':stale,
+            'active_writer_processes':d['active_writer_processes'],
+            'repair_plan':[
+              'STOP_DISABLE_BROKEN_Z_CHAT_AND_Z_CHAT_BACKUP_WITH_ROLLBACK',
+              'DISABLE_Z_CHAT_BACKUP_TIMER_WITH_ROLLBACK',
+              'ADJUST_OR_FREEZE_SURFACE_WRITER_TIMER_ONLY_AFTER_OWNER_PARITY',
+              'WRITE_ACTIVE_BACKEND_DEPENDENCY_LOCK_FROM_ACTUAL_VENV',
+              'KEEP_ZERO_DB_QUARANTINE_ONLY_NO_DELETE'
+            ],
+            'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,
+            'execution_allowed':False,'order_authority':'BLOCKED'
+          }
+          Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+              f.write('# ZEL unit contract audit v2\n\n')
+              f.write(f"- State: **{result['state']}**\n")
+              f.write(f"- Blockers: `{result['blocker_codes']}`\n")
+              f.write(f"- Actual backend missing packages: `{result['actual_backend_missing_packages']}`\n")
+              f.write(f"- Surface timer: `{result['surface_writer_timer']}`\n")
+          PY
+
+      - name: Assert safety invariants
+        run: |
+          python - <<'PY'
+          import json
+          for path in ('out/evidence.json','out/status.json'):
+              d=json.load(open(path)); assert d['protected_mutations']==0; assert d['execution_allowed'] is False; assert d['order_authority']=='BLOCKED'
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ops-unit-contract-audit-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

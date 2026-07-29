@@ -1,0 +1,94 @@
+name: ZEL Minimal Ops Repair V1
+
+on:
+  pull_request:
+    branches:
+      - zel-ops-findings-adjudication-v1
+    paths:
+      - .github/workflows/zel-minimal-ops-repair-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-minimal-ops-repair-v1-postverify
+  cancel-in-progress: false
+
+jobs:
+  verify-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Verify frozen repair state read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 -" > out/repair_postverify.json <<'PY'
+          import hashlib,json,subprocess,urllib.request
+          from pathlib import Path
+          EXPECTED_TIMER_SHA='c12b44ce1a3d9756396e83d1c99847d0d3e837a58ceb5bd9771e2aa2838c4d38'
+          def run(args):
+              return subprocess.run(args,text=True,capture_output=True,check=False,timeout=20)
+          def active(unit): return run(['systemctl','is-active',unit]).stdout.strip()
+          def enabled(unit): return run(['systemctl','is-enabled',unit]).stdout.strip()
+          def show(unit):
+              p=run(['systemctl','show',unit,'--property=ActiveState','--property=Result','--property=ExecMainStatus','--no-pager'])
+              return dict(line.split('=',1) for line in p.stdout.splitlines() if '=' in line)
+          timer=Path('/etc/systemd/system/zel-q4r3-surface-writer-single-owner.timer')
+          timer_sha=hashlib.sha256(timer.read_bytes()).hexdigest() if timer.is_file() else None
+          ps=run(['ps','-eo','args=']).stdout.splitlines()
+          writers=[line for line in ps if 'q4r3_exact25_dedicated_shadow_producer.py' in line or 'q4r3_exact25_persistent_single_event_writer.py' in line]
+          doc=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=10))
+          operations=sum(1 for row in doc.get('paths',{}).values() for method,op in row.items() if method.lower() in {'get','post','put','patch','delete','options','head'} and isinstance(op,dict))
+          checks={
+            'backend_active':active('z-backend.service')=='active',
+            'chat_service_inactive_disabled':active('z-chat.service')=='inactive' and enabled('z-chat.service')=='disabled',
+            'chat_backup_inactive':active('z-chat-backup.service')=='inactive',
+            'chat_backup_timer_inactive_disabled':active('z-chat-backup.timer')=='inactive' and enabled('z-chat-backup.timer')=='disabled',
+            'surface_timer_sha_locked':timer_sha==EXPECTED_TIMER_SHA,
+            'surface_timer_active_enabled':active('zel-q4r3-surface-writer-single-owner.timer')=='active' and enabled('zel-q4r3-surface-writer-single-owner.timer')=='enabled',
+            'surface_service_healthy':show('zel-q4r3-surface-writer-single-owner.service').get('ActiveState')!='failed' and show('zel-q4r3-surface-writer-single-owner.service').get('Result')!='start-limit-hit',
+            'formal_writers_preserved':len(writers)>=2,
+            'openapi_coherent':operations>0,
+          }
+          result={'state':'PASS_MINIMAL_OPS_REPAIR_FROZEN' if all(checks.values()) else 'HOLD_MINIMAL_OPS_REPAIR_DRIFT','original_repair_run_id':'30409614436','rollback_dir':'/home/z/z/runtime/ops_repair_v1/30409614436','timer_sha256':timer_sha,'openapi_operations':operations,'writer_count':len(writers),'checks':checks,'service_changed':False,'process_changed':False,'database_changed':False,'deployment_changed':False,'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - name: Assert repair remains frozen
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('out/repair_postverify.json'))
+          assert d['state']=='PASS_MINIMAL_OPS_REPAIR_FROZEN',d
+          assert all(d['checks'].values())
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-minimal-ops-repair-postverify-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

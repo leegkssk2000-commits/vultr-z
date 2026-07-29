@@ -15,6 +15,7 @@ from typing import Any
 
 from scripts import strategy11_ai_review_router_v3 as core
 
+GROQ_JSON_CLIENT = Path("scripts/strategy11_groq_redteam_v1_2.py")
 QUOTA_MARKERS = (
     "rate limit", "ratelimit", "rate_limit", "http 429", "http_429",
     "status 429", "daily free allocation", "used up your daily free allocation",
@@ -61,7 +62,7 @@ def run_provider(
 ) -> dict[str, Any]:
     artifact_path = output_dir / f"{provider}.json"
     if provider == "groq":
-        command = [sys.executable, str(core.v1.GROQ_CLIENT.resolve()), "--input", str(external_path), "--output", str(artifact_path)]
+        command = [sys.executable, str(GROQ_JSON_CLIENT.resolve()), "--input", str(external_path), "--output", str(artifact_path)]
     elif provider == "workers_ai":
         envelope = {
             "review_stage": stage,

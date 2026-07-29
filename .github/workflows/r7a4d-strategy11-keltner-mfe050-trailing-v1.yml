@@ -1,0 +1,97 @@
+name: R7A4D Strategy11 Keltner MFE050 Trailing V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_keltner_mfe050_trailing_v1.py
+      - .github/workflows/r7a4d-strategy11-keltner-mfe050-trailing-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_DATA_RUN_ID: '30252022416'
+  SOURCE_DATA_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  SOURCE_REPAIR_RUN_ID: '30451796308'
+  SOURCE_REPAIR_ARTIFACT: 's11-keltner-channel-overshoot-repair-v1-30451796308-attempt-1'
+
+concurrency:
+  group: r7a4d-strategy11-keltner-mfe050-trailing-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mfe050-trailing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_REPAIR_ARTIFACT }}
+          path: input/source-repair
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_REPAIR_RUN_ID }}
+      - name: Compile MFE trailing replay
+        run: python -m py_compile backend/tools/r7a4d_strategy11_keltner_mfe050_trailing_v1.py
+      - name: Replay no-change control and one MFE candidate
+        run: |
+          python backend/tools/r7a4d_strategy11_keltner_mfe050_trailing_v1.py \
+            --root . \
+            --fresh-root input/fresh \
+            --source-artifact-root input/source-repair \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_DATA_RUN_ID" \
+            --source-head-sha "$SOURCE_DATA_HEAD_SHA" \
+            --out artifacts/strategy11_keltner_mfe050_trailing_v1
+      - name: Assert bounded single-axis replay and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_keltner_mfe050_trailing_v1/final.json').read_text())
+          assert d['state']=='PASS_KELTNER_MFE050_TRAILING_DIAGNOSTIC_COMPLETE'
+          assert d['strategy_id']=='keltner_trend'
+          assert d['source_variant_id']=='CHANNEL_OVERSHOOT_DISTANCE'
+          assert d['source_path_shape']['trade_count']==16
+          assert d['source_path_shape']['loss_count']==10
+          assert d['source_path_shape']['losses_mfe_ge_0_50r']==6
+          assert d['candidate']['candidate_id']=='TRAIL050_ATR075'
+          assert d['candidate']['axis']=='MFE_TRAILING'
+          assert d['candidate']['trail_activate_r']==0.50
+          assert d['candidate']['trail_atr_mult']==0.75
+          assert d['candidate']['comparison']['checks']['parity_pass'] is True
+          assert d['candidate']['comparison']['checks']['duplicate_zero'] is True
+          assert d['same_data_generation_budget_exhausted'] is True
+          assert d['threshold_sweep_allowed'] is False
+          assert d['canonical_source_modified'] is False
+          assert d['registry_modified'] is False
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-keltner-mfe050-trailing-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_keltner_mfe050_trailing_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,92 @@
+name: R7A4D Strategy11 ML Failure Observers V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_ml_light_observer_v1.py
+      - backend/research/strategy11_ml_light_observer_optimized_v1.py
+      - backend/research/strategy11_failure_learning_observer_v1.py
+      - backend/research/strategy11_ml_failure_observer_policy_v1.json
+      - backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py
+      - backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py
+      - backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
+      - .github/workflows/r7a4d-strategy11-ml-failure-observers-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+
+concurrency:
+  group: r7a4d-strategy11-ml-failure-observers-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  observer-implementations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile actual observers and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_ml_light_observer_v1.py \
+            backend/research/strategy11_ml_light_observer_optimized_v1.py \
+            backend/research/strategy11_failure_learning_observer_v1.py \
+            backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
+      - name: Run calibrated deterministic implementation and negative fixtures
+        run: python backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py
+      - name: Re-run repository-wide actual implementation audit
+        run: |
+          python backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py \
+            --root . \
+            --out artifacts/strategy11_ml_failure_actual_audit_v1
+      - name: Assert optimized observer bounds and actual implementation PASS
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary=json.loads(Path('artifacts/strategy11_ml_failure_observers_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_ml_failure_actual_audit_v1/audit.json').read_text())
+          policy=json.loads(Path('backend/research/strategy11_ml_failure_observer_policy_v1.json').read_text())
+          assert summary['state']=='PASS_ML_FAILURE_OBSERVER_IMPLEMENTATIONS'
+          assert summary['ml_state']=='PASS_ML_LIGHT_OBSERVATION'
+          assert summary['failure_state']=='PASS_FAILURE_LEARNING_OBSERVATION'
+          assert summary['ml_calibration_method']=='PLATT_SCALING'
+          assert summary['ml_fit_samples']+summary['ml_calibration_samples']>=policy['ml_light']['min_train_samples']
+          assert summary['ml_evaluation_samples']>=policy['ml_light']['min_evaluation_samples']
+          assert summary['ml_brier']<=policy['ml_light']['brier_limit']
+          assert summary['ml_ece']<=policy['ml_light']['ece_limit']
+          assert summary['ml_drift_psi']<=policy['ml_light']['drift_psi_limit']
+          assert audit['state']=='PASS_ACTUAL_ML_FAILURE_IMPLEMENTATIONS',audit['blocker_codes']
+          assert all(row['qualified_implementation_count']>=1 for row in audit['types'].values())
+          for payload in (summary,audit,policy):
+              assert payload['research_only'] is True
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+              assert payload['runtime_bound'] is False
+          assert summary['advisory_enabled'] is False
+          assert policy['automatic_activation'] is False
+          assert policy['paper_30d_allowed'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-ml-failure-observers-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_ml_failure_observers_v1
+            artifacts/strategy11_ml_failure_actual_audit_v1
+            backend/research/strategy11_ml_failure_observer_policy_v1.json
+          if-no-files-found: error
+          retention-days: 90

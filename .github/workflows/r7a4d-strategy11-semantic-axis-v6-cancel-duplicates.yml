@@ -1,0 +1,29 @@
+name: R7A4D Strategy11 Cancel Duplicate V6 Runs
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v5
+    paths:
+      - .github/workflows/r7a4d-strategy11-semantic-axis-v6-cancel-duplicates.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preserve oldest resume run and cancel duplicate/original runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/$REPOSITORY/actions/runs?branch=$HEAD_BRANCH&per_page=100")"
+          keep="$(printf '%s' "$runs" | jq -r '[.workflow_runs[] | select(.name=="R7A4D Strategy11 Semantic Axis Rotation L090 V6 Resume" and (.status=="queued" or .status=="in_progress" or .status=="pending")) | .id] | min // empty')"
+          printf '%s' "$runs" | jq -r --arg keep "$keep" '.workflow_runs[] | select((.status=="queued" or .status=="in_progress" or .status=="pending") and ((.name=="R7A4D Strategy11 Semantic Axis Rotation L090 V6") or (.name=="R7A4D Strategy11 Semantic Axis Rotation L090 V6 Resume" and (.id|tostring)!=$keep))) | .id' | while read -r id; do
+            [ -n "$id" ] && gh api --method POST "repos/$REPOSITORY/actions/runs/$id/cancel" || true
+          done

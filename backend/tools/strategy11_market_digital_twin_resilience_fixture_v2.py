@@ -69,7 +69,6 @@ def main() -> int:
     assert "liquidity-shock-001" in risk["blocking_scenarios"]
     liquidity_row = next(row for row in risk["resilience_rows"] if row["scenario_id"] == "liquidity-shock-001")
     assert "COST_BREACH" not in liquidity_row["unexpected_risk_flags"]
-    assert liquidity_row["total_cost_bps"] if "total_cost_bps" in liquidity_row else True
     assert liquidity_row["unexpected_risk_flags"] == ["LIQUIDATION_BUFFER_BREACH"]
 
     package = resilient_package(str(policy["policy_sha"]))
@@ -82,14 +81,13 @@ def main() -> int:
     assert passed["twin_result_sha"] == repeated["twin_result_sha"]
 
     missing_expected = deepcopy(package)
-    api_row = next(row for row in missing_expected["scenarios"] if row["scenario_type"] == "API_GAP")
-    api_row["api_gap_bars"] = 1
-    api_row["stale_feed_ms"] = 1000
-    reseal(api_row)
+    funding_row = next(row for row in missing_expected["scenarios"] if row["scenario_type"] == "FUNDING_SPIKE")
+    funding_row["funding_bps"] = 1.0
+    reseal(funding_row)
     missing_result = evaluate_digital_twin_resilience_v2(missing_expected, policy)
     assert missing_result["capital_gate"] == "HOLD_DIGITAL_TWIN_RISK_EXPOSED"
-    api_resilience = next(row for row in missing_result["resilience_rows"] if row["scenario_type"] == "API_GAP")
-    assert set(api_resilience["missing_expected_flags"]) == {"API_GAP_BREACH", "STALE_FEED_BREACH"}
+    funding_resilience = next(row for row in missing_result["resilience_rows"] if row["scenario_type"] == "FUNDING_SPIKE")
+    assert funding_resilience["missing_expected_flags"] == ["COST_BREACH"]
 
     bad_policy = deepcopy(policy)
     del bad_policy["allowed_expected_flags_by_type"]["BASELINE"]

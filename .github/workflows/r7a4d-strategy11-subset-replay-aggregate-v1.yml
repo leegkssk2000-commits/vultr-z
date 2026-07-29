@@ -1,0 +1,73 @@
+name: R7A4D Strategy11 Subset Replay Aggregate V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py
+      - backend/tools/r7a4d_strategy11_subset_replay_aggregate_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-subset-replay-aggregate-v1.yml
+      - .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-subset-replay-aggregate-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify-subset-aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile aggregator and fixture
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py \
+            backend/tools/r7a4d_strategy11_subset_replay_aggregate_fixture_v1.py
+      - name: Execute subset fixture
+        run: |
+          python backend/tools/r7a4d_strategy11_subset_replay_aggregate_fixture_v1.py \
+            --root artifacts/subset-replay-aggregate
+      - name: Assert authority and intentional subset
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/subset-replay-aggregate')
+          summary=json.loads((root/'summary.json').read_text())
+          final=json.loads((root/'final.json').read_text())
+          assert summary['state']=='PASS_SUBSET_REPLAY_AGGREGATE_FIXTURE'
+          assert final['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE'
+          assert final['strategy_count']==2
+          assert final['source_plan_strategy_count']==22
+          assert final['partial_strategy_set'] is True
+          assert final['unreplayed_strategies_intentionally_untouched'] is True
+          assert final['l090_candidate_count']==1
+          for payload in (summary,final):
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+              assert payload['runtime_bound'] is False
+          print(summary['state'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-subset-replay-aggregate-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/subset-replay-aggregate
+          if-no-files-found: error
+          retention-days: 90

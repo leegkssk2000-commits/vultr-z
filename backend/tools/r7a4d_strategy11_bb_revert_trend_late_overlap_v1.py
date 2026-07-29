@@ -172,7 +172,7 @@ def main() -> int:
     registry = base._load_registry(root)
     row = registry[STRATEGY_ID]
     source_sha = str(row["canonical_engine"]["source_sha256"])
-    source_contract = prior_trace.verify_source_semantics(root, source_sha)
+    source_contract = prior_trace.verify_source(root, source_sha)
     strategy = base._load_canonical_strategy(root, STRATEGY_ID, row)
     result_trace = trace(strategy, symbols, frames, int(manifest["warmup_bars"]), 220)
 

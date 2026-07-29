@@ -1,0 +1,120 @@
+name: R7A4D Strategy11 Chain Intake Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_chain_intake_preflight_v1.py
+      - backend/research/fixtures/strategy11_chain_intake_wait_data_v1.json
+      - backend/research/fixtures/strategy11_chain_intake_w1_ready_v1.json
+      - .github/workflows/r7a4d-strategy11-chain-intake-preflight-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-chain-intake-preflight-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile preflight
+        run: python -m py_compile backend/research/strategy11_chain_intake_preflight_v1.py
+
+      - name: Audit current WAIT_DATA intake
+        run: |
+          mkdir -p artifacts/strategy11_chain_intake_preflight_v1
+          python backend/research/strategy11_chain_intake_preflight_v1.py \
+            --input backend/research/fixtures/strategy11_chain_intake_wait_data_v1.json \
+            --output artifacts/strategy11_chain_intake_preflight_v1/wait_data.json \
+            --repo-root .
+
+      - name: Audit W1-ready intake without guessed fields
+        run: |
+          python backend/research/strategy11_chain_intake_preflight_v1.py \
+            --input backend/research/fixtures/strategy11_chain_intake_w1_ready_v1.json \
+            --output artifacts/strategy11_chain_intake_preflight_v1/w1_ready.json \
+            --repo-root .
+
+      - name: Assert chain state and next patch
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          wait=json.loads(Path('artifacts/strategy11_chain_intake_preflight_v1/wait_data.json').read_text())
+          ready=json.loads(Path('artifacts/strategy11_chain_intake_preflight_v1/w1_ready.json').read_text())
+
+          assert wait['status']=='PASS_CHAIN_INTAKE_WAIT_DATA', wait
+          assert wait['available_non_overlap_bars']==43
+          assert wait['missing_bars']==437
+          assert wait['candidate_count']==0
+          assert wait['component_inventory']['all_seven_present'] is True
+
+          assert ready['status']=='HOLD_CHAIN_INTAKE_MISSING_SOURCED_FIELDS', ready
+          assert ready['candidate_count']==1
+          assert ready['active_candidate_ids']==['TIME54']
+          assert ready['next_patch']=='W1_PROPOSAL_CONTEXT_ENVELOPE_ADAPTER'
+          assert len(ready['missing_binding_groups'])==10
+          assert 'proposal_confidence' in ready['missing_binding_groups']
+          assert 'lico_cost_capacity' in ready['missing_binding_groups']
+          assert 'correlation_ledger' in ready['missing_binding_groups']
+          assert 'portfolio_policy_ssot' in ready['missing_binding_groups']
+          assert 'role_lineage' in ready['missing_binding_groups']
+          assert 'model_risk_baseline' in ready['missing_binding_groups']
+
+          for row in (wait, ready):
+              assert row['proposal_created'] is False
+              assert row['classification_created'] is False
+              assert row['correlation_material_created'] is False
+              assert row['target_weights_created'] is False
+              assert row['attribution_projection_created'] is False
+              assert row['runtime_bound'] is False
+              assert row['research_only'] is True
+              assert row['promotion_authority'] is False
+              assert row['protected_mutations']==0
+              assert row['execution_allowed'] is False
+              assert row['order_authority']=='BLOCKED'
+          PY
+
+      - name: Assert unsafe authority fails closed
+        run: |
+          python - <<'PY'
+          import copy
+          import json
+          from pathlib import Path
+          from backend.research.strategy11_chain_intake_preflight_v1 import IntakeError, audit
+
+          payload=json.loads(Path('backend/research/fixtures/strategy11_chain_intake_wait_data_v1.json').read_text())
+          payload=copy.deepcopy(payload)
+          payload['execution_allowed']=True
+          try:
+              audit(payload, Path('.').resolve())
+          except IntakeError as exc:
+              assert str(exc)=='EXECUTION_FORBIDDEN', exc
+          else:
+              raise AssertionError('unsafe authority was accepted')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-chain-intake-preflight-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_chain_intake_preflight_v1
+          if-no-files-found: error
+          retention-days: 90

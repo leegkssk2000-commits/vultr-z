@@ -120,7 +120,8 @@ def rewrite_manifest(
     expected_used = used_before + len(selected)
     if reservation.get("quota_epoch_date") != epoch_date:
         raise RuntimeError("QUOTA_RESERVATION_DATE_MISMATCH")
-    if int(reservation.get("quota_epoch_candidates_used") or -1) != expected_used:
+    reservation_used = reservation.get("quota_epoch_candidates_used")
+    if reservation_used is None or int(reservation_used) != expected_used:
         raise RuntimeError("QUOTA_RESERVATION_USAGE_MISMATCH")
     if reservation.get("quota_epoch_selected_files") != [path.name for path in selected]:
         raise RuntimeError("QUOTA_RESERVATION_SELECTION_MISMATCH")

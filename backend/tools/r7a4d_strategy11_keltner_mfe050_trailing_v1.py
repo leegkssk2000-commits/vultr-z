@@ -15,6 +15,7 @@ p = replay.p
 exact = replay.exact
 base = replay.base
 repair = replay.repair
+prior = replay.prior
 
 STRATEGY_ID = "keltner_trend"
 SOURCE_VARIANT_ID = "CHANNEL_OVERSHOOT_DISTANCE"
@@ -118,6 +119,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--fresh-root", type=Path, required=True)
     parser.add_argument("--source-artifact-root", type=Path, required=True)
+    parser.add_argument("--baseline-evidence-root", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--source-run-id", required=True)
     parser.add_argument("--source-head-sha", required=True)
@@ -127,6 +129,19 @@ def main() -> int:
     source_path = find_source_variant(args.source_artifact_root.resolve())
     source_summary = strict_json(source_path)
     source_config = dict(source_summary["candidate_config"])
+    source_trades = strict_json(source_path.parent / "replay-A.json")["trades"]
+    baseline_path = prior.find_summary(args.baseline_evidence_root.resolve(), STRATEGY_ID)
+    baseline = strict_json(baseline_path)
+    symbols = tuple(str(value) for value in baseline.get("symbols", []))
+    if not symbols:
+        raise RuntimeError("BASELINE_SYMBOLS_EMPTY")
+    observed_symbols = {str(row.get("symbol")) for row in source_trades}
+    if not observed_symbols.issubset(set(symbols)):
+        raise RuntimeError(
+            "SOURCE_TRADE_SYMBOL_OUTSIDE_BASELINE:"
+            + json.dumps({"observed": sorted(observed_symbols), "baseline": sorted(symbols)}, sort_keys=True)
+        )
+
     gate = exact._gate_from(source_config)
     surgery = p.surgery_from(source_config.get("surgery"))
     if gate.required or gate.forbidden or surgery is not None:
@@ -140,7 +155,6 @@ def main() -> int:
         trail_activate_r=0.50,
         trail_atr_mult=0.75,
     )
-    symbols = tuple(str(value) for value in source_config["symbols"])
 
     frames, features, funding, manifest = p.load_fresh_data(args.fresh_root.resolve())
     quantiles = p.funding_rate_quantiles(funding)
@@ -188,7 +202,6 @@ def main() -> int:
         exit_spec=candidate_exit,
         **common,
     )
-    source_trades = strict_json(source_path.parent / "replay-A.json")["trades"]
     source_shape = path_shape(source_trades)
     if source_shape["losses_mfe_ge_0_50r"] < 5 or source_shape["mfe_giveback_ratio"] < 0.50:
         raise RuntimeError("MFE050_CLUSTER_NOT_SUPPORTED")
@@ -200,6 +213,10 @@ def main() -> int:
         "strategy_id": STRATEGY_ID,
         "source_variant_id": SOURCE_VARIANT_ID,
         "source_summary_sha": stable_sha(source_summary),
+        "baseline_summary_sha": stable_sha(baseline),
+        "baseline_path": str(baseline_path),
+        "baseline_symbols": list(symbols),
+        "observed_source_trade_symbols": sorted(observed_symbols),
         "source_path_shape": source_shape,
         "repair": patch_manifest,
         "control": {

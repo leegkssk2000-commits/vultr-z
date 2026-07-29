@@ -5,9 +5,11 @@ on:
     branches: [master]
     paths:
       - backend/research/strategy11_ml_light_observer_v1.py
+      - backend/research/strategy11_ml_light_observer_optimized_v1.py
       - backend/research/strategy11_failure_learning_observer_v1.py
       - backend/research/strategy11_ml_failure_observer_policy_v1.json
       - backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py
+      - backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py
       - backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
       - .github/workflows/r7a4d-strategy11-ml-failure-observers-v1.yml
   workflow_dispatch:
@@ -37,11 +39,13 @@ jobs:
         run: |
           python -m py_compile \
             backend/research/strategy11_ml_light_observer_v1.py \
+            backend/research/strategy11_ml_light_observer_optimized_v1.py \
             backend/research/strategy11_failure_learning_observer_v1.py \
             backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py \
             backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
-      - name: Run deterministic implementation and negative fixtures
-        run: python backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py
+      - name: Run calibrated deterministic implementation and negative fixtures
+        run: python backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py
       - name: Re-run repository-wide actual implementation audit
         run: |
           python backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py \
@@ -58,6 +62,9 @@ jobs:
           assert summary['state']=='PASS_ML_FAILURE_OBSERVER_IMPLEMENTATIONS'
           assert summary['ml_state']=='PASS_ML_LIGHT_OBSERVATION'
           assert summary['failure_state']=='PASS_FAILURE_LEARNING_OBSERVATION'
+          assert summary['ml_calibration_method']=='PLATT_SCALING'
+          assert summary['ml_fit_samples']+summary['ml_calibration_samples']>=policy['ml_light']['min_train_samples']
+          assert summary['ml_evaluation_samples']>=policy['ml_light']['min_evaluation_samples']
           assert summary['ml_brier']<=policy['ml_light']['brier_limit']
           assert summary['ml_ece']<=policy['ml_light']['ece_limit']
           assert summary['ml_drift_psi']<=policy['ml_light']['drift_psi_limit']

@@ -135,12 +135,20 @@ def main() -> int:
     trades_b = list(replay_b.get("trades") or [])
     if stable_sha(trades_a) != stable_sha(trades_b):
         raise RuntimeError("AB_TRADE_PARITY_MISMATCH")
+    if not trades_a:
+        raise RuntimeError("EMPTY_CANDIDATE_TRADE_LEDGER")
     trade_ids = [str(row.get("trade_id")) for row in trades_a]
     if len(trade_ids) != len(set(trade_ids)):
         raise RuntimeError("DUPLICATE_TRADE_ID")
     expected_source_sha = str(final["strategy_source_sha"])
-    expected_head_sha = str(summary["source_head_sha"])
-    expected_run_id = str(summary["source_run_id"])
+    head_values = {str(row.get("source_head_sha")) for row in trades_a}
+    run_values = {str(row.get("source_run_id")) for row in trades_a}
+    if len(head_values) != 1 or "None" in head_values or "" in head_values:
+        raise RuntimeError("TRADE_SOURCE_HEAD_SHA_SET_MISMATCH:" + json.dumps(sorted(head_values)))
+    if len(run_values) != 1 or "None" in run_values or "" in run_values:
+        raise RuntimeError("TRADE_SOURCE_RUN_ID_SET_MISMATCH:" + json.dumps(sorted(run_values)))
+    expected_head_sha = next(iter(head_values))
+    expected_run_id = next(iter(run_values))
     for trade in trades_a:
         if str(trade.get("strategy_source_sha")) != expected_source_sha:
             raise RuntimeError("TRADE_STRATEGY_SOURCE_SHA_MISMATCH")

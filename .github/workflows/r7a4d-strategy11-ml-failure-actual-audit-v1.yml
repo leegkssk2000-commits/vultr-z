@@ -1,0 +1,65 @@
+name: R7A4D Strategy11 ML Failure Actual Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
+      - backend/research/**
+      - backend/strategy25/**
+      - .github/workflows/r7a4d-strategy11-ml-failure-actual-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-ml-failure-actual-audit-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile actual implementation audit
+        run: python -m py_compile backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py
+      - name: Scan entire repository without treating contracts or fixtures as implementations
+        run: |
+          python backend/tools/r7a4d_strategy11_ml_failure_actual_audit_v1.py \
+            --root . \
+            --out artifacts/strategy11_ml_failure_actual_audit_v1
+      - name: Assert honest fail-closed classification and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_ml_failure_actual_audit_v1/audit.json').read_text())
+          assert d['state'] in {'PASS_ACTUAL_ML_FAILURE_IMPLEMENTATIONS','HOLD_ACTUAL_ML_FAILURE_IMPLEMENTATIONS'}
+          assert set(d['types'])=={'ML_LIGHT','FAILURE_LEARNING'}
+          assert d['control_plane_only_is_not_implementation'] is True
+          assert d['fixture_evidence_is_not_production_evidence'] is True
+          assert d['runtime_bound'] is False and d['automatic_activation'] is False
+          assert d['observer_only'] is True and d['research_only'] is True
+          assert d['promotion_authority'] is False and d['protected_mutations']==0
+          assert d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          if d['state'].startswith('HOLD_'):
+              assert d['blocker_codes']
+              assert d['requested_action']=='hold'
+          else:
+              assert not d['blocker_codes']
+              assert all(v['qualified_implementation_count']>=1 for v in d['types'].values())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-ml-failure-actual-audit-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_ml_failure_actual_audit_v1
+          if-no-files-found: error
+          retention-days: 90

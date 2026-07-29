@@ -1,0 +1,85 @@
+name: R7A4D Strategy11 Source Bound Authority Triage V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py
+      - .github/workflows/r7a4d-strategy11-source-bound-authority-triage-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30410892147'
+  SOURCE_PLAN_ARTIFACT_SHA: '776c0757c17a99437b9cbc776e80d0612882465eee08bdae95a6a700fedd6d00'
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile source-bound triage
+        run: python -m py_compile backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py
+      - name: Download exact authoritative generation-six replay artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/replays
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-semantic-axis-v5-filtered-replay-${batch}-${SOURCE_RUN_ID}" \
+              --dir "input/replays/batch-${batch}"
+          done
+      - name: Apply installed source-binding and Pareto triage
+        run: |
+          python backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py \
+            --replay-root input/replays \
+            --run-id "$SOURCE_RUN_ID" \
+            --source-plan-sha "$SOURCE_PLAN_ARTIFACT_SHA" \
+            --out artifacts/strategy11_source_bound_authority_triage_v1
+      - name: Assert exact authority and no premature promotion
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('artifacts/strategy11_source_bound_authority_triage_v1/triage.json')
+          d=json.loads(p.read_text())
+          assert d['state']=='PASS_SOURCE_BOUND_REPLAY_TRIAGE'
+          assert d['schema_version']=='strategy11.source_bound_replay_triage.v1.1'
+          assert d['source_run_id']=='30410892147'
+          assert d['source_plan_sha']=='776c0757c17a99437b9cbc776e80d0612882465eee08bdae95a6a700fedd6d00'
+          assert d['strategy_count']==22,d['strategy_count']
+          assert d['candidate_count']==43,d['candidate_count']
+          assert len(d['l090_candidates'])==0,d['l090_candidates']
+          assert d['duplicate_strategy_axis_config_data_count']==0
+          assert len(d['entry_expansion_candidates'])==3,d['entry_expansion_candidates']
+          assert d['legacy_retention_over_100_count']==3
+          assert all(0.0 <= row['retention_pct'] <= 100.0 for strategy in d['rows'] for row in strategy['candidates'])
+          assert all(row['entry_count_delta'] > 0 for row in d['entry_expansion_candidates'])
+          assert d['installed_chain_usage']['source_binding_contract']=='PASS'
+          assert d['installed_chain_usage']['proposal_contract'].startswith('HOLD_')
+          assert d['installed_chain_usage']['classifier']=='NOT_RUN_PRE_W1'
+          assert all(row['proposal_created'] is False for row in d['rows'])
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-source-bound-authority-triage-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_source_bound_authority_triage_v1
+          if-no-files-found: error
+          retention-days: 90

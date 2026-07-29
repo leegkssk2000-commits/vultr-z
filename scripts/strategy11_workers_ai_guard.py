@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Read-only Cloudflare Workers AI guard for Strategy11 research artifacts.
 
-The client is advisory only. It never grants promotion or execution authority.
-Secrets are read from environment variables and are never written to logs/artifacts.
+The provider evaluates eligibility for deterministic offline replay only. It
+never grants promotion, live execution or order authority. Mandatory authority
+safety fields are validated locally and stripped from the semantic model input.
+Missing lineage and multi-axis inputs are rejected deterministically before any
+external call.
 """
 from __future__ import annotations
 
@@ -21,21 +24,13 @@ from typing import Any
 DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
 ALLOWED_DECISIONS = {"PASS_TO_REPLAY", "REJECT", "HOLD"}
 SENSITIVE_KEYS = {
-    "api_key",
-    "apikey",
-    "secret",
-    "token",
-    "password",
-    "credential",
-    "credentials",
-    "account",
-    "account_id",
-    "order",
-    "orders",
-    "position",
-    "positions",
-    "exchange_key",
-    "private_key",
+    "api_key", "apikey", "secret", "token", "password", "credential",
+    "credentials", "account", "account_id", "order", "orders", "position",
+    "positions", "exchange_key", "private_key",
+}
+AUTHORITY_ONLY_KEYS = {
+    "research_only", "promotion_authority", "protected_mutations",
+    "execution_allowed", "order_authority", "authority_contract",
 }
 
 
@@ -62,6 +57,18 @@ def assert_anonymized(value: Any, path: str = "root") -> None:
         suspicious = ("bearer ", "-----begin private key-----", "sk-", "gsk_", "cfut_")
         if any(marker in lowered for marker in suspicious):
             raise ValueError(f"HOLD_SENSITIVE_VALUE:{path}")
+
+
+def strip_authority_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: strip_authority_fields(child)
+            for key, child in value.items()
+            if str(key).strip().lower() not in AUTHORITY_ONLY_KEYS
+        }
+    if isinstance(value, list):
+        return [strip_authority_fields(child) for child in value]
+    return value
 
 
 def extract_text(api_payload: dict[str, Any]) -> str:
@@ -103,7 +110,7 @@ def parse_json_response(raw: str) -> dict[str, Any]:
     return parsed
 
 
-def validate_review(review: dict[str, Any]) -> dict[str, Any]:
+def validate_review(review: dict[str, Any], *, source_lineage_complete: bool, changed_axis_count: int) -> dict[str, Any]:
     decision = review.get("decision")
     blockers = review.get("blocker_codes")
     if decision not in ALLOWED_DECISIONS:
@@ -118,27 +125,67 @@ def validate_review(review: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("HOLD_WORKERS_AI_OVERFIT_INVALID")
     if not isinstance(review.get("reason"), str) or not review["reason"].strip():
         raise ValueError("HOLD_WORKERS_AI_REASON_INVALID")
+    if source_lineage_complete and "MISSING_LINEAGE" in blockers:
+        raise ValueError("HOLD_WORKERS_AI_CONTRADICTORY_MISSING_LINEAGE")
+    if not source_lineage_complete and (decision != "HOLD" or "MISSING_LINEAGE" not in blockers):
+        raise ValueError("HOLD_WORKERS_AI_FAIL_CLOSED_LINEAGE_REQUIRED")
+    if changed_axis_count == 1 and decision == "PASS_TO_REPLAY" and review.get("single_axis") is not True:
+        raise ValueError("HOLD_WORKERS_AI_PASS_WITH_SINGLE_AXIS_FALSE")
+    if changed_axis_count != 1 and decision == "PASS_TO_REPLAY":
+        raise ValueError("HOLD_WORKERS_AI_PASS_WITH_MULTI_AXIS_INPUT")
+    if decision == "PASS_TO_REPLAY" and blockers:
+        raise ValueError("HOLD_WORKERS_AI_PASS_WITH_BLOCKERS")
+    if decision in {"REJECT", "HOLD"} and not blockers:
+        raise ValueError("HOLD_WORKERS_AI_NONPASS_WITHOUT_BLOCKER")
     return review
 
 
 def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[str, Any], timeout: int) -> tuple[dict[str, Any], int, str]:
     assert_anonymized(payload)
+    semantic_payload = strip_authority_fields(payload)
+    source_lineage_complete = bool(semantic_payload.get("lineage_complete"))
+    changed_axes = semantic_payload.get("changed_axes", [])
+    changed_axis_count = len(changed_axes) if isinstance(changed_axes, list) else 0
+
+    deterministic_prompt = "STRATEGY11_WORKERS_AI_DETERMINISTIC_PREFLIGHT_V1"
+    if not source_lineage_complete:
+        review = {
+            "decision": "HOLD",
+            "blocker_codes": ["MISSING_LINEAGE"],
+            "single_axis": changed_axis_count == 1,
+            "lineage_complete": False,
+            "overfit_risk": "HIGH",
+            "reason": "Complete lineage is required before any external semantic review or replay.",
+        }
+        return review, 0, sha256_text(deterministic_prompt + ":MISSING_LINEAGE")
+    if changed_axis_count != 1:
+        review = {
+            "decision": "REJECT",
+            "blocker_codes": ["MULTI_AXIS" if changed_axis_count > 1 else "AXIS_MISSING"],
+            "single_axis": False,
+            "lineage_complete": True,
+            "overfit_risk": "HIGH",
+            "reason": "Exactly one causal axis is required for isolated replay eligibility.",
+        }
+        return review, 0, sha256_text(deterministic_prompt + ":AXIS_COUNT")
+
     system_prompt = (
-        "You are an independent fail-closed research artifact guard. Return JSON only. "
+        "You are an independent fail-closed guard for eligibility to run a deterministic OFFLINE research replay. "
+        "This is not permission for promotion, live execution, positions, orders, or capital use. Return JSON only. "
         "Required schema: {\"decision\":\"PASS_TO_REPLAY|REJECT|HOLD\","
         "\"blocker_codes\":[\"CODE\"],\"single_axis\":true,"
         "\"lineage_complete\":true,\"overfit_risk\":\"LOW|MEDIUM|HIGH\","
         "\"reason\":\"one concise sentence\"}. "
-        "Mandatory rules: if lineage_complete in the supplied artifact is false, decision MUST be HOLD "
-        "and blocker_codes MUST contain MISSING_LINEAGE. Reject or hold multi-axis, duplicate-axis, "
-        "unsupported, trade-deletion-driven, low-sample, or authority-unsafe proposals. "
-        "Never grant promotion or execution authority."
+        "Judge only: duplicate axis, evidence support, bounded generation, retention safety, and overfit risk. "
+        "The input has already passed deterministic checks for complete lineage and exactly one changed axis. "
+        "Mandatory authority restrictions are enforced outside this payload and must never be treated as blockers. "
+        "Do not emit MISSING_LINEAGE or MULTI_AXIS for this prevalidated input. PASS_TO_REPLAY means only that "
+        "deterministic replay may test the hypothesis; it never means the strategy passes."
     )
-    input_text = canonical_json(payload)
     request_body = {
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": input_text},
+            {"role": "user", "content": canonical_json(semantic_payload)},
         ],
         "temperature": 0,
         "max_tokens": 400,
@@ -150,7 +197,7 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": "Strategy11-WorkersAI-Guard/1.0",
+            "User-Agent": "Strategy11-WorkersAI-Guard/1.2",
         },
         method="POST",
     )
@@ -167,10 +214,12 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
     api_payload = json.loads(response_bytes.decode("utf-8"))
     if api_payload.get("success") is not True:
         raise RuntimeError("HOLD_WORKERS_AI_API_FAILURE:" + canonical_json(api_payload.get("errors", []))[:1200])
-    raw_text = extract_text(api_payload)
-    review = validate_review(parse_json_response(raw_text))
-    prompt_sha = sha256_text(system_prompt)
-    return review, latency_ms, prompt_sha
+    review = validate_review(
+        parse_json_response(extract_text(api_payload)),
+        source_lineage_complete=True,
+        changed_axis_count=1,
+    )
+    return review, latency_ms, sha256_text(system_prompt)
 
 
 def default_fixture() -> dict[str, Any]:
@@ -204,7 +253,7 @@ def main() -> int:
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     token = os.environ.get("CLOUDFLARE_WORKERS_AI_TOKEN", "").strip()
     base_artifact: dict[str, Any] = {
-        "version": "STRATEGY11_WORKERS_AI_GUARD_V1",
+        "version": "STRATEGY11_WORKERS_AI_GUARD_V1_2",
         "provider": "cloudflare_workers_ai",
         "model": args.model,
         "research_only": True,
@@ -226,6 +275,7 @@ def main() -> int:
         if not isinstance(payload, dict):
             raise RuntimeError("HOLD_WORKERS_AI_INPUT_NOT_OBJECT")
         assert_anonymized(payload)
+        semantic_payload = strip_authority_fields(payload)
         review, latency_ms, prompt_sha = call_workers_ai(
             account_id=account_id,
             token=token,
@@ -238,6 +288,9 @@ def main() -> int:
             "status": "PASS_WORKERS_AI_CONNECTION",
             "blocker_code": None,
             "input_sha": sha256_text(canonical_json(payload)),
+            "review_input_sha": sha256_text(canonical_json(semantic_payload)),
+            "authority_fields_stripped": True,
+            "model_called": latency_ms > 0,
             "prompt_sha": prompt_sha,
             "response_sha": sha256_text(canonical_json(review)),
             "account_id_sha": sha256_text(account_id),
@@ -249,7 +302,7 @@ def main() -> int:
         print(f"workers_ai_model={args.model}")
         print(f"workers_ai_latency_ms={latency_ms}")
         return 0
-    except Exception as exc:  # fail closed and still emit diagnostic artifact
+    except Exception as exc:
         blocker = str(exc)
         artifact = {
             **base_artifact,

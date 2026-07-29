@@ -17,7 +17,7 @@ SAFETY = {
     "order_authority": "BLOCKED",
     "runtime_bound": False,
 }
-VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1_1"
+VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1_2"
 
 
 def proposal(strategy_id: str, candidate_id: str, axis: str) -> dict[str, Any]:
@@ -115,7 +115,7 @@ def write_completed_replay(root: Path) -> None:
         **SAFETY,
     }
     candidate = {
-        "candidate_config": {"candidate_id": candidate_id, "axis": "MFE_TRAILING"},
+        "candidate_config": {"strategy_id": strategy_id, "candidate_id": candidate_id, "axis": "MFE_TRAILING"},
         "parity": {"state": "PASS", "duplicate_trade_count": 0},
         "ladder_check": {"research_pass": False},
         **SAFETY,

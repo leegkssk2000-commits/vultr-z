@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-V1 = Path("scripts/strategy11_ai_review_router.py")
+V1 = Path(__file__).resolve().with_name("strategy11_ai_review_router.py")
 PRE_REPLAY_STAGES = {"PRE_W1_INTERNAL_REPLAY", "PRE_REPLAY_EXTERNAL_HYPOTHESIS"}
 SAFETY = {
     "research_only": True,

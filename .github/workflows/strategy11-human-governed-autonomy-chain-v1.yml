@@ -1,0 +1,87 @@
+name: Strategy11 Human Governed Autonomy Chain V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/strategy11_human_governed_autonomy_chain_fixture_v1.py
+      - .github/workflows/strategy11-human-governed-autonomy-chain-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-human-governed-autonomy-chain-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  human-governed-autonomy-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir numpy
+      - name: Compile integrated chain fixture
+        run: python -m py_compile backend/tools/strategy11_human_governed_autonomy_chain_fixture_v1.py
+      - name: Run full source-bound autonomy chain
+        run: |
+          python backend/tools/strategy11_human_governed_autonomy_chain_fixture_v1.py \
+            --adaptive-policy backend/research/strategy11_adaptive_execution_fixture_policy_v1.json \
+            --self-healing-policy backend/research/strategy11_self_healing_fixture_policy_v1.json \
+            --digital-twin-policy backend/research/strategy11_market_digital_twin_resilience_fixture_policy_v2.json \
+            --human-policy backend/research/strategy11_human_governed_capital_fixture_policy_v1.json \
+            --out artifacts/strategy11_human_governed_autonomy_chain_v1
+      - name: Assert normal and risk paths remain fail closed
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_human_governed_autonomy_chain_v1/summary.json').read_text())
+          normal=d['normal_path']
+          risk=d['risk_path']
+          assert d['state']=='PASS_HUMAN_GOVERNED_AUTONOMY_CHAIN_FIXTURE'
+          assert d['stage_count']==5
+          assert normal['adaptive_state']=='PASS_ADAPTIVE_EXECUTION_PREVIEW'
+          assert normal['self_healing_state']=='PASS_SELF_HEALING_OBSERVER'
+          assert normal['champion_state']=='PASS_SOURCE_BOUND_CHAIN_E2E_FIXTURE'
+          assert normal['digital_twin_capital_gate']=='PASS_DIGITAL_TWIN_RISK_ENVELOPE'
+          assert normal['human_state']=='PASS_HUMAN_GOVERNANCE_PREFLIGHT'
+          assert normal['human_action']=='hold'
+          assert normal['live_activation_allowed'] is False
+          assert normal['external_manual_enable_required'] is True
+          assert risk['digital_twin_capital_gate']=='HOLD_DIGITAL_TWIN_RISK_EXPOSED'
+          assert risk['human_state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert risk['human_action']=='block'
+          assert risk['human_blockers']==['DIGITAL_TWIN_CAPITAL_GATE:HOLD_DIGITAL_TWIN_RISK_EXPOSED']
+          assert len(d['stage_shas'])==7
+          assert d['fixture_only'] is True
+          assert d['production_threshold_authority'] is False
+          assert d['real_w1_candidate_consumed'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          assert d['live_activation_allowed'] is False
+          assert d['order_submission_allowed'] is False
+          assert d['capital_allocation_execute_allowed'] is False
+          assert d['external_manual_enable_required'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-human-governed-autonomy-chain-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_human_governed_autonomy_chain_v1
+          if-no-files-found: error
+          retention-days: 90

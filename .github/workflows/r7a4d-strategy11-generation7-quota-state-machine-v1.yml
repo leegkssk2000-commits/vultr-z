@@ -9,6 +9,10 @@ on:
       - scripts/strategy11_ai_review_router_v3_1.py
       - backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1.py
       - backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py
+      - backend/research/strategy11_trade_path_enricher_v1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json
       - .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml
   schedule:
     - cron: '30 7 * * *'
@@ -74,7 +78,14 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$latest_id/zip" > /tmp/latest-state.zip
             unzip -qo /tmp/latest-state.zip -d input/prior/latest
           fi
-          if find input/prior/latest -name replay_completion.json -type f | grep -q .; then
+          completion="$(find input/prior/latest -name replay_completion.json -type f | head -n 1 || true)"
+          if [ -n "$completion" ] && COMPLETION="$completion" python - <<'PY'
+          import json,os
+          d=json.load(open(os.environ['COMPLETION']))
+          assert d.get('state')=='PASS_GENERATION7_QUOTA_STATE_MACHINE_PATH_LOOP_COMPLETE'
+          assert d.get('path_index_sha') and d.get('path_plan_sha')
+          PY
+          then
             echo 'complete=true' >> "$GITHUB_OUTPUT"
           else
             echo 'complete=false' >> "$GITHUB_OUTPUT"
@@ -164,7 +175,24 @@ jobs:
           cp state/out/filter/search_ledger.json state/final/search_ledger.json
           cp state/out/filter/ai_manifest.json state/final/ai_manifest.json
           cp state/out/filter/cause_analysis.json state/final/cause_analysis.json
-      - name: Assert final replay authority and write completion seal
+      - name: Build source-bound trade-path evidence
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        run: |
+          python backend/research/strategy11_trade_path_enricher_v1.py \
+            --replay-root state/replay \
+            --fresh-root input/fresh \
+            --out state/final/path_evidence
+      - name: Plan next isolated path-derived causal axis
+        if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
+        run: |
+          python backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py \
+            --path-index state/final/path_evidence/index.json \
+            --path-root state/final/path_evidence \
+            --triage state/final/source_bound_triage/triage.json \
+            --search-ledger state/final/search_ledger.json \
+            --policy backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json \
+            --out state/final/pre_shadow_path_plan.json
+      - name: Assert final replay, path evidence and planning authority
         if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
         run: |
           python - <<'PY'
@@ -173,23 +201,44 @@ jobs:
           final=json.load(open('state/final/final.json'))
           triage=json.load(open('state/final/source_bound_triage/triage.json'))
           ai=json.load(open('state/final/ai_manifest.json'))
+          path_index=json.load(open('state/final/path_evidence/index.json'))
+          path_plan=json.load(open('state/final/pre_shadow_path_plan.json'))
           assert final['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE'
           assert ai['all_candidates_final'] is True and ai['wait_quota_count']==0
           assert triage['state']=='PASS_SOURCE_BOUND_REPLAY_TRIAGE'
           assert triage['strategy_count']==final['strategy_count']
           assert triage['duplicate_strategy_axis_config_data_count']==0
-          for payload in (final,triage,ai):
+          assert path_index['state']=='PASS_TRADE_PATH_EVIDENCE_INDEX'
+          assert path_index['hold_bundle_count']==0
+          assert path_plan['state'] in {'PASS_PRE_SHADOW_PATH_OPTIMIZE_BATCH_PLAN','WAIT_NEW_PATH_EVIDENCE'}
+          assert path_plan['triage_strategy_subset_of_ledger'] is True
+          assert path_plan['unreplayed_strategies_untouched'] is True
+          assert path_plan['single_axis_per_strategy'] is True
+          assert path_plan['automatic_replay_start_allowed'] is False
+          assert path_plan['ml_light_consumed'] is False
+          assert path_plan['failure_learning_consumed'] is False
+          assert path_plan['runtime_bridge_allowed'] is False
+          for payload in (final,triage,ai,path_index,path_plan):
               assert payload['promotion_authority'] is False
               assert payload['protected_mutations']==0
               assert payload['execution_allowed'] is False
               assert payload['order_authority']=='BLOCKED'
-          raw=json.dumps({'final':final.get('final_sha256'),'triage':triage['triage_sha'],'ai':ai['state_sha']},sort_keys=True,separators=(',',':')).encode()
+          raw=json.dumps({
+              'final':final.get('final_sha256'),
+              'triage':triage['triage_sha'],
+              'ai':ai['state_sha'],
+              'path_index':path_index['index_sha'],
+              'path_plan':path_plan['plan_sha'],
+          },sort_keys=True,separators=(',',':')).encode()
           completion={
-              'state':'PASS_GENERATION7_QUOTA_STATE_MACHINE_COMPLETE',
+              'state':'PASS_GENERATION7_QUOTA_STATE_MACHINE_PATH_LOOP_COMPLETE',
               'run_id':'${{ github.run_id }}',
               'final_sha':final.get('final_sha256'),
               'triage_sha':triage['triage_sha'],
               'ai_state_sha':ai['state_sha'],
+              'path_index_sha':path_index['index_sha'],
+              'path_plan_sha':path_plan['plan_sha'],
+              'path_candidate_count':path_plan['candidate_count'],
               'completion_sha':hashlib.sha256(raw).hexdigest(),
               'research_only':True,
               'promotion_authority':False,
@@ -199,7 +248,7 @@ jobs:
               'runtime_bound':False,
           }
           Path('state/replay_completion.json').write_text(json.dumps(completion,indent=2,sort_keys=True)+'\n')
-          print(completion['state'])
+          print(completion['state'], 'path_candidates=', completion['path_candidate_count'])
           PY
       - name: Assert WAIT_QUOTA is non-failure and bounded
         if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready != 'true'

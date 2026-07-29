@@ -1,0 +1,68 @@
+name: R7A4D Strategy11 Alpha Overfit Sentinel V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-alpha-multiobjective-auto-v1-clean
+    paths:
+      - backend/tools/r7a4d_strategy11_alpha_overfit_sentinel_v1.py
+      - .github/workflows/r7a4d-strategy11-alpha-overfit-sentinel-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-overfit-sentinel-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sentinel:
+    name: one-shot overfit and rollback sentinel
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - name: Download alpha multiobjective authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+          path: input/alpha
+          github-token: ${{ github.token }}
+          run-id: 30345463070
+      - name: Compile sentinel
+        run: python -m py_compile backend/tools/r7a4d_strategy11_alpha_overfit_sentinel_v1.py
+      - name: Run one-shot sentinel
+        run: |
+          python backend/tools/r7a4d_strategy11_alpha_overfit_sentinel_v1.py \
+            --artifact-root input/alpha \
+            --iterations 5000 \
+            --out out
+      - name: Assert diagnostic-only safety and terminal route
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('out/alpha_overfit_sentinel.json'))
+          assert d['state'] in {'PASS_ALPHA_OVERFIT_SENTINEL_ROBUST_PLATEAU','HOLD_ALPHA_OVERFIT_SENTINEL_FRAGILE'}
+          assert d['diagnostic_only'] is True and d['new_candidate_created'] is False
+          assert d['generation_budget_consumed'] is False
+          assert d['decision']['retain_incumbent'] is True
+          assert d['decision']['next']=='ALPHA_W1_MULTIOBJECTIVE_CONFIRMATION'
+          assert d['decision']['further_same_dataset_parameter_search']=='FORBIDDEN'
+          assert d['research_only'] is True and d['promotion_authority'] is False
+          assert d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          assert d['canonical_mutated'] is False and d['registry_mutated'] is False and d['sealed_holdback_read'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-alpha-overfit-sentinel-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

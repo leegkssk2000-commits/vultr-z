@@ -1,0 +1,133 @@
+name: R7A4D Strategy11 Generation7 Production Audit 20260729
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/r7a4d-strategy11-generation7-production-audit-20260729.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-generation7-production-audit-20260729
+  cancel-in-progress: false
+
+env:
+  REQUIRED_MASTER_SHA: '4262678c8e82ec4dbed3651b7f5782971fcc3e95'
+  PRODUCTION_WORKFLOW: 'r7a4d-strategy11-generation7-quota-state-machine-v1.yml'
+  ARTIFACT_PREFIX: 's11-generation7-quota-state-v1-'
+
+jobs:
+  audit-production-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Resolve exact production run and wait for completion
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p audit
+          run_id=''
+          for attempt in $(seq 1 30); do
+            run_id="$(
+              gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PRODUCTION_WORKFLOW/runs?branch=master&event=push&per_page=50" \
+                --jq ".workflow_runs[] | select(.head_sha==\"$REQUIRED_MASTER_SHA\") | .id" \
+                | head -n 1
+            )"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 20
+          done
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .status)"
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion // ""')"
+            echo "run_id=$run_id status=$status conclusion=${conclusion:-none}"
+            if [ "$status" = completed ]; then break; fi
+            sleep 30
+          done
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .status)"
+          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion // ""')"
+          test "$status" = completed
+          printf '%s\n' "$conclusion" > audit/conclusion.txt
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" > audit/jobs.json
+          test "$conclusion" = success
+      - name: Download and validate cumulative state artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.resolve.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+              --jq ".artifacts[] | select(.expired==false and (.name|startswith(\"$ARTIFACT_PREFIX\"))) | .id" \
+              | head -n 1
+          )"
+          test -n "$artifact_id"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/state.zip
+          unzip -qo /tmp/state.zip -d audit/state
+          RUN_ID="$RUN_ID" ARTIFACT_ID="$artifact_id" python - <<'PY'
+          import json,hashlib,os
+          from pathlib import Path
+          root=Path('audit/state')
+          safety={
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED',
+          }
+          def read_one(name):
+            rows=list(root.rglob(name))
+            return (rows[0],json.loads(rows[0].read_text())) if rows else (None,None)
+          completion_path,completion=read_one('replay_completion.json')
+          manifest_path,manifest=read_one('ai_manifest.json')
+          reservation_path,reservation=read_one('quota_epoch_reservation.json')
+          if completion:
+            assert completion['state']=='PASS_GENERATION7_QUOTA_STATE_MACHINE_PATH_LOOP_COMPLETE'
+            payload=completion
+            authority='PATH_LOOP_COMPLETE'
+          elif manifest:
+            assert manifest['state'] in {'WAIT_GENERATION7_AI_QUOTA','PASS_GENERATION7_AI_REVIEW_COMPLETE'}
+            assert manifest['all_candidates_final'] is False or manifest['wait_quota_count']==0
+            assert 0 <= manifest['quota_epoch_candidates_used'] <= 10
+            assert manifest['quota_epoch_candidates_remaining'] >= 0
+            assert manifest.get('quota_epoch_reservation_sha')
+            assert reservation and reservation['reservation_sha']==manifest['quota_epoch_reservation_sha']
+            payload=manifest
+            authority=manifest['state']
+          else:
+            raise AssertionError('NO_COMPLETION_OR_AI_MANIFEST')
+          for key,value in safety.items():
+            assert payload[key]==value,(key,payload.get(key),value)
+          summary={
+            'state':'PASS_GENERATION7_PRODUCTION_RUN_AUDIT',
+            'required_master_sha':os.environ.get('REQUIRED_MASTER_SHA'),
+            'run_id':os.environ['RUN_ID'],
+            'artifact_id':os.environ['ARTIFACT_ID'],
+            'authority_state':authority,
+            'completion_present':completion is not None,
+            'manifest_present':manifest is not None,
+            'reservation_present':reservation is not None,
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED',
+            'runtime_bound':False,
+          }
+          summary['audit_sha']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('audit/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(summary['state'],summary['authority_state'],summary['run_id'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-generation7-production-audit-20260729-${{ github.run_id }}
+          path: audit
+          if-no-files-found: error
+          retention-days: 30

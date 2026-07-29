@@ -3,8 +3,9 @@
 
 The provider evaluates eligibility for deterministic offline replay only. It
 never grants promotion, live execution or order authority. Mandatory authority
-safety fields are validated locally and stripped from the semantic model input
-so they cannot be misread as a reason to reject offline replay.
+safety fields are validated locally and stripped from the semantic model input.
+Missing lineage and multi-axis inputs are rejected deterministically before any
+external call.
 """
 from __future__ import annotations
 
@@ -59,7 +60,6 @@ def assert_anonymized(value: Any, path: str = "root") -> None:
 
 
 def strip_authority_fields(value: Any) -> Any:
-    """Remove locally-enforced authority fields from the semantic AI payload."""
     if isinstance(value, dict):
         return {
             key: strip_authority_fields(child)
@@ -125,7 +125,6 @@ def validate_review(review: dict[str, Any], *, source_lineage_complete: bool, ch
         raise ValueError("HOLD_WORKERS_AI_OVERFIT_INVALID")
     if not isinstance(review.get("reason"), str) or not review["reason"].strip():
         raise ValueError("HOLD_WORKERS_AI_REASON_INVALID")
-
     if source_lineage_complete and "MISSING_LINEAGE" in blockers:
         raise ValueError("HOLD_WORKERS_AI_CONTRADICTORY_MISSING_LINEAGE")
     if not source_lineage_complete and (decision != "HOLD" or "MISSING_LINEAGE" not in blockers):
@@ -148,6 +147,28 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
     changed_axes = semantic_payload.get("changed_axes", [])
     changed_axis_count = len(changed_axes) if isinstance(changed_axes, list) else 0
 
+    deterministic_prompt = "STRATEGY11_WORKERS_AI_DETERMINISTIC_PREFLIGHT_V1"
+    if not source_lineage_complete:
+        review = {
+            "decision": "HOLD",
+            "blocker_codes": ["MISSING_LINEAGE"],
+            "single_axis": changed_axis_count == 1,
+            "lineage_complete": False,
+            "overfit_risk": "HIGH",
+            "reason": "Complete lineage is required before any external semantic review or replay.",
+        }
+        return review, 0, sha256_text(deterministic_prompt + ":MISSING_LINEAGE")
+    if changed_axis_count != 1:
+        review = {
+            "decision": "REJECT",
+            "blocker_codes": ["MULTI_AXIS" if changed_axis_count > 1 else "AXIS_MISSING"],
+            "single_axis": False,
+            "lineage_complete": True,
+            "overfit_risk": "HIGH",
+            "reason": "Exactly one causal axis is required for isolated replay eligibility.",
+        }
+        return review, 0, sha256_text(deterministic_prompt + ":AXIS_COUNT")
+
     system_prompt = (
         "You are an independent fail-closed guard for eligibility to run a deterministic OFFLINE research replay. "
         "This is not permission for promotion, live execution, positions, orders, or capital use. Return JSON only. "
@@ -155,17 +176,16 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
         "\"blocker_codes\":[\"CODE\"],\"single_axis\":true,"
         "\"lineage_complete\":true,\"overfit_risk\":\"LOW|MEDIUM|HIGH\","
         "\"reason\":\"one concise sentence\"}. "
-        "Judge only: exactly one causal axis, complete lineage, no duplicate axis, evidence support, bounded generation, "
-        "retention safety, and overfit risk. Mandatory authority restrictions are enforced outside this payload and must "
-        "never be treated as blockers to offline replay. If supplied lineage_complete=true, do not emit MISSING_LINEAGE. "
-        "If changed_axes contains exactly one axis and no other blocker exists, single_axis should be true. "
-        "PASS_TO_REPLAY means only that deterministic replay may test the hypothesis; it never means the strategy passes."
+        "Judge only: duplicate axis, evidence support, bounded generation, retention safety, and overfit risk. "
+        "The input has already passed deterministic checks for complete lineage and exactly one changed axis. "
+        "Mandatory authority restrictions are enforced outside this payload and must never be treated as blockers. "
+        "Do not emit MISSING_LINEAGE or MULTI_AXIS for this prevalidated input. PASS_TO_REPLAY means only that "
+        "deterministic replay may test the hypothesis; it never means the strategy passes."
     )
-    input_text = canonical_json(semantic_payload)
     request_body = {
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": input_text},
+            {"role": "user", "content": canonical_json(semantic_payload)},
         ],
         "temperature": 0,
         "max_tokens": 400,
@@ -177,7 +197,7 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": "Strategy11-WorkersAI-Guard/1.1",
+            "User-Agent": "Strategy11-WorkersAI-Guard/1.2",
         },
         method="POST",
     )
@@ -194,14 +214,12 @@ def call_workers_ai(*, account_id: str, token: str, model: str, payload: dict[st
     api_payload = json.loads(response_bytes.decode("utf-8"))
     if api_payload.get("success") is not True:
         raise RuntimeError("HOLD_WORKERS_AI_API_FAILURE:" + canonical_json(api_payload.get("errors", []))[:1200])
-    raw_text = extract_text(api_payload)
     review = validate_review(
-        parse_json_response(raw_text),
-        source_lineage_complete=source_lineage_complete,
-        changed_axis_count=changed_axis_count,
+        parse_json_response(extract_text(api_payload)),
+        source_lineage_complete=True,
+        changed_axis_count=1,
     )
-    prompt_sha = sha256_text(system_prompt)
-    return review, latency_ms, prompt_sha
+    return review, latency_ms, sha256_text(system_prompt)
 
 
 def default_fixture() -> dict[str, Any]:
@@ -235,7 +253,7 @@ def main() -> int:
     account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     token = os.environ.get("CLOUDFLARE_WORKERS_AI_TOKEN", "").strip()
     base_artifact: dict[str, Any] = {
-        "version": "STRATEGY11_WORKERS_AI_GUARD_V1_1",
+        "version": "STRATEGY11_WORKERS_AI_GUARD_V1_2",
         "provider": "cloudflare_workers_ai",
         "model": args.model,
         "research_only": True,
@@ -272,6 +290,7 @@ def main() -> int:
             "input_sha": sha256_text(canonical_json(payload)),
             "review_input_sha": sha256_text(canonical_json(semantic_payload)),
             "authority_fields_stripped": True,
+            "model_called": latency_ms > 0,
             "prompt_sha": prompt_sha,
             "response_sha": sha256_text(canonical_json(review)),
             "account_id_sha": sha256_text(account_id),

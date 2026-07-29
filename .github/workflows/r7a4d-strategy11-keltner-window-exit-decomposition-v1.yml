@@ -1,0 +1,85 @@
+name: R7A4D Strategy11 Keltner Window Exit Decomposition V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_keltner_window_exit_decomposition_v1.py
+      - .github/workflows/r7a4d-strategy11-keltner-window-exit-decomposition-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30451796308'
+  SOURCE_ARTIFACT: 's11-keltner-channel-overshoot-repair-v1-30451796308-attempt-1'
+  SOURCE_ARTIFACT_DIGEST: 'sha256:c81227cffea983f7445e7deb234069a3be77ea7096744df8e118b8498e696882'
+
+concurrency:
+  group: r7a4d-strategy11-keltner-window-exit-decomposition-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  decompose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: input/source
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - name: Compile decomposition
+        run: python -m py_compile backend/tools/r7a4d_strategy11_keltner_window_exit_decomposition_v1.py
+      - name: Decompose window symbol exit and MFE clusters
+        run: |
+          python backend/tools/r7a4d_strategy11_keltner_window_exit_decomposition_v1.py \
+            --artifact-root input/source \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-artifact-digest "$SOURCE_ARTIFACT_DIGEST" \
+            --out artifacts/strategy11_keltner_window_exit_decomposition_v1
+      - name: Assert source binding and bounded next action
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_keltner_window_exit_decomposition_v1/final.json').read_text())
+          assert d['strategy_id']=='keltner_trend'
+          assert d['variant_id']=='CHANNEL_OVERSHOOT_DISTANCE'
+          assert d['state']=='HOLD_KELTNER_WINDOW_CONCENTRATION'
+          assert d['total']['trades']==16
+          assert d['clusters']['positive_windows']==['F1']
+          assert set(d['clusters']['negative_windows'])=={'F2','F3'}
+          assert d['clusters']['loss_count']==10
+          assert d['clusters']['losses_mfe_ge_0_50r']>=5
+          assert d['next_axis']=='MFE_TRAILING'
+          assert d['same_data_next_generation_budget']==1
+          assert d['candidate_count_max']==1
+          assert d['control_required'] is True
+          assert d['threshold_sweep_allowed'] is False
+          assert d['canonical_source_modified'] is False
+          assert d['registry_modified'] is False
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-keltner-window-exit-decomposition-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_keltner_window_exit_decomposition_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,84 @@
+name: Strategy11 Human Governed Capital Contract V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/contracts/strategy11_human_governed_capital_contract_v1.py
+      - backend/research/strategy11_human_governed_capital_fixture_policy_v1.json
+      - backend/tools/strategy11_human_governed_capital_fixture_v1.py
+      - .github/workflows/strategy11-human-governed-capital-contract-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-human-governed-capital-contract-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  human-governed-capital-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile contract and fixtures
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_human_governed_capital_contract_v1.py \
+            backend/tools/strategy11_human_governed_capital_fixture_v1.py
+      - name: Run deterministic human-governed fixtures
+        run: |
+          python backend/tools/strategy11_human_governed_capital_fixture_v1.py \
+            --policy backend/research/strategy11_human_governed_capital_fixture_policy_v1.json \
+            --out artifacts/strategy11_human_governed_capital_contract_v1
+      - name: Assert human-only approval and closed Live boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_human_governed_capital_contract_v1/summary.json').read_text())
+          assert d['state']=='PASS_HUMAN_GOVERNED_CAPITAL_FIXTURES'
+          assert d['case_count']==10
+          assert d['missing_approval_hold']['state']=='HOLD_HUMAN_GOVERNANCE_PREFLIGHT'
+          assert d['valid_human_preflight']['state']=='PASS_HUMAN_GOVERNANCE_PREFLIGHT'
+          assert d['valid_human_preflight']['action']=='hold'
+          assert d['valid_human_preflight']['live_activation_allowed'] is False
+          assert d['valid_human_preflight']['external_manual_enable_required'] is True
+          assert d['ai_approval_block']['state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert d['expired_approval_block']['state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert d['kill_switch_block']['state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert d['digital_twin_risk_block']['state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert d['capital_limit_block']['state']=='BLOCK_HUMAN_GOVERNED_CAPITAL'
+          assert d['canary_sequence_hold']['state']=='HOLD_HUMAN_GOVERNANCE_PREFLIGHT'
+          assert len(d['negative_cases'])==2
+          assert d['runtime_activation_allowed'] is False
+          assert d['live_activation_allowed'] is False
+          assert d['order_submission_allowed'] is False
+          assert d['capital_allocation_execute_allowed'] is False
+          assert d['external_manual_enable_required'] is True
+          assert d['ai_approval_authority'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-human-governed-capital-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_human_governed_capital_contract_v1
+          if-no-files-found: error
+          retention-days: 90

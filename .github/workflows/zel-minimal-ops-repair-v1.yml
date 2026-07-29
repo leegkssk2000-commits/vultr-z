@@ -5,7 +5,6 @@ on:
     branches:
       - zel-ops-findings-adjudication-v1
     paths:
-      - backend/tools/zel_active_backend_dependency_lock_v1.py
       - .github/workflows/zel-minimal-ops-repair-v1.yml
   workflow_dispatch:
 
@@ -13,13 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-minimal-ops-repair-v1
+  group: zel-minimal-ops-repair-v1-postverify
   cancel-in-progress: false
 
 jobs:
-  repair:
+  verify-repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,188 +29,66 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
-          test -n "$VPS_SSH_KEY"
-          test -n "$VPS_HOST"
           mkdir -p ~/.ssh out
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
-      - name: Apply exact rollback-safe repair
+      - name: Verify frozen repair state read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          REPAIR_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test -n "$VPS_USER"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            "REPAIR_RUN_ID='$REPAIR_RUN_ID' python3 -" > out/repair.json <<'PY'
-          import hashlib,json,os,re,shutil,subprocess,time,urllib.request
+            "python3 -" > out/repair_postverify.json <<'PY'
+          import hashlib,json,subprocess,urllib.request
           from pathlib import Path
-
-          EXPECTED={
-            '/etc/systemd/system/z-backend.service':'37ec44b2d08274b03185b95fd47efcb729c7f9f67579a77aefb6951671a7f741',
-            '/etc/systemd/system/z-chat.service':'b20841262e12db29a413a2daf31ef8fb0e5630b021f2bef36fda2bf3ff2a123b',
-            '/etc/systemd/system/z-chat-backup.service':'66cf7b23ccb16378096231fd525c476ce0aeb8f2b68507fc102d6c9c1f8f438f',
-            '/etc/systemd/system/z-chat-backup.timer':'50d29721adc3bb4969c87f424aacab41591a8e69e6bbec832f4bc379ea9ef89d',
-            '/etc/systemd/system/zel-q4r3-surface-writer-single-owner.service':'4461a8c6d0a428dec0b075a193ee05be5c0d1fa8f54484db3de112663f885106',
-            '/etc/systemd/system/zel-q4r3-surface-writer-single-owner.timer':'5ff78fec788085a319b72ba83d57b6ee0ac9eb38c6b860cf8c929cd6bcc28b43',
-          }
-          CHAT_UNITS=('z-chat.service','z-chat-backup.service','z-chat-backup.timer')
-          SURFACE_TIMER='zel-q4r3-surface-writer-single-owner.timer'
-          SURFACE_SERVICE='zel-q4r3-surface-writer-single-owner.service'
-          SAFETY={'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
-
-          def run(args,check=False,timeout=30):
-              p=subprocess.run(args,text=True,capture_output=True,check=False,timeout=timeout)
-              if check and p.returncode:
-                  raise RuntimeError(f"COMMAND_FAIL:{args[0]}:{args[1] if len(args)>1 else ''}:{p.returncode}")
-              return p
-
-          def sha(path):
-              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-          def active(unit):
-              return run(['systemctl','is-active',unit]).stdout.strip()
-
-          def enabled(unit):
-              return run(['systemctl','is-enabled',unit]).stdout.strip()
-
+          EXPECTED_TIMER_SHA='c12b44ce1a3d9756396e83d1c99847d0d3e837a58ceb5bd9771e2aa2838c4d38'
+          def run(args):
+              return subprocess.run(args,text=True,capture_output=True,check=False,timeout=20)
+          def active(unit): return run(['systemctl','is-active',unit]).stdout.strip()
+          def enabled(unit): return run(['systemctl','is-enabled',unit]).stdout.strip()
           def show(unit):
-              p=run(['systemctl','show',unit,'--property=ActiveState','--property=SubState','--property=Result','--property=ExecMainStatus','--property=NRestarts','--property=UnitFileState','--no-pager'])
-              row={}
-              for line in p.stdout.splitlines():
-                  if '=' in line:
-                      k,v=line.split('=',1); row[k]=v
-              return row
-
-          run_id=os.environ.get('REPAIR_RUN_ID','local')
-          rollback=Path('/home/z/z/runtime/ops_repair_v1')/run_id
-          rollback.mkdir(parents=True,exist_ok=False)
-          before={'unit_states':{},'hashes':{},'script_presence':{},'writer_processes':[]}
-          changed=False
-
-          for raw,want in EXPECTED.items():
-              path=Path(raw)
-              if not path.is_file(): raise RuntimeError(f'PRECONDITION_MISSING_UNIT:{raw}')
-              got=sha(path); before['hashes'][raw]=got
-              if got!=want: raise RuntimeError(f'PRECONDITION_SHA_MISMATCH:{raw}:{got}')
-              shutil.copy2(path,rollback/path.name)
-          for unit in CHAT_UNITS+(SURFACE_TIMER,SURFACE_SERVICE,'z-backend.service'):
-              before['unit_states'][unit]={'active':active(unit),'enabled':enabled(unit),'show':show(unit)}
-          for script in ('/home/z/z/scripts/ops/z_chat_proxy.py','/home/z/z/scripts/ops/chat_backup.py'):
-              before['script_presence'][script]=Path(script).exists()
-              if Path(script).exists(): raise RuntimeError(f'PRECONDITION_CHAT_SCRIPT_REAPPEARED:{script}')
-
-          ps=run(['ps','-eo','pid=,args=']).stdout.splitlines()
-          before['writer_processes']=[line.strip() for line in ps if 'q4r3_exact25_dedicated_shadow_producer.py' in line or 'q4r3_exact25_persistent_single_event_writer.py' in line]
-          if len(before['writer_processes'])<2: raise RuntimeError('PRECONDITION_ACTIVE_WRITERS_MISSING')
-          if active('z-backend.service')!='active': raise RuntimeError('PRECONDITION_BACKEND_NOT_ACTIVE')
-
-          (rollback/'before.json').write_text(json.dumps(before,indent=2,sort_keys=True)+'\n')
-
-          def rollback_all(reason):
-              errors=[]
-              try:
-                  for raw in EXPECTED:
-                      backup=rollback/Path(raw).name
-                      if backup.is_file(): shutil.copy2(backup,raw)
-                  run(['systemctl','daemon-reload'],check=True)
-                  for unit,state in before['unit_states'].items():
-                      if state['enabled']=='enabled': run(['systemctl','enable',unit])
-                      elif state['enabled']=='disabled': run(['systemctl','disable',unit])
-                  for unit,state in before['unit_states'].items():
-                      if state['active'] in {'active','activating'}: run(['systemctl','start',unit])
-                      else: run(['systemctl','stop',unit])
-              except Exception as exc:
-                  errors.append(type(exc).__name__)
-              result={'state':'ROLLBACK_COMPLETED' if not errors else 'ROLLBACK_INCOMPLETE','reason':reason,'rollback_errors':errors,'rollback_dir':str(rollback),'service_changed':changed,'process_changed':changed,'database_changed':False,'deployment_changed':False,**SAFETY}
-              (rollback/'result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-              print(json.dumps(result,sort_keys=True))
-              raise SystemExit(1)
-
-          try:
-              # Remove two confirmed restart storms and their dead backup trigger; unit files remain for rollback/audit.
-              for unit in CHAT_UNITS:
-                  run(['systemctl','stop',unit])
-                  run(['systemctl','disable',unit])
-              changed=True
-
-              # Preserve the single-owner surface writer and change only the pathological one-second cadence.
-              timer_path=Path('/etc/systemd/system')/SURFACE_TIMER
-              text=timer_path.read_text()
-              if text.count('OnUnitActiveSec=1')!=1:
-                  raise RuntimeError('SURFACE_TIMER_EXACT_CADENCE_NOT_FOUND')
-              new=text.replace('OnUnitActiveSec=1','OnUnitActiveSec=5s',1)
-              new=new.replace('every 1 second','every 5 seconds',1)
-              temp=timer_path.with_suffix('.timer.new')
-              temp.write_text(new)
-              os.chmod(temp,timer_path.stat().st_mode)
-              os.replace(temp,timer_path)
-
-              run(['systemctl','stop',SURFACE_TIMER])
-              run(['systemctl','daemon-reload'],check=True)
-              run(['systemctl','reset-failed',SURFACE_SERVICE])
-              run(['systemctl','enable',SURFACE_TIMER],check=True)
-              run(['systemctl','start',SURFACE_TIMER],check=True)
-              time.sleep(16)
-
-              after={
-                'unit_states':{unit:{'active':active(unit),'enabled':enabled(unit),'show':show(unit)} for unit in CHAT_UNITS+(SURFACE_TIMER,SURFACE_SERVICE,'z-backend.service')},
-                'surface_timer_sha256':sha(timer_path),
-                'writer_processes':[],
-                'openapi_operations':0,
-              }
-              ps=run(['ps','-eo','pid=,args=']).stdout.splitlines()
-              after['writer_processes']=[line.strip() for line in ps if 'q4r3_exact25_dedicated_shadow_producer.py' in line or 'q4r3_exact25_persistent_single_event_writer.py' in line]
-              doc=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=10))
-              after['openapi_operations']=sum(1 for row in doc.get('paths',{}).values() for method,op in row.items() if method.lower() in {'get','post','put','patch','delete','options','head'} and isinstance(op,dict))
-
-              checks={
-                'backend_active':after['unit_states']['z-backend.service']['active']=='active',
-                'chat_service_inactive_disabled':after['unit_states']['z-chat.service']['active']=='inactive' and after['unit_states']['z-chat.service']['enabled']=='disabled',
-                'chat_backup_inactive':after['unit_states']['z-chat-backup.service']['active']=='inactive',
-                'chat_backup_timer_inactive_disabled':after['unit_states']['z-chat-backup.timer']['active']=='inactive' and after['unit_states']['z-chat-backup.timer']['enabled']=='disabled',
-                'surface_timer_active_enabled':after['unit_states'][SURFACE_TIMER]['active']=='active' and after['unit_states'][SURFACE_TIMER]['enabled']=='enabled',
-                'surface_service_not_failed':after['unit_states'][SURFACE_SERVICE]['show'].get('ActiveState')!='failed' and after['unit_states'][SURFACE_SERVICE]['show'].get('Result')!='start-limit-hit',
-                'writers_preserved':len(after['writer_processes'])>=2,
-                'openapi_coherent':after['openapi_operations']>0,
-              }
-              if not all(checks.values()):
-                  raise RuntimeError('POSTCHECK_FAIL:'+','.join(k for k,v in checks.items() if not v))
-
-              result={'state':'PASS_MINIMAL_OPS_REPAIR','repair_run_id':run_id,'rollback_dir':str(rollback),'changes':['STOP_DISABLE_Z_CHAT_RESTART_STORM','STOP_DISABLE_Z_CHAT_BACKUP_AND_TIMER','SURFACE_WRITER_TIMER_1S_TO_5S'],'checks':checks,'before':before,'after':after,'service_changed':True,'process_changed':True,'database_changed':False,'deployment_changed':False,**SAFETY}
-              (rollback/'result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-              print(json.dumps(result,sort_keys=True))
-          except SystemExit:
-              raise
-          except Exception as exc:
-              rollback_all(str(exc))
+              p=run(['systemctl','show',unit,'--property=ActiveState','--property=Result','--property=ExecMainStatus','--no-pager'])
+              return dict(line.split('=',1) for line in p.stdout.splitlines() if '=' in line)
+          timer=Path('/etc/systemd/system/zel-q4r3-surface-writer-single-owner.timer')
+          timer_sha=hashlib.sha256(timer.read_bytes()).hexdigest() if timer.is_file() else None
+          ps=run(['ps','-eo','args=']).stdout.splitlines()
+          writers=[line for line in ps if 'q4r3_exact25_dedicated_shadow_producer.py' in line or 'q4r3_exact25_persistent_single_event_writer.py' in line]
+          doc=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=10))
+          operations=sum(1 for row in doc.get('paths',{}).values() for method,op in row.items() if method.lower() in {'get','post','put','patch','delete','options','head'} and isinstance(op,dict))
+          checks={
+            'backend_active':active('z-backend.service')=='active',
+            'chat_service_inactive_disabled':active('z-chat.service')=='inactive' and enabled('z-chat.service')=='disabled',
+            'chat_backup_inactive':active('z-chat-backup.service')=='inactive',
+            'chat_backup_timer_inactive_disabled':active('z-chat-backup.timer')=='inactive' and enabled('z-chat-backup.timer')=='disabled',
+            'surface_timer_sha_locked':timer_sha==EXPECTED_TIMER_SHA,
+            'surface_timer_active_enabled':active('zel-q4r3-surface-writer-single-owner.timer')=='active' and enabled('zel-q4r3-surface-writer-single-owner.timer')=='enabled',
+            'surface_service_healthy':show('zel-q4r3-surface-writer-single-owner.service').get('ActiveState')!='failed' and show('zel-q4r3-surface-writer-single-owner.service').get('Result')!='start-limit-hit',
+            'formal_writers_preserved':len(writers)>=2,
+            'openapi_coherent':operations>0,
+          }
+          result={'state':'PASS_MINIMAL_OPS_REPAIR_FROZEN' if all(checks.values()) else 'HOLD_MINIMAL_OPS_REPAIR_DRIFT','original_repair_run_id':'30409614436','rollback_dir':'/home/z/z/runtime/ops_repair_v1/30409614436','timer_sha256':timer_sha,'openapi_operations':operations,'writer_count':len(writers),'checks':checks,'service_changed':False,'process_changed':False,'database_changed':False,'deployment_changed':False,'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          print(json.dumps(result,sort_keys=True))
           PY
-
-      - name: Assert repair result and authority safety
+      - name: Assert repair remains frozen
         run: |
           python - <<'PY'
           import json
-          from pathlib import Path
-          d=json.loads(Path('out/repair.json').read_text())
-          assert d['state']=='PASS_MINIMAL_OPS_REPAIR',d
+          d=json.load(open('out/repair_postverify.json'))
+          assert d['state']=='PASS_MINIMAL_OPS_REPAIR_FROZEN',d
           assert all(d['checks'].values())
           assert d['protected_mutations']==0
           assert d['execution_allowed'] is False
           assert d['order_authority']=='BLOCKED'
-          assert d['database_changed'] is False
           PY
-
       - name: Remove SSH key
         if: always()
         run: rm -f ~/.ssh/vps_key
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-minimal-ops-repair-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: zel-minimal-ops-repair-postverify-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90

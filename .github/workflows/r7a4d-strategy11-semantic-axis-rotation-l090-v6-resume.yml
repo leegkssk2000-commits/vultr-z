@@ -1,0 +1,180 @@
+name: R7A4D Strategy11 Semantic Axis Rotation L090 V6 Resume
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v5
+    paths:
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v6-resume.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-semantic-axis-v6-resume-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  FILTER_RUN_ID: '30415114665'
+  FILTER_ARTIFACT: 's11-semantic-axis-v6-filtered-plan-30415114665'
+
+jobs:
+  replay:
+    name: replay accepted generation-seven candidates batch ${{ matrix.batch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: '1'
+            strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance'
+          - batch: '2'
+            strategies: 'keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal'
+          - batch: '3'
+            strategies: 'range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias'
+          - batch: '4'
+            strategies: 'squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider'
+          - batch: '5'
+            strategies: 'vol_spike_fade,vwap_revert'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Download authoritative filtered plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FILTER_ARTIFACT }}
+          path: input/filter-download
+          github-token: ${{ github.token }}
+          run-id: ${{ env.FILTER_RUN_ID }}
+      - name: Normalize filtered plan paths and assert authority
+        run: |
+          mkdir -p input/plan
+          cp "$(find input/filter-download -type f -name accepted_plan.json -print -quit)" input/plan/accepted_plan.json
+          cp "$(find input/filter-download -type f -name search_ledger.json -print -quit)" input/plan/search_ledger.json
+          cp "$(find input/filter-download -type f -name ai_manifest.json -print -quit)" input/plan/ai_manifest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('input/plan/accepted_plan.json').read_text())
+          l=json.loads(Path('input/plan/search_ledger.json').read_text())
+          a=json.loads(Path('input/plan/ai_manifest.json').read_text())
+          assert p['generation']==7 and p['strategy_count']==22
+          assert p['state']=='PASS_AI_FILTERED_SEMANTIC_AXIS_ROTATION_PLAN'
+          assert l['duplicate_strategy_axis_data_runs']==0
+          assert a['review_count']==44 and a['pass_count']>=22
+          assert p['promotion_authority'] is False and p['execution_allowed'] is False
+          assert p['order_authority']=='BLOCKED'
+          PY
+      - name: Download immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download immutable evidence batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for b in 1 2 3 4 5; do
+            gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${b}-30252022416-attempt-1" --dir "input/evidence/batch-${b}"
+          done
+      - name: Replay control and accepted candidates
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode replay --root . --plan input/plan/accepted_plan.json \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out/batch-${{ matrix.batch }}
+      - name: Assert parity, lineage and bounded candidates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for path in Path('out').rglob('summary.json'):
+              d=json.loads(path.read_text())
+              if d.get('strategy_id') and d.get('version')=='R7A4D_STRATEGY11_MULTIMODAL_L090_REPLAY_V1': rows.append(d)
+          assert rows
+          for d in rows:
+              count=len(d['tested_candidate_ids'])
+              assert 1<=count<=2 and len(d['variants'])==count+1
+              assert d['promotion_authority'] is False and d['protected_mutations']==0
+              assert d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+              for v in d['variants']:
+                  assert v['parity']['state']=='PASS'
+                  assert v['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v6-resume-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate authoritative generation-seven resume results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-semantic-axis-v6-resume-replay-*
+          path: input/replays
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FILTER_ARTIFACT }}
+          path: input/filter-download
+          github-token: ${{ github.token }}
+          run-id: ${{ env.FILTER_RUN_ID }}
+      - name: Aggregate and assert authority
+        run: |
+          mkdir -p input/plan out/final
+          cp "$(find input/filter-download -type f -name accepted_plan.json -print -quit)" input/plan/accepted_plan.json
+          cp "$(find input/filter-download -type f -name search_ledger.json -print -quit)" input/plan/search_ledger.json
+          cp "$(find input/filter-download -type f -name ai_manifest.json -print -quit)" input/plan/ai_manifest.json
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py --mode aggregate --replay-root input/replays --out out/final
+          cp input/plan/accepted_plan.json out/final/generation7_accepted_plan.json
+          cp input/plan/search_ledger.json out/final/search_ledger.json
+          cp input/plan/ai_manifest.json out/final/ai_manifest.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/final/final.json'))
+          l=json.load(open('out/final/search_ledger.json'))
+          a=json.load(open('out/final/ai_manifest.json'))
+          assert d['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE' and d['strategy_count']==22
+          assert len(d['active_l085_queue'])<=3 and l['duplicate_strategy_axis_data_runs']==0
+          assert a['review_count']==44 and a['pass_count']>=22
+          assert d['promotion_authority'] is False and d['protected_mutations']==0
+          assert d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-semantic-axis-v6-resume-final-${{ github.run_id }}
+          path: out/final
+          if-no-files-found: error
+          retention-days: 90

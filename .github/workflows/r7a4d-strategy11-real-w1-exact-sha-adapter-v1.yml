@@ -1,0 +1,99 @@
+name: R7A4D Strategy11 Real W1 Exact SHA Adapter V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_real_w1_exact_sha_adapter_v1.py
+      - backend/tools/r7a4d_strategy11_real_w1_exact_sha_adapter_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-real-w1-exact-sha-adapter-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-real-w1-exact-sha-adapter-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile adapter and fixtures
+        run: |
+          python -m py_compile backend/research/strategy11_real_w1_exact_sha_adapter_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_real_w1_exact_sha_adapter_fixture_v1.py
+          python -m py_compile backend/contracts/strategy11_source_binding_contract_v1.py
+          python -m py_compile backend/contracts/strategy11_strategy_proposal_contract_v1.py
+          python -m py_compile backend/research/strategy11_global_candidate_classifier_v1.py
+
+      - name: Run WAIT, W1-only and full-evidence lanes
+        run: python backend/tools/r7a4d_strategy11_real_w1_exact_sha_adapter_fixture_v1.py
+
+      - name: Assert exact-SHA state transitions
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('artifacts/strategy11_real_w1_exact_sha_adapter_v1')
+          row=json.loads((root/'summary.json').read_text())
+          assert row['state']=='PASS_REAL_W1_EXACT_SHA_ADAPTER_FIXTURES', row
+          assert row['wait_state']=='PASS_REAL_W1_EXACT_SHA_ADAPTER_WAIT_DATA'
+          assert row['wait_bars']=='43/480'
+          assert row['w1_only_adapter_state']=='PASS_REAL_W1_EXACT_SHA_SOURCE_BINDING'
+          assert row['w1_only_classification']=='HOLD'
+          assert 'all_nonoverlap_stages' in row['w1_only_failed_gates']
+          assert 'regime_coverage' in row['w1_only_failed_gates']
+          assert row['full_evidence_adapter_state']=='PASS_REAL_W1_EXACT_SHA_SOURCE_BINDING'
+          assert row['full_evidence_classification']=='CORE'
+          assert row['bound_group_count']==10
+          assert row['bound_field_count'] >= 300
+          assert set(row['negative_cases_passed'])=={
+              'MANIFEST_SHA_MISMATCH',
+              'INACTIVE_CANDIDATE',
+              'CONTEXT_SHA_TAMPER',
+              'RUN_ID_MISMATCH',
+          }
+          assert row['w1_performance_promoted'] is False
+          assert row['fixture_only'] is True
+          assert row['production_threshold_authority'] is False
+          assert row['runtime_bound'] is False
+          assert row['research_only'] is True
+          assert row['promotion_authority'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+
+          wait=json.loads((root/'wait.json').read_text())
+          assert wait['proposal_created'] is False
+          assert wait['bound_package_created'] is False
+
+          w1=json.loads((root/'w1_only_adapter.json').read_text())
+          assert w1['source_w1_manifest_sha']==row['shared_w1_manifest_sha']
+          assert w1['all_values_source_bound'] is True
+          assert w1['inference_used'] is False
+          assert w1['bound_package']['status']=='PASS_STRICT_SOURCE_BINDING'
+          PY
+
+      - name: Upload exact-SHA adapter artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-real-w1-exact-sha-adapter-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_real_w1_exact_sha_adapter_v1
+          if-no-files-found: error
+          retention-days: 90

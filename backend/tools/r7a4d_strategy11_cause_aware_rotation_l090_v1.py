@@ -353,6 +353,7 @@ def main() -> int:
         "axis_order": list(AXIS_ORDER),
         "rows": next_ledger,
         "duplicate_strategy_axis_data_runs": 0,
+        "protected_mutations": 0,
         "promotion_authority": False,
         "execution_allowed": False,
         "order_authority": "BLOCKED",

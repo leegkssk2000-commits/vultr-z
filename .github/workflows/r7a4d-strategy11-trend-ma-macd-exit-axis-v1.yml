@@ -1,0 +1,97 @@
+name: R7A4D Strategy11 Trend MA MACD Exit Axis V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_trend_ma_macd_exit_axis_v1.py
+      - .github/workflows/r7a4d-strategy11-trend-ma-macd-exit-axis-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  REPLAY_RUN_ID: '30410892147'
+
+concurrency:
+  group: r7a4d-strategy11-trend-ma-macd-exit-axis-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download exact evidence and source replay batch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/evidence input/replays
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-evidence-batch-4-${SOURCE_RUN_ID}-attempt-1" \
+            --dir input/evidence/batch-4
+          gh run download "$REPLAY_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-semantic-axis-v5-filtered-replay-4-${REPLAY_RUN_ID}" \
+            --dir input/replays/batch-4
+      - name: Compile exit-axis diagnostic
+        run: python -m py_compile backend/tools/r7a4d_strategy11_trend_ma_macd_exit_axis_v1.py
+      - name: Replay BE075, tighter MFE trail and data-derived time stop separately
+        run: |
+          python backend/tools/r7a4d_strategy11_trend_ma_macd_exit_axis_v1.py \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --replay-root input/replays \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/strategy11_trend_ma_macd_exit_axis_v1
+      - name: Assert isolated axes, parity, safety and no AI bypass
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_trend_ma_macd_exit_axis_v1/final.json').read_text())
+          assert d['state']=='PASS_EXIT_AXIS_DIAGNOSTIC_COMPLETE'
+          assert d['strategy_id']=='trend_ma_macd'
+          assert d['source_variant_id']=='SF__OBV_POSITIVE'
+          assert d['source_run_id']=='30252022416'
+          assert len(d['candidates'])==3
+          assert {row['axis'] for row in d['candidates']}=={'BREAKEVEN','MFE_TRAILING','TIME_STOP'}
+          assert all(row['relation']['checks']['parity_pass'] for row in d['candidates'])
+          assert all(row['relation']['checks']['duplicate_zero'] for row in d['candidates'])
+          assert all(row['relation']['ai_review_state']=='WAIT_GROQ_QUOTA' for row in d['candidates'])
+          assert d['ai_review_state']=='WAIT_GROQ_QUOTA'
+          assert d['w1_confirmation_required'] is True and d['new_sealed_required'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-trend-ma-macd-exit-axis-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_trend_ma_macd_exit_axis_v1
+          if-no-files-found: error
+          retention-days: 90

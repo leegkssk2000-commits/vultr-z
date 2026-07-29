@@ -38,25 +38,31 @@ jobs:
           python backend/research/strategy11_attribution_ledger_v1.py \
             --input backend/research/fixtures/strategy11_attribution_ledger_v1_fixture.json \
             --output artifacts/strategy11_attribution_ledger_v1/result.json
-      - name: Assert projection, SSOT and safety
+      - name: Assert projection, row integrity and safety
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           d=json.loads(Path('artifacts/strategy11_attribution_ledger_v1/result.json').read_text())
           assert d['status']=='PASS_STRATEGY_ATTRIBUTION_LEDGER', d
-          assert d['schema_version']=='strategy11.attribution_projection.v1'
+          assert d['schema_version']=='strategy11.attribution_projection.v1.1'
           assert d['trade_count']==3
           assert abs(d['total_net_pnl_r']-1.42)<1e-9
           assert d['pnl_ssot']=='SOURCE_LEDGER'
           assert d['projection_only'] is True
-          assert d['append_only_evidence'] is True
+          assert d['source_row_hash_verification']=='PASS'
+          assert all(row['source_row_hash_verified'] is True for row in d['rows'])
+          assert all(row['source_row_content_sha']==row['source_row_sha'] for row in d['rows'])
+          assert d['projection_order_verified'] is True
+          assert d['append_only_evidence'] is False
+          assert d['append_only_claimed'] is False
+          assert d['source_history_verified'] is False
+          assert d['append_only_reason']=='PREVIOUS_SOURCE_LEDGER_HEAD_NOT_SUPPLIED'
           assert d['runtime_append_enabled'] is False
           assert d['runtime_bound'] is False
           assert d['source_ledger_mutated'] is False
           assert d['formal_ledger_mutated'] is False
           assert len({row['source_row_id'] for row in d['rows']})==3
-          assert all(len(row['source_row_sha'])==64 for row in d['rows'])
           assert all(len(row['lineage_sha'])==64 for row in d['rows'])
           assert all(len(row['projection_row_sha'])==64 for row in d['rows'])
           assert d['research_only'] is True
@@ -67,18 +73,44 @@ jobs:
           assert 'strategy:alpha_combo' in d['attribution']
           assert 'regime:UP' in d['attribution']
           PY
-      - name: Re-run internal synergy audit
+      - name: Prove altered row fails closed
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=Path('backend/research/fixtures/strategy11_attribution_ledger_v1_fixture.json')
+          d=json.loads(source.read_text())
+          d['trades'][0]['gross_pnl_r']=9.9
+          Path('/tmp/tampered.json').write_text(json.dumps(d))
+          PY
+          set +e
+          python backend/research/strategy11_attribution_ledger_v1.py \
+            --input /tmp/tampered.json \
+            --output artifacts/strategy11_attribution_ledger_v1/tampered.json
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_attribution_ledger_v1/tampered.json').read_text())
+          assert d['status']=='HOLD_STRATEGY_ATTRIBUTION_LEDGER', d
+          assert any(str(x).startswith('SOURCE_ROW_SHA_MISMATCH') for x in d['blockers']), d
+          assert d['append_only_evidence'] is False
+          PY
+      - name: Re-run complete internal synergy audit
         run: |
           python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
           cp artifacts/strategy11_internal_synergy_audit_v1/summary.json artifacts/strategy11_attribution_ledger_v1/synergy_after.json
-      - name: Assert audit progression
+      - name: Assert full chain remains complete
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           d=json.loads(Path('artifacts/strategy11_attribution_ledger_v1/synergy_after.json').read_text())
           assert 'STRATEGY_ATTRIBUTION_LEDGER' in d['implemented_capabilities'], d
-          assert d['recommended_implementation_order'][0]=='ROLE_BOUNDARY_ZBOT_ZICO_LICO_ZLICE', d
+          assert d['missing_capabilities']==[], d
+          assert d['recommended_implementation_order']==[], d
           PY
       - uses: actions/upload-artifact@v4
         if: always()

@@ -24,6 +24,8 @@ REQUIRED_TRADE_FIELDS = {
 SHA_FIELDS = {
     "source_row_sha", "source_sha", "candidate_sha", "data_sha", "window_sha", "manifest_sha",
 }
+SOURCE_ROW_HASH_FIELDS = REQUIRED_TRADE_FIELDS - {"source_row_sha"}
+NUMBER_FIELDS = {"gross_pnl_r", "fee_r", "slippage_r", "funding_r"}
 
 
 class AttributionProjectionError(ValueError):
@@ -77,16 +79,28 @@ def normalize_trade(value: Any, index: int) -> dict[str, Any]:
         raise AttributionProjectionError(f"TRADE_OBJECT_REQUIRED:{index}")
     trade = dict(value)
     missing = sorted(REQUIRED_TRADE_FIELDS - set(trade))
+    extra = sorted(set(trade) - REQUIRED_TRADE_FIELDS)
     if missing:
         raise AttributionProjectionError(f"TRADE_FIELDS_MISSING:{','.join(missing)}")
+    if extra:
+        raise AttributionProjectionError(f"TRADE_EXTRA_FIELDS:{','.join(extra)}")
 
     row: dict[str, Any] = {}
-    for name in sorted(REQUIRED_TRADE_FIELDS - SHA_FIELDS - {"gross_pnl_r", "fee_r", "slippage_r", "funding_r"}):
+    for name in sorted(REQUIRED_TRADE_FIELDS - SHA_FIELDS - NUMBER_FIELDS):
         row[name] = require_string(trade[name], f"trades[{index}].{name}")
     for name in sorted(SHA_FIELDS):
         row[name] = require_sha(trade[name], f"trades[{index}].{name}")
-    for name in ("gross_pnl_r", "fee_r", "slippage_r", "funding_r"):
+    for name in sorted(NUMBER_FIELDS):
         row[name] = require_number(trade[name], f"trades[{index}].{name}")
+
+    source_row_content = {name: row[name] for name in sorted(SOURCE_ROW_HASH_FIELDS)}
+    computed_source_row_sha = sha256(source_row_content)
+    if row["source_row_sha"] != computed_source_row_sha:
+        raise AttributionProjectionError(
+            f"SOURCE_ROW_SHA_MISMATCH:{row['source_ledger_id']}:{row['source_row_id']}"
+        )
+    row["source_row_hash_verified"] = True
+    row["source_row_content_sha"] = computed_source_row_sha
 
     cost = row["fee_r"] + row["slippage_r"] + row["funding_r"]
     row["cost_r"] = round(cost, 10)
@@ -103,6 +117,36 @@ def normalize_trade(value: Any, index: int) -> dict[str, Any]:
     })
     row["projection_row_sha"] = sha256(row)
     return row
+
+
+def aggregate(rows: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    buckets: defaultdict[tuple[str, str], dict[str, float | int]] = defaultdict(
+        lambda: {"gross": 0.0, "cost": 0.0, "net": 0.0, "trades": 0}
+    )
+    dimensions = (
+        ("strategy", "strategy_id"),
+        ("material", "material_id"),
+        ("team", "team"),
+        ("symbol", "symbol"),
+        ("regime", "regime"),
+        ("window", "window_id"),
+    )
+    for row in rows:
+        for dimension, field in dimensions:
+            bucket = buckets[(dimension, row[field])]
+            bucket["gross"] = float(bucket["gross"]) + row["gross_pnl_r"]
+            bucket["cost"] = float(bucket["cost"]) + row["cost_r"]
+            bucket["net"] = float(bucket["net"]) + row["net_pnl_r"]
+            bucket["trades"] = int(bucket["trades"]) + 1
+    return {
+        f"{dimension}:{key}": {
+            "gross_pnl_r": round(float(values["gross"]), 10),
+            "cost_r": round(float(values["cost"]), 10),
+            "net_pnl_r": round(float(values["net"]), 10),
+            "trades": int(values["trades"]),
+        }
+        for (dimension, key), values in sorted(buckets.items())
+    }
 
 
 def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -130,34 +174,7 @@ def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
     if len(set(projection_shas)) != len(projection_shas):
         raise AttributionProjectionError("DUPLICATE_PROJECTION_ROW")
 
-    aggregation: defaultdict[tuple[str, str], dict[str, float | int]] = defaultdict(
-        lambda: {"gross": 0.0, "cost": 0.0, "net": 0.0, "trades": 0}
-    )
-    dimensions = (
-        ("strategy", "strategy_id"),
-        ("material", "material_id"),
-        ("team", "team"),
-        ("symbol", "symbol"),
-        ("regime", "regime"),
-        ("window", "window_id"),
-    )
-    for row in rows:
-        for dimension, field in dimensions:
-            bucket = aggregation[(dimension, row[field])]
-            bucket["gross"] = float(bucket["gross"]) + row["gross_pnl_r"]
-            bucket["cost"] = float(bucket["cost"]) + row["cost_r"]
-            bucket["net"] = float(bucket["net"]) + row["net_pnl_r"]
-            bucket["trades"] = int(bucket["trades"]) + 1
-
-    attribution = {
-        f"{dimension}:{key}": {
-            "gross_pnl_r": round(float(values["gross"]), 10),
-            "cost_r": round(float(values["cost"]), 10),
-            "net_pnl_r": round(float(values["net"]), 10),
-            "trades": int(values["trades"]),
-        }
-        for (dimension, key), values in sorted(aggregation.items())
-    }
+    attribution = aggregate(rows)
     total_net = round(sum(row["net_pnl_r"] for row in rows), 10)
     strategy_net = {
         key.split(":", 1)[1]: values["net_pnl_r"]
@@ -178,7 +195,7 @@ def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
     result = {
-        "schema_version": "strategy11.attribution_projection.v1",
+        "schema_version": "strategy11.attribution_projection.v1.1",
         "status": "PASS_STRATEGY_ATTRIBUTION_LEDGER",
         "input_sha": sha256(payload),
         "trade_count": len(rows),
@@ -188,14 +205,19 @@ def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
         "leave_one_strategy_out_net_r": leave_one_out,
         "marginal_contribution": marginal_contribution,
         "projection_sha": sha256({
-            "source_rows": source_rows,
+            "source_rows": [(row["source_ledger_id"], row["source_row_id"], row["source_row_sha"]) for row in rows],
             "projection_rows": projection_shas,
             "attribution": attribution,
             "marginal_contribution": marginal_contribution,
         }),
         "pnl_ssot": "SOURCE_LEDGER",
         "projection_only": True,
-        "append_only_evidence": True,
+        "source_row_hash_verification": "PASS",
+        "projection_order_verified": True,
+        "append_only_evidence": False,
+        "append_only_claimed": False,
+        "source_history_verified": False,
+        "append_only_reason": "PREVIOUS_SOURCE_LEDGER_HEAD_NOT_SUPPLIED",
         "runtime_append_enabled": False,
         "runtime_bound": False,
         "source_ledger_mutated": False,
@@ -217,11 +239,14 @@ def main() -> int:
         return 0
     except Exception as exc:
         write_json(args.output, {
-            "schema_version": "strategy11.attribution_projection.v1",
+            "schema_version": "strategy11.attribution_projection.v1.1",
             "status": "HOLD_STRATEGY_ATTRIBUTION_LEDGER",
             "blockers": [str(exc)[:1000]],
             "pnl_ssot": "SOURCE_LEDGER",
             "projection_only": True,
+            "append_only_evidence": False,
+            "append_only_claimed": False,
+            "source_history_verified": False,
             "runtime_append_enabled": False,
             "runtime_bound": False,
             "source_ledger_mutated": False,

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Strict fault adapter for the resumable Strategy11 AI router v3.
 
-Only verified provider quota/rate-limit failures may remain resumable WAIT_QUOTA.
-Semantic REJECT is terminal, while provider HOLD/inconclusive output remains a
-fail-closed blocker. No provider substitution or paid fallback is permitted.
+Verified quota faults remain WAIT_QUOTA. Explicit provider semantic rejection is
+terminal. Malformed model output is a separate bounded provider-output retry;
+configuration, authentication and other inconclusive failures remain blockers.
+No provider substitution or paid fallback is permitted.
 """
 
 from __future__ import annotations
@@ -14,26 +15,26 @@ from typing import Any
 
 from scripts import strategy11_ai_review_router_v3 as core
 
-
 QUOTA_MARKERS = (
-    "rate limit",
-    "ratelimit",
-    "rate_limit",
-    "http 429",
-    "http_429",
-    "status 429",
-    "daily free allocation",
-    "used up your daily free allocation",
-    "quota exceeded",
-    "quota_exceeded",
-    "resource_exhausted",
-    "too many requests",
+    "rate limit", "ratelimit", "rate_limit", "http 429", "http_429",
+    "status 429", "daily free allocation", "used up your daily free allocation",
+    "quota exceeded", "quota_exceeded", "resource_exhausted", "too many requests",
+)
+RETRYABLE_OUTPUT_MARKERS = (
+    "response_json_recovery_exhausted",
+    "response_json_decode_failed",
+    "response_json_shape_mismatch",
 )
 
 
 def is_verified_quota_failure(value: Any) -> bool:
     text = str(value or "").lower()
     return any(marker in text for marker in QUOTA_MARKERS)
+
+
+def is_retryable_provider_output(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(marker in text for marker in RETRYABLE_OUTPUT_MARKERS)
 
 
 def semantic_blocker(provider: str, review: dict[str, Any]) -> str | None:
@@ -60,12 +61,7 @@ def run_provider(
 ) -> dict[str, Any]:
     artifact_path = output_dir / f"{provider}.json"
     if provider == "groq":
-        command = [
-            sys.executable,
-            str(core.v1.GROQ_CLIENT.resolve()),
-            "--input", str(external_path),
-            "--output", str(artifact_path),
-        ]
+        command = [sys.executable, str(core.v1.GROQ_CLIENT.resolve()), "--input", str(external_path), "--output", str(artifact_path)]
     elif provider == "workers_ai":
         envelope = {
             "review_stage": stage,
@@ -80,12 +76,7 @@ def run_provider(
         }
         workers_input = output_dir / "workers_input.json"
         core.write_json(workers_input, envelope)
-        command = [
-            sys.executable,
-            str(core.v1.WORKERS_CLIENT.resolve()),
-            "--input", str(workers_input),
-            "--output", str(artifact_path),
-        ]
+        command = [sys.executable, str(core.v1.WORKERS_CLIENT.resolve()), "--input", str(workers_input), "--output", str(artifact_path)]
     else:
         raise ValueError(f"UNSUPPORTED_PROVIDER:{provider}")
 
@@ -96,6 +87,8 @@ def run_provider(
         blocker = artifact.get("blocker_code") or artifact.get("status") or f"HOLD_{provider.upper()}_FAILED"
         if is_verified_quota_failure(blocker):
             raise ValueError(f"VERIFIED_QUOTA:{str(blocker)[:850]}")
+        if is_retryable_provider_output(blocker):
+            raise ValueError(f"RETRYABLE_PROVIDER_OUTPUT:{str(blocker)[:850]}")
         raise RuntimeError(f"PROVIDER_BLOCKER:{str(blocker)[:850]}")
     return row
 

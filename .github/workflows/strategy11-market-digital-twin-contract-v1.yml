@@ -1,0 +1,77 @@
+name: Strategy11 Market Digital Twin Contract V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/contracts/strategy11_market_digital_twin_contract_v1.py
+      - backend/research/strategy11_market_digital_twin_fixture_policy_v1.json
+      - backend/tools/strategy11_market_digital_twin_fixture_v1.py
+      - .github/workflows/strategy11-market-digital-twin-contract-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-market-digital-twin-contract-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  digital-twin-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile contract and fixtures
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_market_digital_twin_contract_v1.py \
+            backend/tools/strategy11_market_digital_twin_fixture_v1.py
+      - name: Run deterministic digital twin fixtures
+        run: |
+          python backend/tools/strategy11_market_digital_twin_fixture_v1.py \
+            --policy backend/research/strategy11_market_digital_twin_fixture_policy_v1.json \
+            --out artifacts/strategy11_market_digital_twin_contract_v1
+      - name: Assert scenario coverage, determinism and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_market_digital_twin_contract_v1/summary.json').read_text())
+          r=d['result']
+          assert d['state']=='PASS_MARKET_DIGITAL_TWIN_FIXTURES'
+          assert d['case_count']==5
+          assert r['state']=='PASS_MARKET_DIGITAL_TWIN_SCENARIO_COVERAGE'
+          assert r['scenario_count']==6
+          assert r['capital_gate']=='HOLD_DIGITAL_TWIN_RISK_EXPOSED'
+          assert r['twin_result_sha']==d['determinism_repeat_sha']
+          assert all(r['liquidity_failure_coverage'].values())
+          assert len(d['negative_cases'])==3
+          assert d['runtime_activation_allowed'] is False
+          assert d['market_data_mutation_allowed'] is False
+          assert d['order_submission_allowed'] is False
+          assert d['capital_allocation_allowed'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-market-digital-twin-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_market_digital_twin_contract_v1
+          if-no-files-found: error
+          retention-days: 90

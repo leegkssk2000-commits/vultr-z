@@ -1,0 +1,235 @@
+name: R7A4D Strategy11 Semantic Axis Rotation L090 V5 Filtered Replay
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v4
+    paths:
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v5-filtered-replay.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-semantic-axis-v5-filtered-replay-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  PLAN_RUN_ID: '30409152509'
+  PLAN_ARTIFACT: 's11-semantic-axis-v5-plan-30409152509-attempt-1'
+  AI_RUN_ID: '30410429632'
+  AI_ARTIFACT: 's11-semantic-axis-v5-resume-ai-30410429632'
+
+jobs:
+  filter:
+    name: freeze 43 accepted candidates and one evidence hold
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: input/plan
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PLAN_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.AI_ARTIFACT }}
+          path: input/ai
+          github-token: ${{ github.token }}
+          run-id: ${{ env.AI_RUN_ID }}
+      - name: Build immutable filtered replay plan
+        run: |
+          mkdir -p out/filter
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('input/plan/plan.json').read_text())
+          ledger=json.loads(Path('input/plan/search_ledger.json').read_text())
+          ai_path=next(Path('input/ai').rglob('ai_manifest.json'))
+          ai=json.loads(ai_path.read_text())
+          assert ai['state']=='HOLD_REJECTED_SINGLE_AXIS_CANDIDATES'
+          assert ai['review_count']==44 and ai['pass_count']==43 and ai['reject_count']==1
+          rejected={(row['strategy_id'],row['candidate_id']):row for row in ai['rejected']}
+          assert set(rejected)=={('session_bias','SF__REJECTION_LONG')}
+          reason=rejected[('session_bias','SF__REJECTION_LONG')]
+          assert any('MISSING_EVIDENCE' in code for code in reason['blocker_codes'])
+
+          accepted_count=0
+          for row in plan['rows']:
+              kept=[cid for cid in row['candidate_ids'] if (row['strategy_id'],cid) not in rejected]
+              assert 1<=len(kept)<=2,(row['strategy_id'],kept)
+              row['candidate_ids']=kept
+              row['candidate_specs']={cid:row['candidate_specs'][cid] for cid in kept}
+              row['ai_review_state']='PASS_TO_REPLAY_FILTERED'
+              row['ai_rejected_candidates']=[cid for sid,cid in rejected if sid==row['strategy_id']]
+              accepted_count+=len(kept)
+          assert len(plan['rows'])==22 and accepted_count==43
+          plan['state']='PASS_AI_FILTERED_SEMANTIC_AXIS_ROTATION_PLAN'
+          plan['candidate_count']=43
+          plan['ai_review_run_id']=30410429632
+          plan['ai_pass_count']=43
+          plan['ai_reject_count']=1
+          plan['wait_new_evidence']=[{'strategy_id':'session_bias','candidate_id':'SF__REJECTION_LONG','axis':'CANDLE_STRUCTURE_GATE','reason':'MISSING_EVIDENCE'}]
+
+          for row in ledger['rows']:
+              if row['strategy_id']=='session_bias':
+                  row['selected_candidate_ids']=[cid for cid in row['selected_candidate_ids'] if cid!='SF__REJECTION_LONG']
+                  row['selected_axes']=['TREND_REGIME_GATE']
+                  row['rejection_reason']='SF__REJECTION_LONG:MISSING_EVIDENCE'
+                  row['next_axis']='VOLATILITY_GATE'
+          ledger['ai_review_run_id']=30410429632
+          ledger['ai_pass_count']=43
+          ledger['ai_reject_count']=1
+          ledger['wait_new_evidence']=[{'strategy_id':'session_bias','candidate_id':'SF__REJECTION_LONG','reason':'MISSING_EVIDENCE'}]
+
+          Path('out/filter/accepted_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          Path('out/filter/search_ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          Path('out/filter/ai_manifest.json').write_text(json.dumps(ai,indent=2,sort_keys=True)+'\n')
+          summary={'state':'PASS_43_ACCEPTED_ONE_WAIT_NEW_EVIDENCE','strategy_count':22,'candidate_count':43,'ai_pass_count':43,'ai_reject_count':1,'rejected':plan['wait_new_evidence'],'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          Path('out/filter/status.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Assert filtered authority
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('out/filter/status.json'))
+          assert d['state']=='PASS_43_ACCEPTED_ONE_WAIT_NEW_EVIDENCE'
+          assert d['strategy_count']==22 and d['candidate_count']==43
+          assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-filtered-plan-${{ github.run_id }}
+          path: out/filter
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: replay accepted candidates batch ${{ matrix.batch }}
+    needs: filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: '1'
+            strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance'
+          - batch: '2'
+            strategies: 'keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal'
+          - batch: '3'
+            strategies: 'range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias'
+          - batch: '4'
+            strategies: 'squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider'
+          - batch: '5'
+            strategies: 'vol_spike_fade,vwap_revert'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-filtered-plan-${{ github.run_id }}
+          path: input/plan
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download immutable evidence batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for b in 1 2 3 4 5; do gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${b}-30252022416-attempt-1" --dir "input/evidence/batch-${b}"; done
+      - name: Replay NO_CHANGE plus one or two accepted candidates
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode replay --root . --plan input/plan/accepted_plan.json \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out/batch-${{ matrix.batch }}
+      - name: Assert parity, lineage and variable candidate count
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for path in Path('out').rglob('summary.json'):
+              d=json.loads(path.read_text())
+              if d.get('strategy_id') and d.get('version')=='R7A4D_STRATEGY11_MULTIMODAL_L090_REPLAY_V1': rows.append(d)
+          assert rows
+          for d in rows:
+              count=len(d['tested_candidate_ids'])
+              assert 1<=count<=2,(d['strategy_id'],count)
+              assert len(d['variants'])==count+1
+              assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+              for v in d['variants']:
+                  assert v['parity']['state']=='PASS' and v['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-filtered-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate filtered generation-six results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-semantic-axis-v5-filtered-replay-*
+          path: input/replays
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-filtered-plan-${{ github.run_id }}
+          path: input/plan
+      - name: Aggregate and assert
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py --mode aggregate --replay-root input/replays --out out/final
+          cp input/plan/search_ledger.json out/final/search_ledger.json
+          cp input/plan/accepted_plan.json out/final/generation6_accepted_plan.json
+          cp input/plan/ai_manifest.json out/final/ai_manifest.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/final/final.json')); ledger=json.load(open('out/final/search_ledger.json'))
+          assert d['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE' and d['strategy_count']==22
+          assert len(d['active_l085_queue'])<=3 and ledger['duplicate_strategy_axis_data_runs']==0
+          assert ledger['ai_pass_count']==43 and ledger['ai_reject_count']==1
+          assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-semantic-axis-v5-filtered-final-${{ github.run_id }}
+          path: out/final
+          if-no-files-found: error
+          retention-days: 90

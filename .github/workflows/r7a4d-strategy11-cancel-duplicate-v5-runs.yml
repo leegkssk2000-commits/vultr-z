@@ -1,0 +1,40 @@
+name: R7A4D Strategy11 Cancel Duplicate V5 Runs
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v4
+    paths:
+      - .github/workflows/r7a4d-strategy11-cancel-duplicate-v5-runs.yml
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v5.yml
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v5-resume.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep only authoritative filtered replay run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AUTHORITY_RUN_ID: '30410892147'
+          BRANCH: r7a4d-strategy11-semantic-axis-rotation-l090-v5
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=100" \
+            --jq '.workflow_runs[] | select((.status=="queued" or .status=="pending" or .status=="in_progress") and (.workflow_id==322571164 or .workflow_id==322588116 or .workflow_id==322591060)) | .id' \
+            > /tmp/run_ids.txt
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if [ "$run_id" = "$AUTHORITY_RUN_ID" ]; then
+              echo "KEEP authority run ${run_id}"
+              continue
+            fi
+            echo "CANCEL duplicate run ${run_id}"
+            gh api --method POST "repos/${REPO}/actions/runs/${run_id}/cancel" || true
+          done < /tmp/run_ids.txt

@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import classify, read_json, stable_sha, write_json
+from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import read_json, stable_sha, write_json
+from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1_1 import strict_classify
 
 VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_V1"
 SAFETY = {
@@ -153,6 +154,7 @@ def filter_reviews(prepared: Mapping[str, Any], ai_root: Path, out_root: Path) -
     assert_safety(prepared, "prepared")
     accepted = []
     semantic_rejected = []
+    advisory_held = []
     waiting = []
     blockers = []
     specs = {(row["strategy_id"], row["candidate_id"]): row for row in prepared.get("executable") or []}
@@ -162,7 +164,7 @@ def filter_reviews(prepared: Mapping[str, Any], ai_root: Path, out_root: Path) -
             waiting.append({**spec, "review_state": "WAIT_QUOTA", "reason": "AI_REVIEW_OUTPUT_MISSING"})
             continue
         result = read_json(path)
-        state = classify(path)
+        state = strict_classify(path)
         row = {
             **spec,
             "review_state": state,
@@ -175,6 +177,8 @@ def filter_reviews(prepared: Mapping[str, Any], ai_root: Path, out_root: Path) -
             accepted.append(row)
         elif state == "SEMANTIC_REJECT":
             semantic_rejected.append(row)
+        elif state == "ADVISORY_HOLD":
+            advisory_held.append(row)
         elif state == "WAIT_QUOTA":
             waiting.append(row)
         else:
@@ -210,11 +214,13 @@ def filter_reviews(prepared: Mapping[str, Any], ai_root: Path, out_root: Path) -
         ],
         "accepted_count": len(accepted),
         "semantic_reject_count": len(semantic_rejected),
+        "advisory_hold_count": len(advisory_held),
         "wait_quota_count": len(waiting),
         "blocker_count": len(blockers),
         "unsupported_count": int(prepared.get("unsupported_count") or 0),
         "accepted": accepted,
         "semantic_rejected": semantic_rejected,
+        "advisory_held": advisory_held,
         "waiting": waiting,
         "blockers": blockers,
         "unsupported": copy.deepcopy(prepared.get("unsupported") or []),

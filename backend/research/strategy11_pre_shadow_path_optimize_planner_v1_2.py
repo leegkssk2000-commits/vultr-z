@@ -27,6 +27,7 @@ def select_candidate(
             "tested_candidate_ids",
             "selected_candidate_ids",
             "ai_rejected_candidate_ids",
+            "ai_advisory_held_candidate_ids",
             "family_binding_wait_candidate_ids",
         )
         for value in (ledger_row.get(key) or [])
@@ -99,6 +100,7 @@ def build_plan(
     result["schema_version"] = SCHEMA
     result["version"] = VERSION
     result["ai_rejected_candidates_excluded"] = True
+    result["ai_advisory_held_candidates_excluded"] = True
     result["family_binding_wait_candidates_excluded"] = True
     result["plan_sha"] = core.canonical_sha({key: value for key, value in result.items() if key != "plan_sha"})
     return result

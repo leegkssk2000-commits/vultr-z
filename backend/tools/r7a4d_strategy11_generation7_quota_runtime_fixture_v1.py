@@ -174,7 +174,9 @@ def main() -> int:
         "if: always() && steps.restore.outcome == 'success' && steps.restore.outputs.complete != 'true'",
     ]
     assert not [value for value in required_workflow if value not in workflow]
-    assert 'response_format={"type": "json_object"}' in groq_client
+    assert 'kwargs["response_format"] = {"type": "json_object"}' in groq_client
+    assert "if json_mode:" in groq_client
+    assert "BadRequestError" in groq_client
     assert "MAX_JSON_ATTEMPTS = 3" in groq_client
 
     summary = {

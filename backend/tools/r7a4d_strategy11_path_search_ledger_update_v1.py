@@ -155,6 +155,7 @@ def update_ledger(
 
     consumed = []
     rejected = []
+    advisory_held = []
     family_wait = []
     for review in replay_plan.get("accepted") or []:
         strategy_id = str(review.get("strategy_id") or "")
@@ -196,6 +197,14 @@ def update_ledger(
         append_unique(by_strategy[strategy_id], "ai_rejected_candidate_ids", candidate_id)
         rejected.append({"strategy_id": strategy_id, "candidate_id": candidate_id, "review_sha": review.get("review_sha")})
 
+    for review in replay_plan.get("advisory_held") or []:
+        strategy_id = str(review.get("strategy_id") or "")
+        candidate_id = str(review.get("candidate_id") or "")
+        if strategy_id not in by_strategy or not candidate_id:
+            raise ValueError(f"ADVISORY_REVIEW_IDENTITY_INVALID:{strategy_id}:{candidate_id}")
+        append_unique(by_strategy[strategy_id], "ai_advisory_held_candidate_ids", candidate_id)
+        advisory_held.append({"strategy_id": strategy_id, "candidate_id": candidate_id, "review_sha": review.get("review_sha")})
+
     for review in replay_plan.get("unsupported") or []:
         strategy_id = str(review.get("strategy_id") or "")
         candidate_id = str(review.get("candidate_id") or "")
@@ -206,6 +215,7 @@ def update_ledger(
 
     ledger["path_consumed_candidates"] = consumed
     ledger["path_ai_rejected_candidates"] = rejected
+    ledger["path_ai_advisory_held_candidates"] = advisory_held
     ledger["path_family_binding_wait_candidates"] = family_wait
     ledger["path_state_machine_version"] = VERSION
     ledger["path_epoch_count"] = int(ledger.get("path_epoch_count") or 0) + (1 if consumed else 0)

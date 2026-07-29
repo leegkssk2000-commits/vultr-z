@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -11,9 +12,16 @@ from typing import Any
 
 from backend.tools import r7a4d_strategy11_path_state_source_restore_v1 as core
 
-VERSION = "R7A4D_STRATEGY11_PATH_STATE_SOURCE_RESTORE_V1_2"
+VERSION = "R7A4D_STRATEGY11_PATH_STATE_SOURCE_RESTORE_V1_3"
 GENERATION_ARTIFACT_PREFIX = "s11-generation7-quota-state-v1-"
 MAX_ARTIFACT_PAGES = 20
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+USER_AGENT = "strategy11-path-state-source-restore-v1-3"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
 
 
 def ending(root: Path, suffix: str, name: str) -> Path:
@@ -69,7 +77,7 @@ def github_headers(token: str) -> dict[str, str]:
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "strategy11-path-state-source-restore-v1-2",
+        "User-Agent": USER_AGENT,
     }
 
 
@@ -82,10 +90,34 @@ def api_json(url: str, token: str) -> dict[str, Any]:
     return value
 
 
-def download_artifact(url: str, token: str, destination: Path) -> None:
+def artifact_signed_url(url: str, token: str) -> str:
     request = urllib.request.Request(url, headers=github_headers(token))
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
+    opener = urllib.request.build_opener(NoRedirect())
+    try:
+        with opener.open(request, timeout=60) as response:
+            final_url = str(response.geturl() or "")
+            if final_url and final_url != url:
+                return final_url
+            raise ValueError(f"ARTIFACT_DOWNLOAD_REDIRECT_REQUIRED:{url}")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in REDIRECT_CODES:
+            raise
+        location = str(exc.headers.get("Location") or "")
+        if not location:
+            raise ValueError(f"ARTIFACT_DOWNLOAD_LOCATION_MISSING:{url}:{exc.code}") from exc
+        return location
+
+
+def download_artifact(url: str, token: str, destination: Path) -> None:
+    signed_url = artifact_signed_url(url, token)
+    signed_request = urllib.request.Request(
+        signed_url,
+        headers={"Accept": "application/octet-stream", "User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(signed_request, timeout=120) as response, destination.open("wb") as handle:
         shutil.copyfileobj(response, handle)
+    if not destination.exists() or destination.stat().st_size <= 0:
+        raise ValueError(f"ARTIFACT_DOWNLOAD_EMPTY:{destination}")
 
 
 def safe_extract(archive: Path, destination: Path) -> None:

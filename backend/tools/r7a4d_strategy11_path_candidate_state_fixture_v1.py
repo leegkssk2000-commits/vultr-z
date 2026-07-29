@@ -17,7 +17,7 @@ SAFETY = {
     "order_authority": "BLOCKED",
     "runtime_bound": False,
 }
-VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1_2"
+VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1_3"
 
 
 def proposal(strategy_id: str, candidate_id: str, axis: str) -> dict[str, Any]:
@@ -176,12 +176,14 @@ def main() -> int:
     rejected_ai = args.root / "rejected-ai"
     write_json(rejected_ai / "trend_ma_macd__PATH_TRAIL_R075_ATR075.json", {
         "status": "HOLD_AI_REVIEW_DECISION_GATE",
-        "blocker_codes": ["groq:DECISION_REJECT:OVERFIT"],
+        "blocker_codes": ["groq:SEMANTIC_REJECT:OVERFIT"],
         "wait_codes": [],
         **SAFETY,
     })
     rejected_plan = filter_reviews(rejected_prepared, rejected_ai, args.root / "rejected-filtered")
     assert rejected_plan["state"] == "WAIT_PATH_ALL_SEMANTIC_REJECT_OR_FAMILY_BINDING"
+    assert rejected_plan["semantic_reject_count"] == 1
+    assert rejected_plan["advisory_hold_count"] == 0
     rejected_ledger = update_ledger(ledger(), rejected_plan)
     trend_rejected = next(row for row in rejected_ledger["rows"] if row["strategy_id"] == "trend_ma_macd")
     assert trend_rejected["axis_generation_count"]["MFE_TRAILING"] == 0

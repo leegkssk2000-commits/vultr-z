@@ -1,0 +1,208 @@
+name: R7A4D Strategy11 Path Candidate Auto Replay V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_path_candidate_state_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py
+      - backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py
+      - backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-path-candidate-auto-replay-v1.yml
+      - .github/workflows/r7a4d-strategy11-path-candidate-state-machine-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-path-candidate-auto-replay-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  RESEARCH_REF: 'r7a4d-strategy11-cause-aware-rotation-l090-v6'
+
+jobs:
+  validate-path-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile path state components
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_path_candidate_state_v1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py \
+            backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py
+      - name: Execute path candidate state fixtures
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py \
+            --root artifacts/path-candidate-state
+      - name: Assert path state authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/path-candidate-state/summary.json').read_text())
+          assert d['state']=='PASS_PATH_CANDIDATE_STATE_FIXTURE'
+          assert d['executable_count']==1
+          assert d['unsupported_count']==1
+          assert d['accepted_count']==1
+          assert d['path_epoch_count']==1
+          assert d['semantic_reject_generation_consumed'] is False
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          print(d['state'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-path-candidate-state-fixture-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/path-candidate-state
+          if-no-files-found: error
+          retention-days: 90
+
+  validate-real-basis-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RESEARCH_REF }}
+          path: research
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-filtered-replay-4-30410892147
+          path: input/source-replay
+          github-token: ${{ github.token }}
+          run-id: 30410892147
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download exact baseline evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Build one exact path replay request
+        run: |
+          mkdir -p artifacts/path-real-replay
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          safety={'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False}
+          plan={
+            'schema_version':'strategy11.path_candidate_replay_plan.v1',
+            'state':'PASS_PATH_AI_REVIEW_READY_TO_REPLAY',
+            'rows':[{
+              'strategy_id':'trend_ma_macd',
+              'basis_variant_id':'SF__OBV_POSITIVE',
+              'candidate_ids':['PATH_BE075'],
+              'candidate_specs':{
+                'PATH_BE075':{
+                  'kind':'EXIT','axis':'BREAKEVEN','changes':{'breakeven_r':0.75},
+                  'basis_variant_id':'SF__OBV_POSITIVE','source_proposal_sha':hashlib.sha256(b'fixture-path-proposal').hexdigest()
+                }
+              }
+            }],
+            'accepted':[{'strategy_id':'trend_ma_macd','candidate_id':'PATH_BE075','axis':'BREAKEVEN','generation':1}],
+            'original_strategy_count':22,
+            **safety,
+          }
+          Path('artifacts/path-real-replay/replay_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Replay candidate on top of exact source basis
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py \
+            --research-root research \
+            --source-replay-root input/source-replay/batch-4 \
+            --plan artifacts/path-real-replay/replay_plan.json \
+            --policy research/backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/path-real-replay/replay
+      - name: Aggregate and source-bind real path replay
+        run: |
+          python backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py \
+            --replay-root artifacts/path-real-replay/replay \
+            --accepted-plan artifacts/path-real-replay/replay_plan.json \
+            --out artifacts/path-real-replay/final
+          python backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py \
+            --replay-root artifacts/path-real-replay/replay \
+            --run-id "${{ github.run_id }}" \
+            --source-plan-sha "$(sha256sum artifacts/path-real-replay/replay_plan.json | awk '{print $1}')" \
+            --out artifacts/path-real-replay/final/triage
+          python backend/research/strategy11_trade_path_enricher_v1.py \
+            --replay-root artifacts/path-real-replay/replay \
+            --fresh-root input/fresh \
+            --out artifacts/path-real-replay/final/path_evidence
+      - name: Assert basis preservation and path output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/path-real-replay')
+          summary=json.loads((root/'replay/trend_ma_macd/summary.json').read_text())
+          control=json.loads((root/'replay/trend_ma_macd/NO_CHANGE_CONTROL/summary.json').read_text())
+          candidate=json.loads((root/'replay/trend_ma_macd/PATH_BE075/summary.json').read_text())
+          final=json.loads((root/'final/final.json').read_text())
+          triage=json.loads((root/'final/triage/triage.json').read_text())
+          paths=json.loads((root/'final/path_evidence/index.json').read_text())
+          assert summary['path_replay_version']=='R7A4D_STRATEGY11_PATH_CANDIDATE_REPLAY_V1'
+          assert summary['basis_variant_id']=='SF__OBV_POSITIVE'
+          assert control['candidate_config']['basis_variant_id']=='SF__OBV_POSITIVE'
+          assert candidate['candidate_config']['basis_variant_id']=='SF__OBV_POSITIVE'
+          assert candidate['candidate_config']['exit']['breakeven_r']==0.75
+          assert control['parity']['state']=='PASS' and candidate['parity']['state']=='PASS'
+          assert control['parity']['duplicate_trade_count']==0 and candidate['parity']['duplicate_trade_count']==0
+          assert final['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE'
+          assert final['strategy_count']==1 and final['partial_strategy_set'] is True
+          assert triage['state']=='PASS_SOURCE_BOUND_REPLAY_TRIAGE'
+          assert paths['state']=='PASS_TRADE_PATH_EVIDENCE_INDEX'
+          for payload in (summary,final,triage,paths):
+            assert payload['promotion_authority'] is False
+            assert payload['protected_mutations']==0
+            assert payload['execution_allowed'] is False
+            assert payload['order_authority']=='BLOCKED'
+          print('PASS_REAL_PATH_BASIS_REPLAY',candidate['trade_count'],candidate['net_return_pct_sum'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-path-real-basis-replay-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/path-real-replay
+          if-no-files-found: error
+          retention-days: 90

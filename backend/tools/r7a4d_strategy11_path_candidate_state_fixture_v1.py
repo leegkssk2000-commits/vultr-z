@@ -5,7 +5,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import read_json, stable_sha, write_json
+from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import stable_sha, write_json
 from backend.tools.r7a4d_strategy11_path_candidate_state_v1 import prepare, filter_reviews
 from backend.tools.r7a4d_strategy11_path_search_ledger_update_v1 import update_ledger
 
@@ -17,7 +17,7 @@ SAFETY = {
     "order_authority": "BLOCKED",
     "runtime_bound": False,
 }
-VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1"
+VERSION = "R7A4D_STRATEGY11_PATH_CANDIDATE_STATE_FIXTURE_V1_1"
 
 
 def proposal(strategy_id: str, candidate_id: str, axis: str) -> dict[str, Any]:
@@ -103,6 +103,34 @@ def ledger() -> dict[str, Any]:
     }
 
 
+def write_completed_replay(root: Path) -> None:
+    strategy_id = "trend_ma_macd"
+    candidate_id = "PATH_TRAIL_R075_ATR075"
+    strategy = {
+        "state": "NO_L090_CANDIDATE",
+        "strategy_id": strategy_id,
+        "tested_candidate_ids": [candidate_id],
+        "winner": None,
+        "same_axis_generation_count": 1,
+        **SAFETY,
+    }
+    candidate = {
+        "candidate_config": {"candidate_id": candidate_id, "axis": "MFE_TRAILING"},
+        "parity": {"state": "PASS", "duplicate_trade_count": 0},
+        "ladder_check": {"research_pass": False},
+        **SAFETY,
+    }
+    batch = {
+        "state": "PASS_PATH_CANDIDATE_REPLAY_BATCH",
+        "strategy_count": 1,
+        "rows": [strategy],
+        **SAFETY,
+    }
+    write_json(root / "batch.json", batch)
+    write_json(root / strategy_id / "summary.json", strategy)
+    write_json(root / strategy_id / candidate_id / "summary.json", candidate)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -125,11 +153,22 @@ def main() -> int:
     assert replay_plan["rows"][0]["basis_variant_id"] == "BASIS_CONTROL"
     assert replay_plan["rows"][0]["candidate_specs"]["PATH_TRAIL_R075_ATR075"]["kind"] == "EXIT"
 
-    updated = update_ledger(ledger(), replay_plan)
+    completion_blocked = False
+    try:
+        update_ledger(ledger(), replay_plan)
+    except ValueError as exc:
+        completion_blocked = "PATH_REPLAY_COMPLETION_REQUIRED" in str(exc)
+    assert completion_blocked is True
+
+    replay_root = args.root / "completed-replay"
+    write_completed_replay(replay_root)
+    updated = update_ledger(ledger(), replay_plan, replay_root)
     trend = next(row for row in updated["rows"] if row["strategy_id"] == "trend_ma_macd")
     bb = next(row for row in updated["rows"] if row["strategy_id"] == "bb_revert")
     assert trend["axis_generation_count"]["MFE_TRAILING"] == 1
     assert trend["tested_candidate_ids"] == ["PATH_TRAIL_R075_ATR075"]
+    assert trend["last_path_research_pass"] is False
+    assert len(trend["last_path_replay_completion_sha"]) == 64
     assert bb["family_binding_wait_candidate_ids"] == ["PATH_CANDLE_PULLBACK_CONFIRM_1"]
     assert updated["path_epoch_count"] == 1
 
@@ -152,10 +191,13 @@ def main() -> int:
         "schema_version": "strategy11.path_candidate_state.fixture.summary.v1",
         "version": VERSION,
         "state": "PASS_PATH_CANDIDATE_STATE_FIXTURE",
+        "fixture_only": True,
+        "production_authority": False,
         "executable_count": prepared["executable_count"],
         "unsupported_count": prepared["unsupported_count"],
         "accepted_count": replay_plan["accepted_count"],
         "path_epoch_count": updated["path_epoch_count"],
+        "completion_without_replay_blocked": completion_blocked,
         "semantic_reject_generation_consumed": False,
         **SAFETY,
     }

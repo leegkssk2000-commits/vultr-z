@@ -1,0 +1,60 @@
+name: R7A4D Strategy11 Portfolio Governor V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_portfolio_governor_v1.py
+      - backend/research/fixtures/strategy11_portfolio_governor_v1_fixture.json
+      - .github/workflows/r7a4d-strategy11-portfolio-governor-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile governor
+        run: python -m py_compile backend/research/strategy11_portfolio_governor_v1.py
+      - name: Run shadow-only fixture
+        run: |
+          mkdir -p artifacts/strategy11_portfolio_governor_v1
+          python backend/research/strategy11_portfolio_governor_v1.py \
+            --input backend/research/fixtures/strategy11_portfolio_governor_v1_fixture.json \
+            --output artifacts/strategy11_portfolio_governor_v1/result.json
+      - name: Assert safety and deterministic targets
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_portfolio_governor_v1/result.json').read_text())
+          assert d['status']=='PASS_PORTFOLIO_GOVERNOR_SHADOW_TARGETS', d
+          assert d['shadow_only'] is True
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert abs(sum(d['target_risk_weights'].values())-1.0)<1e-8
+          assert max(d['target_risk_weights'].values())<=0.800000001
+          assert d['rollback']['mode']=='RETAIN_INCUMBENT_WEIGHTS'
+          PY
+      - name: Re-run synergy audit
+        run: |
+          python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+          cp artifacts/strategy11_internal_synergy_audit_v1/summary.json artifacts/strategy11_portfolio_governor_v1/synergy_after.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-portfolio-governor-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_portfolio_governor_v1
+          if-no-files-found: error
+          retention-days: 90

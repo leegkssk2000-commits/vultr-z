@@ -1,0 +1,68 @@
+name: R7A4D Strategy11 Observer Only Gate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_observer_only_gate_v1.py
+      - backend/tools/r7a4d_strategy11_observer_only_gate_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-observer-only-gate-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile gate and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_observer_only_gate_v1.py \
+            backend/tools/r7a4d_strategy11_observer_only_gate_fixture_v1.py
+      - name: Run observer-only isolation fixtures
+        run: python backend/tools/r7a4d_strategy11_observer_only_gate_fixture_v1.py
+      - name: Assert observer-only authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/strategy11_observer_only_gate_v1')
+          summary=json.loads((root/'summary.json').read_text())
+          passed=json.loads((root/'pass.json').read_text())
+          hold=json.loads((root/'hold_incomplete.json').read_text())
+          negatives=json.loads((root/'negative_fixtures.json').read_text())
+          assert summary['state']=='PASS_OBSERVER_ONLY_GATE_FIXTURES'
+          assert passed['state']=='PASS_OBSERVER_ONLY_GATE'
+          assert passed['observer_count']==2
+          assert passed['observer_burnin_allowed'] is True
+          assert passed['observer_advisory_allowed'] is False
+          assert passed['strategy_input_allowed'] is False
+          assert passed['portfolio_weight_input_allowed'] is False
+          assert passed['paper_30d_allowed'] is False
+          assert hold['state']=='HOLD_OBSERVER_ONLY_GATE_INCOMPLETE'
+          assert len(negatives)==5
+          for payload in (summary,passed,hold):
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+              assert payload['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-observer-only-gate-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_observer_only_gate_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Strict fault adapter for the resumable Strategy11 AI router v3.
 
-Verified quota faults remain WAIT_QUOTA. Explicit provider semantic rejection is
-terminal. Malformed model output is a separate bounded provider-output retry;
-configuration, authentication and other inconclusive failures remain blockers.
-No provider substitution or paid fallback is permitted.
+Verified quota faults remain WAIT_QUOTA. Explicit semantic rejection and valid
+advisory HOLD are distinct terminal candidate drops. Malformed output and the
+bounded Groq JSON-mode BadRequest fallback are provider retries. Configuration,
+authentication and other failures remain blockers. No paid fallback is allowed.
 """
 
 from __future__ import annotations
@@ -22,9 +22,8 @@ QUOTA_MARKERS = (
     "quota exceeded", "quota_exceeded", "resource_exhausted", "too many requests",
 )
 RETRYABLE_OUTPUT_MARKERS = (
-    "response_json_recovery_exhausted",
-    "response_json_decode_failed",
-    "response_json_shape_mismatch",
+    "response_json_recovery_exhausted", "response_json_decode_failed",
+    "response_json_shape_mismatch", "badrequesterror",
 )
 
 
@@ -49,6 +48,8 @@ def semantic_blocker(provider: str, review: dict[str, Any]) -> str | None:
         return None
     if decision == "REJECT":
         return f"{provider}:SEMANTIC_REJECT:{codes}"
+    if decision == "HOLD":
+        return f"{provider}:ADVISORY_HOLD:{codes}"
     return f"{provider}:INCONCLUSIVE_{decision}:{codes}"
 
 

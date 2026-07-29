@@ -92,7 +92,7 @@ jobs:
           test "$HEAD_SHA" = "$REQUIRED_MASTER_SHA"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > audit/state.zip
           unzip -qo audit/state.zip -d audit/state
-      - name: Verify full source-bound production epoch authority
+      - name: Verify source-ready or fail-closed WAIT production epoch
         run: |
           python - <<'PY'
           import hashlib, json, os
@@ -100,16 +100,54 @@ jobs:
           root=Path('audit/state')
           selection=json.loads(Path('audit/artifact_selection.json').read_text())
           status_paths=list(root.rglob('status.json'))
-          if len(status_paths)!=1:
-              raise SystemExit(f'PRODUCTION_STATUS_PATH_COUNT:{len(status_paths)}')
+          restore_paths=list(root.rglob('source_restore_status.json'))
+          if len(status_paths)!=1 or len(restore_paths)!=1:
+              raise SystemExit(f'PRODUCTION_STATUS_PATH_COUNT:{len(status_paths)}:{len(restore_paths)}')
           epoch_root=status_paths[0].parent
+          status=json.loads(status_paths[0].read_text())
+          restore_status=json.loads(restore_paths[0].read_text())
+          safety={
+              'research_only':True,'promotion_authority':False,'protected_mutations':0,
+              'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False,
+          }
+          for payload_name,payload in (('epoch',status),('restore',restore_status)):
+              for key,expected in safety.items():
+                  if payload.get(key)!=expected:
+                      raise SystemExit(f'PRODUCTION_SAFETY_MISMATCH:{payload_name}:{key}')
+
+          if status.get('state')=='WAIT_PATH_SOURCE_ARTIFACT':
+              if restore_status.get('state')!='WAIT_PATH_SOURCE_ARTIFACT':
+                  raise SystemExit(f"PRODUCTION_WAIT_RESTORE_STATE_MISMATCH:{restore_status.get('state')}")
+              if int(restore_status.get('artifact_pages_scanned') or 0)!=20:
+                  raise SystemExit(f"PRODUCTION_WAIT_PAGINATION_INCOMPLETE:{restore_status.get('artifact_pages_scanned')}")
+              if (epoch_root/'source_manifest.json').exists() or (epoch_root/'source').exists():
+                  raise SystemExit('PRODUCTION_WAIT_CONTAINS_FALSE_SOURCE_AUTHORITY')
+              raw={k:v for k,v in status.items() if k!='state_sha'}
+              state_sha=hashlib.sha256(json.dumps(raw,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+              if state_sha!=status.get('state_sha'):
+                  raise SystemExit('PRODUCTION_WAIT_STATE_SHA_MISMATCH')
+              summary={
+                  'state':'PASS_PATH_PRODUCTION_EPOCH_WAIT_SOURCE_AUDIT',
+                  'required_master_sha':os.environ['REQUIRED_MASTER_SHA'],
+                  'artifact_name':selection['ARTIFACT_NAME'],
+                  'run_id':selection['RUN_ID'],
+                  'created_at':selection['CREATED_AT'],
+                  'path_state':'WAIT_PATH_SOURCE_ARTIFACT',
+                  'next':status.get('next'),
+                  'artifact_pages_scanned':restore_status.get('artifact_pages_scanned'),
+                  'source_authority_created':False,
+                  **safety,
+              }
+              Path('audit/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+              print(summary['state'],summary['run_id'])
+              raise SystemExit(0)
+
           epoch_manifest_path=epoch_root/'source_manifest.json'
           restored_manifest_path=epoch_root/'source/source_manifest.json'
           if not epoch_manifest_path.exists() or not restored_manifest_path.exists():
               raise SystemExit(
                   f'PRODUCTION_MANIFEST_MISSING:epoch={epoch_manifest_path.exists()}:restored={restored_manifest_path.exists()}'
               )
-          status=json.loads(status_paths[0].read_text())
           epoch_manifest=json.loads(epoch_manifest_path.read_text())
           restored=json.loads(restored_manifest_path.read_text())
           if status != epoch_manifest:
@@ -124,14 +162,9 @@ jobs:
               raise SystemExit(
                   f"PRODUCTION_SOURCE_TYPE_MISMATCH:{status.get('source_type')}:{restored.get('source_type')}"
               )
-          safety={
-              'research_only':True,'promotion_authority':False,'protected_mutations':0,
-              'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False,
-          }
-          for payload_name,payload in (('epoch',status),('restored',restored)):
-              for key,expected in safety.items():
-                  if payload.get(key)!=expected:
-                      raise SystemExit(f'PRODUCTION_SAFETY_MISMATCH:{payload_name}:{key}')
+          for key,expected in safety.items():
+              if restored.get(key)!=expected:
+                  raise SystemExit(f'PRODUCTION_SAFETY_MISMATCH:restored:{key}')
           components=status.get('components') or {}
           expected_paths={
               'replay_batch':'source/replay/batch.json',

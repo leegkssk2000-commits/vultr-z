@@ -1,0 +1,50 @@
+name: R7A4D Strategy11 Chain Intake Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/r7a4d_strategy11_chain_intake_preflight_v1.py
+      - .github/workflows/r7a4d-strategy11-chain-intake-preflight-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and run preflight
+        run: |
+          python -m py_compile backend/tools/r7a4d_strategy11_chain_intake_preflight_v1.py
+          python backend/tools/r7a4d_strategy11_chain_intake_preflight_v1.py
+      - name: Assert fail-closed intake state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_chain_intake_preflight_v1/summary.json').read_text())
+          assert d['status']=='HOLD_CHAIN_INTAKE_PREFLIGHT', d
+          assert d['chain_module_count']==7, d
+          assert 'REAL_ARTIFACT_CHAIN_ADAPTER_MISSING' in d['blockers'], d
+          assert d['runtime_bound'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-chain-intake-preflight-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_chain_intake_preflight_v1
+          if-no-files-found: error
+          retention-days: 90

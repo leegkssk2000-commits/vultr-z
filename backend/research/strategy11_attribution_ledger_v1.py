@@ -168,6 +168,14 @@ def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
         strategy_id: round(total_net - strategy_value, 10)
         for strategy_id, strategy_value in sorted(strategy_net.items())
     }
+    marginal_contribution = {
+        strategy_id: {
+            "standalone_net_pnl_r": round(strategy_value, 10),
+            "portfolio_net_without_strategy_r": leave_one_out[strategy_id],
+            "marginal_net_contribution_r": round(total_net - leave_one_out[strategy_id], 10),
+        }
+        for strategy_id, strategy_value in sorted(strategy_net.items())
+    }
 
     result = {
         "schema_version": "strategy11.attribution_projection.v1",
@@ -178,10 +186,12 @@ def build_projection(payload: dict[str, Any]) -> dict[str, Any]:
         "rows": rows,
         "attribution": attribution,
         "leave_one_strategy_out_net_r": leave_one_out,
+        "marginal_contribution": marginal_contribution,
         "projection_sha": sha256({
             "source_rows": source_rows,
             "projection_rows": projection_shas,
             "attribution": attribution,
+            "marginal_contribution": marginal_contribution,
         }),
         "pnl_ssot": "SOURCE_LEDGER",
         "projection_only": True,

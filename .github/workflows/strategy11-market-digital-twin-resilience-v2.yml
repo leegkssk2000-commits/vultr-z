@@ -1,0 +1,76 @@
+name: Strategy11 Market Digital Twin Resilience V2
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/contracts/strategy11_market_digital_twin_resilience_v2.py
+      - backend/research/strategy11_market_digital_twin_resilience_fixture_policy_v2.json
+      - backend/tools/strategy11_market_digital_twin_resilience_fixture_v2.py
+      - .github/workflows/strategy11-market-digital-twin-resilience-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-market-digital-twin-resilience-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  digital-twin-resilience-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile resilience contract and fixtures
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_market_digital_twin_resilience_v2.py \
+            backend/tools/strategy11_market_digital_twin_resilience_fixture_v2.py
+      - name: Run deterministic resilience fixtures
+        run: |
+          python backend/tools/strategy11_market_digital_twin_resilience_fixture_v2.py \
+            --policy backend/research/strategy11_market_digital_twin_resilience_fixture_policy_v2.json \
+            --out artifacts/strategy11_market_digital_twin_resilience_v2
+      - name: Assert expected stress versus resilience breach separation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_market_digital_twin_resilience_v2/summary.json').read_text())
+          assert d['state']=='PASS_MARKET_DIGITAL_TWIN_RESILIENCE_FIXTURES_V2'
+          assert d['case_count']==4
+          assert d['risk_exposed']['capital_gate']=='HOLD_DIGITAL_TWIN_RISK_EXPOSED'
+          assert d['resilience_pass']['capital_gate']=='PASS_DIGITAL_TWIN_RISK_ENVELOPE'
+          assert d['resilience_pass']['blocking_scenarios']==[]
+          assert all(row['resilience_pass'] for row in d['resilience_pass']['resilience_rows'])
+          assert d['missing_expected_stress_hold']['capital_gate']=='HOLD_DIGITAL_TWIN_RISK_EXPOSED'
+          assert len(d['negative_cases'])==1
+          assert d['runtime_activation_allowed'] is False
+          assert d['market_data_mutation_allowed'] is False
+          assert d['order_submission_allowed'] is False
+          assert d['capital_allocation_allowed'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-market-digital-twin-resilience-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_market_digital_twin_resilience_v2
+          if-no-files-found: error
+          retention-days: 90

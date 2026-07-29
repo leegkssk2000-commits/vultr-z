@@ -1,0 +1,72 @@
+name: R7A4D Strategy11 Global Candidate Classifier V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_global_candidate_classifier_v1.py
+      - backend/tools/r7a4d_strategy11_global_candidate_classifier_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-global-candidate-classifier-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-global-candidate-classifier-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile classifier and fixtures
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_global_candidate_classifier_v1.py \
+            backend/tools/r7a4d_strategy11_global_candidate_classifier_fixture_v1.py
+      - name: Run deterministic classifier fixtures
+        run: python backend/tools/r7a4d_strategy11_global_candidate_classifier_fixture_v1.py
+      - name: Re-run internal synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert classifier and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          classifier=json.loads(Path('artifacts/strategy11_global_candidate_classifier_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json').read_text())
+          assert classifier['state']=='PASS_GLOBAL_CANDIDATE_CLASSIFIER', classifier
+          assert set(classifier['classifications'])=={'CORE','SYNTHESIS','REJECT','HOLD'}
+          assert classifier['production_threshold_authority'] is False
+          assert classifier['hard_gate_priority'] is True
+          assert classifier['pareto_first'] is True
+          assert classifier['single_score_used'] is False
+          assert classifier['runtime_bound'] is False
+          assert classifier['research_only'] is True
+          assert classifier['promotion_authority'] is False
+          assert classifier['protected_mutations']==0
+          assert classifier['execution_allowed'] is False
+          assert classifier['order_authority']=='BLOCKED'
+          assert 'GLOBAL_CANDIDATE_CLASSIFIER' in audit['implemented_capabilities'], audit
+          assert audit['recommended_implementation_order'][0]=='ENSEMBLE_CORRELATION_ANALYZER', audit
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-global-candidate-classifier-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_global_candidate_classifier_v1
+            artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

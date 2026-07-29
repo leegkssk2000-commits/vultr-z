@@ -1,0 +1,304 @@
+name: R7A4D Strategy11 Path Candidate State Machine V1
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_path_candidate_state_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_ai_resume_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_replay_v1_1.py
+      - backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py
+      - backend/tools/r7a4d_strategy11_path_state_source_restore_v1.py
+      - backend/tools/r7a4d_strategy11_path_state_source_restore_v1_1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py
+      - .github/workflows/r7a4d-strategy11-path-candidate-state-machine-v1.yml
+  schedule:
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+concurrency:
+  group: r7a4d-strategy11-path-candidate-state-machine-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  RESEARCH_REF: 'r7a4d-strategy11-cause-aware-rotation-l090-v6'
+  MAX_NEW_CANDIDATES: '10'
+
+jobs:
+  path-candidate-epoch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RESEARCH_REF }}
+          path: research
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq pandas numpy
+      - name: Restore latest path epoch and generation7 sources
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/prior-path input/generation state
+          latest_path_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false and (.name|startswith("s11-path-candidate-state-v1-")))] | sort_by(.created_at) | last | .id // empty')"
+          if [ -n "$latest_path_id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$latest_path_id/zip" > /tmp/latest-path.zip
+            unzip -qo /tmp/latest-path.zip -d input/prior-path
+          fi
+          latest_generation_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired==false and (.name|startswith("s11-generation7-quota-state-v1-")))] | sort_by(.created_at) | last | .id // empty')"
+          if [ -n "$latest_generation_id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$latest_generation_id/zip" > /tmp/latest-generation.zip
+            unzip -qo /tmp/latest-generation.zip -d input/generation
+          fi
+          python backend/tools/r7a4d_strategy11_path_state_source_restore_v1_1.py \
+            --prior-path-root input/prior-path \
+            --generation-root input/generation \
+            --out state/source \
+            --status state/source_restore_status.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('state/source_restore_status.json'))
+          print('ready=' + ('true' if d['state']=='PASS_PATH_STATE_SOURCE_RESTORED' else 'false'))
+          print('state=' + d['state'])
+          PY
+          echo "latest_path_artifact_id=${latest_path_id:-none}"
+          echo "latest_generation_artifact_id=${latest_generation_id:-none}"
+      - name: Write WAIT_SOURCE state
+        if: steps.restore.outputs.ready != 'true'
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          status={
+            'schema_version':'strategy11.path_candidate.state.v1',
+            'state':'WAIT_PATH_SOURCE_ARTIFACT',
+            'next':'WAIT_GENERATION7_PATH_LOOP_COMPLETION',
+            'research_only':True,'promotion_authority':False,'protected_mutations':0,
+            'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False,
+          }
+          status['state_sha']=hashlib.sha256(json.dumps(status,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('state/status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Prepare executable and family-bound path candidates
+        if: steps.restore.outputs.ready == 'true'
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_state_v1.py \
+            --mode prepare \
+            --path-plan state/source/path_plan.json \
+            --out state/prepared
+      - name: Resume path candidate AI reviews within free quota
+        if: steps.restore.outputs.ready == 'true'
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_ai_resume_v1.py \
+            --prepared state/prepared/prepared.json \
+            --payload-root state/prepared/payloads \
+            --ai-root state/ai \
+            --output-root state/review \
+            --router scripts/strategy11_ai_review_router_v3_1.py \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --prior-root input/prior-path \
+            --max-new-candidates "$MAX_NEW_CANDIDATES"
+      - name: Resolve path review state
+        id: review
+        if: steps.restore.outputs.ready == 'true'
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('state/review/replay_plan.json'))
+          print('state=' + d['state'])
+          print('accepted=' + str(d['accepted_count']))
+          print('wait=' + str(d['wait_quota_count']))
+          print('blockers=' + str(d['blocker_count']))
+          PY
+      - name: Download immutable F1/F2/F3 evidence for accepted replay
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted != '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/fresh input/evidence
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-fresh-data-v1-${SOURCE_RUN_ID}-attempt-1" --dir input/fresh
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Replay accepted path candidates on exact selected basis
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted != '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_replay_v1_1.py \
+            --research-root research \
+            --source-replay-root state/source/replay \
+            --plan state/review/replay_plan.json \
+            --policy research/backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out state/replay
+      - name: Aggregate, source-bind and enrich accepted replay
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted != '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          mkdir -p state/final
+          python backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py \
+            --replay-root state/replay \
+            --accepted-plan state/review/replay_plan.json \
+            --out state/final
+          python backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py \
+            --replay-root state/replay \
+            --run-id "${{ github.run_id }}" \
+            --source-plan-sha "$(sha256sum state/review/replay_plan.json | awk '{print $1}')" \
+            --out state/final/triage
+          python backend/research/strategy11_trade_path_enricher_v1.py \
+            --replay-root state/replay \
+            --fresh-root input/fresh \
+            --out state/final/path_evidence
+      - name: Update path SEARCH_LEDGER after final AI decisions
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          python backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            --ledger state/source/search_ledger.json \
+            --replay-plan state/review/replay_plan.json \
+            --out state/final/updated_ledger.json
+      - name: Plan next epoch from accepted replay
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted != '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          python backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            --path-index state/final/path_evidence/index.json \
+            --path-root state/final/path_evidence \
+            --triage state/final/triage/triage.json \
+            --search-ledger state/final/updated_ledger.json \
+            --policy backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json \
+            --out state/final/next_plan.json
+      - name: Rotate to next untested candidate without replay when no AI candidate survives
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted == '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          mkdir -p state/final
+          python backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            --path-index state/source/path_evidence/index.json \
+            --path-root state/source/path_evidence \
+            --triage state/source/triage.json \
+            --search-ledger state/final/updated_ledger.json \
+            --policy backend/research/strategy11_pre_shadow_path_optimize_policy_v1.json \
+            --out state/final/next_plan.json
+      - name: Build next source authority after accepted replay
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted != '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          rm -rf state/next-source
+          mkdir -p state/next-source
+          cp -a state/replay state/next-source/replay
+          cp -a state/final/path_evidence state/next-source/path_evidence
+          cp state/final/triage/triage.json state/next-source/triage.json
+          cp state/final/updated_ledger.json state/next-source/search_ledger.json
+          cp state/final/next_plan.json state/next-source/path_plan.json
+          rm -rf state/source
+          mv state/next-source state/source
+      - name: Preserve source with updated ledger when no candidate survives
+        if: steps.restore.outputs.ready == 'true' && steps.review.outputs.accepted == '0' && steps.review.outputs.wait == '0' && steps.review.outputs.blockers == '0'
+        run: |
+          cp state/final/updated_ledger.json state/source/search_ledger.json
+          cp state/final/next_plan.json state/source/path_plan.json
+      - name: Seal resumable path state
+        if: steps.restore.outputs.ready == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          review=json.load(open('state/review/replay_plan.json'))
+          source_status=json.load(open('state/source_restore_status.json'))
+          wait=review['wait_quota_count']
+          blockers=review['blocker_count']
+          if blockers:
+              state='HOLD_PATH_AI_REVIEW_BLOCKER'
+              nxt='USER_OR_PERMISSION_REPAIR_REQUIRED'
+          elif wait:
+              state='WAIT_PATH_AI_QUOTA'
+              nxt='RESUME_NEXT_QUOTA_EPOCH'
+          else:
+              plan=json.load(open('state/source/path_plan.json'))
+              unsupported=review['unsupported_count']
+              if plan['candidate_count']>0:
+                  state='NEXT_PATH_EPOCH_READY'
+                  nxt='AI_REVIEW_THEN_ISOLATED_REPLAY'
+              elif unsupported:
+                  state='WAIT_PATH_FAMILY_BINDING_OR_NEW_EVIDENCE'
+                  nxt='FAMILY_BINDING_OR_NEW_NONOVERLAP'
+              else:
+                  state='WAIT_NEW_PATH_EVIDENCE'
+                  nxt='W1_W2_W3_OR_NEW_FAILURE_FINGERPRINT'
+          component_files={
+              'replay_batch':'state/source/replay/batch.json',
+              'path_index':'state/source/path_evidence/index.json',
+              'triage':'state/source/triage.json',
+              'search_ledger':'state/source/search_ledger.json',
+              'path_plan':'state/source/path_plan.json',
+          }
+          components={name:hashlib.sha256(Path(path).read_bytes()).hexdigest() for name,path in component_files.items()}
+          authority_raw=json.dumps(components,sort_keys=True,separators=(',',':')).encode()
+          manifest={
+              'schema_version':'strategy11.path_candidate.state.v1',
+              'state':'PASS_PATH_STATE_SOURCE_READY',
+              'path_state':state,
+              'next':nxt,
+              'source_type':source_status.get('source_type'),
+              'prior_source_manifest_sha':source_status.get('source_manifest_sha'),
+              'source_authority_sha':hashlib.sha256(authority_raw).hexdigest(),
+              'components':components,
+              'review_state':review['state'],
+              'accepted_count':review['accepted_count'],
+              'semantic_reject_count':review['semantic_reject_count'],
+              'wait_quota_count':wait,
+              'unsupported_count':review['unsupported_count'],
+              'research_only':True,'promotion_authority':False,'protected_mutations':0,
+              'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False,
+          }
+          manifest['source_manifest_sha']=hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('state/source_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          Path('state/status.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          print(state,nxt)
+          PY
+      - name: Assert path state safety
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          status=json.load(open('state/status.json'))
+          assert status['promotion_authority'] is False
+          assert status['protected_mutations']==0
+          assert status['execution_allowed'] is False
+          assert status['order_authority']=='BLOCKED'
+          assert status['runtime_bound'] is False
+          if status.get('state')=='PASS_PATH_STATE_SOURCE_READY':
+              assert Path('state/source/replay/batch.json').exists()
+              assert Path('state/source/path_evidence/index.json').exists()
+              assert Path('state/source/triage.json').exists()
+              assert Path('state/source/search_ledger.json').exists()
+              assert Path('state/source/path_plan.json').exists()
+          print(status.get('path_state',status['state']))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-path-candidate-state-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: state
+          if-no-files-found: error
+          retention-days: 90

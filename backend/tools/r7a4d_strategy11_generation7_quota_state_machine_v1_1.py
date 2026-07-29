@@ -186,10 +186,23 @@ def rewrite_outputs(
         raise RuntimeError("WAIT_STATE_ROW_ACCOUNTING_MISMATCH")
 
     all_rejected_rows = list(manifest.get("semantic_rejected") or [])
-    advisory_rows = [row for row in all_rejected_rows if row.get("file") in advisory_names]
+    advisory_rows = [{**row, "state": "ADVISORY_HOLD"} for row in all_rejected_rows if row.get("file") in advisory_names]
     semantic_rows = [row for row in all_rejected_rows if row.get("file") not in advisory_names]
     if len(advisory_rows) != len(advisory_names):
         raise RuntimeError("ADVISORY_HOLD_ROW_ACCOUNTING_MISMATCH")
+
+    advisory_by_strategy: dict[str, list[str]] = {}
+    for row in advisory_rows:
+        advisory_by_strategy.setdefault(str(row["strategy_id"]), []).append(str(row["candidate_id"]))
+    for row in manifest.get("strategy_states") or []:
+        strategy_id = str(row["strategy_id"])
+        holds = sorted(advisory_by_strategy.get(strategy_id, []))
+        if holds:
+            row["advisory_held_candidate_ids"] = holds
+            row["semantic_rejected_candidate_ids"] = [
+                candidate_id for candidate_id in row.get("semantic_rejected_candidate_ids") or []
+                if candidate_id not in holds
+            ]
 
     manifest["version"] = VERSION
     manifest["wait_quota"] = quota_rows
@@ -232,7 +245,6 @@ def rewrite_outputs(
     ledger_path = output_root / "search_ledger.json"
     ledger = core.read_json(ledger_path)
     retry_by_strategy: dict[str, list[str]] = {}
-    advisory_by_strategy: dict[str, list[str]] = {}
     for row in retry_rows:
         retry_by_strategy.setdefault(str(row["strategy_id"]), []).append(str(row["candidate_id"]))
     for row in advisory_rows:

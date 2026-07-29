@@ -14,19 +14,29 @@ def request_review(client: Any, model: str, payload: dict[str, Any]):
     raw_responses: list[str] = []
     prompt_hashes: list[str] = []
     last_error: Exception | None = None
+    json_mode = True
     for attempt in range(MAX_JSON_ATTEMPTS):
         prompt = core.build_prompt(payload, retry=attempt > 0)
         prompt_hashes.append(core.sha256_text(prompt))
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            max_tokens=768,
-            response_format={"type": "json_object"},
-            messages=[
+        kwargs = {
+            "model": model,
+            "temperature": 0,
+            "max_tokens": 768,
+            "messages": [
                 {"role": "system", "content": "Return exactly one valid JSON object and no other text."},
                 {"role": "user", "content": prompt},
             ],
-        )
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        try:
+            completion = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            last_error = exc
+            if json_mode and type(exc).__name__ == "BadRequestError":
+                json_mode = False
+                continue
+            raise
         raw = completion.choices[0].message.content or ""
         raw_responses.append(raw)
         try:

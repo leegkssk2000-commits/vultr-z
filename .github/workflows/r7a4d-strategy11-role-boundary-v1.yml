@@ -1,0 +1,71 @@
+name: R7A4D Strategy11 Role Boundary V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py
+      - backend/tools/r7a4d_strategy11_role_boundary_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-role-boundary-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-role-boundary-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile role contract and fixtures
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            backend/tools/r7a4d_strategy11_role_boundary_fixture_v1.py
+      - name: Run deterministic role fixtures
+        run: python backend/tools/r7a4d_strategy11_role_boundary_fixture_v1.py
+      - name: Re-run internal synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert role boundary and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          role=json.loads(Path('artifacts/strategy11_role_boundary_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json').read_text())
+          assert role['state']=='PASS_ROLE_BOUNDARY_ZBOT_ZICO_LICO_ZLICE', role
+          assert role['valid_roles']==['LICO','ZBOT','ZICO','ZLICE']
+          assert role['negative_fixture_count'] >= 7
+          assert role['sbot_hard_veto_precedence'] is True
+          assert role['cross_role_substitution_forbidden'] is True
+          assert role['runtime_bound'] is False
+          assert role['research_only'] is True
+          assert role['promotion_authority'] is False
+          assert role['protected_mutations']==0
+          assert role['execution_allowed'] is False
+          assert role['order_authority']=='BLOCKED'
+          assert 'ROLE_BOUNDARY_ZBOT_ZICO_LICO_ZLICE' in audit['implemented_capabilities'], audit
+          assert audit['recommended_implementation_order'][0]=='MODEL_RISK_GOVERNANCE', audit
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-role-boundary-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_role_boundary_v1
+            artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

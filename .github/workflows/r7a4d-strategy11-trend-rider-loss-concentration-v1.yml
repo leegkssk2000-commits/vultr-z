@@ -1,0 +1,71 @@
+name: R7A4D Strategy11 Trend Rider Loss Concentration V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_trend_rider_loss_concentration_v1.py
+      - .github/workflows/r7a4d-strategy11-trend-rider-loss-concentration-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-trend-rider-loss-concentration-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  decompose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-trend-rider-seed-repair-v1-30448483881-attempt-1
+          path: input/trend-rider
+          github-token: ${{ github.token }}
+          run-id: 30448483881
+      - name: Compile decomposition
+        run: python -m py_compile backend/tools/r7a4d_strategy11_trend_rider_loss_concentration_v1.py
+      - name: Decompose symbol regime window and exit concentration
+        run: |
+          python backend/tools/r7a4d_strategy11_trend_rider_loss_concentration_v1.py \
+            --artifact-root input/trend-rider \
+            --out artifacts/strategy11_trend_rider_loss_concentration_v1
+      - name: Assert source-bound single next cause
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_trend_rider_loss_concentration_v1/decomposition.json').read_text())
+          assert d['state']=='PASS_TREND_RIDER_LOSS_CONCENTRATION_DECOMPOSITION'
+          assert d['trade_count']==24
+          assert d['parity_pass'] is True
+          assert d['duplicate_trade_count']==0
+          assert d['findings']['f2_net_pct'] < 0
+          assert d['findings']['f1_net_pct'] > 0
+          assert d['next_single_axis'] in {'TREND_REGIME_GATE_HTF_ALIGNMENT','MFE_TRAILING','ENTRY_CONTEXT_GATE'}
+          assert d['window_whitelist_allowed'] is False
+          assert d['threshold_sweep_allowed'] is False
+          assert d['candidate_created'] is False
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-trend-rider-loss-concentration-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_trend_rider_loss_concentration_v1
+          if-no-files-found: error
+          retention-days: 90

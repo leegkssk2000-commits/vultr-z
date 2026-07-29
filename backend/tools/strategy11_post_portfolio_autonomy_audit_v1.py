@@ -4,7 +4,6 @@ import argparse
 import ast
 import hashlib
 import json
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -73,6 +72,7 @@ EXCLUDED_FILES = {
     "strategy11_post_portfolio_autonomy_audit_v1.py",
     "strategy11-post-portfolio-autonomy-audit-v1.yml",
 }
+FAIL_CLOSED_TERMS = ("execution_allowed", "order_authority", "runtime_bound")
 
 
 def stable_sha(value: Any) -> str:
@@ -91,18 +91,14 @@ def iter_source_files(root: Path) -> Iterable[Path]:
         base = root / rel_root
         if not base.exists():
             continue
-        if base.is_file():
-            candidates = [base]
-        else:
-            candidates = base.rglob("*")
+        candidates = [base] if base.is_file() else base.rglob("*")
         for path in candidates:
             if not path.is_file() or path.suffix.lower() not in ALLOWED_SUFFIXES:
                 continue
             rel = path.relative_to(root)
             if path.name in EXCLUDED_FILES:
                 continue
-            lowered_parts = {part.lower() for part in rel.parts}
-            if lowered_parts & EXCLUDED_PARTS:
+            if {part.lower() for part in rel.parts} & EXCLUDED_PARTS:
                 continue
             if rel in seen:
                 continue
@@ -118,10 +114,7 @@ def executable_shape(path: Path, text: str) -> dict[str, Any]:
             return {"kind": "python_parse_error", "callables": 0, "classes": 0, "top_level_calls": 0}
         callables = sum(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in ast.walk(tree))
         classes = sum(isinstance(node, ast.ClassDef) for node in ast.walk(tree))
-        top_level_calls = sum(
-            isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-            for node in tree.body
-        )
+        top_level_calls = sum(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) for node in tree.body)
         return {"kind": "python", "callables": callables, "classes": classes, "top_level_calls": top_level_calls}
     if path.suffix in {".yml", ".yaml"}:
         return {"kind": "workflow_or_yaml", "callables": int("jobs:" in text and ("run:" in text or "uses:" in text))}
@@ -130,25 +123,52 @@ def executable_shape(path: Path, text: str) -> dict[str, Any]:
     return {"kind": "json", "callables": 0}
 
 
-def evidence_strength(path: Path, text: str, terms: tuple[str, ...]) -> tuple[int, list[str]]:
+def term_hits(text: str, terms: tuple[str, ...]) -> list[str]:
     lowered = text.lower()
-    hits = sorted({term for term in terms if term.lower() in lowered})
+    return sorted({term for term in terms if term.lower() in lowered})
+
+
+def evidence_strength(path: Path, text: str, terms: tuple[str, ...]) -> tuple[int, list[str]]:
+    hits = term_hits(text, terms)
     shape = executable_shape(path, text)
     executable = shape.get("kind") in {"python", "workflow_or_yaml", "shell"} and int(shape.get("callables", 0)) > 0
-    score = len(hits) + (2 if executable else 0)
-    return score, hits
+    return len(hits) + (2 if executable else 0), hits
+
+
+def cohesive_contract_candidates(files: list[dict[str, Any]], subcaps: dict[str, tuple[str, ...]]) -> list[dict[str, Any]]:
+    rows = []
+    for file_row in files:
+        if file_row["shape"].get("kind") != "python" or int(file_row["shape"].get("callables", 0)) <= 0:
+            continue
+        text = file_row["text"]
+        matched = {
+            subcap: term_hits(text, terms)
+            for subcap, terms in subcaps.items()
+        }
+        matched = {key: value for key, value in matched.items() if value}
+        fail_closed_hits = term_hits(text, FAIL_CLOSED_TERMS)
+        if len(matched) != len(subcaps) or len(fail_closed_hits) != len(FAIL_CLOSED_TERMS):
+            continue
+        rows.append({
+            "path": file_row["path"],
+            "sha256": file_row["sha256"],
+            "matched_subcapabilities": matched,
+            "fail_closed_hits": fail_closed_hits,
+            "shape": file_row["shape"],
+        })
+    rows.sort(key=lambda value: value["path"])
+    return rows
 
 
 def audit(root: Path, head_sha: str) -> dict[str, Any]:
-    files = []
+    files: list[dict[str, Any]] = []
     for path in iter_source_files(root):
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        rel = path.relative_to(root).as_posix()
         files.append({
-            "path": rel,
+            "path": path.relative_to(root).as_posix(),
             "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "text": text,
             "shape": executable_shape(path, text),
@@ -172,33 +192,39 @@ def audit(root: Path, head_sha: str) -> dict[str, Any]:
                     "shape": row["shape"],
                 })
             candidates.sort(key=lambda value: (-value["score"], value["path"]))
-            strong = [item for item in candidates if item["shape"].get("kind") in {"python", "workflow_or_yaml", "shell"}]
+            executable = [item for item in candidates if item["shape"].get("kind") in {"python", "workflow_or_yaml", "shell"}]
             subcap_rows.append({
                 "subcapability": subcap,
                 "required_terms": list(terms),
-                "status": "EXECUTABLE_EVIDENCE" if strong else ("CONFIG_ONLY_EVIDENCE" if candidates else "MISSING"),
+                "status": "EXECUTABLE_FRAGMENT" if executable else ("CONFIG_ONLY_FRAGMENT" if candidates else "MISSING"),
                 "evidence": candidates[:8],
             })
-        executable_count = sum(row["status"] == "EXECUTABLE_EVIDENCE" for row in subcap_rows)
+
+        executable_count = sum(row["status"] == "EXECUTABLE_FRAGMENT" for row in subcap_rows)
         required_count = len(subcap_rows)
-        if executable_count == required_count:
-            status = "IMPLEMENTED_EVIDENCE"
+        cohesive = cohesive_contract_candidates(files, subcaps)
+        if executable_count == required_count and cohesive:
+            status = "IMPLEMENTED_CONTRACT_EVIDENCE"
+        elif executable_count == required_count:
+            status = "FRAGMENTED_COMPLETE_EVIDENCE"
         elif executable_count > 0:
-            status = "PARTIAL_EVIDENCE"
+            status = "PARTIAL_FRAGMENTED_EVIDENCE"
         else:
             status = "MISSING_EXECUTABLE_EVIDENCE"
-        missing = [row["subcapability"] for row in subcap_rows if row["status"] != "EXECUTABLE_EVIDENCE"]
+        missing = [row["subcapability"] for row in subcap_rows if row["status"] != "EXECUTABLE_FRAGMENT"]
         capability_rows.append({
             "capability": capability,
             "status": status,
             "executable_subcapability_count": executable_count,
             "required_subcapability_count": required_count,
             "missing_or_config_only": missing,
+            "cohesive_fail_closed_contract_evidence": cohesive,
             "subcapabilities": subcap_rows,
         })
-        if missing:
+        if status != "IMPLEMENTED_CONTRACT_EVIDENCE":
             implementation_queue.append({
                 "stage": capability,
+                "evidence_state": status,
                 "missing_or_config_only": missing,
                 "next_minimum_child": f"{capability}_STRICT_CONTRACT_AND_FIXTURE_V1",
                 "runtime_activation_allowed": False,
@@ -211,12 +237,14 @@ def audit(root: Path, head_sha: str) -> dict[str, Any]:
         "repository_head_sha": head_sha,
         "scanned_file_count": len(files),
         "capability_count": len(capability_rows),
+        "contract_cohesion_required": True,
+        "fail_closed_terms_required": list(FAIL_CLOSED_TERMS),
         "capabilities": capability_rows,
         "implementation_queue": implementation_queue,
         "next_stage": implementation_queue[0]["stage"] if implementation_queue else "HUMAN_GOVERNED_ARCHITECTURE_READY",
         "audit_limitations": [
-            "Static executable evidence does not prove runtime binding or production correctness.",
-            "Configuration or documentation alone never satisfies an executable subcapability.",
+            "Static executable fragments do not prove a cohesive stage contract, runtime binding or production correctness.",
+            "A stage is implemented only when one executable Python contract covers every required subcapability and all fail-closed terms.",
             "All future stages remain fixture/read-only until W1/W2/W3, new sealed, Shadow and Paper gates pass.",
         ],
         **SAFETY,

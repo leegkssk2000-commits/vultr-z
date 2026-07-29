@@ -1,0 +1,337 @@
+name: Apply Strategy11 Advisory Hold Integrity Repair
+
+on:
+  push:
+    branches:
+      - strategy11-advisory-hold-integrity-repair-v1
+    paths:
+      - .github/workflows/strategy11-advisory-hold-integrity-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-advisory-hold-integrity-repair-v1
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact single-cause patches
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'PATCH_MATCH_COUNT:{path}:{count}:{old[:80]}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          quota = 'backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1_1.py'
+          replace_once(
+              quota,
+              '    advisory_rows = [row for row in all_rejected_rows if row.get("file") in advisory_names]\n',
+              '    advisory_rows = [{**row, "state": "ADVISORY_HOLD"} for row in all_rejected_rows if row.get("file") in advisory_names]\n',
+          )
+          replace_once(
+              quota,
+              '    if len(advisory_rows) != len(advisory_names):\n        raise RuntimeError("ADVISORY_HOLD_ROW_ACCOUNTING_MISMATCH")\n\n    manifest["version"] = VERSION\n',
+              '    if len(advisory_rows) != len(advisory_names):\n        raise RuntimeError("ADVISORY_HOLD_ROW_ACCOUNTING_MISMATCH")\n\n    advisory_by_strategy: dict[str, list[str]] = {}\n    for row in advisory_rows:\n        advisory_by_strategy.setdefault(str(row["strategy_id"]), []).append(str(row["candidate_id"]))\n    for row in manifest.get("strategy_states") or []:\n        strategy_id = str(row["strategy_id"])\n        holds = sorted(advisory_by_strategy.get(strategy_id, []))\n        if holds:\n            row["advisory_held_candidate_ids"] = holds\n            row["semantic_rejected_candidate_ids"] = [\n                candidate_id for candidate_id in row.get("semantic_rejected_candidate_ids") or []\n                if candidate_id not in holds\n            ]\n\n    manifest["version"] = VERSION\n',
+          )
+          replace_once(
+              quota,
+              '    retry_by_strategy: dict[str, list[str]] = {}\n    advisory_by_strategy: dict[str, list[str]] = {}\n',
+              '    retry_by_strategy: dict[str, list[str]] = {}\n',
+          )
+
+          state = 'backend/tools/r7a4d_strategy11_path_candidate_state_v1.py'
+          replace_once(
+              state,
+              'from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import classify, read_json, stable_sha, write_json\n',
+              'from backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1 import read_json, stable_sha, write_json\nfrom backend.tools.r7a4d_strategy11_generation7_quota_state_machine_v1_1 import strict_classify\n',
+          )
+          replace_once(
+              state,
+              '    semantic_rejected = []\n    waiting = []\n',
+              '    semantic_rejected = []\n    advisory_held = []\n    waiting = []\n',
+          )
+          replace_once(state, '        state = classify(path)\n', '        state = strict_classify(path)\n')
+          replace_once(
+              state,
+              '        elif state == "SEMANTIC_REJECT":\n            semantic_rejected.append(row)\n        elif state == "WAIT_QUOTA":\n',
+              '        elif state == "SEMANTIC_REJECT":\n            semantic_rejected.append(row)\n        elif state == "ADVISORY_HOLD":\n            advisory_held.append(row)\n        elif state == "WAIT_QUOTA":\n',
+          )
+          replace_once(
+              state,
+              '        "semantic_reject_count": len(semantic_rejected),\n        "wait_quota_count": len(waiting),\n',
+              '        "semantic_reject_count": len(semantic_rejected),\n        "advisory_hold_count": len(advisory_held),\n        "wait_quota_count": len(waiting),\n',
+          )
+          replace_once(
+              state,
+              '        "semantic_rejected": semantic_rejected,\n        "waiting": waiting,\n',
+              '        "semantic_rejected": semantic_rejected,\n        "advisory_held": advisory_held,\n        "waiting": waiting,\n',
+          )
+
+          updater = 'backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py'
+          replace_once(
+              updater,
+              '    rejected = []\n    family_wait = []\n',
+              '    rejected = []\n    advisory_held = []\n    family_wait = []\n',
+          )
+          replace_once(
+              updater,
+              '    for review in replay_plan.get("unsupported") or []:\n',
+              '    for review in replay_plan.get("advisory_held") or []:\n        strategy_id = str(review.get("strategy_id") or "")\n        candidate_id = str(review.get("candidate_id") or "")\n        if strategy_id not in by_strategy or not candidate_id:\n            raise ValueError(f"ADVISORY_REVIEW_IDENTITY_INVALID:{strategy_id}:{candidate_id}")\n        append_unique(by_strategy[strategy_id], "ai_advisory_held_candidate_ids", candidate_id)\n        advisory_held.append({"strategy_id": strategy_id, "candidate_id": candidate_id, "review_sha": review.get("review_sha")})\n\n    for review in replay_plan.get("unsupported") or []:\n',
+          )
+          replace_once(
+              updater,
+              '    ledger["path_ai_rejected_candidates"] = rejected\n    ledger["path_family_binding_wait_candidates"] = family_wait\n',
+              '    ledger["path_ai_rejected_candidates"] = rejected\n    ledger["path_ai_advisory_held_candidates"] = advisory_held\n    ledger["path_family_binding_wait_candidates"] = family_wait\n',
+          )
+
+          planner = 'backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py'
+          replace_once(
+              planner,
+              '            "ai_rejected_candidate_ids",\n            "family_binding_wait_candidate_ids",\n',
+              '            "ai_rejected_candidate_ids",\n            "ai_advisory_held_candidate_ids",\n            "family_binding_wait_candidate_ids",\n',
+          )
+          replace_once(
+              planner,
+              '    result["ai_rejected_candidates_excluded"] = True\n    result["family_binding_wait_candidates_excluded"] = True\n',
+              '    result["ai_rejected_candidates_excluded"] = True\n    result["ai_advisory_held_candidates_excluded"] = True\n    result["family_binding_wait_candidates_excluded"] = True\n',
+          )
+
+          fixture = 'backend/tools/r7a4d_strategy11_generation7_quota_runtime_fixture_v1.py'
+          replace_once(
+              fixture,
+              '    assert \'response_format={"type": "json_object"}\' in groq_client\n    assert "MAX_JSON_ATTEMPTS = 3" in groq_client\n',
+              '    assert \'kwargs["response_format"] = {"type": "json_object"}\' in groq_client\n    assert "if json_mode:" in groq_client\n    assert "BadRequestError" in groq_client\n    assert "MAX_JSON_ATTEMPTS = 3" in groq_client\n',
+          )
+          replace_once(
+              'scripts/strategy11_groq_redteam_v1_2.py',
+              'MAX_JSON_ATTEMPTS = 3\n# Fixture compatibility marker: response_format={"type": "json_object"}\n',
+              'MAX_JSON_ATTEMPTS = 3\n',
+          )
+
+          Path('backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py').write_text(r'''from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+from backend.research import strategy11_pre_shadow_path_optimize_planner_v1_2 as planner
+from backend.tools import r7a4d_strategy11_generation7_quota_state_machine_v1 as core
+from backend.tools import r7a4d_strategy11_generation7_quota_state_machine_v1_1 as quota
+from backend.tools import r7a4d_strategy11_path_candidate_state_v1 as path_state
+from backend.tools import r7a4d_strategy11_path_search_ledger_update_v1 as ledger_update
+
+SAFETY = {
+    "research_only": True,
+    "promotion_authority": False,
+    "protected_mutations": 0,
+    "execution_allowed": False,
+    "order_authority": "BLOCKED",
+    "runtime_bound": False,
+}
+
+
+def write(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def decision(token: str, candidate: str) -> dict:
+    return {
+        "schema_version": "strategy11.ai_review_decision_gate.v3",
+        "status": "HOLD_AI_REVIEW_DECISION_GATE",
+        "blocker_codes": [f"groq:{token}:OVERFILTER_ZERO_TRADES"],
+        "wait_codes": [],
+        "candidate_id": candidate,
+    }
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ai = root / "ai"
+        out = root / "out"
+        write(ai / "s__A.json", decision("ADVISORY_HOLD", "A"))
+        write(ai / "s__B.json", decision("SEMANTIC_REJECT", "B"))
+        manifest = {
+            "state": "PASS_GENERATION7_AI_REVIEW_COMPLETE",
+            "next": "WAIT_NEW_EVIDENCE",
+            "all_candidates_final": True,
+            "ready_to_replay": False,
+            "wait_quota": [],
+            "semantic_rejected": [
+                {"strategy_id": "s", "candidate_id": "A", "file": "s__A.json", "state": "SEMANTIC_REJECT"},
+                {"strategy_id": "s", "candidate_id": "B", "file": "s__B.json", "state": "SEMANTIC_REJECT"},
+            ],
+            "strategy_states": [{
+                "strategy_id": "s",
+                "state": "WAIT_NEW_EVIDENCE",
+                "accepted_candidate_ids": [],
+                "semantic_rejected_candidate_ids": ["A", "B"],
+                "wait_quota_candidate_ids": [],
+            }],
+            **SAFETY,
+        }
+        write(out / "accepted_plan.json", {"state": "WAIT_NEW_EVIDENCE", **SAFETY})
+        write(out / "search_ledger.json", {
+            "strategy_states": manifest["strategy_states"],
+            "rows": [{"strategy_id": "s", "rejection_reason": "A:AI_SEMANTIC_REJECT;B:AI_SEMANTIC_REJECT"}],
+            **SAFETY,
+        })
+        reservation = {
+            "quota_epoch_date": "2026-07-30",
+            "quota_epoch_candidates_used": 0,
+            "quota_epoch_candidates_remaining": 10,
+            "quota_epoch_selected_files": [],
+            "reservation_sha": "fixture-reservation",
+            "provider_retry_attempts": {},
+            "provider_retry_attempt_limit": 3,
+        }
+        rewritten = quota.rewrite_outputs(manifest, out, ai, reservation)
+        assert rewritten["advisory_hold_count"] == 1
+        assert rewritten["semantic_reject_count"] == 1
+        assert rewritten["advisory_held"][0]["state"] == "ADVISORY_HOLD"
+        manifest_state = rewritten["strategy_states"][0]
+        assert manifest_state["advisory_held_candidate_ids"] == ["A"]
+        assert manifest_state["semantic_rejected_candidate_ids"] == ["B"]
+
+        prepared = {
+            "state": "PASS_PATH_CANDIDATES_PREPARED",
+            "executable_count": 1,
+            "unsupported_count": 0,
+            "executable": [{
+                "strategy_id": "s", "candidate_id": "A", "axis": "TIME_STOP",
+                "basis_variant_id": "CONTROL", "candidate_sha": "candidate-a",
+                "kind": "EXIT", "changes": {"time_stop_bars": 12}, **SAFETY,
+            }],
+            "unsupported": [],
+            **SAFETY,
+        }
+        path_out = root / "path-review"
+        replay_plan = path_state.filter_reviews(prepared, ai, path_out)
+        assert replay_plan["state"] == "WAIT_PATH_ALL_SEMANTIC_REJECT_OR_FAMILY_BINDING"
+        assert replay_plan["blocker_count"] == 0
+        assert replay_plan["advisory_hold_count"] == 1
+        assert replay_plan["semantic_reject_count"] == 0
+
+        ledger = {"rows": [{"strategy_id": "s"}], **SAFETY}
+        updated = ledger_update.update_ledger(ledger, replay_plan)
+        assert updated["rows"][0]["ai_advisory_held_candidate_ids"] == ["A"]
+        assert updated["path_ai_advisory_held_candidates"][0]["candidate_id"] == "A"
+
+        fingerprint = {"fingerprint": "TIME_EXPOSURE", "support_sha": "support"}
+        basis = {"bundle_sha": "bundle", "source_sha": "source"}
+        policy = {
+            "max_axis_generations_per_data_epoch": 2,
+            "candidate_catalog": {"TIME_EXPOSURE": [{
+                "candidate_id": "A", "axis": "TIME_STOP", "parameters": {"time_stop_bars": 12}, "why": "fixture"
+            }]},
+        }
+        candidate = planner.select_candidate(
+            fingerprint,
+            strategy_id="s",
+            basis_variant_id="CONTROL",
+            basis_bundle=basis,
+            ledger_row={"ai_advisory_held_candidate_ids": ["A"], "remaining_axes": ["TIME_STOP"]},
+            policy=policy,
+        )
+        assert candidate is None
+
+        groq = Path('scripts/strategy11_groq_redteam_v1_2.py').read_text(encoding='utf-8')
+        assert 'kwargs["response_format"] = {"type": "json_object"}' in groq
+        assert 'Fixture compatibility marker' not in groq
+        workflow = Path('.github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml').read_text(encoding='utf-8')
+        assert "steps.restore.outputs.complete != 'true'" in workflow
+
+    print('PASS_STRATEGY11_ADVISORY_HOLD_INTEGRITY_FIXTURE')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+''', encoding='utf-8')
+
+          Path('.github/workflows/r7a4d-strategy11-advisory-hold-integrity-fixture-v1.yml').write_text(r'''name: R7A4D Strategy11 Advisory Hold Integrity Fixture V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1_1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_state_v1.py
+      - backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py
+      - backend/tools/r7a4d_strategy11_generation7_quota_runtime_fixture_v1.py
+      - backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py
+      - scripts/strategy11_groq_redteam_v1_2.py
+      - .github/workflows/r7a4d-strategy11-advisory-hold-integrity-fixture-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile repaired modules
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1_1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_state_v1.py \
+            backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py \
+            scripts/strategy11_groq_redteam_v1_2.py
+      - name: Verify advisory hold integrity end to end
+        run: python backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py
+      - name: Verify existing quota runtime fixture
+        run: |
+          python backend/tools/r7a4d_strategy11_generation7_quota_runtime_fixture_v1.py \
+            --root /tmp/g7-quota-runtime-fixture \
+            --workflow .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml \
+            --groq-client scripts/strategy11_groq_redteam_v1_2.py
+''', encoding='utf-8')
+
+          Path('.github/workflows/strategy11-advisory-hold-integrity-patch.yml').unlink()
+          PY
+      - name: Verify patched modules locally
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1_1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_state_v1.py \
+            backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py \
+            scripts/strategy11_groq_redteam_v1_2.py
+          python backend/tools/r7a4d_strategy11_advisory_hold_integrity_fixture_v1.py
+          python backend/tools/r7a4d_strategy11_generation7_quota_runtime_fixture_v1.py \
+            --root /tmp/g7-quota-runtime-fixture \
+            --workflow .github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml \
+            --groq-client scripts/strategy11_groq_redteam_v1_2.py
+      - name: Commit repaired files
+        run: |
+          git config user.name 'strategy11-repair-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Close Strategy11 advisory hold integrity gaps'
+          git push origin HEAD:strategy11-advisory-hold-integrity-repair-v1

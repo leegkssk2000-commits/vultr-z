@@ -1,0 +1,94 @@
+name: R7A4D Strategy11 Evidence Optimize Closed Loop V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/research/strategy11_evidence_optimize_closed_loop_v1.py
+      - backend/tools/r7a4d_strategy11_evidence_optimize_closed_loop_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-evidence-optimize-closed-loop-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-evidence-optimize-closed-loop-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate-closed-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile controller and fixture
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_evidence_optimize_closed_loop_v1.py \
+            backend/tools/r7a4d_strategy11_evidence_optimize_closed_loop_fixture_v1.py
+      - name: Execute deterministic closed-loop fixtures
+        run: |
+          python backend/tools/r7a4d_strategy11_evidence_optimize_closed_loop_fixture_v1.py \
+            --out artifacts/strategy11_evidence_optimize_closed_loop_v1
+      - name: Assert research loop and fail-closed runtime bridge
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts/strategy11_evidence_optimize_closed_loop_v1')
+          summary = json.loads((root / 'summary.json').read_text())
+          pre = json.loads((root / 'pre_runtime.json').read_text())
+          ready = json.loads((root / 'runtime_ready.json').read_text())
+          exhausted = json.loads((root / 'exhausted.json').read_text())
+
+          assert summary['state'] == 'PASS_EVIDENCE_OPTIMIZE_CLOSED_LOOP_FIXTURE'
+          assert summary['selected_fingerprint'] == 'MFE_GIVEBACK'
+          assert summary['selected_candidate_id'] == 'MFE_TRAIL_ACT075_ATR075'
+          assert summary['selected_axis'] == 'MFE_TRAILING'
+          assert summary['fixture_only'] is True
+          assert summary['real_strategy_artifact_consumed'] is False
+
+          assert pre['state'] == 'PASS_RESEARCH_OPTIMIZE_CLOSED_LOOP_PLAN'
+          assert pre['candidate_count'] == 1
+          assert pre['next_candidate_proposal']['single_axis'] is True
+          assert pre['next_candidate_proposal']['replay_required'] is True
+          assert pre['next_candidate_proposal']['ai_router_plan_required'] is True
+          assert pre['runtime_bridge']['state'] == 'WAIT_REAL_SHADOW300_AND_100C_BURNIN'
+          assert pre['runtime_bridge']['runtime_observer_bridge_allowed'] is False
+
+          assert ready['state'] == 'PASS_READ_ONLY_RUNTIME_OBSERVER_BRIDGE_READY'
+          assert ready['runtime_bridge']['runtime_observer_bridge_allowed'] is True
+          assert ready['runtime_bridge']['strategy_write_allowed'] is False
+          assert ready['runtime_bridge']['threshold_write_allowed'] is False
+          assert ready['runtime_bridge']['portfolio_weight_write_allowed'] is False
+          assert ready['runtime_bridge']['ledger_write_allowed'] is False
+          assert ready['runtime_bridge']['paper_live_order_allowed'] is False
+          assert ready['runtime_bound'] is False
+          assert ready['execution_allowed'] is False
+          assert ready['order_authority'] == 'BLOCKED'
+          assert ready['live_activation_allowed'] is False
+          assert ready['order_submission_allowed'] is False
+
+          assert exhausted['state'] == 'WAIT_NEW_EVIDENCE'
+          assert exhausted['next_candidate_proposal'] is None
+          assert exhausted['incumbent_retained'] is True
+          print('PASS_EVIDENCE_OPTIMIZE_CLOSED_LOOP_FIXTURE')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-evidence-optimize-closed-loop-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_evidence_optimize_closed_loop_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,230 @@
+name: R7A4D Strategy11 Path Candidate Fixture Validation V1
+run-name: FIXTURE_ONLY Strategy11 path contracts ${{ github.sha }}
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/r7a4d_strategy11_path_candidate_state_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_ai_resume_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py
+      - backend/tools/r7a4d_strategy11_path_candidate_replay_v1_1.py
+      - backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py
+      - backend/tools/r7a4d_strategy11_path_state_source_restore_v1.py
+      - backend/tools/r7a4d_strategy11_path_state_source_restore_v1_1.py
+      - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py
+      - backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-path-fixture-validation-v1.yml
+      - .github/workflows/r7a4d-strategy11-path-candidate-state-machine-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-path-fixture-validation-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  FIXTURE_ONLY: 'true'
+
+jobs:
+  validate-fixture-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile path state components
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_path_candidate_state_v1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_ai_resume_v1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_replay_v1.py \
+            backend/tools/r7a4d_strategy11_path_candidate_replay_v1_1.py \
+            backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            backend/tools/r7a4d_strategy11_path_state_source_restore_v1.py \
+            backend/tools/r7a4d_strategy11_path_state_source_restore_v1_1.py \
+            backend/research/strategy11_pre_shadow_path_optimize_planner_v1_2.py \
+            backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py
+      - name: Verify paginated artifact selection and safe extraction
+        run: |
+          mkdir -p artifacts/path-pagination
+          python - <<'PY'
+          import json
+          import tempfile
+          import zipfile
+          from pathlib import Path
+          from urllib.parse import parse_qs, urlparse
+          from backend.tools import r7a4d_strategy11_path_state_source_restore_v1_1 as restore
+
+          calls=[]
+          def fake_api_json(url, token):
+              page=int(parse_qs(urlparse(url).query)['page'][0])
+              calls.append(page)
+              if page==1:
+                  return {'artifacts':[
+                      {'id':idx,'name':f'unrelated-{idx}','expired':False,'created_at':'2026-07-29T00:00:00Z'}
+                      for idx in range(1,101)
+                  ]}
+              if page==2:
+                  return {'artifacts':[
+                      {'id':201,'name':'s11-generation7-quota-state-v1-old','expired':False,'created_at':'2026-07-28T00:00:00Z'},
+                      {'id':202,'name':'s11-generation7-quota-state-v1-new','expired':False,'created_at':'2026-07-29T00:00:00Z'},
+                      {'id':203,'name':'s11-generation7-quota-state-v1-expired','expired':True,'created_at':'2026-07-30T00:00:00Z'},
+                  ]}
+              raise AssertionError(f'unexpected page {page}')
+
+          original=restore.api_json
+          restore.api_json=fake_api_json
+          try:
+              rows=restore.remote_generation_artifacts('fixture-token','owner/repo')
+          finally:
+              restore.api_json=original
+          assert calls==[1,2],calls
+          assert [row['id'] for row in rows]==[202,201],rows
+
+          with tempfile.TemporaryDirectory() as temp:
+              root=Path(temp)
+              malicious=root/'malicious.zip'
+              with zipfile.ZipFile(malicious,'w') as bundle:
+                  bundle.writestr('../escape.txt','blocked')
+              blocked=False
+              try:
+                  restore.safe_extract(malicious,root/'bad-out')
+              except ValueError as exc:
+                  blocked='ARTIFACT_ZIP_PATH_ESCAPE' in str(exc)
+              assert blocked is True
+              assert not (root/'escape.txt').exists()
+              good=root/'good.zip'
+              with zipfile.ZipFile(good,'w') as bundle:
+                  bundle.writestr('nested/ok.txt','ok')
+              restore.safe_extract(good,root/'good-out')
+              assert (root/'good-out/nested/ok.txt').read_text()=='ok'
+
+          summary={
+              'state':'PASS_PATH_ARTIFACT_PAGINATION_FIXTURE',
+              'pages_scanned':calls,
+              'selected_ids':[row['id'] for row in rows],
+              'zip_path_escape_blocked':True,
+              'research_only':True,'promotion_authority':False,'protected_mutations':0,
+              'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False,
+          }
+          Path('artifacts/path-pagination/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(summary['state'])
+          PY
+      - name: Execute deterministic path state fixtures
+        run: |
+          python backend/tools/r7a4d_strategy11_path_candidate_state_fixture_v1.py \
+            --root artifacts/path-candidate-state
+      - name: Verify replay-completion ledger gate
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/path-ledger-completion/review
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/path-ledger-completion')
+          safety={'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False}
+          ledger={'schema_version':'fixture','state':'PASS_SEARCH_LEDGER','rows':[{'strategy_id':'trend_ma_macd','tested_candidate_ids':[],'axis_generation_count':{}}],**safety}
+          plan={
+            'schema_version':'strategy11.path_candidate_replay_plan.v1',
+            'state':'PASS_PATH_AI_REVIEW_READY_TO_REPLAY',
+            'accepted':[{'strategy_id':'trend_ma_macd','candidate_id':'PATH_BE075','axis':'BREAKEVEN','generation':1,'review_sha':'fixture-review'}],
+            'semantic_rejected':[],
+            'unsupported':[],
+            **safety,
+          }
+          (root/'ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          (root/'review/replay_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          PY
+          set +e
+          python backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            --ledger artifacts/path-ledger-completion/ledger.json \
+            --replay-plan artifacts/path-ledger-completion/review/replay_plan.json \
+            --out artifacts/path-ledger-completion/should-not-exist.json \
+            > artifacts/path-ledger-completion/no-replay.log 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep -q 'PATH_REPLAY_COMPLETION_REQUIRED' artifacts/path-ledger-completion/no-replay.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/path-ledger-completion/replay')
+          safety={'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False}
+          strategy={
+            'state':'NO_L090_CANDIDATE','strategy_id':'trend_ma_macd','tested_candidate_ids':['PATH_BE075'],
+            'winner':None,'same_axis_generation_count':1,**safety,
+          }
+          candidate={
+            'candidate_config':{'strategy_id':'trend_ma_macd','candidate_id':'PATH_BE075','axis':'BREAKEVEN'},
+            'parity':{'state':'PASS','duplicate_trade_count':0},
+            'ladder_check':{'research_pass':False},
+            **safety,
+          }
+          batch={'state':'PASS_PATH_CANDIDATE_REPLAY_BATCH','strategy_count':1,'rows':[strategy],**safety}
+          (root/'trend_ma_macd/PATH_BE075').mkdir(parents=True,exist_ok=True)
+          (root/'batch.json').write_text(json.dumps(batch,indent=2,sort_keys=True)+'\n')
+          (root/'trend_ma_macd/summary.json').write_text(json.dumps(strategy,indent=2,sort_keys=True)+'\n')
+          (root/'trend_ma_macd/PATH_BE075/summary.json').write_text(json.dumps(candidate,indent=2,sort_keys=True)+'\n')
+          PY
+          python backend/tools/r7a4d_strategy11_path_search_ledger_update_v1.py \
+            --ledger artifacts/path-ledger-completion/ledger.json \
+            --replay-plan artifacts/path-ledger-completion/review/replay_plan.json \
+            --out artifacts/path-ledger-completion/updated_ledger.json
+      - name: Assert fixture-only authority and completion lineage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state=json.loads(Path('artifacts/path-candidate-state/summary.json').read_text())
+          pagination=json.loads(Path('artifacts/path-pagination/summary.json').read_text())
+          ledger=json.loads(Path('artifacts/path-ledger-completion/updated_ledger.json').read_text())
+          assert state['state']=='PASS_PATH_CANDIDATE_STATE_FIXTURE'
+          assert pagination['state']=='PASS_PATH_ARTIFACT_PAGINATION_FIXTURE'
+          assert pagination['pages_scanned']==[1,2]
+          assert pagination['selected_ids']==[202,201]
+          assert state['semantic_reject_generation_consumed'] is False
+          assert state['completion_without_replay_blocked'] is True
+          assert ledger['path_epoch_count']==1
+          assert ledger['rows'][0]['tested_candidate_ids']==['PATH_BE075']
+          assert ledger['rows'][0]['axis_generation_count']['BREAKEVEN']==1
+          assert ledger['rows'][0]['last_path_research_pass'] is False
+          assert len(ledger['rows'][0]['last_path_replay_completion_sha'])==64
+          assert len(ledger['path_replay_completion_set_sha'])==64
+          for payload in (state,pagination,ledger):
+            assert payload['promotion_authority'] is False
+            assert payload['protected_mutations']==0
+            assert payload['execution_allowed'] is False
+            assert payload['order_authority']=='BLOCKED'
+          manifest={
+            'state':'PASS_PATH_FIXTURE_VALIDATION',
+            'fixture_only':True,
+            'production_authority':False,
+            'artifact_pagination_gate':'PASS',
+            'zip_path_escape_gate':'PASS',
+            'ledger_completion_gate':'PASS',
+            'identity_axis_gate':'PASS',
+            'outcome_consistency_gate':'PASS',
+            'next_production_authority':'.github/workflows/r7a4d-strategy11-path-candidate-state-machine-v1.yml',
+            'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,
+            'order_authority':'BLOCKED','runtime_bound':False,
+          }
+          Path('artifacts/fixture_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          print(manifest['state'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-path-fixture-validation-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 30

@@ -6,6 +6,7 @@ on:
     branches:
       - master
       - 'r7a4d-strategy11-groq-redteam-*'
+      - 'fix-strategy11-groq-json-*'
     paths:
       - 'scripts/strategy11_groq_redteam.py'
       - '.github/workflows/strategy11-groq-redteam-v1.yml'
@@ -65,6 +66,25 @@ jobs:
       - name: Compile read-only client
         run: python -m py_compile scripts/strategy11_groq_redteam.py
 
+      - name: Verify balanced-object parser and fail-closed shape
+        run: |
+          python - <<'PY'
+          from scripts.strategy11_groq_redteam import parse_review_json, validate_review
+          valid={
+            'decision':'REJECT','blocker_codes':['ZERO_TRADES'],'single_axis':True,
+            'evidence_supported':False,'overfit_risk':'HIGH','reason':'No evidence.'
+          }
+          raw='Commentary before\n```json\n{"decision":"REJECT","blocker_codes":["ZERO_TRADES"],"single_axis":true,"evidence_supported":false,"overfit_risk":"HIGH","reason":"No evidence."}\n```\nCommentary after'
+          assert validate_review(parse_review_json(raw))==valid
+          try:
+              parse_review_json('not json')
+          except ValueError as exc:
+              assert str(exc)=='RESPONSE_JSON_DECODE_FAILED'
+          else:
+              raise AssertionError('malformed response was accepted')
+          print('PASS_GROQ_JSON_RECOVERY_PARSER')
+          PY
+
       - name: Run live Groq connection and JSON-schema smoke
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -96,6 +116,10 @@ jobs:
                   raise SystemExit(f'HOLD_GROQ_SAFETY_CONTRACT:{key}')
           if result.get('status') != 'PASS_GROQ_REDTEAM_CONNECTION':
               raise SystemExit(result.get('blocker_code', 'HOLD_GROQ_CONNECTION'))
+          if result.get('json_attempt_count') not in {1,2}:
+              raise SystemExit('HOLD_GROQ_JSON_ATTEMPT_COUNT')
+          if len(result.get('response_attempt_shas', [])) != result['json_attempt_count']:
+              raise SystemExit('HOLD_GROQ_RESPONSE_LINEAGE')
           print('PASS_GROQ_SAFETY_CONTRACT')
           PY
 

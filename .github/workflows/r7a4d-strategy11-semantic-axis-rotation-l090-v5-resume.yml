@@ -1,0 +1,272 @@
+name: R7A4D Strategy11 Semantic Axis Rotation L090 V5 Resume
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v4
+    paths:
+      - .github/workflows/r7a4d-strategy11-semantic-axis-rotation-l090-v5-resume.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+concurrency:
+  group: r7a4d-strategy11-semantic-axis-v5-resume-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  PLAN_RUN_ID: '30409152509'
+  PLAN_ARTIFACT: 's11-semantic-axis-v5-plan-30409152509-attempt-1'
+
+jobs:
+  ai-review:
+    name: review all 44 single-axis candidates fail-closed
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          path: ai-router
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - name: Download authoritative generation-six plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: input/plan
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PLAN_RUN_ID }}
+      - name: Assert fixed plan authority and build payloads
+        run: |
+          mkdir -p input/ai out/ai
+          python - <<'PY'
+          import hashlib,json,re
+          from pathlib import Path
+          plan=json.loads(Path('input/plan/plan.json').read_text())
+          ledger=json.loads(Path('input/plan/search_ledger.json').read_text())
+          assert plan['generation']==6
+          assert plan['supersedes_run_id']==30407772491
+          assert plan['strategy_count']==22 and plan['candidate_count']==44
+          assert ledger['duplicate_strategy_axis_data_runs']==0
+          rows=[]
+          for row in plan['rows']:
+              for cid in row['candidate_ids']:
+                  spec=row['candidate_specs'][cid]
+                  assert isinstance(spec.get('axis'),str) and spec['axis']
+                  canonical=json.dumps({'strategy_id':row['strategy_id'],'candidate_id':cid,'spec':spec},sort_keys=True,separators=(',',':'))
+                  payload={
+                    'strategy_id':row['strategy_id'],
+                    'candidate_id':cid,
+                    'changed_axes':[spec['axis']],
+                    'routing_flags':{'external_hypothesis':True,'multimodal':False,'new_multimodal_evidence':False,'new_failure_fingerprint':False,'borderline_case':False,'major_gate_review':False},
+                    'hypothesis':{'axis':spec['axis'],'generation':6,'description':'One existing feature changes exactly one semantic axis for isolated replay.','candidate_spec':spec},
+                    'evidence':{'strategy_count':1,'candidate_count':1,'duplicate_strategy_axis_data_runs':0,'prior_evidence_lanes':row['evidence_lanes'],'falsification_test':row['falsification_test']},
+                    'lineage':{'source_sha':'64e27d16d7f28b9fae59cf2a875d195f4bca22a1','data_sha':'SOURCE_RUN_30252022416','window_sha':plan.get('prior_final_sha256',''),'candidate_sha':hashlib.sha256(canonical.encode()).hexdigest()}
+                  }
+                  safe=re.sub(r'[^A-Za-z0-9_.-]+','_',f"{row['strategy_id']}__{cid}")
+                  path=Path(f'input/ai/{safe}.json')
+                  path.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+                  rows.append({'strategy_id':row['strategy_id'],'candidate_id':cid,'axis':spec['axis'],'file':path.name})
+          assert len(rows)==44
+          Path('input/payload_manifest.json').write_text(json.dumps({'state':'PASS_44_SINGLE_AXIS_PAYLOADS','rows':rows,'plan_run_id':30409152509,'plan_artifact':'s11-semantic-axis-v5-plan-30409152509-attempt-1'},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Execute all reviews without hiding rejected candidates
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set +e
+          for input in input/ai/*.json; do
+            name="$(basename "$input" .json)"
+            (
+              cd ai-router
+              python scripts/strategy11_ai_review_router_v2.py \
+                --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+                --mode execute \
+                --input "../$input" \
+                --output "../out/ai/${name}.json"
+            )
+          done
+          exit 0
+      - name: Aggregate AI decisions and fail closed on any rejected candidate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('input/payload_manifest.json').read_text())
+          decisions=[]; rejected=[]
+          for row in manifest['rows']:
+              path=Path('out/ai')/row['file']
+              if not path.exists():
+                  item={**row,'status':'MISSING','blocker_codes':['AI_RESULT_MISSING']}; decisions.append(item); rejected.append(item); continue
+              data=json.loads(path.read_text())
+              providers=data.get('provider_results',{})
+              item={**row,'status':data.get('status'),'blocker_codes':data.get('blocker_codes',[]),'input_sha':data.get('input_sha'),'groq':((providers.get('groq') or {}).get('artifact') or {}).get('review'),'workers_ai':((providers.get('workers_ai') or {}).get('artifact') or {}).get('review')}
+              decisions.append(item)
+              if data.get('status')!='PASS_AI_REVIEW_DECISION_GATE': rejected.append(item)
+          summary={'state':'PASS_ALL_44_SINGLE_AXIS_AI_DECISIONS' if not rejected else 'HOLD_REJECTED_SINGLE_AXIS_CANDIDATES','review_count':len(decisions),'pass_count':len(decisions)-len(rejected),'reject_count':len(rejected),'decisions':decisions,'rejected':rejected,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          Path('out/ai_manifest.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          assert len(decisions)==44
+          if rejected:
+              raise SystemExit('HOLD_REJECTED_SINGLE_AXIS_CANDIDATES:'+str(len(rejected)))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-semantic-axis-v5-resume-ai-${{ github.run_id }}
+          path: |
+            out/ai
+            out/ai_manifest.json
+            input/payload_manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: replay accepted semantic axes batch ${{ matrix.batch }}
+    needs: ai-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: '1'
+            strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance'
+          - batch: '2'
+            strategies: 'keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal'
+          - batch: '3'
+            strategies: 'range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias'
+          - batch: '4'
+            strategies: 'squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider'
+          - batch: '5'
+            strategies: 'vol_spike_fade,vwap_revert'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Download fixed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: input/plan
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PLAN_RUN_ID }}
+      - name: Download and assert AI manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-resume-ai-${{ github.run_id }}
+          path: input/ai
+      - run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('input/ai/ai_manifest.json'))
+          assert d['state']=='PASS_ALL_44_SINGLE_AXIS_AI_DECISIONS'
+          assert d['review_count']==44 and d['pass_count']==44 and d['reject_count']==0
+          assert d['promotion_authority'] is False and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          PY
+      - name: Download immutable F1/F2/F3 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download evidence batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for b in 1 2 3 4 5; do gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${b}-30252022416-attempt-1" --dir "input/evidence/batch-${b}"; done
+      - name: Replay control and candidates
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode replay --root . --plan input/plan/plan.json \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out/batch-${{ matrix.batch }}
+      - name: Assert deterministic parity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for path in Path('out').rglob('summary.json'):
+              d=json.loads(path.read_text())
+              if d.get('strategy_id') and d.get('version')=='R7A4D_STRATEGY11_MULTIMODAL_L090_REPLAY_V1': rows.append(d)
+          assert rows
+          for d in rows:
+              assert len(d['tested_candidate_ids'])==2 and len(d['variants'])==3
+              assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+              for v in d['variants']:
+                  assert v['parity']['state']=='PASS' and v['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-semantic-axis-v5-resume-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate authoritative generation-six results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-semantic-axis-v5-resume-replay-*
+          path: input/replays
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: input/plan
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PLAN_RUN_ID }}
+      - name: Aggregate and assert authority
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py --mode aggregate --replay-root input/replays --out out/final
+          cp input/plan/search_ledger.json out/final/search_ledger.json
+          cp input/plan/plan.json out/final/generation6_plan.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/final/final.json')); ledger=json.load(open('out/final/search_ledger.json'))
+          assert d['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE' and d['strategy_count']==22
+          assert len(d['active_l085_queue'])<=3 and ledger['duplicate_strategy_axis_data_runs']==0
+          assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-semantic-axis-v5-resume-final-${{ github.run_id }}
+          path: out/final
+          if-no-files-found: error
+          retention-days: 90

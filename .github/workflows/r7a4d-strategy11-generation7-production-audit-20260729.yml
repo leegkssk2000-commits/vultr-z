@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REQUIRED_MASTER_SHA: '4262678c8e82ec4dbed3651b7f5782971fcc3e95'
+  REQUIRED_MASTER_SHA: '9c7e39724a78193495848ed2594825be80145a84'
   PRODUCTION_WORKFLOW: 'r7a4d-strategy11-generation7-quota-state-machine-v1.yml'
   ARTIFACT_PREFIX: 's11-generation7-quota-state-v1-'
 
@@ -85,20 +85,29 @@ jobs:
           def read_one(name):
             rows=list(root.rglob(name))
             return (rows[0],json.loads(rows[0].read_text())) if rows else (None,None)
-          completion_path,completion=read_one('replay_completion.json')
-          manifest_path,manifest=read_one('ai_manifest.json')
-          reservation_path,reservation=read_one('quota_epoch_reservation.json')
+          _,completion=read_one('replay_completion.json')
+          _,manifest=read_one('ai_manifest.json')
+          _,reservation=read_one('quota_epoch_reservation.json')
           if completion:
             assert completion['state']=='PASS_GENERATION7_QUOTA_STATE_MACHINE_PATH_LOOP_COMPLETE'
             payload=completion
             authority='PATH_LOOP_COMPLETE'
           elif manifest:
-            assert manifest['state'] in {'WAIT_GENERATION7_AI_QUOTA','PASS_GENERATION7_AI_REVIEW_COMPLETE'}
-            assert manifest['all_candidates_final'] is False or manifest['wait_quota_count']==0
+            assert manifest['state'] in {
+              'WAIT_GENERATION7_AI_QUOTA',
+              'WAIT_GENERATION7_PROVIDER_RETRY',
+              'PASS_GENERATION7_AI_REVIEW_COMPLETE',
+            }
+            assert manifest['all_candidates_final'] is False or (
+              manifest.get('wait_quota_count',0)==0 and manifest.get('wait_provider_retry_count',0)==0
+            )
             assert 0 <= manifest['quota_epoch_candidates_used'] <= 10
             assert manifest['quota_epoch_candidates_remaining'] >= 0
             assert manifest.get('quota_epoch_reservation_sha')
             assert reservation and reservation['reservation_sha']==manifest['quota_epoch_reservation_sha']
+            if manifest['state']=='WAIT_GENERATION7_PROVIDER_RETRY':
+              assert manifest['wait_provider_retry_count'] > 0
+              assert manifest['next']=='RETRY_RESERVED_PROVIDER_OUTPUTS'
             payload=manifest
             authority=manifest['state']
           else:

@@ -19,6 +19,7 @@ concurrency:
 env:
   REQUIRED_MASTER_SHA: '05ecf2102bb5ab948170f2d32c65268af76ddcc0'
   ARTIFACT_PREFIX: 's11-path-candidate-state-v1-'
+  PRODUCTION_WORKFLOW: 'r7a4d-strategy11-path-candidate-state-machine-v1.yml'
 
 jobs:
   audit-production-epoch:
@@ -39,14 +40,18 @@ jobs:
           mkdir -p audit/state
           gh api "repos/$GITHUB_REPOSITORY/commits/$REQUIRED_MASTER_SHA" > audit/commit.json
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > audit/artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PRODUCTION_WORKFLOW/runs?branch=master&per_page=100" > audit/production_runs.json
           python - <<'PY' > audit/artifact.env
           import json, os
           from datetime import datetime
           commit=json.load(open('audit/commit.json'))
           payload=json.load(open('audit/artifacts.json'))
+          run_payload=json.load(open('audit/production_runs.json'))
           required=os.environ['REQUIRED_MASTER_SHA']
           prefix=os.environ['ARTIFACT_PREFIX']
           commit_at=datetime.fromisoformat(commit['commit']['committer']['date'].replace('Z','+00:00'))
+          exact_runs=[row for row in run_payload.get('workflow_runs',[]) if str(row.get('head_sha') or '')==required]
+          json.dump(exact_runs,open('audit/exact_production_runs.json','w'),indent=2,sort_keys=True)
           rows=[]
           for artifact in payload.get('artifacts',[]):
               run=artifact.get('workflow_run') or {}
@@ -61,7 +66,15 @@ jobs:
                   continue
               rows.append((created,artifact))
           if not rows:
-              raise SystemExit('PRODUCTION_EPOCH_ARTIFACT_MISSING_FOR_REQUIRED_MASTER_SHA')
+              if not exact_runs:
+                  raise SystemExit('PRODUCTION_EPOCH_RUN_NOT_TRIGGERED')
+              latest=sorted(exact_runs,key=lambda row:str(row.get('created_at') or ''))[-1]
+              run_id=latest.get('id')
+              status=latest.get('status')
+              conclusion=latest.get('conclusion')
+              if status in {'queued','in_progress','waiting','pending','requested'}:
+                  raise SystemExit(f'PRODUCTION_EPOCH_RUN_ACTIVE:{run_id}:{status}')
+              raise SystemExit(f'PRODUCTION_EPOCH_RUN_COMPLETED_WITHOUT_ARTIFACT:{run_id}:{status}:{conclusion}')
           artifact=sorted(rows,key=lambda item:item[0])[-1][1]
           run=artifact.get('workflow_run') or {}
           values={

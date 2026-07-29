@@ -1,0 +1,70 @@
+name: R7A4D Strategy11 Common Proposal Contract V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/contracts/strategy11_strategy_proposal_contract_v1.py
+      - backend/tools/r7a4d_strategy11_strategy_proposal_contract_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-common-proposal-contract-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-common-proposal-contract-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile contract and fixture
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_strategy_proposal_contract_v1.py \
+            backend/tools/r7a4d_strategy11_strategy_proposal_contract_fixture_v1.py
+      - name: Run deterministic contract fixtures
+        run: python backend/tools/r7a4d_strategy11_strategy_proposal_contract_fixture_v1.py
+      - name: Re-run internal synergy audit
+        run: python backend/tools/r7a4d_strategy11_internal_synergy_audit_v1.py
+      - name: Assert contract and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('artifacts/strategy11_strategy_proposal_contract_v1/summary.json').read_text())
+          audit=json.loads(Path('artifacts/strategy11_internal_synergy_audit_v1/summary.json').read_text())
+          assert contract['state']=='PASS_COMMON_STRATEGY_OUTPUT_CONTRACT', contract
+          assert contract['valid_roundtrip'] is True
+          assert contract['canonical_order_invariant'] is True
+          assert contract['negative_fixture_count'] >= 4
+          assert contract['runtime_bound'] is False
+          assert contract['research_only'] is True
+          assert contract['promotion_authority'] is False
+          assert contract['protected_mutations']==0
+          assert contract['execution_allowed'] is False
+          assert contract['order_authority']=='BLOCKED'
+          assert 'COMMON_STRATEGY_OUTPUT_CONTRACT' in audit['implemented_capabilities'], audit
+          assert audit['recommended_implementation_order'][0]=='GLOBAL_CANDIDATE_CLASSIFIER', audit
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-common-proposal-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/strategy11_strategy_proposal_contract_v1
+            artifacts/strategy11_internal_synergy_audit_v1
+          if-no-files-found: error
+          retention-days: 90

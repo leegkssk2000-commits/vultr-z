@@ -9,6 +9,7 @@ on:
       - scripts/strategy11_ai_review_router_v3_1.py
       - backend/tools/r7a4d_strategy11_generation7_quota_state_machine_v1.py
       - backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py
+      - backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py
       - backend/research/strategy11_trade_path_enricher_v1.py
       - backend/research/strategy11_pre_shadow_path_optimize_planner_v1.py
       - backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py
@@ -155,16 +156,13 @@ jobs:
               --source-head-sha "$SOURCE_HEAD_SHA" \
               --out "$GITHUB_WORKSPACE/state/replay"
           )
-      - name: Aggregate and source-bind completed replay
+      - name: Aggregate accepted subset and source-bind completed replay
         if: steps.restore.outputs.complete != 'true' && steps.state.outputs.ready == 'true'
         run: |
-          (
-            cd research
-            PYTHONPATH=. python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
-              --mode aggregate \
-              --replay-root "$GITHUB_WORKSPACE/state/replay" \
-              --out "$GITHUB_WORKSPACE/state/final"
-          )
+          python backend/tools/r7a4d_strategy11_subset_replay_aggregate_v1.py \
+            --replay-root state/replay \
+            --accepted-plan state/out/filter/accepted_plan.json \
+            --out state/final
           plan_sha="$(python -c "import json;print(json.load(open('state/out/filter/accepted_plan.json'))['prior_final_sha256'])")"
           python backend/tools/r7a4d_strategy11_source_bound_replay_triage_v1.py \
             --replay-root state/replay \
@@ -204,6 +202,7 @@ jobs:
           path_index=json.load(open('state/final/path_evidence/index.json'))
           path_plan=json.load(open('state/final/pre_shadow_path_plan.json'))
           assert final['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE'
+          assert final['unreplayed_strategies_intentionally_untouched'] is True
           assert ai['all_candidates_final'] is True and ai['wait_quota_count']==0
           assert triage['state']=='PASS_SOURCE_BOUND_REPLAY_TRIAGE'
           assert triage['strategy_count']==final['strategy_count']

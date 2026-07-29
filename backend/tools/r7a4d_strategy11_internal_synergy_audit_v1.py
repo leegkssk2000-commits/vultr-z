@@ -9,6 +9,7 @@ from typing import Any
 VERSION = "R7A4D_STRATEGY11_INTERNAL_SYNERGY_AUDIT_V1"
 TEXT_SUFFIXES = {".py", ".json", ".yml", ".yaml", ".md"}
 EXCLUDE_PARTS = {".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv"}
+EXCLUDE_PATH_FRAGMENTS = {"strategy11_internal_synergy_audit_v1", "strategy11-internal-synergy-audit-v1"}
 SAFETY = {
     "research_only": True,
     "promotion_authority": False,
@@ -19,6 +20,7 @@ SAFETY = {
 
 CAPABILITIES = {
     "COMMON_STRATEGY_OUTPUT_CONTRACT": {
+        "path_hints": ["strategy", "proposal", "contract", "candidate"],
         "required_groups": [
             ["strategy_id"], ["confidence", "uncertainty"], ["regime"],
             ["cost", "slippage", "funding"], ["risk", "drawdown", "tail"], ["lineage", "source_sha"],
@@ -26,30 +28,37 @@ CAPABILITIES = {
         "description": "One normalized strategy proposal schema carrying edge/confidence/regime/cost/risk/lineage.",
     },
     "GLOBAL_CANDIDATE_CLASSIFIER": {
+        "path_hints": ["classifier", "classification"],
         "required_groups": [["core"], ["synthesis"], ["reject"], ["hold"]],
         "description": "Shared CORE/SYNTHESIS/REJECT/HOLD classifier.",
     },
     "ENSEMBLE_CORRELATION_ANALYZER": {
+        "path_hints": ["ensemble", "correlation"],
         "required_groups": [["correlation"], ["overlap"], ["drawdown"], ["marginal", "contribution"], ["redundancy", "cosine"]],
         "description": "Cross-strategy overlap, correlation, joint drawdown and marginal contribution analysis.",
     },
     "PORTFOLIO_GOVERNOR": {
+        "path_hints": ["portfolio", "allocator", "governor", "weight"],
         "required_groups": [["target_weight", "weights"], ["risk_budget"], ["turnover"], ["capacity", "liquidity"], ["rebalance"], ["rollback"]],
         "description": "Shadow-only portfolio construction layer between ensemble selection and lifecycle control.",
     },
     "REGIME_ROUTED_EXPERTS": {
+        "path_hints": ["team", "lane", "regime", "selector"],
         "required_groups": [["alpha"], ["beta"], ["gamma"], ["delta"], ["regime"], ["conflict", "veto"]],
         "description": "Independent Alpha/Beta/Gamma/Delta teams with regime-aware routing and veto/conflict policy.",
     },
     "ROLE_BOUNDARY_ZBOT_ZICO_LICO_ZLICE": {
+        "path_hints": ["zbot", "zico", "lico", "zlice"],
         "required_groups": [["zbot"], ["zico"], ["lico"], ["zlice"]],
         "description": "Advisor, lifecycle, liquidity/context and evidence/audit roles are separately represented.",
     },
     "STRATEGY_ATTRIBUTION_LEDGER": {
+        "path_hints": ["attribution", "ledger", "contribution"],
         "required_groups": [["attribution"], ["strategy_id"], ["pnl", "net"], ["marginal", "contribution"], ["regime"], ["cost"]],
         "description": "Per-strategy and per-module contribution ledger after costs and by regime.",
     },
     "MODEL_RISK_GOVERNANCE": {
+        "path_hints": ["model", "risk", "drift", "calibration", "error_budget"],
         "required_groups": [["drift"], ["calibration"], ["error_budget"], ["rollback"], ["shadow"], ["promotion_authority"]],
         "description": "Drift/calibration/error-budget/rollback controls independent of model opinions.",
     },
@@ -66,6 +75,10 @@ def read_files(root: Path) -> list[dict[str, Any]]:
         if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
             continue
         if any(part in EXCLUDE_PARTS for part in path.parts):
+            continue
+        relative = str(path.relative_to(root))
+        lower_path = relative.lower()
+        if any(fragment in lower_path for fragment in EXCLUDE_PATH_FRAGMENTS):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
@@ -84,7 +97,8 @@ def read_files(root: Path) -> list[dict[str, Any]]:
             except SyntaxError:
                 pass
         rows.append({
-            "path": str(path.relative_to(root)),
+            "path": relative,
+            "lower_path": lower_path,
             "suffix": path.suffix.lower(),
             "sha256": sha256_text(text),
             "lower": lower,
@@ -100,17 +114,23 @@ def match_group(text: str, group: list[str]) -> bool:
 
 def capability_evidence(rows: list[dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any]:
     required = spec["required_groups"]
+    path_hints = [str(value).lower() for value in spec["path_hints"]]
     evidence: list[dict[str, Any]] = []
     for row in rows:
+        if not any(hint in row["lower_path"] for hint in path_hints):
+            continue
         matched = [index for index, group in enumerate(required) if match_group(row["lower"], group)]
         if matched:
             evidence.append({"path": row["path"], "executable": row["executable"], "matched_groups": matched})
     executable = [row for row in evidence if row["executable"]]
     covered = sorted({index for row in executable for index in row["matched_groups"]})
+    dense_evidence = [row for row in executable if len(row["matched_groups"]) >= max(2, (len(required) + 1) // 2)]
+    implemented = len(covered) == len(required) and bool(dense_evidence)
     return {
-        "status": "IMPLEMENTED_EVIDENCE" if len(covered) == len(required) else "IMPLEMENTATION_REQUIRED",
+        "status": "IMPLEMENTED_EVIDENCE" if implemented else "IMPLEMENTATION_REQUIRED",
         "covered_group_count": len(covered),
         "required_group_count": len(required),
+        "dense_executable_evidence_count": len(dense_evidence),
         "executable_evidence": executable[:30],
         "all_evidence_count": len(evidence),
         "description": spec["description"],

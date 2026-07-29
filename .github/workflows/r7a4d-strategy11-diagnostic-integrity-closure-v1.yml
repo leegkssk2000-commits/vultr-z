@@ -1,0 +1,131 @@
+name: R7A4D Strategy11 Diagnostic Integrity Closure V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_diagnostic_integrity_closure_v1.py
+      - .github/workflows/r7a4d-strategy11-diagnostic-integrity-closure-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-diagnostic-integrity-closure-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+jobs:
+  close-diagnostic-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download exact baseline evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Compile integrity closure
+        run: python -m py_compile backend/tools/r7a4d_strategy11_diagnostic_integrity_closure_v1.py
+      - name: Re-run session-bias with patched-source lineage and exact two-thirds breadth
+        run: |
+          python backend/tools/r7a4d_strategy11_diagnostic_integrity_closure_v1.py \
+            --mode session_bias \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/session_bias
+      - name: Re-run SR levels with patched-source lineage and exact two-thirds breadth
+        run: |
+          python backend/tools/r7a4d_strategy11_diagnostic_integrity_closure_v1.py \
+            --mode sr_levels \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/sr_levels
+      - name: Re-run RBreaker with call-level gate accounting and corrected distance trace
+        run: |
+          python backend/tools/r7a4d_strategy11_diagnostic_integrity_closure_v1.py \
+            --mode rbreaker_like \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/rbreaker_like
+      - name: Assert superseding diagnostic authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          rows = {}
+          for sid in ('session_bias', 'sr_levels', 'rbreaker_like'):
+              d = json.loads((Path('artifacts') / sid / 'final.json').read_text())
+              rows[sid] = d
+              assert d['integrity_state'] == 'PASS_DIAGNOSTIC_INTEGRITY_CLOSURE'
+              assert d['candidate_strategy_source_sha'] == d['repair']['patched_source_sha']
+              assert d['canonical_strategy_source_sha'] == d['repair']['canonical_source_sha']
+              assert d['candidate_trade_lineage_source_shas'] == [d['repair']['patched_source_sha']]
+              assert d['candidate_trade_lineage_count'] == d['candidate']['trade_count']
+              assert d['promotion_authority'] is False
+              assert d['protected_mutations'] == 0
+              assert d['execution_allowed'] is False
+              assert d['order_authority'] == 'BLOCKED'
+              assert d['runtime_bound'] is False
+
+          for sid in ('session_bias', 'sr_levels'):
+              relation = rows[sid]['candidate']['relation']
+              assert relation['checks']['positive_windows_two_thirds_exact'] is True
+              assert relation['positive_window_count'] == 2
+              assert relation['positive_window_total'] == 3
+              assert relation['checks']['minimum_trades'] is False
+
+          trace = rows['rbreaker_like']['after_trace']
+          assert trace['eligible_equals_actual_enter'] is True
+          assert trace['eligibility_counting_scope'] == 'UNIQUE_STRATEGY_CALL'
+          assert trace['volatility_blocker_source'] == 'STRATEGY_WHY_UNROUNDED_GATE_RESULT'
+          assert trace['signal_accounting_identity_pass'] is True
+          assert any(s.get('distance_metric') == 'dist_beyond_signal_atr' for s in trace['samples'])
+          assert any(s.get('active_signal_boundary') is not None for s in trace['samples'])
+          print('PASS_DIAGNOSTIC_INTEGRITY_CLOSURE', {k: v['candidate']['trade_count'] for k, v in rows.items()})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-diagnostic-integrity-closure-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 90

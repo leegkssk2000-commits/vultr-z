@@ -1,0 +1,95 @@
+name: R7A4D Strategy11 Grid MFE Repair V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_grid_mfe_repair_v1.py
+      - .github/workflows/r7a4d-strategy11-grid-mfe-repair-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  REPLAY_RUN_ID: '30410892147'
+
+concurrency:
+  group: r7a4d-strategy11-grid-mfe-repair-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  grid-mfe-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download authoritative grid source replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/replays
+          gh run download "$REPLAY_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-semantic-axis-v5-filtered-replay-1-${REPLAY_RUN_ID}" \
+            --dir input/replays
+      - name: Compile single-axis grid repair
+        run: python -m py_compile backend/tools/r7a4d_strategy11_grid_mfe_repair_v1.py
+      - name: Replay only trail 1.0R / 0.75ATR against unchanged rejection gate
+        run: |
+          python backend/tools/r7a4d_strategy11_grid_mfe_repair_v1.py \
+            --root . \
+            --fresh-root input/fresh \
+            --replay-root input/replays \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/strategy11_grid_mfe_repair_v1
+      - name: Print diagnostic result before fail-closed assertions
+        run: cat artifacts/strategy11_grid_mfe_repair_v1/final.json
+      - name: Assert single causal change, parity and blocked authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_grid_mfe_repair_v1/final.json').read_text())
+          assert d['state']=='PASS_GRID_MFE_DIAGNOSTIC_COMPLETE'
+          assert d['strategy_id']=='grid_rebalance'
+          assert d['source_variant_id']=='SF__REJECTION_LONG'
+          assert d['source_path_shape']['trade_count']==24
+          assert d['source_path_shape']['losses_mfe_ge_1r']==9
+          assert d['candidate']['axis']=='MFE_TRAILING'
+          assert d['candidate']['comparison']['checks']['parity_pass'] is True
+          assert d['candidate']['comparison']['checks']['duplicate_zero'] is True
+          assert d['ai_review_state']=='WAIT_GROQ_QUOTA'
+          assert d['w1_confirmation_required'] is True
+          assert d['new_sealed_required'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-grid-mfe-repair-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_grid_mfe_repair_v1
+          if-no-files-found: error
+          retention-days: 90

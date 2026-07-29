@@ -1,0 +1,104 @@
+name: R7A4D Strategy11 Zero Trade Funnel V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_zero_trade_funnel_v1.py
+      - backend/tools/r7a4d_strategy11_zero_trade_funnel_v1_1.py
+      - .github/workflows/r7a4d-strategy11-zero-trade-funnel-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  REPLAY_RUN_ID: '30410892147'
+
+concurrency:
+  group: r7a4d-strategy11-zero-trade-funnel-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  zero-trade-funnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - name: Download exact immutable fresh data
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download exact baseline evidence and authoritative generation-six replays
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/evidence input/replays
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+            gh run download "$REPLAY_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-semantic-axis-v5-filtered-replay-${batch}-${REPLAY_RUN_ID}" \
+              --dir "input/replays"
+          done
+      - name: Compile zero-trade funnel diagnostic
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_zero_trade_funnel_v1.py \
+            backend/tools/r7a4d_strategy11_zero_trade_funnel_v1_1.py
+      - name: Decompose canonical signal, base gate, surgery and payload causes
+        run: |
+          python backend/tools/r7a4d_strategy11_zero_trade_funnel_v1_1.py \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --replay-root input/replays \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/strategy11_zero_trade_funnel_v1
+      - name: Assert exact authority, complete classification and one-change repair policy
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_zero_trade_funnel_v1/zero_trade_funnel.json').read_text())
+          assert d['state']=='PASS_ZERO_TRADE_FUNNEL_DECOMPOSITION'
+          assert d['source_run_id']=='30252022416'
+          assert d['source_head_sha']=='64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+          assert d['strategy_count']==22,d['strategy_count']
+          assert d['zero_control_strategy_count']==13,d['zero_control_strategy_count']
+          assert len(d['repair_queue'])==13
+          assert sum(d['cause_counts'].values())==13
+          assert all(row['cause'] and row['next_action'] for row in d['repair_queue'])
+          assert all(row['change_budget']==1 for row in d['repair_queue'])
+          assert d['repair_policy']['single_cause_per_child'] is True
+          assert d['repair_policy']['single_change_per_candidate'] is True
+          assert d['repair_policy']['no_blanket_threshold_relaxation'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-zero-trade-funnel-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_zero_trade_funnel_v1
+          if-no-files-found: error
+          retention-days: 90

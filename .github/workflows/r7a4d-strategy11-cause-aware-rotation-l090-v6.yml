@@ -1,0 +1,402 @@
+name: R7A4D Strategy11 Cause-Aware Rotation L090 V6
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-semantic-axis-rotation-l090-v5
+    paths:
+      - backend/tools/r7a4d_strategy11_cause_aware_rotation_l090_v1.py
+      - .github/workflows/r7a4d-strategy11-cause-aware-rotation-l090-v6.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+concurrency:
+  group: r7a4d-strategy11-cause-aware-rotation-l090-v6-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  ORIGINAL_PLAN_RUN_ID: '30377925428'
+  ORIGINAL_PLAN_ARTIFACT: 's11-multimodal-rescue-l090-v1-30377925428-attempt-1'
+  PRIOR_FINAL_RUN_ID: '30410892147'
+  PRIOR_FINAL_ARTIFACT: 's11-semantic-axis-v5-filtered-final-30410892147'
+
+jobs:
+  plan:
+    name: analyze generation-six causes and build generation-seven plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download original multimodal catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ORIGINAL_PLAN_ARTIFACT }}
+          path: input/original
+          github-token: ${{ github.token }}
+          run-id: ${{ env.ORIGINAL_PLAN_RUN_ID }}
+      - name: Download authoritative generation-six final
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PRIOR_FINAL_ARTIFACT }}
+          path: input/prior
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PRIOR_FINAL_RUN_ID }}
+      - name: Compile cause-aware planner
+        run: python -m py_compile backend/tools/r7a4d_strategy11_cause_aware_rotation_l090_v1.py
+      - name: Analyze causes and rotate to distinct untested axes
+        run: |
+          python backend/tools/r7a4d_strategy11_cause_aware_rotation_l090_v1.py \
+            --original-plan-root input/original \
+            --prior-final-root input/prior \
+            --generation 7 \
+            --out out/plan
+      - name: Assert cause analysis, bounded axes and safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('out/plan/plan.json').read_text())
+          ledger=json.loads(Path('out/plan/search_ledger.json').read_text())
+          causes=json.loads(Path('out/plan/cause_analysis.json').read_text())
+          assert plan['state']=='PASS_CAUSE_AWARE_AXIS_ROTATION_PLAN'
+          assert plan['generation']==7 and plan['strategy_count']==22
+          assert 22<=plan['candidate_count']<=44
+          assert ledger['state']=='PASS_SEARCH_LEDGER' and ledger['duplicate_strategy_axis_data_runs']==0
+          assert causes['state']=='PASS_GENERATION6_FAILURE_CAUSE_ANALYSIS'
+          assert causes['strategy_count']==22
+          assert causes['global_findings']['zero_trade_candidates']==37
+          assert causes['global_findings']['nonzero_candidates']==6
+          assert causes['fingerprint_counts']=={
+            'GATE_OVERFILTER_ZERO_TRADES':20,
+            'NEAR_BREAKEVEN_ECONOMICS':1,
+            'NEAR_PASS_LOSS_SHAPE':1,
+          }
+          lrows={r['strategy_id']:r for r in ledger['rows']}
+          for row in plan['rows']:
+              assert 1<=len(row['candidate_ids'])<=2
+              assert len(set(row['selection_rationale']['selected_axes']))==len(row['candidate_ids'])
+              old=set(lrows[row['strategy_id']]['tested_axes'])
+              assert not old.intersection(row['selection_rationale']['selected_axes']), (row['strategy_id'],old,row['selection_rationale']['selected_axes'])
+          for payload in (plan,ledger,causes):
+              assert payload['promotion_authority'] is False
+              assert payload['protected_mutations']==0
+              assert payload['execution_allowed'] is False
+              assert payload['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-cause-aware-v6-plan-${{ github.run_id }}
+          path: out/plan
+          if-no-files-found: error
+          retention-days: 90
+
+  ai-review:
+    name: Groq and Workers AI per-candidate fail-closed review
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          path: ai-router
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-cause-aware-v6-plan-${{ github.run_id }}
+          path: input/plan
+      - name: Build evidence-rich single-axis payloads
+        run: |
+          mkdir -p input/payloads out/ai out/filter
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          plan=json.loads(Path('input/plan/plan.json').read_text())
+          causes=json.loads(Path('input/plan/cause_analysis.json').read_text())
+          crows={r['strategy_id']:r for r in causes['rows']}
+          manifest=[]
+          for row in plan['rows']:
+              cause=crows[row['strategy_id']]
+              for cid in row['candidate_ids']:
+                  spec=row['candidate_specs'][cid]
+                  axis=spec['axis']
+                  evidence={
+                    'generation':7,
+                    'failure_fingerprint':row['failure_fingerprint'],
+                    'control_metrics':cause['control'],
+                    'prior_candidate_metrics':cause['candidates'],
+                    'zero_trade_candidate_count':cause['zero_trade_candidate_count'],
+                    'nonzero_candidate_count':cause['nonzero_candidate_count'],
+                    'selection_rationale':row['selection_rationale'],
+                    'candidate_spec':spec,
+                    'immutable_windows':['F1','F2','F3'],
+                    'bounded_epoch':True,
+                    'same_axis_retest':False,
+                  }
+                  candidate_sha=hashlib.sha256(json.dumps({'strategy_id':row['strategy_id'],'candidate_id':cid,'spec':spec,'evidence':evidence},sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                  payload={
+                    'strategy_id':row['strategy_id'],
+                    'changed_axes':[axis],
+                    'routing_flags':{
+                      'external_hypothesis':True,
+                      'multimodal':False,
+                      'new_multimodal_evidence':False,
+                      'new_failure_fingerprint':True,
+                      'borderline_case':row['failure_fingerprint'] in {'NEAR_PASS_LOSS_SHAPE','NEAR_BREAKEVEN_ECONOMICS'},
+                      'major_gate_review':False,
+                    },
+                    'hypothesis':{
+                      'source':'DETERMINISTIC_GENERATION6_FAILURE_ANALYSIS',
+                      'axis':axis,
+                      'candidate_id':cid,
+                      'description':row['selection_rationale']['why'],
+                    },
+                    'evidence':evidence,
+                    'lineage':{
+                      'source_sha':'64e27d16d7f28b9fae59cf2a875d195f4bca22a1',
+                      'data_sha':'SOURCE_RUN_30252022416',
+                      'window_sha':plan['prior_final_sha256'],
+                      'candidate_sha':candidate_sha,
+                    },
+                    'promotion_authority':False,
+                    'protected_mutations':0,
+                    'execution_allowed':False,
+                    'order_authority':'BLOCKED',
+                  }
+                  fn=f"{row['strategy_id']}__{cid}.json"
+                  Path('input/payloads',fn).write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+                  manifest.append({'strategy_id':row['strategy_id'],'candidate_id':cid,'axis':axis,'file':fn,'candidate_sha':candidate_sha})
+          Path('input/payload_manifest.json').write_text(json.dumps({'state':'PASS_CAUSE_AWARE_SINGLE_AXIS_PAYLOADS','rows':manifest},indent=2,sort_keys=True)+'\n')
+          assert len(manifest)==plan['candidate_count']
+          PY
+      - name: Execute all AI decision gates without hiding rejects
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set +e
+          failures=0
+          while IFS= read -r file; do
+            name="$(basename "$file")"
+            python ai-router/scripts/strategy11_ai_review_router_v2.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+              --mode execute \
+              --input "$file" \
+              --policy ai-router/backend/research/strategy11_ai_review_router_v1.json \
+              --output "out/ai/$name"
+            rc=$?
+            if [ "$rc" -ne 0 ]; then failures=$((failures+1)); fi
+          done < <(find input/payloads -type f -name '*.json' | sort)
+          echo "$failures" > out/ai/nonpass_count.txt
+          exit 0
+      - name: Filter rejected candidates and require at least one axis per strategy
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('input/plan/plan.json').read_text())
+          ledger=json.loads(Path('input/plan/search_ledger.json').read_text())
+          causes=json.loads(Path('input/plan/cause_analysis.json').read_text())
+          decisions={}
+          accepted=[]; rejected=[]
+          for path in sorted(Path('out/ai').glob('*.json')):
+              d=json.loads(path.read_text())
+              sid,cid=path.stem.split('__',1)
+              row={'strategy_id':sid,'candidate_id':cid,'status':d.get('status'),'blocker_codes':d.get('blocker_codes',[]),'file':path.name}
+              decisions[(sid,cid)]=d
+              (accepted if d.get('status')=='PASS_AI_REVIEW_DECISION_GATE' else rejected).append(row)
+          assert len(decisions)==plan['candidate_count'],(len(decisions),plan['candidate_count'])
+          passset={(r['strategy_id'],r['candidate_id']) for r in accepted}
+          wait=[]
+          for row in plan['rows']:
+              kept=[cid for cid in row['candidate_ids'] if (row['strategy_id'],cid) in passset]
+              if not kept:
+                  raise SystemExit(f"HOLD_NO_AI_ACCEPTED_AXIS:{row['strategy_id']}")
+              dropped=[cid for cid in row['candidate_ids'] if cid not in kept]
+              row['candidate_ids']=kept
+              row['candidate_specs']={cid:row['candidate_specs'][cid] for cid in kept}
+              row['ai_review_state']='PASS_TO_REPLAY_FILTERED'
+              row['ai_rejected_candidates']=dropped
+              wait.extend({'strategy_id':row['strategy_id'],'candidate_id':cid,'reason':'AI_PRE_REPLAY_REJECT'} for cid in dropped)
+          plan['state']='PASS_AI_FILTERED_CAUSE_AWARE_PLAN'
+          plan['candidate_count']=sum(len(r['candidate_ids']) for r in plan['rows'])
+          plan['ai_pass_count']=len(accepted)
+          plan['ai_reject_count']=len(rejected)
+          plan['wait_new_evidence']=wait
+          lrows={r['strategy_id']:r for r in ledger['rows']}
+          for row in plan['rows']:
+              l=lrows[row['strategy_id']]
+              l['selected_candidate_ids']=row['candidate_ids']
+              l['selected_axes']=[row['candidate_specs'][cid]['axis'] for cid in row['candidate_ids']]
+              if row['ai_rejected_candidates']:
+                  l['rejection_reason']=';'.join(f"{cid}:AI_PRE_REPLAY_REJECT" for cid in row['ai_rejected_candidates'])
+          ledger['ai_pass_count']=len(accepted)
+          ledger['ai_reject_count']=len(rejected)
+          ledger['wait_new_evidence']=wait
+          manifest={'state':'PASS_AI_REVIEW_FILTERED' if not rejected else 'PASS_WITH_REJECTED_AXES_FILTERED','review_count':len(decisions),'pass_count':len(accepted),'reject_count':len(rejected),'accepted':accepted,'rejected':rejected,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
+          Path('out/filter/accepted_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          Path('out/filter/search_ledger.json').write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n')
+          Path('out/filter/cause_analysis.json').write_text(json.dumps(causes,indent=2,sort_keys=True)+'\n')
+          Path('out/filter/ai_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          assert len(plan['rows'])==22 and 22<=plan['candidate_count']<=44
+          for payload in (plan,ledger,causes,manifest):
+              assert payload['promotion_authority'] is False and payload['protected_mutations']==0 and payload['execution_allowed'] is False and payload['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-cause-aware-v6-ai-filter-${{ github.run_id }}
+          path: |
+            out/ai
+            out/filter
+            input/payload_manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: replay cause-aware candidates batch ${{ matrix.batch }}
+    needs: ai-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: '1'
+            strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,fvg_revert,grid_rebalance'
+          - batch: '2'
+            strategies: 'keltner_trend,liquidity_sweep,mfi_rsi_div,obv_trend,pivot_reversal'
+          - batch: '3'
+            strategies: 'range_fade,rbreaker_like,rsi_swing_fail,scalp_snap,session_bias'
+          - batch: '4'
+            strategies: 'squeeze_break,sr_levels,supertrend_pullback,trend_ma_macd,trend_rider'
+          - batch: '5'
+            strategies: 'vol_spike_fade,vwap_revert'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-cause-aware-v6-ai-filter-${{ github.run_id }}
+          path: input/review
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download immutable evidence batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for b in 1 2 3 4 5; do gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${b}-30252022416-attempt-1" --dir "input/evidence/batch-${b}"; done
+      - name: Replay NO_CHANGE plus accepted distinct axes
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py \
+            --mode replay --root . \
+            --plan input/review/out/filter/accepted_plan.json \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --fresh-root input/fresh --evidence-root input/evidence \
+            --strategy-ids '${{ matrix.strategies }}' \
+            --source-run-id "$SOURCE_RUN_ID" --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out out/batch-${{ matrix.batch }}
+      - name: Assert parity, lineage and bounded candidates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for path in Path('out').rglob('summary.json'):
+              d=json.loads(path.read_text())
+              if d.get('strategy_id') and d.get('version')=='R7A4D_STRATEGY11_MULTIMODAL_L090_REPLAY_V1': rows.append(d)
+          assert rows
+          for d in rows:
+              count=len(d['tested_candidate_ids'])
+              assert 1<=count<=2 and len(d['variants'])==count+1
+              assert d['promotion_authority'] is False and d['protected_mutations']==0 and d['execution_allowed'] is False and d['order_authority']=='BLOCKED'
+              for v in d['variants']:
+                  assert v['parity']['state']=='PASS' and v['parity']['duplicate_trade_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-cause-aware-v6-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    name: aggregate generation-seven cause-aware L090 results
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s11-cause-aware-v6-replay-*
+          path: input/replays
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-cause-aware-v6-ai-filter-${{ github.run_id }}
+          path: input/review
+      - name: Aggregate and route L090 survivors or next distinct axes
+        run: |
+          python backend/tools/r7a4d_strategy11_multimodal_l090_replay_v1.py --mode aggregate --replay-root input/replays --out out/final
+          cp input/review/out/filter/search_ledger.json out/final/search_ledger.json
+          cp input/review/out/filter/accepted_plan.json out/final/generation7_accepted_plan.json
+          cp input/review/out/filter/cause_analysis.json out/final/cause_analysis.json
+          cp input/review/out/filter/ai_manifest.json out/final/ai_manifest.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/final/final.json'))
+          ledger=json.load(open('out/final/search_ledger.json'))
+          ai=json.load(open('out/final/ai_manifest.json'))
+          causes=json.load(open('out/final/cause_analysis.json'))
+          assert d['state']=='PASS_MULTIMODAL_L090_REPLAY_COMPLETE' and d['strategy_count']==22
+          assert len(d['active_l085_queue'])<=3
+          assert ledger['duplicate_strategy_axis_data_runs']==0
+          assert ai['review_count']==ai['pass_count']+ai['reject_count']
+          assert causes['global_findings']['zero_trade_candidates']==37
+          for payload in (d,ledger,ai,causes):
+              assert payload['promotion_authority'] is False and payload['protected_mutations']==0 and payload['execution_allowed'] is False and payload['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-cause-aware-v6-final-${{ github.run_id }}
+          path: out/final
+          if-no-files-found: error
+          retention-days: 90

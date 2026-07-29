@@ -1,0 +1,99 @@
+name: R7A4D Strategy11 MFI RSI Div Extrema Repair V1
+
+on:
+  pull_request:
+    branches:
+      - r7a4d-strategy11-cause-aware-rotation-l090-v6
+    paths:
+      - backend/tools/r7a4d_strategy11_mfi_rsi_div_extrema_repair_v1.py
+      - .github/workflows/r7a4d-strategy11-mfi-rsi-div-extrema-repair-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  SOURCE_RUN_ID: '30252022416'
+  SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+
+concurrency:
+  group: r7a4d-strategy11-mfi-rsi-div-extrema-repair-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  extrema-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh
+          github-token: ${{ github.token }}
+          run-id: 30252022416
+      - name: Download exact baseline evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Compile prior-extrema repair
+        run: python -m py_compile backend/tools/r7a4d_strategy11_mfi_rsi_div_extrema_repair_v1.py
+      - name: Exclude current bar from extrema and compare current wick in memory
+        run: |
+          python backend/tools/r7a4d_strategy11_mfi_rsi_div_extrema_repair_v1.py \
+            --root . \
+            --fresh-root input/fresh \
+            --evidence-root input/evidence \
+            --policy backend/research/strategy11_multimodal_rescue_l090_v1.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --out artifacts/strategy11_mfi_rsi_div_extrema_repair_v1
+      - name: Assert impossible predicates become observable without source mutation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_mfi_rsi_div_extrema_repair_v1/final.json').read_text())
+          assert d['state']=='PASS_MFI_RSI_DIV_EXTREMA_DIAGNOSTIC_COMPLETE'
+          assert d['strategy_id']=='mfi_rsi_div'
+          assert d['before_trace']['call_count']==2874
+          assert d['before_trace']['lower_low_true_count']==0
+          assert d['before_trace']['higher_high_true_count']==0
+          assert d['after_trace']['call_count']==2874
+          assert d['after_trace']['lower_low_true_count']>0
+          assert d['after_trace']['higher_high_true_count']>0
+          assert d['repair']['semantic_change_count']==1
+          assert d['repair']['semantic_change']=='CURRENT_INCLUDED_CLOSE_EXTREMA_TO_PRIOR_EXTREMA_CURRENT_WICK'
+          assert len(d['repair']['replacement_manifest'])==3
+          assert d['canonical_source_modified'] is False
+          assert d['registry_modified'] is False
+          assert d['candidate']['relation']['checks']['parity_pass'] is True
+          assert d['candidate']['relation']['checks']['duplicate_zero'] is True
+          assert d['ai_review_state']=='WAIT_GROQ_QUOTA'
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-mfi-rsi-div-extrema-repair-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_mfi_rsi_div_extrema_repair_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -6,6 +6,7 @@ on:
       - r7a4d-strategy11-cause-aware-rotation-l090-v6
     paths:
       - backend/tools/r7a4d_strategy11_fvg_definition_repair_v1.py
+      - backend/tools/r7a4d_strategy11_fvg_definition_repair_v1_1.py
       - .github/workflows/r7a4d-strategy11-fvg-definition-repair-v1.yml
   workflow_dispatch:
 
@@ -50,11 +51,14 @@ jobs:
               --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
               --dir "input/evidence/batch-${batch}"
           done
-      - name: Compile FVG definition repair
-        run: python -m py_compile backend/tools/r7a4d_strategy11_fvg_definition_repair_v1.py
+      - name: Compile FVG definition repair and registered loader
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_fvg_definition_repair_v1.py \
+            backend/tools/r7a4d_strategy11_fvg_definition_repair_v1_1.py
       - name: Replace only adjacent-gap anchor with three-candle FVG in memory
         run: |
-          python backend/tools/r7a4d_strategy11_fvg_definition_repair_v1.py \
+          python backend/tools/r7a4d_strategy11_fvg_definition_repair_v1_1.py \
             --root . \
             --fresh-root input/fresh \
             --evidence-root input/evidence \
@@ -76,6 +80,7 @@ jobs:
           assert d['after_trace']['no_gap_count']<2874
           assert d['repair']['semantic_change_count']==1
           assert d['repair']['semantic_change']=='ADJACENT_GAP_TO_THREE_CANDLE_FVG'
+          assert d['repair']['loader_fix']=='REGISTER_MODULE_BEFORE_DATACLASS_EXEC'
           assert len(d['repair']['replacement_manifest'])==3
           assert d['canonical_source_modified'] is False
           assert d['registry_modified'] is False

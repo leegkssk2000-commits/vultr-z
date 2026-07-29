@@ -134,6 +134,7 @@ def main() -> int:
     transition_request = deepcopy(request)
     transition_request["fill_history"] = [
         {"state": "NEW", "filled_qty": 0.0, "ts_ms": 1000},
+        {"state": "SENT", "filled_qty": 0.0, "ts_ms": 1500},
         {"state": "FILLED", "filled_qty": 1.0, "ts_ms": 2000},
         {"state": "ACK", "filled_qty": 1.0, "ts_ms": 3000},
     ]

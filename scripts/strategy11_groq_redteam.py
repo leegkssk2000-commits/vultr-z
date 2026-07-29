@@ -35,6 +35,7 @@ FORBIDDEN_KEY_FRAGMENTS = {
     "wallet",
 }
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+MAX_JSON_ATTEMPTS = 2
 
 
 def canonical_json(value: Any) -> str:
@@ -65,7 +66,6 @@ def load_payload(input_path: str | None) -> dict[str, Any]:
             raise ValueError("INPUT_MUST_BE_JSON_OBJECT")
         return payload
 
-    # Non-sensitive fixture used only for connection/schema verification.
     return {
         "strategy_id": "fixture_strategy",
         "hypothesis": {
@@ -90,8 +90,8 @@ def load_payload(input_path: str | None) -> dict[str, Any]:
     }
 
 
-def build_prompt(payload: dict[str, Any]) -> str:
-    contract = {
+def response_contract() -> dict[str, Any]:
+    return {
         "decision": "PASS_TO_REPLAY|REJECT|HOLD",
         "blocker_codes": ["string"],
         "single_axis": True,
@@ -99,14 +99,24 @@ def build_prompt(payload: dict[str, Any]) -> str:
         "overfit_risk": "LOW|MEDIUM|HIGH",
         "reason": "one concise sentence",
     }
+
+
+def build_prompt(payload: dict[str, Any], *, retry: bool = False) -> str:
+    prefix = (
+        "Your previous answer could not be parsed as the required JSON object. "
+        "Return exactly one valid JSON object with double-quoted keys and values, no markdown or prose.\n"
+        if retry
+        else ""
+    )
     return (
-        "You are an independent red-team reviewer for a research-only trading "
+        prefix
+        + "You are an independent red-team reviewer for a research-only trading "
         "hypothesis. You have no promotion or execution authority. Reject or hold "
         "when the proposal changes multiple causal axes, duplicates an already "
         "tested axis, lacks supplied evidence, appears overfit, improves mainly by "
         "deleting trades, or lacks control/lineage parity. Return one JSON object "
         "only, matching this contract exactly:\n"
-        f"{canonical_json(contract)}\n"
+        f"{canonical_json(response_contract())}\n"
         "Anonymized research payload:\n"
         f"{canonical_json(payload)}"
     )
@@ -122,6 +132,53 @@ def strip_code_fence(raw: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return text
+
+
+def iter_balanced_json_objects(raw: str):
+    """Yield balanced top-level object substrings while respecting JSON strings."""
+    text = strip_code_fence(raw)
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield text[start:index + 1]
+                start = None
+
+
+def parse_review_json(raw: str) -> dict[str, Any]:
+    text = strip_code_fence(raw)
+    candidates = [text, *iter_balanced_json_objects(text)]
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("RESPONSE_JSON_DECODE_FAILED")
 
 
 def select_model(client: Groq, requested: str) -> tuple[str, str]:
@@ -194,6 +251,40 @@ def write_artifact(path: Path, artifact: dict[str, Any]) -> None:
     path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def request_review(client: Groq, model: str, payload: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
+    raw_responses: list[str] = []
+    prompt_hashes: list[str] = []
+    last_error: Exception | None = None
+    for attempt in range(MAX_JSON_ATTEMPTS):
+        prompt = build_prompt(payload, retry=attempt > 0)
+        prompt_hashes.append(sha256_text(prompt))
+        completion = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = completion.choices[0].message.content or ""
+        raw_responses.append(raw)
+        try:
+            return validate_review(parse_review_json(raw)), raw_responses, prompt_hashes
+        except ValueError as exc:
+            last_error = exc
+            if str(exc) not in {
+                "RESPONSE_JSON_DECODE_FAILED",
+                "RESPONSE_NOT_JSON_OBJECT",
+                "RESPONSE_JSON_SHAPE_MISMATCH",
+                "RESPONSE_DECISION_INVALID",
+                "RESPONSE_BLOCKERS_INVALID",
+                "RESPONSE_SINGLE_AXIS_INVALID",
+                "RESPONSE_EVIDENCE_INVALID",
+                "RESPONSE_OVERFIT_INVALID",
+                "RESPONSE_REASON_INVALID",
+            }:
+                raise
+    raise ValueError(f"RESPONSE_JSON_RECOVERY_EXHAUSTED:{last_error}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", help="Path to anonymized JSON payload")
@@ -207,7 +298,7 @@ def main() -> int:
     output_path = Path(args.output)
     started = time.monotonic()
     base_artifact: dict[str, Any] = {
-        "schema_version": "strategy11.groq_redteam.v1",
+        "schema_version": "strategy11.groq_redteam.v1.1",
         "provider": "groq",
         "groq_sdk_version": package_version(),
         "GROQ_USED": False,
@@ -227,20 +318,11 @@ def main() -> int:
         payload = load_payload(args.input)
         assert_anonymized(payload)
         payload_text = canonical_json(payload)
-        prompt = build_prompt(payload)
 
         client = Groq(api_key=api_key)
         requested_model = os.environ.get("GROQ_MODEL", DEFAULT_MODEL)
         model, model_resolution = select_model(client, requested_model)
-
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_response = completion.choices[0].message.content or ""
-        review = validate_review(json.loads(strip_code_fence(raw_response)))
+        review, raw_responses, prompt_hashes = request_review(client, model, payload)
 
         artifact = {
             **base_artifact,
@@ -251,26 +333,32 @@ def main() -> int:
             "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
             "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
             "input_sha": sha256_text(payload_text),
-            "prompt_sha": sha256_text(prompt),
-            "response_sha": sha256_text(raw_response),
+            "prompt_sha": prompt_hashes[-1],
+            "prompt_attempt_shas": prompt_hashes,
+            "response_sha": sha256_text(raw_responses[-1]),
+            "response_attempt_shas": [sha256_text(raw) for raw in raw_responses],
+            "json_attempt_count": len(raw_responses),
+            "json_recovery_used": len(raw_responses) > 1,
             "latency_ms": round((time.monotonic() - started) * 1000),
             "review": review,
         }
         write_artifact(output_path, artifact)
         print(
             f"PASS_GROQ_REDTEAM_CONNECTION model={model} "
-            f"decision={review['decision']} artifact={output_path}"
+            f"decision={review['decision']} attempts={len(raw_responses)} artifact={output_path}"
         )
         return 0
 
     except Exception as exc:
-        blocker = str(exc) if str(exc).startswith(("HOLD_", "FORBIDDEN_", "INPUT_", "RESPONSE_")) else type(exc).__name__
+        message = str(exc)
+        blocker = message if message.startswith(("HOLD_", "FORBIDDEN_", "INPUT_", "RESPONSE_")) else type(exc).__name__
         artifact = {
             **base_artifact,
             "status": "HOLD_GROQ_REDTEAM_CONNECTION",
             "blocker_code": blocker,
             "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
             "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "local"),
+            "max_json_attempts": MAX_JSON_ATTEMPTS,
             "latency_ms": round((time.monotonic() - started) * 1000),
         }
         write_artifact(output_path, artifact)

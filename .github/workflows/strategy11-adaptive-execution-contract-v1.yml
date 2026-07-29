@@ -1,0 +1,77 @@
+name: Strategy11 Adaptive Execution Contract V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/contracts/strategy11_adaptive_execution_contract_v1.py
+      - backend/research/strategy11_adaptive_execution_fixture_policy_v1.json
+      - backend/tools/strategy11_adaptive_execution_fixture_v1.py
+      - .github/workflows/strategy11-adaptive-execution-contract-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-adaptive-execution-contract-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  adaptive-execution-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile contract and fixtures
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_adaptive_execution_contract_v1.py \
+            backend/tools/strategy11_adaptive_execution_fixture_v1.py
+      - name: Run deterministic adaptive execution fixtures
+        run: |
+          python backend/tools/strategy11_adaptive_execution_fixture_v1.py \
+            --policy backend/research/strategy11_adaptive_execution_fixture_policy_v1.json \
+            --out artifacts/strategy11_adaptive_execution_contract_v1
+      - name: Assert fail-closed preview authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/strategy11_adaptive_execution_contract_v1/summary.json').read_text())
+          assert d['state']=='PASS_ADAPTIVE_EXECUTION_CONTRACT_FIXTURES'
+          assert d['case_count']==6
+          assert d['pass_preview']['state']=='PASS_ADAPTIVE_EXECUTION_PREVIEW'
+          assert d['pass_preview']['blockers']==[]
+          assert d['pass_preview']['metrics']['next_step']=='SHADOW_EXECUTION_SIMULATION_ONLY'
+          assert d['duplicate_hold']['state']=='HOLD_ADAPTIVE_EXECUTION_PREVIEW'
+          assert d['partial_fill_hold']['state']=='HOLD_ADAPTIVE_EXECUTION_PREVIEW'
+          assert 'PARTIAL_FILL_RECONCILIATION_REQUIRED' in d['partial_fill_hold']['blockers']
+          assert d['risk_cost_hold']['state']=='HOLD_ADAPTIVE_EXECUTION_PREVIEW'
+          assert len(d['negative_cases'])==2
+          assert d['runtime_activation_allowed'] is False
+          assert d['order_submission_allowed'] is False
+          assert d['automatic_live_enable'] is False
+          assert d['research_only'] is True
+          assert d['promotion_authority'] is False
+          assert d['protected_mutations']==0
+          assert d['execution_allowed'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-adaptive-execution-contract-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_adaptive_execution_contract_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -48,11 +48,13 @@ def module_name(path: str) -> str:
 
 
 def resolve_relative(current: str, level: int, target: str | None) -> str:
+    # level=0 is an absolute import and must not inherit the current package.
+    if level == 0:
+        return target or ""
     parts = current.split(".")
     if not current.endswith(".__init__"):
         parts = parts[:-1]
-    if level:
-        parts = parts[: max(0, len(parts) - (level - 1))]
+    parts = parts[: max(0, len(parts) - (level - 1))]
     if target:
         parts.extend(target.split("."))
     return ".".join(parts)

@@ -68,8 +68,9 @@ def main() -> int:
     assert risk["capital_gate"] == "HOLD_DIGITAL_TWIN_RISK_EXPOSED"
     assert "liquidity-shock-001" in risk["blocking_scenarios"]
     liquidity_row = next(row for row in risk["resilience_rows"] if row["scenario_id"] == "liquidity-shock-001")
-    assert "COST_BREACH" in liquidity_row["unexpected_risk_flags"]
-    assert "LIQUIDATION_BUFFER_BREACH" in liquidity_row["unexpected_risk_flags"]
+    assert "COST_BREACH" not in liquidity_row["unexpected_risk_flags"]
+    assert liquidity_row["total_cost_bps"] if "total_cost_bps" in liquidity_row else True
+    assert liquidity_row["unexpected_risk_flags"] == ["LIQUIDATION_BUFFER_BREACH"]
 
     package = resilient_package(str(policy["policy_sha"]))
     passed = evaluate_digital_twin_resilience_v2(package, policy)

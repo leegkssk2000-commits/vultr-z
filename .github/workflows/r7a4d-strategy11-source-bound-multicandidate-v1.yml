@@ -1,0 +1,108 @@
+name: R7A4D Strategy11 Source Bound Multicandidate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/strategy11_source_bound_multicandidate_orchestrator_v1.py
+      - backend/research/strategy11_source_bound_multicandidate_guard_v1.py
+      - backend/tools/r7a4d_strategy11_source_bound_multicandidate_fixture_v1.py
+      - .github/workflows/r7a4d-strategy11-source-bound-multicandidate-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-source-bound-multicandidate-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile orchestrator, guard and fixture
+        run: |
+          python -m py_compile backend/research/strategy11_source_bound_multicandidate_orchestrator_v1.py
+          python -m py_compile backend/research/strategy11_source_bound_multicandidate_guard_v1.py
+          python -m py_compile backend/tools/r7a4d_strategy11_source_bound_multicandidate_fixture_v1.py
+          python -m py_compile backend/contracts/strategy11_source_binding_contract_v1.py
+          python -m py_compile backend/contracts/strategy11_strategy_proposal_contract_v1.py
+          python -m py_compile backend/research/strategy11_global_candidate_classifier_v1.py
+          python -m py_compile backend/research/strategy11_ensemble_correlation_analyzer_v1.py
+          python -m py_compile backend/research/strategy11_portfolio_governor_v1.py
+          python -m py_compile backend/research/strategy11_attribution_ledger_v1.py
+          python -m py_compile backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py
+          python -m py_compile backend/research/strategy11_model_risk_governance_v1.py
+
+      - name: Run pass, hold and tamper fixtures
+        run: python backend/tools/r7a4d_strategy11_source_bound_multicandidate_fixture_v1.py
+
+      - name: Assert pre-Shadow state machine
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('artifacts/strategy11_source_bound_multicandidate_orchestrator_v1')
+          row=json.loads((root/'summary.json').read_text())
+          assert row['state']=='PASS_SOURCE_BOUND_MULTICANDIDATE_ORCHESTRATOR_FIXTURES', row
+          assert row['pass_state']=='PASS_SOURCE_BOUND_MULTICANDIDATE_PREFLIGHT'
+          assert row['classifications']=={'alpha_combo':'CORE','turtle_trend':'SYNTHESIS'}
+          assert row['selected_combination']==['alpha_combo','turtle_trend']
+          assert row['verified_bound_group_count']==20
+          assert row['verified_bound_field_count'] >= 650
+          assert row['verified_source_trade_count']==8
+          assert row['single_candidate_state']=='HOLD_MULTICANDIDATE_INSUFFICIENT_ELIGIBLE'
+          assert row['incomplete_evidence_state']=='HOLD_MULTICANDIDATE_INSUFFICIENT_ELIGIBLE'
+          assert row['duplicate_combination_state']=='HOLD_MULTICANDIDATE_NO_COMPATIBLE_COMBINATION'
+          assert set(row['negative_cases_passed'])=={
+              'SHARED_W1_HEAD_SHA_MISMATCH',
+              'BOUND_LEAF_TAMPER',
+              'SOURCE_LEDGER_DATA_SHA_MISMATCH',
+              'MATERIAL_SEAL_SHA_MISMATCH',
+          }
+          assert row['shadow_20c_ready'] is True
+          assert row['automatic_shadow_start'] is False
+          assert row['fixture_only'] is True
+          assert row['real_shadow_started'] is False
+          assert row['production_threshold_authority'] is False
+          assert row['runtime_bound'] is False
+          assert row['research_only'] is True
+          assert row['promotion_authority'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+
+          passed=json.loads((root/'pass.json').read_text())
+          assert passed['bound_package_integrity_verified'] is True
+          assert passed['source_history_verified'] is True
+          assert passed['append_only_evidence'] is True
+          assert passed['model_risk_states']==[
+              'PASS_MODEL_RISK_GOVERNANCE',
+              'PASS_MODEL_RISK_GOVERNANCE',
+          ]
+          assert passed['shared_lineage']==passed['guard_shared_lineage']
+          assert passed['shadow_canary_scope']=='READ_ONLY_ORCHESTRATOR_PREFLIGHT_ONLY'
+          PY
+
+      - name: Upload multicandidate orchestrator artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-source-bound-multicandidate-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: artifacts/strategy11_source_bound_multicandidate_orchestrator_v1
+          if-no-files-found: error
+          retention-days: 90

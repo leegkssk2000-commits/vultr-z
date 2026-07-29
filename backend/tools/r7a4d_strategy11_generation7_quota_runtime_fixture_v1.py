@@ -85,6 +85,8 @@ def main() -> int:
         "missing_credentials": decision("WAIT_AI_QUOTA_REVIEW", waits=["groq:PROVIDER_BLOCKER:MISSING_GROQ_API_KEY"]),
         "semantic_reject": decision("HOLD_AI_REVIEW_DECISION_GATE", blockers=["groq:SEMANTIC_REJECT:OVERFIT"]),
         "inconclusive_hold": decision("HOLD_AI_REVIEW_DECISION_GATE", blockers=["groq:INCONCLUSIVE_HOLD:INSUFFICIENT_EVIDENCE"]),
+        "inconclusive_lineage_code": decision("HOLD_AI_REVIEW_DECISION_GATE", blockers=["groq:INCONCLUSIVE_HOLD:LINEAGE_INCOMPLETE"]),
+        "single_axis_false": decision("HOLD_AI_REVIEW_DECISION_GATE", blockers=["groq:SINGLE_AXIS_FALSE"]),
     }
     classified = {}
     for name, payload in rows.items():
@@ -96,7 +98,11 @@ def main() -> int:
         "missing_credentials": "BLOCKER",
         "semantic_reject": "SEMANTIC_REJECT",
         "inconclusive_hold": "BLOCKER",
+        "inconclusive_lineage_code": "BLOCKER",
+        "single_axis_false": "BLOCKER",
     }
+    assert adapter.is_explicit_semantic_reject("groq:SEMANTIC_REJECT:OVERFIT") is True
+    assert adapter.is_explicit_semantic_reject("groq:INCONCLUSIVE_HOLD:SEMANTIC_REJECT") is False
     assert adapter.is_verified_quota_failure("used up your daily free allocation") is True
     assert adapter.is_verified_quota_failure("HTTP 401 invalid token") is False
 
@@ -179,6 +185,7 @@ def main() -> int:
         "r7a4d_strategy11_generation7_quota_state_machine_v1_1.py",
         "Assert terminal WAIT_NEW_EVIDENCE outcome",
         "steps.state.outputs.all_final != 'true'",
+        "if: always() && steps.restore.outcome == 'success' && steps.restore.outputs.complete != 'true'",
     ]
     missing = [fragment for fragment in required_fragments if fragment not in workflow]
     assert not missing, missing
@@ -189,6 +196,7 @@ def main() -> int:
         "state": "PASS_GENERATION7_QUOTA_RUNTIME_FIXTURE",
         "strict_classification": classified,
         "verified_quota_only": True,
+        "explicit_semantic_reject_only": True,
         "daily_budget_persisted": True,
         "pre_call_reservation_persisted": True,
         "crash_restore_candidates_used": crash_restore,
@@ -196,6 +204,7 @@ def main() -> int:
         "all_rejected_next": terminal["next"],
         "credential_mapping_present": True,
         "artifact_pagination_present": True,
+        "completed_run_upload_guard_present": True,
         "fixture_only": True,
         **SAFETY,
     }

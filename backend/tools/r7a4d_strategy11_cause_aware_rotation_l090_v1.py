@@ -199,7 +199,9 @@ def main() -> int:
         tested_ids.update(map(str, old.get("selected_candidate_ids", [])))
         tested_features = set(map(str, old.get("tested_features", [])))
         axis_counts = {str(k): int(v) for k, v in (old.get("axis_generation_count") or {}).items()}
-
+        for axis in old.get("tested_axes", []) or []:
+            axis = str(axis)
+            axis_counts[axis] = max(1, axis_counts.get(axis, 0))
         for axis in old.get("selected_axes", []) or []:
             axis = str(axis)
             axis_counts[axis] = min(2, axis_counts.get(axis, 0) + 1)

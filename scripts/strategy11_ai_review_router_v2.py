@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 V1 = Path(__file__).resolve().with_name("strategy11_ai_review_router.py")
+ROUTER_ROOT = V1.parent.parent
 PRE_REPLAY_STAGES = {"PRE_W1_INTERNAL_REPLAY", "PRE_REPLAY_EXTERNAL_HYPOTHESIS"}
 SAFETY = {
     "research_only": True,
@@ -76,14 +77,20 @@ def run_v1(args: argparse.Namespace, raw_output: Path) -> int:
         sys.executable, str(V1),
         "--stage", args.stage,
         "--mode", args.mode,
-        "--policy", str(args.policy),
-        "--output", str(raw_output),
+        "--policy", str(args.policy.resolve()),
+        "--output", str(raw_output.resolve()),
     ]
     if args.input:
-        command.extend(["--input", str(args.input)])
+        command.extend(["--input", str(args.input.resolve())])
     if args.gemini_artifact:
-        command.extend(["--gemini-artifact", str(args.gemini_artifact)])
-    process = subprocess.run(command, text=True, capture_output=True, check=False)
+        command.extend(["--gemini-artifact", str(args.gemini_artifact.resolve())])
+    process = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=ROUTER_ROOT,
+    )
     return process.returncode
 
 

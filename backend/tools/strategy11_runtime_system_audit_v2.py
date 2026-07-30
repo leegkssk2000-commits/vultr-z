@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import json
-from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -14,6 +13,13 @@ v1.SKIP_PARTS.add("artifacts")
 v1.TEXT_SUFFIXES.update({".html", ".css"})
 
 
+NON_PRODUCTION_RUNTIME_PATHS = {
+    "backend/tools/strategy11_runtime_system_audit_v1.py",
+    "backend/tools/strategy11_runtime_system_audit_v2.py",
+    "backend/tools/strategy11_runtime_import_smoke_v1.py",
+}
+
+
 def runtime_named_files(files: Iterable[v1.TextFile]) -> list[v1.TextFile]:
     allowed_suffixes = {".py", ".js", ".css", ".ts", ".tsx", ".json", ".service", ".timer", ".sh"}
     result: list[v1.TextFile] = []
@@ -23,10 +29,9 @@ def runtime_named_files(files: Iterable[v1.TextFile]) -> list[v1.TextFile]:
             continue
         if row.rel.startswith(".github/workflows/"):
             continue
-        if row.rel in {
-            "backend/tools/strategy11_runtime_system_audit_v1.py",
-            "backend/tools/strategy11_runtime_system_audit_v2.py",
-        }:
+        if row.rel in NON_PRODUCTION_RUNTIME_PATHS:
+            continue
+        if row.rel.startswith("backend/tools/") and ("fixture" in name or "smoke" in name or "audit" in name):
             continue
         result.append(row)
     return result

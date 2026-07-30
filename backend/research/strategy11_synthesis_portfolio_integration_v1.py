@@ -250,6 +250,7 @@ def integrate(value: Mapping[str, Any]) -> dict[str, Any]:
         "protected_mutations": 0,
         "execution_allowed": False,
         "order_authority": "BLOCKED",
+        "runtime_bound": False,
     }
     governor = govern(governor_input)
     pass_governor = governor.get("status") == "PASS_PORTFOLIO_GOVERNOR_SHADOW_TARGETS"

@@ -187,7 +187,7 @@ def _build_shadow20_input(
             },
             "correlation": portfolio_result["correlation_analysis_sha"],
             "governor": canonical_sha(portfolio_result["governor_result"]),
-            "attribution_history": adapter_result["attribution_sha"],
+            "attribution_history": adapter_result["proposal"]["metadata"]["attribution_sha"],
             "role_boundary": canonical_sha({"fixture": "ROLE_BOUNDARY_PASS", "selected": selected}),
             "model_risk": {
                 member: canonical_sha({"fixture": "MODEL_RISK_PASS", "member": member}) for member in selected

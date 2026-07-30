@@ -1,0 +1,98 @@
+name: Strategy11 Organic E2E Receipt V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/contracts/strategy11_validation_primitives_v1.py"
+      - "backend/research/strategy11_synthesis_*.py"
+      - "backend/research/strategy11_global_candidate_classifier_v1.py"
+      - "backend/research/strategy11_ensemble_correlation_analyzer_v1.py"
+      - "backend/research/strategy11_portfolio_governor_v1.py"
+      - "backend/research/strategy11_shadow20_readonly_canary_v1.py"
+      - "backend/research/strategy11_shadow200_readonly_accumulator_v1.py"
+      - "backend/research/strategy11_shadow300_readonly_completion_v1.py"
+      - "backend/research/strategy11_ml_light_observer_optimized_v1.py"
+      - "backend/research/strategy11_failure_learning_observer_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py"
+      - ".github/workflows/strategy11-organic-e2e-receipt-v1.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/contracts/strategy11_validation_primitives_v1.py"
+      - "backend/research/strategy11_synthesis_*.py"
+      - "backend/research/strategy11_global_candidate_classifier_v1.py"
+      - "backend/research/strategy11_ensemble_correlation_analyzer_v1.py"
+      - "backend/research/strategy11_portfolio_governor_v1.py"
+      - "backend/research/strategy11_shadow20_readonly_canary_v1.py"
+      - "backend/research/strategy11_shadow200_readonly_accumulator_v1.py"
+      - "backend/research/strategy11_shadow300_readonly_completion_v1.py"
+      - "backend/research/strategy11_ml_light_observer_optimized_v1.py"
+      - "backend/research/strategy11_failure_learning_observer_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py"
+      - ".github/workflows/strategy11-organic-e2e-receipt-v1.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-organic-e2e-receipt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-organic-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile complete organic chain
+        run: |
+          python -m py_compile \
+            backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py \
+            backend/research/strategy11_synthesis_sealer_v1.py \
+            backend/research/strategy11_synthesis_classifier_adapter_v1.py \
+            backend/research/strategy11_synthesis_portfolio_integration_v1.py \
+            backend/research/strategy11_shadow20_readonly_canary_v1.py \
+            backend/research/strategy11_shadow200_readonly_accumulator_v1.py \
+            backend/research/strategy11_shadow300_readonly_completion_v1.py \
+            backend/research/strategy11_ml_light_observer_optimized_v1.py \
+            backend/research/strategy11_failure_learning_observer_v1.py \
+            backend/research/strategy11_post_shadow_observer_gate_v1.py
+      - name: Execute full linked receipt chain
+        run: python backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py
+      - name: Assert no authority escalation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result=json.loads(Path('artifacts/strategy11_organic_e2e_receipt_v1/pass.json').read_text())
+          status=json.loads(Path('artifacts/strategy11_organic_e2e_receipt_v1/status.json').read_text())
+          assert result['state']=='PASS_STRATEGY11_ORGANIC_E2E_RECEIPT', result
+          assert result['stage_count']==7
+          assert result['cycle_count_to_shadow300']==300
+          assert result['observer_burnin_cycle_count']==100
+          assert result['paper_30d_structural_gate_pass'] is True
+          assert result['paper_30d_allowed'] is False
+          assert result['automatic_shadow_start'] is False
+          assert result['automatic_paper_start'] is False
+          assert result['real_shadow_started'] is False
+          assert result['promotion_authority'] is False
+          assert result['protected_mutations']==0
+          assert result['execution_allowed'] is False
+          assert result['order_authority']=='BLOCKED'
+          assert result['runtime_bound'] is False
+          assert status['negative_fixture_count'] >= 2
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-organic-e2e-receipt-${{ github.run_id }}
+          path: artifacts/strategy11_organic_e2e_receipt_v1
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,49 @@
+name: R7A4D Strategy11 V3 Materiality Cache Fixture
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_expanded_discovery_v3.py'
+      - 'backend/tools/strategy11_v3_materiality_cache_fixture.py'
+      - 'backend/research/strategy11_v3_policy.json'
+      - '.github/workflows/r7a4d-strategy11-v3-materiality-cache-fixture.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_expanded_discovery_v3.py'
+      - 'backend/tools/strategy11_v3_materiality_cache_fixture.py'
+      - 'backend/research/strategy11_v3_policy.json'
+      - '.github/workflows/r7a4d-strategy11-v3-materiality-cache-fixture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - run: |
+          python -m py_compile backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_materiality_cache_fixture.py
+          python backend/tools/strategy11_v3_materiality_cache_fixture.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/strategy11_v3_policy.json').read_text())
+          materiality=policy['classification']['materiality']
+          assert materiality['net_return_pct_points_min']>0
+          assert materiality['material_metrics_min']>=2
+          assert policy['promotion_authority'] is False
+          assert policy['execution_allowed'] is False
+          assert policy['order_authority']=='BLOCKED'
+          PY

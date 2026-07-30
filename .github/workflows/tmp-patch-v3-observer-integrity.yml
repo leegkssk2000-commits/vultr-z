@@ -1,0 +1,52 @@
+name: TMP Patch V3 Observer Integrity
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/tmp-patch-v3-observer-integrity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    env: {PYTHONPATH: .}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-observer-chronology-pf-v1
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/tools/strategy11_expanded_discovery_v3.py')
+          text=path.read_text()
+          marker='def validate_archive_frame(frame: pd.DataFrame, *, expected_rows: int, interval_ms: int, label: str) -> tuple[int, int]:\n'
+          helper='''def annotate_observer_trades(trades: list[dict[str, Any]], *, window_id: str, symbol: str) -> list[dict[str, Any]]:\n    output: list[dict[str, Any]] = []\n    for trade in trades:\n        row = dict(trade)\n        row["window_id"] = window_id\n        row["symbol"] = symbol\n        output.append(row)\n    return output\n\n\n'''
+          if 'def annotate_observer_trades(' not in text:
+              if marker not in text: raise SystemExit('ANNOTATE_MARKER_MISSING')
+              text=text.replace(marker,helper+marker,1)
+          old='''                        observer = replay_long_short(frame, wrapper, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))\n                        observer_totals["long"].extend(row for row in observer["trades"] if row["side"] == "long")\n                        observer_totals["short"].extend(row for row in observer["trades"] if row["side"] == "short")\n'''
+          new='''                        observer = replay_long_short(frame, wrapper, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))\n                        annotated_observer = annotate_observer_trades(observer["trades"], window_id=str(row["window_id"]), symbol=str(row["symbol"]))\n                        observer_totals["long"].extend(value for value in annotated_observer if value["side"] == "long")\n                        observer_totals["short"].extend(value for value in annotated_observer if value["side"] == "short")\n'''
+          if old not in text: raise SystemExit('OBSERVER_COLLECTION_MARKER_MISSING')
+          text=text.replace(old,new,1)
+          old='''            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}\n'''
+          new='''            observer_long = sorted(observer_totals["long"], key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol")))\n            observer_short = sorted(observer_totals["short"], key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol")))\n            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_long), "short": combine_stats(observer_short), "observer_only": True, "chronological": True}, "canonical_mutated": False, **SAFETY}\n'''
+          if old not in text: raise SystemExit('OBSERVER_SUMMARY_MARKER_MISSING')
+          path.write_text(text.replace(old,new,1))
+
+          fixture=Path('backend/tools/strategy11_v3_observer_integrity_fixture.py')
+          fixture.write_text('''from __future__ import annotations\nimport json\nfrom backend.tools.strategy11_expanded_discovery_v3 import annotate_observer_trades\nfrom backend.tools.strategy11_long_short_observer_v3 import chronological, stats\n\ndef main():\n    raw=[\n      {"side":"long","entry_ts":"2026-01-02T00:00:00+00:00","exit_ts":"2026-01-02T00:15:00+00:00","net_return_pct":-1.0},\n      {"side":"long","entry_ts":"2026-01-01T00:00:00+00:00","exit_ts":"2026-01-01T00:15:00+00:00","net_return_pct":2.0},\n    ]\n    a=annotate_observer_trades([raw[0]],window_id="A02",symbol="ETHUSDT")\n    b=annotate_observer_trades([raw[1]],window_id="A01",symbol="BTCUSDT")\n    ordered=chronological(a+b)\n    assert [row["window_id"] for row in ordered]==["A01","A02"]\n    assert all("symbol" in row for row in ordered)\n    metric=stats(ordered)\n    assert metric["trade_count"]==2 and metric["max_drawdown_pct"]==1.0\n    epsilon=stats([{"window_id":"A01","symbol":"BTCUSDT","entry_ts":"1","exit_ts":"2","side":"long","net_return_pct":1.0},{"window_id":"A01","symbol":"BTCUSDT","entry_ts":"3","exit_ts":"4","side":"long","net_return_pct":-1e-14}])\n    assert epsilon["net_profit_factor"]==999.0\n    print(json.dumps({"state":"PASS_V3_OBSERVER_INTEGRITY_FIXTURE"},sort_keys=True)); return 0\nif __name__=="__main__": raise SystemExit(main())\n''')
+          PY
+          python -m py_compile backend/tools/strategy11_long_short_observer_v3.py backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_observer_integrity_fixture.py
+          python backend/tools/strategy11_v3_observer_integrity_fixture.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/tools/strategy11_long_short_observer_v3.py backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_observer_integrity_fixture.py
+          git commit -m 'Bind observer chronology and PF integrity'
+          git push origin HEAD:strategy11-v3-observer-chronology-pf-v1

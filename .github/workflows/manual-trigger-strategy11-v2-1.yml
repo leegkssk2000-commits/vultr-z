@@ -1,0 +1,29 @@
+name: Manual Trigger Strategy11 V2.1 Once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/manual-trigger-strategy11-v2-1.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch only when no active V2.1 run exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflow='r7a4d-strategy11-unattended-improvement-v2-1.yml'
+          active="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch master --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending")] | length')"
+          if [ "$active" -gt 0 ]; then
+            echo "SKIP_ACTIVE_V2_1_RUN:$active"
+            exit 0
+          fi
+          gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref master
+          echo 'DISPATCHED_STRATEGY11_V2_1'

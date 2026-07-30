@@ -1,0 +1,66 @@
+name: Strategy11 Organic E2E Runtime Bind Fix V1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/strategy11-organic-e2e-runtime-bind-fix-v1.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: strategy11-organic-e2e-runtime-bind-fix-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Add missing governor runtime-bound authority handoff
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/research/strategy11_synthesis_portfolio_integration_v1.py')
+          text=path.read_text(encoding='utf-8')
+          old='''        "execution_allowed": False,
+                  "order_authority": "BLOCKED",
+              }
+              governor = govern(governor_input)
+          '''
+          new='''        "execution_allowed": False,
+                  "order_authority": "BLOCKED",
+                  "runtime_bound": False,
+              }
+              governor = govern(governor_input)
+          '''
+          old='\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())+'\n'
+          new='\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())+'\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'GOVERNOR_HANDOFF_BLOCK_COUNT:{text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Verify portfolio and full organic chain
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_synthesis_portfolio_integration_v1.py \
+            backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py
+          python backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
+          python backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py
+          git diff --check
+      - name: Commit authority handoff repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/research/strategy11_synthesis_portfolio_integration_v1.py
+          git commit -m "Forward blocked runtime authority into portfolio governor"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}

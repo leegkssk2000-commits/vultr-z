@@ -10,6 +10,7 @@ on:
       - backend/research/strategy11_w1_native_orchestrator_v1.json
       - backend/research/strategy11_w1_native_ema_bind_v1.json
       - backend/research/strategy11_indicator_synergy_coverage_v1.json
+      - backend/research/strategy11_gemini_indicator_delta_authority_v1.json
       - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
       - .github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml
       - .github/workflows/r7a4d-strategy11-w1-idempotency-indicator-coverage-v1.yml
@@ -40,11 +41,27 @@ jobs:
           python -m py_compile backend/tools/strategy11_w1_one_shot_gate_v1.py
           python -m py_compile backend/tools/strategy11_indicator_synergy_coverage_v1.py
 
-      - name: Validate indicator coverage ledger
+      - name: Validate indicator coverage ledger and Gemini authority
         run: |
           python backend/tools/strategy11_indicator_synergy_coverage_v1.py \
             --policy backend/research/strategy11_indicator_synergy_coverage_v1.json \
             --out out/indicator
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('backend/research/strategy11_gemini_indicator_delta_authority_v1.json').read_text())
+          assert row['state']=='PASS_GEMINI_INDICATOR_DELTA_PLAN'
+          assert row['GEMINI_USED'] is True and row['free_only'] is True
+          assert row['direct_video_used'] is True
+          assert row['public_video_count']>=4 and row['independent_channel_count']>=4
+          assert [x['candidate_id'] for x in row['approved_candidates']]==[
+            'EMA_GOLDEN_DEAD_50_200_EVENT','EMA_CROSS_20_50_EVENT'
+          ]
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          assert row['runtime_bound'] is False
+          PY
 
       - name: Exercise W1 and EMA one-shot states
         run: |
@@ -58,9 +75,7 @@ jobs:
             'symbols':[{'symbol':x} for x in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT')],
             'latest_closed_end':'2026-08-01T08:30:00Z'
           }
-          for name,bars,missing,ready in (
-            ('479',479,1,False),('480',480,0,True)
-          ):
+          for name,bars,missing,ready in (('479',479,1,False),('480',480,0,True)):
             row={**base,'available_non_overlap_bars':bars,'missing_to_w1_480':missing,'w1_ready':ready}
             Path(f'fixture/stream-{name}.json').write_text(json.dumps(row))
           Path('fixture/empty.json').write_text(json.dumps({'artifacts':[]}))
@@ -126,6 +141,7 @@ jobs:
             '.github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml',
             '.github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml',
             '.github/workflows/r7a4d-strategy11-w1-idempotency-indicator-coverage-v1.yml',
+            '.github/workflows/r7a4d-strategy11-gemini-indicator-delta-v1.yml',
           ):
             data=yaml.safe_load(Path(path).read_text())
             assert data and 'jobs' in data,path

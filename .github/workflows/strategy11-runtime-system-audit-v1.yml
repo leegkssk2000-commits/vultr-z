@@ -8,6 +8,7 @@ on:
       - ".github/workflows/**"
       - "scripts/**"
       - "runtime/**"
+      - "frontend/z-os-app-source/baseline/**"
 
 permissions:
   contents: read
@@ -33,8 +34,8 @@ jobs:
         run: |
           python backend/tools/strategy11_cron_overlap_audit_v1.py
           python backend/tools/strategy11_internal_organic_audit_v1.py
-      - name: Run runtime and repository integrity audit
-        run: python backend/tools/strategy11_runtime_system_audit_v1.py
+      - name: Run corrected runtime and repository integrity audit
+        run: python backend/tools/strategy11_runtime_system_audit_v2.py
       - name: Execute critical Strategy11 regression chain
         run: |
           python - <<'PY'
@@ -78,6 +79,15 @@ jobs:
           assert runtime["summary"]["json_error_count"] == 0
           assert runtime["summary"]["unresolved_internal_import_count"] == 0
           assert runtime["summary"]["import_cycle_count"] == 0
+          assert runtime["summary"]["runtime_unreferenced_review_count"] == 0, runtime["runtime"]["files"]
+          active = {row["path"] for row in runtime["runtime"]["files"] if row["disposition"] == "ACTIVE_REFERENCED"}
+          required_runtime = {
+              "backend/engine/lbot_runtime.py",
+              "frontend/z-os-app-source/baseline/z_emergency_runtime_guard_v2.js",
+              "frontend/z-os-app-source/baseline/zel_source_envelope_runtime.js",
+              "frontend/z-os-app-source/baseline/zops_runtime_guard_v1.js",
+          }
+          assert required_runtime.issubset(active), (required_runtime, active)
           assert organic["state"] == "PASS_INTERNAL_ORGANIC_STATIC_AUDIT", organic["summary"]
           for report in (runtime, organic):
               authority = report["authority"]

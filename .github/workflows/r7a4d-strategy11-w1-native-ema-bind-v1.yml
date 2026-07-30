@@ -5,12 +5,14 @@ on:
     branches:
       - master
     paths:
+      - backend/tools/strategy11_w1_one_shot_gate_v1.py
       - backend/research/strategy11_w1_native_ema_bind_v1.json
       - .github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml
   push:
     branches:
       - master
     paths:
+      - backend/tools/strategy11_w1_one_shot_gate_v1.py
       - backend/research/strategy11_w1_native_ema_bind_v1.json
       - .github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml
   schedule:
@@ -27,7 +29,7 @@ concurrency:
 
 jobs:
   bind:
-    name: Bind EMA to completed native shared-W1 chain
+    name: Bind EMA once to completed native shared-W1 chain
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -41,45 +43,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Resolve clock and latest upstream native artifact
+      - name: Resolve clock upstream and one-shot receipt gate
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p out
-          python - <<'PY'
-          import datetime as dt, json, os, urllib.request
-          from pathlib import Path
-          contract=json.loads(Path('control/backend/research/strategy11_w1_native_ema_bind_v1.json').read_text())
-          now=dt.datetime.now(dt.timezone.utc)
-          target=dt.datetime.fromisoformat(contract['w1_not_before_utc'].replace('Z','+00:00'))
-          ready=now>=target
-          result={'schema_version':'1.0','version':contract['version'],'state':'WAIT_DATA' if not ready else 'RESOLVE_UPSTREAM','blockers':[],'clock_ready':ready,'w1_not_before_utc':contract['w1_not_before_utc'],'promotion_authority':False,'sealed_holdback_read':False,'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','next':'WAIT_NEXT_HOURLY_NATIVE_RUN' if not ready else 'DOWNLOAD_UPSTREAM_NATIVE_ARTIFACT'}
-          if not ready:
-              Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-              with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('ready=false\n')
-              raise SystemExit(0)
-          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
-          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2022-11-28'}
-          def get(url):
-              req=urllib.request.Request(url,headers=headers)
-              with urllib.request.urlopen(req,timeout=60) as r: return json.load(r)
-          runs=get(f'https://api.github.com/repos/{repo}/actions/runs?status=success&per_page=100').get('workflow_runs',[])
-          runs=[r for r in runs if r.get('name')==contract['upstream_native_workflow_name'] and r.get('conclusion')=='success']
-          runs.sort(key=lambda r:(r.get('updated_at') or '',int(r.get('id') or 0)),reverse=True)
-          selected=artifact=None
-          for run in runs:
-              items=get(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100").get('artifacts',[])
-              items=[a for a in items if not a.get('expired') and str(a.get('name','')).startswith(contract['upstream_native_artifact_prefix'])]
-              if items:
-                  items.sort(key=lambda a:(a.get('updated_at') or '',int(a.get('id') or 0)),reverse=True)
-                  selected,artifact=run,items[0]; break
-          if selected is None: raise SystemExit('NO_SUCCESSFUL_NATIVE_W1_ARTIFACT')
-          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
-              f.write(f"ready=true\nrun_id={selected['id']}\nhead_sha={selected['head_sha']}\nartifact_name={artifact['name']}\n")
-          PY
+          PYTHONPATH=control python control/backend/tools/strategy11_w1_one_shot_gate_v1.py \
+            --mode ema \
+            --contract control/backend/research/strategy11_w1_native_ema_bind_v1.json \
+            --out out/status.json
 
-      - name: Download upstream native W1 artifact
+      - name: Download upstream native W1 completion artifact
         if: steps.upstream.outputs.ready == 'true'
         uses: actions/download-artifact@v4
         with:
@@ -108,6 +83,7 @@ jobs:
           upstream=json.loads(Path('upstream/native-out/status.json').read_text())
           source=json.loads(Path('upstream/shared-w1/status.json').read_text())
           assert upstream['state']=='PASS_W1_NATIVE_PRIMARY_CHAIN', upstream
+          assert upstream['one_shot_completed'] is True
           assert source['state']=='PASS' and source['blockers']==[], source
           assert upstream['source_w1_manifest_sha256']==source['W1_manifest_sha256']
           PY
@@ -169,9 +145,39 @@ jobs:
           for row in (source,upstream,ema):
               assert row['canonical_mutated'] is False and row['registry_mutated'] is False
               assert row['protected_mutations']==0 and row['execution_allowed'] is False
-          final={'schema_version':'1.0','version':'R7A4D_STRATEGY11_W1_NATIVE_EMA_BIND_V1','state':'PASS_W1_NATIVE_PRIMARY_CHAIN_WITH_EMA','blockers':[],'source_w1_run_id':str(upstream['source_w1_run_id']),'source_w1_head_sha':upstream['source_w1_head_sha'],'source_w1_manifest_sha256':manifest_sha,'data_wait_pool_state':upstream['data_wait_pool_state'],'alpha_state':upstream['alpha_state'],'turtle_state':upstream['turtle_state'],'ema_state':ema['state'],'ema_active_candidate_queue':ema.get('active_candidate_queue',[]),'next':'W1_NEW_SEALED_HOLDBACK_GENERATOR','promotion_authority':False,'sealed_holdback_read':False,'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED'}
+          final={
+              'schema_version':'1.1',
+              'version':'R7A4D_STRATEGY11_W1_NATIVE_EMA_BIND_V1_HARDENED',
+              'state':'PASS_W1_NATIVE_PRIMARY_CHAIN_WITH_EMA',
+              'blockers':[],
+              'source_w1_run_id':str(upstream['source_w1_run_id']),
+              'source_w1_head_sha':upstream['source_w1_head_sha'],
+              'source_w1_manifest_sha256':manifest_sha,
+              'data_wait_pool_state':upstream['data_wait_pool_state'],
+              'alpha_state':upstream['alpha_state'],
+              'turtle_state':upstream['turtle_state'],
+              'ema_state':ema['state'],
+              'ema_active_candidate_queue':ema.get('active_candidate_queue',[]),
+              'next':'W1_NEW_SEALED_HOLDBACK_GENERATOR',
+              'completion_artifact_name':'s11-w1-native-ema-completion-20260801t083000z-v1',
+              'one_shot_completed':True,
+              'research_only':True,
+              'promotion_authority':False,
+              'sealed_holdback_read':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'runtime_bound':False,
+          }
           Path('out/status.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
-          Path('out/lineage.json').write_text(json.dumps({'shared_w1_manifest_sha256':manifest_sha,'upstream_native_status_sha256':hashlib.sha256(Path('upstream/native-out/status.json').read_bytes()).hexdigest(),'ema_status_sha256':hashlib.sha256(Path('primary/ema/status.json').read_bytes()).hexdigest()},indent=2,sort_keys=True)+'\n')
+          Path('out/lineage.json').write_text(json.dumps({
+              'shared_w1_manifest_sha256':manifest_sha,
+              'upstream_native_status_sha256':hashlib.sha256(Path('upstream/native-out/status.json').read_bytes()).hexdigest(),
+              'ema_status_sha256':hashlib.sha256(Path('primary/ema/status.json').read_bytes()).hexdigest(),
+          },indent=2,sort_keys=True)+'\n')
           PY
 
       - name: Assert fail-closed contract
@@ -181,14 +187,43 @@ jobs:
           import json
           from pathlib import Path
           row=json.loads(Path('out/status.json').read_text())
-          assert row['state'] in {'WAIT_DATA','PASS_W1_NATIVE_PRIMARY_CHAIN_WITH_EMA'}
+          assert row['state'] in {'WAIT_DATA','WAIT_UPSTREAM','ALREADY_COMPLETED','PASS_W1_NATIVE_PRIMARY_CHAIN_WITH_EMA'}, row
           assert row['blockers']==[] and row['promotion_authority'] is False
           assert row['canonical_mutated'] is False and row['registry_mutated'] is False
           assert row['protected_mutations']==0 and row['execution_allowed'] is False
           assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED'
+          assert row['runtime_bound'] is False
           PY
 
-      - name: Upload EMA-bound native evidence
+      - name: Write GitHub summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          row=json.loads(Path('out/status.json').read_text())
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# Strategy11 hardened EMA shared-W1 bind\n\n')
+              out.write(f"- State: **{row['state']}**\n")
+              out.write(f"- Next: `{row['next']}`\n")
+              if row['state']=='WAIT_UPSTREAM':
+                  out.write('- Native W1 completion receipt not present; no failure and no replay.\n')
+              elif row['state']=='ALREADY_COMPLETED':
+                  out.write('- Existing EMA completion receipt found; replay skipped.\n')
+          PY
+
+      - name: Upload immutable EMA completion receipt
+        uses: actions/upload-artifact@v4
+        if: steps.upstream.outputs.ready == 'true' && success()
+        with:
+          name: s11-w1-native-ema-completion-20260801t083000z-v1
+          path: |
+            out
+            primary/ema
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload EMA bind diagnostic evidence
         uses: actions/upload-artifact@v4
         if: always()
         with:

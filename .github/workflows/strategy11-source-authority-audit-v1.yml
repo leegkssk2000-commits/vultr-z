@@ -1,0 +1,56 @@
+name: Strategy11 Source Authority Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/**"
+      - "backend/tools/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-source-authority-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile audit
+        run: python -m py_compile backend/tools/strategy11_source_authority_audit_v1.py
+      - name: Inspect source authority and references
+        run: python backend/tools/strategy11_source_authority_audit_v1.py
+      - name: Print authority map
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('artifacts/strategy11_source_authority_audit_v1/report.json').read_text())
+          print(json.dumps({
+              'summary': report['summary'],
+              'rows': [{
+                  'target': row['target'],
+                  'disposition': row['disposition'],
+                  'reasons': row['reasons'],
+                  'canonical_candidate': row['canonical_candidate'],
+                  'canonical_candidate_exists': row['canonical_candidate_exists'],
+                  'target_references': row['target_references'],
+                  'canonical_references': row['canonical_references'],
+                  'similarity': row['similarity'],
+              } for row in report['rows']],
+          }, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-source-authority-audit-${{ github.run_id }}
+          path: artifacts/strategy11_source_authority_audit_v1
+          if-no-files-found: error

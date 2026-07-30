@@ -5,12 +5,14 @@ on:
     branches:
       - master
     paths:
+      - backend/tools/strategy11_w1_one_shot_gate_v1.py
       - backend/research/strategy11_w1_native_orchestrator_v1.json
       - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
   push:
     branches:
       - master
     paths:
+      - backend/tools/strategy11_w1_one_shot_gate_v1.py
       - backend/research/strategy11_w1_native_orchestrator_v1.json
       - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
   schedule:
@@ -28,7 +30,7 @@ concurrency:
 
 jobs:
   orchestrate:
-    name: W1 clock gate and shared-SHA native execution
+    name: W1 clock-data-idempotency gate and shared-SHA execution
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -49,61 +51,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Resolve W1 clock and stream integrity gate
+      - name: Resolve clock data and one-shot receipt gate
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p native-out
-          python - <<'PY'
-          import datetime as dt
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-
-          contract_path=Path('control/backend/research/strategy11_w1_native_orchestrator_v1.json')
-          stream_path=Path('stream/strategy11_stream_v1/manifest.json')
-          contract=json.loads(contract_path.read_text())
-          stream=json.loads(stream_path.read_text())
-          assert stream['state']=='PASS' and stream['blockers']==[], stream
-          assert len(stream['symbols'])==5, stream
-          assert stream['canonical_mutated'] is False
-          assert stream['registry_mutated'] is False
-          assert stream['protected_mutations']==0
-          assert stream['execution_allowed'] is False
-          assert stream['order_authority']=='BLOCKED'
-          target=dt.datetime.fromisoformat(contract['w1_not_before_utc'].replace('Z','+00:00'))
-          now=dt.datetime.now(dt.timezone.utc)
-          ready=now>=target
-          output=os.environ['GITHUB_OUTPUT']
-          with open(output,'a',encoding='utf-8') as handle:
-              handle.write(f"ready={'true' if ready else 'false'}\n")
-              handle.write(f"available={int(stream['available_non_overlap_bars'])}\n")
-              handle.write(f"missing={int(stream['missing_to_w1_480'])}\n")
-              handle.write(f"stream_sha={hashlib.sha256(stream_path.read_bytes()).hexdigest()}\n")
-          wait={
-              'schema_version':'1.0',
-              'version':contract['version'],
-              'state':'READY_TO_EXECUTE' if ready else 'WAIT_DATA',
-              'blockers':[],
-              'w1_not_before_utc':contract['w1_not_before_utc'],
-              'clock_now_utc':now.isoformat().replace('+00:00','Z'),
-              'stream_available_non_overlap_bars':int(stream['available_non_overlap_bars']),
-              'stream_missing_to_w1_480':int(stream['missing_to_w1_480']),
-              'stream_manifest_sha256':hashlib.sha256(stream_path.read_bytes()).hexdigest(),
-              'stream_latest_closed_end':stream.get('latest_closed_end'),
-              'clock_ready':ready,
-              'next':'EXECUTE_SHARED_W1' if ready else 'WAIT_NEXT_HOURLY_NATIVE_RUN',
-              'promotion_authority':False,
-              'canonical_mutated':False,
-              'registry_mutated':False,
-              'protected_mutations':0,
-              'execution_allowed':False,
-              'execution_authority':'NONE',
-              'order_authority':'BLOCKED',
-          }
-          Path('native-out/status.json').write_text(json.dumps(wait,indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'state':wait['state'],'available':wait['stream_available_non_overlap_bars'],'ready':ready},sort_keys=True))
-          PY
+          PYTHONPATH=control python control/backend/tools/strategy11_w1_one_shot_gate_v1.py \
+            --mode w1 \
+            --contract control/backend/research/strategy11_w1_native_orchestrator_v1.json \
+            --stream stream/strategy11_stream_v1/manifest.json \
+            --out native-out/status.json
 
       - name: Checkout exact DATA_WAIT_POOL compute authority
         if: steps.gate.outputs.ready == 'true'
@@ -322,8 +280,8 @@ jobs:
           alpha=json.loads(Path('primary/alpha/status.json').read_text())
           turtle=json.loads(Path('primary/turtle/status.json').read_text())
           manifest_sha=source['W1_manifest_sha256']
-          assert alpha['source_w1_manifest_sha256']==manifest_sha, (alpha['source_w1_manifest_sha256'],manifest_sha)
-          assert turtle['source_w1_manifest_sha256']==manifest_sha, (turtle['source_w1_manifest_sha256'],manifest_sha)
+          assert alpha['source_w1_manifest_sha256']==manifest_sha
+          assert turtle['source_w1_manifest_sha256']==manifest_sha
           assert alpha['source_w1_run_id']==turtle['source_w1_run_id']==str(__import__('os').environ['GITHUB_RUN_ID'])
           for row in (source,alpha,turtle):
               assert row['canonical_mutated'] is False
@@ -331,8 +289,8 @@ jobs:
               assert row['protected_mutations']==0
               assert row['execution_allowed'] is False
           final={
-              'schema_version':'1.0',
-              'version':'R7A4D_STRATEGY11_W1_NATIVE_ORCHESTRATOR_V1',
+              'schema_version':'1.1',
+              'version':'R7A4D_STRATEGY11_W1_NATIVE_ORCHESTRATOR_V1_HARDENED',
               'state':'PASS_W1_NATIVE_PRIMARY_CHAIN',
               'blockers':[],
               'source_w1_run_id':str(__import__('os').environ['GITHUB_RUN_ID']),
@@ -344,8 +302,11 @@ jobs:
               'alpha_active_candidate_queue':alpha.get('active_candidate_queue',[]),
               'turtle_state':turtle['state'],
               'turtle_active_candidate_queue':turtle.get('active_candidate_queue',[]),
-              'ema_state':'IMPLEMENTATION_REQUIRED',
+              'ema_state':'WAIT_UPSTREAM_BIND',
               'next':'EMA_PRIMARY_W1_CAUSAL_REPLAY',
+              'completion_artifact_name':'s11-w1-native-completion-20260801t083000z-v1',
+              'one_shot_completed':True,
+              'research_only':True,
               'promotion_authority':False,
               'sealed_holdback_read':False,
               'canonical_mutated':False,
@@ -354,6 +315,7 @@ jobs:
               'execution_allowed':False,
               'execution_authority':'NONE',
               'order_authority':'BLOCKED',
+              'runtime_bound':False,
           }
           Path('native-out/status.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
           Path('native-out/lineage.json').write_text(json.dumps({
@@ -362,7 +324,6 @@ jobs:
               'alpha_status_sha256':hashlib.sha256(Path('primary/alpha/status.json').read_bytes()).hexdigest(),
               'turtle_status_sha256':hashlib.sha256(Path('primary/turtle/status.json').read_bytes()).hexdigest(),
           },indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'state':final['state'],'alpha':final['alpha_state'],'turtle':final['turtle_state'],'next':final['next']},sort_keys=True))
           PY
 
       - name: Assert native fail-closed contract
@@ -372,7 +333,7 @@ jobs:
           import json
           from pathlib import Path
           row=json.loads(Path('native-out/status.json').read_text())
-          assert row['state'] in {'WAIT_DATA','PASS_W1_NATIVE_PRIMARY_CHAIN'}, row
+          assert row['state'] in {'WAIT_DATA','ALREADY_COMPLETED','PASS_W1_NATIVE_PRIMARY_CHAIN'}, row
           assert row['blockers']==[], row
           assert row['promotion_authority'] is False
           assert row['canonical_mutated'] is False
@@ -381,6 +342,7 @@ jobs:
           assert row['execution_allowed'] is False
           assert row['execution_authority']=='NONE'
           assert row['order_authority']=='BLOCKED'
+          assert row['runtime_bound'] is False
           PY
 
       - name: Write GitHub summary
@@ -392,13 +354,16 @@ jobs:
           from pathlib import Path
           row=json.loads(Path('native-out/status.json').read_text())
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
-              out.write('# Strategy11 W1 native orchestrator\n\n')
+              out.write('# Strategy11 W1 hardened native orchestrator\n\n')
               out.write(f"- State: **{row['state']}**\n")
               out.write(f"- Next: `{row['next']}`\n")
               if row['state']=='WAIT_DATA':
                   out.write(f"- Stream bars: `{row['stream_available_non_overlap_bars']}/480`\n")
                   out.write(f"- Missing: `{row['stream_missing_to_w1_480']}`\n")
-                  out.write(f"- W1 gate: `{row['w1_not_before_utc']}`\n")
+                  out.write(f"- Clock ready: `{row['clock_ready']}`\n")
+                  out.write(f"- Data ready: `{row['data_ready']}`\n")
+              elif row['state']=='ALREADY_COMPLETED':
+                  out.write('- Existing completion receipt found; replay skipped.\n')
               else:
                   out.write(f"- Manifest SHA: `{row['source_w1_manifest_sha256']}`\n")
                   out.write(f"- 22 pool: `{row['data_wait_pool_evaluated_strategy_count']}`\n")
@@ -406,7 +371,19 @@ jobs:
                   out.write(f"- Turtle: `{row['turtle_state']}`\n")
           PY
 
-      - name: Upload native W1 evidence
+      - name: Upload immutable W1 completion receipt
+        uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.ready == 'true' && success()
+        with:
+          name: s11-w1-native-completion-20260801t083000z-v1
+          path: |
+            native-out
+            shared-w1
+            primary
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload native W1 diagnostic evidence
         uses: actions/upload-artifact@v4
         if: always()
         with:

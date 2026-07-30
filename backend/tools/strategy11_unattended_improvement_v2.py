@@ -671,6 +671,8 @@ def classify_variant(
         if not risk_ok:
             return "REJECT_COVERAGE_RISK", details
         if trade_count <= control_trades:
+            if primary >= 2 and delta["net"] > 0.0:
+                return "HOLD_COVERAGE_QUALITY_IMPROVED", details
             return "HOLD_COVERAGE_NO_GAIN", details
         if (
             trade_count >= int(rules["lane_b_target_trade_count"])

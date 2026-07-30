@@ -149,6 +149,8 @@ def main() -> int:
     assert status == "PASS_LIVENESS_REPAIR_RESEARCH" and details["hard_risk_ok"]
     status, _ = v2.classify_variant(v2.LANES[1], variant(6, 0.2, 1.1, 1.0, 0.7), control("liquidity_sweep", 2, net=0.1, pf=1.0), p)
     assert status == "PASS_COVERAGE_EXPANSION_RESEARCH"
+    status, _ = v2.classify_variant(v2.LANES[1], variant(2, 0.75, 3.2, 1.4, 0.3), control("rsi_swing_fail", 2, net=-0.28, pf=0.72), p)
+    assert status == "HOLD_COVERAGE_QUALITY_IMPROVED"
     status, _ = v2.classify_variant(v2.LANES[2], variant(8, 0.8, 1.4, 1.3, 0.7), control("trend_ma_macd", 6, net=0.2, pf=1.1), p)
     assert status == "HOLD_DISCOVERY_IMPROVED"
     status, _ = v2.classify_variant(v2.LANES[3], variant(30, 19.0, 3.2, 1.2, 0.8, ladder_pass=True), d, p)

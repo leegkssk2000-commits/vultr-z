@@ -1,0 +1,68 @@
+name: R7A4D Strategy11 Bounded Synthesis Constructor V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/strategy11_bounded_synthesis_constructor_v1.py"
+      - "backend/tools/r7a4d_strategy11_bounded_synthesis_constructor_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-bounded-synthesis-constructor-v1.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/research/strategy11_bounded_synthesis_constructor_v1.py"
+      - "backend/tools/r7a4d_strategy11_bounded_synthesis_constructor_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-bounded-synthesis-constructor-v1.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-bounded-synthesis-constructor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-bounded-constructor:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile constructor and fixture
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_synthesis_material_registry_v1.py \
+            backend/research/strategy11_bounded_synthesis_constructor_v1.py \
+            backend/tools/r7a4d_strategy11_bounded_synthesis_constructor_fixture_v1.py
+      - name: Execute bounded construction fixtures
+        run: python backend/tools/r7a4d_strategy11_bounded_synthesis_constructor_fixture_v1.py
+      - name: Assert selection-only fail-closed authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/strategy11_bounded_synthesis_constructor_v1")
+          status = json.loads((root / "status.json").read_text())
+          plan = json.loads((root / "plan.json").read_text())
+          assert status["state"] == "PASS_BOUNDED_SYNTHESIS_CONSTRUCTOR_FIXTURE"
+          assert status["candidate_count"] == 3
+          assert status["fixture_only"] is True
+          assert status["production_authority"] is False
+          assert plan["selection_only"] is True
+          assert all(row["first_oos_required"] == "W2" for row in plan["candidates"])
+          for value in (status, plan):
+              assert value["research_only"] is True
+              assert value["promotion_authority"] is False
+              assert value["protected_mutations"] == 0
+              assert value["execution_allowed"] is False
+              assert value["order_authority"] == "BLOCKED"
+              assert value["runtime_bound"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-bounded-synthesis-constructor-${{ github.run_id }}
+          path: artifacts/strategy11_bounded_synthesis_constructor_v1
+          if-no-files-found: error

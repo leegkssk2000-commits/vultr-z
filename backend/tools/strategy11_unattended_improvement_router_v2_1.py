@@ -79,28 +79,34 @@ def route_alpha(out: Path, authority: Mapping[str, Any]) -> None:
         plan_prior = alpha_rows[0].get("incumbent") if alpha_rows else None
         if isinstance(plan_prior, Mapping) and isinstance(plan_prior.get("candidate_config"), Mapping):
             prior = plan_prior
+        elif plan.get("state") == "COMPLETE_CUTOFF_NO_NEW_REPLAY":
+            prior = None
         else:
             raise ValueError("ALPHA_PRIOR_CONFIG_MISSING")
     time54 = dict(authority["controls"]["TIME54"])
-    config = dict(prior["candidate_config"])
-    config["candidate_id"] = "TIME54_AUTHORITY_CONTROL"
-    config["axis"] = "ALPHA_MULTIOBJECTIVE_AUTHORITY"
-    config["kind"] = "CONTROL"
-    config["exit"] = dict(time54["exit"])
-    snapshot = {
-        "trade_count": int(time54["trade_count"]),
-        "win_rate_pct": time54["win_rate_pct"],
-        "net_return_pct_sum": time54["net_return_pct_sum"],
-        "net_profit_factor": time54["net_profit_factor"],
-        "payoff_ratio": time54["payoff_ratio"],
-        "max_drawdown_pct": time54["max_drawdown_pct"],
-        "positive_fresh_windows_pct": time54["positive_fresh_windows_pct"],
-        "candidate_config_sha256": v2.stable_sha(config),
-        "source_candidate_config_sha256": time54["candidate_config_sha256"],
-        "candidate_config": config,
-    }
+    if prior is not None:
+        config = dict(prior["candidate_config"])
+        config["candidate_id"] = "TIME54_AUTHORITY_CONTROL"
+        config["axis"] = "ALPHA_MULTIOBJECTIVE_AUTHORITY"
+        config["kind"] = "CONTROL"
+        config["exit"] = dict(time54["exit"])
+        snapshot = {
+            "trade_count": int(time54["trade_count"]),
+            "win_rate_pct": time54["win_rate_pct"],
+            "net_return_pct_sum": time54["net_return_pct_sum"],
+            "net_profit_factor": time54["net_profit_factor"],
+            "payoff_ratio": time54["payoff_ratio"],
+            "max_drawdown_pct": time54["max_drawdown_pct"],
+            "positive_fresh_windows_pct": time54["positive_fresh_windows_pct"],
+            "candidate_config_sha256": v2.stable_sha(config),
+            "source_candidate_config_sha256": time54["candidate_config_sha256"],
+            "candidate_config": config,
+        }
+        row["incumbent_snapshot"] = snapshot
+        row.pop("authority_snapshot_pending_until_nonterminal_plan", None)
+    else:
+        row["authority_snapshot_pending_until_nonterminal_plan"] = True
     row["lane"] = "D_QUALITY_OPTIMIZATION"
-    row["incumbent_snapshot"] = snapshot
     row["special_route"] = authority["route"]
     row["active_candidate_queue"] = list(authority["active_candidate_queue"])
     row["payoff_reference"] = authority["payoff_reference"]

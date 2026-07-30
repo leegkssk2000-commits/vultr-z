@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.tools.strategy11_cron_overlap_audit_v1 import find_overlapping_schedules
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "artifacts" / "strategy11_internal_organic_audit_v1"
 PY_ROOTS = (ROOT / "backend" / "contracts", ROOT / "backend" / "research", ROOT / "backend" / "tools")
@@ -265,12 +267,8 @@ def workflow_audit() -> tuple[dict[str, set[str]], list[dict[str, Any]], list[di
                 "python_refs": python_refs,
             }
         )
-    collisions = [
-        {"cron": cron, "count": len(paths), "workflows": sorted(paths)}
-        for cron, paths in schedules.items()
-        if len(paths) > 1
-    ]
-    return refs, workflows, sorted(collisions, key=lambda row: (-row["count"], row["cron"]))
+    collisions = find_overlapping_schedules(workflows)
+    return refs, workflows, collisions
 
 
 def possible_dead_modules(files: Iterable[PyFile], graph: dict[str, set[str]], workflow_refs: dict[str, set[str]]) -> list[dict[str, str]]:

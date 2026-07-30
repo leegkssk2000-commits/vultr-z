@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
-VERSION = "STRATEGY11_LONG_SHORT_OBSERVER_V3"
+VERSION = "STRATEGY11_LONG_SHORT_OBSERVER_V3_1"
+LOSS_EPSILON = 1e-12
 
 
 @dataclass
@@ -34,8 +35,13 @@ def close_trade(position: Position, price: float, timestamp: str, reason: str, c
     return {"side": position.side, "entry_ts": position.opened_at, "exit_ts": timestamp, "entry_price": position.entry, "exit_price": price, "net_return_pct": gross - position.entry_cost_pct - position.qty * cost_rate * 100.0, "exit_reason": reason}
 
 
+def chronological(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(trades, key=lambda row: (str(row.get("window_id") or ""), str(row.get("entry_ts") or ""), str(row.get("exit_ts") or ""), str(row.get("symbol") or ""), str(row.get("side") or "")))
+
+
 def stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
-    values = [metric(row.get("net_return_pct")) for row in trades]
+    ordered = chronological(trades)
+    values = [metric(row.get("net_return_pct")) for row in ordered]
     wins = [value for value in values if value > 0]
     losses = [value for value in values if value < 0]
     cumulative = peak = drawdown = 0.0
@@ -44,7 +50,8 @@ def stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         peak = max(peak, cumulative)
         drawdown = max(drawdown, peak - cumulative)
     gross_loss = abs(sum(losses))
-    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": sum(wins) / gross_loss if gross_loss > 0 else (999.0 if wins else 0.0), "max_drawdown_pct": drawdown}
+    profit_factor = sum(wins) / gross_loss if gross_loss > LOSS_EPSILON else (999.0 if wins else 0.0)
+    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": profit_factor, "max_drawdown_pct": drawdown}
 
 
 def replay(frame: pd.DataFrame, strategy: Callable[..., dict[str, Any]], *, warmup_bars: int, history_bars: int, cost_bps_per_side: float) -> dict[str, Any]:
@@ -92,6 +99,7 @@ def replay(frame: pd.DataFrame, strategy: Callable[..., dict[str, Any]], *, warm
         raw_ts = last.get("timestamp") if "timestamp" in last else last.get("timestamp_ms")
         timestamp = pd.Timestamp(raw_ts, unit=None if "timestamp" in last else "ms", tz=None if "timestamp" in last else "UTC").isoformat()
         trades.append(close_trade(position, metric(last["close"]), timestamp, "WINDOW_END", cost_rate))
-    long_rows = [row for row in trades if row["side"] == "long"]
-    short_rows = [row for row in trades if row["side"] == "short"]
-    return {"state": "PASS_OBSERVER_ONLY", "combined": stats(trades), "long": stats(long_rows), "short": stats(short_rows), "trades": trades, "ignored_add_reduce": ignored_add_reduce, "promotion_authority": False, "execution_allowed": False, "order_authority": "BLOCKED"}
+    ordered = chronological(trades)
+    long_rows = [row for row in ordered if row["side"] == "long"]
+    short_rows = [row for row in ordered if row["side"] == "short"]
+    return {"state": "PASS_OBSERVER_ONLY", "combined": stats(ordered), "long": stats(long_rows), "short": stats(short_rows), "trades": ordered, "ignored_add_reduce": ignored_add_reduce, "promotion_authority": False, "execution_allowed": False, "order_authority": "BLOCKED"}

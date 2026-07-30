@@ -5,15 +5,19 @@ on:
   pull_request:
     paths:
       - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1_1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_policy_v1.json"
       - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py"
-      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_optimized_fixture_v1.py"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py"
       - ".github/workflows/r7a4d-strategy11-post-shadow-observer-gate-v1.yml"
   push:
     branches: [master]
     paths:
       - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1_1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_policy_v1.json"
       - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py"
-      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_optimized_fixture_v1.py"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py"
       - ".github/workflows/r7a4d-strategy11-post-shadow-observer-gate-v1.yml"
 
 permissions:
@@ -33,7 +37,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compile post-Shadow observer chain
+      - name: Compile hardened post-Shadow observer chain
         run: |
           python -m py_compile \
             backend/research/strategy11_shadow200_readonly_accumulator_v1.py \
@@ -41,29 +45,35 @@ jobs:
             backend/research/strategy11_ml_light_observer_v1.py \
             backend/research/strategy11_ml_light_observer_optimized_v1.py \
             backend/research/strategy11_failure_learning_observer_v1.py \
+            backend/research/strategy11_post_shadow_observer_gate_v1_1.py \
             backend/research/strategy11_post_shadow_observer_gate_v1.py \
             backend/tools/r7a4d_strategy11_shadow300_readonly_completion_fixture_v1.py \
             backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py \
-            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py \
-            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_optimized_fixture_v1.py
-      - name: Execute 301 to 400C positive and negative fixtures
-        run: python backend/tools/r7a4d_strategy11_post_shadow_observer_gate_optimized_fixture_v1.py
-      - name: Assert observer-only Paper qualification boundary
+            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py
+      - name: Execute pinned-policy and ledger-chain fixtures
+        run: python backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py
+      - name: Assert structural-only Paper boundary
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           root = Path("artifacts/strategy11_post_shadow_observer_gate_v1")
-          passed = json.loads((root / "pass.json").read_text())
+          passed = json.loads((root / "pass_structural.json").read_text())
           incomplete = json.loads((root / "hold_incomplete.json").read_text())
           blocked = json.loads((root / "block_mutation.json").read_text())
           status = json.loads((root / "status.json").read_text())
 
-          assert passed["state"] == "PASS_POST_SHADOW_OBSERVER_100C_GATE"
+          assert passed["state"] == "PASS_POST_SHADOW_OBSERVER_100C_STRUCTURAL_GATE"
+          assert passed["trusted_policy_sha"] == status["trusted_policy_sha"]
+          assert passed["policy_class"] == "FIXTURE_ONLY"
+          assert passed["production_threshold_authority"] is False
+          assert passed["ledger_chain_verified"] is True
           assert passed["burnin_cycle_count"] == 100
           assert passed["burnin_start_cycle"] == 301
           assert passed["burnin_end_cycle"] == 400
-          assert passed["paper_30d_allowed"] is True
+          assert passed["paper_30d_structural_gate_pass"] is True
+          assert passed["paper_30d_allowed"] is False
           assert passed["automatic_paper_start"] is False
           assert passed["strategy_write_allowed"] is False
           assert passed["weight_write_allowed"] is False
@@ -77,7 +87,6 @@ jobs:
 
           assert status["fixture_only"] is True
           assert status["production_authority"] is False
-          assert status["automatic_paper_start"] is False
           for value in (passed, incomplete, blocked, status):
               assert value["observer_only"] is True
               assert value["research_only"] is True

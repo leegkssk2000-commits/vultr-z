@@ -94,6 +94,16 @@ def materiality_evidence(candidate: Mapping[str, Any], control: Mapping[str, Any
     return {"thresholds": thresholds, "deltas": deltas, "pf_saturated": pf_saturated, "flags": flags, "improved_count": sum(flags.values())}
 
 
+def annotate_observer_trades(trades: list[dict[str, Any]], *, window_id: str, symbol: str) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for trade in trades:
+        row = dict(trade)
+        row["window_id"] = window_id
+        row["symbol"] = symbol
+        output.append(row)
+    return output
+
+
 def validate_archive_frame(frame: pd.DataFrame, *, expected_rows: int, interval_ms: int, label: str) -> tuple[int, int]:
     required = {"timestamp_ms", "open", "high", "low", "close", "volume"}
     if not required.issubset(frame.columns):
@@ -259,14 +269,17 @@ def discovery_replay(args: argparse.Namespace) -> int:
                     if repeat == "A":
                         window_stats.setdefault(row["window_id"], []).extend(result["trades"])
                         observer = replay_long_short(frame, wrapper, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))
-                        observer_totals["long"].extend(row for row in observer["trades"] if row["side"] == "long")
-                        observer_totals["short"].extend(row for row in observer["trades"] if row["side"] == "short")
+                        annotated_observer = annotate_observer_trades(observer["trades"], window_id=str(row["window_id"]), symbol=str(row["symbol"]))
+                        observer_totals["long"].extend(value for value in annotated_observer if value["side"] == "long")
+                        observer_totals["short"].extend(value for value in annotated_observer if value["side"] == "short")
                 ledgers.append(sorted(repeat_trades, key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol"))))
             parity = stable_sha(ledgers[0]) == stable_sha(ledgers[1]) and len({stable_sha(row) for row in ledgers[0]}) == len(ledgers[0])
             stats = combine_stats(ledgers[0])
             per_window = {window: combine_stats(rows) for window, rows in window_stats.items()}
             positive_windows = sum(value["net_return_pct_sum"] > 0 for value in per_window.values())
-            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}
+            observer_long = sorted(observer_totals["long"], key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol")))
+            observer_short = sorted(observer_totals["short"], key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol")))
+            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_long), "short": combine_stats(observer_short), "observer_only": True, "chronological": True}, "canonical_mutated": False, **SAFETY}
             write_json(out / strategy_id / variant_id / "summary.json", summary)
             summaries.append(summary)
             print(json.dumps({"event": "VARIANT_COMPLETE", "strategy_id": strategy_id, "variant_id": variant_id, "trades": summary["trade_count"], "elapsed_s": round(time.monotonic() - batch_started, 3)}, sort_keys=True), flush=True)

@@ -28,11 +28,13 @@ jobs:
         run: |
           python - <<'PY'
           import re
+          import textwrap
           from pathlib import Path
 
           path=Path('backend/tools/strategy11_source_authority_audit_v1.py')
           text=path.read_text(encoding='utf-8')
-          new='''def token_references(files: Iterable[SourceFile], target: str) -> list[dict[str, Any]]:
+          new=textwrap.dedent('''\
+          def token_references(files: Iterable[SourceFile], target: str) -> list[dict[str, Any]]:
               path_token = target
               module_token = target[:-3].replace("/", ".")
               stem_token = Path(target).stem
@@ -67,8 +69,8 @@ jobs:
                       }
                   )
               return sorted(result, key=lambda row: (-row["total_hits"], row["path"]))
-          '''
-          new='\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())+'\n\n'
+
+          ''')
           pattern=re.compile(r'def token_references\(.*?\n\n(?=def similarity)', re.DOTALL)
           updated,count=pattern.subn(new, text, count=1)
           if count != 1:

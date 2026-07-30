@@ -1,0 +1,156 @@
+name: R7A4D Strategy11 W1 Idempotency Indicator Coverage V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/strategy11_w1_one_shot_gate_v1.py
+      - backend/tools/strategy11_indicator_synergy_coverage_v1.py
+      - backend/research/strategy11_w1_native_orchestrator_v1.json
+      - backend/research/strategy11_w1_native_ema_bind_v1.json
+      - backend/research/strategy11_indicator_synergy_coverage_v1.json
+      - backend/research/strategy11_gemini_indicator_delta_authority_v1.json
+      - .github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml
+      - .github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml
+      - .github/workflows/r7a4d-strategy11-w1-idempotency-indicator-coverage-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-w1-idempotency-indicator-coverage-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile contracts
+        run: |
+          python -m py_compile backend/tools/strategy11_w1_one_shot_gate_v1.py
+          python -m py_compile backend/tools/strategy11_indicator_synergy_coverage_v1.py
+
+      - name: Validate indicator coverage ledger and Gemini authority
+        run: |
+          python backend/tools/strategy11_indicator_synergy_coverage_v1.py \
+            --policy backend/research/strategy11_indicator_synergy_coverage_v1.json \
+            --out out/indicator
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('backend/research/strategy11_gemini_indicator_delta_authority_v1.json').read_text())
+          assert row['state']=='PASS_GEMINI_INDICATOR_DELTA_PLAN'
+          assert row['GEMINI_USED'] is True and row['free_only'] is True
+          assert row['direct_video_used'] is True
+          assert row['public_video_count']>=4 and row['independent_channel_count']>=4
+          assert [x['candidate_id'] for x in row['approved_candidates']]==[
+            'EMA_GOLDEN_DEAD_50_200_EVENT','EMA_CROSS_20_50_EVENT'
+          ]
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          assert row['runtime_bound'] is False
+          PY
+
+      - name: Exercise W1 and EMA one-shot states
+        run: |
+          mkdir -p fixture
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base={
+            'state':'PASS','blockers':[],'canonical_mutated':False,'registry_mutated':False,
+            'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED',
+            'symbols':[{'symbol':x} for x in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT')],
+            'latest_closed_end':'2026-08-01T08:30:00Z'
+          }
+          for name,bars,missing,ready in (('479',479,1,False),('480',480,0,True)):
+            row={**base,'available_non_overlap_bars':bars,'missing_to_w1_480':missing,'w1_ready':ready}
+            Path(f'fixture/stream-{name}.json').write_text(json.dumps(row))
+          Path('fixture/empty.json').write_text(json.dumps({'artifacts':[]}))
+          Path('fixture/w1-complete.json').write_text(json.dumps({'artifacts':[
+            {'id':1,'name':'s11-w1-native-completion-20260801t083000z-v1','expired':False,'workflow_run':{'id':101,'head_sha':'abc'}}
+          ]}))
+          Path('fixture/upstream.json').write_text(json.dumps({'artifacts':[
+            {'id':1,'name':'s11-w1-native-completion-20260801t083000z-v1','expired':False,'workflow_run':{'id':101,'head_sha':'abc'}}
+          ]}))
+          Path('fixture/ema-complete.json').write_text(json.dumps({'artifacts':[
+            {'id':1,'name':'s11-w1-native-completion-20260801t083000z-v1','expired':False,'workflow_run':{'id':101,'head_sha':'abc'}},
+            {'id':2,'name':'s11-w1-native-ema-completion-20260801t083000z-v1','expired':False,'workflow_run':{'id':102,'head_sha':'def'}}
+          ]}))
+          PY
+          run_w1() {
+            local stream=$1 now=$2 index=$3 out=$4
+            python backend/tools/strategy11_w1_one_shot_gate_v1.py --mode w1 \
+              --contract backend/research/strategy11_w1_native_orchestrator_v1.json \
+              --stream "$stream" --artifact-index "$index" --now-utc "$now" --out "$out"
+          }
+          run_ema() {
+            local now=$1 index=$2 out=$3
+            python backend/tools/strategy11_w1_one_shot_gate_v1.py --mode ema \
+              --contract backend/research/strategy11_w1_native_ema_bind_v1.json \
+              --artifact-index "$index" --now-utc "$now" --out "$out"
+          }
+          mkdir -p out/gates
+          run_w1 fixture/stream-480.json 2026-08-01T08:29:59Z fixture/empty.json out/gates/w1-clock-wait.json
+          run_w1 fixture/stream-479.json 2026-08-01T08:31:00Z fixture/empty.json out/gates/w1-bars-wait.json
+          run_w1 fixture/stream-480.json 2026-08-01T08:31:00Z fixture/empty.json out/gates/w1-ready.json
+          run_w1 fixture/stream-480.json 2026-08-01T08:31:00Z fixture/w1-complete.json out/gates/w1-complete.json
+          run_ema 2026-08-01T08:29:59Z fixture/empty.json out/gates/ema-clock-wait.json
+          run_ema 2026-08-01T08:31:00Z fixture/empty.json out/gates/ema-upstream-wait.json
+          run_ema 2026-08-01T08:31:00Z fixture/upstream.json out/gates/ema-ready.json
+          run_ema 2026-08-01T08:31:00Z fixture/ema-complete.json out/gates/ema-complete.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected={
+            'w1-clock-wait.json':'WAIT_DATA','w1-bars-wait.json':'WAIT_DATA',
+            'w1-ready.json':'READY_TO_EXECUTE','w1-complete.json':'ALREADY_COMPLETED',
+            'ema-clock-wait.json':'WAIT_DATA','ema-upstream-wait.json':'WAIT_UPSTREAM',
+            'ema-ready.json':'RESOLVE_UPSTREAM','ema-complete.json':'ALREADY_COMPLETED',
+          }
+          for name,state in expected.items():
+            row=json.loads((Path('out/gates')/name).read_text())
+            assert row['state']==state,(name,row)
+            assert row['promotion_authority'] is False
+            assert row['execution_allowed'] is False
+            assert row['order_authority']=='BLOCKED'
+            assert row['runtime_bound'] is False
+          assert json.loads(Path('out/gates/w1-ready.json').read_text())['one_shot_ready'] is True
+          assert json.loads(Path('out/gates/ema-ready.json').read_text())['upstream_run_id']=='101'
+          PY
+
+      - name: Parse workflow YAML
+        run: |
+          python -m pip install --disable-pip-version-check pyyaml
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          for path in (
+            '.github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml',
+            '.github/workflows/r7a4d-strategy11-w1-native-ema-bind-v1.yml',
+            '.github/workflows/r7a4d-strategy11-w1-idempotency-indicator-coverage-v1.yml',
+            '.github/workflows/r7a4d-strategy11-gemini-indicator-delta-v1.yml',
+          ):
+            data=yaml.safe_load(Path(path).read_text())
+            assert data and 'jobs' in data,path
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-w1-idempotency-indicator-coverage-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,80 @@
+name: R7A4D Strategy11 Gemini Indicator Delta V1
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/tools/strategy11_gemini_indicator_delta_v1.py
+      - backend/research/strategy11_indicator_synergy_coverage_v1.json
+      - backend/research/strategy11_indicator_video_registry_v1.json
+      - .github/workflows/r7a4d-strategy11-gemini-indicator-delta-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-gemini-indicator-delta-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  indicator-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile planner
+        run: python -m py_compile backend/tools/strategy11_gemini_indicator_delta_v1.py
+
+      - name: Run free-only direct-video indicator review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          mkdir -p out
+          python backend/tools/strategy11_gemini_indicator_delta_v1.py \
+            --coverage backend/research/strategy11_indicator_synergy_coverage_v1.json \
+            --registry backend/research/strategy11_indicator_video_registry_v1.json \
+            --out out
+
+      - name: Assert safe result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/plan.json').read_text())
+          assert row['state'] in {
+            'PASS_GEMINI_INDICATOR_DELTA_PLAN','HOLD_NO_SUPPORTED_INDICATOR_DELTA',
+            'WAIT_GEMINI_SECRET','WAIT_GEMINI_MODEL','WAIT_GEMINI_QUOTA'
+          },row
+          assert row['promotion_authority'] is False
+          assert row['protected_mutations']==0
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          assert row['runtime_bound'] is False
+          if row['state']=='PASS_GEMINI_INDICATOR_DELTA_PLAN':
+            assert row['GEMINI_USED'] is True
+            assert row['free_only'] is True
+            assert row['direct_video_used'] is True
+            assert len(row['public_urls'])>=4
+            assert row['independent_channel_count']>=4
+            assert 1<=row['approved_candidate_count']<=6
+            assert row['private_code_sent'] is False
+            assert row['secret_sent'] is False
+            assert row['account_order_runtime_data_sent'] is False
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-indicator-delta-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

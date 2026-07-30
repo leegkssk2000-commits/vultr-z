@@ -186,7 +186,7 @@ def main() -> int:
     assert result["state"] == "PASS_SYNTHESIS_FACTORIAL_W2_CANDIDATE"
     assert abs(result["interaction"]["net_after_cost_r"] - 0.3) < 1e-9
     assert result["interaction"]["max_drawdown_r"] < 0.0
-    assert result["interaction"]["marginal_net_r_vs_best_single"] == 0.7
+    assert abs(result["interaction"]["marginal_net_r_vs_best_single"] - 0.7) < 1e-9
     assert result["selection_data_reused"] is False
     assert result["next"] == "COMPONENT_ATTRIBUTION"
     for key, expected in SAFETY.items():

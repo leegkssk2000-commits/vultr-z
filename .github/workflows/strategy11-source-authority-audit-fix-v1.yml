@@ -27,36 +27,11 @@ jobs:
       - name: Patch exact non-overlapping reference census
         run: |
           python - <<'PY'
+          import re
           from pathlib import Path
 
           path=Path('backend/tools/strategy11_source_authority_audit_v1.py')
           text=path.read_text(encoding='utf-8')
-          old='''def token_references(files: Iterable[SourceFile], target: str) -> list[dict[str, Any]]:
-              path_token = target
-              module_token = target[:-3].replace("/", ".")
-              stem_token = Path(target).stem
-              result = []
-              for file in files:
-                  if file.rel == target:
-                      continue
-                  path_hits = file.text.count(path_token)
-                  module_hits = file.text.count(module_token)
-                  stem_hits = file.text.count(stem_token)
-                  total = path_hits + module_hits + stem_hits
-                  if total:
-                      result.append(
-                          {
-                              "path": file.rel,
-                              "total_hits": total,
-                              "path_hits": path_hits,
-                              "module_hits": module_hits,
-                              "stem_hits": stem_hits,
-                              "is_workflow": file.rel.startswith(".github/workflows/"),
-                              "is_python": file.rel.endswith(".py"),
-                          }
-                      )
-              return sorted(result, key=lambda row: (-row["total_hits"], row["path"]))
-          '''
           new='''def token_references(files: Iterable[SourceFile], target: str) -> list[dict[str, Any]]:
               path_token = target
               module_token = target[:-3].replace("/", ".")
@@ -93,11 +68,12 @@ jobs:
                   )
               return sorted(result, key=lambda row: (-row["total_hits"], row["path"]))
           '''
-          old='\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())+'\n'
-          new='\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())+'\n'
-          if text.count(old) != 1:
-              raise SystemExit(f'TOKEN_REFERENCE_BLOCK_COUNT:{text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          new='\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())+'\n\n'
+          pattern=re.compile(r'def token_references\(.*?\n\n(?=def similarity)', re.DOTALL)
+          updated,count=pattern.subn(new, text, count=1)
+          if count != 1:
+              raise SystemExit(f'TOKEN_REFERENCE_FUNCTION_COUNT:{count}')
+          path.write_text(updated, encoding='utf-8')
           PY
       - name: Verify audit behavior
         run: |

@@ -21,7 +21,6 @@ TARGETS = (
     "backend/tools/r7a4d_strategy11_ml_failure_observers_optimized_fixture_v1.py",
     "backend/tools/r7a4d_strategy11_path_candidate_replay_v1_1.py",
     "backend/tools/r7a4d_strategy11_path_state_source_restore_v1_1.py",
-    "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_optimized_fixture_v1.py",
     "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1_1.py",
     "backend/tools/r7a4d_strategy11_trade_path_causal_loop_fixture_v1_1.py",
 )

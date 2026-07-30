@@ -7,6 +7,7 @@ on:
       - "backend/research/strategy11_synthesis_portfolio_integration_v1.py"
       - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py"
       - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1_1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_review_fixture_v1.py"
       - ".github/workflows/r7a4d-strategy11-synthesis-portfolio-integration-v1.yml"
   push:
     branches: [master]
@@ -14,6 +15,7 @@ on:
       - "backend/research/strategy11_synthesis_portfolio_integration_v1.py"
       - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py"
       - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1_1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_review_fixture_v1.py"
       - ".github/workflows/r7a4d-strategy11-synthesis-portfolio-integration-v1.yml"
 
 permissions:
@@ -43,9 +45,12 @@ jobs:
             backend/research/strategy11_synthesis_classifier_adapter_v1.py \
             backend/research/strategy11_synthesis_portfolio_integration_v1.py \
             backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1_1.py \
-            backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
+            backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_review_fixture_v1.py
       - name: Execute correlation and governor integration fixtures
         run: python backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
+      - name: Execute review regression fixtures
+        run: python backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_review_fixture_v1.py
       - name: Assert shadow-only target boundary
         run: |
           python - <<'PY'
@@ -56,6 +61,7 @@ jobs:
           correlated = json.loads((root / "hold_correlated.json").read_text())
           turnover = json.loads((root / "hold_turnover.json").read_text())
           status = json.loads((root / "status.json").read_text())
+          review = json.loads((root / "review_status.json").read_text())
 
           assert passed["state"] == "PASS_SYNTHESIS_PORTFOLIO_INTEGRATION"
           assert passed["shadow_targets_ready"] is True
@@ -63,13 +69,16 @@ jobs:
           assert passed["governor_result"]["shadow_only"] is True
           assert passed["governor_result"]["status"] == "PASS_PORTFOLIO_GOVERNOR_SHADOW_TARGETS"
           assert passed["correlation_analysis"]["blocked_pair_count"] == 0
+          assert passed["selected_synthesis_members"]
           assert correlated["state"] == "HOLD_NO_COMPATIBLE_SYNTHESIS_PORTFOLIO"
           assert correlated["shadow_targets_ready"] is False
           assert turnover["state"] == "HOLD_SYNTHESIS_PORTFOLIO_GOVERNOR"
           assert turnover["shadow_targets_ready"] is False
+          assert review["duplicate_material_id_rejected"] is True
+          assert review["selected_synthesis_members"]
           assert status["fixture_only"] is True
           assert status["production_authority"] is False
-          for value in (passed, correlated, turnover, status):
+          for value in (passed, correlated, turnover, status, review):
               assert value["research_only"] is True
               assert value["promotion_authority"] is False
               assert value["protected_mutations"] == 0

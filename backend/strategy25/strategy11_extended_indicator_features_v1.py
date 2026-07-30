@@ -69,7 +69,6 @@ def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
 
 def _rolling_percentile(series: pd.Series, length: int = 100) -> pd.Series:
     minimum = max(30, length // 2)
-
     def rank_last(values: np.ndarray) -> float:
         if len(values) == 0 or not np.isfinite(values[-1]):
             return np.nan
@@ -77,7 +76,6 @@ def _rolling_percentile(series: pd.Series, length: int = 100) -> pd.Series:
         if not len(valid):
             return np.nan
         return float(np.mean(valid <= values[-1]) * 100.0)
-
     return series.rolling(length, min_periods=minimum).apply(rank_last, raw=True)
 
 
@@ -211,11 +209,17 @@ def extend_feature_frame(frame: pd.DataFrame, base_features: pd.DataFrame | None
     data["psar_bull"] = close > data["psar"]
 
     period = 25
+
+    def most_recent_extreme_recency(values: np.ndarray, *, find_max: bool) -> float:
+        reversed_values = values[::-1]
+        bars_since = int(np.argmax(reversed_values) if find_max else np.argmin(reversed_values))
+        return float((period - bars_since) / period * 100.0)
+
     data["aroon_up_value"] = high.rolling(period, min_periods=period).apply(
-        lambda values: float((np.argmax(values) + 1) / period * 100.0), raw=True
+        lambda values: most_recent_extreme_recency(values, find_max=True), raw=True
     )
     data["aroon_down_value"] = low.rolling(period, min_periods=period).apply(
-        lambda values: float((period - np.argmin(values)) / period * 100.0), raw=True
+        lambda values: most_recent_extreme_recency(values, find_max=False), raw=True
     )
     data["aroon_up"] = (data["aroon_up_value"] >= 70.0) & (data["aroon_down_value"] <= 30.0)
 

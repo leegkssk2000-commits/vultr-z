@@ -1,0 +1,80 @@
+name: R7A4D Strategy11 Synthesis Portfolio Integration V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/strategy11_synthesis_portfolio_integration_v1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-synthesis-portfolio-integration-v1.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/research/strategy11_synthesis_portfolio_integration_v1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-synthesis-portfolio-integration-v1.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-synthesis-portfolio-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-synthesis-portfolio-integration:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile synthesis portfolio chain
+        run: |
+          python -m py_compile \
+            backend/contracts/strategy11_strategy_proposal_contract_v1.py \
+            backend/research/strategy11_global_candidate_classifier_v1.py \
+            backend/research/strategy11_ensemble_correlation_analyzer_v1.py \
+            backend/research/strategy11_portfolio_governor_v1.py \
+            backend/research/strategy11_synthesis_classifier_adapter_v1.py \
+            backend/research/strategy11_synthesis_portfolio_integration_v1.py \
+            backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
+      - name: Execute correlation and governor integration fixtures
+        run: python backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
+      - name: Assert shadow-only target boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/strategy11_synthesis_portfolio_integration_v1")
+          passed = json.loads((root / "pass.json").read_text())
+          correlated = json.loads((root / "hold_correlated.json").read_text())
+          turnover = json.loads((root / "hold_turnover.json").read_text())
+          status = json.loads((root / "status.json").read_text())
+
+          assert passed["state"] == "PASS_SYNTHESIS_PORTFOLIO_INTEGRATION"
+          assert passed["shadow_targets_ready"] is True
+          assert passed["automatic_shadow_start"] is False
+          assert passed["governor_result"]["shadow_only"] is True
+          assert passed["governor_result"]["status"] == "PASS_PORTFOLIO_GOVERNOR_SHADOW_TARGETS"
+          assert correlated["state"] == "HOLD_NO_COMPATIBLE_SYNTHESIS_PORTFOLIO"
+          assert correlated["shadow_targets_ready"] is False
+          assert turnover["state"] == "HOLD_SYNTHESIS_PORTFOLIO_GOVERNOR"
+          assert turnover["shadow_targets_ready"] is False
+          assert status["fixture_only"] is True
+          assert status["production_authority"] is False
+          for value in (passed, correlated, turnover, status):
+              assert value["research_only"] is True
+              assert value["promotion_authority"] is False
+              assert value["protected_mutations"] == 0
+              assert value["execution_allowed"] is False
+              assert value["order_authority"] == "BLOCKED"
+          assert passed["runtime_bound"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-synthesis-portfolio-integration-${{ github.run_id }}
+          path: artifacts/strategy11_synthesis_portfolio_integration_v1
+          if-no-files-found: error

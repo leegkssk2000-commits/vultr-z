@@ -1,0 +1,121 @@
+name: R7A4D Strategy11 10x Closure Matrix V2
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/closure/strategy11_10x_closure_matrix_v2.py"
+      - ".github/workflows/r7a4d-strategy11-10x-closure-matrix-v2.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/closure/strategy11_10x_closure_matrix_v2.py"
+      - ".github/workflows/r7a4d-strategy11-10x-closure-matrix-v2.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-10x-closure-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-closure-matrix-v2:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile closure matrix v2
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_10x_closure_matrix_v1.py \
+            backend/closure/strategy11_10x_closure_matrix_v2.py
+
+      - name: Resolve append-only data manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin strategy11-data-stream-v1
+          mkdir -p artifacts/strategy11_10x_closure_matrix_v2
+          git show FETCH_HEAD:strategy11_stream_v1/manifest.json \
+            > artifacts/strategy11_10x_closure_matrix_v2/data_manifest.json
+
+      - name: Execute latest structural and real-evidence census
+        run: |
+          python backend/closure/strategy11_10x_closure_matrix_v2.py \
+            --repo-root . \
+            --data-manifest artifacts/strategy11_10x_closure_matrix_v2/data_manifest.json \
+            --output-json artifacts/strategy11_10x_closure_matrix_v2/closure_matrix.json \
+            --output-md artifacts/strategy11_10x_closure_matrix_v2/closure_matrix.md
+
+      - name: Assert structure complete and real activation still gated
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/strategy11_10x_closure_matrix_v2")
+          value = json.loads((root / "closure_matrix.json").read_text())
+          assert value["schema_version"] == "strategy11.10x_closure_matrix.v2"
+          assert value["overall_state"] == "HOLD_10X_CLOSURE_INCOMPLETE"
+          assert value["score_claim_allowed"] is False
+          assert value["action"] == "hold"
+          assert value["structural_domain_coverage_pct"] == 100.0
+          assert value["structural_file_coverage_pct"] == 100.0
+          assert value["real_evidence_coverage_pct"] == 0.0
+          assert value["counts"]["implementation_required"] == 0
+          assert value["next"]["domain_id"] == "D1_RESEARCH_DATA"
+          assert value["next"]["state"] == "WAIT_DATA"
+          domains = {row["domain_id"]: row for row in value["domains"]}
+          assert all(row["structural_state"] == "PASS_STRUCTURAL" for row in domains.values())
+          assert domains["D1_RESEARCH_DATA"]["evidence_state"] == "WAIT_DATA"
+          assert domains["D3_SYNTHESIS_FACTORY"]["missing_files"] == []
+          assert domains["D4_ENSEMBLE_PORTFOLIO"]["missing_files"] == []
+          assert domains["D6_SHADOW_OBSERVER"]["missing_files"] == []
+          assert domains["D10_CONTROLLED_CAPITAL"]["evidence_state"] == "BLOCKED"
+          assert value["research_only"] is True
+          assert value["promotion_authority"] is False
+          assert value["protected_mutations"] == 0
+          assert value["execution_allowed"] is False
+          assert value["order_authority"] == "BLOCKED"
+          assert value["runtime_bound"] is False
+          PY
+
+      - name: Assert corrupt data remains BLOCKED
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          src = Path("artifacts/strategy11_10x_closure_matrix_v2/data_manifest.json")
+          value = json.loads(src.read_text())
+          value["order_authority"] = "OPEN"
+          Path("artifacts/strategy11_10x_closure_matrix_v2/tampered_manifest.json").write_text(
+              json.dumps(value), encoding="utf-8"
+          )
+          PY
+          python backend/closure/strategy11_10x_closure_matrix_v2.py \
+            --repo-root . \
+            --data-manifest artifacts/strategy11_10x_closure_matrix_v2/tampered_manifest.json \
+            --output-json artifacts/strategy11_10x_closure_matrix_v2/tampered_matrix.json \
+            --output-md artifacts/strategy11_10x_closure_matrix_v2/tampered_matrix.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path("artifacts/strategy11_10x_closure_matrix_v2/tampered_matrix.json").read_text())
+          d1 = next(row for row in value["domains"] if row["domain_id"] == "D1_RESEARCH_DATA")
+          assert d1["evidence_state"] == "BLOCKED"
+          assert "DATA_INTEGRITY_OR_AUTHORITY_MISMATCH" in d1["blockers"]
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-10x-closure-matrix-v2-${{ github.run_id }}
+          path: artifacts/strategy11_10x_closure_matrix_v2
+          if-no-files-found: error

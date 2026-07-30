@@ -106,8 +106,8 @@ def _number(value: Any, name: str, *, minimum: float | None = None, maximum: flo
 def _reject_private(value: Any, path: str = "$") -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
-            text = str(key).lower()
-            if any(token in text for token in PRIVATE_TOKENS):
+            key_text = str(key).lower()
+            if any(token in key_text for token in PRIVATE_TOKENS):
                 _fail("PRIVATE_FIELD_FORBIDDEN", f"{path}.{key}")
             _reject_private(child, f"{path}.{key}")
     elif isinstance(value, list):
@@ -247,9 +247,17 @@ def _compatibility(value: Any) -> dict[str, Any]:
     if unknown:
         _fail("INCOMPATIBLE_COMPONENT_TYPE_UNKNOWN", ",".join(unknown))
     return {
-        "allowed_base_families": _string_list(compatibility["allowed_base_families"], "compatibility.allowed_base_families", upper=True),
+        "allowed_base_families": _string_list(
+            compatibility["allowed_base_families"],
+            "compatibility.allowed_base_families",
+            upper=True,
+        ),
         "incompatible_component_types": incompatible_types,
-        "incompatible_axes": _string_list(compatibility["incompatible_axes"], "compatibility.incompatible_axes", upper=True),
+        "incompatible_axes": _string_list(
+            compatibility["incompatible_axes"],
+            "compatibility.incompatible_axes",
+            upper=True,
+        ),
         "same_axis_allowed": _bool(compatibility["same_axis_allowed"], "compatibility.same_axis_allowed"),
         "maximum_generation_per_axis_data": _integer(
             compatibility["maximum_generation_per_axis_data"],
@@ -283,6 +291,7 @@ def validate_material(value: Mapping[str, Any], *, require_material_sha: bool = 
         _fail("TOP_LEVEL_EXTRA_FIELDS", ",".join(extra))
     if raw.get("schema_version") != SCHEMA_VERSION:
         _fail("SCHEMA_VERSION_MISMATCH")
+
     component_type = _string(raw.get("component_type"), "component_type").upper()
     if component_type not in COMPONENT_ROLE:
         _fail("COMPONENT_TYPE_INVALID", component_type)
@@ -292,7 +301,12 @@ def validate_material(value: Mapping[str, Any], *, require_material_sha: bool = 
     state = _string(raw.get("state"), "state").upper()
     if state not in MATERIAL_STATES:
         _fail("MATERIAL_STATE_INVALID", state)
-    parameters = _json_parameter(raw.get("parameters"))
+
+    normalized_evidence = _evidence(raw.get("evidence"), state)
+    normalized_lineage = _lineage(raw.get("source_lineage"))
+    if normalized_lineage["evidence_sha"] != canonical_sha(normalized_evidence):
+        _fail("EVIDENCE_SHA_MISMATCH")
+
     normalized: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "material_id": _string(raw.get("material_id"), "material_id"),
@@ -300,9 +314,9 @@ def validate_material(value: Mapping[str, Any], *, require_material_sha: bool = 
         "component_type": component_type,
         "component_role": component_role,
         "semantic_axis": _string(raw.get("semantic_axis"), "semantic_axis").upper(),
-        "parameters": parameters,
-        "source_lineage": _lineage(raw.get("source_lineage")),
-        "evidence": _evidence(raw.get("evidence"), state),
+        "parameters": _json_parameter(raw.get("parameters")),
+        "source_lineage": normalized_lineage,
+        "evidence": normalized_evidence,
         "compatibility": _compatibility(raw.get("compatibility")),
         "state": state,
         "authority": _authority(raw.get("authority")),
@@ -339,6 +353,7 @@ def build_registry(material_values: Iterable[Mapping[str, Any]]) -> dict[str, An
     fingerprints = [row["metadata"]["material_fingerprint"] for row in materials]
     if len(fingerprints) != len(set(fingerprints)):
         _fail("DUPLICATE_MATERIAL_FINGERPRINT")
+
     pass_rows = [row for row in materials if row["state"] == "PASS_LEAF"]
     result = {
         "schema_version": REGISTRY_SCHEMA,

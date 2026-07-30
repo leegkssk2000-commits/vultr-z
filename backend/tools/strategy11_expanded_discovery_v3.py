@@ -48,9 +48,18 @@ def load_module(name: str, path: Path) -> Any:
     return module
 
 
+def activate_compute_namespace(compute_root: Path) -> None:
+    root = str(compute_root)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import backend
+    backend_path = str(compute_root / "backend")
+    if hasattr(backend, "__path__") and backend_path not in backend.__path__:
+        backend.__path__.insert(0, backend_path)
+
+
 def exact_module(compute_root: Path) -> Any:
-    if str(compute_root) not in sys.path:
-        sys.path.insert(0, str(compute_root))
+    activate_compute_namespace(compute_root)
     return load_module("s11_v3_exact", compute_root / "backend/tools/r7a4d_strategy11_exact.py")
 
 

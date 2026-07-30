@@ -122,7 +122,18 @@ def tightened_value(name: str, value: int | float | bool, fraction: float) -> in
     return round(candidate, 10)
 
 
+def activate_compute_namespace(compute_root: Path) -> None:
+    root = str(compute_root)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import backend
+    backend_path = str(compute_root / "backend")
+    if hasattr(backend, "__path__") and backend_path not in backend.__path__:
+        backend.__path__.insert(0, backend_path)
+
+
 def build_registry(compute_root: Path, policy: Mapping[str, Any]) -> dict[str, Any]:
+    activate_compute_namespace(compute_root)
     registry_path = compute_root / "backend/strategy25/canonical_strategy_registry_v1.json"
     registry = read_json(registry_path)
     rows = [dict(row) for row in registry.get("entries", []) if isinstance(row, Mapping)]

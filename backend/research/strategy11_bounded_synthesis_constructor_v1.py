@@ -12,6 +12,7 @@ from backend.research.strategy11_synthesis_material_registry_v1 import (
     canonical_sha,
     validate_material,
 )
+from backend.contracts.strategy11_validation_primitives_v1 import ValidationPrimitives
 
 INPUT_SCHEMA = "strategy11.bounded_synthesis_constructor.input.v1"
 OUTPUT_SCHEMA = "strategy11.bounded_synthesis_constructor.output.v1"
@@ -34,43 +35,18 @@ class BoundedSynthesisError(ValueError):
 def _fail(code: str, detail: str = "") -> None:
     raise BoundedSynthesisError(f"{code}:{detail}" if detail else code)
 
-
-def _mapping(value: Any, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        _fail("OBJECT_REQUIRED", name)
-    return dict(value)
-
-
-def _string(value: Any, name: str, *, maximum: int = 180) -> str:
-    if not isinstance(value, str) or not value.strip():
-        _fail("STRING_REQUIRED", name)
-    result = value.strip()
-    if len(result) > maximum:
-        _fail("STRING_TOO_LONG", name)
-    return result
+_validation = ValidationPrimitives(_fail)
+_mapping = _validation.mapping
+_string = _validation.string
+_integer = _validation.integer
+_bool = _validation.boolean
+_sha = _validation.sha256
 
 
-def _integer(value: Any, name: str, *, minimum: int = 0, maximum: int | None = None) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        _fail("INT_REQUIRED", name)
-    if value < minimum:
-        _fail("INT_BELOW_MIN", name)
-    if maximum is not None and value > maximum:
-        _fail("INT_ABOVE_MAX", name)
-    return value
 
 
-def _bool(value: Any, name: str) -> bool:
-    if not isinstance(value, bool):
-        _fail("BOOL_REQUIRED", name)
-    return value
 
 
-def _sha(value: Any, name: str) -> str:
-    result = _string(value, name, maximum=64).lower()
-    if len(result) != 64 or any(ch not in "0123456789abcdef" for ch in result):
-        _fail("SHA256_REQUIRED", name)
-    return result
 
 
 def _string_list(value: Any, name: str, *, allowed: set[str] | None = None) -> list[str]:

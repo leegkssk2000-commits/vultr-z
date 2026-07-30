@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from typing import Any, Iterable, Mapping
+from backend.contracts.strategy11_validation_primitives_v1 import ValidationPrimitives
 
 SCHEMA_VERSION = "strategy11.synthesis_material.v1"
 REGISTRY_SCHEMA = "strategy11.synthesis_material_registry.v1"
@@ -48,59 +49,25 @@ class SynthesisMaterialError(ValueError):
 def _fail(code: str, detail: str = "") -> None:
     raise SynthesisMaterialError(f"{code}:{detail}" if detail else code)
 
+_validation = ValidationPrimitives(_fail)
+_mapping = _validation.mapping
+_string = _validation.string
+_sha = _validation.sha256
+_bool = _validation.boolean
+_integer = _validation.integer
+_number = _validation.number
+
+
 
 def canonical_sha(value: Any) -> str:
     text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _mapping(value: Any, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        _fail("OBJECT_REQUIRED", name)
-    return dict(value)
 
 
-def _string(value: Any, name: str, *, maximum: int = 180) -> str:
-    if not isinstance(value, str) or not value.strip():
-        _fail("STRING_REQUIRED", name)
-    result = value.strip()
-    if len(result) > maximum:
-        _fail("STRING_TOO_LONG", name)
-    return result
 
 
-def _sha(value: Any, name: str) -> str:
-    result = _string(value, name, maximum=64).lower()
-    if len(result) != 64 or any(ch not in "0123456789abcdef" for ch in result):
-        _fail("SHA256_REQUIRED", name)
-    return result
-
-
-def _bool(value: Any, name: str) -> bool:
-    if not isinstance(value, bool):
-        _fail("BOOL_REQUIRED", name)
-    return value
-
-
-def _integer(value: Any, name: str, *, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        _fail("INT_REQUIRED", name)
-    if value < minimum:
-        _fail("INT_BELOW_MIN", name)
-    return value
-
-
-def _number(value: Any, name: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _fail("NUMBER_REQUIRED", name)
-    result = float(value)
-    if not math.isfinite(result):
-        _fail("NUMBER_NOT_FINITE", name)
-    if minimum is not None and result < minimum:
-        _fail("NUMBER_BELOW_MIN", name)
-    if maximum is not None and result > maximum:
-        _fail("NUMBER_ABOVE_MAX", name)
-    return result
 
 
 def _reject_private(value: Any, path: str = "$") -> None:

@@ -9,6 +9,7 @@ from backend.research.strategy11_synthesis_factorial_replay_v1 import (
     evaluate_factorial,
 )
 from backend.research.strategy11_synthesis_material_registry_v1 import canonical_sha
+from backend.contracts.strategy11_validation_primitives_v1 import ValidationPrimitives
 
 INPUT_SCHEMA = "strategy11.component_attribution.input.v1"
 OUTPUT_SCHEMA = "strategy11.component_attribution.output.v1"
@@ -21,39 +22,16 @@ class ComponentAttributionError(ValueError):
 def _fail(code: str, detail: str = "") -> None:
     raise ComponentAttributionError(f"{code}:{detail}" if detail else code)
 
-
-def _mapping(value: Any, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        _fail("OBJECT_REQUIRED", name)
-    return dict(value)
-
-
-def _string(value: Any, name: str, *, maximum: int = 180) -> str:
-    if not isinstance(value, str) or not value.strip():
-        _fail("STRING_REQUIRED", name)
-    result = value.strip()
-    if len(result) > maximum:
-        _fail("STRING_TOO_LONG", name)
-    return result
+_validation = ValidationPrimitives(_fail)
+_mapping = _validation.mapping
+_string = _validation.string
+_number = _validation.number
+_bool = _validation.boolean
 
 
-def _number(value: Any, name: str, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _fail("NUMBER_REQUIRED", name)
-    result = float(value)
-    if not math.isfinite(result):
-        _fail("NUMBER_NOT_FINITE", name)
-    if minimum is not None and result < minimum:
-        _fail("NUMBER_BELOW_MIN", name)
-    if maximum is not None and result > maximum:
-        _fail("NUMBER_ABOVE_MAX", name)
-    return result
 
 
-def _bool(value: Any, name: str) -> bool:
-    if not isinstance(value, bool):
-        _fail("BOOL_REQUIRED", name)
-    return value
+
 
 
 def validate_policy(value: Mapping[str, Any]) -> dict[str, Any]:

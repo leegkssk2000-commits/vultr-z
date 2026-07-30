@@ -41,24 +41,26 @@ def main() -> int:
     spec = get_strategy_spec(active[0].key)
     assert spec.get("key") == active[0].key, spec
 
-    assert package_router.routes, package_router.routes
+    package_paths = {getattr(route, "path", "") for route in package_router.routes}
+    assert "/api/frontend-compat/status" in package_paths, package_paths
+    assert "/api/v1/health" in package_paths, package_paths
     state = STATE_MANAGER.snapshot()
     assert state["status"] == "ok", state
 
     app = FastAPI()
-    app.include_router(package_router)
     report = include_zops_optimization_registry(app)
     assert report["ok"] is True, report
-    paths = {getattr(route, "path", "") for route in app.routes}
-    assert "/api/frontend-compat/status" in paths, paths
-    assert "/api/optimization/status" in paths, paths
+    mounted_or_existing = set(report.get("mounted", [])) | set(report.get("skipped_existing", []))
+    assert "/api/optimization/*" in mounted_or_existing, report
+    assert "/api/harness/visual/status" in mounted_or_existing, report
 
     print({
         "state": "PASS_RUNTIME_IMPORT_SMOKE",
         "bot_count": len(bots),
         "team_count": len(teams),
         "strategy_count": len(active),
-        "route_count": len(paths),
+        "package_route_count": len(package_paths),
+        "zops_mount_count": len(report.get("mounted", [])),
         "execution_allowed": False,
         "order_authority": "BLOCKED",
     })

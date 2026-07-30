@@ -76,7 +76,11 @@ def route_alpha(out: Path, authority: Mapping[str, Any]) -> None:
     row = ledger_rows[0]
     prior = row.get("incumbent_snapshot")
     if not isinstance(prior, Mapping) or not isinstance(prior.get("candidate_config"), Mapping):
-        raise ValueError("ALPHA_PRIOR_CONFIG_MISSING")
+        plan_prior = alpha_rows[0].get("incumbent") if alpha_rows else None
+        if isinstance(plan_prior, Mapping) and isinstance(plan_prior.get("candidate_config"), Mapping):
+            prior = plan_prior
+        else:
+            raise ValueError("ALPHA_PRIOR_CONFIG_MISSING")
     time54 = dict(authority["controls"]["TIME54"])
     config = dict(prior["candidate_config"])
     config["candidate_id"] = "TIME54_AUTHORITY_CONTROL"
@@ -108,6 +112,9 @@ def route_alpha(out: Path, authority: Mapping[str, Any]) -> None:
     ledger["alpha_special_route"] = plan["special_routes"][0]
     ledger["alpha_authority_sha256"] = v2.stable_sha(authority)
     ledger["router_version"] = VERSION
+    ledger["last_plan_sha256"] = v2.stable_sha(plan)
+    coverage["active_strategy_count"] = plan["active_strategy_count"]
+    coverage["scheduled_candidate_count"] = plan["candidate_count"]
     coverage["alpha_special_route_count"] = 1
     coverage["alpha_general_lane_candidate_count_removed"] = removed_candidates
     coverage["alpha_authority_sha256"] = v2.stable_sha(authority)

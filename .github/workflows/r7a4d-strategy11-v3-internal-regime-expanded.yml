@@ -1,0 +1,285 @@
+name: R7A4D Strategy11 V3 Internal Regime Expanded Discovery
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_*_v3.py'
+      - 'backend/tools/strategy11_v3_*.py'
+      - 'backend/research/strategy11_v3_policy.json'
+      - '.github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_*_v3.py'
+      - 'backend/tools/strategy11_v3_*.py'
+      - 'backend/research/strategy11_v3_policy.json'
+      - '.github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml'
+  schedule:
+    - cron: '47 */8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-v3-${{ github.event_name == 'pull_request' && github.ref || 'master-discovery' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONPATH: .
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+  SOURCE_RUN_ID: '30252022416'
+  SEED_RUN_ID: '30516499556'
+
+jobs:
+  verify:
+    name: Verify V3 modules and actual 25-strategy registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy pyyaml
+      - name: Compile and run fixture
+        run: |
+          python -m py_compile backend/tools/strategy11_*_v3.py backend/tools/strategy11_v3_*.py
+          python backend/tools/strategy11_v3_fixture.py
+      - name: Build actual source-SHA-bound internal registry
+        run: |
+          mkdir -p out/verify
+          python backend/tools/strategy11_internal_condition_registry_v3.py \
+            --compute-root compute --policy backend/research/strategy11_v3_policy.json \
+            --out out/verify/internal_registry.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/verify/internal_registry.json').read_text())
+          assert row['state']=='PASS_INTERNAL_REGISTRY'
+          assert row['strategy_count']==25 and row['injectable_strategy_count']==25
+          assert all(item['safe_internal_field_count']>0 for item in row['rows'])
+          assert row['protected_mutations']==0 and row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-v3-verify-${{ github.run_id }}
+          path: out/verify
+          if-no-files-found: error
+          retention-days: 30
+
+  prepare:
+    name: Prepare registry, plan and expanded archive
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    outputs:
+      active: ${{ steps.state.outputs.active }}
+      active_strategies: ${{ steps.state.outputs.active_strategies }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy pyyaml
+      - name: Restore latest V2 baseline and V3 ledger
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/previous input/baseline
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow r7a4d-strategy11-v3-internal-regime-expanded.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 's11-v3-state-*' --dir input/previous 2>/dev/null; then break; fi
+          done
+          v2run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow r7a4d-strategy11-unattended-improvement-v2-1.yml --branch master --status success --limit 20 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+          if [ -n "$v2run" ]; then
+            gh run download "$v2run" --repo "$GITHUB_REPOSITORY" --pattern 's11-unattended-improvement-v2-1-state-*' --dir input/baseline || true
+          fi
+          if ! find input/baseline -name base_replay_final.json -print -quit | grep -q .; then
+            gh run download "$SEED_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 's11-unattended-improvement-v2*-state-*' --dir input/baseline
+          fi
+          find input/baseline -name base_replay_final.json -print -quit > input/baseline-path.txt
+          find input/previous -name search_ledger.json -print -quit > input/ledger-path.txt || true
+          test -s input/baseline-path.txt
+      - name: Build registry and V3 plan
+        run: |
+          mkdir -p out/prep/plan
+          python backend/tools/strategy11_internal_condition_registry_v3.py --compute-root compute --policy backend/research/strategy11_v3_policy.json --out out/prep/plan/internal_registry.json
+          previous=()
+          if [ -s input/ledger-path.txt ]; then previous=(--previous-ledger "$(cat input/ledger-path.txt)"); fi
+          python backend/tools/strategy11_v3_orchestrator.py \
+            --registry out/prep/plan/internal_registry.json --baseline "$(cat input/baseline-path.txt)" \
+            --policy backend/research/strategy11_v3_policy.json "${previous[@]}" --out out/prep/plan
+      - uses: actions/cache@v4
+        id: archive-cache
+        with:
+          path: out/prep/archive
+          key: s11-v3-archive-${{ hashFiles('backend/research/strategy11_v3_policy.json') }}
+      - name: Fetch exact 12-window archive on cache miss
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        run: |
+          python backend/tools/strategy11_expanded_discovery_v3.py prepare --compute-root compute --policy backend/research/strategy11_v3_policy.json --out out/prep/archive
+      - name: Assert preparation contracts
+        id: state
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          plan=json.loads(Path('out/prep/plan/plan.json').read_text())
+          archive=json.loads(Path('out/prep/archive/manifest.json').read_text())
+          registry=json.loads(Path('out/prep/plan/internal_registry.json').read_text())
+          assert registry['strategy_count']==25 and registry['injectable_strategy_count']==25
+          assert plan['strategy_count_total']==25 and 'alpha_combo' not in plan['active_strategy_ids']
+          assert plan['candidate_count']<=plan['active_strategy_count']*2
+          assert archive['state']=='PASS_EXPANDED_ARCHIVE' and archive['evaluation_symbol_bars']==54000
+          assert archive['evaluation_periods_non_overlapping'] is True and len(archive['rows'])==60
+          for row in plan['rows']:
+              digests=[row['candidate_specs'][cid]['candidate_spec_sha256'] for cid in row['candidate_ids']]
+              axes=[row['candidate_specs'][cid]['axis'] for cid in row['candidate_ids']]
+              assert len(digests)==len(set(digests)) and len(axes)==len(set(axes))
+          active=plan['state']=='PASS_V3_PLAN' and plan['candidate_count']>0
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as handle:
+              handle.write(f"active={'true' if active else 'false'}\n")
+              handle.write('active_strategies='+','.join(plan['active_strategy_ids'])+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-v3-prep-${{ github.run_id }}
+          path: out/prep
+          if-no-files-found: error
+          retention-days: 30
+
+  replay:
+    name: Replay V3 discovery batch ${{ matrix.batch }}
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.active == 'true'
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {batch: '1', strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,ema_ribbon_scalp'}
+          - {batch: '2', strategies: 'fvg_revert,grid_rebalance,keltner_trend,liquidity_sweep,mfi_rsi_div'}
+          - {batch: '3', strategies: 'obv_trend,pivot_reversal,range_fade,rbreaker_like,rsi_swing_fail'}
+          - {batch: '4', strategies: 'scalp_snap,session_bias,squeeze_break,sr_levels,supertrend_pullback'}
+          - {batch: '5', strategies: 'trend_ma_macd,trend_rider,turtle_trend,vol_spike_fade,vwap_revert'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with: {ref: '${{ env.COMPUTE_REF }}', path: compute, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with: {name: 's11-v3-prep-${{ github.run_id }}', path: input/prep}
+      - name: Download immutable evidence batches
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
+          done
+      - name: Resolve and replay active strategies
+        env: {BATCH_STRATEGIES: '${{ matrix.strategies }}'}
+        run: |
+          selected="$(python - <<'PY'
+          import json,os
+          from pathlib import Path
+          active=set(json.loads(Path('input/prep/plan/plan.json').read_text())['active_strategy_ids'])
+          print(','.join(s for s in os.environ['BATCH_STRATEGIES'].split(',') if s in active))
+          PY
+          )"
+          mkdir -p out/batch-${{ matrix.batch }}
+          if [ -n "$selected" ]; then
+            python backend/tools/strategy11_expanded_discovery_v3.py replay \
+              --compute-root compute --archive-root input/prep/archive --evidence-root input/evidence \
+              --plan input/prep/plan/plan.json --registry input/prep/plan/internal_registry.json \
+              --policy backend/research/strategy11_v3_policy.json --strategy-ids "$selected" \
+              --out out/batch-${{ matrix.batch }}
+          else
+            printf '%s\n' '{"state":"SKIP_NO_ACTIVE_STRATEGIES","rows":[]}' > out/batch-${{ matrix.batch }}/batch.json
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-v3-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  finalize:
+    name: Final organic audit or terminal state receipt
+    if: always() && github.event_name != 'pull_request' && needs.prepare.result == 'success'
+    needs: [prepare, replay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with: {name: 's11-v3-prep-${{ github.run_id }}', path: input/prep}
+      - name: Download replay artifacts when active
+        if: needs.prepare.outputs.active == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: s11-v3-replay-*-${{ github.run_id }}
+          path: input/replays
+          merge-multiple: true
+      - name: Build final state
+        env: {ACTIVE: '${{ needs.prepare.outputs.active }}'}
+        run: |
+          mkdir -p out/state
+          if [ "$ACTIVE" = "true" ]; then
+            python backend/tools/strategy11_expanded_discovery_v3.py aggregate \
+              --batch-root input/replays --plan input/prep/plan/plan.json \
+              --policy backend/research/strategy11_v3_policy.json --out out/state/final.json
+          else
+            python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          plan=json.loads(Path('input/prep/plan/plan.json').read_text())
+          final={
+            'schema_version':'3.0','state':'COMPLETE_NO_SAFE_UNTESTED_AXIS','strategy_count':0,
+            'candidate_count':0,'discovery_pass_count':0,'discovery_pass_rows':[],
+            'blockers':[],'fresh_confirmation_required':True,'w1_w2_w3_new_sealed_required':True,
+            'research_only':True,'promotion_authority':False,'protected_mutations':0,
+            'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False,
+            'plan_sha256':hashlib.sha256(json.dumps(plan,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          }
+          Path('out/state/final.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
+          PY
+          fi
+          cp input/prep/plan/plan.json out/state/cycle_plan.json
+          cp input/prep/plan/internal_registry.json out/state/internal_registry.json
+          cp input/prep/plan/search_ledger.json out/state/search_ledger.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/state/final.json').read_text())
+          assert row['state'] in {'PASS_V3_ORGANIC_AUDIT','COMPLETE_NO_SAFE_UNTESTED_AXIS'}
+          assert row['blockers']==[] and row['fresh_confirmation_required'] is True
+          assert row['promotion_authority'] is False and row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-v3-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90

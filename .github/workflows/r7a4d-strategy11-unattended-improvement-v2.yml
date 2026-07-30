@@ -1,26 +1,30 @@
-name: R7A4D Strategy11 Famous Indicator Autonomy V1
+name: R7A4D Strategy11 Unattended Improvement V2
 
 on:
   pull_request:
-    branches:
-      - master
+    branches: [master]
     paths:
-      - backend/strategy25/strategy11_extended_indicator_features_v1.py
-      - backend/tools/strategy11_famous_indicator_autonomy_v1.py
-      - backend/tools/strategy11_famous_indicator_replay_v1.py
+      - backend/tools/strategy11_unattended_improvement_v2.py
+      - backend/tools/strategy11_unattended_improvement_replay_v2.py
+      - backend/tools/strategy11_unattended_improvement_fixture_v2.py
+      - backend/research/strategy11_unattended_improvement_policy_v2.json
       - backend/research/strategy11_famous_indicator_catalog_v1.json
+      - backend/strategy25/strategy11_extended_indicator_features_v1.py
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml
       - .github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml
   push:
-    branches:
-      - master
+    branches: [master]
     paths:
-      - backend/strategy25/strategy11_extended_indicator_features_v1.py
-      - backend/tools/strategy11_famous_indicator_autonomy_v1.py
-      - backend/tools/strategy11_famous_indicator_replay_v1.py
+      - backend/tools/strategy11_unattended_improvement_v2.py
+      - backend/tools/strategy11_unattended_improvement_replay_v2.py
+      - backend/tools/strategy11_unattended_improvement_fixture_v2.py
+      - backend/research/strategy11_unattended_improvement_policy_v2.json
       - backend/research/strategy11_famous_indicator_catalog_v1.json
+      - backend/strategy25/strategy11_extended_indicator_features_v1.py
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml
       - .github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml
   schedule:
-    - cron: '17 */4 * * *'
+    - cron: '27 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -28,7 +32,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: r7a4d-strategy11-famous-indicator-autonomy-v1
+  group: r7a4d-strategy11-unattended-improvement-v2
   cancel-in-progress: false
 
 env:
@@ -36,13 +40,14 @@ env:
   COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
   SOURCE_RUN_ID: '30252022416'
   SOURCE_HEAD_SHA: '64e27d16d7f28b9fae59cf2a875d195f4bca22a1'
+  SEED_RUN_ID: '30516499556'
   CUTOFF_UTC: '2026-08-01T08:30:00Z'
 
 jobs:
   plan:
-    name: Verify broad catalog and select untested family-compatible axes
+    name: Classify lanes and select causal improvement axes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     outputs:
       active: ${{ steps.state.outputs.active }}
       active_strategies: ${{ steps.state.outputs.active_strategies }}
@@ -64,106 +69,66 @@ jobs:
 
       - run: python -m pip install --disable-pip-version-check pandas numpy pyyaml
 
-      - name: Compile research control plane
+      - name: Compile and run lane policy fixture
         run: |
-          python -m py_compile backend/strategy25/strategy11_extended_indicator_features_v1.py
-          python -m py_compile backend/tools/strategy11_famous_indicator_autonomy_v1.py
-          python -m py_compile backend/tools/strategy11_famous_indicator_replay_v1.py
-
-      - name: Assert causal prefix invariance and indicator breadth
-        run: |
+          python -m py_compile \
+            backend/tools/strategy11_unattended_improvement_v2.py \
+            backend/tools/strategy11_unattended_improvement_replay_v2.py \
+            backend/tools/strategy11_unattended_improvement_fixture_v2.py
+          python backend/tools/strategy11_unattended_improvement_fixture_v2.py
           python - <<'PY'
-          import importlib.util
           import json
-          import sys
           from pathlib import Path
-
-          import numpy as np
-          import pandas as pd
-
-          sys.path.insert(0, str(Path('compute').resolve()))
-          from backend.strategy25.strategy11_feature_library_v1 import compute_feature_frame
-
-          spec=importlib.util.spec_from_file_location(
-              'extended_features',
-              Path('backend/strategy25/strategy11_extended_indicator_features_v1.py').resolve(),
-          )
-          module=importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(module)
-
-          count=720
-          rng=np.random.default_rng(20260730)
-          returns=rng.normal(0.00005,0.0025,count)
-          close=100.0*np.exp(np.cumsum(returns))
-          open_=np.r_[close[0],close[:-1]]
-          high=np.maximum(open_,close)*(1.0+rng.uniform(0.0001,0.004,count))
-          low=np.minimum(open_,close)*(1.0-rng.uniform(0.0001,0.004,count))
-          volume=rng.lognormal(10.0,0.45,count)
-          frame=pd.DataFrame({
-              'timestamp_ms':np.arange(count,dtype=np.int64)*900000+1782864000000,
-              'timestamp':pd.date_range('2026-07-01',periods=count,freq='15min',tz='UTC'),
-              'ts':np.arange(count,dtype=np.int64)*900000+1782864000000,
-              'open':open_,'high':high,'low':low,'close':close,'volume':volume,
-          })
-          full=module.extend_feature_frame(frame,compute_feature_frame(frame))
-          prefix_count=540
-          short_frame=frame.iloc[:prefix_count].copy()
-          prefix=module.extend_feature_frame(short_frame,compute_feature_frame(short_frame))
-          compare=list(module.EXTENDED_FEATURES)+[
-              'fib382','fib618','daily_pivot','daily_r1','daily_s1',
-              'last_confirmed_fractal_high','psar','supertrend_line',
+          policy=json.loads(Path('backend/research/strategy11_unattended_improvement_policy_v2.json').read_text())
+          assert policy['selection_rules']['gate_only_forbidden_in_lanes']==[
+              'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION'
           ]
-          for column in compare:
-              left=full[column].iloc[:prefix_count]
-              right=prefix[column]
-              if left.dtype==bool:
-                  assert np.array_equal(left.to_numpy(),right.to_numpy()),column
-              else:
-                  assert np.allclose(
-                      left.to_numpy(dtype=float),right.to_numpy(dtype=float),
-                      equal_nan=True,rtol=1e-12,atol=1e-12,
-                  ),column
-          catalog=json.loads(Path('backend/research/strategy11_famous_indicator_catalog_v1.json').read_text())
-          assert catalog['scope']['candidate_count']>=50
-          observed=set(catalog['coverage_families'])
-          assert {'BOLLINGER_BANDS','ATR_NATR','FIBONACCI','ICHIMOKU','SUPERTREND','RSI','OBV'}<=observed
-          assert catalog['selection_rules']['blind_cartesian_product_forbidden'] is True
-          assert catalog['selection_rules']['max_candidates_per_strategy_cycle']==2
-          assert catalog['selection_rules']['max_components_per_composite']==2
-          assert catalog['promotion_authority'] is False
-          assert catalog['execution_allowed'] is False
-          assert catalog['order_authority']=='BLOCKED'
+          assert policy['selection_rules']['max_candidates_per_strategy_cycle']==2
+          assert policy['promotion_authority'] is False
+          assert policy['execution_allowed'] is False
+          assert policy['order_authority']=='BLOCKED'
           PY
 
-      - name: Restore latest autonomous ledger when available
-        if: github.event_name != 'pull_request'
+      - name: Restore latest V2 state or source-bound cycle-one seed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p input/previous
-          previous_run="$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow r7a4d-strategy11-famous-indicator-autonomy-v1.yml \
-            --branch master --status success --limit 10 \
-            --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
-          if [ -n "$previous_run" ]; then
-            gh run download "$previous_run" \
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            previous_run="$(gh run list \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern 's11-famous-indicator-autonomy-state-*' \
-              --dir input/previous || true
+              --workflow r7a4d-strategy11-unattended-improvement-v2.yml \
+              --branch master --status success --limit 20 \
+              --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+            if [ -n "$previous_run" ]; then
+              gh run download "$previous_run" \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern 's11-unattended-improvement-v2-state-*' \
+                --dir input/previous || true
+            fi
+          fi
+          if ! find input/previous -type f -name base_replay_final.json -print -quit | grep -q .; then
+            gh run download "$SEED_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name "s11-famous-indicator-autonomy-state-$SEED_RUN_ID" \
+              --dir input/previous/seed
           fi
           find input/previous -type f -name search_ledger.json -print -quit > input/previous-ledger-path.txt || true
+          find input/previous -type f -name base_replay_final.json -print -quit > input/baseline-final-path.txt
+          test -s input/baseline-final-path.txt
 
-      - name: Build bounded unattended cycle
+      - name: Build lane-aware unattended cycle
         run: |
           mkdir -p out/plan
           previous_args=()
           if [ -s input/previous-ledger-path.txt ]; then
             previous_args=(--previous-ledger "$(cat input/previous-ledger-path.txt)")
           fi
-          python backend/tools/strategy11_famous_indicator_autonomy_v1.py \
+          python backend/tools/strategy11_unattended_improvement_v2.py \
             --mode plan \
+            --policy backend/research/strategy11_unattended_improvement_policy_v2.json \
             --catalog backend/research/strategy11_famous_indicator_catalog_v1.json \
+            --baseline-final "$(cat input/baseline-final-path.txt)" \
             "${previous_args[@]}" \
             --out out/plan
 
@@ -177,24 +142,31 @@ jobs:
           ledger=json.loads(Path('out/plan/search_ledger.json').read_text())
           coverage=json.loads(Path('out/plan/coverage.json').read_text())
           assert plan['state'] in {
-              'PASS_AUTONOMOUS_INDICATOR_PLAN',
+              'PASS_UNATTENDED_IMPROVEMENT_PLAN',
               'COMPLETE_CUTOFF_NO_NEW_REPLAY',
-              'COMPLETE_CATALOG_EXHAUSTED',
+              'COMPLETE_NO_SAFE_UNTESTED_AXIS',
           },plan
           assert plan['strategy_count_total']==25
+          assert sum(plan['lane_counts'].values())==25
           assert plan['candidate_count']<=plan['active_strategy_count']*2
           for row in plan['rows']:
+              assert row['lane'] in {
+                  'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION',
+                  'C_DISCOVERY_OPTIMIZATION','D_QUALITY_OPTIMIZATION'
+              }
               assert 1<=len(row['candidate_ids'])<=2
               axes=[row['candidate_specs'][cid]['axis'] for cid in row['candidate_ids']]
               assert len(axes)==len(set(axes))
-              assert all(row['candidate_specs'][cid]['kind']=='GATE' for cid in row['candidate_ids'])
+              if row['lane'] in {'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION'}:
+                  assert not all(row['candidate_specs'][cid]['kind']=='GATE' for cid in row['candidate_ids'])
+          assert coverage['gate_only_search'] is False
           for payload in (plan,ledger,coverage):
               assert payload['promotion_authority'] is False
               assert payload['protected_mutations']==0
               assert payload['execution_allowed'] is False
               assert payload['order_authority']=='BLOCKED'
               assert payload['runtime_bound'] is False
-          active=plan['state']=='PASS_AUTONOMOUS_INDICATOR_PLAN' and plan['candidate_count']>0
+          active=plan['state']=='PASS_UNATTENDED_IMPROVEMENT_PLAN' and plan['candidate_count']>0
           with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as handle:
               handle.write(f"active={'true' if active else 'false'}\n")
               handle.write('active_strategies='+','.join(plan['active_strategy_ids'])+'\n')
@@ -203,10 +175,11 @@ jobs:
 
       - name: Assert cutoff terminal behavior
         run: |
-          python backend/tools/strategy11_famous_indicator_autonomy_v1.py \
+          python backend/tools/strategy11_unattended_improvement_v2.py \
             --mode plan \
+            --policy backend/research/strategy11_unattended_improvement_policy_v2.json \
             --catalog backend/research/strategy11_famous_indicator_catalog_v1.json \
-            --previous-ledger out/plan/search_ledger.json \
+            --baseline-final "$(cat input/baseline-final-path.txt)" \
             --now-utc 2026-08-01T08:30:01Z \
             --out out/cutoff
           python - <<'PY'
@@ -216,24 +189,15 @@ jobs:
           assert row['candidate_count']==0 and row['rows']==[]
           PY
 
-      - name: Parse workflow YAML
-        run: |
-          python - <<'PY'
-          import yaml
-          from pathlib import Path
-          row=yaml.safe_load(Path('.github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml').read_text())
-          assert row and 'jobs' in row
-          PY
-
       - uses: actions/upload-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-plan-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-plan-${{ github.run_id }}
           path: out/plan
           if-no-files-found: error
           retention-days: 90
 
   replay:
-    name: Replay famous indicators batch ${{ matrix.batch }}
+    name: Replay lane-aware candidates batch ${{ matrix.batch }}
     needs: plan
     if: needs.plan.outputs.active == 'true'
     runs-on: ubuntu-latest
@@ -271,7 +235,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-plan-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-plan-${{ github.run_id }}
           path: input/plan
 
       - uses: actions/download-artifact@v4
@@ -287,9 +251,9 @@ jobs:
         run: |
           mkdir -p input/evidence
           for batch in 1 2 3 4 5; do
-            gh run download 30252022416 \
+            gh run download "$SOURCE_RUN_ID" \
               --repo "$GITHUB_REPOSITORY" \
-              --name "s11-evidence-batch-${batch}-30252022416-attempt-1" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
               --dir "input/evidence/batch-${batch}"
           done
 
@@ -308,11 +272,11 @@ jobs:
               handle.write(f"has_rows={'true' if selected else 'false'}\n")
           PY
 
-      - name: Replay NO_CHANGE plus two untested indicator axes
+      - name: Replay control plus lane-selected causal axes
         if: steps.select.outputs.has_rows == 'true'
         run: |
           mkdir -p out/batch-${{ matrix.batch }}
-          python backend/tools/strategy11_famous_indicator_replay_v1.py \
+          python backend/tools/strategy11_unattended_improvement_replay_v2.py \
             --compute-root compute \
             --expected-strategies '${{ needs.plan.outputs.active_strategies }}' \
             --mode replay \
@@ -337,12 +301,10 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          summaries=[]
           for path in Path('out').rglob('summary.json'):
               row=json.loads(path.read_text())
-              if row.get('version')=='STRATEGY11_FAMOUS_INDICATOR_AUTONOMY_REPLAY_V1':
-                  summaries.append(row)
-          for row in summaries:
+              if row.get('version')!='STRATEGY11_UNATTENDED_IMPROVEMENT_REPLAY_V2':
+                  continue
               assert 1<=len(row['tested_candidate_ids'])<=2
               assert len(row['variants'])==len(row['tested_candidate_ids'])+1
               for variant in row['variants']:
@@ -355,16 +317,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-replay-${{ matrix.batch }}-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-replay-${{ matrix.batch }}-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90
 
   aggregate:
-    name: Update autonomous search ledger and preserve research survivors
-    needs:
-      - plan
-      - replay
+    name: Classify lane outcomes and preserve improvement evidence
+    needs: [plan, replay]
     if: needs.plan.outputs.active == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -387,29 +347,30 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-plan-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-plan-${{ github.run_id }}
           path: input/plan
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: s11-famous-indicator-autonomy-replay-*-${{ github.run_id }}
+          pattern: s11-unattended-improvement-v2-replay-*-${{ github.run_id }}
           path: input/replays
           merge-multiple: true
 
-      - name: Aggregate deterministic L090 results
+      - name: Aggregate deterministic replay output
         run: |
           mkdir -p out/base out/state
-          python backend/tools/strategy11_famous_indicator_replay_v1.py \
+          python backend/tools/strategy11_unattended_improvement_replay_v2.py \
             --compute-root compute \
             --expected-strategies '${{ needs.plan.outputs.active_strategies }}' \
             --mode aggregate \
             --replay-root input/replays \
             --out out/base
 
-      - name: Classify PASS HOLD REJECT and advance ledger
+      - name: Classify A-D lane outcomes and advance ledger
         run: |
-          python backend/tools/strategy11_famous_indicator_autonomy_v1.py \
+          python backend/tools/strategy11_unattended_improvement_v2.py \
             --mode update \
+            --policy backend/research/strategy11_unattended_improvement_policy_v2.json \
             --plan input/plan/plan.json \
             --ledger input/plan/search_ledger.json \
             --replay-root input/replays \
@@ -425,7 +386,7 @@ jobs:
           from pathlib import Path
           final=json.loads(Path('out/state/final.json').read_text())
           ledger=json.loads(Path('out/state/search_ledger.json').read_text())
-          assert final['state']=='PASS_AUTONOMOUS_CYCLE'
+          assert final['state']=='PASS_UNATTENDED_IMPROVEMENT_CYCLE'
           assert final['missing_count']==0
           assert final['tested_count_this_cycle']>0
           for row in (final,ledger):
@@ -443,35 +404,44 @@ jobs:
           import json,os
           from pathlib import Path
           final=json.loads(Path('out/state/final.json').read_text())
+          plan=json.loads(Path('out/state/cycle_plan.json').read_text())
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
-              out.write('# Famous indicator autonomous cycle\n\n')
+              out.write('# Lane-aware unattended improvement cycle\n\n')
               out.write(f"- Cycle: `{final['cycle_index']}`\n")
-              out.write(f"- Tested this cycle: `{final['tested_count_this_cycle']}`\n")
-              out.write(f"- L090 research survivors: `{final['research_survivor_count']}`\n")
-              out.write(f"- Cumulative pairs: `{final['tested_strategy_candidate_pairs_cumulative']}`\n")
-              out.write('- Authority: `RESEARCH_ONLY / ORDER_BLOCKED`\n')
+              out.write(f"- Lane census: `{plan['lane_counts']}`\n")
+              out.write(f"- Tested: `{final['tested_count_this_cycle']}`\n")
+              out.write(f"- Research survivors: `{final['research_survivor_count']}`\n")
+              out.write(f"- Improved discovery holds: `{final['improved_hold_count']}`\n")
+              out.write('- Authority: `RESEARCH_ONLY / ORDER_BLOCKED`\n\n')
+              out.write('## Top improvement evidence\n')
+              for row in final['top_improvement_candidates'][:10]:
+                  out.write(
+                      f"- `{row['strategy_id']}` / `{row['candidate_id']}` / `{row['status']}` "
+                      f"trades=`{row['trade_count']}` net=`{row['net_return_pct_sum']}` "
+                      f"PF=`{row['net_profit_factor']}` DD=`{row['max_drawdown_pct']}`\n"
+                  )
           PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-state-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-state-${{ github.run_id }}
           path: out/state
           if-no-files-found: error
           retention-days: 90
 
   terminal:
-    name: Record cutoff or catalog exhaustion
+    name: Record cutoff or no safe untested axis
     needs: plan
     if: github.event_name != 'pull_request' && needs.plan.outputs.active != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-plan-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-plan-${{ github.run_id }}
           path: out/state
       - uses: actions/upload-artifact@v4
         with:
-          name: s11-famous-indicator-autonomy-state-${{ github.run_id }}
+          name: s11-unattended-improvement-v2-state-${{ github.run_id }}
           path: out/state
           if-no-files-found: error
           retention-days: 90

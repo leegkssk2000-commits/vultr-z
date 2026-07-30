@@ -1,0 +1,61 @@
+name: R7A4D Strategy11 Unattended Improvement V2 Regression
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/strategy11_unattended_improvement_v2.py
+      - backend/tools/strategy11_unattended_improvement_replay_v2.py
+      - backend/tools/strategy11_unattended_improvement_fixture_v2.py
+      - backend/tools/strategy11_unattended_improvement_carry_fixture_v2.py
+      - backend/research/strategy11_unattended_improvement_policy_v2.json
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2-regression.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/strategy11_unattended_improvement_v2.py
+      - backend/tools/strategy11_unattended_improvement_replay_v2.py
+      - backend/tools/strategy11_unattended_improvement_fixture_v2.py
+      - backend/tools/strategy11_unattended_improvement_carry_fixture_v2.py
+      - backend/research/strategy11_unattended_improvement_policy_v2.json
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2-regression.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-unattended-improvement-v2-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and execute lane/carry regressions
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_unattended_improvement_v2.py \
+            backend/tools/strategy11_unattended_improvement_replay_v2.py \
+            backend/tools/strategy11_unattended_improvement_fixture_v2.py \
+            backend/tools/strategy11_unattended_improvement_carry_fixture_v2.py
+          python backend/tools/strategy11_unattended_improvement_fixture_v2.py
+          python backend/tools/strategy11_unattended_improvement_carry_fixture_v2.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/strategy11_unattended_improvement_policy_v2.json').read_text())
+          assert policy['promotion_authority'] is False
+          assert policy['execution_allowed'] is False
+          assert policy['execution_authority']=='NONE'
+          assert policy['order_authority']=='BLOCKED'
+          assert policy['runtime_bound'] is False
+          PY

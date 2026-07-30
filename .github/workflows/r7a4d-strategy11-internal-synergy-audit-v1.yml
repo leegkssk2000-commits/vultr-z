@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: strategy11-internal-synergy-audit-v1-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHONPATH: .
 
@@ -42,9 +46,13 @@ jobs:
           assert d['protected_mutations']==0
           assert d['execution_allowed'] is False
           assert d['order_authority']=='BLOCKED'
+          assert d['runtime_bound'] is False
           assert d['constraints']['team_independence_required'] is True
           assert d['constraints']['portfolio_governor_shadow_only'] is True
-          assert d['recommended_implementation_order']
+          if d['missing_capabilities']:
+              assert d['recommended_implementation_order'], d
+          else:
+              assert d['recommended_implementation_order']==[], d
           PY
       - uses: actions/upload-artifact@v4
         with:

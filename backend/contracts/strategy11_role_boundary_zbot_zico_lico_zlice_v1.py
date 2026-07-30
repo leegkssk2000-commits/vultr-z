@@ -11,6 +11,7 @@ SAFETY = {
     "protected_mutations": 0,
     "execution_allowed": False,
     "order_authority": "BLOCKED",
+    "runtime_bound": False,
 }
 REQUIRED_LINEAGE = {
     "strategy_id", "method_id", "skill_id", "team_id", "event_ts",

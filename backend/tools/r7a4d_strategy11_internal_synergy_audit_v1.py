@@ -16,6 +16,7 @@ SAFETY = {
     "protected_mutations": 0,
     "execution_allowed": False,
     "order_authority": "BLOCKED",
+    "runtime_bound": False,
 }
 
 CAPABILITIES = {

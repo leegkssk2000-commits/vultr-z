@@ -1,0 +1,65 @@
+name: Strategy11 Internal Organic Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/contracts/**"
+      - "backend/research/**"
+      - "backend/tools/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-internal-organic-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile audit tools
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_cron_overlap_audit_v1.py \
+            backend/tools/strategy11_internal_organic_audit_v1.py
+      - name: Verify cron overlap detector
+        run: python backend/tools/strategy11_cron_overlap_audit_v1.py
+      - name: Run repository organic audit
+        run: python backend/tools/strategy11_internal_organic_audit_v1.py
+      - name: Print priority detail
+        if: always()
+        run: |
+          if [ -f artifacts/strategy11_internal_organic_audit_v1/report.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/strategy11_internal_organic_audit_v1/report.json").read_text())
+          print(json.dumps({
+              "summary": report["summary"],
+              "priority_findings": report["priority_findings"],
+              "unresolved_internal_imports": report["unresolved_internal_imports"],
+              "safety_mismatches": report["safety"]["partial_or_mismatched"],
+              "naming_anomalies": report["naming_anomalies"],
+              "possible_dead_modules": report["possible_dead_modules"],
+              "production_complexity_hotspots": report["production_complexity_hotspots"][:30],
+              "production_duplicate_function_groups": report["production_duplicate_function_groups"][:20],
+              "schedule_collisions": report["workflow_schedule_collisions"],
+              "pipeline": report["pipeline"],
+          }, indent=2, sort_keys=True))
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy11-internal-organic-audit-${{ github.run_id }}
+          path: artifacts/strategy11_internal_organic_audit_v1
+          if-no-files-found: warn

@@ -14,6 +14,7 @@ SAFETY = {
     "protected_mutations": 0,
     "execution_allowed": False,
     "order_authority": "BLOCKED",
+    "runtime_bound": False,
 }
 REQUIRED_TRADE_FIELDS = {
     "trade_id", "source_ledger_id", "source_row_id", "source_row_sha",

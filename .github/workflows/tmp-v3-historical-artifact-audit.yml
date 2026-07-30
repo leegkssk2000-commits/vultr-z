@@ -1,0 +1,57 @@
+name: TMP V3 Historical Artifact Audit
+
+on:
+  push:
+    branches: [master]
+    paths: ['.github/workflows/tmp-v3-historical-artifact-audit.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: true}
+      - uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-cause-aware-rotation-l090-v6
+          path: compute
+          persist-credentials: false
+      - name: Search source and historical artifacts
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/manual_trigger_receipts/v3-historical
+          grep -RInE 'ANCHOR_ENDS|WINDOW_BARS = 900|strategy11_exact|real_oos|900.*bars' compute/.github/workflows compute/backend/tools > .github/manual_trigger_receipts/v3-historical/source_hits.txt || true
+          python - <<'PY'
+          import json,os,subprocess
+          rows=[]
+          for page in range(1,11):
+              raw=subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/artifacts?per_page=100&page={page}'])
+              payload=json.loads(raw)
+              items=payload.get('artifacts',[])
+              if not items: break
+              rows.extend(items)
+          terms=('exact','oos','repair','indicator','fresh','evidence','strategy11','s11-')
+          selected=[]
+          for row in rows:
+              name=str(row.get('name') or '').lower()
+              if any(term in name for term in terms):
+                  run=row.get('workflow_run') or {}
+                  selected.append({
+                      'id':row.get('id'),'name':row.get('name'),'expired':row.get('expired'),
+                      'size_in_bytes':row.get('size_in_bytes'),'created_at':row.get('created_at'),
+                      'run_id':run.get('id'),'head_sha':run.get('head_sha'),'head_branch':run.get('head_branch')
+                  })
+          selected.sort(key=lambda x:str(x.get('created_at') or ''),reverse=True)
+          out={'artifact_pages_scanned':10,'artifact_total_scanned':len(rows),'selected_count':len(selected),'selected':selected}
+          open('.github/manual_trigger_receipts/v3-historical/artifacts.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/manual_trigger_receipts/v3-historical
+          git commit -m 'Record V3 historical artifact audit'
+          git push

@@ -1,0 +1,135 @@
+name: Strategy11 Runtime System Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/**"
+      - "scripts/**"
+      - "runtime/**"
+      - "frontend/z-os-app-source/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-runtime-system-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime import dependencies
+        run: python -m pip install --disable-pip-version-check "fastapi>=0.110,<1" "pydantic>=2,<3"
+      - name: Compile complete backend
+        run: python -m compileall -q backend
+      - name: Run structural organic audit
+        run: |
+          python backend/tools/strategy11_cron_overlap_audit_v1.py
+          python backend/tools/strategy11_internal_organic_audit_v2.py
+      - name: Run corrected runtime and repository integrity audit
+        run: python backend/tools/strategy11_runtime_system_audit_v2.py
+      - name: Execute active runtime import smoke
+        run: python backend/tools/strategy11_runtime_import_smoke_v1.py
+      - name: Execute critical Strategy11 regression chain
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          required = [
+              "backend/tools/r7a4d_strategy11_validation_primitives_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_synthesis_material_registry_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_bounded_synthesis_constructor_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_synthesis_factorial_replay_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_component_attribution_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_synthesis_sealer_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_synthesis_classifier_adapter_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_shadow20_readonly_canary_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_shadow200_readonly_accumulator_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_shadow300_readonly_completion_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py",
+              "backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py",
+          ]
+          missing = [path for path in required if not Path(path).is_file()]
+          if missing:
+              raise SystemExit(f"CRITICAL_FIXTURE_MISSING:{missing}")
+          for path in required:
+              print(f"RUN={path}", flush=True)
+              subprocess.run([sys.executable, path], check=True)
+          print(f"PASS_CRITICAL_FIXTURE_COUNT={len(required)}")
+          PY
+      - name: Assert blocked authority and zero static blocker
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          runtime = json.loads(Path("artifacts/strategy11_runtime_system_audit_v1/report.json").read_text())
+          organic = json.loads(Path("artifacts/strategy11_internal_organic_audit_v1/report.json").read_text())
+          assert runtime["state"] == "PASS_RUNTIME_SYSTEM_STATIC_AUDIT", runtime["summary"]
+          assert runtime["summary"]["decode_error_count"] == 0
+          assert runtime["summary"]["syntax_error_count"] == 0
+          assert runtime["summary"]["json_error_count"] == 0
+          assert runtime["summary"]["unresolved_internal_import_count"] == 0
+          assert runtime["summary"]["import_cycle_count"] == 0
+          assert runtime["summary"]["runtime_unreferenced_review_count"] == 0, runtime["runtime"]["files"]
+          active = {row["path"] for row in runtime["runtime"]["files"] if row["disposition"] == "ACTIVE_REFERENCED"}
+          required_runtime = {
+              "backend/engine/lbot_runtime.py",
+              "frontend/z-os-app-source/baseline/z_emergency_runtime_guard_v2.js",
+              "frontend/z-os-app-source/baseline/zel_source_envelope_runtime.js",
+              "frontend/z-os-app-source/baseline/zops_runtime_guard_v1.js",
+              "frontend/z-os-app-source/baseline/zops_runtime_guard_v1.css",
+          }
+          assert required_runtime.issubset(active), (required_runtime, active)
+          assert organic["state"] == "PASS_INTERNAL_ORGANIC_STATIC_AUDIT", organic["summary"]
+          for report in (runtime, organic):
+              authority = report["authority"]
+              assert authority["promotion_authority"] is False
+              assert authority["protected_mutations"] == 0
+              assert authority["execution_allowed"] is False
+              assert authority["order_authority"] == "BLOCKED"
+              assert authority["runtime_bound"] is False
+          PY
+      - name: Print runtime optimization candidates
+        if: always()
+        run: |
+          if [ -f artifacts/strategy11_runtime_system_audit_v1/report.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/strategy11_runtime_system_audit_v1/report.json").read_text())
+          runtime = report["runtime"]
+          print(json.dumps({
+              "summary": report["summary"],
+              "exact_duplicate_groups": runtime["exact_duplicate_groups"],
+              "canonical_json_duplicate_groups": runtime["canonical_json_duplicate_groups"],
+              "unreferenced_review": [row for row in runtime["files"] if row["disposition"] == "UNREFERENCED_REVIEW"],
+              "compatibility_wrappers": [row for row in runtime["files"] if row["disposition"] == "COMPATIBILITY_WRAPPER"],
+              "active_runtime_files": [row for row in runtime["files"] if row["disposition"] == "ACTIVE_REFERENCED"],
+              "strategy_performance_evidence": report["strategy_performance_evidence"],
+              "workflow_integrity": report["workflow_integrity"],
+          }, indent=2, sort_keys=True))
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy11-runtime-system-audit-${{ github.run_id }}
+          path: |
+            artifacts/strategy11_runtime_system_audit_v1
+            artifacts/strategy11_internal_organic_audit_v1
+          if-no-files-found: warn
+          retention-days: 90

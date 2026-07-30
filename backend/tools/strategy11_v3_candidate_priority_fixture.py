@@ -34,14 +34,13 @@ def main() -> int:
     assert semantic_role("rsi_os") == "ENTRY_TRIGGER"
     assert semantic_role("min_atr_pct") == "REGIME_GATE"
     candidates = build_candidates(row, "A_ENTRY_LIVENESS_REPAIR", set(), 2)
-    assert [item["field"] for item in candidates] == ["reclaim_atr_min", "rsi_os"] or [item["field"] for item in candidates] == ["rsi_os", "reclaim_atr_min"]
-    assert all(item["semantic_role"] == "ENTRY_TRIGGER" for item in candidates) is False, "distinct semantic role gate must retain a second role when available"
-    # The first candidate must be a real entry trigger; beam and indicator-period fields must not lead Lane A.
-    assert candidates[0]["semantic_role"] == "ENTRY_TRIGGER"
-    assert candidates[0]["field"] not in {"beam_body_ratio_min", "atr_len"}
-    second_cycle = build_candidates(row, "A_ENTRY_LIVENESS_REPAIR", {item["candidate_id"] for item in candidates}, 2)
+    assert [item["semantic_role"] for item in candidates] == ["ENTRY_TRIGGER", "REGIME_GATE"]
+    assert candidates[0]["field"] == "reclaim_atr_min"
+    assert all(item["field"] not in {"beam_body_ratio_min", "atr_len"} for item in candidates)
+    tested = {item["candidate_id"] for item in candidates}
+    second_cycle = build_candidates(row, "A_ENTRY_LIVENESS_REPAIR", tested, 2)
     assert second_cycle
-    assert not {item["candidate_id"] for item in candidates} & {item["candidate_id"] for item in second_cycle}
+    assert not tested & {item["candidate_id"] for item in second_cycle}
     print(json.dumps({"state": "PASS_V3_CANDIDATE_PRIORITY_FIXTURE", "first": [item["field"] for item in candidates], "second": [item["field"] for item in second_cycle]}, sort_keys=True))
     return 0
 

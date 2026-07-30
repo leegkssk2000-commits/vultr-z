@@ -1,0 +1,56 @@
+name: Temporary Strategy11 Unattended V2 Classification Patch
+
+on:
+  push:
+    branches: [strategy11-unattended-improvement-v2]
+    paths:
+      - .github/workflows/tmp-strategy11-unattended-v2-classification-patch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-strategy11-unattended-v2-classification-patch
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-unattended-improvement-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preserve Lane B quality improvements
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/tools/strategy11_unattended_improvement_v2.py')
+          text=path.read_text()
+          old='''        if trade_count <= control_trades:\n            return "HOLD_COVERAGE_NO_GAIN", details\n'''
+          new='''        if trade_count <= control_trades:\n            if primary >= 2 and delta["net"] > 0.0:\n                return "HOLD_COVERAGE_QUALITY_IMPROVED", details\n            return "HOLD_COVERAGE_NO_GAIN", details\n'''
+          if old not in text:
+              raise SystemExit('CLASSIFICATION_SNIPPET_NOT_FOUND')
+          path.write_text(text.replace(old,new,1))
+
+          fixture=Path('backend/tools/strategy11_unattended_improvement_fixture_v2.py')
+          ftext=fixture.read_text()
+          marker='''    status, _ = v2.classify_variant(v2.LANES[1], variant(6, 0.2, 1.1, 1.0, 0.7), control("liquidity_sweep", 2, net=0.1, pf=1.0), p)\n    assert status == "PASS_COVERAGE_EXPANSION_RESEARCH"\n'''
+          addition=marker+'''    status, _ = v2.classify_variant(v2.LANES[1], variant(2, 0.75, 3.2, 1.4, 0.3), control("rsi_swing_fail", 2, net=-0.28, pf=0.72), p)\n    assert status == "HOLD_COVERAGE_QUALITY_IMPROVED"\n'''
+          if marker not in ftext:
+              raise SystemExit('FIXTURE_MARKER_NOT_FOUND')
+          fixture.write_text(ftext.replace(marker,addition,1))
+          PY
+          python -m py_compile backend/tools/strategy11_unattended_improvement_v2.py backend/tools/strategy11_unattended_improvement_fixture_v2.py
+          PYTHONPATH=. python backend/tools/strategy11_unattended_improvement_fixture_v2.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/tools/strategy11_unattended_improvement_v2.py backend/tools/strategy11_unattended_improvement_fixture_v2.py
+          git commit -m "Preserve Lane B quality-improved candidates"
+          git push origin HEAD:strategy11-unattended-improvement-v2

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +19,82 @@ def load_module(name: str, path: Path) -> Any:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def argument_value(arguments: list[str], flag: str) -> str | None:
+    try:
+        return arguments[arguments.index(flag) + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def carry_all_controls(arguments: list[str]) -> None:
+    if argument_value(arguments, "--mode") != "aggregate":
+        return
+    out_value = argument_value(arguments, "--out")
+    if not out_value:
+        raise RuntimeError("AGGREGATE_OUT_REQUIRED")
+    final_path = Path(out_value).resolve() / "final.json"
+    ledger_path = Path("input/plan/search_ledger.json").resolve()
+    if not final_path.exists() or not ledger_path.exists():
+        raise RuntimeError("AGGREGATE_FINAL_OR_LEDGER_MISSING")
+    final = json.loads(final_path.read_text(encoding="utf-8"))
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    rows = {
+        str(row["strategy_id"]): row
+        for row in final.get("rows", [])
+        if isinstance(row, Mapping) and row.get("strategy_id")
+    }
+    for ledger_row in ledger.get("rows", []):
+        if not isinstance(ledger_row, Mapping) or not ledger_row.get("strategy_id"):
+            continue
+        strategy_id = str(ledger_row["strategy_id"])
+        if strategy_id in rows:
+            continue
+        snapshot = ledger_row.get("incumbent_snapshot")
+        if not isinstance(snapshot, Mapping) or not isinstance(snapshot.get("candidate_config"), Mapping):
+            raise RuntimeError(f"INACTIVE_CONTROL_SNAPSHOT_MISSING:{strategy_id}")
+        control = {
+            "variant_id": "NO_CHANGE_CONTROL",
+            **dict(snapshot),
+            "parity": {"state": "CARRIED_PRIOR_VERIFIED_CONTROL", "duplicate_trade_count": 0},
+        }
+        rows[strategy_id] = {
+            "schema_version": "2.0",
+            "version": VERSION,
+            "capability_marker": "LANE_AWARE_UNATTENDED_IMPROVEMENT_REPLAY_V2",
+            "state": "CARRIED_INACTIVE_CONTROL",
+            "strategy_id": strategy_id,
+            "tested_candidate_ids": [],
+            "winner": None,
+            "variants": [control],
+            "next": "WAIT_NEXT_SAFE_UNTESTED_AXIS",
+            "same_axis_generation_count": 0,
+            "same_axis_generation_limit": 2,
+            "distinct_axis_reopen_allowed": True,
+            "promotion_authority": False,
+            "w1_confirmation_required": True,
+            "new_sealed_required": True,
+            "canonical_mutated": False,
+            "registry_mutated": False,
+            "protected_mutations": 0,
+            "execution_allowed": False,
+            "order_authority": "BLOCKED",
+        }
+    ledger_strategy_ids = [str(row["strategy_id"]) for row in ledger.get("rows", [])]
+    if set(rows) != set(ledger_strategy_ids):
+        raise RuntimeError(
+            f"CARRIED_CONTROL_SET_MISMATCH:{len(rows)}:{len(set(ledger_strategy_ids))}"
+        )
+    final["rows"] = [rows[strategy_id] for strategy_id in sorted(rows)]
+    final["strategy_count"] = len(rows)
+    final["active_replayed_strategy_count"] = sum(
+        row.get("state") != "CARRIED_INACTIVE_CONTROL" for row in final["rows"]
+    )
+    final["carried_inactive_control_count"] = sum(
+        row.get("state") == "CARRIED_INACTIVE_CONTROL" for row in final["rows"]
+    )
+    final_path.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -108,7 +185,9 @@ def main() -> int:
     replay.prior.STRATEGIES = strategies
 
     sys.argv = [sys.argv[0], *remaining]
-    return replay.main()
+    result = replay.main()
+    carry_all_controls(remaining)
+    return result
 
 
 if __name__ == "__main__":

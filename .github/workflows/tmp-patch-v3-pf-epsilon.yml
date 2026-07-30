@@ -1,0 +1,42 @@
+name: TMP Patch V3 PF Epsilon
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/tmp-patch-v3-pf-epsilon.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-materiality-cache-v1
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/tools/strategy11_expanded_discovery_v3.py')
+          text=path.read_text()
+          old='''    gross_loss = abs(sum(losses))\n    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": sum(wins) / gross_loss if gross_loss else (999.0 if wins else 0.0), "payoff_ratio": (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and losses else 0.0, "max_drawdown_pct": dd}\n'''
+          new='''    gross_loss = abs(sum(losses))\n    loss_epsilon = 1e-12\n    profit_factor = sum(wins) / gross_loss if gross_loss > loss_epsilon else (999.0 if wins else 0.0)\n    payoff_ratio = (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and gross_loss > loss_epsilon else 0.0\n    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_drawdown_pct": dd}\n'''
+          if old not in text:
+              raise SystemExit('COMBINE_STATS_MARKER_MISSING')
+          path.write_text(text.replace(old,new,1))
+          fixture=Path('backend/tools/strategy11_v3_pf_epsilon_fixture.py')
+          fixture.write_text('''from __future__ import annotations\nimport json\nfrom backend.tools.strategy11_expanded_discovery_v3 import combine_stats\n\ndef main():\n    saturated=combine_stats([{"net_return_pct":1.0},{"net_return_pct":-1e-14}])\n    regular=combine_stats([{"net_return_pct":1.0},{"net_return_pct":-0.5}])\n    assert saturated["net_profit_factor"]==999.0\n    assert saturated["payoff_ratio"]==0.0\n    assert regular["net_profit_factor"]==2.0\n    assert regular["payoff_ratio"]==2.0\n    print(json.dumps({"state":"PASS_V3_PF_EPSILON_FIXTURE"},sort_keys=True)); return 0\nif __name__=="__main__": raise SystemExit(main())\n''')
+          PY
+          PYTHONPATH=. python -m py_compile backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_pf_epsilon_fixture.py
+          python -m pip install --disable-pip-version-check pandas numpy
+          PYTHONPATH=. python backend/tools/strategy11_v3_pf_epsilon_fixture.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_pf_epsilon_fixture.py
+          git commit -m 'Normalize near-zero-loss profit factor in V3'
+          git push origin HEAD:strategy11-v3-materiality-cache-v1

@@ -8,6 +8,7 @@ import json
 import math
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -63,6 +64,34 @@ def activate_compute_namespace(compute_root: Path) -> None:
 def exact_module(compute_root: Path) -> Any:
     activate_compute_namespace(compute_root)
     return load_module("s11_v3_exact", compute_root / "backend/tools/r7a4d_strategy11_exact.py")
+
+
+def load_archive_cache(archive_root: Path, manifest: Mapping[str, Any], exact: Any) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:
+    cache: dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]] = {}
+    for row in manifest["rows"]:
+        key = (str(row["window_id"]), str(row["symbol"]))
+        frame = pd.read_csv(archive_root / row["path"])
+        frame["timestamp"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True)
+        cache[key] = (frame, exact.compute_feature_frame(frame))
+    return cache
+
+
+def materiality_evidence(candidate: Mapping[str, Any], control: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+    thresholds = dict(policy["classification"]["materiality"])
+    deltas = {
+        "net_return_pct_sum": float(candidate["net_return_pct_sum"]) - float(control["net_return_pct_sum"]),
+        "net_profit_factor": float(candidate["net_profit_factor"]) - float(control["net_profit_factor"]),
+        "payoff_ratio": float(candidate["payoff_ratio"]) - float(control["payoff_ratio"]),
+        "max_drawdown_pct_reduction": float(control["max_drawdown_pct"]) - float(candidate["max_drawdown_pct"]),
+    }
+    pf_saturated = min(float(candidate["net_profit_factor"]), float(control["net_profit_factor"])) >= 999.0
+    flags = {
+        "net": deltas["net_return_pct_sum"] >= float(thresholds["net_return_pct_points_min"]),
+        "pf": (not pf_saturated) and deltas["net_profit_factor"] >= float(thresholds["profit_factor_min"]),
+        "payoff": deltas["payoff_ratio"] >= float(thresholds["payoff_ratio_min"]),
+        "dd": deltas["max_drawdown_pct_reduction"] >= float(thresholds["drawdown_pct_points_min"]),
+    }
+    return {"thresholds": thresholds, "deltas": deltas, "pf_saturated": pf_saturated, "flags": flags, "improved_count": sum(flags.values())}
 
 
 def validate_archive_frame(frame: pd.DataFrame, *, expected_rows: int, interval_ms: int, label: str) -> tuple[int, int]:
@@ -167,7 +196,10 @@ def combine_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         peak = max(peak, cumulative)
         dd = max(dd, peak - cumulative)
     gross_loss = abs(sum(losses))
-    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": sum(wins) / gross_loss if gross_loss else (999.0 if wins else 0.0), "payoff_ratio": (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and losses else 0.0, "max_drawdown_pct": dd}
+    loss_epsilon = 1e-12
+    profit_factor = sum(wins) / gross_loss if gross_loss > loss_epsilon else (999.0 if wins else 0.0)
+    payoff_ratio = (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and gross_loss > loss_epsilon else 0.0
+    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_drawdown_pct": dd}
 
 
 def discovery_replay(args: argparse.Namespace) -> int:
@@ -185,8 +217,11 @@ def discovery_replay(args: argparse.Namespace) -> int:
     requested = [value for value in args.strategy_ids.split(",") if value]
     out = Path(args.out).resolve()
     manifest = read_json(archive_root / "manifest.json")
+    archive_cache = load_archive_cache(archive_root, manifest, exact)
     batch_rows: list[dict[str, Any]] = []
+    batch_started = time.monotonic()
     for strategy_id in requested:
+        print(json.dumps({"event": "STRATEGY_START", "strategy_id": strategy_id, "elapsed_s": round(time.monotonic() - batch_started, 3)}, sort_keys=True), flush=True)
         if strategy_id not in plan_map:
             continue
         evidence_summary = read_json(prior.find_summary(evidence_root, strategy_id))
@@ -214,9 +249,7 @@ def discovery_replay(args: argparse.Namespace) -> int:
                 for row in manifest["rows"]:
                     if row["symbol"] not in symbols:
                         continue
-                    frame = pd.read_csv(archive_root / row["path"])
-                    frame["timestamp"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True)
-                    features = exact.compute_feature_frame(frame)
+                    frame, features = archive_cache[(str(row["window_id"]), str(row["symbol"]))]
                     result = exact._replay(frame, features, wrapper, gate, exit_spec, surgery, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))
                     for trade in result["trades"]:
                         trade = dict(trade)
@@ -236,11 +269,12 @@ def discovery_replay(args: argparse.Namespace) -> int:
             summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}
             write_json(out / strategy_id / variant_id / "summary.json", summary)
             summaries.append(summary)
+            print(json.dumps({"event": "VARIANT_COMPLETE", "strategy_id": strategy_id, "variant_id": variant_id, "trades": summary["trade_count"], "elapsed_s": round(time.monotonic() - batch_started, 3)}, sort_keys=True), flush=True)
         control = summaries[0]
         for row in summaries[1:]:
             row["deltas"] = {key: row[key] - control[key] for key in ("trade_count", "net_return_pct_sum", "net_profit_factor", "payoff_ratio", "max_drawdown_pct")}
-            improved = sum(row["deltas"][key] > 0 for key in ("net_return_pct_sum", "net_profit_factor", "payoff_ratio")) + int(row["deltas"]["max_drawdown_pct"] < 0)
-            row["research_state"] = "DISCOVERY_PASS_INTERNAL_OR_REGIME" if row["parity"]["state"] == "PASS" and row["trade_count"] >= int(policy["classification"]["archive_trade_count_min"]) and row["positive_window_count"] >= int(policy["classification"]["positive_windows_min"]) and improved >= 2 and row["net_return_pct_sum"] > control["net_return_pct_sum"] else "DISCOVERY_HOLD"
+            row["materiality"] = materiality_evidence(row, control, policy)
+            row["research_state"] = "DISCOVERY_PASS_INTERNAL_OR_REGIME" if row["parity"]["state"] == "PASS" and row["trade_count"] >= int(policy["classification"]["archive_trade_count_min"]) and row["positive_window_count"] >= int(policy["classification"]["positive_windows_min"]) and row["materiality"]["improved_count"] >= int(policy["classification"]["materiality"]["material_metrics_min"]) and row["materiality"]["flags"]["net"] else "DISCOVERY_HOLD"
         strategy_payload = {"schema_version": "3.0", "version": VERSION, "strategy_id": strategy_id, "control": control, "variants": summaries[1:], "archive_sha256": manifest["archive_sha256"], "source_sha256": canonical_row["canonical_engine"]["source_sha256"], "next": "FRESH_W1_CONFIRMATION" if any(row.get("research_state", "").startswith("DISCOVERY_PASS") for row in summaries[1:]) else "WAIT_NEXT_AXIS", **SAFETY}
         strategy_payload["result_sha256"] = stable_sha(strategy_payload)
         write_json(out / strategy_id / "result.json", strategy_payload)

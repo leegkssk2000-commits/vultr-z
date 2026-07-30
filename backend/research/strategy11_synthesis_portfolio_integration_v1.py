@@ -146,6 +146,22 @@ def validate_package(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hold_no_synthesis_combo(packages: list[dict[str, Any]], correlation: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "schema_version": OUTPUT_SCHEMA,
+        "state": "HOLD_NO_COMPATIBLE_SYNTHESIS_PORTFOLIO",
+        "candidate_package_shas": [row["package_sha"] for row in packages],
+        "correlation_analysis": correlation,
+        "governor_result": None,
+        "shadow_targets_ready": False,
+        "next": "DROP_CORRELATED_MATERIAL_OR_WAIT_NEW_EVIDENCE",
+        "runtime_bound": False,
+        **SAFETY,
+    }
+    result["integration_sha"] = canonical_sha(result)
+    return result
+
+
 def integrate(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = _mapping(value, "integration_input")
     allowed = {"schema_version", "candidate_packages", "correlation_policy", "governor_policy", "authority"}
@@ -161,7 +177,13 @@ def integrate(value: Mapping[str, Any]) -> dict[str, Any]:
         _fail("DUPLICATE_STRATEGY_ID")
     if len({row["candidate_sha"] for row in packages}) != len(packages):
         _fail("DUPLICATE_CANDIDATE_SHA")
-    if "SYNTHESIS" not in {row["classification_name"] for row in packages}:
+    material_ids = [row["material"]["material_id"] for row in packages]
+    if len(set(material_ids)) != len(material_ids):
+        _fail("DUPLICATE_MATERIAL_ID")
+    synthesis_strategy_ids = {
+        row["strategy_id"] for row in packages if row["classification_name"] == "SYNTHESIS"
+    }
+    if not synthesis_strategy_ids:
         _fail("SYNTHESIS_PACKAGE_REQUIRED")
 
     analyzer_candidates = [
@@ -185,23 +207,23 @@ def integrate(value: Mapping[str, Any]) -> dict[str, Any]:
     ]
     correlation = analyze_candidates(analyzer_candidates, _mapping(payload["correlation_policy"], "correlation_policy"))
     selected = correlation.get("shadow_only_candidate_combinations")
-    if not isinstance(selected, list) or not selected:
-        result = {
-            "schema_version": OUTPUT_SCHEMA,
-            "state": "HOLD_NO_COMPATIBLE_SYNTHESIS_PORTFOLIO",
-            "candidate_package_shas": [row["package_sha"] for row in packages],
-            "correlation_analysis": correlation,
-            "governor_result": None,
-            "shadow_targets_ready": False,
-            "next": "DROP_CORRELATED_MATERIAL_OR_WAIT_NEW_EVIDENCE",
-            "runtime_bound": False,
-            **SAFETY,
-        }
-        result["integration_sha"] = canonical_sha(result)
-        return result
-    chosen = selected[0]
+    if not isinstance(selected, list):
+        _fail("CORRELATION_COMBINATION_LIST_REQUIRED")
+    synthesis_selected = [
+        combo for combo in selected
+        if synthesis_strategy_ids.intersection(set(combo.get("members", [])))
+    ]
+    if not synthesis_selected:
+        return _hold_no_synthesis_combo(packages, correlation)
+
+    chosen = synthesis_selected[0]
     chosen_members = set(chosen["members"])
     chosen_packages = [row for row in packages if row["strategy_id"] in chosen_members]
+    if not any(row["classification_name"] == "SYNTHESIS" for row in chosen_packages):
+        _fail("SELECTED_COMBINATION_MISSING_SYNTHESIS")
+    chosen_material_ids = [row["material"]["material_id"] for row in chosen_packages]
+    if len(set(chosen_material_ids)) != len(chosen_material_ids):
+        _fail("SELECTED_COMBINATION_DUPLICATE_MATERIAL_ID")
     candidate_set_sha = chosen["combination_sha"]
     governor_input = {
         "candidate_set_sha": candidate_set_sha,
@@ -236,6 +258,7 @@ def integrate(value: Mapping[str, Any]) -> dict[str, Any]:
         "state": "PASS_SYNTHESIS_PORTFOLIO_INTEGRATION" if pass_governor else "HOLD_SYNTHESIS_PORTFOLIO_GOVERNOR",
         "candidate_package_shas": [row["package_sha"] for row in packages],
         "selected_members": chosen["members"],
+        "selected_synthesis_members": sorted(synthesis_strategy_ids.intersection(chosen_members)),
         "candidate_set_sha": candidate_set_sha,
         "correlation_analysis": correlation,
         "correlation_analysis_sha": correlation["analysis_sha"],

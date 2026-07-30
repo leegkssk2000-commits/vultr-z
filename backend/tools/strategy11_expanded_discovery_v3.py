@@ -168,12 +168,12 @@ def discovery_replay(args: argparse.Namespace) -> int:
                         observer = replay_long_short(frame, wrapper, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))
                         observer_totals["long"].extend(value for value in observer["trades"] if value["side"] == "long")
                         observer_totals["short"].extend(value for value in observer["trades"] if value["side"] == "short")
-                ledgers.append(sorted(repeat_trades, key=lambda value: (value.get("window_id"), value.get("symbol"), value.get("entry_ts"), value.get("exit_ts"))))
+                ledgers.append(sorted(repeat_trades, key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol"))))
             parity = stable_sha(ledgers[0]) == stable_sha(ledgers[1]) and len({stable_sha(row) for row in ledgers[0]}) == len(ledgers[0])
             stats = combine_stats(ledgers[0])
             per_window = {window: combine_stats(values) for window, values in window_stats.items()}
             positive_windows = sum(value["net_return_pct_sum"] > 0 for value in per_window.values())
-            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": stable_sha(variant), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}
+            summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}
             write_json(out / strategy_id / variant_id / "summary.json", summary)
             summaries.append(summary)
         control = summaries[0]
@@ -198,6 +198,7 @@ def aggregate(args: argparse.Namespace) -> int:
     batches = [read_json(path) for path in sorted(root.glob("batch-*/batch.json"))]
     rows = [row for batch in batches for row in batch.get("rows", [])]
     expected = set(plan.get("active_strategy_ids", [])); observed = {str(row["strategy_id"]) for row in rows}
+    plan_digests = {(str(row["strategy_id"]), str(candidate_id)): str(row["candidate_specs"][candidate_id]["candidate_spec_sha256"]) for row in plan.get("rows", []) for candidate_id in row.get("candidate_ids", [])}
     blockers: list[str] = []
     if observed != expected:
         blockers.append(f"STRATEGY_SET_MISMATCH:{len(observed)}:{len(expected)}")
@@ -207,6 +208,9 @@ def aggregate(args: argparse.Namespace) -> int:
         for variant in row.get("variants", []):
             if variant.get("parity", {}).get("state") != "PASS":
                 blockers.append(f"PARITY:{row['strategy_id']}:{variant.get('variant_id')}")
+            expected_digest = plan_digests.get((str(row["strategy_id"]), str(variant.get("variant_id"))))
+            if not expected_digest or variant.get("candidate_spec_sha256") != expected_digest:
+                blockers.append(f"CANDIDATE_DIGEST:{row['strategy_id']}:{variant.get('variant_id')}")
             if variant.get("canonical_mutated") is not False or variant.get("promotion_authority") is not False:
                 blockers.append(f"AUTHORITY:{row['strategy_id']}:{variant.get('variant_id')}")
             if "short_observer" not in variant or "opportunity_diagnostics" not in variant:

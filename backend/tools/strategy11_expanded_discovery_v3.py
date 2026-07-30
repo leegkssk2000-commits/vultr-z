@@ -196,7 +196,10 @@ def combine_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         peak = max(peak, cumulative)
         dd = max(dd, peak - cumulative)
     gross_loss = abs(sum(losses))
-    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": sum(wins) / gross_loss if gross_loss else (999.0 if wins else 0.0), "payoff_ratio": (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and losses else 0.0, "max_drawdown_pct": dd}
+    loss_epsilon = 1e-12
+    profit_factor = sum(wins) / gross_loss if gross_loss > loss_epsilon else (999.0 if wins else 0.0)
+    payoff_ratio = (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and gross_loss > loss_epsilon else 0.0
+    return {"trade_count": len(values), "win_rate_pct": len(wins) / len(values) * 100.0 if values else 0.0, "net_return_pct_sum": sum(values), "net_profit_factor": profit_factor, "payoff_ratio": payoff_ratio, "max_drawdown_pct": dd}
 
 
 def discovery_replay(args: argparse.Namespace) -> int:

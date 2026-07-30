@@ -31,7 +31,7 @@ class DomainSpec:
     title: str
     required_files: tuple[str, ...]
     empirical_gates: tuple[str, ...]
-    missing_state: str = IMPLEMENTATION_REQUIRED
+    default_evidence_state: str
 
 
 DOMAIN_SPECS: tuple[DomainSpec, ...] = (
@@ -41,7 +41,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
         (
             "backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py",
             ".github/workflows/r7a4d-strategy11-continuous-data-v1.yml",
-            "backend/tools/r7a4d_strategy11_famous_indicator_autonomy_v1.py",
+            "backend/tools/strategy11_famous_indicator_autonomy_v1.py",
             ".github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml",
         ),
         (
@@ -49,6 +49,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "480 complete non-overlap W1 bars",
             "W1 one-shot receipt",
         ),
+        WAIT_DATA,
     ),
     DomainSpec(
         "D2_INDIVIDUAL_STRATEGY",
@@ -56,7 +57,8 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
         (
             "backend/contracts/strategy11_strategy_proposal_contract_v1.py",
             "backend/research/strategy11_global_candidate_classifier_v1.py",
-            "backend/tools/r7a4d_strategy11_w1_one_shot_orchestrator_v1.py",
+            "backend/tools/strategy11_w1_one_shot_gate_v1.py",
+            ".github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml",
         ),
         (
             "real W1",
@@ -64,6 +66,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "real W3",
             "new untouched sealed holdback",
         ),
+        WAIT_DATA,
     ),
     DomainSpec(
         "D3_SYNTHESIS_FACTORY",
@@ -81,6 +84,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "W3 repeatability",
             "new untouched synthesis seal",
         ),
+        WAIT_DATA,
     ),
     DomainSpec(
         "D4_ENSEMBLE_PORTFOLIO",
@@ -96,20 +100,23 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "real correlation and joint-DD evidence",
             "real attribution and leave-one-out evidence",
         ),
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D5_EVOLUTION_LOOP",
         "Evidence-driven strategy evolution",
         (
             "backend/research/strategy11_evidence_optimize_closed_loop_v1.py",
-            "backend/research/strategy11_trade_path_evidence_v1.py",
-            "backend/research/strategy11_pre_shadow_causal_axis_planner_v1.py",
+            "backend/research/strategy11_trade_path_enricher_v1.py",
+            "backend/research/strategy11_pre_shadow_path_optimize_planner_v1_1.py",
+            ".github/workflows/r7a4d-strategy11-generation7-quota-state-machine-v1.yml",
         ),
         (
             "real source-bound trade paths",
             "bounded completed replays",
             "no duplicate strategy-axis-data generations",
         ),
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D6_SHADOW_OBSERVER",
@@ -126,6 +133,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "real Shadow300",
             "ML-Light/failure-learning observer 100C burn-in",
         ),
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D7_ADAPTIVE_EXECUTION",
@@ -138,6 +146,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "partial-fill/idempotency evidence",
             "fee/slippage/funding/latency reconciliation",
         ),
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D8_SELF_HEALING_RUNTIME",
@@ -151,7 +160,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "ledger-PnL-Telegram-View-ALIMI parity",
             "verified rollback drill",
         ),
-        missing_state=EXTERNAL_EVIDENCE_REQUIRED,
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D9_DIGITAL_TWIN_GOVERNANCE",
@@ -166,11 +175,16 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "real policy and risk-budget SSOT",
             "valid human approval scope and expiry",
         ),
+        EXTERNAL_EVIDENCE_REQUIRED,
     ),
     DomainSpec(
         "D10_CONTROLLED_CAPITAL",
         "Controlled capital operation",
-        (),
+        (
+            "backend/contracts/strategy11_adaptive_execution_contract_v1.py",
+            "backend/contracts/strategy11_market_digital_twin_contract_v1.py",
+            "backend/contracts/strategy11_human_governed_capital_contract_v1.py",
+        ),
         (
             "30D Paper PASS",
             "human capital preflight PASS",
@@ -178,7 +192,7 @@ DOMAIN_SPECS: tuple[DomainSpec, ...] = (
             "minimum-capital single-strategy live canary",
             "error-budget-controlled scaling",
         ),
-        missing_state=BLOCKED,
+        BLOCKED,
     ),
 )
 
@@ -238,47 +252,52 @@ def _data_state(manifest: Mapping[str, Any] | None) -> tuple[str, list[str], dic
     if not integrity_ok:
         return BLOCKED, ["DATA_INTEGRITY_OR_AUTHORITY_MISMATCH"], details
     if bars == 480 and missing == 0 and manifest.get("w1_ready") is True:
-        return PASS_STRUCTURAL, [], details
+        return PASS_STRUCTURAL, ["W1_EXECUTION_RECEIPT_NOT_INSPECTED"], details
     return WAIT_DATA, ["W1_480_NOT_COMPLETE"], details
 
 
 def evaluate(root: Path, data_manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     data_state, data_blockers, data_details = _data_state(data_manifest)
+    total_required_files = 0
+    total_present_files = 0
 
     for spec in DOMAIN_SPECS:
         missing = missing_files(root, spec.required_files)
-        state = PASS_STRUCTURAL
+        present_count = len(spec.required_files) - len(missing)
+        total_required_files += len(spec.required_files)
+        total_present_files += present_count
+        structural_state = PASS_STRUCTURAL if not missing else IMPLEMENTATION_REQUIRED
+        evidence_state = spec.default_evidence_state
         blockers: list[str] = []
         details: dict[str, Any] = {
             "required_file_count": len(spec.required_files),
-            "present_file_count": len(spec.required_files) - len(missing),
+            "present_file_count": present_count,
         }
+
+        if missing:
+            blockers.append("REQUIRED_FILES_MISSING")
         if spec.domain_id == "D1_RESEARCH_DATA":
-            state = data_state if not missing else IMPLEMENTATION_REQUIRED
+            evidence_state = data_state
             blockers.extend(data_blockers)
             details.update(data_details)
-        elif missing:
-            state = spec.missing_state
-            blockers.append("REQUIRED_FILES_MISSING")
         elif spec.domain_id in {"D2_INDIVIDUAL_STRATEGY", "D3_SYNTHESIS_FACTORY"}:
-            state = WAIT_DATA
             blockers.append("REAL_W1_W2_W3_NEW_SEALED_NOT_PROVEN")
         elif spec.domain_id in {"D4_ENSEMBLE_PORTFOLIO", "D5_EVOLUTION_LOOP", "D6_SHADOW_OBSERVER", "D7_ADAPTIVE_EXECUTION", "D9_DIGITAL_TWIN_GOVERNANCE"}:
-            state = EXTERNAL_EVIDENCE_REQUIRED
             blockers.append("REAL_OPERATIONAL_EVIDENCE_NOT_PROVEN")
         elif spec.domain_id == "D8_SELF_HEALING_RUNTIME":
-            state = EXTERNAL_EVIDENCE_REQUIRED
             blockers.append("VPS_AND_RUNTIME_EVIDENCE_REQUIRED")
         elif spec.domain_id == "D10_CONTROLLED_CAPITAL":
-            state = BLOCKED
             blockers.append("UPSTREAM_REAL_GATES_NOT_COMPLETE")
 
+        effective_state = structural_state if structural_state == IMPLEMENTATION_REQUIRED else evidence_state
         rows.append(
             {
                 "domain_id": spec.domain_id,
                 "title": spec.title,
-                "state": state,
+                "state": effective_state,
+                "structural_state": structural_state,
+                "evidence_state": evidence_state,
                 "missing_files": missing,
                 "blockers": sorted(set(blockers)),
                 "empirical_gates": list(spec.empirical_gates),
@@ -286,26 +305,25 @@ def evaluate(root: Path, data_manifest: Mapping[str, Any] | None = None) -> dict
             }
         )
 
-    real_pass_count = sum(row["state"] == PASS_REAL for row in rows)
-    structural_pass_count = sum(row["state"] == PASS_STRUCTURAL for row in rows)
-    implementation_required_count = sum(row["state"] == IMPLEMENTATION_REQUIRED for row in rows)
-    waiting_count = sum(row["state"] in {WAIT_DATA, EXTERNAL_EVIDENCE_REQUIRED} for row in rows)
-    blocked_count = sum(row["state"] == BLOCKED for row in rows)
+    structural_pass_count = sum(row["structural_state"] == PASS_STRUCTURAL for row in rows)
+    real_pass_count = sum(row["evidence_state"] == PASS_REAL for row in rows)
+    implementation_required_count = sum(row["structural_state"] == IMPLEMENTATION_REQUIRED for row in rows)
+    waiting_count = sum(row["evidence_state"] in {WAIT_DATA, EXTERNAL_EVIDENCE_REQUIRED} for row in rows)
+    blocked_count = sum(row["evidence_state"] == BLOCKED for row in rows)
 
-    overall_state = "HOLD_10X_CLOSURE_INCOMPLETE"
-    action = "hold"
-    if real_pass_count == len(rows):
-        overall_state = "PASS_REAL_10X_CLOSURE"
-    elif implementation_required_count:
-        action = "route_change"
+    score_claim_allowed = real_pass_count == len(rows) and implementation_required_count == 0
+    overall_state = "PASS_REAL_10X_CLOSURE" if score_claim_allowed else "HOLD_10X_CLOSURE_INCOMPLETE"
+    action = "route_change" if implementation_required_count else "hold"
 
     result = {
         "schema_version": "strategy11.10x_closure_matrix.v1",
         "version": VERSION,
         "overall_state": overall_state,
         "action": action,
-        "score_claim_allowed": real_pass_count == len(rows),
-        "engineering_score_pct": round((real_pass_count + 0.5 * structural_pass_count) / len(rows) * 100.0, 3),
+        "score_claim_allowed": score_claim_allowed,
+        "structural_domain_coverage_pct": round(structural_pass_count / len(rows) * 100.0, 3),
+        "structural_file_coverage_pct": round(total_present_files / max(total_required_files, 1) * 100.0, 3),
+        "real_evidence_coverage_pct": round(real_pass_count / len(rows) * 100.0, 3),
         "counts": {
             "domain_count": len(rows),
             "pass_real": real_pass_count,
@@ -323,17 +341,17 @@ def evaluate(root: Path, data_manifest: Mapping[str, Any] | None = None) -> dict
 
 
 def next_action(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    priority = (
-        IMPLEMENTATION_REQUIRED,
-        BLOCKED,
-        WAIT_DATA,
-        EXTERNAL_EVIDENCE_REQUIRED,
-        PASS_STRUCTURAL,
-    )
     rows_list = list(rows)
-    for state in priority:
+    for row in rows_list:
+        if row.get("structural_state") == IMPLEMENTATION_REQUIRED:
+            return {
+                "domain_id": row.get("domain_id"),
+                "state": IMPLEMENTATION_REQUIRED,
+                "reason": (row.get("blockers") or ["REQUIRED_FILES_MISSING"])[0],
+            }
+    for state in (BLOCKED, WAIT_DATA, EXTERNAL_EVIDENCE_REQUIRED, PASS_STRUCTURAL):
         for row in rows_list:
-            if row.get("state") == state:
+            if row.get("evidence_state") == state:
                 return {
                     "domain_id": row.get("domain_id"),
                     "state": state,
@@ -348,18 +366,27 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         "",
         f"- Overall: `{result['overall_state']}`",
         f"- Action: `{result['action']}`",
-        f"- Engineering score: `{result['engineering_score_pct']}%` (structural PASS counts as half; this is not a performance score)",
-        f"- Score claim allowed: `{str(result['score_claim_allowed']).lower()}`",
+        f"- Structural domain coverage: `{result['structural_domain_coverage_pct']}%`",
+        f"- Structural file coverage: `{result['structural_file_coverage_pct']}%`",
+        f"- Real-evidence coverage: `{result['real_evidence_coverage_pct']}%`",
+        f"- 10/10 claim allowed: `{str(result['score_claim_allowed']).lower()}`",
         f"- Matrix SHA: `{result['matrix_sha']}`",
         "",
-        "| Domain | State | Missing files | First blocker |",
-        "|---|---|---:|---|",
+        "| Domain | Structural | Real evidence | Effective | Missing files | First blocker |",
+        "|---|---|---|---|---:|---|",
     ]
     for row in result["domains"]:
         blocker = (row["blockers"] or ["-"])[0]
-        lines.append(f"| {row['domain_id']} {row['title']} | `{row['state']}` | {len(row['missing_files'])} | `{blocker}` |")
+        lines.append(
+            f"| {row['domain_id']} {row['title']} | `{row['structural_state']}` | "
+            f"`{row['evidence_state']}` | `{row['state']}` | {len(row['missing_files'])} | `{blocker}` |"
+        )
     lines.extend(
         [
+            "",
+            "## Interpretation",
+            "",
+            "Structural PASS proves executable contracts and fixtures exist. It is never counted as real strategy or capital evidence.",
             "",
             "## Safety",
             "",

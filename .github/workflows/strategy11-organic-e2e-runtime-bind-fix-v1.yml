@@ -26,12 +26,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Add missing governor runtime-bound authority handoff
+      - name: Repair exact authority and attribution handoffs
         run: |
           python - <<'PY'
           from pathlib import Path
-          path=Path('backend/research/strategy11_synthesis_portfolio_integration_v1.py')
-          text=path.read_text(encoding='utf-8')
+
+          portfolio=Path('backend/research/strategy11_synthesis_portfolio_integration_v1.py')
+          text=portfolio.read_text(encoding='utf-8')
           old='''        "execution_allowed": False,
                   "order_authority": "BLOCKED",
               }
@@ -45,9 +46,21 @@ jobs:
           '''
           old='\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())+'\n'
           new='\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())+'\n'
-          if text.count(old) != 1:
-              raise SystemExit(f'GOVERNOR_HANDOFF_BLOCK_COUNT:{text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          if old in text:
+              text=text.replace(old, new, 1)
+          elif '"runtime_bound": False,\n    }\n    governor = govern(governor_input)' not in text:
+              raise SystemExit('GOVERNOR_RUNTIME_HANDOFF_NOT_FOUND')
+          portfolio.write_text(text, encoding='utf-8')
+
+          fixture=Path('backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py')
+          text=fixture.read_text(encoding='utf-8')
+          old_field='adapter_result["attribution_sha"]'
+          new_field='adapter_result["proposal"]["metadata"]["attribution_sha"]'
+          if old_field in text:
+              text=text.replace(old_field, new_field, 1)
+          elif new_field not in text:
+              raise SystemExit('ATTRIBUTION_LINEAGE_FIELD_NOT_FOUND')
+          fixture.write_text(text, encoding='utf-8')
           PY
       - name: Verify portfolio and full organic chain
         run: |
@@ -57,10 +70,12 @@ jobs:
           python backend/tools/r7a4d_strategy11_synthesis_portfolio_integration_fixture_v1.py
           python backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py
           git diff --check
-      - name: Commit authority handoff repair
+      - name: Commit handoff repairs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/research/strategy11_synthesis_portfolio_integration_v1.py
-          git commit -m "Forward blocked runtime authority into portfolio governor"
+          git add \
+            backend/research/strategy11_synthesis_portfolio_integration_v1.py \
+            backend/tools/r7a4d_strategy11_organic_e2e_receipt_fixture_v1.py
+          git commit -m "Repair portfolio and attribution organic handoffs"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}

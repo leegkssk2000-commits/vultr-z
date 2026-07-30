@@ -1,0 +1,43 @@
+name: TMP Dispatch Strategy11 V3
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/manual_triggers/strategy11-v3-now.txt'
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dispatch only when no V3 run is active
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflow='r7a4d-strategy11-v3-internal-regime-expanded.yml'
+          active="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch master --limit 30 --json databaseId,status,event,createdAt --jq '[.[] | select(.status=="queued" or .status=="in_progress")] | length')"
+          if [ "$active" -gt 0 ]; then
+            result='SKIP_ACTIVE'
+          else
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref master
+            result='DISPATCHED'
+          fi
+          sleep 8
+          latest="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch master --limit 5 --json databaseId,status,event,headSha,createdAt,url --jq '.[0]')"
+          mkdir -p .github/manual_trigger_receipts
+          {
+            echo "result=$result"
+            echo "active_before=$active"
+            echo "latest=$latest"
+          } > .github/manual_trigger_receipts/strategy11-v3-latest.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/manual_trigger_receipts/strategy11-v3-latest.txt
+          git commit -m 'Record Strategy11 V3 manual dispatch' || true
+          git push

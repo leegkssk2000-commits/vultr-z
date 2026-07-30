@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-VERSION = "STRATEGY11_BOUNDED_INTERNAL_MUTATION_V3_1"
+VERSION = "STRATEGY11_BOUNDED_INTERNAL_MUTATION_V3_2"
 
 
 def stable_sha(value: Any) -> str:
@@ -22,8 +22,43 @@ def native_regimes(family: str) -> list[str]:
     }.get(family, ["RANGE", "TREND_UP"])
 
 
+def mutation_domain(field_name: str) -> str:
+    name = field_name.lower()
+    if (
+        name.startswith(("add_", "scale_in_", "reduce_", "max_add", "max_pyramid"))
+        or "_add_" in name
+        or name.endswith("_add")
+        or "pyramiding" in name
+        or "adverse_atr_for_dip" in name
+    ):
+        return "POSITION_MANAGEMENT"
+    if name.startswith("fail_") or "failed_" in name or "fake_break_reject" in name:
+        return "FAILURE_EXIT"
+    if any(token in name for token in ("stop_", "trail_", "target_", "partial_", "breakeven", "base_rr", "beam_rr", "runner_")):
+        return "EXIT_RISK"
+    if any(token in name for token in ("size_long", "size_short", "bonus_long", "bonus_short")):
+        return "POSITION_SIZING"
+    return "ENTRY_LOGIC"
+
+
+def side_scope(field_name: str) -> str:
+    name = field_name.lower()
+    short_tokens = ("short", "bear", "rsi_ob", "upper_")
+    long_tokens = ("long", "bull", "rsi_os", "lower_")
+    short = any(token in name for token in short_tokens)
+    long = any(token in name for token in long_tokens)
+    if short and not long:
+        return "SHORT_ONLY"
+    if long and not short:
+        return "LONG_ONLY"
+    return "NEUTRAL"
+
+
 def semantic_role(field_name: str) -> str:
     name = field_name.lower()
+    domain = mutation_domain(name)
+    if domain != "ENTRY_LOGIC":
+        return domain
     if name.startswith("beam_") or any(token in name for token in ("body_ratio", "close_location")):
         return "BEAM_CONFIRMATION"
     if name.endswith("_len") or any(token in name for token in ("lookback", "window", "period", "bars")):
@@ -34,6 +69,7 @@ def semantic_role(field_name: str) -> str:
         "reclaim", "break", "pullback", "sweep", "wick", "dist", "chase", "band_over",
         "rsi_os", "rsi_ob", "rsi_reclaim", "mfi_delta", "obv_impulse", "vol_mult",
         "squeeze", "pivot", "support", "resistance", "threshold", "kc_mult", "bb_mult",
+        "gap_pct", "hist_impulse", "divergence", "deviation",
     )):
         return "ENTRY_TRIGGER"
     return "ENTRY_SUPPORT"
@@ -62,10 +98,20 @@ def build_candidates(row: Mapping[str, Any], lane: str, tested: set[str], max_co
         "SESSION_ENTRY": 5,
         "GENERIC_ENTRY": 6,
     }
+    side_rank = {"LONG_ONLY": 0, "NEUTRAL": 1, "SHORT_ONLY": 2}
     role_rank = role_priority(lane)
+    allowed_roles = set(role_rank)
+    eligible: list[dict[str, Any]] = []
     for field in fields:
-        field["semantic_role"] = semantic_role(str(field["field"]))
-    fields.sort(key=lambda value: (
+        field_name = str(field["field"])
+        field["mutation_domain"] = mutation_domain(field_name)
+        field["semantic_role"] = semantic_role(field_name)
+        field["side_scope"] = side_scope(field_name)
+        if field["mutation_domain"] != "ENTRY_LOGIC" or field["semantic_role"] not in allowed_roles:
+            continue
+        eligible.append(field)
+    eligible.sort(key=lambda value: (
+        side_rank.get(str(value["side_scope"]), 99),
         role_rank.get(str(value["semantic_role"]), 99),
         axis_priority.get(str(value["axis"]), 99),
         str(value["field"]),
@@ -74,10 +120,10 @@ def build_candidates(row: Mapping[str, Any], lane: str, tested: set[str], max_co
     used_axes: set[str] = set()
     used_roles: set[str] = set()
     relaxed = lane in {"A_ENTRY_LIVENESS_REPAIR", "B_COVERAGE_EXPANSION", "C_DISCOVERY_OPTIMIZATION"}
-    for field in fields:
+    for field in eligible:
         axis = str(field["axis"])
         role = str(field["semantic_role"])
-        if axis in used_axes or (role in used_roles and len(fields) > max_count):
+        if axis in used_axes or (role in used_roles and len(eligible) > max_count):
             continue
         value = field["relaxed_value"] if relaxed else field.get("tightened_value")
         if value is None:
@@ -90,7 +136,9 @@ def build_candidates(row: Mapping[str, Any], lane: str, tested: set[str], max_co
             "candidate_id": candidate_id,
             "kind": "REGIME_INTERNAL_MUTATION" if scope else "INTERNAL_MUTATION",
             "axis": f"{axis}:{field['field']}",
+            "mutation_domain": field["mutation_domain"],
             "semantic_role": role,
+            "side_scope": field["side_scope"],
             "field": field["field"],
             "base_value": field["base_value"],
             "mutation_value": value,

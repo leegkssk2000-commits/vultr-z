@@ -5,6 +5,8 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import math
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -63,33 +65,88 @@ def exact_module(compute_root: Path) -> Any:
     return load_module("s11_v3_exact", compute_root / "backend/tools/r7a4d_strategy11_exact.py")
 
 
+def validate_archive_frame(frame: pd.DataFrame, *, expected_rows: int, interval_ms: int, label: str) -> tuple[int, int]:
+    required = {"timestamp_ms", "open", "high", "low", "close", "volume"}
+    if not required.issubset(frame.columns):
+        raise RuntimeError(f"ARCHIVE_COLUMNS_MISSING:{label}:{sorted(required - set(frame.columns))}")
+    if len(frame) != expected_rows:
+        raise RuntimeError(f"ARCHIVE_ROWS:{label}:{len(frame)}:{expected_rows}")
+    timestamps = pd.to_numeric(frame["timestamp_ms"], errors="raise").astype("int64")
+    if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
+        raise RuntimeError(f"ARCHIVE_TIMESTAMP_ORDER:{label}")
+    if len(timestamps) > 1 and not bool((timestamps.diff().dropna() == interval_ms).all()):
+        raise RuntimeError(f"ARCHIVE_TIMESTAMP_GAP:{label}")
+    numeric = frame[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+    if numeric.isna().any().any() or bool((numeric[["open", "high", "low", "close"]] <= 0).any().any()) or bool((numeric["volume"] < 0).any()):
+        raise RuntimeError(f"ARCHIVE_NUMERIC_INVALID:{label}")
+    if bool((numeric["high"] < numeric[["open", "close", "low"]].max(axis=1)).any()) or bool((numeric["low"] > numeric[["open", "close", "high"]].min(axis=1)).any()):
+        raise RuntimeError(f"ARCHIVE_OHLC_INVARIANT:{label}")
+    return int(timestamps.iloc[0]), int(timestamps.iloc[-1])
+
+
 def prepare_archive(args: argparse.Namespace) -> int:
     compute_root = Path(args.compute_root).resolve()
+    historical_root = Path(args.historical_root).resolve()
     policy = read_json(Path(args.policy).resolve())
     exact = exact_module(compute_root)
     out = Path(args.out).resolve()
-    interval_ms = int(policy["archive"]["interval_ms"])
-    eval_bars = int(policy["archive"]["window_bars"])
-    warmup = int(policy["archive"]["warmup_bars"])
+    archive_policy = policy["archive"]
+    interval_ms = int(archive_policy["interval_ms"])
+    total_bars = int(archive_policy["total_window_bars"])
+    warmup = int(archive_policy["warmup_bars"])
+    eval_bars = total_bars - warmup
+    anchors = list(map(str, archive_policy["anchor_ends_utc"]))
+    historical_roles = list(map(str, archive_policy["historical_roles"]))
+    historical_anchor_count = len(historical_roles)
+    if eval_bars <= 0 or len(anchors) != 12 or historical_anchor_count != 10:
+        raise RuntimeError("ARCHIVE_POLICY_SHAPE_INVALID")
+    source_manifest_path = historical_root / "manifest.json"
+    source_manifest = read_json(source_manifest_path)
+    if list(map(str, source_manifest.get("roles") or [])) != historical_roles:
+        raise RuntimeError("HISTORICAL_ROLE_SET_MISMATCH")
+    if list(map(str, source_manifest.get("anchors") or [])) != anchors[:historical_anchor_count]:
+        raise RuntimeError("HISTORICAL_ANCHOR_SET_MISMATCH")
     rows: list[dict[str, Any]] = []
     intervals: list[tuple[int, int]] = []
-    for window_id, end_iso in enumerate(policy["archive"]["anchor_ends_utc"], start=1):
+    for window_id, (role, end_iso) in enumerate(zip(historical_roles, anchors[:historical_anchor_count]), start=1):
+        expected_end_ms = int(pd.Timestamp(end_iso).timestamp() * 1000)
+        for symbol in policy["symbols"]:
+            source = historical_root / f"{role}-{symbol}.csv"
+            if not source.is_file():
+                raise RuntimeError(f"HISTORICAL_FILE_MISSING:{role}:{symbol}")
+            frame = pd.read_csv(source)
+            start_ms, end_ms = validate_archive_frame(frame, expected_rows=total_bars, interval_ms=interval_ms, label=f"{role}:{symbol}")
+            if end_ms != expected_end_ms:
+                raise RuntimeError(f"HISTORICAL_BOUNDARY_MISMATCH:{role}:{symbol}:{end_ms}:{expected_end_ms}")
+            eval_start_ms = start_ms + warmup * interval_ms
+            if symbol == policy["symbols"][0]:
+                if any(not (eval_start_ms > previous_end or end_ms < previous_start) for previous_start, previous_end in intervals):
+                    raise RuntimeError(f"ARCHIVE_EVALUATION_OVERLAP:{window_id}")
+                intervals.append((eval_start_ms, end_ms))
+            path = out / "market" / f"A{window_id:02d}-{symbol}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+            rows.append({"window_id": f"A{window_id:02d}", "source_window_id": role, "symbol": symbol, "start_ms": start_ms, "evaluation_start_ms": eval_start_ms, "end_ms": end_ms, "rows": total_bars, "path": str(path.relative_to(out)), "sha256": sha256(path), "source_mode": "IMMUTABLE_ARTIFACT_RESTORE", "source_artifact_id": int(policy["historical_source"]["artifact_id"]), "source_run_id": int(policy["historical_source"]["run_id"]), "source_head_sha": str(policy["historical_source"]["head_sha"]), "state": "PASS"})
+    for window_id, end_iso in enumerate(anchors[historical_anchor_count:], start=historical_anchor_count + 1):
         end_ms = int(pd.Timestamp(end_iso).timestamp() * 1000)
-        start_ms = end_ms - (eval_bars + warmup - 1) * interval_ms
-        eval_start_ms = end_ms - (eval_bars - 1) * interval_ms
+        start_ms = end_ms - (total_bars - 1) * interval_ms
+        eval_start_ms = start_ms + warmup * interval_ms
         if any(not (eval_start_ms > previous_end or end_ms < previous_start) for previous_start, previous_end in intervals):
             raise RuntimeError(f"ARCHIVE_EVALUATION_OVERLAP:{window_id}")
         intervals.append((eval_start_ms, end_ms))
         for symbol in policy["symbols"]:
-            frame, endpoint, request_count = exact.base._fetch_exact(symbol, start_ms=start_ms, end_ms=end_ms, expected_rows=eval_bars + warmup)
+            frame, endpoint, request_count = exact.base._fetch_exact(symbol, start_ms=start_ms, end_ms=end_ms, expected_rows=total_bars)
+            observed_start, observed_end = validate_archive_frame(frame, expected_rows=total_bars, interval_ms=interval_ms, label=f"A{window_id:02d}:{symbol}")
+            if observed_start != start_ms or observed_end != end_ms:
+                raise RuntimeError(f"RECENT_BOUNDARY_MISMATCH:A{window_id:02d}:{symbol}")
             path = out / "market" / f"A{window_id:02d}-{symbol}.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
             frame.to_csv(path, index=False)
-            rows.append({"window_id": f"A{window_id:02d}", "symbol": symbol, "start_ms": start_ms, "evaluation_start_ms": eval_start_ms, "end_ms": end_ms, "rows": len(frame), "path": str(path.relative_to(out)), "sha256": sha256(path), "endpoint": endpoint, "request_count": request_count, "state": "PASS"})
-    manifest = {"schema_version": "3.0", "version": VERSION, "state": "PASS_EXPANDED_ARCHIVE", "window_count": len(policy["archive"]["anchor_ends_utc"]), "symbol_count": len(policy["symbols"]), "evaluation_symbol_bars": len(policy["archive"]["anchor_ends_utc"]) * len(policy["symbols"]) * eval_bars, "warmup_bars": warmup, "window_bars": eval_bars, "rows": rows, "evaluation_periods_non_overlapping": True, **SAFETY}
+            rows.append({"window_id": f"A{window_id:02d}", "symbol": symbol, "start_ms": start_ms, "evaluation_start_ms": eval_start_ms, "end_ms": end_ms, "rows": total_bars, "path": str(path.relative_to(out)), "sha256": sha256(path), "endpoint": endpoint, "request_count": request_count, "source_mode": "BINGX_EXACT_INCREMENTAL", "state": "PASS"})
+    manifest = {"schema_version": "3.1", "version": VERSION, "state": "PASS_EXPANDED_ARCHIVE", "window_count": len(anchors), "symbol_count": len(policy["symbols"]), "total_symbol_bars": len(anchors) * len(policy["symbols"]) * total_bars, "evaluation_symbol_bars": len(anchors) * len(policy["symbols"]) * eval_bars, "warmup_bars": warmup, "window_total_bars": total_bars, "evaluation_bars": eval_bars, "rows": rows, "historical_source_manifest_sha256": sha256(source_manifest_path), "historical_source": dict(policy["historical_source"]), "historical_window_count": historical_anchor_count, "incremental_window_count": len(anchors) - historical_anchor_count, "evaluation_periods_non_overlapping": True, **SAFETY}
     manifest["archive_sha256"] = stable_sha(manifest)
     write_json(out / "manifest.json", manifest)
-    print(json.dumps({"state": manifest["state"], "symbol_bars": manifest["evaluation_symbol_bars"], "files": len(rows)}, sort_keys=True))
+    print(json.dumps({"state": manifest["state"], "total_symbol_bars": manifest["total_symbol_bars"], "evaluation_symbol_bars": manifest["evaluation_symbol_bars"], "files": len(rows)}, sort_keys=True))
     return 0
 
 
@@ -149,7 +206,7 @@ def discovery_replay(args: argparse.Namespace) -> int:
             variant_id = str(variant["candidate_id"])
             wrapper = ConfigStrategyWrapper(strategy, cfg_cls, variant.get("field"), variant.get("mutation_value"), variant.get("regime_scope"))
             ledgers: list[list[dict[str, Any]]] = []
-            window_stats: dict[str, list[dict[str, Any]]] = {}
+            window_stats: dict[str, Any] = {}
             observer_totals = {"long": [], "short": []}
             for repeat in ("A", "B"):
                 repeat_trades: list[dict[str, Any]] = []
@@ -162,16 +219,19 @@ def discovery_replay(args: argparse.Namespace) -> int:
                     features = exact.compute_feature_frame(frame)
                     result = exact._replay(frame, features, wrapper, gate, exit_spec, surgery, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))
                     for trade in result["trades"]:
-                        trade = dict(trade); trade["window_id"] = row["window_id"]; trade["symbol"] = row["symbol"]; repeat_trades.append(trade)
+                        trade = dict(trade)
+                        trade["window_id"] = row["window_id"]
+                        trade["symbol"] = row["symbol"]
+                        repeat_trades.append(trade)
                     if repeat == "A":
                         window_stats.setdefault(row["window_id"], []).extend(result["trades"])
                         observer = replay_long_short(frame, wrapper, warmup_bars=int(manifest["warmup_bars"]), history_bars=int(policy["archive"]["history_bars"]), cost_bps_per_side=float(policy["cost_bps_per_side"]))
-                        observer_totals["long"].extend(value for value in observer["trades"] if value["side"] == "long")
-                        observer_totals["short"].extend(value for value in observer["trades"] if value["side"] == "short")
+                        observer_totals["long"].extend(row for row in observer["trades"] if row["side"] == "long")
+                        observer_totals["short"].extend(row for row in observer["trades"] if row["side"] == "short")
                 ledgers.append(sorted(repeat_trades, key=lambda value: (value.get("window_id"), value.get("entry_ts"), value.get("exit_ts"), value.get("symbol"))))
             parity = stable_sha(ledgers[0]) == stable_sha(ledgers[1]) and len({stable_sha(row) for row in ledgers[0]}) == len(ledgers[0])
             stats = combine_stats(ledgers[0])
-            per_window = {window: combine_stats(values) for window, values in window_stats.items()}
+            per_window = {window: combine_stats(rows) for window, rows in window_stats.items()}
             positive_windows = sum(value["net_return_pct_sum"] > 0 for value in per_window.values())
             summary = {"strategy_id": strategy_id, "variant_id": variant_id, "candidate_spec": variant, "candidate_spec_sha256": variant.get("candidate_spec_sha256") or stable_sha({key: value for key, value in variant.items() if key != "candidate_spec_sha256"}), **stats, "positive_window_count": positive_windows, "window_count": manifest["window_count"], "parity": {"state": "PASS" if parity else "HOLD", "replay_a_sha256": stable_sha(ledgers[0]), "replay_b_sha256": stable_sha(ledgers[1]), "duplicate_trade_count": len(ledgers[0]) - len({stable_sha(row) for row in ledgers[0]})}, "opportunity_diagnostics": wrapper.diagnostics(), "short_observer": {"long": combine_stats(observer_totals["long"]), "short": combine_stats(observer_totals["short"]), "observer_only": True}, "canonical_mutated": False, **SAFETY}
             write_json(out / strategy_id / variant_id / "summary.json", summary)
@@ -181,29 +241,31 @@ def discovery_replay(args: argparse.Namespace) -> int:
             row["deltas"] = {key: row[key] - control[key] for key in ("trade_count", "net_return_pct_sum", "net_profit_factor", "payoff_ratio", "max_drawdown_pct")}
             improved = sum(row["deltas"][key] > 0 for key in ("net_return_pct_sum", "net_profit_factor", "payoff_ratio")) + int(row["deltas"]["max_drawdown_pct"] < 0)
             row["research_state"] = "DISCOVERY_PASS_INTERNAL_OR_REGIME" if row["parity"]["state"] == "PASS" and row["trade_count"] >= int(policy["classification"]["archive_trade_count_min"]) and row["positive_window_count"] >= int(policy["classification"]["positive_windows_min"]) and improved >= 2 and row["net_return_pct_sum"] > control["net_return_pct_sum"] else "DISCOVERY_HOLD"
-        strategy_payload = {"schema_version": "3.0", "version": VERSION, "strategy_id": strategy_id, "control": control, "variants": summaries[1:], "archive_sha256": manifest["archive_sha256"], "source_sha256": canonical_row["canonical_engine"]["source_sha256"], "next": "FRESH_W1_CONFIRMATION" if any(str(row.get("research_state", "")).startswith("DISCOVERY_PASS") for row in summaries[1:]) else "WAIT_NEXT_AXIS", **SAFETY}
+        strategy_payload = {"schema_version": "3.0", "version": VERSION, "strategy_id": strategy_id, "control": control, "variants": summaries[1:], "archive_sha256": manifest["archive_sha256"], "source_sha256": canonical_row["canonical_engine"]["source_sha256"], "next": "FRESH_W1_CONFIRMATION" if any(row.get("research_state", "").startswith("DISCOVERY_PASS") for row in summaries[1:]) else "WAIT_NEXT_AXIS", **SAFETY}
         strategy_payload["result_sha256"] = stable_sha(strategy_payload)
         write_json(out / strategy_id / "result.json", strategy_payload)
         batch_rows.append(strategy_payload)
     batch = {"schema_version": "3.0", "version": VERSION, "state": "PASS_V3_DISCOVERY_BATCH", "strategy_count": len(batch_rows), "rows": batch_rows, "archive_sha256": manifest["archive_sha256"], **SAFETY}
     batch["batch_sha256"] = stable_sha(batch)
     write_json(out / "batch.json", batch)
-    print(json.dumps({"state": batch["state"], "strategies": len(batch_rows), "pass_candidates": sum(sum(str(value.get("research_state", "")).startswith("DISCOVERY_PASS") for value in row["variants"]) for row in batch_rows)}, sort_keys=True))
+    print(json.dumps({"state": batch["state"], "strategies": len(batch_rows), "pass_candidates": sum(sum(str(v.get("research_state", "")).startswith("DISCOVERY_PASS") for v in row["variants"]) for row in batch_rows)}, sort_keys=True))
     return 0
 
 
 def aggregate(args: argparse.Namespace) -> int:
     root = Path(args.batch_root).resolve()
     plan = read_json(Path(args.plan).resolve())
+    policy = read_json(Path(args.policy).resolve())
     batches = [read_json(path) for path in sorted(root.glob("batch-*/batch.json"))]
     rows = [row for batch in batches for row in batch.get("rows", [])]
-    expected = set(plan.get("active_strategy_ids", [])); observed = {str(row["strategy_id"]) for row in rows}
+    expected = set(plan.get("active_strategy_ids", []))
+    observed = {str(row["strategy_id"]) for row in rows}
     plan_digests = {(str(row["strategy_id"]), str(candidate_id)): str(row["candidate_specs"][candidate_id]["candidate_spec_sha256"]) for row in plan.get("rows", []) for candidate_id in row.get("candidate_ids", [])}
     blockers: list[str] = []
     if observed != expected:
         blockers.append(f"STRATEGY_SET_MISMATCH:{len(observed)}:{len(expected)}")
     for row in rows:
-        if rows and row.get("archive_sha256") != rows[0].get("archive_sha256"):
+        if row.get("archive_sha256") != rows[0].get("archive_sha256"):
             blockers.append(f"ARCHIVE_SHA_MISMATCH:{row['strategy_id']}")
         for variant in row.get("variants", []):
             if variant.get("parity", {}).get("state") != "PASS":
@@ -224,12 +286,15 @@ def aggregate(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="mode", required=True)
-    prepare = sub.add_parser("prepare"); prepare.add_argument("--compute-root", required=True); prepare.add_argument("--policy", required=True); prepare.add_argument("--out", required=True)
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="mode", required=True)
+    prepare = sub.add_parser("prepare")
+    prepare.add_argument("--compute-root", required=True); prepare.add_argument("--historical-root", required=True); prepare.add_argument("--policy", required=True); prepare.add_argument("--out", required=True)
     replay = sub.add_parser("replay")
     for name in ("compute_root", "archive_root", "evidence_root", "plan", "registry", "policy", "strategy_ids", "out"):
         replay.add_argument("--" + name.replace("_", "-"), required=True)
-    agg = sub.add_parser("aggregate"); agg.add_argument("--batch-root", required=True); agg.add_argument("--plan", required=True); agg.add_argument("--policy", required=True); agg.add_argument("--out", required=True)
+    agg = sub.add_parser("aggregate")
+    agg.add_argument("--batch-root", required=True); agg.add_argument("--plan", required=True); agg.add_argument("--policy", required=True); agg.add_argument("--out", required=True)
     args = parser.parse_args()
     return prepare_archive(args) if args.mode == "prepare" else discovery_replay(args) if args.mode == "replay" else aggregate(args)
 

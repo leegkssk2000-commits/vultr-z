@@ -113,6 +113,27 @@ jobs:
           find input/baseline -name base_replay_final.json -print -quit > input/baseline-path.txt
           find input/previous -name search_ledger.json -print -quit > input/ledger-path.txt || true
           test -s input/baseline-path.txt
+      - name: Restore immutable 10-window historical archive authority
+        uses: actions/download-artifact@v4
+        with:
+          name: strategy11-shadow-funnel-v1
+          path: input/historical
+          github-token: ${{ github.token }}
+          run-id: 30198913273
+      - name: Verify historical archive authority
+        run: |
+          test -f input/historical/artifacts/strategy11_market_cache_v2/manifest.json
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('input/historical/artifacts/strategy11_market_cache_v2')
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['roles']==['S1','S2','S3','S4','S5','S6','V1','V2','H1','H2']
+          assert manifest['anchors']==['2026-03-01T00:00:00Z','2026-03-13T00:00:00Z','2026-03-25T00:00:00Z','2026-04-06T00:00:00Z','2026-04-18T00:00:00Z','2026-04-30T00:00:00Z','2026-05-12T00:00:00Z','2026-05-24T00:00:00Z','2026-06-05T00:00:00Z','2026-06-17T00:00:00Z']
+          files=sorted(root.glob('*.csv'))
+          assert len(files)==50
+          print('HISTORICAL_MANIFEST_SHA256='+hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest())
+          PY
       - name: Build registry and V3 plan
         run: |
           mkdir -p out/prep/plan
@@ -130,7 +151,7 @@ jobs:
       - name: Fetch exact 12-window archive on cache miss
         if: steps.archive-cache.outputs.cache-hit != 'true'
         run: |
-          python backend/tools/strategy11_expanded_discovery_v3.py prepare --compute-root compute --policy backend/research/strategy11_v3_policy.json --out out/prep/archive
+          python backend/tools/strategy11_expanded_discovery_v3.py prepare --compute-root compute --historical-root input/historical/artifacts/strategy11_market_cache_v2 --policy backend/research/strategy11_v3_policy.json --out out/prep/archive
       - name: Assert preparation contracts
         id: state
         run: |
@@ -143,7 +164,9 @@ jobs:
           assert registry['strategy_count']==25 and registry['injectable_strategy_count']==25
           assert plan['strategy_count_total']==25 and 'alpha_combo' not in plan['active_strategy_ids']
           assert plan['candidate_count']<=plan['active_strategy_count']*2
-          assert archive['state']=='PASS_EXPANDED_ARCHIVE' and archive['evaluation_symbol_bars']==54000
+          assert archive['state']=='PASS_EXPANDED_ARCHIVE' and archive['total_symbol_bars']==54000
+          assert archive['evaluation_symbol_bars']==40800
+          assert archive['historical_window_count']==10 and archive['incremental_window_count']==2
           assert archive['evaluation_periods_non_overlapping'] is True and len(archive['rows'])==60
           for row in plan['rows']:
               digests=[row['candidate_specs'][cid]['candidate_spec_sha256'] for cid in row['candidate_ids']]

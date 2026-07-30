@@ -1,0 +1,104 @@
+name: R7A4D Strategy11 Post Shadow Observer Gate V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1_1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_policy_v1.json"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-post-shadow-observer-gate-v1.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/research/strategy11_post_shadow_observer_gate_v1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_v1_1.py"
+      - "backend/research/strategy11_post_shadow_observer_gate_policy_v1.json"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py"
+      - "backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-post-shadow-observer-gate-v1.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-post-shadow-observer-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-post-shadow-observer-gate:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile hardened post-Shadow observer chain
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_shadow200_readonly_accumulator_v1.py \
+            backend/research/strategy11_shadow300_readonly_completion_v1.py \
+            backend/research/strategy11_ml_light_observer_v1.py \
+            backend/research/strategy11_ml_light_observer_optimized_v1.py \
+            backend/research/strategy11_failure_learning_observer_v1.py \
+            backend/research/strategy11_post_shadow_observer_gate_v1_1.py \
+            backend/research/strategy11_post_shadow_observer_gate_v1.py \
+            backend/tools/r7a4d_strategy11_shadow300_readonly_completion_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_ml_failure_observers_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_secure_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py
+      - name: Execute pinned-policy and ledger-chain fixtures
+        run: python backend/tools/r7a4d_strategy11_post_shadow_observer_gate_fixture_v1.py
+      - name: Assert structural-only Paper boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/strategy11_post_shadow_observer_gate_v1")
+          passed = json.loads((root / "pass_structural.json").read_text())
+          incomplete = json.loads((root / "hold_incomplete.json").read_text())
+          blocked = json.loads((root / "block_mutation.json").read_text())
+          status = json.loads((root / "status.json").read_text())
+
+          assert passed["state"] == "PASS_POST_SHADOW_OBSERVER_100C_STRUCTURAL_GATE"
+          assert passed["trusted_policy_sha"] == status["trusted_policy_sha"]
+          assert passed["policy_class"] == "FIXTURE_ONLY"
+          assert passed["production_threshold_authority"] is False
+          assert passed["ledger_chain_verified"] is True
+          assert passed["burnin_cycle_count"] == 100
+          assert passed["burnin_start_cycle"] == 301
+          assert passed["burnin_end_cycle"] == 400
+          assert passed["paper_30d_structural_gate_pass"] is True
+          assert passed["paper_30d_allowed"] is False
+          assert passed["automatic_paper_start"] is False
+          assert passed["strategy_write_allowed"] is False
+          assert passed["weight_write_allowed"] is False
+          assert passed["ledger_write_allowed"] is False
+          assert passed["live_order_allowed"] is False
+
+          assert incomplete["state"] == "HOLD_POST_SHADOW_OBSERVER_100C"
+          assert incomplete["paper_30d_allowed"] is False
+          assert blocked["state"] == "BLOCK_POST_SHADOW_OBSERVER_MUTATION"
+          assert blocked["paper_30d_allowed"] is False
+
+          assert status["fixture_only"] is True
+          assert status["production_authority"] is False
+          for value in (passed, incomplete, blocked, status):
+              assert value["observer_only"] is True
+              assert value["research_only"] is True
+              assert value["promotion_authority"] is False
+              assert value["protected_mutations"] == 0
+              assert value["execution_allowed"] is False
+              assert value["order_authority"] == "BLOCKED"
+              assert value["runtime_bound"] is False
+              assert value["advisory_enabled"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-post-shadow-observer-gate-${{ github.run_id }}
+          path: artifacts/strategy11_post_shadow_observer_gate_v1
+          if-no-files-found: error

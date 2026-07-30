@@ -1,0 +1,54 @@
+name: Temporary Strategy11 Alpha Route Code Patch
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/tmp-strategy11-alpha-route-code-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-alpha-authority-route-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind V2 planner to pinned Alpha authority route
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          v2=Path('backend/tools/strategy11_unattended_improvement_v2.py')
+          text=v2.read_text()
+          old='''    write_json(out / "plan.json", plan)\n    write_json(out / "search_ledger.json", previous)\n    write_json(out / "coverage.json", coverage)\n    print(json.dumps({\n        "state": state,\n        "cycle": cycle,\n        "strategies": len(plan_rows),\n        "candidates": plan["candidate_count"],\n        "lane_counts": lane_counts,\n        "lineage_changes": len(lineage_changes),\n    }, sort_keys=True))\n'''
+          new='''    write_json(out / "plan.json", plan)\n    write_json(out / "search_ledger.json", previous)\n    write_json(out / "coverage.json", coverage)\n    alpha_authority_path = Path(__file__).resolve().parents[2] / "backend/research/strategy11_alpha_authority_route_v1.json"\n    if alpha_authority_path.exists():\n        from backend.tools import strategy11_unattended_improvement_router_v2_1 as alpha_router\n        alpha_authority = alpha_router.read_json(alpha_authority_path)\n        alpha_router.validate_authority(alpha_authority)\n        alpha_router.route_alpha(out, alpha_authority)\n        plan = read_json(out / "plan.json")\n        coverage = read_json(out / "coverage.json")\n    print(json.dumps({\n        "state": state,\n        "cycle": cycle,\n        "strategies": plan["active_strategy_count"],\n        "candidates": plan["candidate_count"],\n        "lane_counts": lane_counts,\n        "alpha_special_route_count": coverage.get("alpha_special_route_count", 0),\n        "lineage_changes": len(lineage_changes),\n    }, sort_keys=True))\n'''
+          if old not in text:
+              raise SystemExit('V2_WRITE_PRINT_BLOCK_NOT_FOUND')
+          v2.write_text(text.replace(old,new,1))
+
+          router=Path('backend/tools/strategy11_unattended_improvement_router_v2_1.py')
+          rtext=router.read_text()
+          old2='''    ledger["alpha_special_route"] = plan["special_routes"][0]\n    ledger["alpha_authority_sha256"] = v2.stable_sha(authority)\n    ledger["router_version"] = VERSION\n    coverage["alpha_special_route_count"] = 1\n'''
+          new2='''    ledger["alpha_special_route"] = plan["special_routes"][0]\n    ledger["alpha_authority_sha256"] = v2.stable_sha(authority)\n    ledger["router_version"] = VERSION\n    ledger["last_plan_sha256"] = v2.stable_sha(plan)\n    coverage["active_strategy_count"] = plan["active_strategy_count"]\n    coverage["scheduled_candidate_count"] = plan["candidate_count"]\n    coverage["alpha_special_route_count"] = 1\n'''
+          if old2 not in rtext:
+              raise SystemExit('ROUTER_LEDGER_BLOCK_NOT_FOUND')
+          router.write_text(rtext.replace(old2,new2,1))
+          PY
+          python -m py_compile \
+            backend/tools/strategy11_unattended_improvement_v2.py \
+            backend/tools/strategy11_unattended_improvement_router_v2_1.py \
+            backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+          PYTHONPATH=. python backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+      - name: Commit branch patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/tools/strategy11_unattended_improvement_v2.py backend/tools/strategy11_unattended_improvement_router_v2_1.py
+          git commit -m "Bind unattended V2 planner to Alpha authority route"
+          git push origin HEAD:strategy11-alpha-authority-route-v1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # 프로젝트 기준 경로
@@ -19,7 +20,7 @@ _DEFAULT_STATE_DB = DB_DIR / "z_state.db"
 DB_PATH: str = os.environ.get("Z_TRADES_DB", str(_DEFAULT_TRADES_DB))
 STATE_DB_PATH: str = os.environ.get("Z_STATE_DB", str(_DEFAULT_STATE_DB))
 
-# SQLAlchemy용 URL ← 이게 없어서 방금까지 계속 터진 것
+# SQLAlchemy용 URL
 SQLALCHEMY_DATABASE_URL: str = os.environ.get(
     "Z_SQLALCHEMY_DATABASE_URL",
     f"sqlite:///{DB_PATH}",
@@ -35,3 +36,8 @@ MAX_EQUITY_WINDOW_DAYS: int = int(
 
 # SQL 로그/디버그 플래그
 DEBUG_SQL: bool = os.environ.get("Z_DEBUG_SQL", "0") == "1"
+
+# Compatibility: legacy callers use `from backend.config import settings`.
+# A same-named `backend/config/` directory exists, so expose this canonical
+# module object explicitly instead of relying on ambiguous package resolution.
+settings = sys.modules[__name__]

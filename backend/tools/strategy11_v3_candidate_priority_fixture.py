@@ -48,10 +48,10 @@ def main() -> int:
     assert semantic_role("rsi_os") == "ENTRY_TRIGGER"
     assert semantic_role("min_atr_pct") == "REGIME_GATE"
     candidates = build_candidates(row, "A_ENTRY_LIVENESS_REPAIR", set(), 2)
-    assert [item["field"] for item in candidates] == ["reclaim_atr_min", "min_atr_pct"]
+    assert [item["field"] for item in candidates] == ["rsi_os", "min_atr_pct"]
     assert [item["semantic_role"] for item in candidates] == ["ENTRY_TRIGGER", "REGIME_GATE"]
+    assert [item["side_scope"] for item in candidates] == ["LONG_ONLY", "NEUTRAL"]
     assert all(item["mutation_domain"] == "ENTRY_LOGIC" for item in candidates)
-    assert all(item["side_scope"] != "SHORT_ONLY" for item in candidates)
     excluded = {"fail_band_break_atr", "add_pullback_atr", "scale_in_progress_min", "rsi_ob"}
     assert excluded.isdisjoint({item["field"] for item in candidates})
     tested = {item["candidate_id"] for item in candidates}

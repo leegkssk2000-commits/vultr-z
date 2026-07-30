@@ -55,7 +55,7 @@ def activate_compute_namespace(compute_root: Path) -> None:
     import backend
     backend_path = str(compute_root / "backend")
     if hasattr(backend, "__path__") and backend_path not in backend.__path__:
-        backend.__path__.insert(0, backend_path)
+        backend.__path__ = [backend_path, *list(backend.__path__)]
 
 
 def exact_module(compute_root: Path) -> Any:

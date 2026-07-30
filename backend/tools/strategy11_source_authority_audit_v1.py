@@ -128,28 +128,37 @@ def token_references(files: Iterable[SourceFile], target: str) -> list[dict[str,
     path_token = target
     module_token = target[:-3].replace("/", ".")
     stem_token = Path(target).stem
+    audit_rel = Path(__file__).resolve().relative_to(ROOT).as_posix()
+    token_specs = (
+        ("path_hits", path_token, r"A-Za-z0-9_./-"),
+        ("module_hits", module_token, r"A-Za-z0-9_."),
+        ("stem_hits", stem_token, r"A-Za-z0-9_"),
+    )
     result = []
     for file in files:
-        if file.rel == target:
+        if file.rel in {target, audit_rel}:
             continue
-        path_hits = file.text.count(path_token)
-        module_hits = file.text.count(module_token)
-        stem_hits = file.text.count(stem_token)
-        total = path_hits + module_hits + stem_hits
-        if total:
-            result.append(
-                {
-                    "path": file.rel,
-                    "total_hits": total,
-                    "path_hits": path_hits,
-                    "module_hits": module_hits,
-                    "stem_hits": stem_hits,
-                    "is_workflow": file.rel.startswith(".github/workflows/"),
-                    "is_python": file.rel.endswith(".py"),
-                }
-            )
+        accepted: list[tuple[int, int, str]] = []
+        for kind, token, boundary in token_specs:
+            pattern = re.compile(rf"(?<![{boundary}]){re.escape(token)}(?![{boundary}])")
+            for match in pattern.finditer(file.text):
+                span = match.span()
+                if any(not (span[1] <= start or span[0] >= end) for start, end, _ in accepted):
+                    continue
+                accepted.append((span[0], span[1], kind))
+        if not accepted:
+            continue
+        counts = {kind: sum(row[2] == kind for row in accepted) for kind, _, _ in token_specs}
+        result.append(
+            {
+                "path": file.rel,
+                "total_hits": len(accepted),
+                **counts,
+                "is_workflow": file.rel.startswith(".github/workflows/"),
+                "is_python": file.rel.endswith(".py"),
+            }
+        )
     return sorted(result, key=lambda row: (-row["total_hits"], row["path"]))
-
 
 def similarity(left: SourceFile | None, right: SourceFile | None) -> dict[str, Any]:
     if left is None or right is None:

@@ -1,0 +1,62 @@
+name: R7A4D Strategy11 Alpha Authority Route V2.1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/strategy11_unattended_improvement_router_v2_1.py
+      - backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+      - backend/research/strategy11_alpha_authority_route_v1.json
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml
+      - .github/workflows/r7a4d-strategy11-alpha-authority-route-v2-1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/strategy11_unattended_improvement_router_v2_1.py
+      - backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+      - backend/research/strategy11_alpha_authority_route_v1.json
+      - .github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml
+      - .github/workflows/r7a4d-strategy11-alpha-authority-route-v2-1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r7a4d-strategy11-alpha-authority-route-v2-1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify pinned Alpha authority and route separation
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_unattended_improvement_router_v2_1.py \
+            backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+          python backend/tools/strategy11_unattended_improvement_router_fixture_v2_1.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('backend/research/strategy11_alpha_authority_route_v1.json').read_text())
+          assert row['source_pr']==249
+          assert row['source_head_sha']=='7039516dbb6ea72da2029beba6f79dac217f911e'
+          assert row['source_run_id']==30345463070
+          assert row['source_artifact_id']==8683273561
+          assert row['active_candidate_queue']==['TIME54','TIME60']
+          assert row['controls']['TIME54']['trade_count']==40
+          assert row['controls']['TIME54']['candidate_config_sha256']=='249200dc90fd56fedbdb335d11a0718db278576b3726742db30f5305d0ff4f9f'
+          assert row['same_dataset_generation_budget_exhausted'] is True
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY

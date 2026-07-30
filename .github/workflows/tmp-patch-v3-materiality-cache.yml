@@ -1,0 +1,85 @@
+name: TMP Patch V3 Materiality Cache
+
+on:
+  push:
+    branches: [strategy11-v3-materiality-cache-v1]
+    paths:
+      - '.github/workflows/tmp-patch-v3-materiality-cache.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-materiality-cache-v1
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Apply bounded materiality and cache optimization
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          policy_path=Path('backend/research/strategy11_v3_policy.json')
+          policy=json.loads(policy_path.read_text())
+          policy['classification']['materiality']={
+            'net_return_pct_points_min':0.25,
+            'profit_factor_min':0.05,
+            'payoff_ratio_min':0.05,
+            'drawdown_pct_points_min':0.10,
+            'material_metrics_min':2
+          }
+          policy_path.write_text(json.dumps(policy,indent=2,sort_keys=True)+'\n')
+
+          path=Path('backend/tools/strategy11_expanded_discovery_v3.py')
+          text=path.read_text()
+          text=text.replace('import sys\n', 'import sys\nimport time\n', 1)
+          marker='def validate_archive_frame(frame: pd.DataFrame, *, expected_rows: int, interval_ms: int, label: str) -> tuple[int, int]:\n'
+          helper='''def load_archive_cache(archive_root: Path, manifest: Mapping[str, Any], exact: Any) -> dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]]:\n    cache: dict[tuple[str, str], tuple[pd.DataFrame, pd.DataFrame]] = {}\n    for row in manifest["rows"]:\n        key = (str(row["window_id"]), str(row["symbol"]))\n        frame = pd.read_csv(archive_root / row["path"])\n        frame["timestamp"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True)\n        cache[key] = (frame, exact.compute_feature_frame(frame))\n    return cache\n\n\ndef materiality_evidence(candidate: Mapping[str, Any], control: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:\n    thresholds = dict(policy["classification"]["materiality"])\n    deltas = {\n        "net_return_pct_sum": float(candidate["net_return_pct_sum"]) - float(control["net_return_pct_sum"]),\n        "net_profit_factor": float(candidate["net_profit_factor"]) - float(control["net_profit_factor"]),\n        "payoff_ratio": float(candidate["payoff_ratio"]) - float(control["payoff_ratio"]),\n        "max_drawdown_pct_reduction": float(control["max_drawdown_pct"]) - float(candidate["max_drawdown_pct"]),\n    }\n    flags = {\n        "net": deltas["net_return_pct_sum"] >= float(thresholds["net_return_pct_points_min"]),\n        "pf": deltas["net_profit_factor"] >= float(thresholds["profit_factor_min"]),\n        "payoff": deltas["payoff_ratio"] >= float(thresholds["payoff_ratio_min"]),\n        "dd": deltas["max_drawdown_pct_reduction"] >= float(thresholds["drawdown_pct_points_min"]),\n    }\n    return {"thresholds": thresholds, "deltas": deltas, "flags": flags, "improved_count": sum(flags.values())}\n\n\n'''
+          if marker not in text:
+              raise SystemExit('VALIDATE_MARKER_MISSING')
+          text=text.replace(marker, helper+marker, 1)
+          old='''    manifest = read_json(archive_root / "manifest.json")\n    batch_rows: list[dict[str, Any]] = []\n    for strategy_id in requested:\n'''
+          new='''    manifest = read_json(archive_root / "manifest.json")\n    archive_cache = load_archive_cache(archive_root, manifest, exact)\n    batch_rows: list[dict[str, Any]] = []\n    batch_started = time.monotonic()\n    for strategy_id in requested:\n        print(json.dumps({"event": "STRATEGY_START", "strategy_id": strategy_id, "elapsed_s": round(time.monotonic() - batch_started, 3)}, sort_keys=True), flush=True)\n'''
+          if old not in text:
+              raise SystemExit('CACHE_INSERT_MARKER_MISSING')
+          text=text.replace(old,new,1)
+          old='''                    frame = pd.read_csv(archive_root / row["path"])\n                    frame["timestamp"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True)\n                    features = exact.compute_feature_frame(frame)\n'''
+          new='''                    frame, features = archive_cache[(str(row["window_id"]), str(row["symbol"]))]\n'''
+          if old not in text:
+              raise SystemExit('CACHE_REPLACE_MARKER_MISSING')
+          text=text.replace(old,new,1)
+          old='''            write_json(out / strategy_id / variant_id / "summary.json", summary)\n            summaries.append(summary)\n'''
+          new='''            write_json(out / strategy_id / variant_id / "summary.json", summary)\n            summaries.append(summary)\n            print(json.dumps({"event": "VARIANT_COMPLETE", "strategy_id": strategy_id, "variant_id": variant_id, "trades": summary["trade_count"], "elapsed_s": round(time.monotonic() - batch_started, 3)}, sort_keys=True), flush=True)\n'''
+          if old not in text:
+              raise SystemExit('TELEMETRY_MARKER_MISSING')
+          text=text.replace(old,new,1)
+          old='''            improved = sum(row["deltas"][key] > 0 for key in ("net_return_pct_sum", "net_profit_factor", "payoff_ratio")) + int(row["deltas"]["max_drawdown_pct"] < 0)\n            row["research_state"] = "DISCOVERY_PASS_INTERNAL_OR_REGIME" if row["parity"]["state"] == "PASS" and row["trade_count"] >= int(policy["classification"]["archive_trade_count_min"]) and row["positive_window_count"] >= int(policy["classification"]["positive_windows_min"]) and improved >= 2 and row["net_return_pct_sum"] > control["net_return_pct_sum"] else "DISCOVERY_HOLD"\n'''
+          new='''            row["materiality"] = materiality_evidence(row, control, policy)\n            row["research_state"] = "DISCOVERY_PASS_INTERNAL_OR_REGIME" if row["parity"]["state"] == "PASS" and row["trade_count"] >= int(policy["classification"]["archive_trade_count_min"]) and row["positive_window_count"] >= int(policy["classification"]["positive_windows_min"]) and row["materiality"]["improved_count"] >= int(policy["classification"]["materiality"]["material_metrics_min"]) and row["materiality"]["flags"]["net"] else "DISCOVERY_HOLD"\n'''
+          if old not in text:
+              raise SystemExit('MATERIALITY_MARKER_MISSING')
+          text=text.replace(old,new,1)
+          path.write_text(text)
+
+          fixture=Path('backend/tools/strategy11_v3_materiality_cache_fixture.py')
+          fixture.write_text('''from __future__ import annotations\n\nimport json\nimport tempfile\nfrom pathlib import Path\n\nimport pandas as pd\n\nfrom backend.tools.strategy11_expanded_discovery_v3 import load_archive_cache, materiality_evidence\n\n\nclass Exact:\n    def __init__(self) -> None:\n        self.calls = 0\n    def compute_feature_frame(self, frame: pd.DataFrame) -> pd.DataFrame:\n        self.calls += 1\n        return frame.assign(feature=1.0)\n\n\ndef main() -> int:\n    policy={"classification":{"materiality":{"net_return_pct_points_min":0.25,"profit_factor_min":0.05,"payoff_ratio_min":0.05,"drawdown_pct_points_min":0.10,"material_metrics_min":2}}}\n    control={"net_return_pct_sum":10.0,"net_profit_factor":1.5,"payoff_ratio":2.0,"max_drawdown_pct":3.0}\n    tiny={"net_return_pct_sum":10.12,"net_profit_factor":1.51,"payoff_ratio":2.01,"max_drawdown_pct":3.0}\n    meaningful={"net_return_pct_sum":10.40,"net_profit_factor":1.56,"payoff_ratio":2.01,"max_drawdown_pct":2.85}\n    assert materiality_evidence(tiny,control,policy)["improved_count"]==0\n    evidence=materiality_evidence(meaningful,control,policy)\n    assert evidence["flags"]["net"] is True and evidence["flags"]["pf"] is True and evidence["flags"]["dd"] is True\n    with tempfile.TemporaryDirectory() as tmp:\n        root=Path(tmp)\n        frame=pd.DataFrame({"timestamp_ms":[1,2],"open":[1,1],"high":[1,1],"low":[1,1],"close":[1,1],"volume":[1,1]})\n        rows=[]\n        for window in ("A01","A02"):\n            path=root/f"{window}-BTCUSDT.csv"\n            frame.to_csv(path,index=False)\n            rows.append({"window_id":window,"symbol":"BTCUSDT","path":path.name})\n        exact=Exact()\n        cache=load_archive_cache(root,{"rows":rows},exact)\n        assert len(cache)==2 and exact.calls==2\n        first=cache[("A01","BTCUSDT")]\n        assert len(first[0])==2 and "feature" in first[1].columns\n    print(json.dumps({"state":"PASS_V3_MATERIALITY_CACHE_FIXTURE"},sort_keys=True))\n    return 0\n\nif __name__=="__main__":\n    raise SystemExit(main())\n''')
+
+          workflow=Path('.github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml')
+          w=workflow.read_text()
+          needle='          python backend/tools/strategy11_v3_fixture.py\n'
+          if needle not in w:
+              raise SystemExit('WORKFLOW_FIXTURE_MARKER_MISSING')
+          w=w.replace(needle,needle+'          python backend/tools/strategy11_v3_materiality_cache_fixture.py\n',1)
+          workflow.write_text(w)
+          PY
+          python -m py_compile backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_materiality_cache_fixture.py
+          python backend/tools/strategy11_v3_materiality_cache_fixture.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/research/strategy11_v3_policy.json backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_materiality_cache_fixture.py .github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml
+          git commit -m 'Add V3 materiality gate and archive feature cache'
+          git push

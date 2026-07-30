@@ -14,6 +14,7 @@ SAFETY = {
     "protected_mutations": 0,
     "execution_allowed": False,
     "order_authority": "BLOCKED",
+    "runtime_bound": False,
 }
 VERSION = "R7A4D_STRATEGY11_GENERATION7_QUOTA_STATE_MACHINE_V1"
 

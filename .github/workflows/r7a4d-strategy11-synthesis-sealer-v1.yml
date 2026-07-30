@@ -1,0 +1,77 @@
+name: R7A4D Strategy11 Synthesis Sealer V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/strategy11_synthesis_sealer_v1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_sealer_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-synthesis-sealer-v1.yml"
+  push:
+    branches: [master]
+    paths:
+      - "backend/research/strategy11_synthesis_sealer_v1.py"
+      - "backend/tools/r7a4d_strategy11_synthesis_sealer_fixture_v1.py"
+      - ".github/workflows/r7a4d-strategy11-synthesis-sealer-v1.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy11-synthesis-sealer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-synthesis-sealer:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile synthesis seal chain
+        run: |
+          python -m py_compile \
+            backend/research/strategy11_synthesis_material_registry_v1.py \
+            backend/research/strategy11_bounded_synthesis_constructor_v1.py \
+            backend/research/strategy11_synthesis_factorial_replay_v1.py \
+            backend/research/strategy11_component_attribution_v1.py \
+            backend/research/strategy11_synthesis_sealer_v1.py \
+            backend/tools/r7a4d_strategy11_synthesis_factorial_replay_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_component_attribution_fixture_v1.py \
+            backend/tools/r7a4d_strategy11_synthesis_sealer_fixture_v1.py
+      - name: Execute synthesis sealer fixtures
+        run: python backend/tools/r7a4d_strategy11_synthesis_sealer_fixture_v1.py
+      - name: Assert new-sealed wait and blocked authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/strategy11_synthesis_sealer_v1")
+          result = json.loads((root / "result.json").read_text())
+          status = json.loads((root / "status.json").read_text())
+          seal = result["synthesis_seal"]
+          assert result["state"] == "PASS_SYNTHESIS_NEW_SEALED_WAIT_CLASSIFIER"
+          assert result["classification_ready"] is True
+          assert result["next"] == "GLOBAL_CANDIDATE_CLASSIFIER"
+          assert seal["seal_state"] == "NEW_SEALED_WAIT_CLASSIFIER"
+          assert seal["classification_ready"] is True
+          assert len({row["data_sha"] for row in result["stage_lineages"].values()}) == 4
+          assert len({row["window_sha"] for row in result["stage_lineages"].values()}) == 4
+          assert status["fixture_only"] is True
+          assert status["production_authority"] is False
+          for value in (result, seal, status):
+              assert value["research_only"] is True
+              assert value["promotion_authority"] is False
+              assert value["protected_mutations"] == 0
+              assert value["execution_allowed"] is False
+              assert value["order_authority"] == "BLOCKED"
+              assert value["runtime_bound"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy11-synthesis-sealer-${{ github.run_id }}
+          path: artifacts/strategy11_synthesis_sealer_v1
+          if-no-files-found: error

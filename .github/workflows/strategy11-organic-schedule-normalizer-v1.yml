@@ -1,0 +1,98 @@
+name: Strategy11 Organic Schedule Normalizer V1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/strategy11-organic-schedule-normalizer-v1.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: strategy11-organic-schedule-normalizer-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Patch overlap detector wiring and stagger schedules
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          audit = Path("backend/tools/strategy11_internal_organic_audit_v1.py")
+          text = audit.read_text(encoding="utf-8")
+          import_line = "from backend.tools.strategy11_cron_overlap_audit_v1 import find_overlapping_schedules\n"
+          anchor = "from typing import Any, Iterable\n"
+          if import_line not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit("AUDIT_IMPORT_ANCHOR_INVALID")
+              text = text.replace(anchor, anchor + "\n" + import_line, 1)
+          old = '''    collisions = [
+        {"cron": cron, "count": len(paths), "workflows": sorted(paths)}
+        for cron, paths in schedules.items()
+        if len(paths) > 1
+    ]
+    return refs, workflows, sorted(collisions, key=lambda row: (-row["count"], row["cron"]))
+'''
+          new = '''    collisions = find_overlapping_schedules(workflows)
+    return refs, workflows, collisions
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("AUDIT_COLLISION_BLOCK_NOT_FOUND")
+          audit.write_text(text, encoding="utf-8")
+
+          famous = Path(".github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml")
+          text = famous.read_text(encoding="utf-8")
+          if "cron: '17 */4 * * *'" in text:
+              text = text.replace("cron: '17 */4 * * *'", "cron: '27 */4 * * *'", 1)
+          elif "cron: '27 */4 * * *'" not in text:
+              raise SystemExit("FAMOUS_CRON_NOT_FOUND")
+          famous.write_text(text, encoding="utf-8")
+
+          intrabar = Path(".github/workflows/r7a4d-strategy11-intrabar-observer-v1.yml")
+          text = intrabar.read_text(encoding="utf-8")
+          text = text.replace(
+              "# 06:17 UTC = 08:17 CEST / 07:17 CET, after the Berlin quiet window.",
+              "# 06:37 UTC = 08:37 CEST / 07:37 CET, staggered after the hourly orchestrator.",
+          )
+          if "cron: '17 6 * * *'" in text:
+              text = text.replace("cron: '17 6 * * *'", "cron: '37 6 * * *'", 1)
+          elif "cron: '37 6 * * *'" not in text:
+              raise SystemExit("INTRABAR_CRON_NOT_FOUND")
+          intrabar.write_text(text, encoding="utf-8")
+          PY
+      - name: Verify parser, schedules and audit compile
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_cron_overlap_audit_v1.py \
+            backend/tools/strategy11_internal_organic_audit_v1.py
+          python backend/tools/strategy11_cron_overlap_audit_v1.py
+          git diff --check
+          grep -F "cron: '27 */4 * * *'" .github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml
+          grep -F "cron: '37 6 * * *'" .github/workflows/r7a4d-strategy11-intrabar-observer-v1.yml
+      - name: Commit organic schedule normalization
+        run: |
+          if git diff --quiet; then
+            echo "No schedule normalization needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            backend/tools/strategy11_internal_organic_audit_v1.py \
+            .github/workflows/r7a4d-strategy11-famous-indicator-autonomy-v1.yml \
+            .github/workflows/r7a4d-strategy11-intrabar-observer-v1.yml
+          git commit -m "Detect cron overlaps and stagger Strategy11 schedules"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}

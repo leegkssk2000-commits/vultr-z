@@ -1,0 +1,51 @@
+name: TMP V3 Immutable Archive Branch Patcher
+
+on:
+  push:
+    branches: [master]
+    paths: ['.github/workflows/tmp-v3-immutable-archive-branch-patch.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-immutable-archive-restore
+          fetch-depth: 0
+      - name: Patch V3 workflow to restore immutable historical archive
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml')
+          text=p.read_text()
+          marker='      - name: Build registry and V3 plan\n'
+          insert='''      - name: Restore immutable 10-window historical archive authority\n        uses: actions/download-artifact@v4\n        with:\n          name: strategy11-shadow-funnel-v1\n          path: input/historical\n          github-token: ${{ github.token }}\n          run-id: 30198913273\n      - name: Verify historical archive authority\n        run: |\n          test -f input/historical/artifacts/strategy11_market_cache_v2/manifest.json\n          python - <<'PYH'\n          import hashlib,json\n          from pathlib import Path\n          root=Path('input/historical/artifacts/strategy11_market_cache_v2')\n          manifest=json.loads((root/'manifest.json').read_text())\n          assert manifest['roles']==['S1','S2','S3','S4','S5','S6','V1','V2','H1','H2']\n          assert manifest['anchors']==['2026-03-01T00:00:00Z','2026-03-13T00:00:00Z','2026-03-25T00:00:00Z','2026-04-06T00:00:00Z','2026-04-18T00:00:00Z','2026-04-30T00:00:00Z','2026-05-12T00:00:00Z','2026-05-24T00:00:00Z','2026-06-05T00:00:00Z','2026-06-17T00:00:00Z']\n          files=sorted(root.glob('*.csv'))\n          assert len(files)==50\n          print('HISTORICAL_MANIFEST_SHA256='+hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest())\n          PYH\n'''
+          if marker not in text: raise SystemExit('BUILD_MARKER_MISSING')
+          text=text.replace(marker,insert+marker,1)
+          old='python backend/tools/strategy11_expanded_discovery_v3.py prepare --compute-root compute --policy backend/research/strategy11_v3_policy.json --out out/prep/archive'
+          new='python backend/tools/strategy11_expanded_discovery_v3.py prepare --compute-root compute --historical-root input/historical/artifacts/strategy11_market_cache_v2 --policy backend/research/strategy11_v3_policy.json --out out/prep/archive'
+          if old not in text: raise SystemExit('PREPARE_COMMAND_MISSING')
+          text=text.replace(old,new,1)
+          old="assert archive['state']=='PASS_EXPANDED_ARCHIVE' and archive['evaluation_symbol_bars']==54000\n          assert archive['evaluation_periods_non_overlapping'] is True and len(archive['rows'])==60"
+          new="assert archive['state']=='PASS_EXPANDED_ARCHIVE' and archive['total_symbol_bars']==54000\n          assert archive['evaluation_symbol_bars']==40800\n          assert archive['historical_window_count']==10 and archive['incremental_window_count']==2\n          assert archive['evaluation_periods_non_overlapping'] is True and len(archive['rows'])==60"
+          if old not in text: raise SystemExit('ARCHIVE_ASSERTION_MISSING')
+          text=text.replace(old,new,1)
+          p.write_text(text)
+          PY
+          python - <<'PY'
+          import yaml
+          yaml.safe_load(open('.github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml'))
+          print('YAML_OK')
+          PY
+          git diff --check
+      - name: Commit target branch patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/r7a4d-strategy11-v3-internal-regime-expanded.yml
+          git commit -m 'Restore immutable historical archive in V3 workflow'
+          git push origin HEAD:strategy11-v3-immutable-archive-restore

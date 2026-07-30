@@ -1,0 +1,39 @@
+name: Temporary Strategy11 V2 Concurrency Patch
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/tmp-strategy11-v2-concurrency-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-unattended-improvement-v2
+          fetch-depth: 0
+      - name: Cancel only stale PR validation runs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('.github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml')
+          text=path.read_text()
+          old='''concurrency:\n  group: r7a4d-strategy11-unattended-improvement-v2\n  cancel-in-progress: false\n'''
+          new='''concurrency:\n  group: r7a4d-strategy11-unattended-improvement-v2\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n'''
+          if old not in text:
+              if "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" not in text:
+                  raise SystemExit('CONCURRENCY_SNIPPET_NOT_FOUND')
+          else:
+              path.write_text(text.replace(old,new,1))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/r7a4d-strategy11-unattended-improvement-v2.yml
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Cancel stale unattended V2 PR validation runs"
+          git push origin HEAD:strategy11-unattended-improvement-v2

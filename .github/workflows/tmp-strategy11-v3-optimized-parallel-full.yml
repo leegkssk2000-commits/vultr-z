@@ -1,0 +1,241 @@
+name: TMP Strategy11 V3 Optimized Parallel Full
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/tmp-strategy11-v3-optimized-parallel-full.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PYTHONPATH: .
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+  SOURCE_RUN_ID: '30252022416'
+  SEED_RUN_ID: '30516499556'
+  ARCHIVE_RUN_ID: '30579167602'
+
+concurrency:
+  group: tmp-strategy11-v3-optimized-parallel-full
+  cancel-in-progress: false
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p .github/manual_trigger_receipts
+          {
+            echo 'state=STARTED'
+            echo 'run_id=${{ github.run_id }}'
+            echo 'head_sha=${{ github.sha }}'
+            echo 'mode=V3_OPTIMIZED_24_STRATEGY_PARALLEL'
+          } > .github/manual_trigger_receipts/strategy11-v3-optimized-parallel.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/manual_trigger_receipts/strategy11-v3-optimized-parallel.txt
+          git commit -m 'Record Strategy11 V3 optimized parallel run' || true
+          git push
+
+  prepare:
+    needs: receipt
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      active: ${{ steps.state.outputs.active }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy pyyaml
+      - name: Download immutable archive from first V3 run
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-v3-prep-${{ env.ARCHIVE_RUN_ID }}
+          path: input/old-prep
+          github-token: ${{ github.token }}
+          run-id: ${{ env.ARCHIVE_RUN_ID }}
+      - name: Restore latest V2 baseline
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/baseline
+          v2run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow r7a4d-strategy11-unattended-improvement-v2-1.yml --branch master --status success --limit 20 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -n "$v2run" ]; then
+            gh run download "$v2run" --repo "$GITHUB_REPOSITORY" --pattern 's11-unattended-improvement-v2-1-state-*' --dir input/baseline || true
+          fi
+          if ! find input/baseline -name base_replay_final.json -print -quit | grep -q .; then
+            gh run download "$SEED_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 's11-unattended-improvement-v2*-state-*' --dir input/baseline
+          fi
+          find input/baseline -name base_replay_final.json -print -quit > input/baseline-path.txt
+          test -s input/baseline-path.txt
+      - name: Build current optimized registry and plan
+        run: |
+          mkdir -p out/prep/plan out/prep/archive
+          cp -R input/old-prep/archive/. out/prep/archive/
+          python backend/tools/strategy11_internal_condition_registry_v3.py \
+            --compute-root compute --policy backend/research/strategy11_v3_policy.json \
+            --out out/prep/plan/internal_registry.json
+          python backend/tools/strategy11_v3_orchestrator.py \
+            --registry out/prep/plan/internal_registry.json \
+            --baseline "$(cat input/baseline-path.txt)" \
+            --policy backend/research/strategy11_v3_policy.json --out out/prep/plan
+      - name: Assert optimized preparation contracts
+        id: state
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          plan=json.loads(Path('out/prep/plan/plan.json').read_text())
+          archive=json.loads(Path('out/prep/archive/manifest.json').read_text())
+          assert plan['strategy_count_total']==25 and 'alpha_combo' not in plan['active_strategy_ids']
+          assert plan['candidate_count']<=48
+          assert archive['state']=='PASS_EXPANDED_ARCHIVE'
+          assert archive['evaluation_symbol_bars']==40800 and len(archive['rows'])==60
+          for row in plan['rows']:
+              for cid in row['candidate_ids']:
+                  candidate=row['candidate_specs'][cid]
+                  assert candidate['one_axis_only'] is True
+                  if row['lane'] in {'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION'} and not cid.startswith('NO_CHANGE'):
+                      assert candidate.get('semantic_role') in {'ENTRY_TRIGGER','REGIME_GATE','ENTRY_SUPPORT','INDICATOR_PERIOD','BEAM_CONFIRMATION'}
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as handle:
+              handle.write("active=true\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmp-v3-opt-prep-${{ github.run_id }}
+          path: out/prep
+          if-no-files-found: error
+          retention-days: 30
+
+  replay:
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        strategy:
+          - anchor_vwap_trend
+          - bb_revert
+          - break_and_continue
+          - ema_ribbon_scalp
+          - fvg_revert
+          - grid_rebalance
+          - keltner_trend
+          - liquidity_sweep
+          - mfi_rsi_div
+          - obv_trend
+          - pivot_reversal
+          - range_fade
+          - rbreaker_like
+          - rsi_swing_fail
+          - scalp_snap
+          - session_bias
+          - squeeze_break
+          - sr_levels
+          - supertrend_pullback
+          - trend_ma_macd
+          - trend_rider
+          - turtle_trend
+          - vol_spike_fade
+          - vwap_revert
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: tmp-v3-opt-prep-${{ github.run_id }}
+          path: input/prep
+      - name: Download immutable evidence batches
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+      - name: Replay one strategy with optimized cache and materiality
+        env: {STRATEGY_ID: '${{ matrix.strategy }}'}
+        run: |
+          mkdir -p "out/batch-${STRATEGY_ID}"
+          python backend/tools/strategy11_expanded_discovery_v3.py replay \
+            --compute-root compute --archive-root input/prep/archive --evidence-root input/evidence \
+            --plan input/prep/plan/plan.json --registry input/prep/plan/internal_registry.json \
+            --policy backend/research/strategy11_v3_policy.json --strategy-ids "$STRATEGY_ID" \
+            --out "out/batch-${STRATEGY_ID}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmp-v3-opt-${{ matrix.strategy }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  finalize:
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, replay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: tmp-v3-opt-prep-${{ github.run_id }}
+          path: input/prep
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tmp-v3-opt-*-${{ github.run_id }}
+          path: input/replays
+          merge-multiple: true
+      - name: Aggregate and audit optimized cycle
+        run: |
+          mkdir -p out/state
+          python backend/tools/strategy11_expanded_discovery_v3.py aggregate \
+            --batch-root input/replays --plan input/prep/plan/plan.json \
+            --policy backend/research/strategy11_v3_policy.json --out out/state/final.json
+          cp input/prep/plan/plan.json out/state/cycle_plan.json
+          cp input/prep/plan/internal_registry.json out/state/internal_registry.json
+          cp input/prep/plan/search_ledger.json out/state/search_ledger.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          final=json.loads(Path('out/state/final.json').read_text())
+          plan=json.loads(Path('out/state/cycle_plan.json').read_text())
+          assert final['state']=='PASS_V3_ORGANIC_AUDIT'
+          assert final['blockers']==[]
+          assert final['strategy_count']==len(plan['active_strategy_ids'])==24
+          assert final['candidate_count']==plan['candidate_count']
+          assert final['fresh_confirmation_required'] is True
+          assert final['promotion_authority'] is False
+          assert final['execution_allowed'] is False
+          assert final['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmp-v3-opt-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90

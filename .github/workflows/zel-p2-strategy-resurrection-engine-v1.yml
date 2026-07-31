@@ -1,0 +1,84 @@
+name: ZEL P2 Strategy Resurrection Engine V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "backend/research/zel_strategy_resurrection_v1.py"
+      - "backend/tools/zel_strategy_native_profile_audit_v1.py"
+      - "tests/test_zel_p2_strategy_resurrection_v1.py"
+      - ".github/workflows/zel-p2-strategy-resurrection-engine-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p2-strategy-resurrection-engine-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-data-wait-pool-compute-v1
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile P2 engine
+        run: |
+          python -m py_compile \
+            backend/research/zel_strategy_resurrection_v1.py \
+            backend/tools/zel_strategy_native_profile_audit_v1.py \
+            tests/test_zel_p2_strategy_resurrection_v1.py
+
+      - name: Run cause-specific regression tests
+        run: python -m pytest -q tests/test_zel_p2_strategy_resurrection_v1.py tests/test_zel_completion_foundation_v1.py
+
+      - name: Audit exact source semantics for all 25 strategies
+        run: |
+          mkdir -p artifacts/zel_p2_strategy_resurrection_v1
+          python backend/tools/zel_strategy_native_profile_audit_v1.py \
+            --source-root source \
+            --out artifacts/zel_p2_strategy_resurrection_v1/native_profiles.json
+
+      - name: Assert source-bound no-promotion boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path("artifacts/zel_p2_strategy_resurrection_v1/native_profiles.json").read_text())
+          assert row["strategy_count"]==25
+          assert row["source_sha_verified_count"]==25
+          assert row["callable_verified_count"]==25
+          assert row["parent_strategy_mutation_count"]==0
+          assert row["runtime_binding_allowed"] is False
+          assert row["promotion_authority"] is False
+          assert row["execution_authority"]=="NONE"
+          assert row["order_authority"]=="BLOCKED"
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p2-strategy-resurrection-v1-${{ github.run_id }}
+          path: artifacts/zel_p2_strategy_resurrection_v1
+          if-no-files-found: error
+          retention-days: 90

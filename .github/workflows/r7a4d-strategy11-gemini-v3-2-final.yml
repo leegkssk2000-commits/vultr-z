@@ -29,7 +29,7 @@ env:
 
 jobs:
   verify:
-    name: Verify Gemini V3.2 candidate-gated contracts
+    name: Verify Gemini V3.2 contracts
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -43,6 +43,7 @@ jobs:
             backend/tools/strategy11_gemini_v3_2.py \
             backend/tools/strategy11_gemini_v3_2_guard.py \
             backend/tools/strategy11_gemini_v3_2_cohort.py \
+            backend/tools/strategy11_gemini_v3_2_cohort_final.py \
             backend/tools/strategy11_gemini_v3_2_ai_filter.py \
             backend/tools/strategy11_gemini_v3_2_fixture.py
           python backend/tools/strategy11_gemini_v3_2_fixture.py
@@ -51,7 +52,7 @@ jobs:
           ids=[sid for _,_,rows in COHORTS for sid in rows]
           assert len(COHORTS)==4 and all(len(rows)==6 for _,_,rows in COHORTS)
           assert len(ids)==24 and len(set(ids))==24 and 'alpha_combo' not in ids
-          print('PASS_GEMINI_V3_2_FINAL_LAYOUT')
+          print('PASS_GEMINI_V3_2_LAYOUT')
           PY
       - name: Assert immutable safety policy
         run: |
@@ -69,7 +70,7 @@ jobs:
           PY
 
   prepare:
-    name: Gemini review, candidate AI gates and replay plan
+    name: Gemini review and candidate AI gates
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -106,7 +107,7 @@ jobs:
           mkdir -p out/gemini out/prep
           previous=()
           if [ -s input/previous-summary-path.txt ]; then previous=(--previous-summary "$(cat input/previous-summary-path.txt)"); fi
-          python backend/tools/strategy11_gemini_v3_2_cohort.py \
+          python backend/tools/strategy11_gemini_v3_2_cohort_final.py \
             --registry "$(cat input/registry-path.txt)" \
             --ledger "$(cat input/ledger-path.txt)" \
             --results-root input/results \
@@ -115,6 +116,28 @@ jobs:
             --v3-final "$(cat input/final-path.txt)" \
             "${previous[@]}" --out out/gemini
           cp -R input/prep/* out/prep/
+      - name: Normalize terminal preflight state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary_path=Path('out/gemini/summary.json')
+          assert summary_path.exists(), 'GEMINI_SUMMARY_MISSING'
+          summary=json.loads(summary_path.read_text())
+          plan_path=Path('out/gemini/plan.json')
+          if not plan_path.exists():
+              assert summary['state'] in {'HOLD','SKIP_UNCHANGED_GEMINI_EVIDENCE'}, summary
+              plan={
+                  'schema_version':'3.2','state':'HOLD_GEMINI_V3_2_PREFLIGHT',
+                  'strategy_count_total':25,'active_strategy_count':0,
+                  'active_strategy_ids':[],'candidate_count':0,'rows':[],
+                  'research_only':True,'promotion_authority':False,
+                  'protected_mutations':0,'execution_allowed':False,
+                  'execution_authority':'NONE','runtime_bound':False,
+                  'order_authority':'BLOCKED',
+              }
+              plan_path.write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          PY
       - name: Build one-axis AI review inputs
         if: ${{ hashFiles('out/gemini/gemini_artifact.json') != '' }}
         run: |
@@ -134,11 +157,27 @@ jobs:
           for input in out/gemini/router_inputs/*.json; do
             [ "$(basename "$input")" = index.json ] && continue
             sid="$(basename "$input" .json)"
+            set +e
             python scripts/strategy11_ai_review_router.py \
               --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
               --input "$input" \
               --gemini-artifact out/gemini/gemini_artifact.json \
               --output "out/gemini/router_results/${sid}.json"
+            rc=$?
+            set -e
+            python - "$sid" "$rc" <<'PY'
+          import json,sys
+          from pathlib import Path
+          sid,rc=sys.argv[1],int(sys.argv[2])
+          path=Path(f'out/gemini/router_results/{sid}.json')
+          assert path.exists(), f'ROUTER_RESULT_MISSING:{sid}:rc={rc}'
+          row=json.loads(path.read_text())
+          assert row.get('status') in {'PASS_AI_REVIEW_ROUTER','HOLD_AI_REVIEW_ROUTER','REJECT_AI_REVIEW_ROUTER'}, row
+          assert row.get('promotion_authority') is False
+          assert row.get('execution_allowed') is False
+          assert row.get('order_authority')=='BLOCKED'
+          print(json.dumps({'strategy_id':sid,'router_status':row['status'],'return_code':rc},sort_keys=True))
+          PY
           done
           python backend/tools/strategy11_gemini_v3_2_ai_filter.py filter \
             --plan out/gemini/plan.json \
@@ -175,11 +214,12 @@ jobs:
           plan=json.loads(Path('out/gemini/plan.json').read_text())
           assert summary['promotion_authority'] is False and summary['execution_allowed'] is False
           assert summary['order_authority']=='BLOCKED'
-          if summary['state']=='SKIP_UNCHANGED_GEMINI_EVIDENCE': count=0
-          else:
-              assert summary['state']=='PASS_GEMINI_V3_2_COHORT_REVIEW'
+          if summary['state']=='PASS_GEMINI_V3_2_COHORT_REVIEW':
               assert summary['GEMINI_USED'] is True and summary['reviewed_strategy_count']==24
               assert plan['candidate_count']==summary['selected_replay_count']
+          else:
+              assert summary['state'] in {'HOLD','SKIP_UNCHANGED_GEMINI_EVIDENCE'}
+              assert plan['candidate_count']==0
           count=int(plan.get('candidate_count',0))
           with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as handle:
               handle.write(f"active={'true' if count else 'false'}\n")

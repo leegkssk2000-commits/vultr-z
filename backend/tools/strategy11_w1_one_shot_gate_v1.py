@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -31,28 +32,30 @@ def stable_sha(value: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def github_artifacts(name: str, fixture: Path | None) -> list[dict[str, Any]]:
-    if fixture is not None:
-        data = strict_json(fixture)
-        rows = data.get("artifacts", data) if isinstance(data, Mapping) else data
-        return [dict(row) for row in rows if isinstance(row, Mapping) and row.get("name") == name and not row.get("expired", False)]
+def github_context() -> tuple[str, str, dict[str, str]]:
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
     token = os.environ.get("GH_TOKEN", os.environ.get("GITHUB_TOKEN", "")).strip()
     if not repo or not token:
-        raise RuntimeError("GITHUB_ARTIFACT_LOOKUP_CONTEXT_MISSING")
+        raise RuntimeError("GITHUB_LOOKUP_CONTEXT_MISSING")
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "strategy11-w1-one-shot-gate",
     }
+    return repo, token, headers
+
+
+def github_artifacts(name: str, fixture: Path | None) -> list[dict[str, Any]]:
+    if fixture is not None:
+        data = strict_json(fixture)
+        rows = data.get("artifacts", data) if isinstance(data, Mapping) else data
+        return [dict(row) for row in rows if isinstance(row, Mapping) and row.get("name") == name and not row.get("expired", False)]
+    repo, _token, headers = github_context()
     output: list[dict[str, Any]] = []
     for page in range(1, 21):
         query = urllib.parse.urlencode({"per_page": 100, "page": page, "name": name})
-        request = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/actions/artifacts?{query}",
-            headers=headers,
-        )
+        request = urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/artifacts?{query}", headers=headers)
         with urllib.request.urlopen(request, timeout=60) as response:
             payload = json.load(response)
         rows = payload.get("artifacts", [])
@@ -63,6 +66,27 @@ def github_artifacts(name: str, fixture: Path | None) -> list[dict[str, Any]]:
     return output
 
 
+def github_release(tag: str, fixture: Path | None) -> dict[str, Any] | None:
+    if not tag:
+        return None
+    if fixture is not None:
+        data = strict_json(fixture)
+        rows = data.get("releases", []) if isinstance(data, Mapping) else []
+        matches = [dict(row) for row in rows if isinstance(row, Mapping) and row.get("tag_name") == tag and not row.get("draft", False)]
+        return matches[0] if matches else None
+    repo, _token, headers = github_context()
+    encoded = urllib.parse.quote(tag, safe="")
+    request = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/tags/{encoded}", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return dict(payload) if isinstance(payload, Mapping) and not payload.get("draft", False) else None
+
+
 def workflow_run(row: Mapping[str, Any]) -> Mapping[str, Any]:
     value = row.get("workflow_run")
     return value if isinstance(value, Mapping) else {}
@@ -70,7 +94,7 @@ def workflow_run(row: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def common_status(contract: Mapping[str, Any], state: str, now: dt.datetime, blockers: list[str], next_step: str) -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "version": contract["version"],
         "state": state,
         "blockers": blockers,
@@ -95,10 +119,7 @@ def write_outputs(values: Mapping[str, Any]) -> None:
         return
     with open(target, "a", encoding="utf-8") as handle:
         for key, value in values.items():
-            if isinstance(value, bool):
-                text = "true" if value else "false"
-            else:
-                text = str(value)
+            text = "true" if value is True else "false" if value is False else str(value)
             handle.write(f"{key}={text}\n")
 
 
@@ -113,14 +134,19 @@ def w1_mode(args: argparse.Namespace, contract: Mapping[str, Any], now: dt.datet
     assert stream.get("execution_allowed") is False
     assert stream.get("order_authority") == "BLOCKED"
     completion_name = str(contract["completion_artifact_name"])
-    completed = github_artifacts(completion_name, Path(args.artifact_index) if args.artifact_index else None)
+    durable_tag = str(contract.get("durable_completion_release_tag") or "")
+    fixture = Path(args.artifact_index) if args.artifact_index else None
+    completed = github_artifacts(completion_name, fixture)
+    durable_release = github_release(durable_tag, fixture) if durable_tag else None
     target = parse_time(str(contract["w1_not_before_utc"]))
     latest = parse_time(str(stream["latest_closed_end"]))
     available = int(stream.get("available_non_overlap_bars", 0))
     missing = int(stream.get("missing_to_w1_480", 480))
     clock_ready = now >= target
     data_ready = bool(stream.get("w1_ready")) and available >= 480 and missing == 0 and latest >= target
-    if completed:
+    if durable_release:
+        state, ready, next_step = "ALREADY_COMPLETED", False, "USE_DURABLE_W1_RELEASE_RECEIPT"
+    elif completed:
         state, ready, next_step = "ALREADY_COMPLETED", False, "USE_EXISTING_W1_COMPLETION_RECEIPT"
     elif not (clock_ready and data_ready):
         state, ready, next_step = "WAIT_DATA", False, "WAIT_NEXT_HOURLY_NATIVE_RUN"
@@ -137,15 +163,12 @@ def w1_mode(args: argparse.Namespace, contract: Mapping[str, Any], now: dt.datet
         "stream_manifest_sha256": hashlib.sha256(stream_path.read_bytes()).hexdigest(),
         "completion_artifact_name": completion_name,
         "completion_receipt_count": len(completed),
+        "durable_completion_release_tag": durable_tag,
+        "durable_completion_release_found": durable_release is not None,
+        "durable_completion_release_id": (durable_release or {}).get("id"),
         "one_shot_ready": ready,
     })
-    write_outputs({
-        "ready": ready,
-        "state": state,
-        "available": available,
-        "missing": missing,
-        "stream_sha": result["stream_manifest_sha256"],
-    })
+    write_outputs({"ready": ready, "state": state, "available": available, "missing": missing, "stream_sha": result["stream_manifest_sha256"], "durable_release_found": durable_release is not None})
     return result
 
 
@@ -186,13 +209,7 @@ def ema_mode(args: argparse.Namespace, contract: Mapping[str, Any], now: dt.date
         "upstream_head_sha": str(head_sha),
         "upstream_artifact_name": str(artifact_name),
     })
-    write_outputs({
-        "ready": ready,
-        "state": state,
-        "run_id": run_id,
-        "head_sha": head_sha,
-        "artifact_name": artifact_name,
-    })
+    write_outputs({"ready": ready, "state": state, "run_id": run_id, "head_sha": head_sha, "artifact_name": artifact_name})
     return result
 
 

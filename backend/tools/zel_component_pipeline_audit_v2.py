@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_2"
+VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_3"
 SAFE = {
     "research_only": True,
     "promotion_authority": False,
@@ -119,14 +119,14 @@ def audit(
 
     per_axis_bindings = (
         "axis-ai-gate:" in workflow_text
-        and "zel_component_axis_ai_gate_v2.py prepare" in workflow_text
-        and "strategy11_ai_review_router.py" in workflow_text
-        and "PRE_REPLAY_COMPONENT_AXIS" in workflow_text
-        and "Groq" in workflow_text
-        and "Workers" in workflow_text
+        and "Required material per-axis Groq and Workers AI review" in workflow_text
+        and "active_axis_count != '0'" in workflow_text
+        and "strategy11_groq_redteam.py" in workflow_text
+        and "strategy11_workers_ai_guard.py" in workflow_text
+        and "PASS_COMPONENT_AXIS_AI_GATE_V2" in workflow_text
     )
     if not per_axis_bindings:
-        findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "stripped helper, router or axis job missing"))
+        findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "material single-axis Groq/Workers workflow binding missing"))
     if "GEMINI_API_KEY" not in workflow_text or "zel_component_gemini_v2.py" not in workflow_text:
         findings.append(finding("GEMINI_DIRECT_VIDEO_NOT_EXECUTED", "CRITICAL", "actual Gemini execution missing"))
     if "call_direct_video" not in gemini_text or "public_video_count" not in gemini_text or "independent_channel_count" not in gemini_text:
@@ -139,7 +139,7 @@ def audit(
     rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
     counts = {severity: sum(row["severity"] == severity for row in findings) for severity in rank}
     report = {
-        "schema_version": "2.2",
+        "schema_version": "2.3",
         "version": VERSION,
         "state": "PASS_COMPONENT_PIPELINE_AUDIT_V2" if not findings else "HOLD_COMPONENT_PIPELINE_V2_REPAIR_REQUIRED",
         "finding_count": len(findings),
@@ -155,7 +155,7 @@ def audit(
             "LICO",
             "ZLICE_LINEAGE",
             "ORDERED_ATTRIBUTION",
-            "STRIPPED_MATERIAL_AXIS_AI",
+            "MATERIAL_AXIS_AI",
             "BOUNDED_GEMINI_DIRECT_VIDEO",
             "SHADOW_BLOCKED",
         ],

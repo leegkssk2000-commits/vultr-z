@@ -1,0 +1,125 @@
+name: R7A4D Strategy11 Post-Gemini Intake V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_post_gemini_intake_v1.py'
+      - 'backend/tools/strategy11_post_gemini_intake_fixture_v1.py'
+      - '.github/workflows/r7a4d-strategy11-post-gemini-intake-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-post-gemini-intake-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GEMINI_RUN_ID: '30620477546'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and run deterministic fixture
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_post_gemini_intake_v1.py \
+            backend/tools/strategy11_post_gemini_intake_fixture_v1.py
+          python backend/tools/strategy11_post_gemini_intake_fixture_v1.py
+
+  source_bound:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-data-stream-v1
+          path: stream
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Download immutable Gemini V3.2 result
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/gemini out
+          gh run download "$GEMINI_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "s11-gemini-v3-2-final-state-${GEMINI_RUN_ID}" --dir input/gemini
+          test -f input/gemini/summary.json
+          test -f input/gemini/gemini_artifact.json
+          test -f input/gemini/ai_filter.json
+          test -f input/gemini/replay_final.json
+      - name: Classify source-bound strategy results
+        run: |
+          python backend/tools/strategy11_post_gemini_intake_v1.py classify \
+            --summary input/gemini/summary.json \
+            --gemini-artifact input/gemini/gemini_artifact.json \
+            --ai-filter input/gemini/ai_filter.json \
+            --replay-final input/gemini/replay_final.json \
+            --out out/classification.json
+      - name: Bind Alpha fresh-W1 hypothesis receipt
+        run: |
+          python backend/tools/strategy11_post_gemini_intake_v1.py alpha-receipt \
+            --gemini-artifact input/gemini/gemini_artifact.json \
+            --out out/alpha_fresh_receipt.json
+      - name: Rehearse exact W1 downstream sequence
+        run: |
+          python backend/tools/strategy11_post_gemini_intake_v1.py w1-preflight \
+            --manifest stream/strategy11_stream_v1/manifest.json \
+            --overlay-contract backend/research/strategy11_v3_survivor_w1_overlay_v1.json \
+            --out out/w1_preflight.json
+      - name: Rehearse Shadow candidate intake
+        run: |
+          python backend/tools/strategy11_post_gemini_intake_v1.py shadow-intake \
+            --classification out/classification.json \
+            --alpha-receipt out/alpha_fresh_receipt.json \
+            --w1-preflight out/w1_preflight.json \
+            --out out/shadow_intake.json
+      - name: Assert current fail-closed state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('out/classification.json').read_text())
+          a=json.loads(Path('out/alpha_fresh_receipt.json').read_text())
+          w=json.loads(Path('out/w1_preflight.json').read_text())
+          s=json.loads(Path('out/shadow_intake.json').read_text())
+          assert c['state']=='PASS_POST_GEMINI_CLASSIFICATION' and c['reviewed_strategy_count']==24
+          assert a['state']=='WAIT_ALPHA_W1_FRESH' and a['hypothesis_count']==1
+          assert w['state'] in {'WAIT_W1_DATA','READY_NATIVE_W1_DISPATCH'}
+          assert s['state']=='WAIT_SHADOW_INTAKE_UPSTREAM'
+          assert s['shadow_start_allowed'] is False and s['admitted_family_count']==0
+          for row in (c,a,w,s):
+              assert row['promotion_authority'] is False
+              assert row['execution_allowed'] is False
+              assert row['runtime_bound'] is False
+              assert row['order_authority']=='BLOCKED'
+          report={
+              'classification_counts':c['category_counts'],
+              'alpha_hypotheses':a['hypotheses'],
+              'w1_state':w['state'],
+              'available_bars':w['available_non_overlap_bars'],
+              'missing_bars':w['missing_to_w1_480'],
+              'shadow_intake_state':s['state'],
+              'staged_families':s['staged_families'],
+          }
+          Path('out/report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-post-gemini-intake-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

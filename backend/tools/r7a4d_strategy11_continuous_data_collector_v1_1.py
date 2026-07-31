@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-import json
 import math
+import sys
 import urllib.parse
+from pathlib import Path
 from typing import Any
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from backend.tools import r7a4d_strategy11_continuous_data_collector_v1 as collector
 

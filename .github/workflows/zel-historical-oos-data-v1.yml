@@ -1,0 +1,149 @@
+name: ZEL Historical OOS Data V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_data_collector_v1.py
+      - tests/test_zel_historical_oos_data_collector_v1.py
+      - .github/workflows/zel-historical-oos-data-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_data_collector_v1.py
+      - tests/test_zel_historical_oos_data_collector_v1.py
+      - .github/workflows/zel-historical-oos-data-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-historical-oos-data-v1
+  cancel-in-progress: false
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas pytest
+      - name: Compile and test fixed window contract
+        run: |
+          python -m py_compile \
+            backend/tools/zel_historical_oos_data_collector_v1.py \
+            tests/test_zel_historical_oos_data_collector_v1.py
+          python -m pytest -q tests/test_zel_historical_oos_data_collector_v1.py
+
+  collect:
+    if: github.event_name != 'pull_request'
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout isolated historical data branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-historical-oos-data-v1
+          path: history
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Collect fixed historical validation/OOS windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p status
+          python control/backend/tools/zel_historical_oos_data_collector_v1.py \
+            --data-root history/zel_historical_oos_v1 \
+            --status-out status/manifest.json \
+            2>&1 | tee status/collector.log
+
+      - name: Assert isolation and authority contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('status/manifest.json').read_text())
+          assert d['state']=='PASS_HISTORICAL_OOS_DATA_READY'
+          assert d['version']=='ZEL_HISTORICAL_OOS_DATA_COLLECTOR_V1'
+          assert d['symbols']==['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT']
+          assert d['window_count']==6
+          assert d['total_market_rows']==302400
+          assert d['forward_overlap_count']==0
+          assert d['forward_ledger_mutated'] is False
+          assert d['formal_ledger_mutated'] is False
+          assert d['strategy_source_mutated'] is False
+          assert d['registry_mutated'] is False
+          assert d['historical_data_is_promotion_authority'] is False
+          assert d['final_holdout_accessed'] is False
+          assert d['promotion_authority'] is False
+          assert d['execution_authority']=='NONE'
+          assert d['order_authority']=='BLOCKED'
+          for row in d['files']:
+              assert row['sha256']
+              if row['kind']=='market':
+                  assert row['end_ms'] < d['authority_end_ms']
+          PY
+
+      - name: Commit isolated historical data
+        working-directory: history
+        run: |
+          git config user.name 'zel-historical-data-bot'
+          git config user.email 'zel-historical-data-bot@users.noreply.github.com'
+          git add zel_historical_oos_v1
+          if git diff --cached --quiet; then
+            echo 'Historical dataset already matches frozen manifest.'
+            exit 0
+          fi
+          rows=$(python -c "import json;print(json.load(open('zel_historical_oos_v1/manifest.json'))['total_market_rows'])")
+          git commit -m "data(zel): freeze isolated historical OOS market set (${rows} rows)"
+          git push origin HEAD:zel-historical-oos-data-v1
+
+      - name: Write job summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('status/manifest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as out:
+              out.write('# ZEL Historical OOS Data V1\n\n')
+              if p.exists():
+                  d=json.loads(p.read_text())
+                  out.write(f"- State: **{d['state']}**\n")
+                  out.write(f"- Market rows: {d['total_market_rows']}\n")
+                  out.write(f"- Windows: {d['window_count']}\n")
+                  out.write(f"- Forward overlap: {d['forward_overlap_count']}\n")
+                  out.write(f"- Promotion authority: {d['promotion_authority']}\n")
+              else:
+                  out.write('- State: **HOLD_NO_MANIFEST**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-historical-oos-data-v1-${{ github.run_id }}
+          path: status
+          if-no-files-found: error
+          retention-days: 30

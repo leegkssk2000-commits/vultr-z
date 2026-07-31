@@ -6,6 +6,9 @@ on:
     paths:
       - 'backend/tools/zel_component_autonomy_v3_runner.py'
       - 'backend/research/zel_component_autonomy_policy_v3.json'
+      - 'backend/tools/zel_component_pipeline_audit_v2.py'
+      - 'backend/tools/zel_component_gemini_v2.py'
+      - 'scripts/strategy11_ai_review_router.py'
       - '.github/workflows/zel-component-autonomy-v3.yml'
   schedule:
     - cron: '27 */8 * * *'
@@ -53,6 +56,24 @@ jobs:
           grep -q BONFERRONI backend/tools/zel_component_autonomy_v3_runner.py
           grep -q order_stable backend/tools/zel_component_autonomy_v3_runner.py
           grep -q exact_skill_replay_required backend/tools/zel_component_autonomy_v3_runner.py
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --result out/fixture/fixture_result_v3.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v3.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/fixture-audit
+          python - <<'PY2'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/fixture-audit/report.json').read_text())
+          assert row['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2',row['findings']
+          assert row['metrics']['claim_tier']=='HYPOTHESIS_ONLY'
+          assert row['metrics']['performance_claim_allowed'] is False
+          PY2
       - uses: actions/upload-artifact@v4
         with:
           name: zel-component-autonomy-v3-fixture-${{ github.run_id }}
@@ -190,6 +211,7 @@ jobs:
           retention-days: 90
 
   axis-ai-gate:
+    name: Required material per-axis Groq and Workers AI review
     if: needs.replay.outputs.active_axis_count != '0'
     needs: replay
     runs-on: ubuntu-latest
@@ -254,30 +276,72 @@ jobs:
         with:
           name: zel-component-autonomy-v3-state-${{ github.run_id }}
           path: input/state
-      - name: Run bounded direct-video and independent router
+      - name: Restore previous Gemini fingerprint receipt
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/previous out/gemini
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v3.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-component-autonomy-v3-gemini-*' --dir input/previous 2>/dev/null && break
+          done
+          find input/previous -name gemini_artifact.json -print -quit > input/previous-path.txt || true
+      - name: Enforce persistent same-fingerprint dedup
+        id: preflight
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          current=json.loads(Path('input/state/state/final.json').read_text()); previous={}
+          p=Path('input/previous-path.txt')
+          if p.exists() and p.read_text().strip(): previous=json.loads(Path(p.read_text().strip()).read_text())
+          previous_used=previous.get('GEMINI_USED') is True or previous.get('GEMINI_PREVIOUSLY_USED') is True
+          same=previous.get('data_fingerprint')==current.get('data_fingerprint')
+          execute=not (previous_used and same)
+          if not execute:
+              receipt={'state':'SKIP_UNCHANGED_COMPONENT_FINGERPRINT','GEMINI_USED':False,
+                       'GEMINI_PREVIOUSLY_USED':True,'execution_skipped':True,
+                       'data_fingerprint':current.get('data_fingerprint'),
+                       'previous_run_id':previous.get('run_id',previous.get('previous_run_id')),
+                       'previous_response_sha':previous.get('response_sha',previous.get('previous_response_sha')),
+                       'research_only':True,'promotion_authority':False,'protected_mutations':0,
+                       'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+              Path('out/gemini/gemini_artifact.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as h: h.write(f"execute={'true' if execute else 'false'}\n")
+          PY
+      - name: Run bounded Gemini direct-video
+        if: steps.preflight.outputs.execute == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          timeout 110m python backend/tools/zel_component_gemini_v2.py --result input/state/state/final.json --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json --out out/gemini
+      - name: Gate Gemini hypotheses independently
+        if: steps.preflight.outputs.execute == 'true'
+        env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
         run: |
           mkdir -p out/gemini/reviews
-          timeout 110m python backend/tools/zel_component_gemini_v2.py --result input/state/state/final.json --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json --out out/gemini
           for input in out/gemini/hypotheses/*.json; do
             [ -e "$input" ] || continue; id=$(basename "$input" .json)
             timeout 120s python scripts/strategy11_ai_review_router.py --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute --input "$input" --gemini-artifact out/gemini/gemini_artifact.json --output "out/gemini/reviews/${id}.json" || true
           done
+      - name: Build terminal hypothesis-only summary
+        if: always()
+        run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          a=json.loads(Path('out/gemini/gemini_artifact.json').read_text())
-          assert a['state']=='PASS_COMPONENT_GEMINI_DIRECT_VIDEO'
-          for key in ('actual_model','public_urls','independent_channels','run_id','input_sha','prompt_sha','response_sha'): assert a.get(key),key
-          accepted=[]
-          for p in Path('out/gemini/reviews').glob('*.json'):
-              r=json.loads(p.read_text()); g=((((r.get('provider_results') or {}).get('groq') or {}).get('artifact') or {}).get('review') or {}).get('decision'); w=((((r.get('provider_results') or {}).get('workers_ai') or {}).get('artifact') or {}).get('review') or {}).get('decision')
-              if r.get('status')=='PASS_AI_REVIEW_ROUTER' and g=='PASS_TO_REPLAY' and w=='PASS_TO_REPLAY': accepted.append(p.stem)
-          summary={'state':'PASS_COMPONENT_GEMINI_AI_GATE' if accepted else 'HOLD_NO_JOINTLY_APPROVED_HYPOTHESIS','data_fingerprint':a.get('data_fingerprint'),'actual_model':a['actual_model'],'prompt_sha':a['prompt_sha'],'response_sha':a['response_sha'],'hypothesis_count':len(a.get('hypotheses',[])),'accepted_hypothesis_ids':accepted,'replay_allowed_now':False,'performance_claim_allowed':False,'research_only':True,'promotion_authority':False,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+          p=Path('out/gemini/gemini_artifact.json')
+          if not p.exists(): raise SystemExit('GEMINI_ARTIFACT_MISSING')
+          a=json.loads(p.read_text()); accepted=[]
+          if a.get('execution_skipped') is not True:
+              assert a['state']=='PASS_COMPONENT_GEMINI_DIRECT_VIDEO'
+              for key in ('actual_model','public_urls','independent_channels','run_id','input_sha','prompt_sha','response_sha'): assert a.get(key),key
+          for rp in Path('out/gemini/reviews').glob('*.json') if Path('out/gemini/reviews').exists() else []:
+              r=json.loads(rp.read_text()); g=((((r.get('provider_results') or {}).get('groq') or {}).get('artifact') or {}).get('review') or {}).get('decision'); w=((((r.get('provider_results') or {}).get('workers_ai') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              if r.get('status')=='PASS_AI_REVIEW_ROUTER' and g=='PASS_TO_REPLAY' and w=='PASS_TO_REPLAY': accepted.append(rp.stem)
+          state=a.get('state') if a.get('execution_skipped') else ('PASS_COMPONENT_GEMINI_AI_GATE' if accepted else 'HOLD_NO_JOINTLY_APPROVED_HYPOTHESIS')
+          summary={'state':state,'data_fingerprint':a.get('data_fingerprint'),'GEMINI_USED':a.get('GEMINI_USED',False),'GEMINI_PREVIOUSLY_USED':a.get('GEMINI_PREVIOUSLY_USED',False),'actual_model':a.get('actual_model'),'prompt_sha':a.get('prompt_sha'),'response_sha':a.get('response_sha'),'hypothesis_count':len(a.get('hypotheses',[])),'accepted_hypothesis_ids':accepted,'replay_allowed_now':False,'performance_claim_allowed':False,'research_only':True,'promotion_authority':False,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
           Path('out/gemini/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
           PY
       - uses: actions/upload-artifact@v4

@@ -14,10 +14,25 @@ from backend.tools.strategy11_regime_edge_router_v3 import (
 )
 
 VERSION = "STRATEGY11_V3_ROLLING_CAUSAL_CACHE"
+SUPPORTED_BASENAMES = ("trend_rider.py", "supertrend_pullback.py")
 
 
 class FastCausalConfigStrategyWrapper(BaseWrapper):
-    """Cache exact rolling-history computations without changing decisions."""
+    """Cache exact rolling-history computations for the two Supertrend bottlenecks."""
+
+    def __new__(
+        cls,
+        strategy: Any,
+        config_class: type[Any],
+        field: str | None = None,
+        mutation_value: Any = None,
+        regime_scope: str | None = None,
+    ) -> Any:
+        module = sys.modules.get(getattr(strategy, "__module__", ""))
+        module_path = str(getattr(module, "__file__", "")) if module is not None else ""
+        if not module_path.endswith(SUPPORTED_BASENAMES):
+            return BaseWrapper(strategy, config_class, field, mutation_value, regime_scope)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -33,7 +48,7 @@ class FastCausalConfigStrategyWrapper(BaseWrapper):
             raise RuntimeError("FAST_WRAPPER_STRATEGY_MODULE_MISSING")
         self.module = module
         module_path = str(getattr(module, "__file__", ""))
-        self.canonical_nan_seed = module_path.endswith(("trend_rider.py", "supertrend_pullback.py"))
+        self.canonical_nan_seed = module_path.endswith(SUPPORTED_BASENAMES)
         if hasattr(module, "_supertrend") and not hasattr(module, "_v3_original_supertrend"):
             setattr(module, "_v3_original_supertrend", getattr(module, "_supertrend"))
         if hasattr(module, "_ema") and not hasattr(module, "_v3_original_ema"):

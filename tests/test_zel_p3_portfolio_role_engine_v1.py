@@ -111,11 +111,13 @@ def test_sbot_veto_removes_candidate_without_deleting_observer_control() -> None
 
 def test_high_correlation_only_blocks_when_selected_ensembles_conflict() -> None:
     rows = candidates()
-    trend_primary = rows[0]["return_series"]
     breakout_primary = next(row for row in rows if row["material_id"] == "breakout.0")
-    breakout_primary["return_series"] = copy.deepcopy(trend_primary)
-    breakout_secondary = next(row for row in rows if row["material_id"] == "breakout.1")
-    breakout_secondary["return_series"] = {key: value * 0.99 for key, value in trend_primary.items()}
+    hybrid_primary = next(row for row in rows if row["material_id"] == "hybrid.0")
+    hybrid_secondary = next(row for row in rows if row["material_id"] == "hybrid.1")
+    hybrid_primary["return_series"] = copy.deepcopy(breakout_primary["return_series"])
+    hybrid_secondary["return_series"] = {
+        key: value * 0.99 for key, value in breakout_primary["return_series"].items()
+    }
     result = evaluate(rows, policy())
     assert result["status"] == "HOLD_P3_PORTFOLIO_GAPS"
     assert any(blocker.startswith("ACTIVE_PAIR_CORRELATION") for blocker in result["blockers"])

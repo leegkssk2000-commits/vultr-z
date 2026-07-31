@@ -1,0 +1,138 @@
+name: R7A4D Strategy11 Supertrend Parent Basis V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_supertrend_parent_basis_v1.py'
+      - '.github/workflows/r7a4d-strategy11-supertrend-parent-basis-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-supertrend-parent-basis-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+
+jobs:
+  parent-basis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Compile bounded parent child
+        run: python -m py_compile backend/tools/strategy11_supertrend_parent_basis_v1.py
+      - name: Restore exact immutable V3 archive
+        uses: actions/download-artifact@v4
+        with:
+          name: final-v3-prep-30588354565
+          path: input/prep
+          github-token: ${{ github.token }}
+          run-id: 30588354565
+      - name: Restore original strategy evidence authorities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence/batch-4 input/evidence/batch-5
+          gh run download 30252022416 --repo "$GITHUB_REPOSITORY" \
+            --name s11-evidence-batch-4-30252022416-attempt-1 \
+            --dir input/evidence/batch-4
+          gh run download 30252022416 --repo "$GITHUB_REPOSITORY" \
+            --name s11-evidence-batch-5-30252022416-attempt-1 \
+            --dir input/evidence/batch-5
+      - name: Restore broken V3 controls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/control/supertrend input/control/trend
+          gh run download 30588354565 --repo "$GITHUB_REPOSITORY" \
+            --name final-v3-supertrend_pullback-30588354565 \
+            --dir input/control/supertrend
+          gh run download 30596336496 --repo "$GITHUB_REPOSITORY" \
+            --name resume-v3-trend-rider-30596336496 \
+            --dir input/control/trend
+      - name: Verify immutable inputs and parent authority
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          archive=json.loads(Path('input/prep/archive/manifest.json').read_text())
+          assert archive['archive_sha256']=='985c8561016639b7ab4397bd8064cf3a67d8667db3a21797138aa5326291dbbd'
+          assert archive['window_count']==12 and archive['symbol_count']==5
+          assert archive['evaluation_symbol_bars']==40800 and len(archive['rows'])==60
+          for path in (
+              Path('input/evidence/batch-4/supertrend_pullback/summary.json'),
+              Path('input/evidence/batch-5/trend_rider/summary.json'),
+          ):
+              row=json.loads(path.read_text())
+              assert row['symbols']==['XRPUSDT','SOLUSDT']
+              assert row['candidate']['gate']['required']==[]
+              assert row['candidate']['gate']['forbidden']==[]
+              assert row.get('surgery') is None
+          registry=json.loads(Path('compute/backend/strategy25/canonical_strategy_registry_v1.json').read_text())
+          mapping={row['strategy_id']:row for row in registry['entries']}
+          for sid in ('supertrend_pullback','trend_rider'):
+              engine=mapping[sid]['canonical_engine']
+              path=Path('compute')/engine['implementation_path']
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==engine['source_sha256']
+          PY
+      - name: Replay official basis in immutable parent wrappers
+        run: |
+          mkdir -p out
+          python backend/tools/strategy11_supertrend_parent_basis_v1.py \
+            --compute-root compute \
+            --archive-root input/prep/archive \
+            --evidence-root input/evidence \
+            --control-root input/control \
+            --out out
+      - name: Assert terminal decomposition and blocked authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/final.json').read_text())
+          assert row['state']=='PASS_SUPERTREND_PARENT_BASIS_DECOMPOSITION'
+          assert row['parent_count']==2
+          assert row['canonical_parent_mutation_count']==0
+          assert {item['strategy_id'] for item in row['rows']}=={'supertrend_pullback','trend_rider'}
+          for item in row['rows']:
+              assert item['parent_symbols']==['XRPUSDT','SOLUSDT']
+              assert item['change_budget']==1
+              assert item['legacy_parent_modified'] is False
+              assert item['control']['trade_count']==0
+              assert item['control']['indicator_nan_count']==16296
+              assert item['repaired']['ab_parity']=='PASS'
+              assert item['repaired']['duplicate_trade_count']==0
+              assert item['repaired']['opportunity_diagnostics']['hold_reasons'].get(
+                  'st_pullback_indicator_nan' if item['strategy_id']=='supertrend_pullback' else 'trend_rider_indicator_nan', 0
+              )==0
+              assert item['promotion_authority'] is False
+              assert item['execution_allowed'] is False
+              assert item['execution_authority']=='NONE'
+              assert item['runtime_bound'] is False
+              assert item['order_authority']=='BLOCKED'
+              assert item['fresh_confirmation_required'] is True
+              assert item['w1_w2_w3_new_sealed_required'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-supertrend-parent-basis-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

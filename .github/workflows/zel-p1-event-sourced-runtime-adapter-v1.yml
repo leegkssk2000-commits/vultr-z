@@ -1,0 +1,82 @@
+name: ZEL P1 Event-Sourced Runtime Adapter V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "backend/contracts/zel_event_sourced_shadow_v2.py"
+      - "backend/runtime/zel_shadow_event_journal_v1.py"
+      - "backend/runtime/zel_shadow_event_journal_v2.py"
+      - "tools/zel_event_sourced_exact25_producer_v1.py"
+      - "tools/zel_event_sourced_exact25_producer_v2.py"
+      - "tools/zel_event_sourced_exact25_cutover_preflight_v1.py"
+      - "tests/test_zel_p1_event_sourced_runtime_adapter_v1.py"
+      - ".github/workflows/zel-p1-event-sourced-runtime-adapter-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p1-event-sourced-runtime-adapter-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pytest pandas
+
+      - name: Compile adapter
+        run: |
+          python -m py_compile \
+            backend/contracts/zel_event_sourced_shadow_v2.py \
+            backend/runtime/zel_shadow_event_journal_v1.py \
+            backend/runtime/zel_shadow_event_journal_v2.py \
+            tools/zel_event_sourced_exact25_producer_v1.py \
+            tools/zel_event_sourced_exact25_producer_v2.py \
+            tools/zel_event_sourced_exact25_cutover_preflight_v1.py \
+            tests/test_zel_p1_event_sourced_runtime_adapter_v1.py
+
+      - name: Run P1 adapter tests
+        run: python -m pytest -q tests/test_zel_p1_event_sourced_runtime_adapter_v1.py tests/test_zel_completion_foundation_v1.py
+
+      - name: Assert no private or live execution calls
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          paths=[
+              Path("tools/zel_event_sourced_exact25_producer_v1.py"),
+              Path("tools/zel_event_sourced_exact25_producer_v2.py"),
+              Path("backend/runtime/zel_shadow_event_journal_v2.py"),
+          ]
+          forbidden={
+              "create_order", "create_market_order", "create_limit_order", "cancel_order",
+              "set_leverage", "set_margin_mode", "fetch_balance", "fetch_positions",
+              "private_get", "private_post", "execute_order", "place_order",
+          }
+          found=[]
+          for path in paths:
+              tree=ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call):
+                      name=""
+                      if isinstance(node.func, ast.Name): name=node.func.id
+                      elif isinstance(node.func, ast.Attribute): name=node.func.attr
+                      if name in forbidden: found.append((str(path),name))
+          assert found==[],found
+          PY

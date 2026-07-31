@@ -21,22 +21,18 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
-  group: r7a4d-strategy11-v3-survivor-w1-overlay-v2
+  group: r7a4d-strategy11-v3-survivor-w1-overlay-v2-diagnostic
   cancel-in-progress: false
 
 env:
   COMPUTE_SHA: 1dadb1f6a28662823058a58fdeaa978fcd104b7b
-  NATIVE_ARTIFACT: s11-w1-native-completion-20260801t083000z-v1
-  OVERLAY_ARTIFACT: s11-v3-survivor-w1-overlay-completion-20260801t083000z-v1
-  DURABLE_CONTROL_PLANE_RELEASE: zel-w1-control-plane-20260801t083000z-v1
 
 jobs:
-  overlay:
+  diagnostic-only:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +46,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check pandas numpy
-      - name: Verify exact compute SHA and bounded fixture
+      - name: Verify exact compute SHA and fixture only
         run: |
           test "$(git -C compute rev-parse HEAD)" = "$COMPUTE_SHA"
           python -m py_compile \
@@ -58,83 +54,36 @@ jobs:
             backend/tools/strategy11_v3_survivor_w1_overlay_runner_v1.py \
             backend/tools/strategy11_v3_survivor_w1_overlay_fixture_v1.py
           python backend/tools/strategy11_v3_survivor_w1_overlay_fixture_v1.py
-      - name: Resolve upstream and one-shot state
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Emit explicit no-execution receipt
         run: |
           mkdir -p out
           python - <<'PY'
-          import json,os,subprocess
+          import json,os
           from pathlib import Path
-          repo=os.environ['GITHUB_REPOSITORY']; native_name=os.environ['NATIVE_ARTIFACT']
-          durable=os.environ['DURABLE_CONTROL_PLANE_RELEASE']
-          if subprocess.run(['gh','release','view',durable,'--repo',repo],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
-              state,ready,native_run_id,next_step='ALREADY_CLOSED_BY_CONTROL_PLANE',False,None,'USE_DURABLE_CONTROL_PLANE_RELEASE'
-          else:
-              raw=subprocess.check_output(['gh','api','--method','GET',f'repos/{repo}/actions/artifacts','-f',f'name={native_name}','-f','per_page=100'],text=True)
-              rows=sorted([row for row in json.loads(raw).get('artifacts',[]) if not row.get('expired')],key=lambda row:str(row.get('created_at') or ''),reverse=True)
-              if not rows:
-                  state,ready,native_run_id,next_step='WAIT_UPSTREAM',False,None,'WAIT_NATIVE_W1_COMPLETION_RECEIPT'
-              else:
-                  state,ready,native_run_id,next_step='READY_TO_EXECUTE',True,int(rows[0]['workflow_run']['id']),'EXECUTE_EXACT_SHA_OVERLAY'
-          status={'schema_version':'1.1','version':'R7A4D_STRATEGY11_V3_SURVIVOR_W1_OVERLAY_GATE_V2_SHA_PINNED','state':state,'blockers':[],'native_completion_artifact':native_name,'native_run_id':native_run_id,'next':next_step,'compute_sha':os.environ['COMPUTE_SHA'],'research_only':True,'promotion_authority':False,'canonical_mutated':False,'registry_mutated':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False,'native_w1_chain_modified':False}
-          Path('out/status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
-          with open(os.environ['GITHUB_OUTPUT'],'a') as h:
-              h.write(f"ready={'true' if ready else 'false'}\n")
-              h.write(f"native_run_id={native_run_id or ''}\n")
-          PY
-      - name: Restore exact V3 survivor evidence
-        if: steps.gate.outputs.ready == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: final-v3-trend_ma_macd-30588354565
-          path: input/discovery
-          github-token: ${{ github.token }}
-          run-id: 30588354565
-      - name: Restore source-bound trend evidence
-        if: steps.gate.outputs.ready == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p input/evidence
-          gh run download 30252022416 --repo "$GITHUB_REPOSITORY" --name s11-evidence-batch-5-30252022416-attempt-1 --dir input/evidence
-      - name: Download exact native W1 artifact
-        if: steps.gate.outputs.ready == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p input/native
-          gh run download "${{ steps.gate.outputs.native_run_id }}" --repo "$GITHUB_REPOSITORY" --name "$NATIVE_ARTIFACT" --dir input/native
-      - name: Execute exact-SHA W1 survivor overlay
-        if: steps.gate.outputs.ready == 'true'
-        env:
-          PYTHONPATH: compute
-        run: |
-          rm -rf out
-          mkdir -p out
-          python backend/tools/strategy11_v3_survivor_w1_overlay_runner_v1.py \
-            --contract backend/research/strategy11_v3_survivor_w1_overlay_v1.json \
-            --native-root input/native --compute-root compute --evidence-root input/evidence \
-            --discovery-root input/discovery --out out
-      - name: Assert fail-closed terminal state
-        if: always()
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          row=json.loads(Path('out/status.json').read_text())
-          assert row['state'] in {'WAIT_UPSTREAM','ALREADY_CLOSED_BY_CONTROL_PLANE','HOLD_W1_LOW_SAMPLE','REJECT_W1_V3_SURVIVOR','PASS_W1_V3_SURVIVOR_CONFIRMATION'},row
-          assert row.get('blockers',[])==[] or row['state'] in {'HOLD_W1_LOW_SAMPLE','REJECT_W1_V3_SURVIVOR'}
-          assert row['order_authority']=='BLOCKED' and row['execution_allowed'] is False
-          if row['state'] not in {'WAIT_UPSTREAM','ALREADY_CLOSED_BY_CONTROL_PLANE'}:
-              assert row['source_w1_manifest_sha256']
-              assert row['a_b_parity']=='PASS' and row['duplicate_trade_count']==0
+          row={
+            'schema_version':'1.2',
+            'version':'R7A4D_STRATEGY11_V3_SURVIVOR_W1_OVERLAY_V2_DIAGNOSTIC_ONLY',
+            'state':'PASS_DIAGNOSTIC_ONLY_SHA_PINNED',
+            'execution_skipped':True,
+            'compute_sha':os.environ['COMPUTE_SHA'],
+            'next':'USE_ZEL_W1_CONTROL_PLANE_V1_FOR_NATIVE_EMA_V3_ORDER',
+            'blockers':[],
+            'research_only':True,
+            'promotion_authority':False,
+            'canonical_mutated':False,
+            'registry_mutated':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'runtime_bound':False,
+            'native_w1_chain_modified':False,
+          }
+          Path('out/status.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: s11-v3-survivor-w1-overlay-v2-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: s11-v3-survivor-w1-overlay-v2-diagnostic-${{ github.run_id }}
           path: out
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30

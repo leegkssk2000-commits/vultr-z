@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import random
 from copy import deepcopy
 from pathlib import Path
@@ -95,14 +96,22 @@ def order_interaction_audit(
 ) -> dict[str, Any]:
     functions = selected_stage_functions(result, policy)
     canonical = [name for name in ("TEAM", "SKILL", "ZBOT", "ZICO", "LICO") if result["pipeline_decisions"][name]["applied"]]
-    orders = [tuple(canonical)] if len(canonical) <= 1 else list(itertools.permutations(canonical))
+    orders: list[tuple[str, ...]]
+    if len(canonical) <= 1:
+        orders = [tuple(canonical)]
+    else:
+        orders = list(itertools.permutations(canonical))
     outcomes = []
     for order in orders:
         final_rows, applied = apply_order(rows, order, functions, policy)
-        outcomes.append({"order": list(order), "applied": applied, "stats": core.stats(final_rows)})
+        outcomes.append({
+            "order": list(order),
+            "applied": applied,
+            "stats": core.stats(final_rows),
+        })
     nets = [core.number(row["stats"]["net_return_pct_sum"]) for row in outcomes]
     spread = max(nets) - min(nets) if nets else 0.0
-    applied_sets = {tuple(row["applied"]) for row in outcomes}
+    applied_sets = {frozenset(row["applied"]) for row in outcomes}
     limit = core.number((policy.get("claim_policy") or {}).get("order_spread_max_pct_points"), 0.20)
     order_stable = spread <= limit and len(applied_sets) <= 1
     return {
@@ -279,14 +288,58 @@ def run(args: argparse.Namespace) -> int:
 
 
 def fixture(out: Path) -> int:
-    source = out / "v2"
-    v2.fixture(source)
-    low = read_json(source / "low_sample_fixture_result.json")
-    assert low["state"] == "LOW_SAMPLE_HOLD"
-    result = read_json(source / "fixture_result.json")
-    assert int(result["control"]["stats"]["trade_count"]) == 24
-    assert result["order_authority"] == "BLOCKED"
-    print("PASS_COMPONENT_AUTONOMY_V3_WRAPPER_FIXTURE")
+    policy = read_json(Path(__file__).resolve().parents[1] / "research" / "zel_component_autonomy_policy_v3.json")
+    ledger, summary = v2._fixture_input(24)
+    result = v2.optimize(policy, ledger, summary)
+    rows = core.load_events(ledger, summary)
+    functions = selected_stage_functions(result, policy)
+    applied_order = [name for name in ("TEAM", "SKILL", "ZBOT", "ZICO", "LICO") if result["pipeline_decisions"][name]["applied"]]
+    final_rows, _ = apply_order(rows, applied_order, functions, policy)
+    gate = claim_gate(result, rows, final_rows, policy)
+    assert gate["claim_tier"] == "HYPOTHESIS_ONLY"
+    assert gate["performance_claim_allowed"] is False
+    assert gate["interaction_audit"]["tested_order_count"] >= 1
+    assert gate["interaction_audit"]["applied_set_count"] == 1
+
+    low_ledger, low_summary = v2._fixture_input(5)
+    low_result = v2.optimize(policy, low_ledger, low_summary)
+    low_rows = core.load_events(low_ledger, low_summary)
+    low_functions = selected_stage_functions(low_result, policy)
+    low_order = [name for name in ("TEAM", "SKILL", "ZBOT", "ZICO", "LICO") if low_result["pipeline_decisions"][name]["applied"]]
+    low_final, _ = apply_order(low_rows, low_order, low_functions, policy)
+    low_gate = claim_gate(low_result, low_rows, low_final, policy)
+    assert low_gate["claim_tier"] == "LOW_SAMPLE"
+    assert low_gate["performance_claim_allowed"] is False
+
+    result["schema_version"] = "3.0"
+    result["version"] = VERSION
+    result["claim_gate"] = gate
+    result["structure_state"] = "PASS_COMPONENT_STRUCTURE"
+    result["economic_state"] = gate["claim_tier"]
+    result["performance_claim_allowed"] = False
+    result["state"] = "HYPOTHESIS_ONLY_HOLD"
+    result["shadow_start_allowed"] = False
+    result["paper_allowed"] = False
+    result["live_allowed"] = False
+    result["result_sha256"] = core.stable_sha({key: value for key, value in result.items() if key != "result_sha256"})
+
+    low_result["schema_version"] = "3.0"
+    low_result["version"] = VERSION
+    low_result["claim_gate"] = low_gate
+    low_result["structure_state"] = "PASS_COMPONENT_STRUCTURE"
+    low_result["economic_state"] = low_gate["claim_tier"]
+    low_result["performance_claim_allowed"] = False
+    low_result["state"] = "LOW_SAMPLE_HOLD"
+    low_result["shadow_start_allowed"] = False
+    low_result["paper_allowed"] = False
+    low_result["live_allowed"] = False
+    low_result["result_sha256"] = core.stable_sha({key: value for key, value in low_result.items() if key != "result_sha256"})
+
+    write_json(out / "fixture_result_v3.json", result)
+    write_json(out / "low_sample_fixture_result_v3.json", low_result)
+    write_json(out / "fixture_claim_gate.json", gate)
+    write_json(out / "low_sample_claim_gate.json", low_gate)
+    print("PASS_COMPONENT_AUTONOMY_V3_CLAIM_GATE_FIXTURE")
     return 0
 
 

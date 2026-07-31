@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_1"
+VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_2"
 SAFE = {
     "research_only": True,
     "promotion_authority": False,
@@ -117,19 +117,29 @@ def audit(
         if active and axis not in {"BOT_POLICY", "TEAM_POLICY", "SKILL_PROFILE", "ADVISOR_PROFILE"}:
             findings.append(finding("UNKNOWN_AI_AXIS", "HIGH", axis))
 
-    if "Required material per-axis Groq and Workers AI review" not in workflow_text:
-        findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "V2 axis gate job missing"))
+    per_axis_bindings = (
+        "axis-ai-gate:" in workflow_text
+        and "zel_component_axis_ai_gate_v2.py prepare" in workflow_text
+        and "strategy11_ai_review_router.py" in workflow_text
+        and "PRE_REPLAY_COMPONENT_AXIS" in workflow_text
+        and "Groq" in workflow_text
+        and "Workers" in workflow_text
+    )
+    if not per_axis_bindings:
+        findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "stripped helper, router or axis job missing"))
     if "GEMINI_API_KEY" not in workflow_text or "zel_component_gemini_v2.py" not in workflow_text:
         findings.append(finding("GEMINI_DIRECT_VIDEO_NOT_EXECUTED", "CRITICAL", "actual Gemini execution missing"))
-    if "call_direct_video" not in gemini_text or "public_video_count" not in gemini_text:
+    if "call_direct_video" not in gemini_text or "public_video_count" not in gemini_text or "independent_channel_count" not in gemini_text:
         findings.append(finding("GEMINI_EVIDENCE_RECEIPT_INCOMPLETE", "HIGH", "direct-video receipt fields missing"))
+    if "same_fingerprint_repeat_forbidden" not in gemini_text or "SKIP_UNCHANGED_COMPONENT_FINGERPRINT" not in workflow_text:
+        findings.append(finding("GEMINI_FINGERPRINT_DEDUP_NOT_BOUND", "HIGH", "repeat guard missing"))
     if diagnostic_path.exists():
         findings.append(finding("DIAGNOSTIC_WORKFLOW_RESIDUE", "MEDIUM", str(diagnostic_path)))
 
     rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
     counts = {severity: sum(row["severity"] == severity for row in findings) for severity in rank}
     report = {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "version": VERSION,
         "state": "PASS_COMPONENT_PIPELINE_AUDIT_V2" if not findings else "HOLD_COMPONENT_PIPELINE_V2_REPAIR_REQUIRED",
         "finding_count": len(findings),
@@ -145,7 +155,7 @@ def audit(
             "LICO",
             "ZLICE_LINEAGE",
             "ORDERED_ATTRIBUTION",
-            "MATERIAL_AXIS_AI",
+            "STRIPPED_MATERIAL_AXIS_AI",
             "BOUNDED_GEMINI_DIRECT_VIDEO",
             "SHADOW_BLOCKED",
         ],
@@ -155,6 +165,7 @@ def audit(
             "low_sample_hold": low_sample,
             "eligible_ai_axes": sorted(axis for axis, active in eligibility.items() if active),
             "interaction_residual": residual,
+            "per_axis_gate_bound": per_axis_bindings,
         },
         "next": "WAIT_NEW_EXACT_LEDGER_OR_W1" if not findings else "FIX_FINDINGS_BEFORE_MERGE",
         **SAFE,

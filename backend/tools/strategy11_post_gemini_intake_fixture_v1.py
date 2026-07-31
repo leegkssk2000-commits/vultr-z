@@ -5,7 +5,7 @@ import tempfile
 from argparse import Namespace
 from pathlib import Path
 
-from backend.tools import strategy11_post_gemini_intake_v1 as subject
+import strategy11_post_gemini_intake_v1 as subject
 
 
 def dump(path: Path, value: dict) -> None:
@@ -20,9 +20,13 @@ def reviews():
     rows=[]
     for i in range(24):
         sid=f"strategy_{i:02d}"
-        verdict="NO_ACTION"; candidate=None; reason="NO_BOUNDED_IMPROVEMENT"
-        if i in (0,1,2): verdict="SELECT_REPLAY"; candidate=f"CAND_{i}"; reason="BOUNDED_HYPOTHESIS"
-        if i in (22,23): verdict="NEW_CHILD_REQUIRED"; reason="BASIS_REJECT"
+        verdict="NO_ACTION"
+        candidate=None
+        reason="NO_BOUNDED_IMPROVEMENT"
+        if i in (0,1,2):
+            verdict="SELECT_REPLAY"; candidate=f"CAND_{i}"; reason="BOUNDED_HYPOTHESIS"
+        if i in (22,23):
+            verdict="NEW_CHILD_REQUIRED"; reason="BASIS_REJECT"
         rows.append({"strategy_id":sid,"verdict":verdict,"selected_candidate_id":candidate,"causal_reason":reason,"overfit_risk":"MEDIUM","video_source_indexes":[1,2] if candidate else []})
     return rows
 

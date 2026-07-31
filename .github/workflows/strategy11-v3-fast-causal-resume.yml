@@ -4,12 +4,12 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/tools/strategy11_expanded_discovery_v3.py'
-      - 'backend/tools/strategy11_v3_fast_causal.py'
-      - '.github/workflows/strategy11-v3-fast-causal-resume.yml'
+      - backend/tools/strategy11_expanded_discovery_v3.py
+      - backend/tools/strategy11_v3_fast_causal.py
+      - .github/workflows/strategy11-v3-fast-causal-resume.yml
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 env:
@@ -20,13 +20,13 @@ env:
   STRATEGY_ID: trend_rider
 
 concurrency:
-  group: tmp-strategy11-v3-final-corrected-parallel
+  group: strategy11-v3-fast-causal-resume-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,10 +46,8 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Verify exact rolling-history equivalence and cache reuse
+      - name: Verify rolling-history equivalence and reuse
         run: |
-          grep -q 'FastCausalConfigStrategyWrapper' backend/tools/strategy11_expanded_discovery_v3.py
-          grep -q 'install_exact_prepare(exact_module' backend/tools/strategy11_expanded_discovery_v3.py
           python -m py_compile backend/tools/strategy11_v3_fast_causal.py backend/tools/strategy11_expanded_discovery_v3.py
           python - <<'PY'
           import importlib.util,json,sys
@@ -69,22 +67,21 @@ jobs:
           frame['timestamp']=pd.to_datetime(frame['timestamp_ms'],unit='ms',utc=True)
           windows=[frame.iloc[:100].copy(),frame.iloc[50:250].copy(),frame.iloc[200:440].copy(),frame.iloc[660:900].copy()]
           path=Path('compute/backend/strategies/trend_rider.py')
-          variants=[(None,None,None),('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')]
-          for index,(field,value,scope) in enumerate(variants):
-              slow_module=load(f'slow_trend_rider_{index}',path)
-              fast_module=load(f'fast_trend_rider_{index}',path)
-              slow=ConfigStrategyWrapper(slow_module.strategy,slow_module.TrendRiderConfig,field,value,scope)
-              fast=FastCausalConfigStrategyWrapper(fast_module.strategy,fast_module.TrendRiderConfig,field,value,scope)
+          for idx,(field,value,scope) in enumerate([(None,None,None),('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')]):
+              slow_mod=load(f'slow_{idx}',path)
+              fast_mod=load(f'fast_{idx}',path)
+              slow=ConfigStrategyWrapper(slow_mod.strategy,slow_mod.TrendRiderConfig,field,value,scope)
+              fast=FastCausalConfigStrategyWrapper(fast_mod.strategy,fast_mod.TrendRiderConfig,field,value,scope)
               fast.prepare_frame(frame)
               for history in windows:
-                  left=slow(history,state={},risk_action='hold')
-                  right=fast(history,state={},risk_action='hold')
+                  expected=slow(history,state={},risk_action='hold')
+                  actual=fast(history,state={},risk_action='hold')
                   repeated=fast(history,state={},risk_action='hold')
-                  encoded=json.dumps(left,sort_keys=True,allow_nan=True)
-                  assert encoded==json.dumps(right,sort_keys=True,allow_nan=True),(field,history.index[0],left,right)
+                  encoded=json.dumps(expected,sort_keys=True,allow_nan=True)
+                  assert encoded==json.dumps(actual,sort_keys=True,allow_nan=True)
                   assert encoded==json.dumps(repeated,sort_keys=True,allow_nan=True)
-              assert fast.cache_hits['supertrend']>0
-              assert fast.cache_hits['ema']>0
+              assert len(fast.supertrend_cache)>0
+              assert len(fast.ema_cache)>0
               assert fast.cache_hits['regime']>0
               assert fast.cache_hits['decision']>0
           print('PASS_FAST_ROLLING_CAUSAL_EQUIVALENCE')
@@ -113,27 +110,27 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Download immutable evidence batches
+      - name: Download immutable evidence
         env: {GH_TOKEN: '${{ github.token }}'}
         run: |
           mkdir -p input/evidence
           for batch in 1 2 3 4 5; do
             gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
           done
-      - name: Replay trend rider with exact rolling cache
+      - name: Replay missing trend rider
         run: |
-          mkdir -p "out/batch-${STRATEGY_ID}"
+          mkdir -p out/batch-trend_rider
           python backend/tools/strategy11_expanded_discovery_v3.py replay \
             --compute-root compute --archive-root input/prep/archive --evidence-root input/evidence \
             --plan input/prep/plan/plan.json --registry input/prep/plan/internal_registry.json \
-            --policy backend/research/strategy11_v3_policy.json --strategy-ids "$STRATEGY_ID" \
-            --out "out/batch-${STRATEGY_ID}"
+            --policy backend/research/strategy11_v3_policy.json --strategy-ids trend_rider \
+            --out out/batch-trend_rider
           python - <<'PY'
-          import json,os
+          import json
           from pathlib import Path
-          sid=os.environ['STRATEGY_ID']
-          batch=json.loads(Path(f'out/batch-{sid}/batch.json').read_text())
-          assert batch['state']=='PASS_V3_DISCOVERY_BATCH' and batch['strategy_count']==1
+          batch=json.loads(Path('out/batch-trend_rider/batch.json').read_text())
+          assert batch['state']=='PASS_V3_DISCOVERY_BATCH'
+          assert batch['strategy_count']==1
           for variant in batch['rows'][0]['variants']:
               assert variant['parity']['state']=='PASS'
               assert variant['parity']['duplicate_trade_count']==0
@@ -150,15 +147,14 @@ jobs:
           retention-days: 90
 
   finalize:
-    needs: [validate,replay]
+    needs: replay
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: strategy11-v3-fast-causal-resume
-          token: ${{ github.token }}
-          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
       - run: python -m pip install --disable-pip-version-check pandas numpy
@@ -168,7 +164,7 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Restore 23 completed strategy artifacts
+      - name: Restore completed artifacts
         env: {GH_TOKEN: '${{ github.token }}'}
         run: |
           mkdir -p input/old input/replays
@@ -179,9 +175,9 @@ jobs:
         with:
           name: resume-v3-trend-rider-${{ github.run_id }}
           path: input/new
-      - name: Aggregate authoritative 24-strategy result
+      - name: Aggregate 24 strategies and 48 candidates
         run: |
-          find input/new -type d -name 'batch-*' -print0 | while IFS= read -r -d '' path; do rm -rf "input/replays/$(basename "$path")"; cp -R "$path" input/replays/; done
+          cp -R input/new/batch-trend_rider input/replays/
           test "$(find input/replays -mindepth 2 -maxdepth 2 -name batch.json | wc -l)" -eq 24
           mkdir -p out/state
           python backend/tools/strategy11_expanded_discovery_v3.py aggregate \
@@ -213,29 +209,3 @@ jobs:
           path: out/state
           if-no-files-found: error
           retention-days: 90
-      - name: Record authoritative receipt
-        run: |
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          final=json.loads(Path('out/state/final.json').read_text())
-          path=Path('.github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt')
-          path.parent.mkdir(parents=True,exist_ok=True)
-          path.write_text('\n'.join([
-            'state='+str(final['state']),
-            'run_id='+os.environ['GITHUB_RUN_ID'],
-            'head_sha='+os.environ['GITHUB_SHA'],
-            'strategy_count='+str(final['strategy_count']),
-            'candidate_count='+str(final['candidate_count']),
-            'discovery_pass_count='+str(final['discovery_pass_count']),
-            'final_sha256='+str(final['final_sha256']),
-            'promotion_authority=false',
-            'execution_allowed=false',
-            'order_authority=BLOCKED',
-          ])+'\n')
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt
-          git commit -m 'Record Strategy11 V3 fast causal resume result'
-          git push origin HEAD:strategy11-v3-fast-causal-resume

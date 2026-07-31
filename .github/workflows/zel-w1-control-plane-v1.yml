@@ -1,0 +1,289 @@
+name: ZEL W1 Control Plane V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/zel_control_plane_hardening_v1.py'
+      - 'backend/research/zel_control_plane_hardening_v1.json'
+      - 'backend/tools/zel_component_autonomy_v3_runner.py'
+      - 'backend/research/zel_component_autonomy_policy_v3.json'
+      - '.github/workflows/zel-w1-control-plane-v1.yml'
+      - '.github/workflows/zel-component-autonomy-v3.yml'
+      - '.github/workflows/r7a4d-strategy11-w1-boundary-accelerator-v1.yml'
+      - '.github/workflows/r7a4d-strategy11-v3-survivor-w1-overlay-v2.yml'
+      - 'backend/tools/strategy11_w1_one_shot_gate_v1.py'
+  workflow_run:
+    workflows: ['R7A4D Strategy11 W1 Native Orchestrator V1']
+    types: [completed]
+    branches: [master]
+  schedule:
+    - cron: '29 9 1 8 *'
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Optional exact native completion run ID
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-w1-control-plane-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  NATIVE_ARTIFACT: s11-w1-native-completion-20260801t083000z-v1
+  NATIVE_RELEASE_TAG: zel-w1-native-20260801t083000z-v1
+  CONTROL_PLANE_RELEASE_TAG: zel-w1-control-plane-20260801t083000z-v1
+  EMA_SHA: ad3b073217d3925e713988a779e988ed8b5799a2
+  V3_COMPUTE_SHA: 1dadb1f6a28662823058a58fdeaa978fcd104b7b
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run deterministic control-plane fixture
+        run: |
+          python -m py_compile \
+            backend/tools/zel_control_plane_hardening_v1.py \
+            backend/tools/zel_component_autonomy_v3_runner.py \
+            backend/tools/strategy11_w1_one_shot_gate_v1.py
+          python -m json.tool backend/research/zel_control_plane_hardening_v1.json >/dev/null
+          python -m json.tool backend/research/zel_component_autonomy_policy_v3.json >/dev/null
+          python backend/tools/zel_control_plane_hardening_v1.py fixture \
+            --contract backend/research/zel_control_plane_hardening_v1.json \
+            --out out/fixture
+      - name: Run expanded static audit
+        run: |
+          python backend/tools/zel_control_plane_hardening_v1.py audit \
+            --contract backend/research/zel_control_plane_hardening_v1.json \
+            --accelerator .github/workflows/r7a4d-strategy11-w1-boundary-accelerator-v1.yml \
+            --native-gate backend/tools/strategy11_w1_one_shot_gate_v1.py \
+            --v3-workflow .github/workflows/r7a4d-strategy11-v3-survivor-w1-overlay-v2.yml \
+            --component-workflow .github/workflows/zel-component-autonomy-v3.yml \
+            --control-workflow .github/workflows/zel-w1-control-plane-v1.yml \
+            --component-wrapper backend/tools/zel_component_autonomy_v3_runner.py \
+            --notifier .github/workflows/zel-state-aware-control-feed-v1.yml \
+            --authority-registry backend/research/zel_execution_authority_registry_v1.json \
+            --out out/audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/audit.json').read_text())
+          assert row['state']=='PASS_ZEL_CONTROL_PLANE_HARDENING_AUDIT',row['findings']
+          assert row['finding_count']==0
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-w1-control-plane-v1-fixture-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+
+  close:
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      ready: ${{ steps.native.outputs.ready }}
+      project_state: ${{ steps.bind.outputs.project_state }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Resolve exact native completion artifact
+        id: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.native_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/native out
+          candidates=()
+          if [ -n "${INPUT_RUN_ID:-}" ]; then candidates+=("$INPUT_RUN_ID"); fi
+          if [ -n "${EVENT_RUN_ID:-}" ]; then candidates+=("$EVENT_RUN_ID"); fi
+          while IFS= read -r id; do [ -n "$id" ] && candidates+=("$id"); done < <(
+            gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow r7a4d-strategy11-w1-native-orchestrator-v1.yml \
+              --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true
+          )
+          selected=
+          for run in "${candidates[@]}"; do
+            rm -rf input/native/*
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+              --name "$NATIVE_ARTIFACT" --dir input/native 2>/dev/null; then
+              selected="$run"; break
+            fi
+          done
+          if [ -z "$selected" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          row={'schema_version':'zel.project_state.v1','state':'WAIT_NATIVE_PASS',
+               'next':'WAIT_NATIVE_COMPLETION_ARTIFACT','research_only':True,
+               'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,
+               'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False,
+               'shadow_start_allowed':False,'paper_allowed':False,'live_allowed':False}
+          Path('out/project_state_latest.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+          PY
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$selected" >> "$GITHUB_OUTPUT"
+      - name: Build and seal durable native receipt
+        if: steps.native.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python backend/tools/zel_control_plane_hardening_v1.py seal-native \
+            --contract backend/research/zel_control_plane_hardening_v1.json \
+            --native-root input/native --out out/durable_native_receipt.json
+          NATIVE_HEAD_SHA=$(python -c "import json;print(json.load(open('out/durable_native_receipt.json'))['source_w1_head_sha'])")
+          if gh release view "$NATIVE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p input/existing-native
+            gh release download "$NATIVE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern durable_native_receipt.json --dir input/existing-native
+            cmp out/durable_native_receipt.json input/existing-native/durable_native_receipt.json
+          else
+            gh release create "$NATIVE_RELEASE_TAG" out/durable_native_receipt.json \
+              --repo "$GITHUB_REPOSITORY" --target "$NATIVE_HEAD_SHA" \
+              --title "ZEL Strategy11 durable W1 native receipt" \
+              --notes "Immutable research-only W1 completion receipt. No runtime, Shadow, Paper, Live or order authority."
+          fi
+      - name: Checkout exact EMA authority
+        if: steps.native.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EMA_SHA }}
+          path: ema
+          persist-credentials: false
+      - name: Verify exact EMA head and download immutable inputs
+        if: steps.native.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git -C ema rev-parse HEAD)" = "$EMA_SHA"
+          mkdir -p input/ema-evidence input/ema-authority
+          gh run download 30252022416 --repo "$GITHUB_REPOSITORY" \
+            --name s11-evidence-batch-1-30252022416-attempt-1 --dir input/ema-evidence
+          gh run download 30282056363 --repo "$GITHUB_REPOSITORY" \
+            --name s11-ema-repair-v2-30282056363-attempt-1 --dir input/ema-authority
+      - name: Execute EMA on exact native shared W1
+        if: steps.native.outputs.ready == 'true'
+        run: |
+          mkdir -p out/ema
+          NATIVE_RUN=$(python -c "import json;print(json.load(open('input/native/native-out/status.json'))['source_w1_run_id'])")
+          NATIVE_HEAD=$(python -c "import json;print(json.load(open('input/native/native-out/status.json'))['source_w1_head_sha'])")
+          PYTHONPATH=ema python ema/backend/tools/r7a4d_strategy11_ema_primary_w1_causal_replay_v1.py \
+            --root ema \
+            --source-root input/native/shared-w1 \
+            --baseline-summary input/ema-evidence/ema_ribbon_scalp/summary.json \
+            --ema-authority-root input/ema-authority \
+            --policy ema/backend/research/ema_primary_w1_causal_replay_v1.json \
+            --out out/ema \
+            --source-run-id "$NATIVE_RUN" \
+            --source-head-sha "$NATIVE_HEAD"
+      - name: Checkout exact V3 compute authority
+        if: steps.native.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.V3_COMPUTE_SHA }}
+          path: compute
+          persist-credentials: false
+      - name: Verify V3 compute head and restore immutable evidence
+        if: steps.native.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git -C compute rev-parse HEAD)" = "$V3_COMPUTE_SHA"
+          mkdir -p input/v3-discovery input/v3-evidence
+          gh run download 30588354565 --repo "$GITHUB_REPOSITORY" \
+            --name final-v3-trend_ma_macd-30588354565 --dir input/v3-discovery
+          gh run download 30252022416 --repo "$GITHUB_REPOSITORY" \
+            --name s11-evidence-batch-5-30252022416-attempt-1 --dir input/v3-evidence
+      - name: Execute V3 survivor overlay after EMA
+        if: steps.native.outputs.ready == 'true'
+        run: |
+          mkdir -p out/v3
+          PYTHONPATH=compute:. python backend/tools/strategy11_v3_survivor_w1_overlay_runner_v1.py \
+            --contract backend/research/strategy11_v3_survivor_w1_overlay_v1.json \
+            --native-root input/native \
+            --compute-root compute \
+            --evidence-root input/v3-evidence \
+            --discovery-root input/v3-discovery \
+            --out out/v3
+      - name: Bind one exact component authority and project SSOT
+        id: bind
+        if: steps.native.outputs.ready == 'true'
+        run: |
+          python backend/tools/zel_control_plane_hardening_v1.py bind \
+            --contract backend/research/zel_control_plane_hardening_v1.json \
+            --native-root input/native \
+            --ema-status out/ema/status.json \
+            --v3-root out/v3 \
+            --out out
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          row=json.loads(Path('out/project_state_latest.json').read_text())
+          assert row['state']=='PASS_W1_CONTROL_PLANE_CLOSED',row
+          assert row['component_authority']['component_dispatch_allowed'] is True
+          assert row['performance_claim_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as h:
+              h.write(f"project_state={row['state']}\n")
+          PY
+      - name: Seal durable control-plane state
+        if: steps.native.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C out/component-authority . | gzip -n > out/component-authority.tar.gz
+          NATIVE_HEAD_SHA=$(python -c "import json;print(json.load(open('out/durable_native_receipt.json'))['source_w1_head_sha'])")
+          if gh release view "$CONTROL_PLANE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p input/existing-control
+            gh release download "$CONTROL_PLANE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern project_state_latest.json --pattern component-authority.tar.gz --dir input/existing-control
+            cmp out/project_state_latest.json input/existing-control/project_state_latest.json
+            cmp out/component-authority.tar.gz input/existing-control/component-authority.tar.gz
+          else
+            gh release create "$CONTROL_PLANE_RELEASE_TAG" \
+              out/project_state_latest.json out/durable_native_receipt.json out/component-authority.tar.gz \
+              --repo "$GITHUB_REPOSITORY" --target "$NATIVE_HEAD_SHA" \
+              --title "ZEL W1 control-plane closure" \
+              --notes "Native→EMA→V3→exact authority binder. Research-only; performance claims and all execution authority remain blocked."
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-w1-control-plane-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+      - name: Dispatch Component Autonomy V3
+        if: steps.native.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run zel-component-autonomy-v3.yml --repo "$GITHUB_REPOSITORY" --ref master \
+            -f authority_run_id="$GITHUB_RUN_ID" \
+            -f authority_artifact="zel-w1-control-plane-v1-${GITHUB_RUN_ID}"

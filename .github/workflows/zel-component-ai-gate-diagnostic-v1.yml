@@ -1,0 +1,71 @@
+name: ZEL Component AI Gate Diagnostic V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-component-ai-gate-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore exact successful component state
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-component-autonomy-state-30631629312
+          path: input/state
+          github-token: ${{ github.token }}
+          run-id: '30631629312'
+      - name: Execute and preserve provider artifacts
+        id: gate
+        continue-on-error: true
+        env:
+          PYTHONPATH: .
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out/ai
+          set +e
+          python scripts/strategy11_ai_review_router.py \
+            --stage GLOBAL_CLASSIFICATION --mode execute \
+            --input input/state/ai_input.json --output out/ai/review.json
+          rc=$?
+          echo "router_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Summarize blocker without exposing secrets
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/ai/review.json').read_text())
+          print('status=',row.get('status'))
+          print('blockers=',row.get('blocker_codes'))
+          for provider,result in row.get('provider_results',{}).items():
+              artifact=result.get('artifact',{}) if isinstance(result,dict) else {}
+              print(provider,'returncode=',result.get('returncode') if isinstance(result,dict) else None,'status=',result.get('status') if isinstance(result,dict) else None,'artifact_status=',artifact.get('status'),'blocker=',artifact.get('blocker_code'))
+          assert row.get('promotion_authority') is False
+          assert row.get('execution_allowed') is False
+          assert row.get('order_authority')=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-ai-gate-diagnostic-${{ github.run_id }}
+          path: out/ai
+          if-no-files-found: error
+          retention-days: 7

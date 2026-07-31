@@ -54,3 +54,10 @@ def test_request_and_registry_are_fail_closed():
     assert len(registry["sources"]) >= 6
     assert len({row["channel"] for row in registry["sources"]}) >= 5
     assert registry["selection_policy"]["view_count_is_discovery_weight_not_truth"] is True
+    assert registry["selection_policy"]["overlong_video_direct_request_forbidden"] is True
+    deferred = registry["deferred_sources"]
+    assert len(deferred) == 1
+    assert deferred[0]["direct_video_used"] is False
+    assert deferred[0]["deferred_reason"] == "OVERLONG_DIRECT_VIDEO_FRAME_LIMIT_REQUIRES_CLIP_OR_FPS_PIPELINE"
+    direct_urls = {row["url"] for row in registry["sources"]}
+    assert deferred[0]["url"] not in direct_urls

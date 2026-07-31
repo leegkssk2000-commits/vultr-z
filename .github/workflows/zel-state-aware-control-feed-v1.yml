@@ -1,0 +1,82 @@
+name: ZEL State-Aware Control Feed V1
+
+on:
+  workflow_run:
+    workflows:
+      - ZEL W1 Control Plane V1
+      - ZEL Component Autonomy V3
+    types: [completed]
+    branches: [master]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  inspect-terminal-artifact:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download exact terminal artifact and classify
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          if [ "$WORKFLOW_NAME" = "ZEL W1 Control Plane V1" ]; then
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "zel-w1-control-plane-v1-${RUN_ID}" --dir input
+            FILE=$(find input -name project_state_latest.json -print -quit)
+          else
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "zel-component-autonomy-v3-state-${RUN_ID}" --dir input
+            FILE=$(find input -path '*/state/final.json' -print -quit)
+          fi
+          test -n "$FILE"
+          python - "$FILE" "$WORKFLOW_NAME" >> "$GITHUB_OUTPUT" <<'PY'
+          import json,sys
+          row=json.load(open(sys.argv[1])); workflow=sys.argv[2]; state=str(row.get('state'))
+          fingerprint=str(row.get('data_fingerprint') or row.get('project_state_sha256') or row.get('source_w1_manifest_sha256') or 'none')
+          if workflow=='ZEL W1 Control Plane V1':
+              notify=state=='PASS_W1_CONTROL_PLANE_CLOSED' or state.startswith('HOLD')
+          else:
+              notify=state.startswith('HOLD') or state in {'LOW_SAMPLE_HOLD','HYPOTHESIS_ONLY_HOLD'}
+          print(f"notify={'true' if notify else 'false'}")
+          print(f"state={state}")
+          print(f"fingerprint={fingerprint}")
+          print(f"economic_state={row.get('economic_state',row.get('claim_gate',{}).get('claim_tier','unknown'))}")
+          PY
+      - name: Post one state transition receipt
+        if: steps.classify.outputs.notify == 'true'
+        uses: actions/github-script@v7
+        env:
+          STATE: ${{ steps.classify.outputs.state }}
+          FINGERPRINT: ${{ steps.classify.outputs.fingerprint }}
+          ECONOMIC_STATE: ${{ steps.classify.outputs.economic_state }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issueNumber = 417;
+            const run = context.payload.workflow_run;
+            const marker = `<!-- zel-state:${run.name}:${process.env.STATE}:${process.env.FINGERPRINT} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber, per_page: 100
+            });
+            if (comments.some(c => (c.body || '').includes(marker))) return;
+            const body = [
+              marker,
+              '@leegkssk2000-commits',
+              '',
+              `**${run.name} — ${process.env.STATE}**`,
+              `- economic_state: \`${process.env.ECONOMIC_STATE}\``,
+              `- fingerprint: \`${process.env.FINGERPRINT.slice(0,16)}\``,
+              `- run: [${run.id}](${run.html_url})`,
+              '- authority: `research_only / execution=NONE / order=BLOCKED`',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber, body
+            });

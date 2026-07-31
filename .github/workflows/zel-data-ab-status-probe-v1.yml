@@ -1,0 +1,147 @@
+name: ZEL Data A+B Status Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-ab-status-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-ab-status-probe-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-ab-status-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate fixed probe contract
+        run: |
+          set -euo pipefail
+          grep -q 'EXPECTED_SOURCE_SHA=e5aba8105ba510494491f4c3d7aac8590ba8b9d8' .github/workflows/zel-data-ab-status-probe-v1.yml
+          grep -q 'zel_data_ab_expansion_result.json' .github/workflows/zel-data-ab-status-probe-v1.yml
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_SOURCE_SHA: e5aba8105ba510494491f4c3d7aac8590ba8b9d8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Wait for terminal VPS result
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 150); do
+            if ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "test -s /tmp/zel_data_ab_expansion_result.json && \
+               python3 -c \"import json;d=json.load(open('/tmp/zel_data_ab_expansion_result.json'));assert d.get('source_sha')=='${EXPECTED_SOURCE_SHA}'\""; then
+              echo "Terminal result found at attempt ${attempt}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'TERMINAL_RESULT_TIMEOUT' >&2
+          exit 1
+
+      - name: Fetch terminal result
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_ab_expansion_result.json" \
+            result/latest.json
+
+      - name: Validate source identity
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads(Path('result/latest.json').read_text())
+          assert d.get('source_sha')==os.environ['EXPECTED_SOURCE_SHA'], d
+          assert d.get('execution_authority')=='NONE', d
+          assert d.get('order_authority')=='BLOCKED', d
+          assert d.get('paper_enabled') is False, d
+          assert d.get('live_enabled') is False, d
+          PY
+
+      - name: Checkout result branch
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish PASS or HOLD result
+        if: always()
+        run: |
+          set -euo pipefail
+          test -s result/latest.json
+          mkdir -p results-branch/runtime_results/zel/data_ab_expansion_v1
+          cp result/latest.json results-branch/runtime_results/zel/data_ab_expansion_v1/latest.json
+          cp result/latest.json "results-branch/runtime_results/zel/data_ab_expansion_v1/probe_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-data-ab-probe-bot'
+          git config user.email 'zel-data-ab-probe-bot@users.noreply.github.com'
+          git add runtime_results/zel/data_ab_expansion_v1
+          if git diff --cached --quiet; then
+            echo 'No result delta.'
+            exit 0
+          fi
+          state=$(python -c "import json;print(json.load(open('runtime_results/zel/data_ab_expansion_v1/latest.json')).get('state','UNKNOWN'))")
+          git commit -m "result(zel): data A+B terminal ${state} ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Assert PASS terminal state
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/latest.json').read_text())
+          assert d['state']=='PASS', d
+          assert d['verdict']=='DATA_A_FORWARD_EXPANSION_AND_B_HISTORICAL_OOS_READY', d
+          PY
+
+      - name: Upload probe artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-data-ab-status-probe-v1-${{ github.run_id }}
+          path: result
+          if-no-files-found: error
+          retention-days: 30

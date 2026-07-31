@@ -1,0 +1,91 @@
+name: ZEL P1-P6 Completion Foundation V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "backend/contracts/zel_strategy_lifecycle_v1.py"
+      - "backend/contracts/zel_event_sourced_shadow_v1.py"
+      - "backend/research/zel_strategy_lifecycle_registry_v1.py"
+      - "backend/research/zel_completion_program_v1.json"
+      - "backend/research/zel_oms_state_machine_v1.py"
+      - "backend/research/zel_promotion_gates_v1.py"
+      - "backend/tools/zel_pipeline_bottleneck_cleanup_audit_v1.py"
+      - "backend/tools/zel_completion_foundation_fixture_v1.py"
+      - "tests/test_zel_completion_foundation_v1.py"
+      - ".github/workflows/zel-p1-p6-completion-foundation-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p1-p6-completion-foundation-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile foundation
+        run: |
+          python -m py_compile \
+            backend/contracts/zel_strategy_lifecycle_v1.py \
+            backend/contracts/zel_event_sourced_shadow_v1.py \
+            backend/research/zel_strategy_lifecycle_registry_v1.py \
+            backend/research/zel_oms_state_machine_v1.py \
+            backend/research/zel_promotion_gates_v1.py \
+            backend/tools/zel_pipeline_bottleneck_cleanup_audit_v1.py \
+            backend/tools/zel_completion_foundation_fixture_v1.py \
+            tests/test_zel_completion_foundation_v1.py
+          python -m json.tool backend/research/zel_completion_program_v1.json >/dev/null
+
+      - name: Run deterministic contract tests
+        run: python -m pytest -q tests/test_zel_completion_foundation_v1.py
+
+      - name: Execute integrated fixture and cleanup baseline
+        run: python backend/tools/zel_completion_foundation_fixture_v1.py
+
+      - name: Assert blocked authority and fixture-only boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result=json.loads(Path("artifacts/zel_completion_foundation_v1/fixture_result.json").read_text())
+          assert result["state"]=="PASS_ZEL_COMPLETION_FOUNDATION_FIXTURE"
+          assert result["fixture_only"] is True
+          assert result["strategy_count"]==25
+          assert result["observer_allowed_count"]==25
+          assert result["capital_allowed_count"]==0
+          assert result["event_lineage_coverage_pct"]==100.0
+          assert result["oms_terminal_state"]=="CLOSED"
+          assert result["real_completion_fixture_rejected"] is True
+          assert result["execution_authority"]=="NONE"
+          assert result["order_authority"]=="BLOCKED"
+          assert result["runtime_bound"] is False
+          assert result["paper_allowed"] is False
+          assert result["live_allowed"] is False
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p1-p6-completion-foundation-v1-${{ github.run_id }}
+          path: artifacts/zel_completion_foundation_v1
+          if-no-files-found: error
+          retention-days: 90

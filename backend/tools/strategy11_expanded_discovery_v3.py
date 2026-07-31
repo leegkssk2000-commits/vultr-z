@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from backend.tools.strategy11_regime_edge_router_v3 import ConfigStrategyWrapper
+from backend.tools.strategy11_v3_fast_causal import FastCausalConfigStrategyWrapper as ConfigStrategyWrapper, install_exact_prepare
 from backend.tools.strategy11_long_short_observer_v3 import replay as replay_long_short
 
 VERSION = "STRATEGY11_EXPANDED_DISCOVERY_V3"
@@ -219,7 +219,7 @@ def discovery_replay(args: argparse.Namespace) -> int:
     plan = read_json(Path(args.plan).resolve())
     registry = read_json(Path(args.registry).resolve())
     policy = read_json(Path(args.policy).resolve())
-    exact = exact_module(compute_root)
+    exact = install_exact_prepare(exact_module(compute_root))
     prior = load_module("s11_v3_prior", compute_root / "backend/tools/r7a4d_strategy11_gemini_22_prework_v1_1.py").v1
     canonical = exact.base._load_registry(compute_root)
     registry_map = {str(row["strategy_id"]): row for row in registry["rows"]}

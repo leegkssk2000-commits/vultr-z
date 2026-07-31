@@ -1,15 +1,17 @@
-name: Strategy11 Groq Anonymization Guard V2
+name: Strategy11 Provider Guard V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_github_models_review.py'
       - '.github/workflows/strategy11-groq-anonymization-guard-v2.yml'
   push:
     branches: [master]
     paths:
       - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_github_models_review.py'
       - '.github/workflows/strategy11-groq-anonymization-guard-v2.yml'
   workflow_dispatch:
 
@@ -17,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: strategy11-groq-anonymization-v2-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  group: strategy11-provider-guard-v2-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -30,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Compile and validate anonymization boundaries
+      - name: Compile provider clients
         run: |
-          python -m py_compile scripts/strategy11_groq_redteam.py
+          python -m py_compile scripts/strategy11_groq_redteam.py scripts/strategy11_github_models_review.py
+      - name: Validate Groq anonymization boundaries
+        run: |
           python scripts/strategy11_groq_redteam.py --self-test
-      - name: Verify blocked authority is stripped and real order fields fail
-        run: |
           python - <<'PY'
           from scripts.strategy11_groq_redteam import assert_anonymized, strip_authority_fields
           payload={
@@ -50,4 +52,13 @@ jobs:
               try: assert_anonymized(bad)
               except ValueError: pass
               else: raise AssertionError(bad)
+          PY
+      - name: Validate GitHub Models retirement HOLD
+        run: |
+          python scripts/strategy11_github_models_review.py --self-test
+          python - <<'PY'
+          from scripts.strategy11_github_models_review import retired_review, validate_review
+          row=validate_review(retired_review())
+          assert row['decision']=='HOLD'
+          assert row['blocker_codes']==['GITHUB_MODELS_PROVIDER_RETIRED_HTTP_410']
           PY

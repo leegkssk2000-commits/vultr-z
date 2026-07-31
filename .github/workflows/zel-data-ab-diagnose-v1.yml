@@ -1,0 +1,174 @@
+name: ZEL Data A+B Diagnose V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-ab-diagnose-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-ab-diagnose-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-ab-diagnose-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate diagnostic scope
+        run: |
+          set -euo pipefail
+          grep -q 'q4r3-exact25-forward-expansion-v1.service' .github/workflows/zel-data-ab-diagnose-v1.yml
+          grep -q 'runtime_results/zel/data_ab_expansion_v1/diagnostic_latest.json' .github/workflows/zel-data-ab-diagnose-v1.yml
+
+  diagnose:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Build sanitized VPS diagnostic
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
+          import json, subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          unit="q4r3-exact25-forward-expansion-v1.service"
+          root=Path("/home/z/z/runtime/exact25_edge_v1/forward_expansion_v1")
+          out=Path("/tmp/zel_data_ab_diagnostic.json")
+
+          def run(*args):
+              p=subprocess.run(args,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+              return p.returncode,p.stdout[-12000:]
+
+          def load(path):
+              try:
+                  v=json.loads(path.read_text(encoding="utf-8",errors="replace"))
+                  return v if isinstance(v,dict) else {}
+              except Exception as exc:
+                  return {"read_error":f"{type(exc).__name__}:{exc}"}
+
+          rc_show,show=run("systemctl","show",unit,
+              "-p","LoadState","-p","ActiveState","-p","SubState","-p","Result",
+              "-p","MainPID","-p","ExecMainCode","-p","ExecMainStatus",
+              "-p","NRestarts","-p","StateChangeTimestamp")
+          rc_status,status_text=run("systemctl","status",unit,"--no-pager","-l")
+          rc_journal,journal=run("journalctl","-u",unit,"-n","160","--no-pager","-o","short-iso")
+          rc_cat,unit_text=run("systemctl","cat",unit,"--no-pager")
+
+          status=load(root/"status_latest.json")
+          state=load(root/"state.json")
+          safe_state={k:state.get(k) for k in (
+              "epoch_id","cycle_count","signal_count","open_count","close_count",
+              "duplicate_close_count","updated_at","last_processed") if k in state}
+          positions=state.get("positions")
+          safe_state["open_position_count"]=len(positions) if isinstance(positions,dict) else None
+
+          payload={
+              "schema_version":"zel.data_ab_expansion.diagnostic.v1",
+              "generated_at":datetime.now(timezone.utc).isoformat(),
+              "unit":unit,
+              "systemctl_show_rc":rc_show,
+              "systemctl_show":show,
+              "systemctl_status_rc":rc_status,
+              "systemctl_status_tail":status_text,
+              "journal_rc":rc_journal,
+              "journal_tail":journal,
+              "unit_cat_rc":rc_cat,
+              "unit_text":unit_text,
+              "status_exists":(root/"status_latest.json").exists(),
+              "status":status,
+              "state_exists":(root/"state.json").exists(),
+              "state_counters":safe_state,
+              "canonical_producer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-shadow-producer.service"]).returncode==0,
+              "canonical_writer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-persistent-single-event-writer.service"]).returncode==0,
+              "execution_authority":"NONE",
+              "order_authority":"BLOCKED",
+              "paper_enabled":False,
+              "live_enabled":False,
+          }
+          out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          PY'
+
+      - name: Fetch diagnostic
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_ab_diagnostic.json" \
+            result/diagnostic_latest.json
+
+      - name: Assert sanitized authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/diagnostic_latest.json').read_text())
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          assert d['paper_enabled'] is False,d
+          assert d['live_enabled'] is False,d
+          assert d['canonical_producer_active'] is True,d
+          assert d['canonical_writer_active'] is True,d
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish diagnostic
+        run: |
+          set -euo pipefail
+          mkdir -p results-branch/runtime_results/zel/data_ab_expansion_v1
+          cp result/diagnostic_latest.json results-branch/runtime_results/zel/data_ab_expansion_v1/diagnostic_latest.json
+          cp result/diagnostic_latest.json "results-branch/runtime_results/zel/data_ab_expansion_v1/diagnostic_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-data-ab-diagnostic-bot'
+          git config user.email 'zel-data-ab-diagnostic-bot@users.noreply.github.com'
+          git add runtime_results/zel/data_ab_expansion_v1
+          git commit -m "diagnostic(zel): data A+B ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-ab-diagnose-v1-${{ github.run_id }}
+          path: result
+          if-no-files-found: error
+          retention-days: 30

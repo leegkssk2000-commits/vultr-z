@@ -40,15 +40,14 @@ def normalize(payload: Mapping[str, Any]) -> dict[str, Any]:
     row["changed_axes"] = ["ADVISOR_PROFILE"]
     external = copy.deepcopy(hypothesis)
     external["axis"] = "ADVISOR_PROFILE"
-    external["component_axis"] = "ZBOT_PROFILE"
-    external["advisor_role"] = "ZBot"
+    external.pop("component_axis", None)
+    external.pop("advisor_role", None)
     row["hypothesis"] = external
-    row["component_replay_contract"] = {
-        "internal_axis": "ZBOT_PROFILE",
-        "external_review_axis": "ADVISOR_PROFILE",
-        "target": "ZBot",
-        "source_mutation_allowed": False,
-    }
+    flags = row.get("routing_flags") if isinstance(row.get("routing_flags"), dict) else {}
+    flags["internal_component_axis"] = "ZBOT_PROFILE"
+    flags["internal_advisor_role"] = "ZBot"
+    row["routing_flags"] = flags
+    row.pop("component_replay_contract", None)
     return row
 
 

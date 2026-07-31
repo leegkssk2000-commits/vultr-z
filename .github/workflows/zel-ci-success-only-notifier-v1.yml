@@ -30,7 +30,7 @@ jobs:
           script: |
             const issueNumber = 417;
             const run = context.payload.workflow_run;
-            const marker = `<!-- ci-success-run:${run.id} -->`;
+            const marker = `<!-- ci-success:${run.name}:${run.head_sha} -->`;
             const comments = await github.paginate(
               github.rest.issues.listComments,
               {
@@ -41,7 +41,7 @@ jobs:
               },
             );
             if (comments.some((comment) => (comment.body || '').includes(marker))) {
-              core.info(`SUCCESS_RECEIPT_ALREADY_POSTED:${run.id}`);
+              core.info(`SUCCESS_RECEIPT_ALREADY_POSTED:${run.name}:${run.head_sha}`);
               return;
             }
             const sha = (run.head_sha || '').slice(0, 12);
@@ -49,12 +49,13 @@ jobs:
               marker,
               '@leegkssk2000-commits',
               '',
-              `✅ **${run.name} PASS**`,
+              `✅ **WORKFLOW SUCCESS — ${run.name}**`,
               `- branch: \`${run.head_branch}\``,
               `- commit: \`${sha}\``,
               `- run: [${run.id}](${run.html_url})`,
               `- completed: \`${run.updated_at}\``,
               '',
+              '`same workflow + same master SHA = one notification`',
               '`failure/cancelled/skipped/PR/non-master = no notification`',
             ].join('\n');
             await github.rest.issues.createComment({

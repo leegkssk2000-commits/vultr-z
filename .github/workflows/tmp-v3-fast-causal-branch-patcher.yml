@@ -1,0 +1,55 @@
+name: TMP V3 Fast Causal Branch Patcher
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/tmp-v3-fast-causal-branch-patcher.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-strategy11-v3-final-corrected-parallel
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-fast-causal-resume
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Patch branch source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/tools/strategy11_expanded_discovery_v3.py')
+          text=path.read_text()
+          old='from backend.tools.strategy11_regime_edge_router_v3 import ConfigStrategyWrapper\n'
+          new='from backend.tools.strategy11_v3_fast_causal import FastCausalConfigStrategyWrapper as ConfigStrategyWrapper, install_exact_prepare\n'
+          assert text.count(old)==1
+          text=text.replace(old,new,1)
+          marker='def discovery_replay(args: argparse.Namespace) -> int:\n'
+          before,after=text.split(marker,1)
+          old_exact='    exact = exact_module(compute_root)\n'
+          assert after.count(old_exact)>=1
+          after=after.replace(old_exact,'    exact = install_exact_prepare(exact_module(compute_root))\n',1)
+          path.write_text(before+marker+after)
+          PY
+          python -m py_compile backend/tools/strategy11_v3_fast_causal.py backend/tools/strategy11_expanded_discovery_v3.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/tools/strategy11_expanded_discovery_v3.py backend/tools/strategy11_v3_fast_causal.py
+          git commit -m 'Bind fast causal cache to Strategy11 V3 replay'
+          git push origin HEAD:strategy11-v3-fast-causal-resume
+      - name: Remove temporary master patcher
+        run: |
+          git fetch origin master
+          git checkout -B master origin/master
+          git rm .github/workflows/tmp-v3-fast-causal-branch-patcher.yml
+          git commit -m 'Remove temporary V3 fast causal branch patcher'
+          git push origin master

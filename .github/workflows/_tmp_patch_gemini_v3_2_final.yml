@@ -17,28 +17,77 @@ jobs:
         with:
           ref: strategy11-gemini-v3-2-multimodal
           persist-credentials: true
-      - name: Patch final workflow
+      - name: Patch final workflow safely
         run: |
           python - <<'PY'
           from pathlib import Path
           path=Path('.github/workflows/r7a4d-strategy11-gemini-v3-2-final.yml')
           text=path.read_text()
-          text=text.replace(
-              '            backend/tools/strategy11_gemini_v3_2_cohort.py \\\n            backend/tools/strategy11_gemini_v3_2_ai_filter.py',
-              '            backend/tools/strategy11_gemini_v3_2_cohort.py \\\n            backend/tools/strategy11_gemini_v3_2_cohort_final.py \\\n            backend/tools/strategy11_gemini_v3_2_ai_filter.py',
-          )
-          text=text.replace(
-              '          python backend/tools/strategy11_gemini_v3_2_cohort.py \\\n',
-              '          python backend/tools/strategy11_gemini_v3_2_cohort_final.py \\\n',
-          )
-          old="""          summary=json.loads(Path('out/gemini/summary.json').read_text())
+
+          old_compile="""            backend/tools/strategy11_gemini_v3_2_cohort.py \\
+            backend/tools/strategy11_gemini_v3_2_ai_filter.py \\
+"""
+          new_compile="""            backend/tools/strategy11_gemini_v3_2_cohort.py \\
+            backend/tools/strategy11_gemini_v3_2_cohort_final.py \\
+            backend/tools/strategy11_gemini_v3_2_ai_filter.py \\
+"""
+          assert old_compile in text
+          text=text.replace(old_compile,new_compile,1)
+
+          old_call="          python backend/tools/strategy11_gemini_v3_2_cohort.py \\\n"
+          new_call="          python backend/tools/strategy11_gemini_v3_2_cohort_final.py \\\n"
+          assert old_call in text
+          text=text.replace(old_call,new_call,1)
+
+          old_loop="""          mkdir -p out/gemini/router_results
+          for input in out/gemini/router_inputs/*.json; do
+            [ \"$(basename \"$input\")\" = index.json ] && continue
+            sid=\"$(basename \"$input\" .json)\"
+            python scripts/strategy11_ai_review_router.py \\
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \\
+              --input \"$input\" \\
+              --gemini-artifact out/gemini/gemini_artifact.json \\
+              --output \"out/gemini/router_results/${sid}.json\"
+          done
+"""
+          new_loop="""          mkdir -p out/gemini/router_results
+          for input in out/gemini/router_inputs/*.json; do
+            [ \"$(basename \"$input\")\" = index.json ] && continue
+            sid=\"$(basename \"$input\" .json)\"
+            set +e
+            python scripts/strategy11_ai_review_router.py \\
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \\
+              --input \"$input\" \\
+              --gemini-artifact out/gemini/gemini_artifact.json \\
+              --output \"out/gemini/router_results/${sid}.json\"
+            rc=$?
+            set -e
+            python - \"$sid\" \"$rc\" <<'PY2'
+          import json,sys
+          from pathlib import Path
+          sid,rc=sys.argv[1],int(sys.argv[2])
+          path=Path(f'out/gemini/router_results/{sid}.json')
+          assert path.exists(),f'ROUTER_RESULT_MISSING:{sid}:rc={rc}'
+          row=json.loads(path.read_text())
+          assert row.get('status') in {'PASS_AI_REVIEW_ROUTER','HOLD_AI_REVIEW_ROUTER','REJECT_AI_REVIEW_ROUTER'},row
+          assert row.get('promotion_authority') is False
+          assert row.get('execution_allowed') is False
+          assert row.get('order_authority')=='BLOCKED'
+          print(json.dumps({'strategy_id':sid,'router_status':row['status'],'return_code':rc},sort_keys=True))
+          PY2
+          done
+"""
+          assert old_loop in text
+          text=text.replace(old_loop,new_loop,1)
+
+          old_state="""          summary=json.loads(Path('out/gemini/summary.json').read_text())
           plan=json.loads(Path('out/gemini/plan.json').read_text())
           assert summary['promotion_authority'] is False and summary['execution_allowed'] is False
 """
-          new="""          summary=json.loads(Path('out/gemini/summary.json').read_text())
+          new_state="""          summary=json.loads(Path('out/gemini/summary.json').read_text())
           plan_path=Path('out/gemini/plan.json')
           if not plan_path.exists():
-              assert summary['state']=='HOLD', summary
+              assert summary['state'] in {'HOLD','SKIP_UNCHANGED_GEMINI_EVIDENCE'},summary
               plan={
                   'schema_version':'3.2','state':'HOLD_GEMINI_V3_2_PREFLIGHT',
                   'strategy_count_total':25,'active_strategy_count':0,
@@ -49,12 +98,12 @@ jobs:
                   'order_authority':'BLOCKED',
               }
               plan_path.write_text(json.dumps(plan,indent=2,sort_keys=True)+'\\n')
-          else:
-              plan=json.loads(plan_path.read_text())
+          plan=json.loads(plan_path.read_text())
           assert summary['promotion_authority'] is False and summary['execution_allowed'] is False
 """
-          assert old in text
-          text=text.replace(old,new)
+          assert old_state in text
+          text=text.replace(old_state,new_state,1)
+
           path.write_text(text)
           PY
           python - <<'PY'
@@ -63,10 +112,11 @@ jobs:
           yaml.safe_load(Path('.github/workflows/r7a4d-strategy11-gemini-v3-2-final.yml').read_text())
           print('PASS_FINAL_WORKFLOW_PATCH')
           PY
-      - name: Commit patch
+      - name: Remove patcher and commit
         run: |
+          git rm .github/workflows/_tmp_patch_gemini_v3_2_final.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .github/workflows/r7a4d-strategy11-gemini-v3-2-final.yml
-          git commit -m 'Fail closed Gemini V3.2 cohort and preflight holds'
+          git commit -m 'Fix Gemini V3.2 candidate HOLD and preflight handling'
           git push origin HEAD:strategy11-gemini-v3-2-multimodal

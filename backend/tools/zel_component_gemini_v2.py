@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from backend.tools import strategy11_gemini_v3_2 as gemini
 
-VERSION = "ZEL_COMPONENT_GEMINI_DIRECT_VIDEO_V2"
+VERSION = "ZEL_COMPONENT_GEMINI_DIRECT_VIDEO_V2_1"
 AXES = {"BOT_POLICY", "TEAM_POLICY", "SKILL_PROFILE", "ADVISOR_PROFILE"}
 SAFE = {
     "research_only": True,
@@ -53,13 +53,18 @@ def parse_json_text(text: str) -> dict[str, Any]:
     try:
         value = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
+        object_start, object_end = stripped.find("{"), stripped.rfind("}")
+        array_start, array_end = stripped.find("["), stripped.rfind("]")
+        if array_start >= 0 and array_end > array_start and (object_start < 0 or array_start < object_start):
+            value = json.loads(stripped[array_start:array_end + 1])
+        elif object_start >= 0 and object_end > object_start:
+            value = json.loads(stripped[object_start:object_end + 1])
+        else:
             raise
-        value = json.loads(stripped[start:end + 1])
+    if isinstance(value, list):
+        value = {"status": "PASS", "component_reviews": value}
     if not isinstance(value, dict):
-        raise ValueError("GEMINI_JSON_OBJECT_REQUIRED")
+        raise ValueError("GEMINI_JSON_OBJECT_OR_REVIEW_ARRAY_REQUIRED")
     return value
 
 
@@ -81,6 +86,7 @@ def component_view(result: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "strategy_id": result.get("strategy_id"),
         "state": result.get("state"),
+        "data_fingerprint": result.get("data_fingerprint"),
         "low_sample_hold": (result.get("convergence") or {}).get("low_sample_hold"),
         "control": (result.get("control") or {}).get("stats"),
         "full_stack": result.get("full_stack"),
@@ -129,6 +135,9 @@ def prompt(result: Mapping[str, Any], sources: Sequence[Mapping[str, Any]]) -> s
 
 
 def normalize_response(response: Mapping[str, Any]) -> list[dict[str, Any]]:
+    status = str(response.get("status") or "PASS").upper()
+    if status not in {"PASS", "HOLD"}:
+        raise ValueError(f"GEMINI_STATUS_INVALID:{status}")
     rows = response.get("component_reviews")
     if not isinstance(rows, list):
         raise ValueError("COMPONENT_REVIEWS_REQUIRED")
@@ -193,8 +202,9 @@ def normalize_response(response: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> int:
     ai = result.get("ai_usage") or {}
+    fingerprint = str(result.get("data_fingerprint") or "")
     if ai.get("gemini_required_this_epoch") is not True:
-        receipt = {"state": "SKIP_GEMINI_NOT_REQUIRED", "GEMINI_USED": False, "hypotheses": [], **SAFE}
+        receipt = {"state": "SKIP_GEMINI_NOT_REQUIRED", "GEMINI_USED": False, "data_fingerprint": fingerprint, "hypotheses": [], **SAFE}
         receipt["receipt_sha256"] = stable_sha(receipt)
         write_json(out / "gemini_artifact.json", receipt)
         print(receipt["state"], receipt["receipt_sha256"])
@@ -207,17 +217,21 @@ def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> in
         raise RuntimeError("GEMINI_API_KEY_MISSING")
     research_prompt = prompt(result, sources)
     model, text = gemini.call_direct_video(key, research_prompt, sources)
-    parsed = parse_json_text(text)
-    reviews = normalize_response(parsed)
+    try:
+        reviews = normalize_response(parse_json_text(text))
+    except Exception:
+        correction = research_prompt + "\n\nYour previous answer violated the JSON envelope. Return one JSON object or a JSON array of exactly four axis review rows."
+        model, text = gemini.call_direct_video(key, correction, sources)
+        reviews = normalize_response(parse_json_text(text))
     hypotheses = [row for row in reviews if row["verdict"] == "PROPOSE_HYPOTHESIS"]
     input_payload = {
         "result_sha256": result.get("result_sha256"),
-        "data_fingerprint": result.get("data_fingerprint"),
+        "data_fingerprint": fingerprint,
         "sources": source_view(sources),
         "component_evidence": component_view(result),
     }
     artifact = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "version": VERSION,
         "state": "PASS_COMPONENT_GEMINI_DIRECT_VIDEO",
         "GEMINI_USED": True,
@@ -225,6 +239,8 @@ def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> in
         "free_only": True,
         "trigger_reason": ai.get("gemini_trigger_reason"),
         "hypothesis_only_low_sample": bool(ai.get("gemini_hypothesis_only_when_low_sample")),
+        "data_fingerprint": fingerprint,
+        "same_fingerprint_repeat_forbidden": True,
         "public_video_count": len(sources),
         "independent_channel_count": len({str(row.get("channel") or "") for row in sources}),
         "sources": source_view(sources),
@@ -257,29 +273,41 @@ def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> in
             "lineage": {
                 "ledger_sha": (result.get("source_authority") or {}).get("ledger_sha256"),
                 "summary_sha": (result.get("source_authority") or {}).get("summary_sha256"),
-                "fingerprint": result.get("data_fingerprint"),
+                "fingerprint": fingerprint,
                 "candidate_result_sha": result.get("result_sha256"),
                 "gemini_receipt_sha": artifact["receipt_sha256"],
             },
             "control": (result.get("control") or {}).get("stats"),
             "candidate": {},
-            "research_only": True,
-            "promotion_authority": False,
-            "protected_mutations": 0,
-            "execution_allowed": False,
-            "order_authority": "BLOCKED",
+            **SAFE,
         }
         write_json(out / "hypotheses" / f"{index:02d}-{hypothesis['axis']}-{hypothesis['hypothesis_id']}.json", payload)
     print(artifact["state"], len(hypotheses), artifact["receipt_sha256"])
     return 0
 
 
+def fixture(out: str | Path) -> int:
+    target = Path(out)
+    target.mkdir(parents=True, exist_ok=True)
+    parsed = parse_json_text('[{"axis":"BOT_POLICY","verdict":"NO_ACTION"},{"axis":"TEAM_POLICY","verdict":"NO_ACTION"},{"axis":"SKILL_PROFILE","verdict":"NO_ACTION"},{"axis":"ADVISOR_PROFILE","verdict":"NO_ACTION"}]')
+    reviews = normalize_response(parsed)
+    assert len(reviews) == 4 and {row["axis"] for row in reviews} == AXES
+    write_json(target / "fixture.json", {"reviews": reviews, **SAFE})
+    print("PASS_COMPONENT_GEMINI_V2_1_FIXTURE")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--result", required=True)
-    parser.add_argument("--video-registry", required=True)
+    parser.add_argument("--result")
+    parser.add_argument("--video-registry")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--fixture", action="store_true")
     args = parser.parse_args()
+    if args.fixture:
+        return fixture(args.out)
+    if not args.result or not args.video_registry:
+        parser.error("--result and --video-registry are required unless --fixture is used")
     return run(read_json(args.result), read_json(args.video_registry), Path(args.out))
 
 

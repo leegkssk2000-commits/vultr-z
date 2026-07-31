@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_3"
+VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_4"
 SAFE = {
     "research_only": True,
     "promotion_authority": False,
@@ -129,17 +129,27 @@ def audit(
         findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "material single-axis Groq/Workers workflow binding missing"))
     if "GEMINI_API_KEY" not in workflow_text or "zel_component_gemini_v2.py" not in workflow_text:
         findings.append(finding("GEMINI_DIRECT_VIDEO_NOT_EXECUTED", "CRITICAL", "actual Gemini execution missing"))
-    if "call_direct_video" not in gemini_text or "public_video_count" not in gemini_text or "independent_channel_count" not in gemini_text:
-        findings.append(finding("GEMINI_EVIDENCE_RECEIPT_INCOMPLETE", "HIGH", "direct-video receipt fields missing"))
-    if "same_fingerprint_repeat_forbidden" not in gemini_text or "SKIP_UNCHANGED_COMPONENT_FINGERPRINT" not in workflow_text:
-        findings.append(finding("GEMINI_FINGERPRINT_DEDUP_NOT_BOUND", "HIGH", "repeat guard missing"))
+    gemini_router_fields = all(
+        token in gemini_text
+        for token in ("call_direct_video", "public_urls", "independent_channels", "run_id", "input_sha", "prompt_sha", "response_sha")
+    ) and "strategy11_ai_review_router.py" in workflow_text
+    if not gemini_router_fields:
+        findings.append(finding("GEMINI_ROUTER_ARTIFACT_SCHEMA_INCOMPLETE", "CRITICAL", "router-compatible source and lineage fields missing"))
+    gemini_dedup = (
+        "same_fingerprint_repeat_forbidden" in gemini_text
+        and "SKIP_UNCHANGED_COMPONENT_FINGERPRINT" in workflow_text
+        and "GEMINI_PREVIOUSLY_USED" in workflow_text
+        and "previous_used" in workflow_text
+    )
+    if not gemini_dedup:
+        findings.append(finding("GEMINI_FINGERPRINT_DEDUP_NOT_BOUND", "HIGH", "persistent repeat guard missing"))
     if diagnostic_path.exists():
         findings.append(finding("DIAGNOSTIC_WORKFLOW_RESIDUE", "MEDIUM", str(diagnostic_path)))
 
     rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
     counts = {severity: sum(row["severity"] == severity for row in findings) for severity in rank}
     report = {
-        "schema_version": "2.3",
+        "schema_version": "2.4",
         "version": VERSION,
         "state": "PASS_COMPONENT_PIPELINE_AUDIT_V2" if not findings else "HOLD_COMPONENT_PIPELINE_V2_REPAIR_REQUIRED",
         "finding_count": len(findings),
@@ -156,7 +166,8 @@ def audit(
             "ZLICE_LINEAGE",
             "ORDERED_ATTRIBUTION",
             "MATERIAL_AXIS_AI",
-            "BOUNDED_GEMINI_DIRECT_VIDEO",
+            "ROUTER_COMPATIBLE_GEMINI_DIRECT_VIDEO",
+            "PERSISTENT_FINGERPRINT_DEDUP",
             "SHADOW_BLOCKED",
         ],
         "metrics": {
@@ -166,6 +177,8 @@ def audit(
             "eligible_ai_axes": sorted(axis for axis, active in eligibility.items() if active),
             "interaction_residual": residual,
             "per_axis_gate_bound": per_axis_bindings,
+            "gemini_router_fields_bound": gemini_router_fields,
+            "gemini_dedup_bound": gemini_dedup,
         },
         "next": "WAIT_NEW_EXACT_LEDGER_OR_W1" if not findings else "FIX_FINDINGS_BEFORE_MERGE",
         **SAFE,

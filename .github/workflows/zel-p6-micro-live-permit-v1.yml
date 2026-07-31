@@ -1,0 +1,79 @@
+name: ZEL P6 Micro Live Permit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "backend/contracts/zel_micro_live_canary_v1.py"
+      - "backend/runtime/zel_micro_live_permit_registry_v1.py"
+      - "tests/test_zel_p6_micro_live_permit_v1.py"
+      - ".github/workflows/zel-p6-micro-live-permit-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p6-micro-live-permit-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile P6 permit
+        run: |
+          python -m py_compile \
+            backend/contracts/zel_micro_live_canary_v1.py \
+            backend/runtime/zel_micro_live_permit_registry_v1.py \
+            tests/test_zel_p6_micro_live_permit_v1.py
+
+      - name: Run permit and completion regression
+        run: python -m pytest -q tests/test_zel_p6_micro_live_permit_v1.py tests/test_zel_completion_foundation_v1.py
+
+      - name: Assert no exchange execution implementation
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          paths=[
+              Path("backend/contracts/zel_micro_live_canary_v1.py"),
+              Path("backend/runtime/zel_micro_live_permit_registry_v1.py"),
+          ]
+          forbidden={
+              "create_order", "create_market_order", "create_limit_order", "cancel_order",
+              "set_leverage", "set_margin_mode", "fetch_balance", "fetch_positions",
+              "private_get", "private_post", "execute_order", "place_order",
+          }
+          found=[]
+          text=""
+          for path in paths:
+              source=path.read_text()
+              text+=source
+              tree=ast.parse(source)
+              for node in ast.walk(tree):
+                  if not isinstance(node,ast.Call): continue
+                  name=""
+                  if isinstance(node.func,ast.Name): name=node.func.id
+                  elif isinstance(node.func,ast.Attribute): name=node.func.attr
+                  if name in forbidden: found.append((str(path),name))
+          assert found==[],found
+          assert '"exchange_execution_performed": False' in text
+          assert '"live_execution_adapter_present": False' in text
+          assert '"capital_scale_allowed": False' in text
+          PY

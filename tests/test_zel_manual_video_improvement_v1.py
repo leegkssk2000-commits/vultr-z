@@ -42,8 +42,15 @@ def test_request_and_registry_are_fail_closed():
     registry = json.loads((root / "backend/research/zel_manual_video_registry_v1.json").read_text())
     assert request["same_evidence_reanalysis"] is True
     assert request["new_market_data_claim"] is False
+    assert request["promotion_authority"] is False
+    assert request["protected_mutations"] == 0
     assert request["execution_allowed"] is False
+    assert request["execution_authority"] == "NONE"
     assert request["order_authority"] == "BLOCKED"
+    assert request["runtime_bound"] is False
+    assert request["shadow_start_allowed"] is False
+    assert request["paper_allowed"] is False
+    assert request["live_allowed"] is False
     assert len(registry["sources"]) >= 6
     assert len({row["channel"] for row in registry["sources"]}) >= 5
     assert registry["selection_policy"]["view_count_is_discovery_weight_not_truth"] is True

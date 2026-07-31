@@ -1,0 +1,315 @@
+name: ZEL Historical OOS Exact25 Replay V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v1.py
+      - .github/workflows/zel-historical-oos-exact25-replay-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v1.py
+      - .github/workflows/zel-historical-oos-exact25-replay-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-historical-oos-exact25-replay-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile and run replay self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_historical_oos_exact25_replay_v1.py
+          python backend/tools/zel_historical_oos_exact25_replay_v1.py --self-test
+
+  replay_15m:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      INTERVAL: 15m
+      REMOTE_OUT: /tmp/zel_historical_oos_exact25_replay_v1_15m
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload replay engine
+        run: |
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Execute exact 15m replay on VPS
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "rm -rf '${REMOTE_OUT}' && mkdir -p '${REMOTE_OUT}' && \
+             /home/z/z/.venv/bin/python /tmp/zel_historical_oos_exact25_replay_v1.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --data-root /home/z/z/data/zel_historical_oos_v1 \
+               --interval '${INTERVAL}' \
+               --output-dir '${REMOTE_OUT}' \
+               --workers 4 && \
+             tar -C '${REMOTE_OUT}' -czf /tmp/zel_historical_oos_exact25_replay_v1_15m.tar.gz ."
+
+      - name: Fetch 15m terminal result
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p result/15m
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_historical_oos_exact25_replay_v1_15m.tar.gz" \
+            /tmp/15m.tar.gz
+          tar -C result/15m -xzf /tmp/15m.tar.gz
+
+      - name: Assert 15m replay contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/15m/report.json').read_text())
+          assert d['state']=='PASS',d
+          assert d['verdict']=='HISTORICAL_OOS_EXACT25_REPLAY_COMPLETE',d
+          assert d['interval']=='15m',d
+          assert d['data']['symbol_count']==5,d
+          assert d['data']['window_count']==3,d
+          assert d['data']['file_count']==15,d
+          assert d['source']['strategy_count']==25,d
+          assert d['source']['strategy_tree_unchanged'] is True,d
+          assert d['source']['producer_unchanged'] is True,d
+          assert d['source']['manifest_unchanged'] is True,d
+          assert d['canonical_runtime']['producer_pid_unchanged'] is True,d
+          assert d['canonical_runtime']['writer_pid_unchanged'] is True,d
+          assert d['canonical_runtime']['formal_ledger']['prefix_unchanged'] is True,d
+          assert d['replay']['strategy_count_completed']==25,d
+          assert d['replay']['strategy_failure_count']==0,d
+          assert d['research_only'] is True,d
+          assert d['selection_authority'] is False,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish 15m summary and scoreboard
+        run: |
+          set -euo pipefail
+          base=results-branch/runtime_results/zel/historical_oos_exact25_replay_v1/15m
+          mkdir -p "$base"
+          cp result/15m/report.json "$base/latest.json"
+          cp result/15m/summary.json "$base/summary_latest.json"
+          cp result/15m/scoreboard.csv "$base/scoreboard_latest.csv"
+          cp result/15m/report.json "$base/run_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-historical-replay-bot'
+          git config user.email 'zel-historical-replay-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/historical_oos_exact25_replay_v1/15m
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "result(zel): Historical OOS Exact25 15m ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-historical-oos-exact25-replay-15m-${{ github.run_id }}
+          path: result/15m
+          if-no-files-found: error
+          retention-days: 30
+
+  replay_1m:
+    if: github.event_name != 'pull_request'
+    needs: replay_15m
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      INTERVAL: 1m
+      REMOTE_OUT: /tmp/zel_historical_oos_exact25_replay_v1_1m
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload replay engine
+        run: |
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Execute exact 1m replay on VPS
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "rm -rf '${REMOTE_OUT}' && mkdir -p '${REMOTE_OUT}' && \
+             /home/z/z/.venv/bin/python /tmp/zel_historical_oos_exact25_replay_v1.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --data-root /home/z/z/data/zel_historical_oos_v1 \
+               --interval '${INTERVAL}' \
+               --output-dir '${REMOTE_OUT}' \
+               --workers 4 && \
+             tar -C '${REMOTE_OUT}' -czf /tmp/zel_historical_oos_exact25_replay_v1_1m.tar.gz ."
+
+      - name: Fetch 1m terminal result
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p result/1m
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_historical_oos_exact25_replay_v1_1m.tar.gz" \
+            /tmp/1m.tar.gz
+          tar -C result/1m -xzf /tmp/1m.tar.gz
+
+      - name: Assert 1m replay contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/1m/report.json').read_text())
+          assert d['state']=='PASS',d
+          assert d['verdict']=='HISTORICAL_OOS_EXACT25_REPLAY_COMPLETE',d
+          assert d['interval']=='1m',d
+          assert d['data']['symbol_count']==5,d
+          assert d['data']['window_count']==3,d
+          assert d['data']['file_count']==15,d
+          assert d['source']['strategy_count']==25,d
+          assert d['source']['strategy_tree_unchanged'] is True,d
+          assert d['source']['producer_unchanged'] is True,d
+          assert d['source']['manifest_unchanged'] is True,d
+          assert d['canonical_runtime']['producer_pid_unchanged'] is True,d
+          assert d['canonical_runtime']['writer_pid_unchanged'] is True,d
+          assert d['canonical_runtime']['formal_ledger']['prefix_unchanged'] is True,d
+          assert d['replay']['strategy_count_completed']==25,d
+          assert d['replay']['strategy_failure_count']==0,d
+          assert d['research_only'] is True,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish 1m and combined results
+        run: |
+          set -euo pipefail
+          base=results-branch/runtime_results/zel/historical_oos_exact25_replay_v1/1m
+          mkdir -p "$base"
+          cp result/1m/report.json "$base/latest.json"
+          cp result/1m/summary.json "$base/summary_latest.json"
+          cp result/1m/scoreboard.csv "$base/scoreboard_latest.csv"
+          cp result/1m/report.json "$base/run_${GITHUB_RUN_ID}.json"
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('results-branch/runtime_results/zel/historical_oos_exact25_replay_v1')
+          m15=json.loads((root/'15m/latest.json').read_text())
+          m1=json.loads(Path('result/1m/report.json').read_text())
+          passed=m15['state']=='PASS' and m1['state']=='PASS'
+          combined={
+            'schema_version':'zel.historical_oos_exact25_replay.combined.v1',
+            'state':'PASS' if passed else 'HOLD',
+            'verdict':'HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE' if passed else 'HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_HOLD',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'intervals':{
+              '15m':{
+                'closed_trade_count':m15['replay']['closed_trade_count'],
+                'strategy_call_count':m15['replay']['strategy_call_count'],
+                'error_count':m15['replay']['error_count'],
+                'claim_tier_counts':m15['replay']['claim_tier_counts'],
+                'failure_fingerprint_counts':m15['replay']['failure_fingerprint_counts'],
+              },
+              '1m':{
+                'closed_trade_count':m1['replay']['closed_trade_count'],
+                'strategy_call_count':m1['replay']['strategy_call_count'],
+                'error_count':m1['replay']['error_count'],
+                'claim_tier_counts':m1['replay']['claim_tier_counts'],
+                'failure_fingerprint_counts':m1['replay']['failure_fingerprint_counts'],
+              },
+            },
+            'total_closed_trade_count':m15['replay']['closed_trade_count']+m1['replay']['closed_trade_count'],
+            'total_strategy_call_count':m15['replay']['strategy_call_count']+m1['replay']['strategy_call_count'],
+            'research_only':True,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          (root/'combined_latest.json').write_text(json.dumps(combined,indent=2,sort_keys=True)+'\n')
+          PY
+          cd results-branch
+          git config user.name 'zel-historical-replay-bot'
+          git config user.email 'zel-historical-replay-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/historical_oos_exact25_replay_v1
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "result(zel): Historical OOS Exact25 1m and combined ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-historical-oos-exact25-replay-1m-${{ github.run_id }}
+          path: result/1m
+          if-no-files-found: error
+          retention-days: 30

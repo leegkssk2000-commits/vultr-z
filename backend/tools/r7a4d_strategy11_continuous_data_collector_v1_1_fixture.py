@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -42,8 +44,23 @@ def main() -> int:
     finally:
         repair.collector.request_json = original
 
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "funding" / "BTCUSDT.json"
+        repair._ORIGINAL_ATOMIC_JSON(path, {
+            "symbol": "BTCUSDT",
+            "rows": [{"timestamp_ms": last_event, "funding_rate": 0.0001}],
+            "source": repair.FUNDING_ENDPOINT,
+        })
+        repair.atomic_json_preserve_funding_source(path, {
+            "symbol": "BTCUSDT",
+            "rows": [{"timestamp_ms": last_event, "funding_rate": 0.0001}],
+            "source": None,
+        })
+        saved = json.loads(path.read_text())
+        assert saved["source"] == repair.FUNDING_ENDPOINT
+
     assert repair.collector.VERSION == "R7A4D_STRATEGY11_CONTINUOUS_DATA_COLLECTOR_V1"
-    print("PASS_CONTINUOUS_FUNDING_GAP_AWARE_FIXTURE")
+    print("PASS_CONTINUOUS_FUNDING_GAP_AWARE_AND_IDEMPOTENT_SOURCE_FIXTURE")
     return 0
 
 

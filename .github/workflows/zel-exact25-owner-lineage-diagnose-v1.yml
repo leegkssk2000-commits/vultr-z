@@ -1,0 +1,204 @@
+name: ZEL Exact25 Owner Lineage Diagnose V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-exact25-owner-lineage-diagnose-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-exact25-owner-lineage-diagnose-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-exact25-owner-lineage-diagnose-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate diagnostic contract
+        run: |
+          set -euo pipefail
+          grep -q 'q4r3_canonical_strategy_owner_manifest_v1.json' .github/workflows/zel-exact25-owner-lineage-diagnose-v1.yml
+          grep -q 'owner_lineage_latest.json' .github/workflows/zel-exact25-owner-lineage-diagnose-v1.yml
+
+  diagnose:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Trace exact owner source lineage on VPS
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
+          import hashlib,json,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+
+          root=Path("/home/z/z")
+          manifest_path=root/"backend/config/q4r3_canonical_strategy_owner_manifest_v1.json"
+          out=Path("/tmp/zel_exact25_owner_lineage_diagnostic.json")
+          manifest=json.loads(manifest_path.read_text(encoding="utf-8"))
+          entries=manifest.get("strategies") or []
+          rows=[]
+
+          def sha_bytes(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def git_bytes(commit,path):
+              p=subprocess.run(["git","-C",str(root),"show",f"{commit}:{path}"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+              return p.stdout if p.returncode==0 else None
+
+          for entry in entries:
+              sid=str(entry.get("strategy_id") or "")
+              rel=str(entry.get("owner_path") or "")
+              expected=str(entry.get("owner_sha256") or "")
+              path=root/rel
+              actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+              match_kind="current" if actual==expected else None
+              match_ref=None
+              searched_commits=0
+              if actual!=expected and rel:
+                  rev=subprocess.run(
+                      ["git","-C",str(root),"rev-list","--all","--",rel],
+                      text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                  )
+                  for commit in rev.stdout.splitlines()[:2500]:
+                      searched_commits+=1
+                      data=git_bytes(commit,rel)
+                      if data is not None and sha_bytes(data)==expected:
+                          match_kind="git_commit"
+                          match_ref=commit
+                          break
+              backup_match=None
+              if actual!=expected and match_ref is None and path.name:
+                  find=subprocess.run(
+                      ["find",str(root),"-xdev","-type","f","-name",path.name,
+                       "-not","-path","*/.git/*","-not","-path","*/.venv/*",
+                       "-not","-path","*/venv/*","-not","-path","*/runtime/*",
+                       "-not","-path","*/data/*"],
+                      text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                  )
+                  for candidate in find.stdout.splitlines()[:500]:
+                      p=Path(candidate)
+                      try:
+                          if hashlib.sha256(p.read_bytes()).hexdigest()==expected:
+                              backup_match=str(p)
+                              match_kind="backup_file"
+                              match_ref=backup_match
+                              break
+                      except OSError:
+                          pass
+              rows.append({
+                  "strategy_id":sid,
+                  "owner_path":rel,
+                  "expected_sha256":expected,
+                  "actual_sha256":actual,
+                  "parity":actual==expected,
+                  "match_kind":match_kind,
+                  "match_ref":match_ref,
+                  "searched_commit_count":searched_commits,
+              })
+
+          mismatch=[row for row in rows if not row["parity"]]
+          unresolved=[row for row in mismatch if not row["match_ref"]]
+          payload={
+              "schema_version":"zel.exact25.owner_lineage.diagnostic.v1",
+              "generated_at":datetime.now(timezone.utc).isoformat(),
+              "git_head":subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip(),
+              "git_branch":subprocess.check_output(["git","-C",str(root),"rev-parse","--abbrev-ref","HEAD"],text=True).strip(),
+              "strategy_count":len(rows),
+              "parity_count":len(rows)-len(mismatch),
+              "mismatch_count":len(mismatch),
+              "unresolved_count":len(unresolved),
+              "mismatches":mismatch,
+              "all_owner_sources_recoverable":len(unresolved)==0,
+              "canonical_producer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-shadow-producer.service"]).returncode==0,
+              "canonical_writer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-persistent-single-event-writer.service"]).returncode==0,
+              "execution_authority":"NONE",
+              "order_authority":"BLOCKED",
+              "paper_enabled":False,
+              "live_enabled":False,
+          }
+          out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          PY'
+
+      - name: Fetch diagnostic
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_exact25_owner_lineage_diagnostic.json" \
+            result/owner_lineage_latest.json
+
+      - name: Assert safe read-only result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/owner_lineage_latest.json').read_text())
+          assert d['strategy_count']==25,d
+          assert d['canonical_producer_active'] is True,d
+          assert d['canonical_writer_active'] is True,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish owner lineage diagnostic
+        run: |
+          set -euo pipefail
+          mkdir -p results-branch/runtime_results/zel/data_ab_expansion_v1
+          cp result/owner_lineage_latest.json results-branch/runtime_results/zel/data_ab_expansion_v1/owner_lineage_latest.json
+          cp result/owner_lineage_latest.json "results-branch/runtime_results/zel/data_ab_expansion_v1/owner_lineage_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-owner-lineage-bot'
+          git config user.email 'zel-owner-lineage-bot@users.noreply.github.com'
+          git add runtime_results/zel/data_ab_expansion_v1
+          git commit -m "diagnostic(zel): exact25 owner lineage ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-owner-lineage-diagnose-v1-${{ github.run_id }}
+          path: result
+          if-no-files-found: error
+          retention-days: 30

@@ -38,9 +38,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - run: python -m pip install --disable-pip-version-check pandas
       - name: Compile and run deterministic fixture
         run: |
@@ -79,9 +81,11 @@ jobs:
       ai_escalation: ${{ steps.result.outputs.ai_escalation }}
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check pandas
       - name: Restore exact canonical Strategy11 evidence
         uses: actions/download-artifact@v4
@@ -91,7 +95,8 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ env.EVIDENCE_RUN_ID }}
       - name: Restore latest successful component state
-        env: {GH_TOKEN: '${{ github.token }}'}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p input/previous
           for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v1.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
@@ -156,8 +161,11 @@ jobs:
               'fingerprint':row.get('data_fingerprint'),
               'result_sha':row.get('result_sha256')
             },
-            'research_only':True,'promotion_authority':False,'protected_mutations':0,
-            'execution_allowed':False,'order_authority':'BLOCKED'
+            'research_only':True,
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED'
           }
           Path('out/state/ai_input.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
           with open(os.environ['GITHUB_OUTPUT'],'a') as h:
@@ -179,9 +187,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
           name: zel-component-autonomy-state-${{ github.run_id }}
@@ -189,8 +199,8 @@ jobs:
       - name: Execute fail-closed role-based major gate
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GITHUB_MODELS_TOKEN: ${{ github.token }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p out/ai
           python scripts/strategy11_ai_review_router.py \
@@ -234,14 +244,20 @@ jobs:
           final=json.loads(Path('input/state/final.json').read_text())
           request={
             'state':'REQUEST_GEMINI_DIRECT_VIDEO_ON_NEW_FAILURE_FINGERPRINT',
-            'public_video_min':4,'independent_channel_min':4,
-            'max_hypotheses_per_component':2,'max_generations_per_axis':2,
+            'public_video_min':4,
+            'independent_channel_min':4,
+            'max_hypotheses_per_component':2,
+            'max_generations_per_axis':2,
             'component_scope':['BOT','TEAM','SKILL','ADVISOR'],
             'data_fingerprint':final.get('data_fingerprint'),
             'failure_evidence':final.get('component_attribution'),
             'same_fingerprint_repeat_forbidden':True,
-            'research_only':True,'promotion_authority':False,'protected_mutations':0,
-            'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False
+            'research_only':True,
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'order_authority':'BLOCKED',
+            'runtime_bound':False
           }
           request['request_sha256']=hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',',':')).encode()).hexdigest()
           Path('out/gemini/request.json').write_text(json.dumps(request,indent=2,sort_keys=True)+'\n')

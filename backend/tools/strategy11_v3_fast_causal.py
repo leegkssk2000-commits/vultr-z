@@ -32,6 +32,8 @@ class FastCausalConfigStrategyWrapper(BaseWrapper):
         if module is None:
             raise RuntimeError("FAST_WRAPPER_STRATEGY_MODULE_MISSING")
         self.module = module
+        module_path = str(getattr(module, "__file__", ""))
+        self.canonical_nan_seed = module_path.endswith(("trend_rider.py", "supertrend_pullback.py"))
         if hasattr(module, "_supertrend") and not hasattr(module, "_v3_original_supertrend"):
             setattr(module, "_v3_original_supertrend", getattr(module, "_supertrend"))
         if hasattr(module, "_ema") and not hasattr(module, "_v3_original_ema"):
@@ -64,11 +66,28 @@ class FastCausalConfigStrategyWrapper(BaseWrapper):
         index = value.index
         return (self.current_frame_id, len(value), repr(index[0]), repr(index[-1]))
 
+    @staticmethod
+    def _canonical_nan_supertrend(df: pd.DataFrame, length: int) -> pd.DataFrame:
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        previous = close.shift(1)
+        tr = pd.concat(
+            [high - low, (high - previous).abs(), (low - previous).abs()],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.rolling(length, min_periods=length).mean()
+        nan = pd.Series(float("nan"), index=df.index, dtype="float64")
+        return pd.DataFrame({"supertrend": nan.copy(), "direction": nan.copy(), "atr": atr})
+
     def _supertrend_proxy(self, df: pd.DataFrame, length: int, multiplier: float) -> pd.DataFrame:
         key = (*self._window_key(df), int(length), float(multiplier))
         cached = self.supertrend_cache.get(key)
         if cached is None:
-            cached = self.original_supertrend(df, length, multiplier).copy(deep=True)
+            if self.canonical_nan_seed and int(length) > 1:
+                cached = self._canonical_nan_supertrend(df, int(length))
+            else:
+                cached = self.original_supertrend(df, length, multiplier).copy(deep=True)
             self.supertrend_cache[key] = cached
         else:
             self.cache_hits["supertrend"] += 1

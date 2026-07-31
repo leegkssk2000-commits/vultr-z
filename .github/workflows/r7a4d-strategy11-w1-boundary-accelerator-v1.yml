@@ -1,0 +1,147 @@
+name: R7A4D Strategy11 W1 Boundary Accelerator V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/strategy11_w1_boundary_accelerator_v1.json'
+      - '.github/workflows/r7a4d-strategy11-w1-boundary-accelerator-v1.yml'
+  schedule:
+    - cron: '47 8 1 8 *'
+    - cron: '2 9 1 8 *'
+    - cron: '29 9 1 8 *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: r7a4d-strategy11-w1-boundary-accelerator-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  fixture:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact boundary schedule contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('backend/research/strategy11_w1_boundary_accelerator_v1.json').read_text())
+          assert row['date_utc']=='2026-08-01'
+          assert row['w1_exact_end_utc']=='2026-08-01T08:30:00Z'
+          stages={item['name']:item for item in row['stages']}
+          assert stages['PRE_FINAL_PREFLIGHT']['time_utc']=='08:32'
+          assert stages['PRE_FINAL_PREFLIGHT']['expected_available_bars']==479
+          assert stages['FINAL_CLOSED_BAR_COLLECTOR']['time_utc']=='08:47'
+          assert stages['FINAL_CLOSED_BAR_COLLECTOR']['expected_available_bars']==480
+          assert stages['NATIVE_W1_ONE_SHOT']['time_utc']=='09:02'
+          assert stages['V3_SURVIVOR_OVERLAY']['time_utc']=='09:29'
+          assert stages['FINAL_CLOSED_BAR_COLLECTOR']['workflow']=='.github/workflows/r7a4d-strategy11-continuous-data-v1.yml'
+          assert stages['NATIVE_W1_ONE_SHOT']['workflow']=='.github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml'
+          assert stages['V3_SURVIVOR_OVERLAY']['workflow']=='.github/workflows/r7a4d-strategy11-v3-survivor-w1-overlay-v2.yml'
+          invariant=row['invariants']
+          assert invariant['native_chain_modified'] is False
+          assert invariant['canonical_mutated'] is False
+          assert invariant['registry_mutated'] is False
+          assert invariant['protected_mutations']==0
+          assert invariant['execution_allowed'] is False
+          assert invariant['execution_authority']=='NONE'
+          assert invariant['order_authority']=='BLOCKED'
+          assert invariant['runtime_bound'] is False
+          print('PASS_W1_BOUNDARY_ACCELERATOR_CONTRACT')
+          PY
+
+  dispatch:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve exact-date target
+        id: target
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          mkdir -p status
+          python - <<'PY'
+          import datetime,json,os
+          from pathlib import Path
+          schedule=os.environ['SCHEDULE']
+          today=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+          mapping={
+              '47 8 1 8 *':('.github/workflows/r7a4d-strategy11-continuous-data-v1.yml','FINAL_CLOSED_BAR_COLLECTOR'),
+              '2 9 1 8 *':('.github/workflows/r7a4d-strategy11-w1-native-orchestrator-v1.yml','NATIVE_W1_ONE_SHOT'),
+              '29 9 1 8 *':('.github/workflows/r7a4d-strategy11-v3-survivor-w1-overlay-v2.yml','V3_SURVIVOR_OVERLAY'),
+          }
+          if schedule not in mapping:
+              raise SystemExit(f'UNKNOWN_SCHEDULE:{schedule}')
+          workflow,stage=mapping[schedule]
+          execute=today=='2026-08-01'
+          state='READY_TO_DISPATCH' if execute else 'SKIP_OUTSIDE_EXACT_DATE'
+          row={
+              'schema_version':'1.0',
+              'version':'R7A4D_STRATEGY11_W1_BOUNDARY_ACCELERATOR_V1',
+              'state':state,
+              'date_utc':today,
+              'schedule':schedule,
+              'stage':stage,
+              'workflow':workflow,
+              'execute':execute,
+              'native_chain_modified':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'runtime_bound':False,
+          }
+          Path('status/status.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f"execute={'true' if execute else 'false'}\n")
+              out.write(f"workflow={workflow}\n")
+              out.write(f"stage={stage}\n")
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Verify downstream workflow exists
+        if: steps.target.outputs.execute == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ steps.target.outputs.workflow }}
+        run: gh api "repos/$GITHUB_REPOSITORY/contents/$WORKFLOW?ref=master" >/dev/null
+      - name: Dispatch bounded downstream stage
+        if: steps.target.outputs.execute == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ steps.target.outputs.workflow }}
+        run: gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref master
+      - name: Record dispatch result
+        if: steps.target.outputs.execute == 'true'
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          WORKFLOW: ${{ steps.target.outputs.workflow }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          path=Path('status/status.json')
+          row=json.loads(path.read_text())
+          row['state']='PASS_DOWNSTREAM_DISPATCHED'
+          row['dispatched_stage']=os.environ['STAGE']
+          row['dispatched_workflow']=os.environ['WORKFLOW']
+          path.write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-w1-boundary-accelerator-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: status
+          if-no-files-found: error
+          retention-days: 30

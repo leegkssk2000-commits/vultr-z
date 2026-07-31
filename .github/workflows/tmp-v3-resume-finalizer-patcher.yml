@@ -1,0 +1,94 @@
+name: TMP V3 Resume Finalizer Patcher
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/tmp-v3-resume-finalizer-patcher.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-strategy11-v3-final-corrected-parallel
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-fast-causal-resume
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Reduce resume to missing strategy and add final receipt
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('.github/workflows/strategy11-v3-fast-causal-resume.yml')
+          text=path.read_text()
+          assert '  contents: read\n' in text
+          text=text.replace('  contents: read\n','  contents: write\n',1)
+          assert 'strategy: [trend_rider, supertrend_pullback]' in text
+          text=text.replace('strategy: [trend_rider, supertrend_pullback]','strategy: [trend_rider]',1)
+          text=text.replace('Restore 22 completed artifacts from original run','Restore 23 completed artifacts from original run',1)
+          marker="""      - uses: actions/upload-artifact@v4
+        with:
+          name: final-v3-resumed-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90
+"""
+          assert text.count(marker)==1
+          receipt=marker+"""      - name: Record authoritative resume receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          final=json.loads(Path('out/state/final.json').read_text())
+          path=Path('.github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt')
+          path.parent.mkdir(parents=True,exist_ok=True)
+          path.write_text('\n'.join([
+            'state='+str(final['state']),
+            'run_id='+os.environ['GITHUB_RUN_ID'],
+            'head_sha='+os.environ['GITHUB_SHA'],
+            'strategy_count='+str(final['strategy_count']),
+            'candidate_count='+str(final['candidate_count']),
+            'discovery_pass_count='+str(final['discovery_pass_count']),
+            'final_sha256='+str(final['final_sha256']),
+            'promotion_authority=false',
+            'execution_allowed=false',
+            'order_authority=BLOCKED',
+          ])+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt
+          git commit -m 'Record Strategy11 V3 fast causal resume result'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:strategy11-v3-fast-causal-resume
+"""
+          path.write_text(text.replace(marker,receipt,1))
+          PY
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          yaml.safe_load(Path('.github/workflows/strategy11-v3-fast-causal-resume.yml').read_text())
+          print('PASS_RESUME_WORKFLOW_YAML')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/strategy11-v3-fast-causal-resume.yml
+          git commit -m 'Finalize Strategy11 V3 fast causal resume workflow'
+          git push origin HEAD:strategy11-v3-fast-causal-resume
+      - name: Remove temporary master patcher
+        run: |
+          git fetch origin master
+          git checkout -B master origin/master
+          git rm .github/workflows/tmp-v3-resume-finalizer-patcher.yml
+          git commit -m 'Remove temporary V3 resume finalizer patcher'
+          git push origin master

@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from backend.tools import strategy11_gemini_v3_2 as gemini
 
-VERSION = "ZEL_COMPONENT_GEMINI_DIRECT_VIDEO_V2_1"
+VERSION = "ZEL_COMPONENT_GEMINI_DIRECT_VIDEO_V2_2"
 AXES = {"BOT_POLICY", "TEAM_POLICY", "SKILL_PROFILE", "ADVISOR_PROFILE"}
 SAFE = {
     "research_only": True,
@@ -210,7 +210,9 @@ def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> in
         print(receipt["state"], receipt["receipt_sha256"])
         return 0
     sources = [dict(row) for row in registry.get("sources", []) if isinstance(row, Mapping)]
-    if len(sources) < 4 or len({str(row.get("channel") or "") for row in sources}) < 4:
+    public_urls = [str(row["url"]) for row in sources]
+    independent_channels = [str(row.get("channel") or "") for row in sources]
+    if len(set(public_urls)) < 4 or len(set(independent_channels)) < 4:
         raise RuntimeError("GEMINI_SOURCE_DIVERSITY_LOW")
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -230,25 +232,35 @@ def run(result: Mapping[str, Any], registry: Mapping[str, Any], out: Path) -> in
         "sources": source_view(sources),
         "component_evidence": component_view(result),
     }
+    input_sha = stable_sha(input_payload)
+    prompt_sha = hashlib.sha256(research_prompt.encode("utf-8")).hexdigest()
+    response_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    run_id = str(os.environ.get("GITHUB_RUN_ID") or "LOCAL_COMPONENT_GEMINI_V2")
     artifact = {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "version": VERSION,
         "state": "PASS_COMPONENT_GEMINI_DIRECT_VIDEO",
         "GEMINI_USED": True,
         "actual_model": model,
+        "run_id": run_id,
         "free_only": True,
         "trigger_reason": ai.get("gemini_trigger_reason"),
         "hypothesis_only_low_sample": bool(ai.get("gemini_hypothesis_only_when_low_sample")),
         "data_fingerprint": fingerprint,
         "same_fingerprint_repeat_forbidden": True,
-        "public_video_count": len(sources),
-        "independent_channel_count": len({str(row.get("channel") or "") for row in sources}),
+        "public_urls": public_urls,
+        "independent_channels": independent_channels,
+        "public_video_count": len(set(public_urls)),
+        "independent_channel_count": len(set(independent_channels)),
         "sources": source_view(sources),
         "reviews": reviews,
         "hypotheses": hypotheses,
-        "input_sha256": stable_sha(input_payload),
-        "prompt_sha256": hashlib.sha256(research_prompt.encode("utf-8")).hexdigest(),
-        "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "input_sha": input_sha,
+        "prompt_sha": prompt_sha,
+        "response_sha": response_sha,
+        "input_sha256": input_sha,
+        "prompt_sha256": prompt_sha,
+        "response_sha256": response_sha,
         "replay_allowed": False,
         "next": "GROQ_WORKERS_SINGLE_AXIS_GATE_THEN_WAIT_NEW_EXACT_LEDGER",
         **SAFE,
@@ -293,7 +305,7 @@ def fixture(out: str | Path) -> int:
     reviews = normalize_response(parsed)
     assert len(reviews) == 4 and {row["axis"] for row in reviews} == AXES
     write_json(target / "fixture.json", {"reviews": reviews, **SAFE})
-    print("PASS_COMPONENT_GEMINI_V2_1_FIXTURE")
+    print("PASS_COMPONENT_GEMINI_V2_2_FIXTURE")
     return 0
 
 

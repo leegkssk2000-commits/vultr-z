@@ -66,3 +66,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# manual-data-trigger: 2026-07-31T08:38:00Z

@@ -1,0 +1,61 @@
+name: ZEL P3 Portfolio Role Governor V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "backend/research/zel_portfolio_role_engine_v1.py"
+      - "backend/research/zel_portfolio_role_engine_v1_1.py"
+      - "tests/test_zel_p3_portfolio_role_engine_v1.py"
+      - ".github/workflows/zel-p3-portfolio-role-governor-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p3-portfolio-role-governor-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile P3 engine
+        run: |
+          python -m py_compile \
+            backend/research/zel_portfolio_role_engine_v1.py \
+            backend/research/zel_portfolio_role_engine_v1_1.py \
+            tests/test_zel_p3_portfolio_role_engine_v1.py
+
+      - name: Run role and exposure regression tests
+        run: python -m pytest -q tests/test_zel_p3_portfolio_role_engine_v1.py tests/test_zel_completion_foundation_v1.py
+
+      - name: Assert blocked capital authority
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for path in (
+              Path("backend/research/zel_portfolio_role_engine_v1.py"),
+              Path("backend/research/zel_portfolio_role_engine_v1_1.py"),
+          ):
+              text=path.read_text()
+              assert 'capital_activation_allowed": False' in text
+              assert 'execution_authority": "NONE"' in text
+              assert 'order_authority": "BLOCKED"' in text
+          PY

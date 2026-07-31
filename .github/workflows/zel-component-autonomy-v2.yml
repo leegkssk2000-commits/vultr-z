@@ -62,6 +62,7 @@ jobs:
             backend/tools/zel_component_pipeline_audit_v2.py
           python -m json.tool backend/research/zel_component_autonomy_policy_v2.json >/dev/null
           python backend/tools/zel_component_autonomy_v2_runner.py fixture --out out/fixture
+          python backend/tools/zel_component_gemini_v2.py --fixture --out out/gemini-fixture
       - name: Run V2 pipeline audit on fixture
         run: |
           python backend/tools/zel_component_pipeline_audit_v2.py \
@@ -292,7 +293,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas groq
       - uses: actions/download-artifact@v4
         with:
           name: zel-component-autonomy-v2-state-${{ github.run_id }}
@@ -317,9 +318,26 @@ jobs:
           p=Path('input/previous-path.txt')
           if p.exists() and p.read_text().strip():
               previous=json.loads(Path(p.read_text().strip()).read_text())
-          execute=not (previous.get('GEMINI_USED') is True and previous.get('data_fingerprint')==current.get('data_fingerprint'))
+          previous_used=previous.get('GEMINI_USED') is True or previous.get('GEMINI_PREVIOUSLY_USED') is True
+          same=previous.get('data_fingerprint')==current.get('data_fingerprint')
+          execute=not (previous_used and same)
           if not execute:
-              receipt={'state':'SKIP_UNCHANGED_COMPONENT_FINGERPRINT','GEMINI_USED':False,'data_fingerprint':current.get('data_fingerprint'),'previous_response_sha256':previous.get('response_sha256'),'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+              receipt={
+                'state':'SKIP_UNCHANGED_COMPONENT_FINGERPRINT',
+                'GEMINI_USED':False,
+                'GEMINI_PREVIOUSLY_USED':True,
+                'execution_skipped':True,
+                'data_fingerprint':current.get('data_fingerprint'),
+                'previous_run_id':previous.get('run_id', previous.get('previous_run_id')),
+                'previous_response_sha':previous.get('response_sha', previous.get('previous_response_sha')),
+                'research_only':True,
+                'promotion_authority':False,
+                'protected_mutations':0,
+                'execution_allowed':False,
+                'execution_authority':'NONE',
+                'order_authority':'BLOCKED',
+                'runtime_bound':False,
+              }
               Path('out/gemini/gemini_artifact.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
           with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
               handle.write(f"execute={'true' if execute else 'false'}\n")
@@ -375,11 +393,32 @@ jobs:
               reviews[path.stem]={'router_status':row.get('status'),'groq_decision':groq,'workers_decision':workers,'pass_to_future_replay':passed}
               if passed:
                   accepted.append(path.stem)
-          summary={'state':'PASS_COMPONENT_GEMINI_AI_GATE' if accepted else artifact.get('state'),'data_fingerprint':artifact.get('data_fingerprint'),'GEMINI_USED':artifact.get('GEMINI_USED',False),'actual_model':artifact.get('actual_model'),'hypothesis_count':len(artifact.get('hypotheses',[])),'accepted_count':len(accepted),'accepted_hypothesis_ids':accepted,'reviews':reviews,'replay_allowed_now':False,'next':'WAIT_NEW_EXACT_LEDGER_OR_W1','research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+          summary={
+            'state':'PASS_COMPONENT_GEMINI_AI_GATE' if accepted else artifact.get('state'),
+            'data_fingerprint':artifact.get('data_fingerprint'),
+            'GEMINI_USED':artifact.get('GEMINI_USED',False),
+            'GEMINI_PREVIOUSLY_USED':artifact.get('GEMINI_PREVIOUSLY_USED',False),
+            'actual_model':artifact.get('actual_model'),
+            'hypothesis_count':len(artifact.get('hypotheses',[])),
+            'accepted_count':len(accepted),
+            'accepted_hypothesis_ids':accepted,
+            'reviews':reviews,
+            'replay_allowed_now':False,
+            'next':'WAIT_NEW_EXACT_LEDGER_OR_W1',
+            'research_only':True,
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'runtime_bound':False,
+          }
           Path('out/gemini/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
           if '${{ steps.preflight.outputs.execute }}' == 'true':
-              assert artifact.get('state') in {'PASS_COMPONENT_GEMINI_DIRECT_VIDEO'}, artifact
+              assert artifact.get('state')=='PASS_COMPONENT_GEMINI_DIRECT_VIDEO', artifact
               assert artifact.get('GEMINI_USED') is True
+              for key in ('public_urls','independent_channels','run_id','input_sha','prompt_sha','response_sha'):
+                  assert artifact.get(key), key
           PY
       - uses: actions/upload-artifact@v4
         if: always()

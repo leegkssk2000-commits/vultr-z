@@ -1,0 +1,243 @@
+name: ZEL Manual V3 Video Improvement V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_manual_video_registry_v1.json'
+      - 'backend/research/zel_manual_v3_request_v1.json'
+      - 'backend/tools/zel_manual_multiaxis_gemini_v1.py'
+      - 'backend/tools/zel_manual_hypothesis_replay_v1.py'
+      - 'tests/test_zel_manual_video_improvement_v1.py'
+      - '.github/workflows/zel-manual-v3-video-improvement-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_manual_v3_request_v1.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-manual-v3-video-improvement-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  EVIDENCE_RUN_ID: '30252022416'
+  EVIDENCE_ARTIFACT: 's11-evidence-batch-5-30252022416-attempt-1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas pytest
+      - name: Compile manual research surface
+        run: |
+          python -m py_compile \
+            backend/tools/zel_manual_multiaxis_gemini_v1.py \
+            backend/tools/zel_manual_hypothesis_replay_v1.py \
+            tests/test_zel_manual_video_improvement_v1.py
+          python -m json.tool backend/research/zel_manual_video_registry_v1.json >/dev/null
+          python -m json.tool backend/research/zel_manual_v3_request_v1.json >/dev/null
+      - name: Run manual fixtures and P1 P2 P4 regression
+        run: |
+          python backend/tools/zel_manual_multiaxis_gemini_v1.py fixture --out out/fixture/gemini
+          python backend/tools/zel_manual_hypothesis_replay_v1.py fixture --out out/fixture/replay
+          python -m pytest -q \
+            tests/test_zel_manual_video_improvement_v1.py \
+            tests/test_zel_p1_event_sourced_runtime_adapter_v1.py \
+            tests/test_zel_p2_strategy_resurrection_v1.py \
+            tests/test_zel_p4_durable_oms_v1.py
+      - name: Run read-only pipeline cleanup audit
+        run: |
+          python backend/tools/zel_pipeline_bottleneck_cleanup_audit_v1.py --root . --out out/preflight/cleanup.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/preflight/cleanup.json').read_text())
+          assert row['critical_count']==0,row['findings']
+          PY
+      - name: Write P1 runtime preflight boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row={
+            'schema_version':'zel.manual_p1_preflight.v1',
+            'state':'HOLD_VPS_RUNTIME_INPUT_REQUIRED',
+            'repository_contract_tests':'PASS',
+            'vps_systemd_checked':False,
+            'open_position_count':None,
+            'producer_blob_checked_on_vps':False,
+            'formal_ledger_checked_on_vps':False,
+            'mutation_count':0,
+            'runtime_cutover_allowed':False,
+            'next':'READ_ONLY_SSH_SYSTEMD_STATE_OPEN_POSITION_PREFLIGHT',
+            'execution_authority':'NONE','order_authority':'BLOCKED'
+          }
+          Path('out/preflight').mkdir(parents=True,exist_ok=True)
+          Path('out/preflight/p1.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-manual-v3-verify-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+
+  research:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas groq
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.EVIDENCE_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ env.EVIDENCE_RUN_ID }}
+      - name: Resolve exact evidence paths
+        run: |
+          mkdir -p input/exact out/v3 out/manual/reviews out/replay out/preflight
+          ledger=$(find input/evidence -path '*/trend_ma_macd/baseline_trades.json' -print -quit)
+          summary=$(find input/evidence -path '*/trend_ma_macd/summary.json' -print -quit)
+          test -n "$ledger" -a -n "$summary"
+          cp "$ledger" input/exact/baseline_trades.json
+          cp "$summary" input/exact/summary.json
+      - name: Run V3 immediately on user request
+        run: |
+          python backend/tools/zel_component_autonomy_v3_runner.py run \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --ledger input/exact/baseline_trades.json \
+            --summary input/exact/summary.json \
+            --out out/v3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/v3/final.json').read_text())
+          assert row['order_authority']=='BLOCKED'
+          assert row['execution_allowed'] is False
+          assert row['shadow_start_allowed'] is False
+          PY
+      - name: Execute high-engagement YouTube Gemini research
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          test -n "${GEMINI_API_KEY:-}"
+          python backend/tools/zel_manual_multiaxis_gemini_v1.py run \
+            --result out/v3/final.json \
+            --registry backend/research/zel_manual_video_registry_v1.json \
+            --request backend/research/zel_manual_v3_request_v1.json \
+            --out out/manual
+      - name: Gate every hypothesis with Groq and Workers
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          test -n "${GROQ_API_KEY:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}"
+          for input in out/manual/hypotheses/*.json; do
+            [ -e "$input" ] || continue
+            id=$(basename "$input" .json)
+            set +e
+            timeout 120s python scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" \
+              --gemini-artifact out/manual/gemini_artifact.json \
+              --output "out/manual/reviews/${id}.json"
+            rc=$?
+            set -e
+            test -s "out/manual/reviews/${id}.json" || { echo "ROUTER_RECEIPT_MISSING:$id:rc=$rc"; exit 1; }
+          done
+      - name: Run bounded deterministic hypothesis replay
+        run: |
+          python backend/tools/zel_manual_hypothesis_replay_v1.py run \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --ledger input/exact/baseline_trades.json \
+            --summary input/exact/summary.json \
+            --result out/v3/final.json \
+            --gemini-artifact out/manual/gemini_artifact.json \
+            --reviews-dir out/manual/reviews \
+            --out out/replay
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/replay/report.json').read_text())
+          assert row['same_evidence_reanalysis'] is True
+          assert row['new_market_data_claim'] is False
+          assert row['performance_claim_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          assert row['source_file_mutated'] is False
+          PY
+      - name: Re-run strategy source and OMS simulations
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest -q \
+            tests/test_zel_p2_strategy_resurrection_v1.py \
+            tests/test_zel_p4_durable_oms_v1.py
+          python backend/tools/zel_pipeline_bottleneck_cleanup_audit_v1.py --root . --out out/preflight/cleanup.json
+      - name: Build terminal receipt
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          v3=json.loads(Path('out/v3/final.json').read_text())
+          gem=json.loads(Path('out/manual/gemini_artifact.json').read_text())
+          replay=json.loads(Path('out/replay/report.json').read_text())
+          cleanup=json.loads(Path('out/preflight/cleanup.json').read_text())
+          receipt={
+            'schema_version':'zel.manual_v3_video_improvement.receipt.v1',
+            'state':'PASS_MANUAL_RESEARCH_EXECUTED_HOLD_PROMOTION',
+            'request_id':gem['request_id'],
+            'v3_state':v3['state'],
+            'trade_count':replay['trade_count'],
+            'video_source_count':gem['source_count'],
+            'observed_view_sum':gem['observed_view_sum'],
+            'hypothesis_count':replay['hypothesis_count'],
+            'improvement_observed_count':replay['improvement_observed_count'],
+            'joint_ai_approved_improvement_count':replay['joint_ai_approved_improvement_count'],
+            'strategy_file_mechanism_tested':replay['strategy_file_mechanism_tested'],
+            'team_bot_mechanism_tested':replay['team_bot_mechanism_tested'],
+            'skill_mechanism_tested':replay['skill_mechanism_tested'],
+            'zbot_mechanism_tested':replay['zbot_mechanism_tested'],
+            'cleanup_critical_count':cleanup['critical_count'],
+            'same_evidence_reanalysis':True,
+            'new_market_data_claim':False,
+            'performance_claim_allowed':False,
+            'promotion_authority':False,
+            'execution_allowed':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'runtime_bound':False,
+            'shadow_start_allowed':False,
+            'paper_allowed':False,
+            'live_allowed':False,
+            'next':'P1_VPS_READ_ONLY_PREFLIGHT_AND_NEW_EXACT_LEDGER_MIN_20'
+          }
+          receipt['receipt_sha256']=hashlib.sha256(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/terminal_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(receipt['state'],receipt['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-manual-v3-video-improvement-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

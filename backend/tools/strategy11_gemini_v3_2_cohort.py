@@ -87,7 +87,18 @@ def parse_json_text(text: str) -> dict[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
-    value = json.loads(stripped)
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        starts = [index for index in (stripped.find("{"), stripped.find("[")) if index >= 0]
+        ends = [index for index in (stripped.rfind("}"), stripped.rfind("]")) if index >= 0]
+        if not starts or not ends or max(ends) <= min(starts):
+            raise
+        value = json.loads(stripped[min(starts):max(ends) + 1])
+    if isinstance(value, list):
+        if not all(isinstance(row, Mapping) for row in value):
+            raise ValueError("GEMINI_JSON_ARRAY_ROWS_INVALID")
+        return {"status": "PASS", "strategy_reviews": value}
     if not isinstance(value, dict):
         raise ValueError("GEMINI_JSON_OBJECT_REQUIRED")
     return value

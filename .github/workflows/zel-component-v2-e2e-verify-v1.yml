@@ -1,0 +1,201 @@
+name: ZEL Component V2 E2E Verify V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-component-v2-e2e-verify-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-component-v2-e2e-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+  EVIDENCE_RUN_ID: '30252022416'
+  EVIDENCE_ARTIFACT: 's11-evidence-batch-5-30252022416-attempt-1'
+
+jobs:
+  verify-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas groq
+      - name: Restore exact canonical Strategy11 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.EVIDENCE_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ env.EVIDENCE_RUN_ID }}
+      - name: Verify exact evidence authority
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/zel_component_autonomy_policy_v2.json').read_text())
+          root=Path('input/evidence/trend_ma_macd')
+          ledger=root/'baseline_trades.json'; summary=root/'summary.json'
+          assert ledger.is_file() and summary.is_file()
+          assert hashlib.sha256(ledger.read_bytes()).hexdigest()==policy['source_authorities']['trade_ledger_file_sha256']
+          assert hashlib.sha256(summary.read_bytes()).hexdigest()==policy['source_authorities']['summary_file_sha256']
+          row=json.loads(summary.read_text())
+          assert row['authority_exact_summary_sha256']==policy['source_authorities']['authority_exact_summary_sha256']
+          assert row['selected_authority_result_sha256']==policy['source_authorities']['selected_authority_result_sha256']
+          PY
+      - name: Run exact-ledger sequential component pipeline
+        run: |
+          python backend/tools/zel_component_autonomy_v2_runner.py run \
+            --policy backend/research/zel_component_autonomy_policy_v2.json \
+            --ledger input/evidence/trend_ma_macd/baseline_trades.json \
+            --summary input/evidence/trend_ma_macd/summary.json \
+            --out out/state
+      - name: Audit exact pipeline state
+        run: |
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v2.json \
+            --result out/state/final.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v2.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/audit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state=json.loads(Path('out/state/final.json').read_text())
+          audit=json.loads(Path('out/audit/report.json').read_text())
+          assert state['state']=='LOW_SAMPLE_HOLD', state['state']
+          assert state['control']['stats']['trade_count']==5
+          assert state['convergence']['low_sample_hold'] is True
+          assert not any(state['axis_review_eligibility'].values())
+          assert state['ai_usage']['gemini_required_this_epoch'] is True
+          assert state['order_authority']=='BLOCKED'
+          assert state['execution_allowed'] is False
+          assert state['runtime_bound'] is False
+          assert state['shadow_start_allowed'] is False
+          assert abs(state['component_attribution']['interaction_residual']) <= 1e-12
+          assert audit['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2', audit['findings']
+          PY
+      - name: Execute actual Gemini direct-video research
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/zel_component_gemini_v2.py \
+            --result out/state/final.json \
+            --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json \
+            --out out/gemini
+      - name: Verify Gemini source and lineage receipt
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state=json.loads(Path('out/state/final.json').read_text())
+          row=json.loads(Path('out/gemini/gemini_artifact.json').read_text())
+          assert row['state']=='PASS_COMPONENT_GEMINI_DIRECT_VIDEO', row
+          assert row['GEMINI_USED'] is True
+          assert row['data_fingerprint']==state['data_fingerprint']
+          assert len(set(row['public_urls']))>=4
+          assert len(set(row['independent_channels']))>=4
+          assert row['public_video_count']>=4
+          assert row['independent_channel_count']>=4
+          assert row['actual_model']
+          for key in ('run_id','input_sha','prompt_sha','response_sha','receipt_sha256'):
+              assert row.get(key), key
+          assert row['replay_allowed'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - name: Gate Gemini hypotheses with Groq and Workers
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          mkdir -p out/gemini/reviews
+          for input in out/gemini/hypotheses/*.json; do
+            [ -e "$input" ] || continue
+            id=$(basename "$input" .json)
+            set +e
+            python scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" \
+              --gemini-artifact out/gemini/gemini_artifact.json \
+              --output "out/gemini/reviews/${id}.json"
+            rc=$?
+            set -e
+            test -s "out/gemini/reviews/${id}.json" || { echo "ROUTER_RECEIPT_MISSING:$id:rc=$rc"; exit 1; }
+          done
+      - name: Build terminal E2E receipt
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          state=json.loads(Path('out/state/final.json').read_text())
+          gemini=json.loads(Path('out/gemini/gemini_artifact.json').read_text())
+          reviews={}
+          accepted=[]
+          for path in sorted(Path('out/gemini/reviews').glob('*.json')):
+              row=json.loads(path.read_text())
+              groq=((((row.get('provider_results') or {}).get('groq') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              workers=((((row.get('provider_results') or {}).get('workers_ai') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              passed=row.get('status')=='PASS_AI_REVIEW_ROUTER' and groq=='PASS_TO_REPLAY' and workers=='PASS_TO_REPLAY'
+              reviews[path.stem]={
+                'router_status':row.get('status'),
+                'groq_status':((row.get('provider_results') or {}).get('groq') or {}).get('status'),
+                'workers_status':((row.get('provider_results') or {}).get('workers_ai') or {}).get('status'),
+                'groq_decision':groq,
+                'workers_decision':workers,
+                'pass_to_future_replay':passed,
+              }
+              if passed: accepted.append(path.stem)
+          receipt={
+            'state':'PASS_COMPONENT_V2_E2E_VERIFIED',
+            'exact_pipeline_state':state['state'],
+            'exact_trade_count':state['control']['stats']['trade_count'],
+            'pipeline_result_sha256':state['result_sha256'],
+            'pipeline_audit_state':json.loads(Path('out/audit/report.json').read_text())['state'],
+            'gemini_state':gemini['state'],
+            'gemini_used':gemini['GEMINI_USED'],
+            'gemini_model':gemini['actual_model'],
+            'gemini_public_video_count':gemini['public_video_count'],
+            'gemini_independent_channel_count':gemini['independent_channel_count'],
+            'gemini_hypothesis_count':len(gemini.get('hypotheses',[])),
+            'accepted_future_hypothesis_count':len(accepted),
+            'accepted_future_hypothesis_ids':accepted,
+            'provider_reviews':reviews,
+            'replay_allowed_now':False,
+            'shadow_start_allowed':False,
+            'paper_allowed':False,
+            'live_allowed':False,
+            'research_only':True,
+            'promotion_authority':False,
+            'protected_mutations':0,
+            'execution_allowed':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'runtime_bound':False,
+            'next':'WAIT_NEW_EXACT_LEDGER_OR_W1',
+          }
+          receipt['receipt_sha256']=hashlib.sha256(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/e2e_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(receipt['state'],receipt['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-v2-e2e-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

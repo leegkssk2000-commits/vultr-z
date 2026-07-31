@@ -1,0 +1,113 @@
+name: R7A4D Strategy11 Supertrend Authentic Child V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/strategy11_supertrend_authentic_contract_v1.json'
+      - 'backend/tools/strategy11_supertrend_authentic_child_v1.py'
+      - 'backend/tools/strategy11_supertrend_authentic_fixture_v1.py'
+      - '.github/workflows/r7a4d-strategy11-supertrend-authentic-child-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-supertrend-authentic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  authentic-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile and verify formula/state fixture
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_supertrend_authentic_child_v1.py \
+            backend/tools/strategy11_supertrend_authentic_fixture_v1.py
+          python backend/tools/strategy11_supertrend_authentic_fixture_v1.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('backend/research/strategy11_supertrend_authentic_contract_v1.json').read_text())
+          assert contract['strategy_id']=='supertrend_flip_authentic'
+          assert contract['formula']['atr']=='WILDER_RMA'
+          assert contract['formula']['atr_length']==10
+          assert contract['formula']['multiplier']==3.0
+          assert contract['formula']['recursive_final_bands'] is True
+          assert contract['formula']['confirmed_close_flip'] is True
+          assert contract['safety']['legacy_parent_modified'] is False
+          assert contract['safety']['promotion_authority'] is False
+          assert contract['safety']['execution_allowed'] is False
+          assert contract['safety']['runtime_bound'] is False
+          assert contract['safety']['order_authority']=='BLOCKED'
+          PY
+      - name: Restore exact immutable V3 archive
+        uses: actions/download-artifact@v4
+        with:
+          name: final-v3-prep-30588354565
+          path: input/prep
+          github-token: ${{ github.token }}
+          run-id: 30588354565
+      - name: Verify archive authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path=Path('input/prep/archive/manifest.json')
+          row=json.loads(path.read_text())
+          assert row['state']=='PASS_EXPANDED_ARCHIVE'
+          assert row['archive_sha256']=='985c8561016639b7ab4397bd8064cf3a67d8667db3a21797138aa5326291dbbd'
+          assert row['window_count']==12 and row['symbol_count']==5
+          assert row['total_symbol_bars']==54000
+          assert row['evaluation_symbol_bars']==40800
+          assert row['evaluation_periods_non_overlapping'] is True
+          assert len(row['rows'])==60
+          PY
+      - name: Run authentic bidirectional replay
+        run: |
+          mkdir -p out
+          python backend/tools/strategy11_supertrend_authentic_child_v1.py \
+            --archive-root input/prep/archive \
+            --out out \
+            --length 10 \
+            --multiplier 3.0 \
+            --cost-bps-per-side 4.0
+      - name: Assert terminal research-only contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/final.json').read_text())
+          assert row['state']=='PASS_AUTHENTIC_BIDIRECTIONAL_REPLAY_COMPLETE'
+          assert row['strategy_id']=='supertrend_flip_authentic'
+          assert row['row_count']==60
+          assert row['post_seed_nan_count']==0
+          assert row['duplicate_trade_count']==0
+          assert row['ab_parity']=='PASS'
+          assert row['long_flip_count']>0 and row['short_flip_count']>0
+          assert row['legacy_parent_modified'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['runtime_bound'] is False
+          assert row['order_authority']=='BLOCKED'
+          assert row['fresh_confirmation_required'] is True
+          assert row['w1_w2_w3_new_sealed_required'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-supertrend-authentic-child-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

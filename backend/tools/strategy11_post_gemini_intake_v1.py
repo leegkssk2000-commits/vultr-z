@@ -144,7 +144,7 @@ def w1_preflight(args: argparse.Namespace) -> int:
         raise ValueError("STREAM_SHA_MISSING")
     exact_end = str(contract["upstream"]["w1_exact_end_utc"])
     latest = str(manifest.get("latest_closed_end") or "")
-    ready = available == 480 and missing == 0 and manifest.get("w1_ready") is True and latest.replace("+00:00", "Z") >= exact_end
+    ready = available >= 480 and missing == 0 and manifest.get("w1_ready") is True and latest.replace("+00:00", "Z") >= exact_end
     state = "READY_NATIVE_W1_DISPATCH" if ready else "WAIT_W1_DATA"
     schedule = {"preflight_collector_utc": "2026-08-01T08:32:00Z", "final_collector_utc": "2026-08-01T08:47:00Z", "native_w1_utc": "2026-08-01T09:02:00Z", "v3_overlay_utc": "2026-08-01T09:29:00Z"}
     output = {"schema_version": "1.0", "version": VERSION, "state": state, "available_non_overlap_bars": available, "missing_to_w1_480": missing, "w1_ready": bool(manifest.get("w1_ready")), "latest_closed_end": latest, "required_exact_end": exact_end, "symbol_count": len(symbols), "manifest_sha256": file_sha(manifest_path), "market_sha_set_sha256": stable_sha({row["symbol"]: row["market_sha256"] for row in symbols}), "funding_sha_set_sha256": stable_sha({row["symbol"]: row["funding_sha256"] for row in symbols}), "sequence": schedule, "sequence_order_valid": list(schedule.values()) == sorted(schedule.values()), "native_completion_artifact": contract["upstream"]["native_completion_artifact"], "overlay_candidate": contract["candidate"], "next": "DISPATCH_NATIVE_W1" if ready else "WAIT_APPEND_ONLY_COLLECTOR", **SAFETY}
@@ -156,6 +156,28 @@ def w1_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_w1_receipt(row: Mapping[str, Any], *, label: str, allowed_states: set[str], strategy_id: str, manifest_sha: str, variant_id: str | None = None, allowed_configs: set[str] | None = None) -> None:
+    require_safety(row, label)
+    if row.get("state") not in allowed_states:
+        raise ValueError(f"W1_RECEIPT_STATE:{label}:{row.get('state')}")
+    if row.get("strategy_id") != strategy_id:
+        raise ValueError(f"W1_RECEIPT_STRATEGY:{label}:{row.get('strategy_id')}")
+    if row.get("source_w1_manifest_sha256") != manifest_sha:
+        raise ValueError(f"W1_RECEIPT_MANIFEST:{label}")
+    if variant_id is not None and row.get("variant_id") != variant_id:
+        raise ValueError(f"W1_RECEIPT_VARIANT:{label}:{row.get('variant_id')}")
+    if allowed_configs is not None and row.get("selected_config") not in allowed_configs:
+        raise ValueError(f"W1_RECEIPT_CONFIG:{label}:{row.get('selected_config')}")
+    hash_key = "result_sha256" if "result_sha256" in row else "receipt_sha256" if "receipt_sha256" in row else None
+    if hash_key is None:
+        raise ValueError(f"W1_RECEIPT_SELF_HASH_MISSING:{label}")
+    expected = str(row[hash_key])
+    unsigned = dict(row)
+    del unsigned[hash_key]
+    if stable_sha(unsigned) != expected:
+        raise ValueError(f"W1_RECEIPT_SELF_HASH:{label}")
+
+
 def shadow_intake(args: argparse.Namespace) -> int:
     classification = read_json(Path(args.classification))
     alpha = read_json(Path(args.alpha_receipt))
@@ -164,6 +186,11 @@ def shadow_intake(args: argparse.Namespace) -> int:
         require_safety(row, label)
     trend_w1 = read_json(Path(args.trend_w1)) if args.trend_w1 else None
     alpha_w1 = read_json(Path(args.alpha_w1)) if args.alpha_w1 else None
+    manifest_sha = str(w1.get("manifest_sha256") or "")
+    if trend_w1 is not None:
+        validate_w1_receipt(trend_w1, label="trend_w1", allowed_states={"PASS_W1_V3_SURVIVOR_CONFIRMATION"}, strategy_id="trend_ma_macd", manifest_sha=manifest_sha, variant_id="INT3_MAX_CHASE_DIST_ATR_RELAX")
+    if alpha_w1 is not None:
+        validate_w1_receipt(alpha_w1, label="alpha_w1", allowed_states={"PASS_ALPHA_W1_FRESH_CONFIRMATION", "PASS_W1_ALPHA_MULTIOBJECTIVE_CONFIRMATION"}, strategy_id="alpha_combo", manifest_sha=manifest_sha, allowed_configs={"TIME54", "TIME60"})
     staged = [{"family_id": "alpha_combo", "role": "CORE", "configs": ["TIME54", "TIME60"], "mutually_exclusive": True, "required_receipt": "ALPHA_W1_FRESH_PASS"}, {"family_id": "trend_ma_macd", "role": "CORE", "configs": ["INT3_MAX_CHASE_DIST_ATR_RELAX"], "mutually_exclusive": False, "required_receipt": "PASS_W1_V3_SURVIVOR_CONFIRMATION"}]
     admitted: list[dict[str, Any]] = []
     if alpha_w1 and alpha_w1.get("state") in {"PASS_ALPHA_W1_FRESH_CONFIRMATION", "PASS_W1_ALPHA_MULTIOBJECTIVE_CONFIRMATION"}:

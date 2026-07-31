@@ -36,6 +36,22 @@ class EventSourcedProducerHooksV2(base.EventSourcedProducerHooks):
         raw = build_event_v2(event_identity, event_type, event_ts, payload, self.journal)
         return self.journal.append(raw)
 
+    def close_position(
+        self,
+        position: Mapping[str, Any],
+        exit_price: float,
+        exit_ts: str,
+        reason: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        row = super().close_position(position, exit_price, exit_ts, reason, *args, **kwargs)
+        row["event_source_version"] = VERSION
+        key = str(row["event_id"])
+        if key in self.pending_close:
+            self.pending_close[key]["row_sha256"] = canonical_sha(row)
+        return row
+
     def append_jsonl_once(self, path: Path, row: Mapping[str, Any]) -> bool:
         appended = self.original_append_jsonl_once(path, row)
         if row.get("schema") != "q4r3_exact25_dedicated_shadow_close_v1":

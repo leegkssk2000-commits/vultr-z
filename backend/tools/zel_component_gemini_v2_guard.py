@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from backend.tools import zel_component_autonomy_v2 as core
 from backend.tools import zel_component_gemini_v2 as active
 
 VERSION = "ZEL_COMPONENT_GEMINI_V2_GUARD"

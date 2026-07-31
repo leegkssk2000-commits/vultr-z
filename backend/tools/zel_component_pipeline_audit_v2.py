@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_4"
+VERSION = "ZEL_COMPONENT_PIPELINE_AUDIT_V2_5"
 SAFE = {
     "research_only": True,
     "promotion_authority": False,
@@ -21,6 +21,7 @@ ROLES = {"LBot", "MBot", "OBot", "SBot"}
 TEAMS = {"AlphaTeam", "BetaTeam", "GammaTeam", "DeltaTeam"}
 ADVISORS = {"ZBOT", "ZICO", "LICO", "ZLICE"}
 OBSERVER_ONLY = {"SK_ENTRY_SHORT_BEAM", "SK_ADD_DCA", "SK_ADD_AVG_DOWN", "SK_ADD_WATER_ADD"}
+CLAIM_TIERS = {"LOW_SAMPLE", "HYPOTHESIS_ONLY", "COMPONENT_EFFICACY", "INTEGRATED_S_GRADE_SAMPLE"}
 
 
 def read_json(path: str | Path) -> dict[str, Any]:
@@ -68,7 +69,7 @@ def audit(
     best_by_role = (modules.get("bots") or {}).get("best_by_role") or {}
     if set(best_by_role) != ROLES:
         findings.append(finding("BOT_ROLE_PROFILE_SET_MISMATCH", "CRITICAL", str(sorted(best_by_role))))
-    if "for watcher in team.get(\"watchers\", [])" not in core_text:
+    if 'for watcher in team.get("watchers", [])' not in core_text:
         findings.append(finding("TEAM_WATCHERS_NOT_FULLY_EVALUATED", "CRITICAL", "watcher iteration missing"))
     if set((policy.get("team_search") or {}).get("teams", {})) != TEAMS:
         findings.append(finding("TEAM_SET_MISMATCH", "CRITICAL", str(sorted((policy.get('team_search') or {}).get('teams', {})))))
@@ -117,13 +118,39 @@ def audit(
         if active and axis not in {"BOT_POLICY", "TEAM_POLICY", "SKILL_PROFILE", "ADVISOR_PROFILE"}:
             findings.append(finding("UNKNOWN_AI_AXIS", "HIGH", axis))
 
+    is_v3 = str(result.get("schema_version") or "").startswith("3") or "claim_gate" in result
+    claim_gate = result.get("claim_gate") or {}
+    claim_tier = claim_gate.get("claim_tier")
+    performance_claim_allowed = bool(result.get("performance_claim_allowed", claim_gate.get("performance_claim_allowed", False)))
+    exact_skill_replay_required = bool(claim_gate.get("exact_skill_replay_required"))
+    interaction = claim_gate.get("interaction_audit") or {}
+    statistics = claim_gate.get("statistical_gate") or {}
+    if is_v3:
+        if not claim_gate:
+            findings.append(finding("V3_CLAIM_GATE_MISSING", "CRITICAL", "claim_gate missing"))
+        if claim_tier not in CLAIM_TIERS:
+            findings.append(finding("V3_CLAIM_TIER_INVALID", "CRITICAL", str(claim_tier)))
+        if claim_tier in {"LOW_SAMPLE", "HYPOTHESIS_ONLY"} and performance_claim_allowed:
+            findings.append(finding("V3_PREMATURE_PERFORMANCE_CLAIM", "CRITICAL", str(claim_tier)))
+        if exact_skill_replay_required and performance_claim_allowed:
+            findings.append(finding("V3_SYNTHETIC_SKILL_CLAIM_LEAK", "CRITICAL", "exact replay still required"))
+        if claim_tier in {"COMPONENT_EFFICACY", "INTEGRATED_S_GRADE_SAMPLE"}:
+            if interaction.get("order_stable") is False and result.get("state") != "HOLD_COMPONENT_INTERACTION_UNSTABLE":
+                findings.append(finding("V3_INTERACTION_HOLD_NOT_ENFORCED", "CRITICAL", str(result.get("state"))))
+            if interaction.get("order_stable") is True and exact_skill_replay_required and result.get("state") != "HOLD_EXACT_SKILL_REPLAY_REQUIRED":
+                findings.append(finding("V3_EXACT_SKILL_REPLAY_HOLD_NOT_ENFORCED", "CRITICAL", str(result.get("state"))))
+            if interaction.get("order_stable") is True and not exact_skill_replay_required and statistics.get("pass") is False and result.get("state") != "HOLD_STATISTICAL_GATE":
+                findings.append(finding("V3_STATISTICAL_HOLD_NOT_ENFORCED", "CRITICAL", str(result.get("state"))))
+        if result.get("shadow_start_allowed") is not False or result.get("paper_allowed") is not False or result.get("live_allowed") is not False:
+            findings.append(finding("V3_EXECUTION_SURFACE_LEAK", "CRITICAL", "shadow/paper/live must remain false"))
+
     per_axis_bindings = (
         "axis-ai-gate:" in workflow_text
         and "Required material per-axis Groq and Workers AI review" in workflow_text
         and "active_axis_count != '0'" in workflow_text
         and "strategy11_groq_redteam.py" in workflow_text
         and "strategy11_workers_ai_guard.py" in workflow_text
-        and "PASS_COMPONENT_AXIS_AI_GATE_V2" in workflow_text
+        and ("PASS_COMPONENT_AXIS_AI_GATE_V2" in workflow_text or "PASS_COMPONENT_AXIS_AI_GATE_V3" in workflow_text)
     )
     if not per_axis_bindings:
         findings.append(finding("PER_AXIS_AI_GATE_NOT_BOUND", "CRITICAL", "material single-axis Groq/Workers workflow binding missing"))
@@ -149,7 +176,7 @@ def audit(
     rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
     counts = {severity: sum(row["severity"] == severity for row in findings) for severity in rank}
     report = {
-        "schema_version": "2.4",
+        "schema_version": "2.5",
         "version": VERSION,
         "state": "PASS_COMPONENT_PIPELINE_AUDIT_V2" if not findings else "HOLD_COMPONENT_PIPELINE_V2_REPAIR_REQUIRED",
         "finding_count": len(findings),
@@ -165,6 +192,7 @@ def audit(
             "LICO",
             "ZLICE_LINEAGE",
             "ORDERED_ATTRIBUTION",
+            "V3_CLAIM_GATES",
             "MATERIAL_AXIS_AI",
             "ROUTER_COMPATIBLE_GEMINI_DIRECT_VIDEO",
             "PERSISTENT_FINGERPRINT_DEDUP",
@@ -174,6 +202,11 @@ def audit(
             "control_trade_count": int(((result.get("control") or {}).get("stats") or {}).get("trade_count", 0)),
             "full_stack_trade_count": int(((result.get("full_stack") or {}).get("stats") or {}).get("trade_count", 0)),
             "low_sample_hold": low_sample,
+            "claim_tier": claim_tier,
+            "performance_claim_allowed": performance_claim_allowed,
+            "exact_skill_replay_required": exact_skill_replay_required,
+            "order_stable": interaction.get("order_stable"),
+            "statistical_gate_pass": statistics.get("pass"),
             "eligible_ai_axes": sorted(axis for axis, active in eligibility.items() if active),
             "interaction_residual": residual,
             "per_axis_gate_bound": per_axis_bindings,

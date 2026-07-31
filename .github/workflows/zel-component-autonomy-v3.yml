@@ -1,0 +1,289 @@
+name: ZEL Component Autonomy V3
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/zel_component_autonomy_v3_runner.py'
+      - 'backend/research/zel_component_autonomy_policy_v3.json'
+      - '.github/workflows/zel-component-autonomy-v3.yml'
+  schedule:
+    - cron: '27 */8 * * *'
+  workflow_dispatch:
+    inputs:
+      authority_run_id:
+        description: Optional W1 control-plane run ID
+        required: false
+        type: string
+      authority_artifact:
+        description: Optional W1 control-plane artifact
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-component-autonomy-v3-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONPATH: .
+  LEGACY_RUN_ID: '30252022416'
+  LEGACY_ARTIFACT: s11-evidence-batch-5-30252022416-attempt-1
+  CONTROL_RELEASE: zel-w1-control-plane-20260801t083000z-v1
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Verify V3 contracts
+        run: |
+          python -m py_compile backend/tools/zel_component_autonomy_v3_runner.py
+          python -m json.tool backend/research/zel_component_autonomy_policy_v3.json >/dev/null
+          python backend/tools/zel_component_autonomy_v3_runner.py fixture --out out/fixture
+          grep -q HYPOTHESIS_ONLY_HOLD backend/tools/zel_component_autonomy_v3_runner.py
+          grep -q BONFERRONI backend/tools/zel_component_autonomy_v3_runner.py
+          grep -q order_stable backend/tools/zel_component_autonomy_v3_runner.py
+          grep -q exact_skill_replay_required backend/tools/zel_component_autonomy_v3_runner.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-v3-fixture-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+
+  replay:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    outputs:
+      state: ${{ steps.gate.outputs.state }}
+      active_axis_count: ${{ steps.gate.outputs.active_axis_count }}
+      gemini_required: ${{ steps.gate.outputs.gemini_required }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Resolve dynamic or legacy authority
+        id: authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.authority_run_id }}
+          ARTIFACT: ${{ inputs.authority_artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/evidence
+          mode=legacy
+          if [ -n "${RUN_ID:-}" ] && [ -n "${ARTIFACT:-}" ]; then
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT" --dir input/control
+            cp -a input/control/component-authority/. input/evidence/
+            mode=dynamic_artifact
+          elif gh release view "$CONTROL_RELEASE" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p input/release
+            gh release download "$CONTROL_RELEASE" --repo "$GITHUB_REPOSITORY" --pattern component-authority.tar.gz --dir input/release
+            tar -xzf input/release/component-authority.tar.gz -C input/evidence
+            mode=dynamic_release
+          else
+            gh run download "$LEGACY_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$LEGACY_ARTIFACT" --dir input/evidence
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Verify authority hashes and safety
+        env:
+          MODE: ${{ steps.authority.outputs.mode }}
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/zel_component_autonomy_policy_v3.json').read_text())
+          root=Path('input/evidence/trend_ma_macd'); ledger=root/'baseline_trades.json'; summary=root/'summary.json'
+          assert ledger.is_file() and summary.is_file()
+          if os.environ['MODE'].startswith('dynamic'):
+              authority=json.loads(Path('input/evidence/authority.json').read_text())
+              assert authority['schema_version']==policy['source_authorities']['dynamic_authority_schema']
+              assert authority['state']=='PASS_W1_EXACT_AUTHORITY_BINDER'
+              assert authority['component_dispatch_allowed'] is True
+              assert hashlib.sha256(ledger.read_bytes()).hexdigest()==authority['trade_ledger_file_sha256']
+              assert hashlib.sha256(summary.read_bytes()).hexdigest()==authority['summary_file_sha256']
+              assert authority['execution_allowed'] is False and authority['order_authority']=='BLOCKED'
+          else:
+              assert hashlib.sha256(ledger.read_bytes()).hexdigest()==policy['source_authorities']['trade_ledger_file_sha256']
+              assert hashlib.sha256(summary.read_bytes()).hexdigest()==policy['source_authorities']['summary_file_sha256']
+          row=json.loads(summary.read_text())
+          assert row['authority']=='READ_ONLY_BASELINE_EVIDENCE_NO_EXECUTION'
+          assert row['strategy_id']=='trend_ma_macd'
+          PY
+      - name: Restore same-fingerprint state
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/previous
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v3.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-component-autonomy-v3-state-*' --dir input/previous 2>/dev/null && break
+          done
+          find input/previous -name state.json -print -quit > input/previous-path.txt || true
+      - name: Run claim-gated replay
+        run: |
+          previous=(); [ ! -s input/previous-path.txt ] || previous=(--previous-state "$(cat input/previous-path.txt)")
+          python backend/tools/zel_component_autonomy_v3_runner.py run \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --ledger input/evidence/trend_ma_macd/baseline_trades.json \
+            --summary input/evidence/trend_ma_macd/summary.json \
+            "${previous[@]}" --out out/state
+      - name: Audit result and build material-axis envelopes
+        id: gate
+        run: |
+          mkdir -p out/audit out/axis/inputs
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --result out/state/final.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v3.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/audit
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          row=json.loads(Path('out/state/final.json').read_text()); audit=json.loads(Path('out/audit/report.json').read_text())
+          assert audit['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2',audit['findings']
+          assert row['shadow_start_allowed'] is False and row['order_authority']=='BLOCKED'
+          modules=row['module_results']; configs={
+            'BOT_POLICY':modules['bots']['best_by_role'],'TEAM_POLICY':modules['teams']['best'],
+            'SKILL_PROFILE':modules['skills']['best'],
+            'ADVISOR_PROFILE':{role:value['best'] for role,value in modules['advisors'].items()}}
+          active=[]
+          for axis,eligible in row['axis_review_eligibility'].items():
+              if not eligible: continue
+              payload={'strategy_id':row['strategy_id'],'component_epoch':row['epoch'],'changed_axes':[axis],
+                       'lineage_complete':True,'hypothesis':{'axis':axis,'configuration':configs[axis]},
+                       'control':row['control']['stats'],'candidate':row['full_stack']['stats'],
+                       'evidence':row['component_attribution'],
+                       'lineage':{'ledger_sha':row['source_authority']['ledger_sha256'],
+                                  'summary_sha':row['source_authority']['summary_sha256'],
+                                  'fingerprint':row['data_fingerprint'],'candidate_result_sha':row['result_sha256']},
+                       'research_only':True,'promotion_authority':False,'execution_allowed':False,
+                       'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+              Path(f'out/axis/inputs/{axis}.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+              active.append(axis)
+          Path('out/axis/inputs/index.json').write_text(json.dumps({'active_axes':active},indent=2)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as h:
+              h.write(f"state={row['state']}\nactive_axis_count={len(active)}\n")
+              h.write(f"gemini_required={'true' if row['ai_usage']['gemini_required_this_epoch'] else 'false'}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-v3-state-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  axis-ai-gate:
+    if: needs.replay.outputs.active_axis_count != '0'
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-component-autonomy-v3-state-${{ github.run_id }}
+          path: input/state
+      - name: Run isolated Groq and Workers guards
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail; mkdir -p out/ai/reviews
+          test -n "${GROQ_API_KEY:-}"; test -n "${CLOUDFLARE_ACCOUNT_ID:-}"; test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}"
+          count=0
+          for input in input/state/axis/inputs/*.json; do
+            [ "$(basename "$input")" = index.json ] && continue
+            count=$((count+1)); test "$count" -le 4; axis=$(basename "$input" .json)
+            timeout 120s python scripts/strategy11_groq_redteam.py --input "$input" --output "out/ai/reviews/${axis}.groq.json"
+            timeout 120s python scripts/strategy11_workers_ai_guard.py --input "$input" --output "out/ai/reviews/${axis}.workers.json"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          index=json.loads(Path('input/state/axis/inputs/index.json').read_text()); result={'state':'PASS_COMPONENT_AXIS_AI_GATE_V3','axes':{},'research_only':True,'promotion_authority':False,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+          for axis in index['active_axes']:
+              g=json.loads(Path(f'out/ai/reviews/{axis}.groq.json').read_text()); w=json.loads(Path(f'out/ai/reviews/{axis}.workers.json').read_text())
+              assert g['status']=='PASS_GROQ_REDTEAM_CONNECTION'; assert w['status']=='PASS_WORKERS_AI_CONNECTION'
+              gm=g.get('actual_model') or g.get('model') or g.get('provider_model'); wm=w.get('actual_model') or w.get('model') or w.get('provider_model')
+              complete=bool(gm and wm and g.get('response_sha') and w.get('response_sha'))
+              result['axes'][axis]={'groq_decision':g['review']['decision'],'workers_decision':w['review']['decision'],'groq_model':gm,'workers_model':wm,'identity_complete':complete,'pass_to_future_replay':complete and g['review']['decision']=='PASS_TO_REPLAY' and w['review']['decision']=='PASS_TO_REPLAY'}
+          Path('out/ai/summary.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-autonomy-v3-axis-ai-${{ github.run_id }}
+          path: out/ai
+          if-no-files-found: error
+          retention-days: 90
+
+  gemini-direct-video:
+    if: needs.replay.outputs.gemini_required == 'true'
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas groq
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-component-autonomy-v3-state-${{ github.run_id }}
+          path: input/state
+      - name: Run bounded direct-video and independent router
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          mkdir -p out/gemini/reviews
+          timeout 110m python backend/tools/zel_component_gemini_v2.py --result input/state/state/final.json --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json --out out/gemini
+          for input in out/gemini/hypotheses/*.json; do
+            [ -e "$input" ] || continue; id=$(basename "$input" .json)
+            timeout 120s python scripts/strategy11_ai_review_router.py --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute --input "$input" --gemini-artifact out/gemini/gemini_artifact.json --output "out/gemini/reviews/${id}.json" || true
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path('out/gemini/gemini_artifact.json').read_text())
+          assert a['state']=='PASS_COMPONENT_GEMINI_DIRECT_VIDEO'
+          for key in ('actual_model','public_urls','independent_channels','run_id','input_sha','prompt_sha','response_sha'): assert a.get(key),key
+          accepted=[]
+          for p in Path('out/gemini/reviews').glob('*.json'):
+              r=json.loads(p.read_text()); g=((((r.get('provider_results') or {}).get('groq') or {}).get('artifact') or {}).get('review') or {}).get('decision'); w=((((r.get('provider_results') or {}).get('workers_ai') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              if r.get('status')=='PASS_AI_REVIEW_ROUTER' and g=='PASS_TO_REPLAY' and w=='PASS_TO_REPLAY': accepted.append(p.stem)
+          summary={'state':'PASS_COMPONENT_GEMINI_AI_GATE' if accepted else 'HOLD_NO_JOINTLY_APPROVED_HYPOTHESIS','data_fingerprint':a.get('data_fingerprint'),'actual_model':a['actual_model'],'prompt_sha':a['prompt_sha'],'response_sha':a['response_sha'],'hypothesis_count':len(a.get('hypotheses',[])),'accepted_hypothesis_ids':accepted,'replay_allowed_now':False,'performance_claim_allowed':False,'research_only':True,'promotion_authority':False,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+          Path('out/gemini/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-autonomy-v3-gemini-${{ github.run_id }}
+          path: out/gemini
+          if-no-files-found: error
+          retention-days: 90

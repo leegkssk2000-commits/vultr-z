@@ -1,0 +1,254 @@
+name: ZEL Component Autonomy V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_component_autonomy_policy_v1.json'
+      - 'backend/tools/zel_component_autonomy_v1.py'
+      - '.github/workflows/zel-component-autonomy-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_component_autonomy_policy_v1.json'
+      - 'backend/tools/zel_component_autonomy_v1.py'
+      - '.github/workflows/zel-component-autonomy-v1.yml'
+  schedule:
+    - cron: '57 */8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+concurrency:
+  group: zel-component-autonomy-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONPATH: .
+  EVIDENCE_RUN_ID: '30252022416'
+  EVIDENCE_ARTIFACT: 's11-evidence-batch-5-30252022416-attempt-1'
+
+jobs:
+  verify:
+    name: Verify component autonomy contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile and run deterministic fixture
+        run: |
+          python -m py_compile backend/tools/zel_component_autonomy_v1.py
+          python -m json.tool backend/research/zel_component_autonomy_policy_v1.json >/dev/null
+          python backend/tools/zel_component_autonomy_v1.py fixture --out out/fixture
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/fixture/fixture_result.json').read_text())
+          assert row['state']=='PASS_COMPONENT_AUTONOMY_EPOCH'
+          assert set(row['module_results'])=={'bots','teams','skills','advisors'}
+          assert row['module_results']['skills']['tested']>=15
+          assert row['module_results']['teams']['tested']==4
+          assert row['execution_fidelity']=='CANONICAL_EXACT_TRADE_LEDGER_PLUS_EVENT_COUNTERFACTUAL_COMPONENTS'
+          assert row['convergence']['fingerprint_reset'] is True
+          assert row['ai_usage']['xai_grok_required'] is False
+          assert row['shadow_start_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-fixture-${{ github.run_id }}
+          path: out/fixture
+          if-no-files-found: error
+          retention-days: 30
+
+  replay:
+    name: Exact-ledger bot/team/skill/advisor epoch
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      state: ${{ steps.result.outputs.state }}
+      ai_escalation: ${{ steps.result.outputs.ai_escalation }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Restore exact canonical Strategy11 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.EVIDENCE_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          run-id: ${{ env.EVIDENCE_RUN_ID }}
+      - name: Restore latest successful component state
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/previous
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v1.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-component-autonomy-state-*' --dir input/previous 2>/dev/null; then break; fi
+          done
+          find input/previous -name state.json -print -quit > input/previous-path.txt || true
+      - name: Verify exact source files
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/zel_component_autonomy_policy_v1.json').read_text())
+          root=Path('input/evidence/trend_ma_macd')
+          ledger=root/'baseline_trades.json'; summary=root/'summary.json'
+          assert ledger.is_file() and summary.is_file()
+          assert hashlib.sha256(ledger.read_bytes()).hexdigest()==policy['source_authorities']['trade_ledger_file_sha256']
+          assert hashlib.sha256(summary.read_bytes()).hexdigest()==policy['source_authorities']['summary_file_sha256']
+          row=json.loads(summary.read_text())
+          assert row['authority_exact_summary_sha256']==policy['source_authorities']['authority_exact_summary_sha256']
+          assert row['selected_authority_result_sha256']==policy['source_authorities']['selected_authority_result_sha256']
+          PY
+      - name: Run bounded autonomous epoch
+        run: |
+          previous=()
+          if [ -s input/previous-path.txt ]; then previous=(--previous-state "$(cat input/previous-path.txt)"); fi
+          python backend/tools/zel_component_autonomy_v1.py run \
+            --policy backend/research/zel_component_autonomy_policy_v1.json \
+            --ledger input/evidence/trend_ma_macd/baseline_trades.json \
+            --summary input/evidence/trend_ma_macd/summary.json \
+            "${previous[@]}" --out out/state
+      - name: Verify terminal authority and build AI input
+        id: result
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          row=json.loads(Path('out/state/final.json').read_text())
+          assert row['state'] in {'PASS_COMPONENT_AUTONOMY_EPOCH','CONVERGED_HOLD'}
+          assert row['order_authority']=='BLOCKED' and row['execution_allowed'] is False
+          assert row['shadow_start_allowed'] is False and row['runtime_bound'] is False
+          assert row['execution_fidelity']=='CANONICAL_EXACT_TRADE_LEDGER_PLUS_EVENT_COUNTERFACTUAL_COMPONENTS'
+          assert set(row['module_results'])=={'bots','teams','skills','advisors'}
+          ai_required = row['state']=='CONVERGED_HOLD' or int(row.get('convergence',{}).get('patience',0))>=2
+          payload={
+            'component_epoch':row.get('epoch'),
+            'stage':'GLOBAL_CLASSIFICATION',
+            'changed_axes':['BOT_POLICY','TEAM_POLICY','SKILL_PROFILE','ADVISOR_PROFILE'],
+            'routing_flags':{
+              'borderline_case':False,
+              'major_gate_review':True,
+              'new_failure_fingerprint':ai_required,
+              'new_multimodal_evidence':ai_required,
+              'multimodal':ai_required,
+              'external_hypothesis':False
+            },
+            'control':row.get('control',{}).get('stats',{}),
+            'candidate':row.get('full_stack',{}).get('stats',{}),
+            'attribution':row.get('component_attribution',{}),
+            'lineage':{
+              'ledger_sha':row.get('source_authority',{}).get('ledger_sha256'),
+              'summary_sha':row.get('source_authority',{}).get('summary_sha256'),
+              'fingerprint':row.get('data_fingerprint'),
+              'result_sha':row.get('result_sha256')
+            },
+            'research_only':True,'promotion_authority':False,'protected_mutations':0,
+            'execution_allowed':False,'order_authority':'BLOCKED'
+          }
+          Path('out/state/ai_input.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as h:
+              h.write(f"state={row['state']}\n")
+              h.write(f"ai_escalation={'true' if ai_required else 'false'}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90
+
+  ai-major-gate:
+    name: Required Workers AI and GitHub Models review
+    if: needs.replay.result == 'success'
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-component-autonomy-state-${{ github.run_id }}
+          path: input/state
+      - name: Execute fail-closed role-based major gate
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_MODELS_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out/ai
+          python scripts/strategy11_ai_review_router.py \
+            --stage GLOBAL_CLASSIFICATION --mode execute \
+            --input input/state/ai_input.json --output out/ai/review.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/ai/review.json').read_text())
+          assert row['status']=='PASS_AI_REVIEW_ROUTER'
+          assert row['provider_results']['workers_ai'].get('returncode')==0
+          assert row['provider_results']['github_models'].get('returncode')==0
+          assert row['promotion_authority'] is False
+          assert row['execution_allowed'] is False
+          assert row['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-ai-review-${{ github.run_id }}
+          path: out/ai
+          if-no-files-found: error
+          retention-days: 90
+
+  gemini-escalation:
+    name: Emit Gemini video request only on convergence/new fingerprint
+    if: needs.replay.outputs.ai_escalation == 'true'
+    needs: replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-component-autonomy-state-${{ github.run_id }}
+          path: input/state
+      - name: Build bounded direct-video request receipt
+        run: |
+          mkdir -p out/gemini
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          final=json.loads(Path('input/state/final.json').read_text())
+          request={
+            'state':'REQUEST_GEMINI_DIRECT_VIDEO_ON_NEW_FAILURE_FINGERPRINT',
+            'public_video_min':4,'independent_channel_min':4,
+            'max_hypotheses_per_component':2,'max_generations_per_axis':2,
+            'component_scope':['BOT','TEAM','SKILL','ADVISOR'],
+            'data_fingerprint':final.get('data_fingerprint'),
+            'failure_evidence':final.get('component_attribution'),
+            'same_fingerprint_repeat_forbidden':True,
+            'research_only':True,'promotion_authority':False,'protected_mutations':0,
+            'execution_allowed':False,'order_authority':'BLOCKED','runtime_bound':False
+          }
+          request['request_sha256']=hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/gemini/request.json').write_text(json.dumps(request,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-component-autonomy-gemini-request-${{ github.run_id }}
+          path: out/gemini
+          if-no-files-found: error
+          retention-days: 90

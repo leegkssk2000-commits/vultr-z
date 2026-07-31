@@ -32,7 +32,6 @@ jobs:
           run-id: '30631629312'
       - name: Execute and preserve provider artifacts
         id: gate
-        continue-on-error: true
         env:
           PYTHONPATH: .
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -69,3 +68,11 @@ jobs:
           path: out/ai
           if-no-files-found: error
           retention-days: 7
+      - name: Fail closed after artifact preservation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/ai/review.json').read_text())
+          assert row.get('status')=='PASS_AI_REVIEW_ROUTER', row.get('blocker_codes')
+          PY

@@ -5,17 +5,23 @@ on:
     branches: [master]
     paths:
       - 'backend/tools/zel_component_autonomy_v2.py'
-      - 'backend/tools/zel_component_gemini_direct_video_v1.py'
+      - 'backend/tools/zel_component_autonomy_v2_runner.py'
+      - 'backend/tools/zel_component_gemini_v2.py'
+      - 'backend/tools/zel_component_pipeline_audit_v2.py'
       - 'backend/research/zel_component_autonomy_policy_v2.json'
       - 'backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py'
+      - '.github/workflows/zel-component-autonomy-v1.yml'
       - '.github/workflows/zel-component-autonomy-v2.yml'
   push:
     branches: [master]
     paths:
       - 'backend/tools/zel_component_autonomy_v2.py'
-      - 'backend/tools/zel_component_gemini_direct_video_v1.py'
+      - 'backend/tools/zel_component_autonomy_v2_runner.py'
+      - 'backend/tools/zel_component_gemini_v2.py'
+      - 'backend/tools/zel_component_pipeline_audit_v2.py'
       - 'backend/research/zel_component_autonomy_policy_v2.json'
       - 'backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py'
+      - '.github/workflows/zel-component-autonomy-v1.yml'
       - '.github/workflows/zel-component-autonomy-v2.yml'
   schedule:
     - cron: '57 */8 * * *'
@@ -36,32 +42,54 @@ env:
 
 jobs:
   verify:
+    name: Verify V2 sequential pipeline contracts
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - run: python -m pip install --disable-pip-version-check pandas
-      - name: Compile deterministic fixtures
+      - name: Compile and run deterministic fixtures
         run: |
-          python -m py_compile backend/tools/zel_component_autonomy_v2.py backend/tools/zel_component_gemini_direct_video_v1.py
+          python -m py_compile \
+            backend/tools/zel_component_autonomy_v2.py \
+            backend/tools/zel_component_autonomy_v2_runner.py \
+            backend/tools/zel_component_gemini_v2.py \
+            backend/tools/zel_component_pipeline_audit_v2.py
           python -m json.tool backend/research/zel_component_autonomy_policy_v2.json >/dev/null
-          python backend/tools/zel_component_autonomy_v2.py fixture --out out/fixture
-          python backend/tools/zel_component_gemini_direct_video_v1.py fixture --out out/gemini-fixture
+          python backend/tools/zel_component_autonomy_v2_runner.py fixture --out out/fixture
+      - name: Run V2 pipeline audit on fixture
+        run: |
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v2.json \
+            --result out/fixture/fixture_result.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v2.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/audit
           python - <<'PY'
           import json
           from pathlib import Path
-          row=json.loads(Path('out/fixture/fixture_result.json').read_text())
+          fixture=json.loads(Path('out/fixture/fixture_result.json').read_text())
           low=json.loads(Path('out/fixture/low_sample_fixture_result.json').read_text())
-          assert row['schema_version']=='2.0'
-          assert set(row['module_results']['bots']['best_by_role'])=={'LBot','MBot','OBot','SBot'}
-          assert row['module_results']['skills']['best']['selection_eligible'] is True
-          assert row['component_attribution']['method']=='ORDERED_MARGINAL_EXACT_SUM'
-          assert abs(row['component_attribution']['interaction_residual']) <= 1e-12
+          audit=json.loads(Path('out/audit/report.json').read_text())
+          assert fixture['schema_version']=='2.1'
+          assert fixture['component_attribution']['method']=='SEQUENTIAL_MATERIAL_ONLY_EXACT_SUM'
+          assert abs(fixture['component_attribution']['interaction_residual']) <= 1e-12
+          assert set(fixture['module_results']['bots']['best_by_role'])=={'LBot','MBot','OBot','SBot'}
+          assert fixture['module_results']['skills']['best']['skill_id'] not in fixture['module_results']['skills']['observer_only_ids']
           assert low['state']=='LOW_SAMPLE_HOLD'
-          assert row['order_authority']=='BLOCKED' and row['runtime_bound'] is False
+          assert not any(low['axis_review_eligibility'].values())
+          assert low['ai_usage']['gemini_required_this_epoch'] is True
+          assert audit['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2', audit['findings']
+          assert fixture['order_authority']=='BLOCKED' and fixture['runtime_bound'] is False
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -71,18 +99,22 @@ jobs:
           retention-days: 30
 
   replay:
+    name: Exact-ledger sequential component epoch
+    if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     outputs:
       state: ${{ steps.result.outputs.state }}
       active_axis_count: ${{ steps.result.outputs.active_axis_count }}
       gemini_required: ${{ steps.result.outputs.gemini_required }}
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check pandas
       - uses: actions/download-artifact@v4
         with:
@@ -90,9 +122,9 @@ jobs:
           path: input/evidence
           github-token: ${{ github.token }}
           run-id: ${{ env.EVIDENCE_RUN_ID }}
-      - name: Restore latest V2 state only on master lineage
-        if: github.event_name != 'pull_request'
-        env: {GH_TOKEN: '${{ github.token }}'}
+      - name: Restore latest V2 state
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p input/previous
           for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v2.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
@@ -104,39 +136,73 @@ jobs:
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
-          p=json.loads(Path('backend/research/zel_component_autonomy_policy_v2.json').read_text())
+          policy=json.loads(Path('backend/research/zel_component_autonomy_policy_v2.json').read_text())
           root=Path('input/evidence/trend_ma_macd')
           ledger=root/'baseline_trades.json'; summary=root/'summary.json'
-          assert hashlib.sha256(ledger.read_bytes()).hexdigest()==p['source_authorities']['trade_ledger_file_sha256']
-          assert hashlib.sha256(summary.read_bytes()).hexdigest()==p['source_authorities']['summary_file_sha256']
+          assert ledger.is_file() and summary.is_file()
+          assert hashlib.sha256(ledger.read_bytes()).hexdigest()==policy['source_authorities']['trade_ledger_file_sha256']
+          assert hashlib.sha256(summary.read_bytes()).hexdigest()==policy['source_authorities']['summary_file_sha256']
           row=json.loads(summary.read_text())
-          assert row['authority_exact_summary_sha256']==p['source_authorities']['authority_exact_summary_sha256']
-          assert row['selected_authority_result_sha256']==p['source_authorities']['selected_authority_result_sha256']
+          assert row['authority_exact_summary_sha256']==policy['source_authorities']['authority_exact_summary_sha256']
+          assert row['selected_authority_result_sha256']==policy['source_authorities']['selected_authority_result_sha256']
           PY
-      - name: Run role-bound exact-ledger pipeline
+      - name: Run sequential material-only pipeline
         run: |
           previous=()
           if [ -s input/previous-path.txt ]; then previous=(--previous-state "$(cat input/previous-path.txt)"); fi
-          python backend/tools/zel_component_autonomy_v2.py run \
+          python backend/tools/zel_component_autonomy_v2_runner.py run \
             --policy backend/research/zel_component_autonomy_policy_v2.json \
             --ledger input/evidence/trend_ma_macd/baseline_trades.json \
             --summary input/evidence/trend_ma_macd/summary.json \
             "${previous[@]}" --out out/state
-      - name: Verify terminal result and expose gates
+      - name: Audit real pipeline and build material axis envelopes
         id: result
         run: |
+          mkdir -p out/axis/inputs out/audit
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v2.json \
+            --result out/state/final.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v2.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/audit
           python - <<'PY'
           import json,os
           from pathlib import Path
           row=json.loads(Path('out/state/final.json').read_text())
-          assert row['state']=='LOW_SAMPLE_HOLD'
-          assert row['control']['stats']['trade_count']==5
-          assert row['convergence']['low_sample_hold'] is True
-          assert set(row['module_results']['bots']['best_by_role'])=={'LBot','MBot','OBot','SBot'}
-          assert row['module_results']['skills']['best']['skill_id'] not in row['module_results']['skills']['observer_only_ids']
-          assert abs(row['component_attribution']['interaction_residual']) <= 1e-12
+          audit=json.loads(Path('out/audit/report.json').read_text())
+          assert row['state'] in {'LOW_SAMPLE_HOLD','HOLD_NO_MATERIAL_COMPONENT_IMPROVEMENT','PASS_COMPONENT_AUTONOMY_EPOCH','CONVERGED_HOLD'}
+          assert audit['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2', audit['findings']
           assert row['order_authority']=='BLOCKED' and row['shadow_start_allowed'] is False
-          active=[axis for axis,value in row['axis_review_eligibility'].items() if value]
+          modules=row['module_results']
+          configs={
+            'BOT_POLICY':modules['bots']['best_by_role'],
+            'TEAM_POLICY':modules['teams']['best'],
+            'SKILL_PROFILE':modules['skills']['best'],
+            'ADVISOR_PROFILE':{role:value['best'] for role,value in modules['advisors'].items()},
+          }
+          active=[]
+          for axis,eligible in row['axis_review_eligibility'].items():
+              if not eligible:
+                  continue
+              payload={
+                'strategy_id':row['strategy_id'],
+                'component_epoch':row['epoch'],
+                'changed_axes':[axis],
+                'lineage_complete':True,
+                'hypothesis':{'axis':axis,'generation':row['epoch'],'configuration':configs[axis],'description':'Evaluate one material component axis against the exact canonical ledger.'},
+                'control':row['control']['stats'],
+                'candidate':row['full_stack']['stats'],
+                'evidence':row['component_attribution'],
+                'lineage':{'ledger_sha':row['source_authority']['ledger_sha256'],'summary_sha':row['source_authority']['summary_sha256'],'fingerprint':row['data_fingerprint'],'candidate_result_sha':row['result_sha256']},
+                'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','runtime_bound':False,'order_authority':'BLOCKED'
+              }
+              Path(f'out/axis/inputs/{axis}.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+              active.append(axis)
+          Path('out/axis/inputs/index.json').write_text(json.dumps({'active_axes':active},indent=2,sort_keys=True)+'\n')
           with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
               handle.write(f"state={row['state']}\n")
               handle.write(f"active_axis_count={len(active)}\n")
@@ -145,80 +211,63 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zel-component-autonomy-v2-state-${{ github.run_id }}
-          path: out/state
+          path: |
+            out/state
+            out/audit
+            out/axis
           if-no-files-found: error
           retention-days: 90
 
   axis-ai-gate:
-    needs: replay
+    name: Required material per-axis Groq and Workers AI review
     if: needs.replay.outputs.active_axis_count != '0'
+    needs: replay
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
       - uses: actions/download-artifact@v4
-        with: {name: 'zel-component-autonomy-v2-state-${{ github.run_id }}', path: input/state}
-      - name: Build material one-axis envelopes only
-        run: |
-          mkdir -p out/ai/inputs out/ai/reviews
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          row=json.loads(Path('input/state/final.json').read_text())
-          modules=row['module_results']
-          mapping={
-            'BOT_POLICY': modules['bots']['best_by_role'],
-            'TEAM_POLICY': modules['teams']['best'],
-            'SKILL_PROFILE': modules['skills']['best'],
-            'ADVISOR_PROFILE': {role:value['best'] for role,value in modules['advisors'].items()},
-          }
-          active=[]
-          for axis,eligible in row['axis_review_eligibility'].items():
-              if not eligible: continue
-              payload={
-                'strategy_id':row['strategy_id'],'component_epoch':row['epoch'],
-                'changed_axes':[axis],'lineage_complete':True,
-                'hypothesis':{'axis':axis,'generation':row['epoch'],'configuration':mapping[axis],'description':'Evaluate one material component axis against the exact ledger.'},
-                'control':row['control']['stats'],'candidate':row['full_stack']['stats'],
-                'evidence':row['component_attribution'],
-                'lineage':{'ledger_sha':row['source_authority']['ledger_sha256'],'summary_sha':row['source_authority']['summary_sha256'],'fingerprint':row['data_fingerprint'],'candidate_result_sha':row['result_sha256']},
-                'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','runtime_bound':False,'order_authority':'BLOCKED'
-              }
-              Path(f'out/ai/inputs/{axis}.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
-              active.append(axis)
-          Path('out/ai/inputs/index.json').write_text(json.dumps({'active_axes':active},indent=2,sort_keys=True)+'\n')
-          PY
-      - name: Run Groq and Workers independently
+        with:
+          name: zel-component-autonomy-v2-state-${{ github.run_id }}
+          path: input/state
+      - name: Run independent material-axis guards
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${GROQ_API_KEY:-}" && test -n "${CLOUDFLARE_ACCOUNT_ID:-}" && test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}"
-          for input in out/ai/inputs/*.json; do
+          mkdir -p out/ai/reviews
+          test -n "${GROQ_API_KEY:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}"
+          for input in input/state/axis/inputs/*.json; do
             [ "$(basename "$input")" = index.json ] && continue
             axis=$(basename "$input" .json)
             python scripts/strategy11_groq_redteam.py --input "$input" --output "out/ai/reviews/${axis}.groq.json"
             python scripts/strategy11_workers_ai_guard.py --input "$input" --output "out/ai/reviews/${axis}.workers.json"
           done
-      - name: Verify receipts and preserve HOLD/REJECT
+      - name: Preserve PASS HOLD and REJECT receipts
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          index=json.loads(Path('out/ai/inputs/index.json').read_text())
+          index=json.loads(Path('input/state/axis/inputs/index.json').read_text())
           summary={'state':'PASS_COMPONENT_AXIS_AI_GATE_V2','axes':{},'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'order_authority':'BLOCKED'}
           for axis in index['active_axes']:
               groq=json.loads(Path(f'out/ai/reviews/{axis}.groq.json').read_text())
               workers=json.loads(Path(f'out/ai/reviews/{axis}.workers.json').read_text())
-              assert groq['status']=='PASS_GROQ_CONNECTION' and workers['status']=='PASS_WORKERS_AI_CONNECTION'
+              assert groq['status']=='PASS_GROQ_CONNECTION'
+              assert workers['status']=='PASS_WORKERS_AI_CONNECTION'
               gd=groq['review']['decision']; wd=workers['review']['decision']
-              assert gd in {'PASS_TO_REPLAY','REJECT','HOLD'} and wd in {'PASS_TO_REPLAY','REJECT','HOLD'}
+              assert gd in {'PASS_TO_REPLAY','REJECT','HOLD'}
+              assert wd in {'PASS_TO_REPLAY','REJECT','HOLD'}
               summary['axes'][axis]={'groq_decision':gd,'workers_decision':wd,'pass_to_next':gd=='PASS_TO_REPLAY' and wd=='PASS_TO_REPLAY','groq_response_sha':groq.get('response_sha'),'workers_response_sha':workers.get('response_sha')}
           Path('out/ai/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
           PY
@@ -231,55 +280,107 @@ jobs:
           retention-days: 90
 
   gemini-direct-video:
-    needs: replay
+    name: Actual bounded Gemini direct-video hypothesis review
     if: needs.replay.outputs.gemini_required == 'true'
+    needs: replay
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with: {persist-credentials: false}
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
+        with:
+          python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
       - uses: actions/download-artifact@v4
-        with: {name: 'zel-component-autonomy-v2-state-${{ github.run_id }}', path: input/state}
-      - name: Restore last component Gemini receipt
-        if: github.event_name != 'pull_request'
-        env: {GH_TOKEN: '${{ github.token }}'}
+        with:
+          name: zel-component-autonomy-v2-state-${{ github.run_id }}
+          path: input/state
+      - name: Restore previous Gemini receipt for fingerprint dedup
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p input/previous
+          mkdir -p input/previous out/gemini
           for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-component-autonomy-v2.yml --branch master --status success --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
             if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-component-autonomy-v2-gemini-*' --dir input/previous 2>/dev/null; then break; fi
           done
-          find input/previous -name artifact.json -print -quit > input/previous-path.txt || true
-      - name: Execute bounded Gemini direct-video review
-        env: {GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'}
+          find input/previous -name gemini_artifact.json -print -quit > input/previous-path.txt || true
+      - name: Resolve same-fingerprint execution guard
+        id: preflight
         run: |
-          previous=()
-          if [ -s input/previous-path.txt ]; then previous=(--previous "$(cat input/previous-path.txt)"); fi
-          python backend/tools/zel_component_gemini_direct_video_v1.py review \
-            --result input/state/final.json \
-            --policy backend/research/zel_component_autonomy_policy_v2.json \
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          current=json.loads(Path('input/state/state/final.json').read_text())
+          previous={}
+          p=Path('input/previous-path.txt')
+          if p.exists() and p.read_text().strip():
+              previous=json.loads(Path(p.read_text().strip()).read_text())
+          execute=not (previous.get('GEMINI_USED') is True and previous.get('data_fingerprint')==current.get('data_fingerprint'))
+          if not execute:
+              receipt={'state':'SKIP_UNCHANGED_COMPONENT_FINGERPRINT','GEMINI_USED':False,'data_fingerprint':current.get('data_fingerprint'),'previous_response_sha256':previous.get('response_sha256'),'research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+              Path('out/gemini/gemini_artifact.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as handle:
+              handle.write(f"execute={'true' if execute else 'false'}\n")
+          PY
+      - name: Execute Gemini against four public videos
+        id: gemini_call
+        if: steps.preflight.outputs.execute == 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python backend/tools/zel_component_gemini_v2.py \
+            --result input/state/state/final.json \
             --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json \
-            "${previous[@]}" --out out/gemini
-          python backend/tools/zel_component_gemini_direct_video_v1.py prepare --artifact out/gemini/artifact.json --out out/gemini/inputs
-      - name: Gate each Gemini hypothesis with Groq and Workers
+            --out out/gemini
+      - name: Gate Gemini hypotheses with Groq and Workers
+        if: steps.preflight.outputs.execute == 'true' && steps.gemini_call.outcome == 'success'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
         run: |
           mkdir -p out/gemini/reviews
-          for input in out/gemini/inputs/*.json; do
-            [ "$(basename "$input")" = index.json ] && continue
+          for input in out/gemini/hypotheses/*.json; do
+            [ -e "$input" ] || continue
             id=$(basename "$input" .json)
             set +e
-            python scripts/strategy11_ai_review_router.py --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute --input "$input" --gemini-artifact out/gemini/artifact.json --output "out/gemini/reviews/${id}.json"
+            python scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" --gemini-artifact out/gemini/gemini_artifact.json \
+              --output "out/gemini/reviews/${id}.json"
             rc=$?
             set -e
-            test -s "out/gemini/reviews/${id}.json" || { echo "missing router receipt rc=$rc id=$id"; exit 1; }
+            test -s "out/gemini/reviews/${id}.json" || { echo "ROUTER_RECEIPT_MISSING:$id:rc=$rc"; exit 1; }
           done
-          python backend/tools/zel_component_gemini_direct_video_v1.py summarize --artifact out/gemini/artifact.json --inputs out/gemini/inputs --reviews out/gemini/reviews --out out/gemini/summary.json
+      - name: Build terminal Gemini summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          artifact_path=Path('out/gemini/gemini_artifact.json')
+          if not artifact_path.exists():
+              raise SystemExit('GEMINI_ARTIFACT_MISSING')
+          artifact=json.loads(artifact_path.read_text())
+          reviews={}
+          accepted=[]
+          for path in sorted(Path('out/gemini/reviews').glob('*.json')) if Path('out/gemini/reviews').exists() else []:
+              row=json.loads(path.read_text())
+              groq=((((row.get('provider_results') or {}).get('groq') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              workers=((((row.get('provider_results') or {}).get('workers_ai') or {}).get('artifact') or {}).get('review') or {}).get('decision')
+              passed=row.get('status')=='PASS_AI_REVIEW_ROUTER' and groq=='PASS_TO_REPLAY' and workers=='PASS_TO_REPLAY'
+              reviews[path.stem]={'router_status':row.get('status'),'groq_decision':groq,'workers_decision':workers,'pass_to_future_replay':passed}
+              if passed:
+                  accepted.append(path.stem)
+          summary={'state':'PASS_COMPONENT_GEMINI_AI_GATE' if accepted else artifact.get('state'),'data_fingerprint':artifact.get('data_fingerprint'),'GEMINI_USED':artifact.get('GEMINI_USED',False),'actual_model':artifact.get('actual_model'),'hypothesis_count':len(artifact.get('hypotheses',[])),'accepted_count':len(accepted),'accepted_hypothesis_ids':accepted,'reviews':reviews,'replay_allowed_now':False,'next':'WAIT_NEW_EXACT_LEDGER_OR_W1','research_only':True,'promotion_authority':False,'protected_mutations':0,'execution_allowed':False,'execution_authority':'NONE','order_authority':'BLOCKED','runtime_bound':False}
+          Path('out/gemini/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          if '${{ steps.preflight.outputs.execute }}' == 'true':
+              assert artifact.get('state') in {'PASS_COMPONENT_GEMINI_DIRECT_VIDEO'}, artifact
+              assert artifact.get('GEMINI_USED') is True
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

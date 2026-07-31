@@ -1,0 +1,38 @@
+name: TMP Patch Gemini Cohort Envelope
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/_tmp_patch_gemini_cohort_envelope.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-gemini-v3-2-multimodal
+          persist-credentials: true
+      - name: Patch tolerant JSON envelope
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('backend/tools/strategy11_gemini_v3_2_cohort.py')
+          text=path.read_text()
+          old='''    value = json.loads(stripped)\n    if not isinstance(value, dict):\n        raise ValueError("GEMINI_JSON_OBJECT_REQUIRED")\n    return value\n'''
+          new='''    try:\n        value = json.loads(stripped)\n    except json.JSONDecodeError:\n        starts = [index for index in (stripped.find("{"), stripped.find("[")) if index >= 0]\n        ends = [index for index in (stripped.rfind("}"), stripped.rfind("]")) if index >= 0]\n        if not starts or not ends or max(ends) <= min(starts):\n            raise\n        value = json.loads(stripped[min(starts):max(ends) + 1])\n    if isinstance(value, list):\n        if not all(isinstance(row, Mapping) for row in value):\n            raise ValueError("GEMINI_JSON_ARRAY_ROWS_INVALID")\n        return {"status": "PASS", "strategy_reviews": value}\n    if not isinstance(value, dict):\n        raise ValueError("GEMINI_JSON_OBJECT_REQUIRED")\n    return value\n'''
+          assert old in text
+          path.write_text(text.replace(old,new))
+          PY
+          python -m py_compile backend/tools/strategy11_gemini_v3_2_cohort.py
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/tools/strategy11_gemini_v3_2_cohort.py
+          git commit -m 'Accept Gemini cohort JSON array envelopes'
+          git push origin HEAD:strategy11-gemini-v3-2-multimodal

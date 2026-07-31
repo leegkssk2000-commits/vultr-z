@@ -10,7 +10,7 @@ from typing import Any
 
 from backend.research.zel_strategy_lifecycle_registry_v1 import REGISTRY
 
-VERSION = "ZEL_STRATEGY_NATIVE_PROFILE_AUDIT_V1"
+VERSION = "ZEL_STRATEGY_NATIVE_PROFILE_AUDIT_V1_1"
 ACTION_LITERALS = {
     "enter", "entry", "open", "buy", "sell", "hold", "none", "flat",
     "exit", "close", "stop", "add", "reduce", "partial", "partial30",
@@ -72,7 +72,7 @@ def dict_keys(node: ast.AST) -> set[str]:
     return output
 
 
-def callable_node(tree: ast.Module, callable_name: str) -> ast.AST:
+def callable_nodes(tree: ast.Module, callable_name: str) -> tuple[ast.ClassDef, ast.AST]:
     parts = callable_name.split(".")
     if len(parts) != 2:
         _fail("CALLABLE_FORMAT_INVALID", callable_name)
@@ -81,7 +81,7 @@ def callable_node(tree: ast.Module, callable_name: str) -> ast.AST:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == method_name:
-                    return child
+                    return node, child
     _fail("CALLABLE_NOT_FOUND", callable_name)
     raise AssertionError
 
@@ -96,18 +96,19 @@ def profile_entry(source_root: Path, entry: dict[str, Any]) -> dict[str, Any]:
         _fail("STRATEGY_SOURCE_SHA_MISMATCH", entry["strategy_id"])
     text = path.read_text(encoding="utf-8")
     tree = ast.parse(text, filename=str(path))
-    method = callable_node(tree, source["callable"])
-    constants = string_constants(method)
-    names = identifiers(method)
-    keys = dict_keys(method)
+    class_node, method = callable_nodes(tree, source["callable"])
+    constants = string_constants(class_node)
+    names = identifiers(class_node)
+    keys = dict_keys(class_node)
     combined = constants | names | keys
     actions = sorted(ACTION_LITERALS & constants)
     indicators = sorted({token for token in INDICATOR_TOKENS if any(token in item for item in combined)})
     risk = sorted(RISK_KEYS & combined)
     state = sorted(STATE_KEYS & combined)
     sides = sorted({side for side in ("long", "short") if side in constants})
-    comparisons = sum(isinstance(node, ast.Compare) for node in ast.walk(method))
-    boolean_branches = sum(isinstance(node, (ast.If, ast.IfExp, ast.BoolOp)) for node in ast.walk(method))
+    comparisons = sum(isinstance(node, ast.Compare) for node in ast.walk(class_node))
+    boolean_branches = sum(isinstance(node, (ast.If, ast.IfExp, ast.BoolOp)) for node in ast.walk(class_node))
+    method_arguments = [argument.arg for argument in method.args.args]
     return {
         "strategy_id": entry["strategy_id"],
         "declared_family": entry["family"],
@@ -116,7 +117,9 @@ def profile_entry(source_root: Path, entry: dict[str, Any]) -> dict[str, Any]:
         "source_sha256": actual_sha,
         "callable": source["callable"],
         "callable_found": True,
+        "callable_arguments": method_arguments,
         "source_parse_pass": True,
+        "semantic_scope": "COMPLETE_STRATEGY_CLASS_AST",
         "action_literals": actions,
         "side_literals": sides,
         "indicator_semantic_tokens": indicators,

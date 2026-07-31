@@ -46,7 +46,7 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Verify sampled causal equivalence
+      - name: Verify exact rolling-history equivalence and cache reuse
         run: |
           grep -q 'FastCausalConfigStrategyWrapper' backend/tools/strategy11_expanded_discovery_v3.py
           grep -q 'install_exact_prepare(exact_module' backend/tools/strategy11_expanded_discovery_v3.py
@@ -55,8 +55,8 @@ jobs:
           import importlib.util,json,sys
           from pathlib import Path
           import pandas as pd
-          from backend.tools.strategy11_regime_edge_router_v3 import ConfigStrategyWrapper,classify_regime
-          from backend.tools.strategy11_v3_fast_causal import FastCausalConfigStrategyWrapper,_frame_regimes
+          from backend.tools.strategy11_regime_edge_router_v3 import ConfigStrategyWrapper
+          from backend.tools.strategy11_v3_fast_causal import FastCausalConfigStrategyWrapper
 
           def load(name,path):
               spec=importlib.util.spec_from_file_location(name,path)
@@ -67,10 +67,7 @@ jobs:
 
           frame=pd.read_csv('input/prep/archive/market/A01-BTCUSDT.csv')
           frame['timestamp']=pd.to_datetime(frame['timestamp_ms'],unit='ms',utc=True)
-          lengths=[100,150,220,300,450,600,750,900]
-          regimes=_frame_regimes(frame)
-          for n in lengths:
-              assert regimes[n-1]==classify_regime(frame.iloc[:n])
+          windows=[frame.iloc[:100].copy(),frame.iloc[50:250].copy(),frame.iloc[200:440].copy(),frame.iloc[660:900].copy()]
           path=Path('compute/backend/strategies/trend_rider.py')
           variants=[(None,None,None),('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')]
           for index,(field,value,scope) in enumerate(variants):
@@ -79,12 +76,18 @@ jobs:
               slow=ConfigStrategyWrapper(slow_module.strategy,slow_module.TrendRiderConfig,field,value,scope)
               fast=FastCausalConfigStrategyWrapper(fast_module.strategy,fast_module.TrendRiderConfig,field,value,scope)
               fast.prepare_frame(frame)
-              for n in lengths:
-                  history=frame.iloc[:n].copy()
+              for history in windows:
                   left=slow(history,state={},risk_action='hold')
                   right=fast(history,state={},risk_action='hold')
-                  assert json.dumps(left,sort_keys=True,allow_nan=True)==json.dumps(right,sort_keys=True,allow_nan=True),(field,n,left,right)
-          print('PASS_FAST_CAUSAL_PREFIX_EQUIVALENCE')
+                  repeated=fast(history,state={},risk_action='hold')
+                  encoded=json.dumps(left,sort_keys=True,allow_nan=True)
+                  assert encoded==json.dumps(right,sort_keys=True,allow_nan=True),(field,history.index[0],left,right)
+                  assert encoded==json.dumps(repeated,sort_keys=True,allow_nan=True)
+              assert fast.cache_hits['supertrend']>0
+              assert fast.cache_hits['ema']>0
+              assert fast.cache_hits['regime']>0
+              assert fast.cache_hits['decision']>0
+          print('PASS_FAST_ROLLING_CAUSAL_EQUIVALENCE')
           PY
 
   replay:
@@ -117,7 +120,7 @@ jobs:
           for batch in 1 2 3 4 5; do
             gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
           done
-      - name: Replay trend rider with causal cache
+      - name: Replay trend rider with exact rolling cache
         run: |
           mkdir -p "out/batch-${STRATEGY_ID}"
           python backend/tools/strategy11_expanded_discovery_v3.py replay \

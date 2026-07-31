@@ -9,7 +9,7 @@ on:
       - '.github/workflows/strategy11-v3-fast-causal-resume.yml'
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 env:
@@ -17,6 +17,7 @@ env:
   COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
   OLD_RUN_ID: '30588354565'
   SOURCE_RUN_ID: '30252022416'
+  STRATEGY_ID: trend_rider
 
 concurrency:
   group: tmp-strategy11-v3-final-corrected-parallel
@@ -45,7 +46,7 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Assert patch binding and sampled causal equivalence
+      - name: Verify sampled causal equivalence
         run: |
           grep -q 'FastCausalConfigStrategyWrapper' backend/tools/strategy11_expanded_discovery_v3.py
           grep -q 'install_exact_prepare(exact_module' backend/tools/strategy11_expanded_discovery_v3.py
@@ -59,33 +60,30 @@ jobs:
 
           def load(name,path):
               spec=importlib.util.spec_from_file_location(name,path)
-              module=importlib.util.module_from_spec(spec); sys.modules[name]=module; spec.loader.exec_module(module)
+              module=importlib.util.module_from_spec(spec)
+              sys.modules[name]=module
+              spec.loader.exec_module(module)
               return module
 
           frame=pd.read_csv('input/prep/archive/market/A01-BTCUSDT.csv')
           frame['timestamp']=pd.to_datetime(frame['timestamp_ms'],unit='ms',utc=True)
           lengths=[100,150,220,300,450,600,750,900]
-          fast_regimes=_frame_regimes(frame)
+          regimes=_frame_regimes(frame)
           for n in lengths:
-              assert fast_regimes[n-1]==classify_regime(frame.iloc[:n])
-          specs={
-              'trend_rider': [('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')],
-              'supertrend_pullback': [('max_pullback_dist_from_ema_atr',1.61,None),('st_mult',2.55,'TREND_UP')],
-          }
-          for sid,variants in specs.items():
-              path=Path('compute/backend/strategies')/f'{sid}.py'
-              for index,(field,value,scope) in enumerate([(None,None,None),*variants]):
-                  slow_module=load(f'slow_{sid}_{index}',path)
-                  fast_module=load(f'fast_{sid}_{index}',path)
-                  cfg_name='TrendRiderConfig' if sid=='trend_rider' else 'SupertrendPullbackConfig'
-                  slow=ConfigStrategyWrapper(slow_module.strategy,getattr(slow_module,cfg_name),field,value,scope)
-                  fast=FastCausalConfigStrategyWrapper(fast_module.strategy,getattr(fast_module,cfg_name),field,value,scope)
-                  fast.prepare_frame(frame)
-                  for n in lengths:
-                      history=frame.iloc[:n].copy()
-                      left=slow(history,state={},risk_action='hold')
-                      right=fast(history,state={},risk_action='hold')
-                      assert json.dumps(left,sort_keys=True,allow_nan=True)==json.dumps(right,sort_keys=True,allow_nan=True),(sid,field,n,left,right)
+              assert regimes[n-1]==classify_regime(frame.iloc[:n])
+          path=Path('compute/backend/strategies/trend_rider.py')
+          variants=[(None,None,None),('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')]
+          for index,(field,value,scope) in enumerate(variants):
+              slow_module=load(f'slow_trend_rider_{index}',path)
+              fast_module=load(f'fast_trend_rider_{index}',path)
+              slow=ConfigStrategyWrapper(slow_module.strategy,slow_module.TrendRiderConfig,field,value,scope)
+              fast=FastCausalConfigStrategyWrapper(fast_module.strategy,fast_module.TrendRiderConfig,field,value,scope)
+              fast.prepare_frame(frame)
+              for n in lengths:
+                  history=frame.iloc[:n].copy()
+                  left=slow(history,state={},risk_action='hold')
+                  right=fast(history,state={},risk_action='hold')
+                  assert json.dumps(left,sort_keys=True,allow_nan=True)==json.dumps(right,sort_keys=True,allow_nan=True),(field,n,left,right)
           print('PASS_FAST_CAUSAL_PREFIX_EQUIVALENCE')
           PY
 
@@ -93,10 +91,6 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        strategy: [trend_rider, supertrend_pullback]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,8 +117,7 @@ jobs:
           for batch in 1 2 3 4 5; do
             gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
           done
-      - name: Replay stalled strategy with causal cache
-        env: {STRATEGY_ID: '${{ matrix.strategy }}'}
+      - name: Replay trend rider with causal cache
         run: |
           mkdir -p "out/batch-${STRATEGY_ID}"
           python backend/tools/strategy11_expanded_discovery_v3.py replay \
@@ -148,7 +141,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: resume-v3-${{ matrix.strategy }}-${{ github.run_id }}
+          name: resume-v3-trend-rider-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90
@@ -161,7 +154,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: strategy11-v3-fast-causal-resume
-          persist-credentials: false
+          token: ${{ github.token }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
       - run: python -m pip install --disable-pip-version-check pandas numpy
@@ -171,18 +165,18 @@ jobs:
           path: input/prep
           github-token: ${{ github.token }}
           run-id: ${{ env.OLD_RUN_ID }}
-      - name: Restore 22 completed artifacts from original run
+      - name: Restore 23 completed strategy artifacts
         env: {GH_TOKEN: '${{ github.token }}'}
         run: |
           mkdir -p input/old input/replays
           gh run download "$OLD_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern "final-v3-*-${OLD_RUN_ID}" --dir input/old
           find input/old -type d -name 'batch-*' -print0 | while IFS= read -r -d '' path; do cp -R "$path" input/replays/; done
+          test "$(find input/replays -mindepth 2 -maxdepth 2 -name batch.json | wc -l)" -eq 23
       - uses: actions/download-artifact@v4
         with:
-          pattern: resume-v3-*-${{ github.run_id }}
+          name: resume-v3-trend-rider-${{ github.run_id }}
           path: input/new
-          merge-multiple: true
-      - name: Overlay resumed artifacts and aggregate
+      - name: Aggregate authoritative 24-strategy result
         run: |
           find input/new -type d -name 'batch-*' -print0 | while IFS= read -r -d '' path; do rm -rf "input/replays/$(basename "$path")"; cp -R "$path" input/replays/; done
           test "$(find input/replays -mindepth 2 -maxdepth 2 -name batch.json | wc -l)" -eq 24
@@ -216,3 +210,29 @@ jobs:
           path: out/state
           if-no-files-found: error
           retention-days: 90
+      - name: Record authoritative receipt
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          final=json.loads(Path('out/state/final.json').read_text())
+          path=Path('.github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt')
+          path.parent.mkdir(parents=True,exist_ok=True)
+          path.write_text('\n'.join([
+            'state='+str(final['state']),
+            'run_id='+os.environ['GITHUB_RUN_ID'],
+            'head_sha='+os.environ['GITHUB_SHA'],
+            'strategy_count='+str(final['strategy_count']),
+            'candidate_count='+str(final['candidate_count']),
+            'discovery_pass_count='+str(final['discovery_pass_count']),
+            'final_sha256='+str(final['final_sha256']),
+            'promotion_authority=false',
+            'execution_allowed=false',
+            'order_authority=BLOCKED',
+          ])+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/manual_trigger_receipts/strategy11-v3-fast-causal-resume.txt
+          git commit -m 'Record Strategy11 V3 fast causal resume result'
+          git push origin HEAD:strategy11-v3-fast-causal-resume

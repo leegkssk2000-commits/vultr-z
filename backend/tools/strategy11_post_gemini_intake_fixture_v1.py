@@ -20,13 +20,9 @@ def reviews():
     rows=[]
     for i in range(24):
         sid=f"strategy_{i:02d}"
-        verdict="NO_ACTION"
-        candidate=None
-        reason="NO_BOUNDED_IMPROVEMENT"
-        if i in (0,1,2):
-            verdict="SELECT_REPLAY"; candidate=f"CAND_{i}"; reason="BOUNDED_HYPOTHESIS"
-        if i in (22,23):
-            verdict="NEW_CHILD_REQUIRED"; reason="BASIS_REJECT"
+        verdict="NO_ACTION"; candidate=None; reason="NO_BOUNDED_IMPROVEMENT"
+        if i in (0,1,2): verdict="SELECT_REPLAY"; candidate=f"CAND_{i}"; reason="BOUNDED_HYPOTHESIS"
+        if i in (22,23): verdict="NEW_CHILD_REQUIRED"; reason="BASIS_REJECT"
         rows.append({"strategy_id":sid,"verdict":verdict,"selected_candidate_id":candidate,"causal_reason":reason,"overfit_risk":"MEDIUM","video_source_indexes":[1,2] if candidate else []})
     return rows
 
@@ -62,7 +58,20 @@ def main() -> int:
         dump(root/'manifest-ready.json',manifest)
         w1_ready=root/'w1-ready.json'
         subject.w1_preflight(Namespace(manifest=str(root/'manifest-ready.json'),overlay_contract=str(root/'contract.json'),out=str(w1_ready)))
-        dump(root/'trend-pass.json',safe(state="PASS_W1_V3_SURVIVOR_CONFIRMATION")); dump(root/'alpha-pass.json',safe(state="PASS_ALPHA_W1_FRESH_CONFIRMATION"))
+        current_manifest_sha=subject.read_json(w1_ready)["manifest_sha256"]
+        trend_pass=safe(state="PASS_W1_V3_SURVIVOR_CONFIRMATION",strategy_id="trend_ma_macd",variant_id="INT3_MAX_CHASE_DIST_ATR_RELAX",source_w1_manifest_sha256=current_manifest_sha)
+        trend_pass["result_sha256"]=subject.stable_sha(trend_pass)
+        alpha_pass=safe(state="PASS_ALPHA_W1_FRESH_CONFIRMATION",strategy_id="alpha_combo",selected_config="TIME54",source_w1_manifest_sha256=current_manifest_sha)
+        alpha_pass["receipt_sha256"]=subject.stable_sha(alpha_pass)
+        dump(root/'trend-pass.json',trend_pass); dump(root/'alpha-pass.json',alpha_pass)
+        stale=dict(trend_pass); stale["source_w1_manifest_sha256"]="stale"; stale["result_sha256"]=subject.stable_sha({k:v for k,v in stale.items() if k!="result_sha256"})
+        dump(root/'trend-stale.json',stale)
+        try:
+            subject.shadow_intake(Namespace(classification=str(classification),alpha_receipt=str(alpha_path),w1_preflight=str(w1_ready),trend_w1=str(root/'trend-stale.json'),alpha_w1=str(root/'alpha-pass.json'),out=str(root/'must-not-write.json')))
+        except ValueError as exc:
+            assert str(exc).startswith("W1_RECEIPT_MANIFEST:trend_w1")
+        else:
+            raise AssertionError("STALE_W1_RECEIPT_ACCEPTED")
         ready_intake=root/'ready-intake.json'
         subject.shadow_intake(Namespace(classification=str(classification),alpha_receipt=str(alpha_path),w1_preflight=str(w1_ready),trend_w1=str(root/'trend-pass.json'),alpha_w1=str(root/'alpha-pass.json'),out=str(ready_intake)))
         result=subject.read_json(ready_intake)

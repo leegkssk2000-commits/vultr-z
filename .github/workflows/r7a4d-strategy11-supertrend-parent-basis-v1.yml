@@ -5,6 +5,9 @@ on:
     branches: [master]
     paths:
       - 'backend/tools/strategy11_supertrend_parent_basis_v1.py'
+      - 'backend/tools/strategy11_supertrend_parent_basis_runner_v1.py'
+      - 'backend/tools/strategy11_supertrend_fast_basis_v1.py'
+      - 'backend/tools/strategy11_long_short_observer_v3.py'
       - '.github/workflows/r7a4d-strategy11-supertrend-parent-basis-v1.yml'
   workflow_dispatch:
 
@@ -23,7 +26,7 @@ env:
 jobs:
   parent-basis:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,7 +41,12 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install --disable-pip-version-check pandas numpy
       - name: Compile bounded parent child
-        run: python -m py_compile backend/tools/strategy11_supertrend_parent_basis_v1.py
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_supertrend_parent_basis_v1.py \
+            backend/tools/strategy11_supertrend_parent_basis_runner_v1.py \
+            backend/tools/strategy11_supertrend_fast_basis_v1.py \
+            backend/tools/strategy11_long_short_observer_v3.py
       - name: Restore exact immutable V3 archive
         uses: actions/download-artifact@v4
         with:
@@ -93,10 +101,34 @@ jobs:
               path=Path('compute')/engine['implementation_path']
               assert hashlib.sha256(path.read_bytes()).hexdigest()==engine['source_sha256']
           PY
+      - name: Verify fast basis equals frozen authentic formula
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+          from backend.tools.strategy11_supertrend_authentic_child_v1 import authentic_supertrend
+          from backend.tools.strategy11_supertrend_fast_basis_v1 import authentic_supertrend_fast
+          manifest=json.loads(Path('input/prep/archive/manifest.json').read_text())
+          selected=[row for row in manifest['rows'] if row['symbol'] in ('XRPUSDT','SOLUSDT')][:6]
+          checks=0
+          for row in selected:
+              frame=pd.read_csv(Path('input/prep/archive')/row['path'])
+              for end in (220,300,450,700,900):
+                  sample=frame.iloc[max(0,end-220):end].copy()
+                  slow=authentic_supertrend(sample,10,3.0)
+                  fast=authentic_supertrend_fast(sample,10,3.0)
+                  for column in ('atr','final_upper','final_lower','direction','supertrend'):
+                      assert np.allclose(slow[column].to_numpy(),fast[column].to_numpy(),rtol=0.0,atol=1e-12,equal_nan=True),(row['window_id'],row['symbol'],end,column)
+                  checks+=1
+          assert checks==30
+          print('PASS_FAST_AUTHENTIC_EQUIVALENCE',checks)
+          PY
       - name: Replay official basis in immutable parent wrappers
         run: |
           mkdir -p out
-          python backend/tools/strategy11_supertrend_parent_basis_v1.py \
+          python backend/tools/strategy11_supertrend_parent_basis_runner_v1.py \
             --compute-root compute \
             --archive-root input/prep/archive \
             --evidence-root input/evidence \

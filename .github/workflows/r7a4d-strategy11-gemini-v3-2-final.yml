@@ -1,0 +1,362 @@
+name: R7A4D Strategy11 Gemini V3.2 Candidate-Gated Rescue
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/strategy11_gemini_v3_2*.py'
+      - 'backend/research/strategy11_gemini_v3_2_policy.json'
+      - 'backend/research/strategy11_gemini_video_registry_v3_2.json'
+      - '.github/workflows/r7a4d-strategy11-gemini-v3-2-final.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2,10,18 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: strategy11-gemini-v3-2-final-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONPATH: .
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+  V3_SOURCE_RUN_ID: '30588354565'
+  V3_RESUME_RUN_ID: '30596336496'
+  EVIDENCE_RUN_ID: '30252022416'
+
+jobs:
+  verify:
+    name: Verify Gemini V3.2 contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and run deterministic fixtures
+        run: |
+          python -m py_compile \
+            backend/tools/strategy11_gemini_v3_2.py \
+            backend/tools/strategy11_gemini_v3_2_guard.py \
+            backend/tools/strategy11_gemini_v3_2_cohort.py \
+            backend/tools/strategy11_gemini_v3_2_cohort_final.py \
+            backend/tools/strategy11_gemini_v3_2_ai_filter.py \
+            backend/tools/strategy11_gemini_v3_2_fixture.py
+          python backend/tools/strategy11_gemini_v3_2_fixture.py
+          python - <<'PY'
+          from backend.tools.strategy11_gemini_v3_2_cohort import COHORTS
+          ids=[sid for _,_,rows in COHORTS for sid in rows]
+          assert len(COHORTS)==4 and all(len(rows)==6 for _,_,rows in COHORTS)
+          assert len(ids)==24 and len(set(ids))==24 and 'alpha_combo' not in ids
+          print('PASS_GEMINI_V3_2_LAYOUT')
+          PY
+      - name: Assert immutable safety policy
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('backend/research/strategy11_gemini_v3_2_policy.json').read_text())
+          v=json.loads(Path('backend/research/strategy11_gemini_video_registry_v3_2.json').read_text())
+          assert p['max_candidates_per_strategy']==1
+          assert p['alpha_single_axis_schema_required'] is True
+          assert p['supertrend_basis_authority_run_id']==30602112063
+          assert p['promotion_authority'] is False and p['execution_allowed'] is False
+          assert p['runtime_bound'] is False and p['order_authority']=='BLOCKED'
+          assert len(v['sources'])>=4 and len({row['channel'] for row in v['sources']})>=4
+          PY
+
+  prepare:
+    name: Gemini review and candidate AI gates
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      active: ${{ steps.state.outputs.active }}
+      approved_count: ${{ steps.state.outputs.approved_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with: {ref: '${{ env.COMPUTE_REF }}', path: compute, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy pyyaml groq
+      - name: Restore immutable V3 authority
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/prep input/results input/final input/previous
+          gh run download "$V3_SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "final-v3-prep-${V3_SOURCE_RUN_ID}" --dir input/prep
+          gh run download "$V3_SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern "final-v3-*-${V3_SOURCE_RUN_ID}" --dir input/results
+          gh run download "$V3_RESUME_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "resume-v3-trend-rider-${V3_RESUME_RUN_ID}" --dir input/results
+          gh run download "$V3_RESUME_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "final-v3-resumed-state-${V3_RESUME_RUN_ID}" --dir input/final
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow r7a4d-strategy11-gemini-v3-2-final.yml --branch master --status success --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 's11-gemini-v3-2-final-state-*' --dir input/previous 2>/dev/null; then break; fi
+          done
+          find input/prep -name internal_registry.json -print -quit > input/registry-path.txt
+          find input/final -name search_ledger.json -print -quit > input/ledger-path.txt
+          find input/final -name final.json -print -quit > input/final-path.txt
+          find input/previous -name summary.json -print -quit > input/previous-summary-path.txt || true
+          test -s input/registry-path.txt && test -s input/ledger-path.txt && test -s input/final-path.txt
+      - name: Run Gemini direct-video cohort review
+        env: {GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'}
+        run: |
+          mkdir -p out/gemini out/prep
+          previous=()
+          if [ -s input/previous-summary-path.txt ]; then previous=(--previous-summary "$(cat input/previous-summary-path.txt)"); fi
+          python backend/tools/strategy11_gemini_v3_2_cohort_final.py \
+            --registry "$(cat input/registry-path.txt)" \
+            --ledger "$(cat input/ledger-path.txt)" \
+            --results-root input/results \
+            --video-registry backend/research/strategy11_gemini_video_registry_v3_2.json \
+            --policy backend/research/strategy11_gemini_v3_2_policy.json \
+            --v3-final "$(cat input/final-path.txt)" \
+            "${previous[@]}" --out out/gemini
+          cp -R input/prep/* out/prep/
+      - name: Normalize terminal preflight state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary_path=Path('out/gemini/summary.json')
+          assert summary_path.exists(), 'GEMINI_SUMMARY_MISSING'
+          summary=json.loads(summary_path.read_text())
+          plan_path=Path('out/gemini/plan.json')
+          if not plan_path.exists():
+              assert summary['state'] in {'HOLD','SKIP_UNCHANGED_GEMINI_EVIDENCE'}, summary
+              plan={
+                  'schema_version':'3.2','state':'HOLD_GEMINI_V3_2_PREFLIGHT',
+                  'strategy_count_total':25,'active_strategy_count':0,
+                  'active_strategy_ids':[],'candidate_count':0,'rows':[],
+                  'research_only':True,'promotion_authority':False,
+                  'protected_mutations':0,'execution_allowed':False,
+                  'execution_authority':'NONE','runtime_bound':False,
+                  'order_authority':'BLOCKED',
+              }
+              plan_path.write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Build one-axis AI review inputs
+        if: ${{ hashFiles('out/gemini/gemini_artifact.json') != '' }}
+        run: |
+          python backend/tools/strategy11_gemini_v3_2_ai_filter.py prepare \
+            --plan out/gemini/plan.json \
+            --gemini-artifact out/gemini/gemini_artifact.json \
+            --results-root input/results \
+            --out out/gemini/router_inputs
+      - name: Run Groq and Workers AI per candidate
+        if: ${{ hashFiles('out/gemini/gemini_artifact.json') != '' }}
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          mkdir -p out/gemini/router_results
+          for input in out/gemini/router_inputs/*.json; do
+            [ "$(basename "$input")" = index.json ] && continue
+            sid="$(basename "$input" .json)"
+            set +e
+            python scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" \
+              --gemini-artifact out/gemini/gemini_artifact.json \
+              --output "out/gemini/router_results/${sid}.json"
+            rc=$?
+            set -e
+            python - "$sid" "$rc" <<'PY'
+          import json,sys
+          from pathlib import Path
+          sid,rc=sys.argv[1],int(sys.argv[2])
+          path=Path(f'out/gemini/router_results/{sid}.json')
+          assert path.exists(), f'ROUTER_RESULT_MISSING:{sid}:rc={rc}'
+          row=json.loads(path.read_text())
+          assert row.get('status') in {'PASS_AI_REVIEW_ROUTER','HOLD_AI_REVIEW_ROUTER','REJECT_AI_REVIEW_ROUTER'}, row
+          assert row.get('promotion_authority') is False
+          assert row.get('execution_allowed') is False
+          assert row.get('order_authority')=='BLOCKED'
+          print(json.dumps({'strategy_id':sid,'router_status':row['status'],'return_code':rc},sort_keys=True))
+          PY
+          done
+          python backend/tools/strategy11_gemini_v3_2_ai_filter.py filter \
+            --plan out/gemini/plan.json \
+            --router-root out/gemini/router_results \
+            --out-plan out/gemini/plan.filtered.json \
+            --out-report out/gemini/ai_filter.json
+          mv out/gemini/plan.filtered.json out/gemini/plan.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary=json.loads(Path('out/gemini/summary.json').read_text())
+          report=json.loads(Path('out/gemini/ai_filter.json').read_text())
+          plan=json.loads(Path('out/gemini/plan.json').read_text())
+          summary['gemini_selected_replay_count']=summary.get('selected_replay_count',0)
+          summary['ai_approved_replay_count']=report['accepted_candidate_count']
+          summary['ai_rejected_replay_count']=report['rejected_candidate_count']
+          summary['selected_replay_count']=plan['candidate_count']
+          summary['selected_strategy_ids']=plan['active_strategy_ids']
+          summary['candidate_ai_filter_state']=report['state']
+          Path('out/gemini/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          for sid in report['accepted_strategy_ids']:
+              row=json.loads(Path(f'out/gemini/router_results/{sid}.json').read_text())
+              assert row['status']=='PASS_AI_REVIEW_ROUTER'
+              assert row['provider_results']['groq']['artifact']['review']['decision']=='PASS_TO_REPLAY'
+              assert row['provider_results']['workers_ai']['artifact']['review']['decision']=='PASS_TO_REPLAY'
+          PY
+      - name: Expose filtered replay state
+        id: state
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          summary=json.loads(Path('out/gemini/summary.json').read_text())
+          plan=json.loads(Path('out/gemini/plan.json').read_text())
+          assert summary['promotion_authority'] is False and summary['execution_allowed'] is False
+          assert summary['order_authority']=='BLOCKED'
+          if summary['state']=='PASS_GEMINI_V3_2_COHORT_REVIEW':
+              assert summary['GEMINI_USED'] is True and summary['reviewed_strategy_count']==24
+              assert plan['candidate_count']==summary['selected_replay_count']
+          else:
+              assert summary['state'] in {'HOLD','SKIP_UNCHANGED_GEMINI_EVIDENCE'}
+              assert plan['candidate_count']==0
+          count=int(plan.get('candidate_count',0))
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as handle:
+              handle.write(f"active={'true' if count else 'false'}\n")
+              handle.write(f"approved_count={count}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s11-gemini-v3-2-final-prep-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    name: Replay AI-approved V3.2 batch ${{ matrix.batch }}
+    if: needs.prepare.outputs.active == 'true'
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {batch: '1', strategies: 'anchor_vwap_trend,bb_revert,break_and_continue,ema_ribbon_scalp'}
+          - {batch: '2', strategies: 'fvg_revert,grid_rebalance,keltner_trend,liquidity_sweep,mfi_rsi_div'}
+          - {batch: '3', strategies: 'obv_trend,pivot_reversal,range_fade,rbreaker_like,rsi_swing_fail'}
+          - {batch: '4', strategies: 'scalp_snap,session_bias,squeeze_break,sr_levels'}
+          - {batch: '5', strategies: 'trend_ma_macd,turtle_trend,vol_spike_fade,vwap_revert'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with: {ref: '${{ env.COMPUTE_REF }}', path: compute, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with: {name: 's11-gemini-v3-2-final-prep-${{ github.run_id }}', path: input/prep}
+      - name: Download immutable evidence
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${EVIDENCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
+          done
+      - name: Replay approved strategies
+        env: {BATCH_STRATEGIES: '${{ matrix.strategies }}'}
+        run: |
+          selected="$(python - <<'PY'
+          import json,os
+          from pathlib import Path
+          active=set(json.loads(Path('input/prep/gemini/plan.json').read_text())['active_strategy_ids'])
+          print(','.join(s for s in os.environ['BATCH_STRATEGIES'].split(',') if s in active))
+          PY
+          )"
+          mkdir -p out/batch-${{ matrix.batch }}
+          if [ -n "$selected" ]; then
+            python backend/tools/strategy11_expanded_discovery_v3.py replay \
+              --compute-root compute --archive-root input/prep/prep/archive --evidence-root input/evidence \
+              --plan input/prep/gemini/plan.json --registry input/prep/prep/plan/internal_registry.json \
+              --policy backend/research/strategy11_v3_policy.json --strategy-ids "$selected" \
+              --out out/batch-${{ matrix.batch }}
+          else
+            printf '%s\n' '{"state":"SKIP_NO_AI_APPROVED_STRATEGIES","rows":[]}' > out/batch-${{ matrix.batch }}/batch.json
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-v3-2-final-replay-${{ matrix.batch }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  finalize:
+    name: Aggregate candidate-gated Gemini V3.2 results
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, replay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with: {name: 's11-gemini-v3-2-final-prep-${{ github.run_id }}', path: input/prep}
+      - name: Download replay artifacts
+        if: needs.prepare.outputs.active == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: s11-gemini-v3-2-final-replay-*-${{ github.run_id }}
+          path: input/replays
+          merge-multiple: true
+      - name: Build final result
+        env: {ACTIVE: '${{ needs.prepare.outputs.active }}'}
+        run: |
+          mkdir -p out/state
+          if [ "$ACTIVE" = true ]; then
+            python backend/tools/strategy11_expanded_discovery_v3.py aggregate \
+              --batch-root input/replays --plan input/prep/gemini/plan.json \
+              --policy backend/research/strategy11_v3_policy.json --out out/state/replay_final.json
+          else
+            printf '%s\n' '{"state":"COMPLETE_NO_AI_APPROVED_GEMINI_REPLAY_AXIS","strategy_count":0,"candidate_count":0,"discovery_pass_count":0,"discovery_pass_rows":[],"blockers":[],"research_only":true,"promotion_authority":false,"protected_mutations":0,"execution_allowed":false,"execution_authority":"NONE","runtime_bound":false,"order_authority":"BLOCKED"}' > out/state/replay_final.json
+          fi
+          cp input/prep/gemini/summary.json out/state/summary.json
+          cp input/prep/gemini/plan.json out/state/gemini_plan.json
+          if [ -f input/prep/gemini/gemini_artifact.json ]; then cp input/prep/gemini/gemini_artifact.json out/state/gemini_artifact.json; fi
+          if [ -f input/prep/gemini/ai_filter.json ]; then cp input/prep/gemini/ai_filter.json out/state/ai_filter.json; fi
+      - name: Assert final safety and report
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          final=json.loads(Path('out/state/replay_final.json').read_text())
+          summary=json.loads(Path('out/state/summary.json').read_text())
+          assert final.get('blockers',[])==[]
+          assert final['promotion_authority'] is False and final['execution_allowed'] is False
+          assert final['runtime_bound'] is False and final['order_authority']=='BLOCKED'
+          report={
+              'gemini_state':summary['state'],
+              'gemini_used':summary.get('GEMINI_USED'),
+              'reviewed':summary.get('reviewed_strategy_count',0),
+              'gemini_selected':summary.get('gemini_selected_replay_count',0),
+              'ai_approved':summary.get('ai_approved_replay_count',0),
+              'ai_rejected':summary.get('ai_rejected_replay_count',0),
+              'approved_strategy_ids':summary.get('selected_strategy_ids',[]),
+              'alpha_fresh_hypothesis_count':summary.get('alpha_fresh_hypothesis_count',0),
+              'replay_state':final['state'],
+              'discovery_pass_count':final.get('discovery_pass_count',0),
+              'discovery_pass_rows':final.get('discovery_pass_rows',[]),
+          }
+          Path('out/state/report.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s11-gemini-v3-2-final-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90

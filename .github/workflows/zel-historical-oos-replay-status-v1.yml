@@ -1,0 +1,173 @@
+name: ZEL Historical OOS Replay Status V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-historical-oos-replay-status-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-historical-oos-replay-status-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-historical-oos-replay-status-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate status scope
+        run: |
+          set -euo pipefail
+          grep -q 'zel_historical_oos_exact25_replay_v1.py' .github/workflows/zel-historical-oos-replay-status-v1.yml
+          grep -q 'replay_status_latest.json' .github/workflows/zel-historical-oos-replay-status-v1.yml
+
+  status:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Read replay process and terminal surfaces
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
+          import json,os,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+
+          out=Path("/tmp/zel_historical_oos_replay_status.json")
+          process=subprocess.run(
+              ["pgrep","-af","zel_historical_oos_exact25_replay_v1.py"],
+              text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+          )
+          lines=[line for line in process.stdout.splitlines() if "pgrep -af" not in line]
+          active=[]
+          for line in lines:
+              interval="unknown"
+              if "--interval 15m" in line: interval="15m"
+              elif "--interval 1m" in line: interval="1m"
+              active.append({"interval":interval,"command":line[-1000:]})
+
+          roots={
+              "15m":Path("/tmp/zel_historical_oos_exact25_replay_v1_15m"),
+              "1m":Path("/tmp/zel_historical_oos_exact25_replay_v1_1m"),
+          }
+          outputs={}
+          for interval,root in roots.items():
+              summary=root/"summary.json"
+              report=root/"report.json"
+              outputs[interval]={
+                  "root_exists":root.exists(),
+                  "summary_exists":summary.exists(),
+                  "report_exists":report.exists(),
+                  "summary":json.loads(summary.read_text()) if summary.exists() else None,
+              }
+
+          def active_unit(name):
+              return subprocess.run(["systemctl","is-active","--quiet",name]).returncode==0
+
+          load=os.getloadavg()
+          payload={
+              "schema_version":"zel.historical_oos_exact25_replay.status.v1",
+              "generated_at":datetime.now(timezone.utc).isoformat(),
+              "process_count":len(active),
+              "active_processes":active,
+              "outputs":outputs,
+              "load_average_1m":load[0],
+              "load_average_5m":load[1],
+              "load_average_15m":load[2],
+              "canonical_producer_active":active_unit("q4r3-exact25-shadow-producer.service"),
+              "canonical_writer_active":active_unit("q4r3-exact25-persistent-single-event-writer.service"),
+              "data_a_active":active_unit("q4r3-exact25-forward-expansion-v1.service"),
+              "paper_enabled":False,
+              "live_enabled":False,
+              "execution_authority":"NONE",
+              "order_authority":"BLOCKED",
+              "action":"hold",
+          }
+          out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          PY'
+
+      - name: Fetch status
+        run: |
+          mkdir -p result
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_historical_oos_replay_status.json" \
+            result/replay_status_latest.json
+
+      - name: Assert authority boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/replay_status_latest.json').read_text())
+          assert d['canonical_producer_active'] is True,d
+          assert d['canonical_writer_active'] is True,d
+          assert d['data_a_active'] is True,d
+          assert d['paper_enabled'] is False,d
+          assert d['live_enabled'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish replay status
+        run: |
+          set -euo pipefail
+          base=results-branch/runtime_results/zel/historical_oos_exact25_replay_v1
+          mkdir -p "$base"
+          cp result/replay_status_latest.json "$base/replay_status_latest.json"
+          cp result/replay_status_latest.json "$base/replay_status_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-replay-status-bot'
+          git config user.email 'zel-replay-status-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/historical_oos_exact25_replay_v1
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "status(zel): Historical OOS replay ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-historical-oos-replay-status-v1-${{ github.run_id }}
+          path: result
+          if-no-files-found: error
+          retention-days: 7

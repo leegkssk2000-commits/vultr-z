@@ -6,6 +6,7 @@ on:
     paths:
       - 'backend/tools/strategy11_gemini_v3_2.py'
       - 'backend/tools/strategy11_gemini_v3_2_fixture.py'
+      - 'backend/tools/strategy11_gemini_v3_2_guard.py'
       - 'backend/research/strategy11_gemini_v3_2_policy.json'
       - 'backend/research/strategy11_gemini_video_registry_v3_2.json'
       - '.github/workflows/r7a4d-strategy11-gemini-v3-2.yml'
@@ -40,7 +41,7 @@ jobs:
         with: {python-version: '3.12'}
       - name: Compile and run deterministic fixture
         run: |
-          python -m py_compile backend/tools/strategy11_gemini_v3_2.py backend/tools/strategy11_gemini_v3_2_fixture.py
+          python -m py_compile backend/tools/strategy11_gemini_v3_2.py backend/tools/strategy11_gemini_v3_2_guard.py backend/tools/strategy11_gemini_v3_2_fixture.py
           python backend/tools/strategy11_gemini_v3_2_fixture.py
       - name: Assert policy and video registry
         run: |
@@ -50,6 +51,10 @@ jobs:
           policy=json.loads(Path('backend/research/strategy11_gemini_v3_2_policy.json').read_text())
           videos=json.loads(Path('backend/research/strategy11_gemini_video_registry_v3_2.json').read_text())
           assert policy['max_candidates_per_strategy']==1
+          assert policy['minimum_selected_replay']==4
+          assert policy['minimum_failed_hold_rescue_replay']==3
+          assert policy['alpha_single_axis_schema_required'] is True
+          assert policy['supertrend_basis_authority_run_id']==30602112063
           assert policy['alpha_same_data_replay_forbidden'] is True
           assert policy['supertrend_same_data_threshold_search_forbidden'] is True
           assert policy['promotion_authority'] is False
@@ -103,7 +108,7 @@ jobs:
           mkdir -p out/gemini out/prep
           previous=()
           if [ -s input/previous-summary-path.txt ]; then previous=(--previous-summary "$(cat input/previous-summary-path.txt)"); fi
-          python backend/tools/strategy11_gemini_v3_2.py \
+          python backend/tools/strategy11_gemini_v3_2_guard.py \
             --registry "$(cat input/registry-path.txt)" \
             --ledger "$(cat input/ledger-path.txt)" \
             --results-root input/results \
@@ -154,7 +159,7 @@ jobs:
               assert summary['state']=='PASS_GEMINI_V3_2_REVIEW', summary
               assert summary['GEMINI_USED'] is True
               assert summary['reviewed_strategy_count']==24
-              assert 0 <= summary['selected_replay_count'] <= 16
+              assert 4 <= summary['selected_replay_count'] <= 16
               assert plan['candidate_count']==summary['selected_replay_count']
               assert all(len(row['candidate_ids'])==1 for row in plan['rows'])
               assert all(row['strategy_id'] not in {'alpha_combo','supertrend_pullback','trend_rider'} for row in plan['rows'])

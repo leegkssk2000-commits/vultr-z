@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-VERSION = "STRATEGY11_LONG_SHORT_OBSERVER_V3_1"
+VERSION = "STRATEGY11_LONG_SHORT_OBSERVER_V3_2"
 LOSS_EPSILON = 1e-12
 
 
@@ -27,6 +27,12 @@ def metric(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return output if math.isfinite(output) else default
+
+
+def timestamp_iso(row: pd.Series) -> str:
+    if "timestamp" in row and pd.notna(row.get("timestamp")):
+        return pd.Timestamp(row.get("timestamp")).isoformat()
+    return pd.Timestamp(row.get("timestamp_ms"), unit="ms", tz="UTC").isoformat()
 
 
 def close_trade(position: Position, price: float, timestamp: str, reason: str, cost_rate: float) -> dict[str, Any]:
@@ -62,8 +68,7 @@ def replay(frame: pd.DataFrame, strategy: Callable[..., dict[str, Any]], *, warm
     ignored_add_reduce = 0
     for index in range(warmup_bars, len(frame)):
         row = frame.iloc[index]
-        raw_ts = row.get("timestamp") if "timestamp" in row else row.get("timestamp_ms")
-        timestamp = pd.Timestamp(raw_ts, unit=None if "timestamp" in row else "ms", tz=None if "timestamp" in row else "UTC").isoformat()
+        timestamp = timestamp_iso(row)
         open_, high, low, close = (metric(row[key]) for key in ("open", "high", "low", "close"))
         if pending is not None and position is None:
             side = str(pending.get("side") or "").lower()
@@ -96,8 +101,7 @@ def replay(frame: pd.DataFrame, strategy: Callable[..., dict[str, Any]], *, warm
             pending = dict(result)
     if position is not None:
         last = frame.iloc[-1]
-        raw_ts = last.get("timestamp") if "timestamp" in last else last.get("timestamp_ms")
-        timestamp = pd.Timestamp(raw_ts, unit=None if "timestamp" in last else "ms", tz=None if "timestamp" in last else "UTC").isoformat()
+        timestamp = timestamp_iso(last)
         trades.append(close_trade(position, metric(last["close"]), timestamp, "WINDOW_END", cost_rate))
     ordered = chronological(trades)
     long_rows = [row for row in ordered if row["side"] == "long"]

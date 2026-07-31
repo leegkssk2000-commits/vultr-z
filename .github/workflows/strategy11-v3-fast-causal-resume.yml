@@ -1,0 +1,218 @@
+name: Strategy11 V3 Fast Causal Resume
+
+on:
+  push:
+    branches: [strategy11-v3-fast-causal-resume]
+    paths:
+      - 'backend/tools/strategy11_expanded_discovery_v3.py'
+      - 'backend/tools/strategy11_v3_fast_causal.py'
+      - '.github/workflows/strategy11-v3-fast-causal-resume.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+  OLD_RUN_ID: '30588354565'
+  SOURCE_RUN_ID: '30252022416'
+
+concurrency:
+  group: tmp-strategy11-v3-final-corrected-parallel
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-fast-causal-resume
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-v3-prep-${{ env.OLD_RUN_ID }}
+          path: input/prep
+          github-token: ${{ github.token }}
+          run-id: ${{ env.OLD_RUN_ID }}
+      - name: Assert patch binding and sampled causal equivalence
+        run: |
+          grep -q 'FastCausalConfigStrategyWrapper' backend/tools/strategy11_expanded_discovery_v3.py
+          grep -q 'install_exact_prepare(exact_module' backend/tools/strategy11_expanded_discovery_v3.py
+          python -m py_compile backend/tools/strategy11_v3_fast_causal.py backend/tools/strategy11_expanded_discovery_v3.py
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          import pandas as pd
+          from backend.tools.strategy11_regime_edge_router_v3 import ConfigStrategyWrapper,classify_regime
+          from backend.tools.strategy11_v3_fast_causal import FastCausalConfigStrategyWrapper,_frame_regimes
+
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              module=importlib.util.module_from_spec(spec); sys.modules[name]=module; spec.loader.exec_module(module)
+              return module
+
+          frame=pd.read_csv('input/prep/archive/market/A01-BTCUSDT.csv')
+          frame['timestamp']=pd.to_datetime(frame['timestamp_ms'],unit='ms',utc=True)
+          lengths=[100,150,220,300,450,600,750,900]
+          fast_regimes=_frame_regimes(frame)
+          for n in lengths:
+              assert fast_regimes[n-1]==classify_regime(frame.iloc[:n])
+          specs={
+              'trend_rider': [('max_chase_dist_atr',2.415,None),('st_mult',2.55,'TREND_UP')],
+              'supertrend_pullback': [('max_pullback_dist_from_ema_atr',1.61,None),('st_mult',2.55,'TREND_UP')],
+          }
+          for sid,variants in specs.items():
+              path=Path('compute/backend/strategies')/f'{sid}.py'
+              for index,(field,value,scope) in enumerate([(None,None,None),*variants]):
+                  slow_module=load(f'slow_{sid}_{index}',path)
+                  fast_module=load(f'fast_{sid}_{index}',path)
+                  cfg_name='TrendRiderConfig' if sid=='trend_rider' else 'SupertrendPullbackConfig'
+                  slow=ConfigStrategyWrapper(slow_module.strategy,getattr(slow_module,cfg_name),field,value,scope)
+                  fast=FastCausalConfigStrategyWrapper(fast_module.strategy,getattr(fast_module,cfg_name),field,value,scope)
+                  fast.prepare_frame(frame)
+                  for n in lengths:
+                      history=frame.iloc[:n].copy()
+                      left=slow(history,state={},risk_action='hold')
+                      right=fast(history,state={},risk_action='hold')
+                      assert json.dumps(left,sort_keys=True,allow_nan=True)==json.dumps(right,sort_keys=True,allow_nan=True),(sid,field,n,left,right)
+          print('PASS_FAST_CAUSAL_PREFIX_EQUIVALENCE')
+          PY
+
+  replay:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        strategy: [trend_rider, supertrend_pullback]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-fast-causal-resume
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-v3-prep-${{ env.OLD_RUN_ID }}
+          path: input/prep
+          github-token: ${{ github.token }}
+          run-id: ${{ env.OLD_RUN_ID }}
+      - name: Download immutable evidence batches
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" --dir "input/evidence/batch-${batch}"
+          done
+      - name: Replay stalled strategy with causal cache
+        env: {STRATEGY_ID: '${{ matrix.strategy }}'}
+        run: |
+          mkdir -p "out/batch-${STRATEGY_ID}"
+          python backend/tools/strategy11_expanded_discovery_v3.py replay \
+            --compute-root compute --archive-root input/prep/archive --evidence-root input/evidence \
+            --plan input/prep/plan/plan.json --registry input/prep/plan/internal_registry.json \
+            --policy backend/research/strategy11_v3_policy.json --strategy-ids "$STRATEGY_ID" \
+            --out "out/batch-${STRATEGY_ID}"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          sid=os.environ['STRATEGY_ID']
+          batch=json.loads(Path(f'out/batch-{sid}/batch.json').read_text())
+          assert batch['state']=='PASS_V3_DISCOVERY_BATCH' and batch['strategy_count']==1
+          for variant in batch['rows'][0]['variants']:
+              assert variant['parity']['state']=='PASS'
+              assert variant['parity']['duplicate_trade_count']==0
+              assert variant['canonical_mutated'] is False
+              assert variant['promotion_authority'] is False
+              assert variant['execution_allowed'] is False
+              assert variant['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resume-v3-${{ matrix.strategy }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  finalize:
+    needs: [validate,replay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: strategy11-v3-fast-causal-resume
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-v3-prep-${{ env.OLD_RUN_ID }}
+          path: input/prep
+          github-token: ${{ github.token }}
+          run-id: ${{ env.OLD_RUN_ID }}
+      - name: Restore 22 completed artifacts from original run
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          mkdir -p input/old input/replays
+          gh run download "$OLD_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern "final-v3-*-${OLD_RUN_ID}" --dir input/old
+          find input/old -type d -name 'batch-*' -print0 | while IFS= read -r -d '' path; do cp -R "$path" input/replays/; done
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: resume-v3-*-${{ github.run_id }}
+          path: input/new
+          merge-multiple: true
+      - name: Overlay resumed artifacts and aggregate
+        run: |
+          find input/new -type d -name 'batch-*' -print0 | while IFS= read -r -d '' path; do rm -rf "input/replays/$(basename "$path")"; cp -R "$path" input/replays/; done
+          test "$(find input/replays -mindepth 2 -maxdepth 2 -name batch.json | wc -l)" -eq 24
+          mkdir -p out/state
+          python backend/tools/strategy11_expanded_discovery_v3.py aggregate \
+            --batch-root input/replays --plan input/prep/plan/plan.json \
+            --policy backend/research/strategy11_v3_policy.json --out out/state/final.json
+          cp input/prep/plan/plan.json out/state/cycle_plan.json
+          cp input/prep/plan/internal_registry.json out/state/internal_registry.json
+          cp input/prep/plan/search_ledger.json out/state/search_ledger.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          final=json.loads(Path('out/state/final.json').read_text())
+          plan=json.loads(Path('out/state/cycle_plan.json').read_text())
+          assert final['state']=='PASS_V3_ORGANIC_AUDIT'
+          assert final['blockers']==[]
+          assert final['strategy_count']==len(plan['active_strategy_ids'])==24
+          assert final['candidate_count']==plan['candidate_count']==48
+          assert final['fresh_confirmation_required'] is True
+          assert final['w1_w2_w3_new_sealed_required'] is True
+          assert final['promotion_authority'] is False
+          assert final['execution_allowed'] is False
+          assert final['order_authority']=='BLOCKED'
+          assert final['runtime_bound'] is False
+          print(json.dumps(final,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final-v3-resumed-state-${{ github.run_id }}
+          path: out/state
+          if-no-files-found: error
+          retention-days: 90

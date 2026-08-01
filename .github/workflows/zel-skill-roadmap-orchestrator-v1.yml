@@ -1,0 +1,241 @@
+name: ZEL Skill Roadmap Orchestrator V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_skill_extension_contract_v1.json
+      - backend/tools/zel_skill_extension_contract_v1.py
+      - .github/workflows/zel-skill-roadmap-orchestrator-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_skill_extension_contract_v1.json
+      - backend/tools/zel_skill_extension_contract_v1.py
+      - .github/workflows/zel-skill-roadmap-orchestrator-v1.yml
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-skill-roadmap-orchestrator-v1
+  cancel-in-progress: false
+
+jobs:
+  validate-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate skill contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_skill_extension_contract_v1.py
+          python backend/tools/zel_skill_extension_contract_v1.py --self-test
+          mkdir -p out
+          python backend/tools/zel_skill_extension_contract_v1.py \
+            --contract backend/research/zel_skill_extension_contract_v1.json \
+            --out out/skill_contract_latest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-skill-extension-contract-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  repair-data-b-and-dispatch-risk:
+    if: github.event_name != 'pull_request'
+    needs: validate-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+
+      - name: Verify immutable prerequisites
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          seq=json.loads(Path('results/runtime_results/zel/trade_methods_risk_sequence_replay_v1/latest.json').read_text())
+          assert seq['state']=='PASS_NO_LOOKAHEAD_RISK_SEQUENCE_REPLAY',seq
+          assert seq['no_lookahead_proved'] is True and seq['data_b_binding_allowed'] is True,seq
+          p=Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/15m/latest.json')
+          d=json.loads(p.read_text())
+          assert d['state']=='PASS' and d['interval']=='15m',d
+          assert d['replay']['strategy_count_completed']==25 and d['replay']['error_count']==0,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload exact replay engine
+        run: |
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Ensure both Data B terminal ledgers
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          SOURCE=/opt/zel/forward-expansion-v1/source
+          DATA=/opt/zel/historical-oos-v1
+          test -s "$DATA/manifest.json"
+          for interval in 15m 1m; do
+            out="/tmp/zel_historical_oos_exact25_replay_v1_${interval}"
+            if [ ! -s "$out/report.json" ] || [ ! -s "$out/summary.json" ] || [ ! -s "$out/scoreboard.csv" ] || [ ! -s "$out/trades.jsonl.gz" ]; then
+              rm -rf "$out"
+              mkdir -p "$out"
+              "$PY" /tmp/zel_historical_oos_exact25_replay_v1.py \
+                --source-root "$SOURCE" \
+                --data-root "$DATA" \
+                --interval "$interval" \
+                --output-dir "$out" \
+                --workers 4
+            fi
+          done
+          rm -rf /tmp/zel_data_b_terminal_v1
+          mkdir -p /tmp/zel_data_b_terminal_v1/15m /tmp/zel_data_b_terminal_v1/1m
+          for interval in 15m 1m; do
+            src="/tmp/zel_historical_oos_exact25_replay_v1_${interval}"
+            cp "$src/report.json" /tmp/zel_data_b_terminal_v1/$interval/report.json
+            cp "$src/summary.json" /tmp/zel_data_b_terminal_v1/$interval/summary.json
+            cp "$src/scoreboard.csv" /tmp/zel_data_b_terminal_v1/$interval/scoreboard.csv
+          done
+          tar -C /tmp/zel_data_b_terminal_v1 -czf /tmp/zel_data_b_terminal_v1.tar.gz .
+          REMOTE
+
+      - name: Fetch and validate terminal authorities
+        run: |
+          set -euo pipefail
+          mkdir -p out/data_b
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_terminal_v1.tar.gz" \
+            /tmp/data_b.tar.gz
+          tar -C out/data_b -xzf /tmp/data_b.tar.gz
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for interval in ('15m','1m'):
+              d=json.loads(Path(f'out/data_b/{interval}/report.json').read_text())
+              assert d['state']=='PASS' and d['interval']==interval,d
+              assert d['replay']['strategy_count_completed']==25,d
+              assert d['replay']['strategy_failure_count']==0 and d['replay']['error_count']==0,d
+              assert d['canonical_runtime']['producer_pid_unchanged'] is True,d
+              assert d['canonical_runtime']['writer_pid_unchanged'] is True,d
+              assert d['canonical_runtime']['formal_ledger']['prefix_unchanged'] is True,d
+              assert d['research_only'] is True and d['promotion_authority'] is False,d
+              assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Publish 15m, 1m and combined SSOT
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-skill-roadmap-bot'
+          git config user.email 'zel-skill-roadmap-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/historical_oos_exact25_replay_v1
+          for interval in 15m 1m; do
+            mkdir -p "$root/$interval"
+            cp "out/data_b/$interval/report.json" "$root/$interval/latest.json"
+            cp "out/data_b/$interval/summary.json" "$root/$interval/summary_latest.json"
+            cp "out/data_b/$interval/scoreboard.csv" "$root/$interval/scoreboard_latest.csv"
+            cp "out/data_b/$interval/report.json" "$root/$interval/run_${GITHUB_RUN_ID}.json"
+          done
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('results/runtime_results/zel/historical_oos_exact25_replay_v1')
+          reports={k:json.loads((root/k/'latest.json').read_text()) for k in ('15m','1m')}
+          intervals={}
+          for key,d in reports.items():
+              intervals[key]={
+                  'closed_trade_count':d['replay']['closed_trade_count'],
+                  'strategy_call_count':d['replay']['strategy_call_count'],
+                  'error_count':d['replay']['error_count'],
+                  'claim_tier_counts':d['replay']['claim_tier_counts'],
+                  'failure_fingerprint_counts':d['replay']['failure_fingerprint_counts'],
+                  'report_sha256':hashlib.sha256((root/key/'latest.json').read_bytes()).hexdigest(),
+              }
+          out={
+              'schema_version':'zel.historical_oos_exact25_replay.combined.v1',
+              'state':'PASS',
+              'verdict':'HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',
+              'generated_at':datetime.now(timezone.utc).isoformat(),
+              'intervals':intervals,
+              'total_closed_trade_count':sum(v['closed_trade_count'] for v in intervals.values()),
+              'total_strategy_call_count':sum(v['strategy_call_count'] for v in intervals.values()),
+              'research_only':True,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'paper_enabled':False,
+              'live_enabled':False,
+              'action':'hold',
+              'next':'RUN_DATA_B_RISK_ADAPTER_ABLATION',
+          }
+          (root/'combined_latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+          mkdir -p results/runtime_results/zel/skill_extension_contract_v1
+          cp out/skill_contract_latest.json results/runtime_results/zel/skill_extension_contract_v1/latest.json || true
+          cd results
+          git add runtime_results/zel/historical_oos_exact25_replay_v1 runtime_results/zel/skill_extension_contract_v1
+          git commit -m "result(zel): repair Data B and seal skill contract ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Dispatch Risk main-effect stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-data-b-risk-adapter-ablation-v1.yml/dispatches" \
+            -f ref=master
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-skill-roadmap-orchestrator-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: ignore
+          retention-days: 90

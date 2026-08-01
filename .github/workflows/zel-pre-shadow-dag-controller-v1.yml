@@ -2,6 +2,12 @@ name: ZEL Pre-Shadow DAG Controller V1
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_pre_shadow_receipt_dag_v1.py
+      - backend/tools/zel_pre_shadow_lineage_controller_v1.py
+      - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
   workflow_run:
     workflows:
       - ZEL Data B 1m Single Owner Repair V1
@@ -19,8 +25,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate DAG and lineage engines
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_pre_shadow_receipt_dag_v1.py \
+            backend/tools/zel_pre_shadow_lineage_controller_v1.py
+          python backend/tools/zel_pre_shadow_receipt_dag_v1.py --self-test
+          python backend/tools/zel_pre_shadow_lineage_controller_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('.github/workflows/zel-pre-shadow-dag-controller-v1.yml').read_text()
+          assert 'ONE_ORDERED_STAGE_AT_A_TIME' in t
+          assert 'pre_shadow_lineage_v1' in t
+          assert 'Bind completed workflow to expected lineage' in t
+          assert 'Create dispatch expectation' in t
+          assert 'Dispatch exactly one planned stage' in t
+          print('PASS_PRE_SHADOW_DAG_CONTROLLER_STATIC')
+          PY
+
   advance:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -43,10 +79,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Evaluate ordered receipt DAG
+      - name: Bind completed workflow to expected lineage
         run: |
           set -euo pipefail
           mkdir -p out
+          python control/backend/tools/zel_pre_shadow_lineage_controller_v1.py \
+            --mode bind \
+            --results-root results \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --out out/bind.json
+          cat out/bind.json
+
+      - name: Evaluate ordered receipt DAG
+        run: |
+          set -euo pipefail
           python control/backend/tools/zel_pre_shadow_receipt_dag_v1.py \
             --results-root results \
             --out out/latest.json
@@ -55,6 +101,8 @@ jobs:
           from pathlib import Path
           d=json.loads(Path('out/latest.json').read_text())
           assert d['dispatch_policy']=='ONE_ORDERED_STAGE_AT_A_TIME',d
+          assert d['lineage_policy']=='CURRENT_PREDECESSOR_AND_STAGE_RECEIPT_SHA_REQUIRED',d
+          assert d['safe_non_passing_receipt_retry'] is True,d
           assert d['execution_authority']=='NONE',d
           assert d['order_authority']=='BLOCKED',d
           assert d['promotion_authority'] is False,d
@@ -64,10 +112,103 @@ jobs:
               'passed':d['passed_stage_count'],
               'blocked':d['first_blocked_stage'],
               'eligible':d['eligible_next_stage'],
+              'reason':d['eligible_reason'],
           },sort_keys=True))
           PY
 
-      - name: Publish DAG receipt
+      - name: Plan exactly one eligible implemented stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          stage=json.loads(Path('out/latest.json').read_text()).get('eligible_next_stage')
+          mapping={
+              'RISK_MAIN_EFFECT':{
+                  'workflow_file':'zel-data-b-risk-adapter-ablation-v1.yml',
+                  'workflow_name':'ZEL Data B Risk Adapter Ablation V1',
+              },
+              'EXACT25_LIVENESS_AND_REPAIR':{
+                  'workflow_file':'zel-exact25-material-upgrade-loop-v1.yml',
+                  'workflow_name':'ZEL Exact25 Material Upgrade Loop V1',
+              },
+              'TRADE_METHOD_COVERAGE':{
+                  'workflow_file':'zel-trade-methods-pre-shadow-audit-v1.yml',
+                  'workflow_name':'ZEL Trade Methods Pre-Shadow Audit V1',
+              },
+          }
+          plan={'stage_id':stage,'implemented':stage in mapping,'dispatch':False,'adopt_active':False}
+          if stage in mapping:
+              plan.update(mapping[stage])
+          Path('out/dispatch_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          PY
+          workflow=$(python -c "import json;print(json.load(open('out/dispatch_plan.json')).get('workflow_file') or '')")
+          if [ -z "$workflow" ]; then
+            cat out/dispatch_plan.json
+            exit 0
+          fi
+          gh run list --workflow "$workflow" --limit 30 \
+            --json databaseId,status,createdAt,headSha > out/active_runs.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('out/dispatch_plan.json').read_text())
+          rows=json.loads(Path('out/active_runs.json').read_text())
+          active=[row for row in rows if row.get('status') in {'queued','in_progress','waiting','pending','requested'}]
+          active.sort(key=lambda row:row.get('createdAt') or '',reverse=True)
+          if active:
+              plan['adopt_active']=True
+              plan['dispatch']=False
+              plan['active_run']=active[0]
+          else:
+              plan['dispatch']=True
+              plan['active_run']=None
+          Path('out/dispatch_plan.json').write_text(json.dumps(plan,indent=2,sort_keys=True)+'\n')
+          print(plan)
+          PY
+
+      - name: Create dispatch expectation
+        run: |
+          set -euo pipefail
+          stage=$(python -c "import json;print(json.load(open('out/dispatch_plan.json')).get('stage_id') or '')")
+          implemented=$(python -c "import json;print(str(json.load(open('out/dispatch_plan.json')).get('implemented',False)).lower())")
+          if [ -z "$stage" ] || [ "$implemented" != true ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          Path('out/expectation.json').write_text(json.dumps({'state':'NOOP_NO_IMPLEMENTED_ELIGIBLE_STAGE'},indent=2)+'\n')
+          PY
+            exit 0
+          fi
+          workflow_name=$(python -c "import json;print(json.load(open('out/dispatch_plan.json'))['workflow_name'])")
+          python control/backend/tools/zel_pre_shadow_lineage_controller_v1.py \
+            --mode expect \
+            --results-root results \
+            --dag out/latest.json \
+            --stage-id "$stage" \
+            --workflow-name "$workflow_name" \
+            --controller-run-id "$GITHUB_RUN_ID" \
+            --out out/expectation.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan=json.loads(Path('out/dispatch_plan.json').read_text())
+          if not plan.get('adopt_active'):
+              raise SystemExit(0)
+          path=Path('results/runtime_results/zel/pre_shadow_lineage_v1/expectation_latest.json')
+          expected=json.loads(path.read_text())
+          active=plan['active_run']
+          expected['state']='ADOPTED_ACTIVE_RUN'
+          expected['generated_at']=active['createdAt']
+          expected['adopted_active_run_id']=str(active['databaseId'])
+          expected['adopted_active_head_sha']=active.get('headSha')
+          path.write_text(json.dumps(expected,indent=2,sort_keys=True)+'\n')
+          Path('out/expectation.json').write_text(json.dumps(expected,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish DAG and lineage receipts
         run: |
           set -euo pipefail
           cd results
@@ -80,45 +221,22 @@ jobs:
           cp out/latest.json "$root/latest.json"
           cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
           cd results
-          git add runtime_results/zel/pre_shadow_receipt_dag_v1
-          git commit -m "result(zel): pre-Shadow receipt DAG ${GITHUB_RUN_ID}" || true
+          git add runtime_results/zel/pre_shadow_receipt_dag_v1 runtime_results/zel/pre_shadow_lineage_v1
+          git commit -m "result(zel): pre-Shadow DAG lineage ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
 
-      - name: Dispatch exactly one eligible implemented stage
+      - name: Dispatch exactly one planned stage
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          stage=$(python - <<'PY'
-          import json
-          from pathlib import Path
-          print(json.loads(Path('out/latest.json').read_text()).get('eligible_next_stage') or '')
-          PY
-          )
-          case "$stage" in
-            RISK_MAIN_EFFECT)
-              workflow=zel-data-b-risk-adapter-ablation-v1.yml
-              ;;
-            EXACT25_LIVENESS_AND_REPAIR)
-              workflow=zel-exact25-material-upgrade-loop-v1.yml
-              ;;
-            TRADE_METHOD_COVERAGE)
-              workflow=zel-trade-methods-pre-shadow-audit-v1.yml
-              ;;
-            '')
-              echo NO_ELIGIBLE_STAGE
-              exit 0
-              ;;
-            *)
-              echo "HOLD_STAGE_IMPLEMENTATION_REQUIRED:$stage"
-              exit 0
-              ;;
-          esac
-          active=$(gh run list --workflow "$workflow" --limit 30 --json status --jq '[.[]|select(.status=="queued" or .status=="in_progress")]|length')
-          if [ "$active" != 0 ]; then
-            echo "ACTIVE_STAGE_ALREADY_EXISTS:$stage:$active"
+          dispatch=$(python -c "import json;print(str(json.load(open('out/dispatch_plan.json')).get('dispatch',False)).lower())")
+          if [ "$dispatch" != true ]; then
+            cat out/dispatch_plan.json
             exit 0
           fi
+          stage=$(python -c "import json;print(json.load(open('out/dispatch_plan.json'))['stage_id'])")
+          workflow=$(python -c "import json;print(json.load(open('out/dispatch_plan.json'))['workflow_file'])")
           gh workflow run "$workflow" --ref master
           echo "DISPATCHED_ONE_STAGE:$stage:$workflow"
 
@@ -126,12 +244,13 @@ jobs:
         run: |
           cat <<'EOF'
           Controller dispatches at most one receipt-eligible stage.
-          Missing receipt, unsafe authority, unimplemented stage, or active duplicate remains HOLD.
+          Each passing downstream stage requires a binding to the current predecessor receipt SHA and current stage receipt SHA.
+          Safe WAIT/HOLD receipts are retryable; parse or authority violations remain blocked.
           Shadow/Paper/Live/order authority remains blocked.
           EOF
 
       - uses: actions/upload-artifact@v4
         with:
           name: zel-pre-shadow-dag-controller-v1-${{ github.run_id }}
-          path: out/latest.json
+          path: out
           retention-days: 90

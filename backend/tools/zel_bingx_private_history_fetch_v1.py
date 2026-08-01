@@ -6,10 +6,9 @@ import hmac
 import json
 import os
 import re
-import ssl
+import subprocess
 import time
 import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,28 +26,6 @@ ROOTS = (Path("/home/z/z"), Path("/opt/zel"), Path("/etc/zel"), Path("/etc/syste
 SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".cache", "logs", "log"}
 SUFFIX = {".env", ".conf", ".service", ".json", ".yaml", ".yml", ".py", ".sh"}
 DAY_MS = 86_400_000
-
-
-def ssl_context() -> ssl.SSLContext:
-    # Prefer the host's CA bundle because VPS environments may use a private
-    # egress CA that is absent from a venv's bundled certifi store.
-    candidates = (
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/etc/ssl/cert.pem",
-    )
-    for candidate in candidates:
-        if Path(candidate).is_file():
-            return ssl.create_default_context(cafile=candidate)
-    try:
-        import certifi  # type: ignore
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        return ssl.create_default_context()
-
-
-SSL_CONTEXT = ssl_context()
 
 
 def pick(values: dict[str, str]) -> tuple[str, str, str, str] | None:
@@ -79,7 +56,6 @@ def discover_credentials() -> tuple[str, str, str, str, str] | None:
     current = pick(dict(os.environ))
     if current:
         return *current, "current_environment"
-
     for path in Path("/proc").glob("[0-9]*/environ"):
         try:
             raw = path.read_bytes()
@@ -96,7 +72,6 @@ def discover_credentials() -> tuple[str, str, str, str, str] | None:
         current = pick(values)
         if current:
             return *current, "process_environment"
-
     for root in ROOTS:
         if not root.exists():
             continue
@@ -122,6 +97,11 @@ def discover_credentials() -> tuple[str, str, str, str, str] | None:
     return None
 
 
+def safe_error(value: object, key: str, secret: str) -> str:
+    text = str(value).replace(key, "[API_KEY]").replace(secret, "[API_SECRET]")
+    return text[:400]
+
+
 def signed_request(key: str, secret: str, path: str, params: dict[str, Any]) -> Any:
     if path not in ALLOWED.values():
         raise RuntimeError("ENDPOINT_NOT_ALLOWED")
@@ -132,32 +112,51 @@ def signed_request(key: str, secret: str, path: str, params: dict[str, Any]) -> 
         [(name, str(signed[name])) for name in sorted(signed)] + [("signature", signature)],
         safe="-_.~",
     )
-    headers = {
-        "X-BX-APIKEY": key,
-        "X-SOURCE-KEY": "BX-AI-SKILL",
-        "User-Agent": "ZEL_BINGX_HISTORY_FETCH_V1",
-    }
-    last_error: Exception | None = None
+    errors: list[str] = []
     for base in BASES:
+        url = base + path + "?" + query
+        # Secrets are passed through curl config stdin, not command-line argv.
+        config = "\n".join(
+            (
+                "silent",
+                "show-error",
+                "fail-with-body",
+                "connect-timeout = 15",
+                "max-time = 30",
+                f'url = "{url}"',
+                f'header = "X-BX-APIKEY: {key}"',
+                'header = "X-SOURCE-KEY: BX-AI-SKILL"',
+                'header = "User-Agent: ZEL_BINGX_HISTORY_FETCH_V1"',
+                "",
+            )
+        )
         try:
-            request = urllib.request.Request(base + path + "?" + query, headers=headers, method="GET")
-            with urllib.request.urlopen(request, timeout=20, context=SSL_CONTEXT) as response:
-                payload = json.loads(response.read().decode())
+            completed = subprocess.run(
+                ["curl", "--config", "-"],
+                input=config,
+                text=True,
+                capture_output=True,
+                timeout=40,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(f"CURL_{completed.returncode}:{completed.stderr.strip()}")
+            payload = json.loads(completed.stdout)
             if int(payload.get("code", -1)) != 0:
                 raise RuntimeError(f"BINGX:{payload.get('code')}:{payload.get('msg', '')}")
             return payload.get("data")
         except Exception as exc:
-            last_error = exc
-    raise RuntimeError(str(last_error))
+            errors.append(safe_error(exc, key, secret))
+    raise RuntimeError(" | ".join(errors))
 
 
 def rows(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     if isinstance(value, dict):
-        for key in ("orders", "fills", "trades", "list", "data"):
-            if isinstance(value.get(key), list):
-                return [item for item in value[key] if isinstance(item, dict)]
+        for field in ("orders", "fills", "trades", "list", "data"):
+            if isinstance(value.get(field), list):
+                return [item for item in value[field] if isinstance(item, dict)]
         return [value]
     return []
 
@@ -166,7 +165,7 @@ def deduplicate(items: list[dict[str, Any]], identity_keys: tuple[str, ...]) -> 
     result: dict[str, dict[str, Any]] = {}
     for item in items:
         identity = next(
-            (f"{key}:{item[key]}" for key in identity_keys if item.get(key) not in (None, "")),
+            (f"{field}:{item[field]}" for field in identity_keys if item.get(field) not in (None, "")),
             None,
         )
         if not identity:
@@ -182,11 +181,11 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=90)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-
     base = {
         "schema_version": "zel.bingx.private_history.raw.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "read_only": True,
+        "transport": "curl_tls_verified",
         "write_endpoint_called": False,
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
@@ -204,43 +203,26 @@ def main() -> int:
         end_ms = int(time.time() * 1000)
         days = max(1, min(args.days, 90))
         cursor = end_ms - days * DAY_MS
-
         try:
             commission = signed_request(key, secret, ALLOWED["commission"], {})
         except Exception as exc:
             commission = None
-            errors.append({"endpoint": "commission", "error": str(exc)[:300]})
-
+            errors.append({"endpoint": "commission", "error": safe_error(exc, key, secret)})
         while cursor < end_ms:
             stop = min(cursor + DAY_MS - 1, end_ms)
             calls = (
-                (
-                    "orders",
-                    ALLOWED["orders"],
-                    {"currency": "USDT", "startTime": cursor, "endTime": stop, "limit": 1000},
-                ),
-                (
-                    "fills",
-                    ALLOWED["fills"],
-                    {"currency": "USDT", "tradingUnit": "COIN", "startTs": cursor, "endTs": stop},
-                ),
-                (
-                    "income",
-                    ALLOWED["income"],
-                    {"startTime": cursor, "endTime": stop, "limit": 1000},
-                ),
+                ("orders", ALLOWED["orders"], {"currency": "USDT", "startTime": cursor, "endTime": stop, "limit": 1000}),
+                ("fills", ALLOWED["fills"], {"currency": "USDT", "tradingUnit": "COIN", "startTs": cursor, "endTs": stop}),
+                ("income", ALLOWED["income"], {"startTime": cursor, "endTime": stop, "limit": 1000}),
             )
             targets = {"orders": orders, "fills": fills, "income": income}
             for name, path, params in calls:
                 try:
                     targets[name].extend(rows(signed_request(key, secret, path, params)))
                 except Exception as exc:
-                    errors.append(
-                        {"endpoint": name, "start": cursor, "end": stop, "error": str(exc)[:300]}
-                    )
+                    errors.append({"endpoint": name, "start": cursor, "end": stop, "error": safe_error(exc, key, secret)})
                 time.sleep(0.24)
             cursor = stop + 1
-
         clean_orders = deduplicate(orders, ("orderID", "orderId", "clientOrderId"))
         clean_fills = deduplicate(fills, ("tradeId", "fillId", "orderId"))
         clean_income = deduplicate(income, ("tranId", "tradeId", "time"))
@@ -251,7 +233,6 @@ def main() -> int:
             state = "HOLD_BINGX_PRIVATE_HISTORY_PARTIAL_ERRORS"
         else:
             state = "PASS_BINGX_PRIVATE_HISTORY_READ_ONLY"
-
         output = {
             **base,
             "state": state,
@@ -271,17 +252,8 @@ def main() -> int:
                 "request_error_count": len(errors),
             },
         }
-
     Path(args.out).write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")) + "\n")
-    print(
-        json.dumps(
-            {
-                "state": output["state"],
-                "read_only": True,
-                "encrypted_transport_required": True,
-            }
-        )
-    )
+    print(json.dumps({"state": output["state"], "read_only": True, "encrypted_transport_required": True}))
     return 0
 
 

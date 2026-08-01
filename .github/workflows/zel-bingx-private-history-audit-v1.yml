@@ -1,0 +1,179 @@
+name: ZEL BingX Private History Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_private_history_fetch_v1.py
+      - backend/research/zel_bingx_private_history_audit_contract_v1.json
+      - backend/research/zel_bingx_audit_public_key_v1.pem
+      - .github/workflows/zel-bingx-private-history-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_private_history_fetch_v1.py
+      - backend/research/zel_bingx_private_history_audit_contract_v1.json
+      - backend/research/zel_bingx_audit_public_key_v1.pem
+      - .github/workflows/zel-bingx-private-history-audit-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-bingx-private-history-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only contract and client
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bingx_private_history_fetch_v1.py
+          python - <<'PY0'
+          import importlib.util
+          from pathlib import Path
+          path=Path('backend/tools/zel_bingx_private_history_fetch_v1.py')
+          spec=importlib.util.spec_from_file_location('audit', path)
+          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          assert set(mod.ALLOWED.values())=={
+            '/openApi/swap/v2/trade/allOrders',
+            '/openApi/swap/v2/trade/allFillOrders',
+            '/openApi/swap/v2/user/income',
+            '/openApi/swap/v2/user/commissionRate',
+          }
+          assert all('/order' not in p or p.endswith('allOrders') for p in mod.ALLOWED.values())
+          print('PASS_BINGX_PRIVATE_HISTORY_CLIENT')
+          PY0
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_bingx_private_history_audit_contract_v1.json').read_text())
+          assert c['schema_version']=='zel.bingx.private_history.audit.contract.v1'
+          assert c['read_only'] is True
+          assert c['raw_result_publication_allowed'] is False
+          assert c['encrypted_artifact_required'] is True
+          assert c['write_endpoint_allowed'] is False
+          assert c['order_authority']=='BLOCKED'
+          assert c['execution_authority']=='NONE'
+          assert c['action']=='hold'
+          paths=set(c['allowed_endpoints'])
+          assert paths=={
+            '/openApi/swap/v2/trade/allOrders',
+            '/openApi/swap/v2/trade/allFillOrders',
+            '/openApi/swap/v2/user/income',
+            '/openApi/swap/v2/user/commissionRate',
+          }
+          print('PASS_BINGX_PRIVATE_HISTORY_CONTRACT')
+          PY
+
+  audit-and-encrypt:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install SSH client and encryption dependency
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-client
+          python -m pip install --disable-pip-version-check --quiet cryptography
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload read-only audit client
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_bingx_private_history_fetch_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_bingx_private_history_audit_v1.py"
+      - name: Query private history on VPS without log exposure
+        run: |
+          set -euo pipefail
+          if ! ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          rm -f /tmp/zel_bingx_private_history_v1.json /tmp/zel_bingx_private_history_v1.status /tmp/zel_bingx_private_history_v1.err
+          PY=/home/z/z/.venv/bin/python
+          if [ ! -x "$PY" ]; then PY=python3; fi
+          if ! "$PY" /tmp/zel_bingx_private_history_audit_v1.py \
+              --days 90 \
+              --out /tmp/zel_bingx_private_history_v1.json \
+              >/tmp/zel_bingx_private_history_v1.status \
+              2>/tmp/zel_bingx_private_history_v1.err; then
+            exit 41
+          fi
+          test -s /tmp/zel_bingx_private_history_v1.json
+          REMOTE
+          then
+            echo 'REMOTE_BINGX_PRIVATE_HISTORY_AUDIT_FAILED'
+            exit 1
+          fi
+          echo 'PASS_REMOTE_BINGX_PRIVATE_HISTORY_AUDIT'
+      - name: Fetch private result into ephemeral runner storage
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zel-private
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_bingx_private_history_v1.json" \
+            /tmp/zel-private/audit.json
+          test -s /tmp/zel-private/audit.json
+      - name: Encrypt private result for artifact transport
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import base64, hashlib, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          raw_path=Path('/tmp/zel-private/audit.json')
+          raw=raw_path.read_bytes()
+          pub=serialization.load_pem_public_key(Path('backend/research/zel_bingx_audit_public_key_v1.pem').read_bytes())
+          key=AESGCM.generate_key(bit_length=256)
+          nonce=os.urandom(12)
+          aad=b'zel-bingx-private-history-v1'
+          ciphertext=AESGCM(key).encrypt(nonce,raw,aad)
+          encrypted_key=pub.encrypt(key,padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          package={
+              'schema_version':'zel.encrypted.private_artifact.v1',
+              'algorithm':'RSA-OAEP-SHA256+A256GCM',
+              'aad':base64.b64encode(aad).decode(),
+              'encrypted_key':base64.b64encode(encrypted_key).decode(),
+              'nonce':base64.b64encode(nonce).decode(),
+              'ciphertext':base64.b64encode(ciphertext).decode(),
+              'plaintext_sha256':hashlib.sha256(raw).hexdigest(),
+          }
+          Path('out/zel_bingx_private_history_v1.enc.json').write_text(json.dumps(package,separators=(',',':'))+'\n')
+          raw_path.unlink()
+          print('PASS_ENCRYPTED_PRIVATE_HISTORY_ARTIFACT')
+          PY
+      - name: Remove VPS temporary private result
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_bingx_private_history_v1.json /tmp/zel_bingx_private_history_v1.status /tmp/zel_bingx_private_history_v1.err /tmp/zel_bingx_private_history_audit_v1.py' \
+            >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-bingx-private-history-encrypted-v1-${{ github.run_id }}
+          path: out/zel_bingx_private_history_v1.enc.json
+          if-no-files-found: error
+          retention-days: 7

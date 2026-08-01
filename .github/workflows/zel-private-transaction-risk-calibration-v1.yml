@@ -1,0 +1,90 @@
+name: ZEL Private Transaction Risk Calibration V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_private_transaction_risk_calibration_v1.json
+      - .github/workflows/zel-private-transaction-risk-calibration-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_private_transaction_risk_calibration_v1.json
+      - .github/workflows/zel-private-transaction-risk-calibration-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-private-transaction-risk-calibration-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate sanitized calibration contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/zel_private_transaction_risk_calibration_v1.json')
+          d=json.loads(p.read_text())
+          assert d['schema_version']=='zel.private_transaction_risk_calibration.v1',d
+          assert d['source']['raw_private_data_committed'] is False,d
+          assert d['standard_futures']['realized_pnl_event_count']==9,d
+          assert d['standard_futures']['positive_event_count']==8,d
+          assert d['standard_futures']['negative_event_count']==1,d
+          assert d['standard_futures']['net_after_cost_usdt']>0,d
+          assert d['usdt_m_perpetual']['forced_liquidation_count']==1,d
+          assert d['admission']['risk_ablation_input_allowed'] is True,d
+          assert d['admission']['lico_cost_stress_input_allowed'] is True,d
+          assert d['admission']['zico_failure_fingerprint_input_allowed'] is True,d
+          assert d['admission']['threshold_estimation_allowed'] is False,d
+          assert d['safety']['observer_only'] is True,d
+          assert d['safety']['selection_authority'] is False,d
+          assert d['safety']['promotion_authority'] is False,d
+          assert d['safety']['runtime_binding_allowed'] is False,d
+          assert d['safety']['execution_authority']=='NONE',d
+          assert d['safety']['order_authority']=='BLOCKED',d
+          print('PASS_PRIVATE_TRANSACTION_RISK_CALIBRATION_V1')
+          PY
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Publish observer-only calibration SSOT
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/private_transaction_risk_calibration_v1
+          mkdir -p "$root"
+          cp backend/research/zel_private_transaction_risk_calibration_v1.json "$root/latest.json"
+          cp backend/research/zel_private_transaction_risk_calibration_v1.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-private-calibration-bot'
+          git config user.email 'zel-private-calibration-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/private_transaction_risk_calibration_v1
+          git commit -m "result(zel): private transaction risk calibration ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1

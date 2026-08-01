@@ -12,11 +12,6 @@ on:
     paths:
       - backend/tools/zel_data_b_risk_adapter_ablation_v1.py
       - .github/workflows/zel-data-b-risk-adapter-ablation-v1.yml
-  workflow_run:
-    workflows:
-      - ZEL Trade Methods Risk Sequence Replay V1
-      - ZEL Historical OOS 1m Resume V1
-    types: [completed]
 
 permissions:
   contents: write
@@ -35,11 +30,20 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Validate ablation engine
+      - name: Validate ablation engine and single-owner boundary
         run: |
           set -euo pipefail
           python -m py_compile backend/tools/zel_data_b_risk_adapter_ablation_v1.py
           python backend/tools/zel_data_b_risk_adapter_ablation_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('.github/workflows/zel-data-b-risk-adapter-ablation-v1.yml').read_text()
+          assert 'workflow_run:' not in t,t
+          assert 'zel_historical_oos_exact25_replay_v1.py' not in t,t
+          assert 'rm -rf "$out"' not in t,t
+          assert 'HOLD_MISSING_SINGLE_OWNER_DATA_B_LEDGER' in t,t
+          print('PASS_RISK_CONSUMER_ONLY_BOUNDARY')
+          PY
 
   ablate:
     if: github.event_name != 'pull_request'
@@ -61,8 +65,9 @@ jobs:
           fetch-depth: 0
           token: ${{ github.token }}
 
-      - name: Verify prerequisite authorities
+      - name: Verify prerequisite authorities and single owner
         run: |
+          set -euo pipefail
           python - <<'PY'
           import json
           from pathlib import Path
@@ -73,7 +78,12 @@ jobs:
           combined=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json').read_text())
           assert combined['state']=='PASS',combined
           assert combined['verdict']=='HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',combined
+          assert combined.get('single_owner_proved') is True,combined
           assert combined['promotion_authority'] is False,combined
+          assert combined['execution_authority']=='NONE' and combined['order_authority']=='BLOCKED',combined
+          single=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/single_owner/latest.json').read_text())
+          assert single['state']=='PASS_DUPLICATE_OWNERS_REMOVED_AND_OUTPUT_QUARANTINED',single
+          assert single['matched_processes_after']=={},single
           PY
 
       - name: Install SSH client
@@ -89,34 +99,25 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Upload engines and adapter
+      - name: Upload Risk engine and adapter only
         run: |
           set -euo pipefail
           scp -i ~/.ssh/vps_key \
             backend/tools/zel_data_b_risk_adapter_ablation_v1.py \
-            backend/tools/zel_historical_oos_exact25_replay_v1.py \
             backend/research/adapters/zel_trade_method_risk_mode_adapter_v1.py \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
 
-      - name: Ensure exact Data B trade ledgers and run ablation
+      - name: Require canonical Data B ledgers and run ablation
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
           set -euo pipefail
           PY=/home/z/z/.venv/bin/python
-          SOURCE=/opt/zel/forward-expansion-v1/source
-          DATA=/opt/zel/historical-oos-v1
           for interval in 15m 1m; do
             out="/tmp/zel_historical_oos_exact25_replay_v1_${interval}"
             if [ ! -s "$out/trades.jsonl.gz" ] || [ ! -s "$out/report.json" ]; then
-              rm -rf "$out"
-              mkdir -p "$out"
-              "$PY" /tmp/zel_historical_oos_exact25_replay_v1.py \
-                --source-root "$SOURCE" \
-                --data-root "$DATA" \
-                --interval "$interval" \
-                --output-dir "$out" \
-                --workers 4
+              echo "HOLD_MISSING_SINGLE_OWNER_DATA_B_LEDGER:${interval}"
+              exit 42
             fi
           done
           rm -rf /tmp/zel_data_b_risk_adapter_ablation_v1

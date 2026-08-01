@@ -32,9 +32,15 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           text=Path('.github/workflows/zel-data-b-1m-status-probe-v1.yml').read_text()
-          forbidden=['systemctl restart','systemctl stop','kill ','pkill','rm -rf /opt','order','paper_enabled: true','live_enabled: true']
-          for token in forbidden:
-              assert token not in text, token
+          probe=text.split('- name: Read VPS 1m state',1)[1]
+          assert "pgrep" in probe
+          assert "read_only':True" in probe
+          assert "execution_authority':'NONE'" in probe
+          assert "order_authority':'BLOCKED'" in probe
+          assert 'systemctl ' not in probe
+          assert 'pkill ' not in probe
+          assert 'kill ' not in probe
+          assert 'rm -rf /opt' not in probe
           print('PASS_DATA_B_1M_STATUS_PROBE_READ_ONLY')
           PY
 
@@ -62,7 +68,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
-          import json, os, subprocess
+          import json, subprocess
           from datetime import datetime, timezone
           from pathlib import Path
           root=Path('/tmp/zel_historical_oos_exact25_replay_v1_1m')

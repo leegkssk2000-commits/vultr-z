@@ -89,6 +89,8 @@ STAGES = [
     },
 ]
 
+LINEAGE_ROOT = "runtime_results/zel/pre_shadow_lineage_v1"
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -112,6 +114,13 @@ def atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     temp.replace(path)
 
 
+def load_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"JSON_OBJECT_REQUIRED:{path}")
+    return payload
+
+
 def state_allowed(stage: Mapping[str, Any], state: Any) -> bool:
     if state in stage.get("states", []):
         return True
@@ -132,57 +141,147 @@ def integrity_ok(payload: Mapping[str, Any]) -> tuple[bool, list[str]]:
     return not violations, violations
 
 
+def binding_path(results_root: Path, stage_id: str) -> Path:
+    return results_root / LINEAGE_ROOT / f"{stage_id.lower()}.json"
+
+
+def validate_lineage(
+    results_root: Path,
+    stage: Mapping[str, Any],
+    row: Mapping[str, Any],
+    rows_by_id: Mapping[str, Mapping[str, Any]],
+) -> tuple[bool, dict[str, Any], list[str]]:
+    prerequisites = list(stage.get("requires", []))
+    if not prerequisites:
+        return True, {"required": False}, []
+    predecessor_id = prerequisites[-1]
+    predecessor = rows_by_id.get(predecessor_id)
+    violations: list[str] = []
+    info: dict[str, Any] = {
+        "required": True,
+        "predecessor_stage_id": predecessor_id,
+        "binding_path": str(binding_path(results_root, str(stage["id"])).relative_to(results_root)),
+        "binding_exists": False,
+        "binding_sha256": None,
+        "binding_state": None,
+    }
+    if not predecessor or not predecessor.get("pass"):
+        violations.append("PREDECESSOR_NOT_PASSED")
+        return False, info, violations
+    path = binding_path(results_root, str(stage["id"]))
+    if not path.is_file():
+        violations.append("LINEAGE_BINDING_MISSING")
+        return False, info, violations
+    info["binding_exists"] = True
+    info["binding_sha256"] = sha256_path(path)
+    try:
+        binding = load_json(path)
+    except Exception as exc:
+        violations.append(f"LINEAGE_BINDING_PARSE_ERROR:{type(exc).__name__}:{exc}")
+        return False, info, violations
+    info["binding_state"] = binding.get("state")
+    expected = {
+        "state": "PASS_STAGE_LINEAGE_BOUND",
+        "stage_id": stage["id"],
+        "predecessor_stage_id": predecessor_id,
+        "predecessor_receipt_sha256": predecessor.get("receipt_sha256"),
+        "stage_receipt_sha256": row.get("receipt_sha256"),
+    }
+    for key, value in expected.items():
+        if binding.get(key) != value:
+            violations.append(f"LINEAGE_{key.upper()}_MISMATCH")
+    binding_integrity, binding_violations = integrity_ok(binding)
+    if not binding_integrity:
+        violations.extend(f"BINDING_{item}" for item in binding_violations)
+    return not violations, info, violations
+
+
 def evaluate(results_root: Path) -> dict[str, Any]:
     stage_results: list[dict[str, Any]] = []
+    rows_by_id: dict[str, dict[str, Any]] = {}
     passed: set[str] = set()
     first_blocked: str | None = None
     eligible_stage: str | None = None
+    retry_reason: str | None = None
 
     for stage in STAGES:
-        path = results_root / stage["path"]
+        stage_id = str(stage["id"])
+        path = results_root / str(stage["path"])
         prerequisites = list(stage.get("requires", []))
         prereq_pass = all(item in passed for item in prerequisites)
         row: dict[str, Any] = {
-            "stage_id": stage["id"],
+            "stage_id": stage_id,
             "path": stage["path"],
             "prerequisites": prerequisites,
             "prerequisites_pass": prereq_pass,
             "exists": path.is_file(),
             "receipt_sha256": sha256_path(path) if path.is_file() else None,
             "state": None,
+            "parse_ok": False,
             "integrity_ok": False,
+            "state_allowed": False,
+            "lineage_ok": not prerequisites,
+            "lineage": {"required": bool(prerequisites)},
             "violations": [],
             "pass": False,
+            "retry_eligible": False,
         }
         if path.is_file():
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("OBJECT_REQUIRED")
+                payload = load_json(path)
+                row["parse_ok"] = True
                 row["state"] = payload.get("state")
-                row["integrity_ok"], row["violations"] = integrity_ok(payload)
-                row["pass"] = prereq_pass and row["integrity_ok"] and state_allowed(stage, row["state"])
-                if stage["id"] == "DATA_B_TERMINAL" and row["pass"]:
+                row["integrity_ok"], integrity_violations = integrity_ok(payload)
+                row["violations"].extend(integrity_violations)
+                row["state_allowed"] = state_allowed(stage, row["state"])
+                basic_pass = prereq_pass and row["integrity_ok"] and row["state_allowed"]
+                if stage_id == "DATA_B_TERMINAL" and basic_pass:
                     if payload.get("single_owner_proved") is not True:
-                        row["pass"] = False
+                        basic_pass = False
                         row["violations"].append("DATA_B_SINGLE_OWNER_NOT_PROVED")
                     if payload.get("intervals", {}).get("1m", {}).get("error_count") not in (0, None):
-                        row["pass"] = False
+                        basic_pass = False
                         row["violations"].append("DATA_B_1M_ERRORS_NONZERO")
+                if basic_pass:
+                    lineage_ok, lineage_info, lineage_violations = validate_lineage(
+                        results_root, stage, row, rows_by_id
+                    )
+                    row["lineage_ok"] = lineage_ok
+                    row["lineage"] = lineage_info
+                    row["violations"].extend(lineage_violations)
+                row["pass"] = basic_pass and row["lineage_ok"]
+                row["retry_eligible"] = (
+                    prereq_pass
+                    and row["parse_ok"]
+                    and row["integrity_ok"]
+                    and not row["pass"]
+                )
             except Exception as exc:
                 row["violations"].append(f"RECEIPT_PARSE_ERROR:{type(exc).__name__}:{exc}")
+        else:
+            row["retry_eligible"] = prereq_pass
+
         if row["pass"]:
-            passed.add(stage["id"])
+            passed.add(stage_id)
         elif first_blocked is None:
-            first_blocked = stage["id"]
-            if prereq_pass and not path.is_file():
-                eligible_stage = stage["id"]
+            first_blocked = stage_id
+            if row["retry_eligible"]:
+                eligible_stage = stage_id
+                if not row["exists"]:
+                    retry_reason = "MISSING_RECEIPT"
+                elif not row["state_allowed"]:
+                    retry_reason = "SAFE_NON_PASSING_RECEIPT"
+                elif not row["lineage_ok"]:
+                    retry_reason = "MISSING_OR_STALE_LINEAGE_BINDING"
+                else:
+                    retry_reason = "SAFE_RETRY_REQUIRED"
         stage_results.append(row)
+        rows_by_id[stage_id] = row
 
     complete = len(passed) == len(STAGES)
     state = "PASS_PRE_SHADOW_DAG_COMPLETE" if complete else "HOLD_PRE_SHADOW_DAG_INCOMPLETE"
     return {
-        "schema_version": "zel.pre_shadow.receipt_dag.v1",
+        "schema_version": "zel.pre_shadow.receipt_dag.v2",
         "generated_at": now_iso(),
         "state": state,
         "ordered_stage_count": len(STAGES),
@@ -190,7 +289,10 @@ def evaluate(results_root: Path) -> dict[str, Any]:
         "passed_stages": [stage["id"] for stage in STAGES if stage["id"] in passed],
         "first_blocked_stage": first_blocked,
         "eligible_next_stage": eligible_stage,
+        "eligible_reason": retry_reason,
         "dispatch_policy": "ONE_ORDERED_STAGE_AT_A_TIME",
+        "lineage_policy": "CURRENT_PREDECESSOR_AND_STAGE_RECEIPT_SHA_REQUIRED",
+        "safe_non_passing_receipt_retry": True,
         "parallelism_scope": "INTERNAL_TO_COMPONENT_MAIN_EFFECT_ONLY",
         "stage_results": stage_results,
         "shadow_start_allowed": complete,
@@ -204,12 +306,16 @@ def evaluate(results_root: Path) -> dict[str, Any]:
     }
 
 
+def write_receipt(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(payload), sort_keys=True) + "\n", encoding="utf-8")
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         data_path = root / STAGES[0]["path"]
-        data_path.parent.mkdir(parents=True, exist_ok=True)
-        data_path.write_text(json.dumps({
+        write_receipt(data_path, {
             "state": "PASS",
             "single_owner_proved": True,
             "intervals": {"1m": {"error_count": 0}},
@@ -217,21 +323,62 @@ def self_test() -> None:
             "execution_authority": "NONE",
             "order_authority": "BLOCKED",
             "live_enabled": False,
-        }))
+        })
         result = evaluate(root)
         assert result["passed_stages"] == ["DATA_B_TERMINAL"]
         assert result["eligible_next_stage"] == "RISK_MAIN_EFFECT"
+        assert result["eligible_reason"] == "MISSING_RECEIPT"
+
         risk_path = root / STAGES[1]["path"]
-        risk_path.parent.mkdir(parents=True, exist_ok=True)
-        risk_path.write_text(json.dumps({
+        write_receipt(risk_path, {
+            "state": "WAIT_RISK_RETRY",
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+        })
+        result = evaluate(root)
+        assert result["eligible_next_stage"] == "RISK_MAIN_EFFECT"
+        assert result["eligible_reason"] == "SAFE_NON_PASSING_RECEIPT"
+
+        write_receipt(risk_path, {
             "state": "PASS_DATA_B_RISK_ADAPTER_ABLATION",
             "promotion_authority": False,
             "execution_authority": "NONE",
             "order_authority": "BLOCKED",
-        }))
+        })
+        result = evaluate(root)
+        assert result["passed_stage_count"] == 1
+        assert result["eligible_next_stage"] == "RISK_MAIN_EFFECT"
+        assert result["eligible_reason"] == "MISSING_OR_STALE_LINEAGE_BINDING"
+
+        lineage = binding_path(root, "RISK_MAIN_EFFECT")
+        write_receipt(lineage, {
+            "state": "PASS_STAGE_LINEAGE_BOUND",
+            "stage_id": "RISK_MAIN_EFFECT",
+            "predecessor_stage_id": "DATA_B_TERMINAL",
+            "predecessor_receipt_sha256": sha256_path(data_path),
+            "stage_receipt_sha256": sha256_path(risk_path),
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+        })
         result = evaluate(root)
         assert result["passed_stage_count"] == 2
         assert result["eligible_next_stage"] == "EXACT25_LIVENESS_AND_REPAIR"
+
+        write_receipt(data_path, {
+            "state": "PASS",
+            "single_owner_proved": True,
+            "intervals": {"1m": {"error_count": 0}, "generation": 2},
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+            "live_enabled": False,
+        })
+        result = evaluate(root)
+        assert result["passed_stage_count"] == 1
+        assert result["eligible_next_stage"] == "RISK_MAIN_EFFECT"
+        assert result["eligible_reason"] == "MISSING_OR_STALE_LINEAGE_BINDING"
     print(json.dumps({"state": "PASS_SELF_TEST", "stage_count": len(STAGES)}, sort_keys=True))
 
 
@@ -253,6 +400,7 @@ def main() -> int:
         "passed_stage_count": result["passed_stage_count"],
         "first_blocked_stage": result["first_blocked_stage"],
         "eligible_next_stage": result["eligible_next_stage"],
+        "eligible_reason": result["eligible_reason"],
     }, sort_keys=True))
     return 0
 

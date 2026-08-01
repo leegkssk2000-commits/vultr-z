@@ -262,11 +262,12 @@ def self_test() -> None:
         dag.write_text(json.dumps({"eligible_next_stage": "RISK_MAIN_EFFECT"}))
         expectation = create_expectation(root, dag, "RISK_MAIN_EFFECT", "ZEL Data B Risk Adapter Ablation V1", "1")
         assert expectation["predecessor_receipt_sha256"] == sha256_path(data)
+        expected_at = expectation["generated_at"]
         risk = stage_path(root, "RISK_MAIN_EFFECT")
         risk.parent.mkdir(parents=True, exist_ok=True)
         risk.write_text(json.dumps({
             "state": "PASS_DATA_B_RISK_ADAPTER_ABLATION",
-            "generated_at": "2026-01-01T00:02:00+00:00",
+            "generated_at": expected_at,
         }))
         event = root / "event.json"
         event.write_text(json.dumps({"workflow_run": {
@@ -274,7 +275,7 @@ def self_test() -> None:
             "id": 99,
             "head_sha": "abc",
             "conclusion": "success",
-            "created_at": "2026-01-01T00:01:00+00:00",
+            "created_at": expected_at,
         }}))
         bound = bind_completed_event(root, event)
         assert bound["state"] == "PASS_STAGE_LINEAGE_BOUND", bound

@@ -1,0 +1,203 @@
+name: ZEL Trade Methods Pre-Shadow Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_pre_shadow_audit_v1.py
+      - backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json
+      - .github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_pre_shadow_audit_v1.py
+      - backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json
+      - .github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml
+  schedule:
+    - cron: '13 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Exact25 Material Upgrade Loop V1
+      - ZEL Exact25 Material Child Probe V2
+      - ZEL Component Autonomy V3
+      - ZEL Alpha Auto Validation Chain V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-trade-methods-pre-shadow-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate audit and automatic contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_trade_methods_pre_shadow_audit_v1.py
+          python backend/tools/zel_trade_methods_pre_shadow_audit_v1.py --self-test
+          python -m json.tool backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json').read_text())
+          assert c['automatic'] is True,c
+          assert c['user_configuration_required'] is False,c
+          assert c['scope']['strategies']==25,c
+          assert c['scope']['trade_methods'] is True,c
+          assert c['scope']['scalping_method_family'] is True,c
+          assert c['method_layer_invariants']['max_changed_axes_per_child']==1,c
+          assert c['scalping_invariants']['ohlcv_only_is_not_sufficient_for_promotion'] is True,c
+          assert c['convergence']['shadow_requires_unseen_w2_and_w3'] is True,c
+          assert c['safety']['execution_authority']=='NONE',c
+          assert c['safety']['order_authority']=='BLOCKED',c
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload read-only audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_trade_methods_pre_shadow_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Audit VPS trade methods and personal source coverage
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_trade_methods_pre_shadow_audit_v1.py \
+               --root /home/z/z \
+               --out /tmp/zel_trade_methods_pre_shadow_audit_latest.json"
+
+      - name: Fetch audit result
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_trade_methods_pre_shadow_audit_latest.json" \
+            out/latest.json
+
+      - name: Validate safety and derive release block
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['user_configuration_required'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['canonical_trade_methods_mutated'] is False,d
+          assert d['canonical_registry_mutated'] is False,d
+          assert d['shadow_start_allowed'] is False,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          assert d['paper_enabled'] is False,d
+          assert d['live_enabled'] is False,d
+          Path('out/pre_shadow_release_latest.json').write_text(json.dumps({
+            'schema_version':'zel.pre_shadow.release_gate.v1',
+            'state':'HOLD_PRE_SHADOW_AUTOMATIC_IMPROVEMENT_INCOMPLETE',
+            'source_audit_state':d['state'],
+            'blockers':d['blockers'],
+            'required_automatic_chain':d['required_automatic_chain'],
+            'user_configuration_required':False,
+            'shadow_start_allowed':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'paper_enabled':False,
+            'live_enabled':False,
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish audit and pre-Shadow gate
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-trade-method-audit-bot'
+          git config user.email 'zel-trade-method-audit-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/trade_methods_pre_shadow_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp out/pre_shadow_release_latest.json "$root/pre_shadow_release_latest.json"
+          cp backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json "$root/contract_v1.json"
+          cd results
+          git add runtime_results/zel/trade_methods_pre_shadow_v1
+          git commit -m "result(zel): trade-methods pre-Shadow audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('out/latest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as h:
+              h.write('# ZEL Trade Methods Pre-Shadow Audit V1\n\n')
+              if not p.exists():
+                  h.write('- State: **HOLD_NO_AUDIT_RESULT**\n')
+              else:
+                  d=json.loads(p.read_text())
+                  h.write(f"- State: **{d['state']}**\n")
+                  h.write(f"- Exact25: {d['strategy_inventory']['strategy_count']}\n")
+                  h.write(f"- H74TM8 markers complete: {d['trade_methods']['h74tm8_markers_complete']}\n")
+                  h.write(f"- Personal method sources found: {len(d['personal_method_sources'])}\n")
+                  h.write(f"- Blockers: {len(d['blockers'])}\n")
+                  h.write('- Shadow start allowed: **false**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-trade-methods-pre-shadow-audit-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

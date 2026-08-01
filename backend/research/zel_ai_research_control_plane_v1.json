@@ -1,0 +1,117 @@
+{
+  "schema_version": "zel.ai.research_control_plane.v1",
+  "state": "DESIGN_LOCKED_RESEARCH_ONLY",
+  "objective": "maximize reproducible out_of_sample net expectancy subject to drawdown, execution, lineage, and operational safety constraints",
+  "layers": {
+    "blind_holdout_vault": {
+      "zones": ["RESEARCH", "W2_FORWARD", "W3_DURABILITY", "FINAL_HOLDOUT"],
+      "proposer_access": ["RESEARCH"],
+      "repairer_access": ["RESEARCH"],
+      "falsifier_access": ["RESEARCH", "SANITIZED_COUNTEREXAMPLES"],
+      "evaluator_access": ["RESEARCH", "W2_FORWARD", "W3_DURABILITY", "FINAL_HOLDOUT"],
+      "judge_access": ["SIGNED_RECEIPTS_ONLY"],
+      "final_holdout_one_shot": true,
+      "holdout_key_storage": "OUTSIDE_REPOSITORY_AND_CHAT",
+      "holdout_path_disclosure_to_proposer": false,
+      "detailed_holdout_feedback_before_epoch_freeze": false,
+      "sealed_manifest_sha_required": true
+    },
+    "role_separation": {
+      "roles": ["EXPLORER", "REPAIRER", "FALSIFIER", "RISK_CRITIC", "EXECUTION_CRITIC", "EVALUATOR", "JUDGE", "LINEAGE_AUDITOR"],
+      "proposer_must_differ_from_evaluator": true,
+      "evaluator_must_differ_from_judge": true,
+      "judge_cannot_modify_candidate": true,
+      "single_ai_self_approval_forbidden": true,
+      "quorum_does_not_replace_independence": true
+    },
+    "model_prompt_lineage": {
+      "required_fields": [
+        "proposal_id",
+        "epoch_id",
+        "role",
+        "provider",
+        "model",
+        "prompt_sha256",
+        "context_sha256",
+        "source_data_sha256",
+        "parent_variant_sha256",
+        "candidate_sha256",
+        "changed_axis",
+        "hypothesis",
+        "expected_failure_mode",
+        "created_at"
+      ],
+      "sha256_format": "64_LOWER_HEX",
+      "immutable_after_registration": true,
+      "raw_prompt_storage_allowed": false,
+      "secret_or_api_key_storage_allowed": false
+    },
+    "proposal_budget_and_multiple_testing": {
+      "max_proposals_per_epoch": 120,
+      "max_proposals_per_parent": 12,
+      "max_proposals_per_model_per_epoch": 40,
+      "max_changed_axes_per_proposal": 1,
+      "minimum_closed_sample": 30,
+      "penalty_formula": "raw_score - 0.25*sqrt(log(1+trial_count)/max(sample_count,1))",
+      "trial_count_must_include_rejected_candidates": true,
+      "pre_registered_success_criteria_required": true,
+      "duplicate_group_id_required": true,
+      "semantic_duplicate_threshold": 0.85,
+      "final_holdout_reuse_forbidden": true
+    },
+    "adversarial_market_lab": {
+      "scenario_manifest": "backend/research/zel_adversarial_market_lab_v1.json",
+      "mandatory_before_w3": true,
+      "minimum_pass_ratio": 1.0,
+      "runtime_write_allowed": false
+    },
+    "ai_value_added_scoreboard": {
+      "metrics": [
+        "proposal_count",
+        "compile_pass_rate",
+        "material_signal_repair_rate",
+        "w2_pass_rate",
+        "w3_pass_rate",
+        "net_r_delta",
+        "drawdown_r_improvement",
+        "duplicate_rate",
+        "rollback_rate",
+        "cost_usd",
+        "latency_sec"
+      ],
+      "score_formula": "2*w3_pass + w2_pass + max(net_r_delta,0) + max(dd_improvement_r,0) - duplicate_rate - 2*rollback_rate - min(cost_usd/100,1)",
+      "automatic_model_weight_change_allowed": false,
+      "promotion_authority": false
+    },
+    "bingx_execution_evidence": {
+      "collector_contract": "backend/research/zel_bingx_execution_evidence_collector_v1.json",
+      "collector_tool": "backend/tools/zel_bingx_execution_evidence_collector_v1.py",
+      "direct_runtime_application_allowed": false,
+      "calibration_candidate_only": true
+    }
+  },
+  "gates": [
+    "POLICY_VALID",
+    "ROLE_SEPARATION_VALID",
+    "LINEAGE_COMPLETE",
+    "PROPOSAL_BUDGET_VALID",
+    "MULTIPLE_TESTING_PENALTY_RECORDED",
+    "BLIND_HOLDOUT_NOT_LEAKED",
+    "ADVERSARIAL_SUITE_PASS",
+    "AI_SCOREBOARD_PUBLISHED",
+    "BINGX_EVIDENCE_RECEIPT_VALID"
+  ],
+  "safety": {
+    "canonical_strategy_mutation": false,
+    "formal_ledger_mutation": false,
+    "runtime_registry_write": false,
+    "shadow_start_allowed": false,
+    "paper_start_allowed": false,
+    "live_enabled": false,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "action": "hold"
+  }
+}

@@ -1,0 +1,61 @@
+name: ZEL Data B Replay Owner Policy V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Enforce one direct 1m replay owner
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          workflows=Path('.github/workflows')
+          direct=[]
+          redirects=[]
+          for path in sorted(workflows.glob('*.y*ml')):
+              text=path.read_text(errors='ignore')
+              if 'zel_historical_oos_exact25_replay_v1.py' in text and '--interval 1m' in text:
+                  direct.append(path.name)
+              if 'zel-data-b-1m-single-owner-repair-v1.yml/dispatches' in text:
+                  redirects.append(path.name)
+          assert direct==['zel-data-b-1m-single-owner-repair-v1.yml'],direct
+          required_redirects={
+              'zel-data-b-1m-terminal-repair-v2.yml',
+              'zel-historical-oos-1m-resume-v1.yml',
+          }
+          assert required_redirects.issubset(set(redirects)),redirects
+          risk=(workflows/'zel-data-b-risk-adapter-ablation-v1.yml').read_text()
+          assert 'zel_historical_oos_exact25_replay_v1.py' not in risk
+          assert 'workflow_run:' not in risk
+          canonical=(workflows/'zel-data-b-1m-single-owner-repair-v1.yml').read_text()
+          for target in (
+              'zel-data-b-risk-adapter-ablation-v1.yml',
+              'zel-exact25-material-upgrade-loop-v1.yml',
+              'zel-trade-methods-pre-shadow-audit-v1.yml',
+              'zel-alpha-auto-validation-chain-v1.yml',
+          ):
+              assert target in canonical,target
+              assert (workflows/target).is_file(),target
+          assert 'flock -n 9' in canonical
+          assert 'single_owner_proved' in canonical
+          print({'direct_1m_owner':direct,'redirects':sorted(redirects),'downstream_targets':'PASS'})
+          PY

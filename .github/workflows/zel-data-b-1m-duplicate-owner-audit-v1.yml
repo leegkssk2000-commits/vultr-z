@@ -1,0 +1,106 @@
+name: ZEL Data B 1m Duplicate Owner Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_data_b_1m_duplicate_owner_audit_v1.py
+      - .github/workflows/zel-data-b-1m-duplicate-owner-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_data_b_1m_duplicate_owner_audit_v1.py
+      - .github/workflows/zel-data-b-1m-duplicate-owner-audit-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only source
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_data_b_1m_duplicate_owner_audit_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_data_b_1m_duplicate_owner_audit_v1.py').read_text()
+          for x in ('os.kill','pkill','kill -','rm -rf','unlink(','rmtree(','systemctl stop','systemctl restart'):
+              assert x not in t,x
+          assert "'process_killed': False" in t
+          assert "'output_deleted': False" in t
+          assert "'execution_authority': 'NONE'" in t
+          assert "'order_authority': 'BLOCKED'" in t
+          print('PASS_DATA_B_DUP_OWNER_AUDIT_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_data_b_1m_duplicate_owner_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_1m_duplicate_owner_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_data_b_1m_duplicate_owner_audit_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_1m_duplicate_owner_audit_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_data_b_1m_duplicate_owner_audit_v1.py /tmp/zel_data_b_1m_duplicate_owner_audit_v1.json' || true
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['schema_version']=='zel.data_b.1m.duplicate_owner.audit.v1',d
+          assert d['state'] in {'HOLD_DUPLICATE_DATA_B_1M_OWNERS','PASS_SINGLE_DATA_B_1M_OWNER','HOLD_NO_DATA_B_1M_PROCESS'},d
+          s=d['safety']
+          assert s['read_only'] is True and s['process_killed'] is False,d
+          assert s['output_deleted'] is False and s['runtime_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          print(json.dumps({'state':d['state'],'process_count':d['process_count'],'root_groups':d['root_groups'],'terminal':d['output']['terminal_files']},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/data_b_1m_duplicate_owner_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-dup-owner-audit-bot'
+          git config user.email 'zel-data-b-dup-owner-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/data_b_1m_duplicate_owner_audit_v1
+          git commit -m "result(zel): Data B 1m duplicate owner audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-data-b-1m-duplicate-owner-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

@@ -1,0 +1,228 @@
+name: ZEL Exact25 Material Upgrade Loop V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_exact25_material_upgrade_director_v1.py
+      - backend/research/zel_exact25_material_upgrade_contract_v1.json
+      - .github/workflows/zel-exact25-material-upgrade-loop-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_exact25_material_upgrade_director_v1.py
+      - backend/research/zel_exact25_material_upgrade_contract_v1.json
+      - .github/workflows/zel-exact25-material-upgrade-loop-v1.yml
+  schedule:
+    - cron: '29 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Data B 1m Terminal Repair V2
+      - ZEL Historical OOS 1m Resume V1
+      - ZEL Alpha Auto Validation Chain V1
+      - ZEL W1 AI Strategy Improvement Epoch1 V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-exact25-material-upgrade-loop-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate director and immutable contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_exact25_material_upgrade_director_v1.py
+          python backend/tools/zel_exact25_material_upgrade_director_v1.py --self-test
+          python -m json.tool backend/research/zel_exact25_material_upgrade_contract_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_exact25_material_upgrade_contract_v1.json').read_text())
+          assert c['target_strategy_count']==25,c
+          assert c['automatic'] is True,c
+          assert c['user_configuration_required'] is False,c
+          assert c['required_order'][:4]==[
+              'DIAGNOSE_ALL25','SOURCE_SURFACE_DISCOVERY',
+              'ONE_AXIS_CHILD_VARIANT','DATA_B_15M_AND_1M_REPLAY'
+          ],c
+          assert c['material_gate']['zero_or_low_sample_direct_synthesis_forbidden'] is True,c
+          assert c['material_gate']['negative_edge_direct_synthesis_forbidden'] is True,c
+          assert c['optimization_policy']['max_changed_axes_per_child']==1,c
+          assert c['safety']['promotion_authority'] is False,c
+          assert c['safety']['execution_authority']=='NONE',c
+          assert c['safety']['order_authority']=='BLOCKED',c
+          PY
+
+  direct:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve Data B multi-timeframe terminal
+        id: data_b
+        run: |
+          set -euo pipefail
+          p15=results/runtime_results/zel/historical_oos_exact25_replay_v1/15m/scoreboard_latest.csv
+          p1=results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/scoreboard_latest.csv
+          combined=results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json
+          if [ -s "$p15" ] && [ -s "$p1" ] && [ -s "$combined" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json').read_text())
+          assert d['state']=='PASS',d
+          assert d['verdict']=='HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build wait state
+        if: steps.data_b.outputs.ready != 'true'
+        run: |
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          d={
+            'schema_version':'zel.exact25.material_upgrade.status.v1',
+            'state':'WAIT_DATA_B_15M_AND_1M_TERMINAL',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'strategy_count':25,
+            'automatic':True,
+            'user_configuration_required':False,
+            'diagnosis_started':False,
+            'child_variant_started':False,
+            'w2_started':False,
+            'w3_started':False,
+            'canonical_strategy_files_mutated':False,
+            'canonical_registry_mutated':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'paper_enabled':False,
+            'live_enabled':False,
+            'action':'hold',
+            'next':'AUTO_RESUME_ON_DATA_B_TERMINAL_OR_HOURLY_SCHEDULE'
+          }
+          Path('out/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Diagnose all 25 and build upgrade queue
+        if: steps.data_b.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python control/backend/tools/zel_exact25_material_upgrade_director_v1.py \
+            --scoreboard-15m results/runtime_results/zel/historical_oos_exact25_replay_v1/15m/scoreboard_latest.csv \
+            --scoreboard-1m results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/scoreboard_latest.csv \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE',d
+          assert d['strategy_count']==25,d
+          assert len(d['queue'])==25,d
+          assert len(d['strategies'])==25,d
+          assert d['synthesis_policy']['zero_or_low_sample_as_direct_material'] is False,d
+          assert d['synthesis_policy']['negative_edge_as_direct_material'] is False,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          Path('out/repair_queue_latest.json').write_text(json.dumps({
+              'schema_version':'zel.exact25.material_repair_queue.v1',
+              'generated_at':d['generated_at'],
+              'state':'PASS_REPAIR_QUEUE_READY',
+              'queue':d['queue'],
+              'required_order':d['automatic_loop'],
+              'max_changed_axes_per_child':1,
+              'canonical_strategy_files_mutated':False,
+              'canonical_registry_mutated':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          Path('out/synthesis_material_latest.json').write_text(json.dumps({
+              'schema_version':'zel.exact25.synthesis_material_pool.v1',
+              'generated_at':d['generated_at'],
+              'state':'PASS_MATERIAL_POOL_FILTERED',
+              'eligible':d['material_ready_strategies'],
+              'excluded_pending_upgrade':d['repair_required_strategies'],
+              'eligible_count':d['material_ready_count'],
+              'excluded_count':d['repair_required_count'],
+              'zero_or_low_sample_direct_synthesis_forbidden':True,
+              'negative_edge_direct_synthesis_forbidden':True,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish material upgrade state
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-material-upgrade-bot'
+          git config user.email 'zel-material-upgrade-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/exact25_material_upgrade_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          if [ -s out/repair_queue_latest.json ]; then cp out/repair_queue_latest.json "$root/repair_queue_latest.json"; fi
+          if [ -s out/synthesis_material_latest.json ]; then cp out/synthesis_material_latest.json "$root/synthesis_material_latest.json"; fi
+          cp control/backend/research/zel_exact25_material_upgrade_contract_v1.json "$root/contract_v1.json"
+          cd results
+          git add runtime_results/zel/exact25_material_upgrade_v1
+          git commit -m "result(zel): Exact25 material upgrade state ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-material-upgrade-loop-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

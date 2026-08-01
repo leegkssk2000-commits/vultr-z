@@ -1,0 +1,97 @@
+name: ZEL Data B Immediate Chain V3
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-immediate-chain-v3.yml
+      - backend/research/zel_pre_shadow_survivor_target_v1.json
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-immediate-chain-v3.yml
+      - backend/research/zel_pre_shadow_survivor_target_v1.json
+  workflow_run:
+    workflows:
+      - ZEL Data B 1m Terminal Repair V2
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: zel-data-b-immediate-chain-v3-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate launcher and survivor target
+        run: |
+          set -euo pipefail
+          python -m json.tool backend/research/zel_pre_shadow_survivor_target_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/zel_pre_shadow_survivor_target_v1.json').read_text())
+          assert d['minimum_shadow_survivors']==5,d
+          assert d['maximum_shadow_survivors']==7,d
+          assert d['top_bundle_count_per_strategy']==3,d
+          assert d['top3_means_strategies'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+
+  launch-terminal:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch exact Data B 1m terminal repair now
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-data-b-1m-terminal-repair-v2.yml/dispatches" \
+            -f ref=master
+
+  fanout-after-terminal:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Dispatch ordered improvement research lanes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for workflow in \
+            zel-data-b-risk-adapter-ablation-v1.yml \
+            zel-exact25-material-upgrade-loop-v1.yml \
+            zel-trade-methods-pre-shadow-audit-v1.yml \
+            zel-alpha-auto-validation-chain-v1.yml; do
+            gh api --method POST -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" \
+              -f ref=master
+          done
+
+      - name: Record boundaries
+        run: |
+          cat <<'EOF'
+          Data B 1m terminal PASS only opens research lanes.
+          Risk must PASS before Skill bundle replay.
+          Exact25 material improvement evaluates all 25 strategies.
+          Top3 means up to three bundles per surviving strategy, not three strategies.
+          Pre-Shadow survivor target is 5 to 7 strategies.
+          Canonical mutation, promotion, execution, order, Paper and Live remain blocked.
+          EOF

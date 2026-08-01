@@ -1,0 +1,251 @@
+name: ZEL Orchestration Cutover One-Shot V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-single-owner-repair-v1.yml
+      - .github/workflows/zel-exact25-material-upgrade-loop-v1.yml
+      - .github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml
+      - .github/workflows/zel-alpha-auto-validation-chain-v1.yml
+      - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
+      - .github/workflows/zel-orchestration-cutover-autofix-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-orchestration-cutover-one-shot-${{ github.head_ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Apply ordered-trigger cutover
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def remove_legacy_automatic_triggers(path: Path) -> str:
+              text=path.read_text()
+              header, tail=text.split('\npermissions:',1)
+              marker='\n  schedule:\n'
+              if marker in header:
+                  header=header[:header.index(marker)]+'\n'
+              text=header+'\npermissions:'+tail
+              path.write_text(text)
+              return text
+
+          single=Path('.github/workflows/zel-data-b-1m-single-owner-repair-v1.yml')
+          text=single.read_text()
+          old='''      - name: Dispatch ordered research lanes
+                  env:
+                    GH_TOKEN: ${{ github.token }}
+                  run: |
+                    set -euo pipefail
+                    for workflow in zel-data-b-risk-adapter-ablation-v1.yml zel-exact25-material-upgrade-loop-v1.yml zel-trade-methods-pre-shadow-audit-v1.yml zel-alpha-auto-validation-chain-v1.yml; do
+                      gh api --method POST -H 'Accept: application/vnd.github+json' "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" -f ref=master
+                    done
+          '''.replace('                  env','        env').replace('                    GH','          GH').replace('                  run','        run').replace('                    set','          set').replace('                    for','          for').replace('                      gh','            gh').replace('                    done','          done')
+          new='''      - name: Dispatch receipt-driven DAG controller only
+                  env:
+                    GH_TOKEN: ${{ github.token }}
+                  run: |
+                    set -euo pipefail
+                    gh workflow run zel-pre-shadow-dag-controller-v1.yml --ref master
+          '''.replace('                  env','        env').replace('                    GH','          GH').replace('                  run','        run').replace('                    set','          set').replace('                    gh','          gh')
+          if 'Dispatch receipt-driven DAG controller only' not in text:
+              assert old in text
+              text=text.replace(old,new,1)
+              single.write_text(text)
+
+          exact=Path('.github/workflows/zel-exact25-material-upgrade-loop-v1.yml')
+          text=remove_legacy_automatic_triggers(exact)
+          if '\n  prerequisite:\n' not in text:
+              block='''
+            prerequisite:
+              if: github.event_name != 'pull_request'
+              needs: validate
+              runs-on: ubuntu-latest
+              timeout-minutes: 10
+              outputs:
+                ready: ${{ steps.gate.outputs.ready }}
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    ref: zel-data-expansion-results-v1
+                    path: results
+                    persist-credentials: false
+                - id: gate
+                  name: Require Risk main-effect receipt
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY2'
+                    import json
+                    from pathlib import Path
+                    p=Path('results/runtime_results/zel/data_b_risk_adapter_ablation_v1/latest.json')
+                    ready=False
+                    if p.is_file():
+                        d=json.loads(p.read_text())
+                        ready=(
+                            d.get('state')=='PASS_DATA_B_RISK_ADAPTER_ABLATION'
+                            and d.get('promotion_authority') is False
+                            and d.get('execution_authority')=='NONE'
+                            and d.get('order_authority')=='BLOCKED'
+                        )
+                    with Path('/tmp/ready').open('w') as h:
+                        h.write('true' if ready else 'false')
+                    print({'risk_receipt_ready':ready})
+                    PY2
+                    echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+          '''.replace('\n            prerequisite:', '\n  prerequisite:').replace('\n              if:', '\n    if:').replace('\n              needs:', '\n    needs:').replace('\n              runs-on:', '\n    runs-on:').replace('\n              timeout-minutes:', '\n    timeout-minutes:').replace('\n              outputs:', '\n    outputs:').replace('\n                ready:', '\n      ready:').replace('\n              steps:', '\n    steps:').replace('\n                - uses:', '\n      - uses:').replace('\n                  with:', '\n        with:').replace('\n                    ref:', '\n          ref:').replace('\n                    path:', '\n          path:').replace('\n                    persist-credentials:', '\n          persist-credentials:').replace('\n                - id:', '\n      - id:').replace('\n                  name:', '\n        name:').replace('\n                  run:', '\n        run:').replace('\n                    set', '\n          set').replace('\n                    python', '\n          python').replace('\n                    import', '\n          import').replace('\n                    from', '\n          from').replace('\n                    p=', '\n          p=').replace('\n                    ready=', '\n          ready=').replace('\n                    if ', '\n          if ').replace('\n                        d=', '\n              d=').replace('\n                        ready=', '\n              ready=').replace('\n                            ', '\n                  ').replace('\n                    with ', '\n          with ').replace('\n                        h.', '\n              h.').replace('\n                    print', '\n          print').replace('\n                    PY2', '\n          PY2').replace('\n                    echo', '\n          echo')
+              text=text.replace('\n  direct:\n',block+'\n  direct:\n',1)
+              text=text.replace("  direct:\n    if: github.event_name != 'pull_request'\n    needs: validate\n", "  direct:\n    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'\n    needs: [validate, prerequisite]\n",1)
+              exact.write_text(text)
+
+          methods=Path('.github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml')
+          text=remove_legacy_automatic_triggers(methods)
+          if '\n  prerequisite:\n' not in text:
+              block='''
+            prerequisite:
+              if: github.event_name != 'pull_request'
+              needs: validate
+              runs-on: ubuntu-latest
+              timeout-minutes: 10
+              outputs:
+                ready: ${{ steps.gate.outputs.ready }}
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    ref: zel-data-expansion-results-v1
+                    path: results
+                    persist-credentials: false
+                - id: gate
+                  name: Require Exact25 repair receipt
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY2'
+                    import json
+                    from pathlib import Path
+                    p=Path('results/runtime_results/zel/exact25_material_upgrade_v1/latest.json')
+                    ready=False
+                    if p.is_file():
+                        d=json.loads(p.read_text())
+                        ready=(
+                            d.get('state')=='PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE'
+                            and d.get('promotion_authority') is False
+                            and d.get('execution_authority')=='NONE'
+                            and d.get('order_authority')=='BLOCKED'
+                        )
+                    Path('/tmp/ready').write_text('true' if ready else 'false')
+                    print({'exact25_receipt_ready':ready})
+                    PY2
+                    echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+          '''.replace('\n            prerequisite:', '\n  prerequisite:').replace('\n              if:', '\n    if:').replace('\n              needs:', '\n    needs:').replace('\n              runs-on:', '\n    runs-on:').replace('\n              timeout-minutes:', '\n    timeout-minutes:').replace('\n              outputs:', '\n    outputs:').replace('\n                ready:', '\n      ready:').replace('\n              steps:', '\n    steps:').replace('\n                - uses:', '\n      - uses:').replace('\n                  with:', '\n        with:').replace('\n                    ref:', '\n          ref:').replace('\n                    path:', '\n          path:').replace('\n                    persist-credentials:', '\n          persist-credentials:').replace('\n                - id:', '\n      - id:').replace('\n                  name:', '\n        name:').replace('\n                  run:', '\n        run:').replace('\n                    set', '\n          set').replace('\n                    python', '\n          python').replace('\n                    import', '\n          import').replace('\n                    from', '\n          from').replace('\n                    p=', '\n          p=').replace('\n                    ready=', '\n          ready=').replace('\n                    if ', '\n          if ').replace('\n                        d=', '\n              d=').replace('\n                        ready=', '\n              ready=').replace('\n                            ', '\n                  ').replace('\n                    Path', '\n          Path').replace('\n                    print', '\n          print').replace('\n                    PY2', '\n          PY2').replace('\n                    echo', '\n          echo')
+              text=text.replace('\n  audit:\n',block+'\n  audit:\n',1)
+              text=text.replace("  audit:\n    if: github.event_name != 'pull_request'\n    needs: validate\n", "  audit:\n    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'\n    needs: [validate, prerequisite]\n",1)
+              methods.write_text(text)
+
+          alpha=Path('.github/workflows/zel-alpha-auto-validation-chain-v1.yml')
+          text=remove_legacy_automatic_triggers(alpha)
+          if '\n  prerequisite:\n' not in text:
+              block='''
+            prerequisite:
+              if: github.event_name != 'pull_request'
+              needs: validate
+              runs-on: ubuntu-latest
+              timeout-minutes: 10
+              outputs:
+                ready: ${{ steps.gate.outputs.ready }}
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    ref: zel-data-expansion-results-v1
+                    path: results
+                    persist-credentials: false
+                - id: gate
+                  name: Require strategy Top3 bundle receipt
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY2'
+                    import json
+                    from pathlib import Path
+                    p=Path('results/runtime_results/zel/strategy_top3_bundles_v1/latest.json')
+                    ready=False
+                    if p.is_file():
+                        d=json.loads(p.read_text())
+                        ready=(
+                            d.get('state')=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE'
+                            and d.get('promotion_authority') is False
+                            and d.get('execution_authority')=='NONE'
+                            and d.get('order_authority')=='BLOCKED'
+                        )
+                    Path('/tmp/ready').write_text('true' if ready else 'false')
+                    print({'top3_receipt_ready':ready})
+                    PY2
+                    echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+          '''.replace('\n            prerequisite:', '\n  prerequisite:').replace('\n              if:', '\n    if:').replace('\n              needs:', '\n    needs:').replace('\n              runs-on:', '\n    runs-on:').replace('\n              timeout-minutes:', '\n    timeout-minutes:').replace('\n              outputs:', '\n    outputs:').replace('\n                ready:', '\n      ready:').replace('\n              steps:', '\n    steps:').replace('\n                - uses:', '\n      - uses:').replace('\n                  with:', '\n        with:').replace('\n                    ref:', '\n          ref:').replace('\n                    path:', '\n          path:').replace('\n                    persist-credentials:', '\n          persist-credentials:').replace('\n                - id:', '\n      - id:').replace('\n                  name:', '\n        name:').replace('\n                  run:', '\n        run:').replace('\n                    set', '\n          set').replace('\n                    python', '\n          python').replace('\n                    import', '\n          import').replace('\n                    from', '\n          from').replace('\n                    p=', '\n          p=').replace('\n                    ready=', '\n          ready=').replace('\n                    if ', '\n          if ').replace('\n                        d=', '\n              d=').replace('\n                        ready=', '\n              ready=').replace('\n                            ', '\n                  ').replace('\n                    Path', '\n          Path').replace('\n                    print', '\n          print').replace('\n                    PY2', '\n          PY2').replace('\n                    echo', '\n          echo')
+              text=text.replace('\n  orchestrate:\n',block+'\n  orchestrate:\n',1)
+              text=text.replace("  orchestrate:\n    if: github.event_name != 'pull_request'\n    needs: validate\n", "  orchestrate:\n    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'\n    needs: [validate, prerequisite]\n",1)
+          legacy='''          active=$(gh run list --workflow zel-historical-oos-1m-resume-v1.yml --limit 20 --json status --jq '[.[]|select(.status=="queued" or .status=="in_progress")]|length' || echo 0)
+                    if [ "$active" = 0 ]; then
+                      gh workflow run zel-historical-oos-1m-resume-v1.yml --ref master
+                    fi
+          '''.replace('                    if','          if').replace('                      gh','            gh').replace('                    fi','          fi')
+          if legacy in text:
+              text=text.replace(legacy,"          echo 'WAIT_DATA_B_WITHOUT_REDISPATCH'\n",1)
+          alpha.write_text(text)
+          PY
+      - name: Validate cutover policy
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          paths={
+            'single':Path('.github/workflows/zel-data-b-1m-single-owner-repair-v1.yml'),
+            'exact':Path('.github/workflows/zel-exact25-material-upgrade-loop-v1.yml'),
+            'methods':Path('.github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml'),
+            'alpha':Path('.github/workflows/zel-alpha-auto-validation-chain-v1.yml'),
+            'controller':Path('.github/workflows/zel-pre-shadow-dag-controller-v1.yml'),
+          }
+          data={key:path.read_text() for key,path in paths.items()}
+          assert 'Dispatch receipt-driven DAG controller only' in data['single']
+          assert 'for workflow in zel-data-b-risk' not in data['single']
+          for key in ('exact','methods','alpha'):
+              header=data[key].split('\npermissions:',1)[0]
+              assert 'schedule:' not in header,(key,header)
+              assert 'workflow_run:' not in header,(key,header)
+              assert '\n  prerequisite:\n' in data[key],key
+          assert 'PASS_DATA_B_RISK_ADAPTER_ABLATION' in data['exact']
+          assert 'PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE' in data['methods']
+          assert 'PASS_STRATEGY_TOP3_BUNDLES_COMPLETE' in data['alpha']
+          assert 'gh workflow run zel-historical-oos-1m-resume-v1.yml' not in data['alpha']
+          assert 'ONE_ORDERED_STAGE_AT_A_TIME' in data['controller']
+          assert 'Dispatch exactly one eligible implemented stage' in data['controller']
+          print('PASS_ORDERED_ORCHESTRATION_CUTOVER')
+          PY
+      - name: Commit patched workflows
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo NO_CHANGES
+            exit 0
+          fi
+          git config user.name 'zel-orchestration-cutover-bot'
+          git config user.email 'zel-orchestration-cutover-bot@users.noreply.github.com'
+          git add \
+            .github/workflows/zel-data-b-1m-single-owner-repair-v1.yml \
+            .github/workflows/zel-exact25-material-upgrade-loop-v1.yml \
+            .github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml \
+            .github/workflows/zel-alpha-auto-validation-chain-v1.yml
+          git commit -m 'fix(zel): enforce receipt-ordered pre-Shadow orchestration'
+          git push origin HEAD:${{ github.head_ref }}

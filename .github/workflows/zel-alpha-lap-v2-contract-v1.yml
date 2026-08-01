@@ -1,0 +1,109 @@
+name: ZEL Alpha Lap V2 Contract V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_alpha_lap_v2_control_plane_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_registry_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_paired_comparison_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_promotion_demotion_contract_v1.json
+      - .github/workflows/zel-alpha-lap-v2-contract-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_alpha_lap_v2_control_plane_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_registry_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_paired_comparison_contract_v1.json
+      - backend/research/zel_alpha_lap_v2_promotion_demotion_contract_v1.json
+      - .github/workflows/zel-alpha-lap-v2-contract-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-alpha-lap-v2-contract-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate Alpha Lap V2 contracts
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('backend/research')
+          names={
+            'control':'zel_alpha_lap_v2_control_plane_contract_v1.json',
+            'registry':'zel_alpha_lap_v2_registry_contract_v1.json',
+            'paired':'zel_alpha_lap_v2_paired_comparison_contract_v1.json',
+            'promotion':'zel_alpha_lap_v2_promotion_demotion_contract_v1.json',
+          }
+          data={key:json.loads((root/name).read_text()) for key,name in names.items()}
+
+          assert data['control']['schema_version']=='zel.alpha_lap.v2.control_plane.contract.v1'
+          assert data['registry']['schema_version']=='zel.alpha_lap.v2.registry.contract.v1'
+          assert data['paired']['schema_version']=='zel.alpha_lap.v2.paired_comparison.contract.v1'
+          assert data['promotion']['schema_version']=='zel.alpha_lap.v2.promotion_demotion.contract.v1'
+
+          for contract in data.values():
+            safety=contract['safety']
+            assert safety['execution_authority']=='NONE', safety
+            assert safety['order_authority']=='BLOCKED', safety
+            assert safety['action']=='hold', safety
+
+          assert data['control']['mode']=='research_only'
+          assert data['control']['candidate_unit']=='strategy_specific_full_bundle'
+          assert data['control']['safety']['promotion_authority'] is False
+          assert data['control']['safety']['automatic_live_change'] is False
+          assert 'DATA_B_15M_1M_TERMINAL' in data['control']['economic_lane_dependencies']
+          assert 'registry_schema' in data['control']['parallel_work_allowed_before_data_b_terminal']
+          assert 'economic_candidate_selection' in data['control']['forbidden_before_data_b_terminal']
+
+          assert data['registry']['slot_rules']['one_active_champion_per_slot'] is True
+          assert data['registry']['slot_rules']['champion_delete_on_replacement'] is False
+          assert data['registry']['slot_rules']['previous_champion_becomes_rollback_candidate'] is True
+          assert data['registry']['safety']['runtime_registry_write_allowed'] is False
+
+          rules=data['paired']['comparison_rules']
+          assert rules['same_market_time_required'] is True
+          assert rules['same_cost_model_required'] is True
+          assert rules['same_risk_budget_required'] is True
+          assert rules['unpaired_period_comparison_for_promotion_forbidden'] is True
+          assert rules['zlice_direct_pnl_delta_must_equal_zero'] is True
+          assert data['paired']['safety']['promotion_authority'] is False
+
+          promotion=data['promotion']['promotion_rules']
+          assert promotion['hysteresis_required'] is True
+          assert promotion['probation_required'] is True
+          assert promotion['cooldown_required'] is True
+          assert promotion['previous_champion_preserved_for_rollback'] is True
+          assert promotion['automatic_live_change'] is False
+          assert data['promotion']['safety']['automatic_registry_switch'] is False
+
+          existing=[
+            root/'zel_pre_shadow_gate_matrix_v1.json',
+            root/'zel_experiment_bundle_receipt_contract_v1.json',
+            root/'zel_drift_rollback_error_budget_v1.json',
+          ]
+          assert all(path.is_file() for path in existing), existing
+          print('PASS_ALPHA_LAP_V2_CONTRACTS_RESEARCH_ONLY')
+          PY
+      - name: Record safety boundary
+        run: |
+          cat <<'EOF'
+          Alpha Lap V2 contract validation only.
+          No Data B selection, champion replacement, runtime binding, Shadow, Paper, Live, registry write, or order authority.
+          Economic lane remains gated by Data B 1m/combined and downstream W2/W3/Shadow/Paper evidence.
+          EOF

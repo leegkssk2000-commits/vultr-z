@@ -1,0 +1,103 @@
+name: ZEL View TradingView Backup Diff Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_view_tradingview_backup_diff_audit_v1.py
+      - .github/workflows/zel-view-tradingview-backup-diff-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_view_tradingview_backup_diff_audit_v1.py
+      - .github/workflows/zel-view-tradingview-backup-diff-audit-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only source
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_view_tradingview_backup_diff_audit_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_view_tradingview_backup_diff_audit_v1.py').read_text()
+          for x in ('shutil.copy','replace(','write_text(current','unlink(','rm -rf','systemctl'):
+              assert x not in t,x
+          assert "'full_file_restore_allowed':False" in t
+          assert "'existing_cards_preserve':True" in t
+          assert "'frontend_mutated':False" in t
+          print('PASS_VIEW_TV_BACKUP_DIFF_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only backup diff
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_view_tradingview_backup_diff_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_view_tradingview_backup_diff_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_view_tradingview_backup_diff_audit_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_view_tradingview_backup_diff_audit_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_view_tradingview_backup_diff_audit_v1.py /tmp/zel_view_tradingview_backup_diff_audit_v1.json' || true
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state'] in {'PASS_TRADINGVIEW_BACKUP_CANDIDATE_FOUND','HOLD_NO_TRADINGVIEW_BACKUP_CANDIDATE'},d
+          assert d['restoration_contract']['full_file_restore_allowed'] is False,d
+          assert d['restoration_contract']['existing_cards_preserve'] is True,d
+          assert d['safety']['read_only'] is True and d['safety']['frontend_mutated'] is False,d
+          print(json.dumps({'state':d['state'],'current':d['current'],'candidate_count':d['candidate_count'],'best_candidate':d['best_candidate']},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/view_tradingview_backup_diff_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-view-tv-backup-audit-bot'
+          git config user.email 'zel-view-tv-backup-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/view_tradingview_backup_diff_audit_v1
+          git commit -m "result(zel): View TradingView backup diff ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-view-tradingview-backup-diff-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

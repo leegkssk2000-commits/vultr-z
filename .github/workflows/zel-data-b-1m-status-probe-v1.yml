@@ -4,10 +4,12 @@ on:
   pull_request:
     branches: [master]
     paths:
+      - backend/tools/zel_data_b_1m_status_probe_v1.py
       - .github/workflows/zel-data-b-1m-status-probe-v1.yml
   push:
     branches: [master]
     paths:
+      - backend/tools/zel_data_b_1m_status_probe_v1.py
       - .github/workflows/zel-data-b-1m-status-probe-v1.yml
   workflow_dispatch:
 
@@ -26,18 +28,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Validate read-only contract
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate read-only probe
         run: |
           set -euo pipefail
+          python -m py_compile backend/tools/zel_data_b_1m_status_probe_v1.py
           python - <<'PY'
           from pathlib import Path
-          text=Path('.github/workflows/zel-data-b-1m-status-probe-v1.yml').read_text()
-          probe=text.split('- name: Read VPS 1m state',1)[1]
-          assert "pgrep" in probe
-          assert "read_only':True" in probe
-          assert "execution_authority':'NONE'" in probe
-          assert "order_authority':'BLOCKED'" in probe
-          assert "Path('/tmp/zel_historical_oos_exact25_replay_v1_1m')" in probe
+          text=Path('backend/tools/zel_data_b_1m_status_probe_v1.py').read_text()
+          assert "pgrep" in text
+          assert "'read_only': True" in text
+          assert "'execution_authority': 'NONE'" in text
+          assert "'order_authority': 'BLOCKED'" in text
+          forbidden=('systemctl', 'subprocess.run([\'kill\'', 'subprocess.run([\'pkill\'', 'unlink(', 'rmtree(')
+          assert not any(token in text for token in forbidden)
           print('PASS_DATA_B_1M_STATUS_PROBE_READ_ONLY')
           PY
 
@@ -47,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           ref: zel-data-expansion-results-v1
@@ -64,48 +74,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
-          import json, subprocess
-          from datetime import datetime, timezone
-          from pathlib import Path
-          root=Path('/tmp/zel_historical_oos_exact25_replay_v1_1m')
-          proc=subprocess.run(['pgrep','-af','zel_historical_oos_exact25_replay_v1.py'],capture_output=True,text=True)
-          lines=[x for x in proc.stdout.splitlines() if '--interval 1m' in x]
-          files={name:{'exists':(root/name).is_file(),'bytes':(root/name).stat().st_size if (root/name).is_file() else 0} for name in ['report.json','summary.json','scoreboard.csv','trades.jsonl.gz']}
-          report_state=None
-          completed=None
-          failures=None
-          closed=None
-          generated=None
-          if files['report.json']['exists']:
-              try:
-                  d=json.loads((root/'report.json').read_text())
-                  report_state=d.get('state')
-                  completed=(d.get('replay') or {}).get('strategy_count_completed')
-                  failures=(d.get('replay') or {}).get('strategy_failure_count')
-                  closed=(d.get('replay') or {}).get('closed_trade_count')
-                  generated=d.get('generated_at')
-              except Exception as exc:
-                  report_state='UNREADABLE:'+type(exc).__name__
-          payload={
-              'schema_version':'zel.data_b.1m.status_probe.v1',
-              'generated_at':datetime.now(timezone.utc).isoformat(),
-              'process_running':bool(lines),
-              'process_count':len(lines),
-              'local_output_dir_exists':root.is_dir(),
-              'local_files':files,
-              'local_report_state':report_state,
-              'strategy_count_completed':completed,
-              'strategy_failure_count':failures,
-              'closed_trade_count':closed,
-              'local_report_generated_at':generated,
-              'read_only':True,
-              'execution_authority':'NONE',
-              'order_authority':'BLOCKED',
-              'action':'hold',
-          }
-          print(json.dumps(payload))
-          PY' > out/vps.json
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_data_b_1m_status_probe_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_1m_status_probe_v1.py"
+          ssh -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_data_b_1m_status_probe_v1.py' > out/vps.json
+          python -m json.tool out/vps.json >/dev/null
       - name: Resolve publication state
         run: |
           set -euo pipefail
@@ -125,7 +100,8 @@ jobs:
               state='IN_PROGRESS_DATA_B_1M_REPLAY'
           else:
               state='HOLD_1M_NOT_RUNNING_NO_TERMINAL_PUBLICATION'
-          out={**v,
+          out={
+              **v,
               'state':state,
               'result_branch_1m_published':one,
               'result_branch_combined_published':combined,
@@ -146,3 +122,9 @@ jobs:
           git add runtime_results/zel/data_b_1m_status_probe_v1/latest.json
           git commit -m "result(zel): Data B 1m status probe ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
+      - name: Remove temporary probe
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_data_b_1m_status_probe_v1.py' >/dev/null 2>&1 || true

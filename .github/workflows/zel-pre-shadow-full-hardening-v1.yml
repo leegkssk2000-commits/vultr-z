@@ -1,0 +1,123 @@
+name: ZEL Pre-Shadow Full Hardening V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_pre_shadow_receipt_dag_v1.py
+      - backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py
+      - backend/tools/zel_bingx_execution_calibration_adapter_v1.py
+      - backend/tools/zel_component_counterfactual_attribution_v1.py
+      - backend/research/zel_pre_shadow_full_hardening_contract_v1.json
+      - .github/workflows/zel-pre-shadow-full-hardening-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_pre_shadow_receipt_dag_v1.py
+      - backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py
+      - backend/tools/zel_bingx_execution_calibration_adapter_v1.py
+      - backend/tools/zel_component_counterfactual_attribution_v1.py
+      - backend/research/zel_pre_shadow_full_hardening_contract_v1.json
+      - .github/workflows/zel-pre-shadow-full-hardening-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-pre-shadow-full-hardening-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install replay dependency
+        run: python -m pip install --disable-pip-version-check pandas
+      - name: Compile all hardening adapters
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_pre_shadow_receipt_dag_v1.py \
+            backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py \
+            backend/tools/zel_bingx_execution_calibration_adapter_v1.py \
+            backend/tools/zel_component_counterfactual_attribution_v1.py
+      - name: Run deterministic self-tests
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_historical_oos_exact25_replay_v1.py --self-test
+          python backend/tools/zel_historical_oos_exact25_replay_v2.py --self-test
+          python backend/tools/zel_pre_shadow_receipt_dag_v1.py --self-test
+          python backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py --self-test
+          python backend/tools/zel_bingx_execution_calibration_adapter_v1.py --self-test
+          python backend/tools/zel_component_counterfactual_attribution_v1.py --self-test
+      - name: Validate hardening contract and safety boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          c=json.loads(Path('backend/research/zel_pre_shadow_full_hardening_contract_v1.json').read_text())
+          assert c['schema_version']=='zel.pre_shadow.full_hardening.contract.v1',c
+          assert c['replay_durability']['strategy_level_checkpoint'] is True,c
+          assert c['replay_durability']['input_fingerprint_required'] is True,c
+          assert c['replay_durability']['resume_after_interruption'] is True,c
+          assert c['replay_durability']['current_running_v1_process_mutation_allowed'] is False,c
+          assert c['dag_rules']['one_ordered_stage_at_a_time'] is True,c
+          assert c['dag_rules']['legacy_four_way_post_1m_fanout_must_be_retired'] is True,c
+          assert c['alpha_lap_v2']['runtime_registry_write_allowed'] is False,c
+          assert c['execution_calibration']['direct_runtime_application_allowed'] is False,c
+          assert c['component_attribution']['zlice_direct_pnl_delta_zero'] is True,c
+          assert c['failure_learning_ml_light']['pre_300c_runtime_binding'] is False,c
+          s=c['safety']
+          assert s['current_1m_process_mutation'] is False,s
+          assert s['canonical_strategy_mutation'] is False,s
+          assert s['formal_ledger_mutation'] is False,s
+          assert s['runtime_registry_write'] is False,s
+          assert s['shadow_start_allowed'] is False,s
+          assert s['paper_start_allowed'] is False,s
+          assert s['live_enabled'] is False,s
+          assert s['promotion_authority'] is False,s
+          assert s['execution_authority']=='NONE',s
+          assert s['order_authority']=='BLOCKED',s
+          assert s['action']=='hold',s
+
+          replay=Path('backend/tools/zel_historical_oos_exact25_replay_v2.py').read_text()
+          assert 'strategy_level_atomic_checkpoint' in replay,replay
+          assert 'artifact_manifest.json' in replay,replay
+          assert 'terminal_receipt.json' in replay,replay
+          assert 'os.replace' in replay,replay
+          assert 'execution_authority": "NONE' in replay,replay
+          assert 'order_authority": "BLOCKED' in replay,replay
+
+          dag=Path('backend/tools/zel_pre_shadow_receipt_dag_v1.py').read_text()
+          expected=[
+              'DATA_B_TERMINAL','RISK_MAIN_EFFECT','EXACT25_LIVENESS_AND_REPAIR',
+              'TRADE_METHOD_COVERAGE','COMPONENT_MAIN_EFFECT','SELECTED_INTERACTIONS',
+              'STRATEGY_TOP3_BUNDLES','ALPHA_LAP_CHALLENGERS','W2_FORWARD',
+              'W3_DURABILITY','PORTFOLIO_JOINT_RISK','ROLLBACK_REHEARSAL','PRE_SHADOW_RELEASE'
+          ]
+          positions=[dag.index(f'"id": "{name}"') for name in expected]
+          assert positions==sorted(positions),positions
+          print('PASS_PRE_SHADOW_FULL_HARDENING_V1')
+          PY
+      - name: Record migration boundary
+        run: |
+          cat <<'EOF'
+          Replay V2 and downstream adapters are validated but do not mutate the currently running V1 replay.
+          Canonical runner switch is deferred until the current 1m run reaches terminal PASS or terminal FAIL.
+          /view and TradingView UI remain deferred until Shadow pre-start.
+          execution=NONE order=BLOCKED promotion=false action=hold
+          EOF

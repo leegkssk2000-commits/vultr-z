@@ -1,0 +1,359 @@
+name: ZEL Exact25 Material Child Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_targeted_replay_v1.py
+      - backend/tools/zel_exact25_material_child_builder_v1.py
+      - .github/workflows/zel-exact25-material-child-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_targeted_replay_v1.py
+      - backend/tools/zel_exact25_material_child_builder_v1.py
+      - .github/workflows/zel-exact25-material-child-probe-v1.yml
+  schedule:
+    - cron: '41 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Exact25 Material Upgrade Loop V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-exact25-material-child-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate targeted replay and child builder
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_targeted_replay_v1.py \
+            backend/tools/zel_exact25_material_child_builder_v1.py
+          python backend/tools/zel_historical_oos_targeted_replay_v1.py --self-test
+          python backend/tools/zel_exact25_material_child_builder_v1.py --self-test
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select next zero or low sample material
+        id: select
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          src=Path('results/runtime_results/zel/exact25_material_upgrade_v1/latest.json')
+          if not src.exists():
+              state={'state':'WAIT_MATERIAL_DIAGNOSIS','selected':False}
+          else:
+              d=json.loads(src.read_text())
+              if d.get('state')!='PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE':
+                  state={'state':'WAIT_MATERIAL_DIAGNOSIS','selected':False,'upstream_state':d.get('state')}
+              else:
+                  auto={'NO_SIGNAL_DORMANT','LOW_SAMPLE_RARE_OR_OVERFILTERED','THIN_SAMPLE'}
+                  root=Path('results/runtime_results/zel/exact25_material_child_probe_v1')
+                  selected=None
+                  for item in d.get('queue') or []:
+                      if item.get('failure_fingerprint') not in auto:
+                          continue
+                      sid=str(item['strategy_id'])
+                      prior=root/sid/'latest.json'
+                      if prior.exists():
+                          p=json.loads(prior.read_text())
+                          if p.get('diagnosis_report_sha256')==d.get('report_sha256') and p.get('terminal_for_evidence') is True:
+                              continue
+                      selected=item
+                      break
+                  if selected is None:
+                      state={
+                          'state':'NO_PENDING_AUTOPATCHABLE_MATERIAL_FOR_CURRENT_EVIDENCE',
+                          'selected':False,
+                          'diagnosis_report_sha256':d.get('report_sha256'),
+                          'terminal_for_evidence':True,
+                          'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+                      }
+                  else:
+                      state={
+                          'state':'PASS_NEXT_MATERIAL_SELECTED',
+                          'selected':True,
+                          'strategy_id':selected['strategy_id'],
+                          'failure_fingerprint':selected['failure_fingerprint'],
+                          'causal_axis':selected['causal_axis'],
+                          'diagnosis_report_sha256':d.get('report_sha256'),
+                          'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+                      }
+          Path('out/selection.json').write_text(json.dumps(state,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(state,sort_keys=True))
+          PY
+          selected=$(python -c "import json;print(str(json.load(open('out/selection.json')).get('selected',False)).lower())")
+          echo "selected=$selected" >> "$GITHUB_OUTPUT"
+          if [ "$selected" = true ]; then
+            sid=$(python -c "import json;print(json.load(open('out/selection.json'))['strategy_id'])")
+            echo "strategy_id=$sid" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build no-pending state
+        if: steps.select.outputs.selected != 'true'
+        run: cp out/selection.json out/latest.json
+
+      - name: Install SSH client
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload research-only probe tools
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            control/backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            control/backend/tools/zel_historical_oos_targeted_replay_v1.py \
+            control/backend/tools/zel_exact25_material_child_builder_v1.py \
+            results/runtime_results/zel/exact25_material_upgrade_v1/latest.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Build children and run targeted Data B replay
+        if: steps.select.outputs.selected == 'true'
+        env:
+          SID: ${{ steps.select.outputs.strategy_id }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "SID='$SID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          root=/tmp/zel_exact25_material_child_probe_v1_${SID}
+          rm -rf "$root"
+          mkdir -p "$root"
+          /home/z/z/.venv/bin/python /tmp/zel_exact25_material_child_builder_v1.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --diagnosis /tmp/latest.json \
+            --strategy-id "$SID" \
+            --out-root "$root/children" \
+            --max-children 3 \
+            --report "$root/build.json"
+          /home/z/z/.venv/bin/python - <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          root=Path('/tmp')/('zel_exact25_material_child_probe_v1_'+__import__('os').environ['SID'])
+          build=json.loads((root/'build.json').read_text())
+          results=[]
+          for child in build.get('children') or []:
+              item=dict(child)
+              item['intervals']={}
+              if child.get('state')!='PASS_CHILD_REGISTRY_LOAD':
+                  results.append(item);continue
+              child_root=Path(child['child_source_root'])
+              for interval in ('15m','1m'):
+                  out=root/'replays'/child['variant_id']/interval
+                  out.mkdir(parents=True,exist_ok=True)
+                  cmd=[
+                      '/home/z/z/.venv/bin/python','/tmp/zel_historical_oos_targeted_replay_v1.py',
+                      '--source-root',str(child_root),
+                      '--data-root','/opt/zel/historical-oos-v1',
+                      '--interval',interval,
+                      '--strategy-id',build['strategy_id'],
+                      '--output-dir',str(out),
+                  ]
+                  p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+                  report=out/'report.json'
+                  if report.exists():
+                      payload=json.loads(report.read_text())
+                      item['intervals'][interval]=payload
+                  else:
+                      item['intervals'][interval]={
+                          'state':'TARGETED_REPLAY_PROCESS_FAILED','returncode':p.returncode,'output_tail':p.stdout[-4000:]
+                      }
+              results.append(item)
+          (root/'raw_results.json').write_text(json.dumps({
+              'schema_version':'zel.exact25.material_child_probe.raw.v1',
+              'build':build,'children':results
+          },indent=2,sort_keys=True)+'\n')
+          PY
+          /home/z/z/.venv/bin/python - <<'PY'
+          import gzip,json,math,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          sid=os.environ['SID']
+          root=Path('/tmp')/('zel_exact25_material_child_probe_v1_'+sid)
+          raw=json.loads((root/'raw_results.json').read_text())
+          diagnosis=json.loads(Path('/tmp/latest.json').read_text())
+          card=next(x for x in diagnosis['strategies'] if x['strategy_id']==sid)
+          baseline_count=int(card['combined_counters']['close_count'])
+          baseline_net=card['combined_metrics'].get('net_r')
+          baseline_pf=card['combined_metrics'].get('profit_factor')
+          evaluated=[]
+          for child in raw['children']:
+              rows=[]; errors=0; intervals_ok=True
+              for interval in ('15m','1m'):
+                  report=child.get('intervals',{}).get(interval,{})
+                  if report.get('state')!='PASS':
+                      intervals_ok=False
+                  score=report.get('scorecard') or {}
+                  errors += int(score.get('error_count') or 0)
+                  gz=root/'replays'/child['variant_id']/interval/'trades.jsonl.gz'
+                  if gz.exists():
+                      with gzip.open(gz,'rt',encoding='utf-8') as h:
+                          for line in h:
+                              rows.append(json.loads(line))
+              values=[float(r['realized_R']) for r in rows]
+              gains=sum(v for v in values if v>0)
+              losses=-sum(v for v in values if v<0)
+              count=len(values); net=sum(values)
+              expectancy=net/count if count else None
+              pf=(gains/losses if losses else (999.0 if gains else None))
+              equity=peak=dd=0.0
+              for v in values:
+                  equity+=v;peak=max(peak,equity);dd=max(dd,peak-equity)
+              sample_target=max(20,math.ceil(baseline_count*1.25))
+              checks={
+                  'both_intervals_pass':intervals_ok,
+                  'errors_zero':errors==0,
+                  'sample_expanded':count>=sample_target,
+                  'expectancy_not_destructive':expectancy is not None and expectancy>=-0.05,
+                  'pf_floor':pf is not None and pf>=0.90,
+                  'net_improved':baseline_net is None or net>float(baseline_net),
+              }
+              discovery_pass=all(checks.values())
+              score_value=(expectancy or -9.0)*math.log1p(count)-0.02*dd
+              evaluated.append({
+                  'variant_id':child['variant_id'],
+                  'build_state':child.get('state'),
+                  'source_change':{
+                      'owner_path':child.get('owner_path'),'line':child.get('line'),
+                      'compare_text':child.get('compare_text'),'old_literal':child.get('old_literal'),
+                      'new_literal':child.get('new_literal'),'reason':child.get('reason')
+                  },
+                  'metrics':{'trade_count':count,'net_R':net,'expectancy_R':expectancy,'profit_factor':pf,'max_drawdown_R':dd,'error_count':errors},
+                  'baseline':{'trade_count':baseline_count,'net_R':baseline_net,'profit_factor':baseline_pf},
+                  'checks':checks,'discovery_pass':discovery_pass,'score':score_value,
+                  'interval_states':{k:(child.get('intervals',{}).get(k,{}) or {}).get('state') for k in ('15m','1m')},
+              })
+          survivors=[x for x in evaluated if x['discovery_pass']]
+          survivors.sort(key=lambda x:(-x['score'],x['variant_id']))
+          state='PASS_CHILD_DISCOVERY_CANDIDATE' if survivors else 'NO_CHILD_DISCOVERY_PASS_HOLD'
+          report={
+              'schema_version':'zel.exact25.material_child_probe.v1',
+              'state':state,'generated_at':datetime.now(timezone.utc).isoformat(),
+              'strategy_id':sid,'failure_fingerprint':card['failure_fingerprint'],
+              'causal_axis':card['causal_axis'],'diagnosis_report_sha256':diagnosis['report_sha256'],
+              'build_state':raw['build']['state'],'evaluated_children':evaluated,
+              'survivor_count':len(survivors),'best_child':survivors[0] if survivors else None,
+              'terminal_for_evidence':True,
+              'next':'W2_NEW_FORWARD_CHILD_CONFIRMATION' if survivors else 'NEXT_CAUSAL_AXIS_ONLY_ON_NEW_EVIDENCE',
+              'canonical_strategy_files_mutated':False,'canonical_registry_mutated':False,
+              'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED',
+              'paper_enabled':False,'live_enabled':False,'action':'hold'
+          }
+          (root/'latest.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+          tar -C "$root" -czf "/tmp/zel_exact25_material_child_probe_v1_${SID}.tar.gz" \
+            latest.json build.json raw_results.json replays
+          REMOTE
+
+      - name: Fetch child probe result
+        if: steps.select.outputs.selected == 'true'
+        env:
+          SID: ${{ steps.select.outputs.strategy_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/probe
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_exact25_material_child_probe_v1_${SID}.tar.gz" \
+            /tmp/probe.tar.gz
+          tar -C out/probe -xzf /tmp/probe.tar.gz
+          cp out/probe/latest.json out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['terminal_for_evidence'] is True,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['canonical_registry_mutated'] is False,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+
+      - name: Publish material child probe
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-material-child-probe-bot'
+          git config user.email 'zel-material-child-probe-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/exact25_material_child_probe_v1
+          mkdir -p "$root"
+          if [ "${{ steps.select.outputs.selected }}" = true ]; then
+            sid=${{ steps.select.outputs.strategy_id }}
+            mkdir -p "$root/$sid"
+            cp out/latest.json "$root/$sid/latest.json"
+            cp out/latest.json "$root/$sid/run_${GITHUB_RUN_ID}.json"
+            cp out/probe/build.json "$root/$sid/build_${GITHUB_RUN_ID}.json"
+            cp out/probe/raw_results.json "$root/$sid/raw_${GITHUB_RUN_ID}.json"
+            cp out/latest.json "$root/latest.json"
+          else
+            cp out/latest.json "$root/latest.json"
+          fi
+          cd results
+          git add runtime_results/zel/exact25_material_child_probe_v1
+          git commit -m "result(zel): Exact25 material child probe ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-material-child-probe-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

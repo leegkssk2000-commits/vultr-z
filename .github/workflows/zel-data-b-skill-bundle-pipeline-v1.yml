@@ -1,0 +1,204 @@
+name: ZEL Data B Skill Bundle Pipeline V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_skill_extension_contract_v1.json
+      - backend/tools/zel_data_b_skill_bundle_pipeline_v1.py
+      - .github/workflows/zel-data-b-skill-bundle-pipeline-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_skill_extension_contract_v1.json
+      - backend/tools/zel_data_b_skill_bundle_pipeline_v1.py
+      - .github/workflows/zel-data-b-skill-bundle-pipeline-v1.yml
+  workflow_run:
+    workflows:
+      - ZEL Data B Risk Adapter Ablation V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-data-b-skill-bundle-pipeline-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate skill pipeline
+        run: |
+          set -euo pipefail
+          python -m json.tool backend/research/zel_skill_extension_contract_v1.json >/dev/null
+          python -m py_compile backend/tools/zel_data_b_skill_bundle_pipeline_v1.py
+          python backend/tools/zel_data_b_skill_bundle_pipeline_v1.py --self-test
+
+  replay:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Verify sequential prerequisites
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          combined=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json').read_text())
+          assert combined['state']=='PASS',combined
+          assert combined['verdict']=='HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',combined
+          risk=json.loads(Path('results/runtime_results/zel/data_b_risk_adapter_ablation_v1/latest.json').read_text())
+          assert risk['state']=='PASS_DATA_B_RISK_ADAPTER_ABLATION',risk
+          assert risk['strategy_count']==25 and risk['intervals']==['15m','1m'],risk
+          assert risk['economic_improvement_claim_allowed'] is False,risk
+          assert risk['runtime_binding_allowed'] is False and risk['shadow_start_allowed'] is False,risk
+          assert risk['execution_authority']=='NONE' and risk['order_authority']=='BLOCKED',risk
+          PY
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload research engine and contract
+        run: |
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_data_b_skill_bundle_pipeline_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/research/zel_skill_extension_contract_v1.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Ensure exact ledgers and run skill pipeline
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          SOURCE=/opt/zel/forward-expansion-v1/source
+          DATA=/opt/zel/historical-oos-v1
+          for interval in 15m 1m; do
+            out="/tmp/zel_historical_oos_exact25_replay_v1_${interval}"
+            if [ ! -s "$out/trades.jsonl.gz" ] || [ ! -s "$out/report.json" ]; then
+              rm -rf "$out"
+              mkdir -p "$out"
+              "$PY" /tmp/zel_historical_oos_exact25_replay_v1.py \
+                --source-root "$SOURCE" \
+                --data-root "$DATA" \
+                --interval "$interval" \
+                --output-dir "$out" \
+                --workers 4
+            fi
+          done
+          rm -rf /tmp/zel_data_b_skill_bundle_pipeline_v1
+          mkdir -p /tmp/zel_data_b_skill_bundle_pipeline_v1
+          "$PY" /tmp/zel_data_b_skill_bundle_pipeline_v1.py \
+            --contract /tmp/zel_skill_extension_contract_v1.json \
+            --trades-15m /tmp/zel_historical_oos_exact25_replay_v1_15m/trades.jsonl.gz \
+            --trades-1m /tmp/zel_historical_oos_exact25_replay_v1_1m/trades.jsonl.gz \
+            --output-dir /tmp/zel_data_b_skill_bundle_pipeline_v1
+          tar -C /tmp/zel_data_b_skill_bundle_pipeline_v1 -czf /tmp/zel_data_b_skill_bundle_pipeline_v1.tar.gz .
+          REMOTE
+
+      - name: Fetch pipeline result
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_skill_bundle_pipeline_v1.tar.gz" \
+            /tmp/skill.tar.gz
+          tar -C out -xzf /tmp/skill.tar.gz
+
+      - name: Assert terminal contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_DATA_B_SKILL_MAIN_EFFECT_AND_BUNDLE_RESEARCH',d
+          assert d['strategy_count']==25,d
+          assert d['intervals']==['15m','1m'],d
+          assert d['skill_count_per_strategy']==18,d
+          assert d['compatibility_matrix_applied'] is True,d
+          assert d['maximum_active_skills_per_bundle']==2,d
+          assert d['observer_only_excluded_from_top_bundle'] is True,d
+          assert d['loss_profit_add_combination_forbidden'] is True,d
+          assert d['economic_improvement_claim_allowed'] is False,d
+          assert d['selection_authority'] is False and d['promotion_authority'] is False,d
+          assert d['runtime_binding_allowed'] is False and d['shadow_start_allowed'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          assert len(d['strategies'])==25,d
+          for strategy in d['strategies']:
+              assert len(strategy['skills'])==18,strategy['strategy_id']
+              assert len(strategy['compatibility_and_interactions']['top3_bundles'])<=3,strategy['strategy_id']
+              for bundle in strategy['compatibility_and_interactions']['top3_bundles']:
+                  assert len(bundle['skills'])<=2,bundle
+          PY
+
+      - name: Publish skill main-effect and Top3 research SSOT
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-data-b-skill-bot'
+          git config user.email 'zel-data-b-skill-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/data_b_skill_bundle_pipeline_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp out/scoreboard.csv "$root/scoreboard_latest.csv"
+          cd results
+          git add runtime_results/zel/data_b_skill_bundle_pipeline_v1
+          git commit -m "result(zel): Data B skill bundles ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Dispatch strategy-specific full bundle planner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-survivor-bundle-gemini-v1.yml/dispatches" \
+            -f ref=master
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-skill-bundle-pipeline-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: ignore
+          retention-days: 90

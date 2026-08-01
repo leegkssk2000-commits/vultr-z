@@ -76,39 +76,39 @@ jobs:
           PY
 
   prerequisite:
-  if: github.event_name != 'pull_request'
-  needs: validate
-  runs-on: ubuntu-latest
-  timeout-minutes: 10
-  outputs:
-    ready: ${{ steps.gate.outputs.ready }}
-  steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: zel-data-expansion-results-v1
-        path: results
-        persist-credentials: false
-    - id: gate
-      name: Require strategy Top3 bundle receipt
-      run: |
-        set -euo pipefail
-        python - <<'PY2'
-        import json
-        from pathlib import Path
-        p=Path('results/runtime_results/zel/strategy_top3_bundles_v1/latest.json')
-        ready=False
-        if p.is_file():
-            d=json.loads(p.read_text())
-            ready=(
-                d.get('state')=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE'
-                and d.get('promotion_authority') is False
-                and d.get('execution_authority')=='NONE'
-                and d.get('order_authority')=='BLOCKED'
-            )
-        Path('/tmp/ready').write_text('true' if ready else 'false')
-        print({'top3_receipt_ready':ready})
-        PY2
-        echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - id: gate
+        name: Require strategy Top3 bundle receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY2'
+          import json
+          from pathlib import Path
+          p=Path('results/runtime_results/zel/strategy_top3_bundles_v1/latest.json')
+          ready=False
+          if p.is_file():
+              d=json.loads(p.read_text())
+              ready=(
+                  d.get('state')=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE'
+                  and d.get('promotion_authority') is False
+                  and d.get('execution_authority')=='NONE'
+                  and d.get('order_authority')=='BLOCKED'
+              )
+          Path('/tmp/ready').write_text('true' if ready else 'false')
+          print({'top3_receipt_ready':ready})
+          PY2
+          echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
 
   orchestrate:
     if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'

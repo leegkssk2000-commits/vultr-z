@@ -68,6 +68,43 @@ def build_manifest(dataset_root: Path, zone: str) -> dict[str, Any]:
     }
 
 
+def receipt(
+    zone: str,
+    dataset_root: Path,
+    errors: list[str],
+    manifest_sha: str | None,
+    signature: str | None,
+    seal_written: bool,
+    ident: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    passed = not errors and seal_written
+    return {
+        "schema_version": "zel.holdout_vault.receipt.v1",
+        "version": VERSION,
+        "generated_at": now_iso(),
+        "state": "PASS_HOLDOUT_VAULT_SEALED" if passed else "HOLD_HOLDOUT_VAULT",
+        "zone": zone,
+        "dataset_root_disclosed": False,
+        "dataset_root_sha256": hashlib.sha256(str(dataset_root.resolve()).encode()).hexdigest(),
+        "manifest_sha256": manifest_sha,
+        "manifest_hmac_sha256": hashlib.sha256((signature or "").encode()).hexdigest() if signature else None,
+        "file_count": manifest.get("file_count") if manifest else None,
+        "total_bytes": manifest.get("total_bytes") if manifest else None,
+        "identity": ident,
+        "errors": sorted(set(errors)),
+        "proposer_access_granted": False,
+        "judge_dataset_access_granted": False,
+        "one_shot_required": zone == "FINAL_HOLDOUT",
+        "runtime_mutated": False,
+        "canonical_strategy_mutated": False,
+        "formal_ledger_mutated": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+    }
+
+
 def seal(
     dataset_root: Path,
     repository_root: Path,
@@ -135,43 +172,6 @@ def seal(
     return receipt(zone, dataset_root, errors, manifest_sha, signature, True, ident, manifest)
 
 
-def receipt(
-    zone: str,
-    dataset_root: Path,
-    errors: list[str],
-    manifest_sha: str | None,
-    signature: str | None,
-    seal_written: bool,
-    ident: dict[str, Any] | None = None,
-    manifest: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    passed = not errors and seal_written
-    return {
-        "schema_version": "zel.holdout_vault.receipt.v1",
-        "version": VERSION,
-        "generated_at": now_iso(),
-        "state": "PASS_HOLDOUT_VAULT_SEALED" if passed else "HOLD_HOLDOUT_VAULT",
-        "zone": zone,
-        "dataset_root_disclosed": False,
-        "dataset_root_sha256": hashlib.sha256(str(dataset_root.resolve()).encode()).hexdigest(),
-        "manifest_sha256": manifest_sha,
-        "manifest_hmac_sha256": hashlib.sha256((signature or "").encode()).hexdigest() if signature else None,
-        "file_count": manifest.get("file_count") if manifest else None,
-        "total_bytes": manifest.get("total_bytes") if manifest else None,
-        "identity": ident,
-        "errors": sorted(set(errors)),
-        "proposer_access_granted": False,
-        "judge_dataset_access_granted": False,
-        "one_shot_required": zone == "FINAL_HOLDOUT",
-        "runtime_mutated": False,
-        "canonical_strategy_mutated": False,
-        "formal_ledger_mutated": False,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
-        "action": "hold",
-    }
-
-
 def consume_once(receipt_path: Path, marker_path: Path, token: str) -> dict[str, Any]:
     source = json.loads(receipt_path.read_text(encoding="utf-8"))
     errors: list[str] = []
@@ -212,7 +212,7 @@ def self_test() -> None:
         data.mkdir(parents=True)
         (data / "x.json").write_text('{"x":1}\n', encoding="utf-8")
         current_group = grp.getgrgid(os.getgid()).gr_name
-        result = seal(data, repo, seals, "W2_FORWARD", "test-key", current_group, [], False)
+        result = seal(data, repo, seals, "W2_FORWARD", "test-key", current_group, [], True)
         assert result["state"] == "PASS_HOLDOUT_VAULT_SEALED", result
         assert result["file_count"] == 1, result
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION, "user": getpass.getuser()}, sort_keys=True))

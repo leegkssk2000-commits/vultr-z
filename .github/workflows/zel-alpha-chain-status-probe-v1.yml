@@ -1,0 +1,84 @@
+name: ZEL Alpha Chain Status Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-alpha-chain-status-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-alpha-chain-status-probe-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          set -euo pipefail
+          grep -q 'zel-data-b-1m-terminal-repair-v2.yml' .github/workflows/zel-alpha-chain-status-probe-v1.yml
+          grep -q 'zel-alpha-auto-validation-chain-v1.yml' .github/workflows/zel-alpha-chain-status-probe-v1.yml
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Read exact workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow zel-data-b-1m-terminal-repair-v2.yml \
+            --branch master --limit 10 \
+            --json databaseId,status,conclusion,createdAt,updatedAt,headSha,event \
+            > out/repair_runs.json
+          gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow zel-alpha-auto-validation-chain-v1.yml \
+            --branch master --limit 10 \
+            --json databaseId,status,conclusion,createdAt,updatedAt,headSha,event \
+            > out/alpha_runs.json
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          repair=json.loads(Path('out/repair_runs.json').read_text())
+          alpha=json.loads(Path('out/alpha_runs.json').read_text())
+          payload={
+            'schema_version':'zel.alpha_chain.status_probe.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'data_b_terminal_repair_latest':repair[0] if repair else None,
+            'alpha_auto_chain_latest':alpha[0] if alpha else None,
+            'execution_authority':'NONE','order_authority':'BLOCKED',
+            'paper_enabled':False,'live_enabled':False,'action':'hold'
+          }
+          Path('out/latest.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Publish status
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-alpha-chain-status-bot'
+          git config user.email 'zel-alpha-chain-status-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          mkdir -p runtime_results/zel/alpha_auto_validation_chain_v1
+          cp ../out/latest.json runtime_results/zel/alpha_auto_validation_chain_v1/status_probe_latest.json
+          git add runtime_results/zel/alpha_auto_validation_chain_v1/status_probe_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "status(zel): Alpha automatic chain probe ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1

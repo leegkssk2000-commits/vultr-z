@@ -183,12 +183,12 @@ def calibrate(path: Path) -> dict[str, Any]:
             continue
         if any(token in text for token in LIQUIDATION_TYPE_HINTS):
             liquidation_count += 1
-        if any(token in text for token in FEE_TYPE_HINTS):
-            fee += amount
-            fee_count += 1
-        elif any(token in text for token in FUNDING_TYPE_HINTS):
+        if any(token in text for token in FUNDING_TYPE_HINTS):
             funding += amount
             funding_count += 1
+        elif any(token in text for token in FEE_TYPE_HINTS):
+            fee += amount
+            fee_count += 1
         elif any(token in text for token in PNL_TYPE_HINTS):
             realized += amount
             realized_count += 1

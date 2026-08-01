@@ -525,6 +525,11 @@ def main() -> int:
         "order_authority": "BLOCKED",
         "action": "hold",
     })
+    # FINAL_PROGRESS_WRITTEN_BEFORE_MANIFEST
+    write_progress(
+        progress_path, run_id, fingerprint, started_at, started_monotonic,
+        EXPECTED_STRATEGY_COUNT, list(raw_by_strategy), failures, state, None,
+    )
     manifest_payload = artifact_manifest(
         output_dir,
         ["report.json", "summary.json", "scoreboard.csv", "trades.jsonl.gz", "progress.json"],
@@ -551,10 +556,6 @@ def main() -> int:
         "order_authority": "BLOCKED",
         "action": "hold",
     })
-    write_progress(
-        progress_path, run_id, fingerprint, started_at, started_monotonic,
-        EXPECTED_STRATEGY_COUNT, list(raw_by_strategy), failures, state, None,
-    )
     print(json.dumps(json.loads((output_dir / "terminal_receipt.json").read_text()), sort_keys=True))
     return 0 if state == "PASS" else 1
 

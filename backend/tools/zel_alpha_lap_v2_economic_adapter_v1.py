@@ -219,7 +219,13 @@ def paired_compare(champion_path: Path, challenger_path: Path) -> dict[str, Any]
     challenger_values = [row["challenger_R"] for row in pairs]
     deltas = [row["delta_R"] for row in pairs]
     paired_count = len(pairs)
-    state = "PASS_ALPHA_LAP_PAIRED_COMPARISON" if paired_count and not violations else "HOLD_ALPHA_LAP_PAIRED_COMPARISON_INCOMPLETE"
+    unpaired_champion_count = len(set(champion) - set(challenger))
+    unpaired_challenger_count = len(set(challenger) - set(champion))
+    state = (
+        "PASS_ALPHA_LAP_PAIRED_COMPARISON"
+        if paired_count and not violations and unpaired_champion_count == 0 and unpaired_challenger_count == 0
+        else "HOLD_ALPHA_LAP_PAIRED_COMPARISON_INCOMPLETE"
+    )
     return {
         "schema_version": "zel.alpha_lap.v2.paired_comparison.receipt.v1",
         "generated_at": now_iso(),
@@ -229,8 +235,8 @@ def paired_compare(champion_path: Path, challenger_path: Path) -> dict[str, Any]
         "champion_row_count": len(champion_rows),
         "challenger_row_count": len(challenger_rows),
         "paired_count": paired_count,
-        "unpaired_champion_count": len(set(champion) - set(challenger)),
-        "unpaired_challenger_count": len(set(challenger) - set(champion)),
+        "unpaired_champion_count": unpaired_champion_count,
+        "unpaired_challenger_count": unpaired_challenger_count,
         "contract_violation_count": len(violations),
         "contract_violations": violations[:100],
         "metrics": {

@@ -1,0 +1,180 @@
+{
+  "schema_version": "zel.survivor_bundle_experiment.contract.v1",
+  "automatic": true,
+  "user_configuration_required": false,
+  "objective": "Measure whether strategy-specific combinations of trade methods, skills, team policy, ZBot, Zico, Lico and Zlice improve out-of-sample expectancy, profit factor and drawdown without hiding execution cost or attribution risk.",
+  "unit_of_analysis": "ONE_SURVIVING_STRATEGY_X_ONE_SEALED_DATA_WINDOW",
+  "survivor_source": "runtime_results/zel/exact25_material_upgrade_v1/synthesis_material_latest.json",
+  "maximum_survivors": 5,
+  "required_order": [
+    "BASE_STRATEGY_EXACT_REPLAY",
+    "TRADE_METHOD_LAYER_EXACT_REPLAY",
+    "SINGLE_SKILL_ABLATION",
+    "TEAM_POLICY_ABLATION",
+    "ZBOT_ADVISOR_ABLATION",
+    "LICO_EXECUTION_REALISM_ABLATION",
+    "ZICO_OMS_RELIABILITY_ABLATION",
+    "ZLICE_LINEAGE_NEGATIVE_CONTROL",
+    "FRACTIONAL_FACTORIAL_INTERACTION_SCREEN",
+    "TOP3_BUNDLE_EXACT_REPLAY",
+    "W2_NEW_FORWARD",
+    "W3_TEMPORAL_DURABILITY",
+    "PORTFOLIO_JOINT_DD_AND_MARGIN_COLLISION",
+    "PRE_SHADOW_RELEASE_GATE"
+  ],
+  "economic_roles": {
+    "strategy": "Creates the raw opportunity distribution and side/regime exposure.",
+    "trade_methods": "Changes target, stop, partial exit, trailing, sizing and allowed skill policy.",
+    "skills": "Changes entry/exit management only through an explicit skill profile.",
+    "team_bots": "Changes candidate admission, confidence, veto and route selection.",
+    "ZBot": "Advisor and decision trace; economic effect exists only when a frozen advice rule is consumed by the simulator.",
+    "Lico": "Models spread, slippage, latency, fill probability, partial fill, market impact and capacity.",
+    "Zico": "Models OMS lifecycle, duplicate prevention, ACK loss, stale order rejection, restart recovery and reconciliation.",
+    "Zlice": "Lineage and attribution only; expected direct economic delta is zero and non-zero unexplained delta is a failure.",
+    "failure_learning": "Post-300C observer/veto only; cannot create entries or mutate strategy parameters.",
+    "ml_light": "Post-300C observer/scorer only; cannot promote, execute or change the same epoch under evaluation."
+  },
+  "experiment_design": {
+    "full_power_set_forbidden": true,
+    "reason": "Eight binary components create 256 combinations per strategy and invite multiple-testing overfit.",
+    "screening_design": "HIERARCHICAL_SPARSE_FRACTIONAL_FACTORIAL",
+    "phase_1_main_effects": [
+      "BASE",
+      "TRADE_METHODS",
+      "BEST_SINGLE_SKILL",
+      "TEAM_POLICY",
+      "ZBOT_ADVICE",
+      "LICO_EXECUTION",
+      "ZICO_OMS",
+      "ZLICE_LINEAGE_CONTROL"
+    ],
+    "phase_2_interactions": [
+      "TRADE_METHODS_X_SKILL",
+      "TRADE_METHODS_X_TEAM",
+      "TEAM_X_ZBOT",
+      "TRADE_METHODS_X_LICO",
+      "TEAM_X_LICO",
+      "ZICO_X_LICO",
+      "SKILL_X_TEAM"
+    ],
+    "interaction_admission": "Test a pair only when both components have non-negative main effect, the causal mechanism is explicit, and Gemini plus one independent red-team model accepts the falsification test.",
+    "maximum_exact_bundle_candidates_per_strategy": 3,
+    "maximum_active_skills_per_bundle": 2,
+    "one_causal_axis_per_child": true,
+    "same_evidence_reoptimization_forbidden": true,
+    "failed_axis_requires_new_evidence": true
+  },
+  "required_metrics": [
+    "sample_count",
+    "net_R",
+    "expectancy_R",
+    "profit_factor",
+    "win_rate_pct",
+    "payoff_ratio",
+    "max_drawdown_R",
+    "max_consecutive_losses",
+    "average_MFE_R",
+    "average_MAE_R",
+    "average_exposure_min",
+    "fee_R",
+    "slippage_R",
+    "funding_R",
+    "latency_cost_R",
+    "fill_rejection_count",
+    "partial_fill_count",
+    "duplicate_order_prevented_count",
+    "stale_order_rejected_count",
+    "orphan_order_count",
+    "lineage_complete_pct"
+  ],
+  "bundle_gate": {
+    "minimum_closed_trades_data_b": 300,
+    "minimum_positive_window_pct": 60.0,
+    "minimum_profit_factor": 1.0,
+    "minimum_expectancy_R": 0.0,
+    "maximum_loss_cap_R": -0.75,
+    "maximum_unexplained_lineage_pct": 0.0,
+    "cost_stress_required": true,
+    "latency_stress_required": true,
+    "same_bar_stop_first": true,
+    "long_short_separate": true,
+    "short_execution_is_conservative": true,
+    "must_beat_base_on_at_least_three": [
+      "expectancy_R",
+      "profit_factor",
+      "net_R",
+      "max_drawdown_R",
+      "payoff_ratio"
+    ],
+    "must_not_worsen": [
+      "loss_cap_breach_count",
+      "orphan_order_count",
+      "duplicate_order_count",
+      "lineage_gap_count"
+    ]
+  },
+  "attribution": {
+    "required": true,
+    "methods": [
+      "MAIN_EFFECT_DELTA",
+      "LEAVE_ONE_COMPONENT_OUT",
+      "PAIR_INTERACTION_DELTA",
+      "ORDER_STABLE_SHAPLEY_APPROXIMATION"
+    ],
+    "zlice_direct_delta_expected": 0.0,
+    "unattributed_improvement_is_not_claimable": true,
+    "global_component_must_be_tested_per_strategy": true,
+    "strategy_specific_bundle_is_default": true
+  },
+  "gemini": {
+    "required": true,
+    "mode": "DIRECT_PUBLIC_VIDEO_PLUS_EXACT_EVIDENCE",
+    "registry": "backend/research/zel_manual_video_registry_v1.json",
+    "minimum_sources": 4,
+    "minimum_independent_channels": 4,
+    "maximum_hypotheses_per_strategy": 4,
+    "maximum_interaction_hypotheses_per_strategy": 2,
+    "single_axis_hypothesis_required": true,
+    "every_hypothesis_requires_falsification_test": true,
+    "gemini_has_no_performance_or_promotion_authority": true,
+    "groq_red_team_required": true,
+    "workers_ai_schema_safety_gate_required": true
+  },
+  "failure_learning_ml_light_boundary": {
+    "feature_preparation_before_shadow_allowed": true,
+    "offline_counterfactual_research_before_shadow_allowed": true,
+    "pre_shadow_result_can_promote_bundle": false,
+    "runtime_binding_during_fourth_shadow_forbidden": true,
+    "activation_point": "AFTER_FOURTH_SHADOW_300C_AND_INDEPENDENT_HOLDOUT_BEFORE_30D_PAPER",
+    "observer_only": true,
+    "entry_signal_authority": false,
+    "same_epoch_strategy_mutation": false,
+    "order_authority": "BLOCKED"
+  },
+  "portfolio_gate": {
+    "required_after_per_strategy_top3": true,
+    "metrics": [
+      "pairwise_return_correlation",
+      "simultaneous_loss_rate",
+      "joint_max_drawdown_R",
+      "margin_collision_count",
+      "regime_concentration",
+      "symbol_concentration",
+      "side_concentration",
+      "capacity_overlap"
+    ],
+    "individual_best_bundle_is_not_automatically_portfolio_best": true
+  },
+  "safety": {
+    "canonical_strategy_files_mutated": false,
+    "canonical_trade_methods_mutated": false,
+    "canonical_registry_mutated": false,
+    "shadow_start_allowed": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "paper_enabled": false,
+    "live_enabled": false,
+    "action": "hold"
+  }
+}

@@ -1,0 +1,310 @@
+name: ZEL Survivor Bundle Gemini V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_survivor_bundle_experiment_contract_v1.json
+      - backend/tools/zel_survivor_bundle_experiment_v1.py
+      - backend/tools/zel_survivor_bundle_gemini_v1.py
+      - .github/workflows/zel-survivor-bundle-gemini-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_survivor_bundle_experiment_contract_v1.json
+      - backend/tools/zel_survivor_bundle_experiment_v1.py
+      - backend/tools/zel_survivor_bundle_gemini_v1.py
+      - .github/workflows/zel-survivor-bundle-gemini-v1.yml
+  schedule:
+    - cron: '41 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Exact25 Material Upgrade Loop V1
+      - ZEL Exact25 Material Child Probe V2
+      - ZEL Trade Methods Pre-Shadow Audit V1
+      - ZEL Component Autonomy V3
+      - ZEL Alpha Auto Validation Chain V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-survivor-bundle-gemini-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate bundle planner, Gemini gate and contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_survivor_bundle_experiment_v1.py \
+            backend/tools/zel_survivor_bundle_gemini_v1.py
+          python backend/tools/zel_survivor_bundle_experiment_v1.py --self-test
+          python backend/tools/zel_survivor_bundle_gemini_v1.py --self-test
+          python -m json.tool backend/research/zel_survivor_bundle_experiment_contract_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_survivor_bundle_experiment_contract_v1.json').read_text())
+          assert c['automatic'] is True,c
+          assert c['user_configuration_required'] is False,c
+          assert c['maximum_survivors']==5,c
+          assert c['experiment_design']['full_power_set_forbidden'] is True,c
+          assert c['experiment_design']['maximum_exact_bundle_candidates_per_strategy']==3,c
+          assert c['attribution']['strategy_specific_bundle_is_default'] is True,c
+          assert c['attribution']['global_component_must_be_tested_per_strategy'] is True,c
+          assert c['gemini']['required'] is True,c
+          assert c['gemini']['groq_red_team_required'] is True,c
+          assert c['gemini']['workers_ai_schema_safety_gate_required'] is True,c
+          boundary=c['failure_learning_ml_light_boundary']
+          assert boundary['runtime_binding_during_fourth_shadow_forbidden'] is True,c
+          assert boundary['pre_shadow_result_can_promote_bundle'] is False,c
+          assert boundary['observer_only'] is True,c
+          assert c['safety']['shadow_start_allowed'] is False,c
+          assert c['safety']['execution_authority']=='NONE',c
+          assert c['safety']['order_authority']=='BLOCKED',c
+          PY
+
+  research:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install AI red-team dependency
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Resolve survivor and pre-Shadow authorities
+        id: authorities
+        run: |
+          set -euo pipefail
+          mkdir -p input out
+          survivors=results/runtime_results/zel/exact25_material_upgrade_v1/synthesis_material_latest.json
+          audit=results/runtime_results/zel/trade_methods_pre_shadow_v1/latest.json
+          if [ -s "$survivors" ]; then
+            cp "$survivors" input/survivors.json
+            echo 'survivors_ready=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' '{"state":"WAIT_SURVIVING_STRATEGY_POOL","eligible":[]}' > input/survivors.json
+            echo 'survivors_ready=false' >> "$GITHUB_OUTPUT"
+          fi
+          if [ -s "$audit" ]; then
+            cp "$audit" input/audit.json
+            echo 'audit_ready=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' '{"state":"HOLD_PRE_SHADOW_AUDIT_MISSING","blockers":["PRE_SHADOW_AUDIT_MISSING"]}' > input/audit.json
+            echo 'audit_ready=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build per-survivor hierarchical experiment matrix
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control python control/backend/tools/zel_survivor_bundle_experiment_v1.py \
+            --survivors input/survivors.json \
+            --audit input/audit.json \
+            --maximum-survivors 5 \
+            --out out/plan
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/plan/latest.json').read_text())
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          assert d['shadow_start_allowed'] is False,d
+          assert d['failure_learning_ml_light_runtime_binding_allowed'] is False,d
+          Path('out/survivor_count.txt').write_text(str(d['survivor_count']))
+          PY
+
+      - name: Run direct-video Gemini research per surviving strategy
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          count=$(cat out/survivor_count.txt)
+          mkdir -p out/gemini
+          if [ "$count" -eq 0 ]; then
+            printf '%s\n' '{"state":"WAIT_SURVIVING_STRATEGY_POOL","strategy_count":0,"GEMINI_USED":false,"promotion_authority":false,"execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}' > out/gemini/latest.json
+          elif [ -z "${GEMINI_API_KEY:-}" ]; then
+            printf '%s\n' '{"state":"HOLD_GEMINI_API_KEY_MISSING","strategy_count":0,"GEMINI_USED":false,"promotion_authority":false,"execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}' > out/gemini/latest.json
+          else
+            PYTHONPATH=control python control/backend/tools/zel_survivor_bundle_gemini_v1.py \
+              --plans out/plan \
+              --registry control/backend/research/zel_manual_video_registry_v1.json \
+              --out out/gemini
+          fi
+
+      - name: Run Groq and Workers AI gates for Gemini hypotheses
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/redteam
+          if [ -z "${GROQ_API_KEY:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] || [ -z "${CLOUDFLARE_WORKERS_AI_TOKEN:-}" ]; then
+            printf '%s\n' '{"state":"HOLD_REDTEAM_SECRET_MISSING","review_count":0,"promotion_authority":false,"execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}' > out/redteam/latest.json
+            exit 0
+          fi
+          count=0
+          pass_count=0
+          for input in out/gemini/strategies/*/hypotheses/*.json; do
+            [ -f "$input" ] || continue
+            count=$((count+1))
+            stem=$(basename "$input" .json)
+            strategy=$(basename "$(dirname "$(dirname "$input")")")
+            mkdir -p "out/redteam/$strategy"
+            timeout 120s python control/scripts/strategy11_groq_redteam.py \
+              --input "$input" --output "out/redteam/$strategy/$stem.groq.json"
+            timeout 120s python control/scripts/strategy11_workers_ai_guard.py \
+              --input "$input" --output "out/redteam/$strategy/$stem.workers.json"
+            python - "$strategy" "$stem" <<'PY'
+          import json,sys
+          from pathlib import Path
+          strategy,stem=sys.argv[1:]
+          g=json.loads(Path(f'out/redteam/{strategy}/{stem}.groq.json').read_text())
+          w=json.loads(Path(f'out/redteam/{strategy}/{stem}.workers.json').read_text())
+          assert g['status']=='PASS_GROQ_REDTEAM_CONNECTION',g
+          assert w['status']=='PASS_WORKERS_AI_CONNECTION',w
+          PY
+            pass_count=$((pass_count+1))
+          done
+          python - "$count" "$pass_count" <<'PY'
+          import json,sys
+          from pathlib import Path
+          count,passed=map(int,sys.argv[1:])
+          d={
+            'schema_version':'zel.survivor_bundle.redteam_summary.v1',
+            'state':'PASS_REDTEAM_CONNECTIONS' if count==passed else 'HOLD_REDTEAM_INCOMPLETE',
+            'review_count':count,
+            'connection_pass_count':passed,
+            'hypothesis_is_not_replay_authority':True,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/redteam/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Build terminal status
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          plan=json.loads(Path('out/plan/latest.json').read_text())
+          gemini=json.loads(Path('out/gemini/latest.json').read_text())
+          redteam=json.loads(Path('out/redteam/latest.json').read_text())
+          blockers=list(plan.get('blockers') or [])
+          if str(gemini.get('state','')).startswith('HOLD_'):
+              blockers.append(gemini['state'])
+          if str(redteam.get('state','')).startswith('HOLD_'):
+              blockers.append(redteam['state'])
+          state='PASS_SURVIVOR_BUNDLE_RESEARCH_PLAN_READY' if plan.get('survivor_count',0)>0 and not blockers else 'HOLD_SURVIVOR_BUNDLE_RESEARCH_INCOMPLETE'
+          d={
+            'schema_version':'zel.survivor_bundle.terminal.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,
+            'survivor_count':plan.get('survivor_count',0),
+            'strategy_ids':plan.get('strategy_ids',[]),
+            'plan_state':plan.get('state'),
+            'gemini_state':gemini.get('state'),
+            'redteam_state':redteam.get('state'),
+            'blockers':sorted(set(blockers)),
+            'exact_bundle_adapter_replay_required':True,
+            'economic_improvement_claim_allowed':False,
+            'failure_learning_ml_light_runtime_binding_allowed':False,
+            'next':'EXACT_PER_STRATEGY_BUNDLE_REPLAY_AFTER_DEPENDENCY_REPAIR',
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'shadow_start_allowed':False,
+            'paper_enabled':False,
+            'live_enabled':False,
+            'action':'hold'
+          }
+          Path('out/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish survivor bundle research state
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-survivor-bundle-bot'
+          git config user.email 'zel-survivor-bundle-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/survivor_bundle_experiment_v1
+          mkdir -p "$root"
+          rm -rf "$root/plan" "$root/gemini" "$root/redteam"
+          cp -a out/plan "$root/plan"
+          cp -a out/gemini "$root/gemini"
+          cp -a out/redteam "$root/redteam"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp control/backend/research/zel_survivor_bundle_experiment_contract_v1.json "$root/contract_v1.json"
+          cd results
+          git add runtime_results/zel/survivor_bundle_experiment_v1
+          git commit -m "result(zel): survivor bundle Gemini state ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('out/latest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as h:
+              h.write('# ZEL Survivor Bundle Gemini V1\n\n')
+              if not p.exists():
+                  h.write('- State: **HOLD_NO_TERMINAL_RESULT**\n')
+              else:
+                  d=json.loads(p.read_text())
+                  h.write(f"- State: **{d['state']}**\n")
+                  h.write(f"- Survivors: {d['survivor_count']}\n")
+                  h.write(f"- Gemini: {d['gemini_state']}\n")
+                  h.write(f"- Red team: {d['redteam_state']}\n")
+                  h.write('- Economic claim: **false**\n')
+                  h.write('- Shadow start: **false**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-survivor-bundle-gemini-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,112 @@
+name: ZEL ALIMI View Runtime Audit V2
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_view_runtime_audit_v2.py
+      - .github/workflows/zel-alimi-view-runtime-audit-v2.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_view_runtime_audit_v2.py
+      - .github/workflows/zel-alimi-view-runtime-audit-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-alimi-view-runtime-audit-v2
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate source and safety
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_alimi_view_runtime_audit_v2.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_alimi_view_runtime_audit_v2.py').read_text()
+          for x in ('systemctl restart','systemctl stop','systemctl start','systemctl enable','systemctl disable','rm -rf','git reset','git clean','verify=False','curl -k'):
+              assert x not in t,x
+          assert '.deploy_backups' in t
+          assert 'tv_route_shadowed_by_generic_handle' in t
+          assert 'execution_authority": "NONE' in t
+          assert 'order_authority": "BLOCKED' in t
+          print('PASS_ALIMI_VIEW_AUDIT_V2_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Run active-only read-only audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_view_runtime_audit_v2.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_view_runtime_audit_v2.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_view_runtime_audit_v2.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_view_runtime_audit_v2.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_view_runtime_audit_v2.py /tmp/zel_alimi_view_runtime_audit_v2.json' || true
+      - name: Validate receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['schema_version']=='zel.alimi.view.runtime.audit.v2',d
+          assert d['state']=='PASS_READ_ONLY_AUDIT_COMPLETE',d
+          assert d['safety']['read_only'] is True,d
+          assert d['safety']['runtime_mutated'] is False,d
+          assert d['safety']['frontend_mutated'] is False,d
+          assert d['safety']['service_mutated'] is False,d
+          assert d['safety']['execution_authority']=='NONE',d
+          assert d['safety']['order_authority']=='BLOCKED',d
+          print(json.dumps(d['findings'],sort_keys=True))
+          PY
+      - name: Publish result authority
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/alimi_view_runtime_audit_v2
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-alimi-view-audit-v2-bot'
+          git config user.email 'zel-alimi-view-audit-v2-bot@users.noreply.github.com'
+          git add runtime_results/zel/alimi_view_runtime_audit_v2
+          git commit -m "result(zel): ALIMI View active audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alimi-view-runtime-audit-v2-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

@@ -1,0 +1,137 @@
+name: ZEL PR500 One-Shot Autofix V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py
+      - backend/tools/zel_bingx_execution_calibration_adapter_v1.py
+      - .github/workflows/zel-pr500-autofix-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-pr500-one-shot-autofix-v1-${{ github.head_ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Apply deterministic review fixes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          replay=Path('backend/tools/zel_historical_oos_exact25_replay_v2.py')
+          text=replay.read_text()
+          insert='''    write_progress(
+              progress_path, run_id, fingerprint, started_at, started_monotonic,
+              EXPECTED_STRATEGY_COUNT, list(raw_by_strategy), failures, state, None,
+          )
+              manifest_payload = artifact_manifest(
+          '''.replace('          )\n              manifest', '    )\n    manifest')
+          needle='    manifest_payload = artifact_manifest(\n'
+          if 'FINAL_PROGRESS_WRITTEN_BEFORE_MANIFEST' not in text:
+              assert text.count(needle)==1,text.count(needle)
+              final_progress='''    # FINAL_PROGRESS_WRITTEN_BEFORE_MANIFEST
+              write_progress(
+                  progress_path, run_id, fingerprint, started_at, started_monotonic,
+                  EXPECTED_STRATEGY_COUNT, list(raw_by_strategy), failures, state, None,
+              )
+          '''.replace('              write_progress','    write_progress').replace('                  progress','        progress').replace('                  EXPECTED','        EXPECTED').replace('              )','    )')
+              text=text.replace(needle, final_progress+needle, 1)
+              old='''    write_progress(
+                  progress_path, run_id, fingerprint, started_at, started_monotonic,
+                  EXPECTED_STRATEGY_COUNT, list(raw_by_strategy), failures, state, None,
+              )
+              print(json.dumps(json.loads((output_dir / "terminal_receipt.json").read_text()), sort_keys=True))
+          '''.replace('              write_progress','    write_progress').replace('                  progress','        progress').replace('                  EXPECTED','        EXPECTED').replace('              )','    )').replace('              print','    print')
+              new='    print(json.dumps(json.loads((output_dir / "terminal_receipt.json").read_text()), sort_keys=True))\n'
+              assert old in text
+              text=text.replace(old,new,1)
+              replay.write_text(text)
+
+          alpha=Path('backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py')
+          text=alpha.read_text()
+          old='''    paired_count = len(pairs)
+              state = "PASS_ALPHA_LAP_PAIRED_COMPARISON" if paired_count and not violations else "HOLD_ALPHA_LAP_PAIRED_COMPARISON_INCOMPLETE"
+          '''.replace('              state','    state')
+          new='''    paired_count = len(pairs)
+              unpaired_champion_count = len(set(champion) - set(challenger))
+              unpaired_challenger_count = len(set(challenger) - set(champion))
+              state = (
+                  "PASS_ALPHA_LAP_PAIRED_COMPARISON"
+                  if paired_count and not violations and unpaired_champion_count == 0 and unpaired_challenger_count == 0
+                  else "HOLD_ALPHA_LAP_PAIRED_COMPARISON_INCOMPLETE"
+              )
+          '''.replace('              unpaired','    unpaired').replace('              state','    state').replace('                  "PASS','        "PASS').replace('                  if','        if').replace('                  else','        else').replace('              )','    )')
+          if 'unpaired_champion_count = len' not in text:
+              assert old in text
+              text=text.replace(old,new,1)
+              text=text.replace('"unpaired_champion_count": len(set(champion) - set(challenger)),','"unpaired_champion_count": unpaired_champion_count,',1)
+              text=text.replace('"unpaired_challenger_count": len(set(challenger) - set(champion)),','"unpaired_challenger_count": unpaired_challenger_count,',1)
+              alpha.write_text(text)
+
+          calibration=Path('backend/tools/zel_bingx_execution_calibration_adapter_v1.py')
+          text=calibration.read_text()
+          old='''        if any(token in text for token in FEE_TYPE_HINTS):
+              fee += amount
+              fee_count += 1
+          elif any(token in text for token in FUNDING_TYPE_HINTS):
+              funding += amount
+              funding_count += 1
+          '''.replace('              fee','            fee').replace('              funding','            funding')
+          new='''        if any(token in text for token in FUNDING_TYPE_HINTS):
+              funding += amount
+              funding_count += 1
+          elif any(token in text for token in FEE_TYPE_HINTS):
+              fee += amount
+              fee_count += 1
+          '''.replace('              fee','            fee').replace('              funding','            funding')
+          if old in text:
+              text=text.replace(old,new,1)
+              calibration.write_text(text)
+          PY
+      - name: Validate patched sources
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py \
+            backend/tools/zel_bingx_execution_calibration_adapter_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('backend/tools/zel_historical_oos_exact25_replay_v2.py').read_text()
+          assert r.index('FINAL_PROGRESS_WRITTEN_BEFORE_MANIFEST') < r.index('manifest_payload = artifact_manifest')
+          assert r.count('failures, state, None') == 1,r.count('failures, state, None')
+          a=Path('backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py').read_text()
+          assert 'unpaired_champion_count == 0 and unpaired_challenger_count == 0' in a
+          c=Path('backend/tools/zel_bingx_execution_calibration_adapter_v1.py').read_text()
+          assert c.index('if any(token in text for token in FUNDING_TYPE_HINTS)') < c.index('elif any(token in text for token in FEE_TYPE_HINTS)')
+          print('PASS_PR500_REVIEW_FIXES')
+          PY
+      - name: Commit fixes once
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo NO_CHANGES
+            exit 0
+          fi
+          git config user.name 'zel-pr500-autofix-bot'
+          git config user.email 'zel-pr500-autofix-bot@users.noreply.github.com'
+          git add backend/tools/zel_historical_oos_exact25_replay_v2.py \
+                  backend/tools/zel_alpha_lap_v2_economic_adapter_v1.py \
+                  backend/tools/zel_bingx_execution_calibration_adapter_v1.py
+          git commit -m 'fix(zel): address PR500 integrity review'
+          git push origin HEAD:${{ github.head_ref }}

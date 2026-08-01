@@ -1,0 +1,105 @@
+name: ZEL BingX Since 2026 Summary Index V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-bingx-private-history-since-2026-index-v1.yml
+  workflow_run:
+    workflows: ["ZEL BingX Private History Since 2026 V1"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: zel-bingx-since-2026-summary-index-v1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Resolve latest master run and wait for terminal artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/index /tmp/artifact
+          for attempt in $(seq 1 240); do
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-bingx-private-history-since-2026-v1.yml/runs?branch=master&event=push&per_page=1" > /tmp/index/runs.json
+            run_id=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/index/runs.json').read_text())
+          rows=d.get('workflow_runs') or []
+          print(rows[0].get('id','') if rows else '')
+          PY
+            )
+            status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/index/runs.json').read_text())
+          rows=d.get('workflow_runs') or []
+          print(rows[0].get('status','') if rows else '')
+          PY
+            )
+            conclusion=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/index/runs.json').read_text())
+          rows=d.get('workflow_runs') or []
+          print(rows[0].get('conclusion','') if rows else '')
+          PY
+            )
+            if [ -n "$run_id" ] && [ "$status" = completed ]; then
+              if [ "$conclusion" != success ]; then
+                echo "LATEST_AUDIT_NOT_SUCCESS:$run_id:$conclusion"
+                exit 1
+              fi
+              echo "$run_id" > /tmp/index/run_id
+              break
+            fi
+            if [ "$attempt" -eq 240 ]; then
+              echo 'AUDIT_RUN_TIMEOUT'
+              exit 1
+            fi
+            sleep 15
+          done
+          run_id=$(cat /tmp/index/run_id)
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --dir /tmp/artifact
+          find /tmp/artifact -type f -name 'zel_bingx_since_2026_summary.json' -print -quit > /tmp/index/summary_path
+          test -s /tmp/index/summary_path
+          summary=$(cat /tmp/index/summary_path)
+          test -s "$summary"
+          cp "$summary" /tmp/index/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/tmp/index/latest.json')
+          d=json.loads(p.read_text())
+          assert d['schema_version']=='zel.bingx.private_history.sanitized_summary.v1'
+          assert d['raw_private_records_included'] is False
+          assert d['api_credentials_included'] is False
+          assert d['order_ids_included'] is False
+          assert d['order_authority']=='BLOCKED'
+          assert d['execution_authority']=='NONE'
+          print('PASS_SANITIZED_BINGX_SINCE_2026_SUMMARY')
+          PY
+      - name: Publish sanitized summary to result authority
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          mkdir -p results/runtime_results/zel/bingx_private_history_since_2026_v1
+          cp /tmp/index/latest.json results/runtime_results/zel/bingx_private_history_since_2026_v1/latest.json
+          cp /tmp/index/runs.json results/runtime_results/zel/bingx_private_history_since_2026_v1/run_meta_latest.json
+          cd results
+          git config user.name 'zel-bingx-since-2026-summary-bot'
+          git config user.email 'zel-bingx-since-2026-summary-bot@users.noreply.github.com'
+          git add runtime_results/zel/bingx_private_history_since_2026_v1
+          git commit -m "result(zel): publish sanitized BingX history since 2026" || true
+          git push origin HEAD:zel-data-expansion-results-v1

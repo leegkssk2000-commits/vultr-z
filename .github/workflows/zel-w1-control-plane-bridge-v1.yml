@@ -1,0 +1,115 @@
+name: ZEL W1 Control Plane Bridge V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-control-plane-bridge-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-control-plane-bridge-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: zel-w1-control-plane-bridge-v1
+  cancel-in-progress: false
+
+env:
+  NATIVE_RUN_ID: '30692822412'
+  NATIVE_ARTIFACT: s11-w1-native-completion-20260801t083000z-v1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate exact one-time bridge
+        run: |
+          set -euo pipefail
+          grep -q "NATIVE_RUN_ID: '30692822412'" .github/workflows/zel-w1-control-plane-bridge-v1.yml
+          grep -q 'zel-w1-control-plane-v1.yml' .github/workflows/zel-w1-control-plane-bridge-v1.yml
+
+  dispatch:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Verify exact Native W1 completion artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf input/native
+          mkdir -p input/native
+          gh run download "$NATIVE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$NATIVE_ARTIFACT" --dir input/native
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          candidates=list(Path('input/native').rglob('status.json'))
+          assert candidates,candidates
+          rows=[]
+          for p in candidates:
+              try:
+                  d=json.loads(p.read_text())
+              except Exception:
+                  continue
+              if d.get('state')=='PASS_W1_NATIVE_PRIMARY_CHAIN':
+                  rows.append((p,d))
+          assert len(rows)==1,[(str(p),d.get('state')) for p,d in rows]
+          p,d=rows[0]
+          assert d['order_authority']=='BLOCKED',d
+          assert d['execution_authority']=='NONE',d
+          assert d['paper_allowed'] is False,d
+          assert d['live_allowed'] is False,d
+          print(p)
+          PY
+
+      - name: Dispatch master Control Plane with exact Native run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run zel-w1-control-plane-v1.yml --repo "$GITHUB_REPOSITORY" --ref master \
+            -f native_run_id="$NATIVE_RUN_ID"
+          sleep 8
+          run_id=''
+          for _ in $(seq 1 30); do
+            run_id=$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow zel-w1-control-plane-v1.yml --branch master --event workflow_dispatch --limit 10 \
+              --json databaseId,createdAt --jq ".[] | select(.createdAt >= \"$before\") | .databaseId" | head -1)
+            [ -n "$run_id" ] && break
+            sleep 4
+          done
+          test -n "$run_id"
+          echo "CONTROL_PLANE_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "Dispatched control plane run $run_id"
+
+      - name: Confirm Control Plane entered execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            status=$(gh run view "$CONTROL_PLANE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq .status)
+            case "$status" in
+              queued|in_progress|completed) echo "status=$status"; exit 0;;
+            esac
+            sleep 4
+          done
+          exit 1

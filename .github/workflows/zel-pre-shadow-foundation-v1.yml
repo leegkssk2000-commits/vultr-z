@@ -1,0 +1,61 @@
+name: ZEL Pre-Shadow Foundation V1
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths: ['backend/research/zel_*_v1.json','backend/research/zel_trade_methods_rebuild_v2.json','backend/tools/zel_progress_heartbeat_v1.py','.github/workflows/zel-pre-shadow-foundation-v1.yml']
+  push:
+    branches: [master]
+    paths: ['backend/research/zel_*_v1.json','backend/research/zel_trade_methods_rebuild_v2.json','backend/tools/zel_progress_heartbeat_v1.py','.github/workflows/zel-pre-shadow-foundation-v1.yml']
+permissions: {contents: read}
+concurrency: {group: zel-pre-shadow-foundation-v1, cancel-in-progress: false}
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate 1-7 contracts and rebuilt methods
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_progress_heartbeat_v1.py
+          mkdir -p out
+          python backend/tools/zel_progress_heartbeat_v1.py --out out/progress_example.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = [
+              'backend/research/zel_progress_heartbeat_contract_v1.json',
+              'backend/research/zel_experiment_bundle_receipt_contract_v1.json',
+              'backend/research/zel_bingx_execution_calibration_v1.json',
+              'backend/research/zel_component_contribution_logger_v1.json',
+              'backend/research/zel_pre_shadow_gate_matrix_v1.json',
+              'backend/research/zel_drift_rollback_error_budget_v1.json',
+              'backend/research/zel_trade_methods_rebuild_v2.json',
+          ]
+          docs={Path(p).name:json.loads(Path(p).read_text()) for p in files}
+          assert len(docs)==7,docs.keys()
+          for name,d in docs.items():
+              assert d.get('schema_version'),name
+              s=d.get('safety',{})
+              assert s.get('action')=='hold' or name.startswith('zel_progress_') or name.startswith('zel_experiment_'),(name,s)
+          m=docs['zel_trade_methods_rebuild_v2.json']
+          assert m['legacy']['assessment']=='REBUILD_REQUIRED'
+          assert len(m['methods'])==8
+          assert len({x['method_id'] for x in m['methods']})==8
+          assert m['research_policy']['w2_w3_required'] is True
+          assert m['safety']=={'canonical_mutation':False,'runtime_binding':False,'economic_claim':False,'action':'hold'}
+          g=docs['zel_pre_shadow_gate_matrix_v1.json']
+          assert g['gates'][-1]=='PRE_SHADOW_RELEASE'
+          assert g['survivor_target']=={'min':5,'max':7}
+          e=docs['zel_bingx_execution_calibration_v1.json']
+          assert 'user_specific_slippage' in e['public_cannot_identify']
+          assert e['api_key_policy']=='never_store_in_repository_or_chat'
+          out={'state':'PASS_PRE_SHADOW_FOUNDATION_1_TO_7','contract_count':len(docs),'method_count':len(m['methods']),'economic_claim_allowed':False,'shadow_start_allowed':False,'action':'hold'}
+          Path('out/foundation_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: 'zel-pre-shadow-foundation-v1-${{ github.run_id }}', path: out, if-no-files-found: error, retention-days: 90}

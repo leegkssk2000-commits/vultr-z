@@ -1,0 +1,161 @@
+name: ZEL Trade Methods Risk Sizing Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_risk_sizing_probe_v1.py
+      - .github/workflows/zel-trade-methods-risk-sizing-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_risk_sizing_probe_v1.py
+      - .github/workflows/zel-trade-methods-risk-sizing-probe-v1.yml
+  workflow_run:
+    workflows:
+      - ZEL Trade Methods Semantic Audit V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-trade-methods-risk-sizing-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate deterministic probe
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_trade_methods_risk_sizing_probe_v1.py
+          python backend/tools/zel_trade_methods_risk_sizing_probe_v1.py --self-test
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload deterministic probe
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_trade_methods_risk_sizing_probe_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Probe exact VPS runtime behavior
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "/home/z/z/.venv/bin/python /tmp/zel_trade_methods_risk_sizing_probe_v1.py \
+               --root /home/z/z \
+               --out /tmp/zel_trade_methods_risk_sizing_probe_latest.json"
+
+      - name: Fetch probe result
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_trade_methods_risk_sizing_probe_latest.json" \
+            out/latest.json
+
+      - name: Assert no-write boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['python_file_count'] > 0,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['canonical_trade_methods_mutated'] is False,d
+          assert d['canonical_registry_mutated'] is False,d
+          assert d['adapter_created'] is False,d
+          assert d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          assert d['shadow_start_allowed'] is False,d
+          assert set(d['roles'])=={'RISK_MODE','SIZING_POLICY'},d
+          PY
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish exact probe SSOT
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-risk-sizing-probe-bot'
+          git config user.email 'zel-risk-sizing-probe-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/trade_methods_risk_sizing_probe_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git add runtime_results/zel/trade_methods_risk_sizing_probe_v1
+          git commit -m "result(zel): risk sizing deterministic probe ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('out/latest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as h:
+              h.write('# ZEL Trade Methods Risk/Sizing Probe V1\n\n')
+              if not p.exists():
+                  h.write('- State: **HOLD_NO_RESULT**\n')
+              else:
+                  d=json.loads(p.read_text())
+                  h.write(f"- State: **{d['state']}**\n")
+                  for name,row in d['roles'].items():
+                      h.write(f"- {name}: **{row['state']}**\n")
+                  h.write('- Canonical mutation: **0**\n')
+                  h.write('- Shadow start: **false**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-trade-methods-risk-sizing-probe-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -50,9 +50,93 @@ jobs:
           python backend/tools/zel_historical_oos_targeted_replay_v1.py --self-test
           python backend/tools/zel_exact25_material_child_builder_v2.py --self-test
 
-  probe:
+  ai_control_probe:
     if: github.event_name != 'pull_request'
-    needs: validate
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: gate
+        name: ZEL_AI_CONTROL_GATE_V1 — require current proposal lineage
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          proposal=results/runtime_results/zel/ai_research_control_plane_v1/latest.json
+          predecessor=results/runtime_results/zel/exact25_material_upgrade_v1/latest.json
+          if [ ! -s "$proposal" ] || [ ! -s "$predecessor" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/ai_control_gate.json').write_text(json.dumps({
+            'schema_version':'zel.ai.control_gate.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_AI_CONTROL_GATE_INPUT_MISSING',
+            'stage_id':'EXACT25_LIVENESS_AND_REPAIR',
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            exit 0
+          fi
+          predecessor_sha=$(sha256sum "$predecessor" | awk '{print $1}')
+          STAGE_ID='EXACT25_LIVENESS_AND_REPAIR' PREDECESSOR_SHA="$predecessor_sha" PROPOSAL="$proposal" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          ctx=p.get('gate_context')
+          assert isinstance(ctx,dict),p
+          assert ctx.get('stage_id')==os.environ['STAGE_ID'],ctx
+          assert ctx.get('predecessor_receipt_sha256')==os.environ['PREDECESSOR_SHA'],ctx
+          epoch=str(ctx.get('epoch_id') or '')
+          assert epoch,ctx
+          Path('/tmp/zel_ai_epoch').write_text(epoch)
+          PY
+          epoch=$(cat /tmp/zel_ai_epoch)
+          if python control/backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id 'EXACT25_LIVENESS_AND_REPAIR' \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/ai_control_gate.json; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ai-control-gate-probe-${{ github.run_id }}
+          path: out/ai_control_gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  probe:
+    if: github.event_name != 'pull_request' && needs.ai_control_probe.outputs.ready == 'true'
+    needs: [validate, ai_control_probe]
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:

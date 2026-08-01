@@ -1,0 +1,49 @@
+name: ZEL ALIMI View Mode UI Contract V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_alimi_view_mode_ui_contract_v1.json
+      - .github/workflows/zel-alimi-view-mode-ui-contract-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_alimi_view_mode_ui_contract_v1.json
+      - .github/workflows/zel-alimi-view-mode-ui-contract-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate mode UI contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/zel_alimi_view_mode_ui_contract_v1.json').read_text())
+          assert d['schema_version']=='zel.alimi.view.mode_ui.contract.v1',d
+          roles=d['surface_roles']
+          assert roles['shadow']['primary_surface']=='/view/',roles
+          assert roles['paper']['primary_surface']=='ALIMI',roles
+          assert roles['live']['primary_surface']=='ALIMI',roles
+          assert d['tradingview_read_only_observer']['order_controls'] is False,d
+          assert d['tradingview_read_only_observer']['endpoint']=='/api/tv/observe',d
+          assert 'Never combine Shadow Paper Live Backtest or Disabled metrics in one value.' in d['global_invariants'],d
+          s=d['safety']
+          assert s['frontend_mutation_allowed_now'] is False,s
+          assert s['runtime_binding_allowed_now'] is False,s
+          assert s['shadow_start_allowed'] is False,s
+          assert s['paper_start_allowed'] is False,s
+          assert s['live_enabled'] is False,s
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',s
+          assert s['action']=='hold',s
+          print('PASS_ALIMI_VIEW_MODE_UI_CONTRACT_V1')
+          PY

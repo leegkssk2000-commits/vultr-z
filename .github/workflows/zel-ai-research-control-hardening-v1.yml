@@ -1,0 +1,77 @@
+name: ZEL AI Research Control Hardening V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_research_control_plane_v1.json
+      - backend/research/zel_adversarial_market_lab_v1.json
+      - backend/research/zel_bingx_execution_evidence_collector_v1.json
+      - backend/tools/zel_ai_research_control_plane_v1.py
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - .github/workflows/zel-ai-research-control-hardening-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_research_control_plane_v1.json
+      - backend/research/zel_adversarial_market_lab_v1.json
+      - backend/research/zel_bingx_execution_evidence_collector_v1.json
+      - backend/tools/zel_ai_research_control_plane_v1.py
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - .github/workflows/zel-ai-research-control-hardening-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ai-research-control-hardening-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile tools
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ai_research_control_plane_v1.py \
+            backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - name: Run deterministic self-tests
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_ai_research_control_plane_v1.py --self-test
+          python backend/tools/zel_bingx_execution_evidence_collector_v1.py --self-test
+      - name: Validate safety contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/zel_ai_research_control_plane_v1.json').read_text())
+          collector=json.loads(Path('backend/research/zel_bingx_execution_evidence_collector_v1.json').read_text())
+          adversarial=json.loads(Path('backend/research/zel_adversarial_market_lab_v1.json').read_text())
+          assert collector['methods_allowed']==['GET'],collector
+          assert set(collector['methods_forbidden'])=={'POST','PUT','PATCH','DELETE'},collector
+          assert collector['credential_policy']['repository_storage'] is False,collector
+          assert len(adversarial['scenarios'])>=15,adversarial
+          s=policy['safety']
+          assert s['canonical_strategy_mutation'] is False,s
+          assert s['formal_ledger_mutation'] is False,s
+          assert s['runtime_registry_write'] is False,s
+          assert s['shadow_start_allowed'] is False,s
+          assert s['paper_start_allowed'] is False,s
+          assert s['live_enabled'] is False,s
+          assert s['execution_authority']=='NONE',s
+          assert s['order_authority']=='BLOCKED',s
+          text=Path('backend/tools/zel_bingx_execution_evidence_collector_v1.py').read_text()
+          for token in ('method="POST"','method="DELETE"','requests.post','requests.delete','systemctl','os.kill','subprocess'):
+              assert token not in text,token
+          print('PASS_AI_RESEARCH_CONTROL_HARDENING_V1')
+          PY

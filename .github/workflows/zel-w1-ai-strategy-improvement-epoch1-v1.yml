@@ -1,0 +1,247 @@
+name: ZEL W1 AI Strategy Improvement Epoch1 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-ai-strategy-improvement-epoch1-v1.yml
+      - backend/research/zel_w1_strategy_improvement_request_v1.json
+      - backend/research/zel_w1_manual_v3_request_v1.json
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-ai-strategy-improvement-epoch1-v1.yml
+      - backend/research/zel_w1_strategy_improvement_request_v1.json
+      - backend/research/zel_w1_manual_v3_request_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-w1-ai-strategy-improvement-epoch1-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check pandas pytest
+      - name: Validate immutable improvement contract
+        run: |
+          set -euo pipefail
+          python -m json.tool backend/research/zel_w1_strategy_improvement_request_v1.json >/dev/null
+          python -m json.tool backend/research/zel_w1_manual_v3_request_v1.json >/dev/null
+          python -m py_compile backend/tools/zel_manual_multiaxis_gemini_v2.py scripts/strategy11_ai_review_router.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('backend/research/zel_w1_strategy_improvement_request_v1.json').read_text())
+          r=json.loads(Path('backend/research/zel_w1_manual_v3_request_v1.json').read_text())
+          assert p['validation_order']==[
+              'W1_FAILURE_DIAGNOSIS','DATA_B_CANDIDATE_DISCOVERY_AND_REJECTION',
+              'W2_NEW_FORWARD_CONFIRMATION','W3_TEMPORAL_DURABILITY',
+              'SEALED_FINAL_HOLDOUT','REAL_SHADOW'
+          ],p
+          assert p['source_w1_run_id']==30692822412,p
+          assert p['canonical_strategy_files_mutated'] is False,p
+          assert r['target_strategy']=='trend_ma_macd',r
+          assert r['same_evidence_reanalysis'] is True,r
+          assert r['new_market_data_claim'] is False,r
+          assert r['data_b_replay_required_before_acceptance'] is True,r
+          assert r['w2_started'] is False and r['w3_started'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          PY
+
+  research:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas groq
+      - name: Build W1 trend_ma_macd evidence envelope
+        run: |
+          set -euo pipefail
+          mkdir -p out/input out/gemini out/reviews out/terminal
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          src=Path('results-branch/runtime_results/zel/w1_performance_report_20260801/latest.json')
+          w1=json.loads(src.read_text())
+          row=w1['data_wait_pool']['notable']['trend_ma_macd']
+          stats={
+              'trade_count':row['trade_count'],
+              'net_return_pct_sum':row['net_return_pct_sum'],
+              'net_profit_factor':row['net_profit_factor'],
+              'win_rate_pct':row['win_rate_pct'],
+              'max_drawdown_pct':row['max_drawdown_pct'],
+              'positive_windows_pct':row['positive_windows_pct'],
+          }
+          payload={
+              'schema_version':'zel.w1_strategy_improvement.evidence.v1',
+              'strategy_id':'trend_ma_macd',
+              'strategy_variant':'W1_NATIVE_CONTROL',
+              'state':'W1_DIAGNOSIS_COMPLETE',
+              'data_fingerprint':w1['source_w1_manifest_sha256'],
+              'source_authority':{
+                  'w1_run_id':w1['source_run_id'],
+                  'w1_artifact_id':w1['source_artifact_id'],
+                  'ledger_sha256':w1['source_artifact_digest'].removeprefix('sha256:'),
+                  'summary_sha256':hashlib.sha256(src.read_bytes()).hexdigest(),
+              },
+              'control':{'stats':stats},
+              'full_stack':{'stats':stats},
+              'convergence':{'low_sample_hold':True},
+              'pipeline_decisions':{
+                  'failure_fingerprint':'POSITIVE_EDGE_LOW_WINDOW_COVERAGE',
+                  'allowed_axes':['REGIME_FILTER','EXIT_SHAPE'],
+                  'data_b_required':True,
+                  'w2_started':False,
+                  'w3_started':False,
+              },
+              'module_results':{},
+              'canonical_strategy_files_mutated':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+          }
+          payload['result_sha256']=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/input/w1_result.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Generate video-grounded single-axis hypotheses
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          python backend/tools/zel_manual_multiaxis_gemini_v2.py run \
+            --result out/input/w1_result.json \
+            --registry backend/research/zel_manual_video_registry_v1.json \
+            --request backend/research/zel_w1_manual_v3_request_v1.json \
+            --out out/gemini
+      - name: Groq and Workers independent gate
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GROQ_API_KEY:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test -n "${CLOUDFLARE_WORKERS_AI_TOKEN:-}"
+          for input in out/gemini/hypotheses/*.json; do
+            [ -e "$input" ] || continue
+            id=$(basename "$input" .json)
+            set +e
+            timeout 120s python scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" \
+              --gemini-artifact out/gemini/gemini_artifact.json \
+              --output "out/reviews/${id}.json"
+            rc=$?
+            set -e
+            test -s "out/reviews/${id}.json" || { echo "AI_REVIEW_RECEIPT_MISSING:$id:rc=$rc"; exit 1; }
+          done
+      - name: Bind current Data B state and close research stage
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          gem=json.loads(Path('out/gemini/gemini_artifact.json').read_text())
+          status_path=Path('results-branch/runtime_results/zel/w1_strategy_improvement/data_b_status_latest.json')
+          if status_path.exists():
+              data_b=json.loads(status_path.read_text())
+          else:
+              data_b={'state':'DATA_B_STATUS_NOT_YET_PUBLISHED','data_b_15m_complete':False,'data_b_1m_complete':False}
+          reviews=[]
+          for path in sorted(Path('out/reviews').glob('*.json')):
+              reviews.append({'file':path.name,'receipt':json.loads(path.read_text())})
+          hypotheses=gem.get('hypotheses') or []
+          data_b_complete=bool(data_b.get('data_b_15m_complete') and data_b.get('data_b_1m_complete'))
+          if not hypotheses:
+              state='NO_SUPPORTED_HYPOTHESIS_HOLD'
+          elif data_b_complete:
+              state='HYPOTHESES_AI_REVIEWED_READY_FOR_DATA_B_CHILD_REPLAY'
+          else:
+              state='HYPOTHESES_AI_REVIEWED_WAIT_DATA_B_TERMINAL'
+          receipt={
+              'schema_version':'zel.w1_strategy_improvement.epoch1.receipt.v1',
+              'state':state,
+              'target_strategy':'trend_ma_macd',
+              'failure_fingerprint':'POSITIVE_EDGE_LOW_WINDOW_COVERAGE',
+              'w1_run_id':30692822412,
+              'gemini_state':gem['state'],
+              'usable_video_count':gem['usable_source_count'],
+              'independent_channel_count':gem['usable_independent_channels'],
+              'hypothesis_count':len(hypotheses),
+              'hypotheses':hypotheses,
+              'ai_review_count':len(reviews),
+              'ai_reviews':reviews,
+              'data_b_state':data_b,
+              'data_b_deterministic_replay_complete':False,
+              'w2_started':False,
+              'w2_complete':False,
+              'w3_started':False,
+              'w3_complete':False,
+              'canonical_strategy_files_mutated':False,
+              'canonical_registry_mutated':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'paper_enabled':False,
+              'live_enabled':False,
+              'action':'hold',
+              'next':'DATA_B_CHILD_REPLAY_THEN_W2_NEW_FORWARD',
+          }
+          receipt['receipt_sha256']=hashlib.sha256(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/terminal/latest.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(state,receipt['hypothesis_count'],receipt['ai_review_count'])
+          PY
+      - name: Publish improvement epoch
+        run: |
+          set -euo pipefail
+          cd results-branch
+          git config user.name 'zel-w1-improvement-bot'
+          git config user.email 'zel-w1-improvement-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          base=results-branch/runtime_results/zel/w1_strategy_improvement/epoch1
+          mkdir -p "$base"
+          cp out/terminal/latest.json "$base/latest.json"
+          cp out/terminal/latest.json "$base/run_${GITHUB_RUN_ID}.json"
+          cp out/gemini/gemini_artifact.json "$base/gemini_artifact_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git add runtime_results/zel/w1_strategy_improvement/epoch1
+          git commit -m "result(zel): W1 AI improvement epoch1 ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-w1-ai-strategy-improvement-epoch1-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

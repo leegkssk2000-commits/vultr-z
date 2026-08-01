@@ -14,15 +14,6 @@ on:
       - backend/tools/zel_exact25_material_upgrade_director_v1.py
       - backend/research/zel_exact25_material_upgrade_contract_v1.json
       - .github/workflows/zel-exact25-material-upgrade-loop-v1.yml
-  schedule:
-    - cron: '29 * * * *'
-  workflow_run:
-    workflows:
-      - ZEL Data B 1m Terminal Repair V2
-      - ZEL Historical OOS 1m Resume V1
-      - ZEL Alpha Auto Validation Chain V1
-      - ZEL W1 AI Strategy Improvement Epoch1 V1
-    types: [completed]
 
 permissions:
   contents: write
@@ -68,9 +59,44 @@ jobs:
           assert c['safety']['order_authority']=='BLOCKED',c
           PY
 
-  direct:
+  prerequisite:
     if: github.event_name != 'pull_request'
     needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - id: gate
+        name: Require Risk main-effect receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/runtime_results/zel/data_b_risk_adapter_ablation_v1/latest.json')
+          ready=False
+          if p.is_file():
+              d=json.loads(p.read_text())
+              ready=(
+                  d.get('state')=='PASS_DATA_B_RISK_ADAPTER_ABLATION'
+                  and d.get('promotion_authority') is False
+                  and d.get('execution_authority')=='NONE'
+                  and d.get('order_authority')=='BLOCKED'
+              )
+          Path('/tmp/ready').write_text('true' if ready else 'false')
+          print({'risk_receipt_ready':ready})
+          PY
+          echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+
+  direct:
+    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'
+    needs: [validate, prerequisite]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -142,7 +168,7 @@ jobs:
             'paper_enabled':False,
             'live_enabled':False,
             'action':'hold',
-            'next':'AUTO_RESUME_ON_DATA_B_TERMINAL_OR_HOURLY_SCHEDULE'
+            'next':'RECEIPT_DAG_CONTROLLER'
           }
           Path('out/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY

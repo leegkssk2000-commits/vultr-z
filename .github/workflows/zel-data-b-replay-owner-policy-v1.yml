@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Enforce one direct 1m replay owner
+      - name: Enforce one direct 1m replay owner and one receipt DAG
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -52,22 +52,53 @@ jobs:
               'zel-historical-oos-exact25-replay-v3.yml',
           }
           assert required_redirects.issubset(set(redirects)),redirects
+
           risk=(workflows/'zel-data-b-risk-adapter-ablation-v1.yml').read_text()
           risk_header=risk.split('\njobs:',1)[0]
           risk_ablate=risk.split('\n  ablate:',1)[1]
           assert 'workflow_run:' not in risk_header
           assert 'zel_historical_oos_exact25_replay_v1.py' not in risk_ablate
           assert '--source-root' not in risk_ablate
+
           canonical=(workflows/'zel-data-b-1m-single-owner-repair-v1.yml').read_text()
+          assert 'flock -n 9' in canonical
+          assert 'single_owner_proved' in canonical
+          assert 'Dispatch receipt-driven DAG controller only' in canonical
+          assert 'gh workflow run zel-pre-shadow-dag-controller-v1.yml --ref master' in canonical
+          assert 'for workflow in zel-data-b-risk-adapter-ablation-v1.yml' not in canonical
+
+          controller_path=workflows/'zel-pre-shadow-dag-controller-v1.yml'
+          assert controller_path.is_file(),controller_path
+          controller=controller_path.read_text()
+          assert 'Plan exactly one eligible implemented stage' in controller
+          assert 'Dispatch exactly one planned stage' in controller
+          assert 'ONE_ORDERED_STAGE_AT_A_TIME' in controller
+          assert 'CURRENT_PREDECESSOR_AND_STAGE_RECEIPT_SHA_REQUIRED' in controller
           for target in (
               'zel-data-b-risk-adapter-ablation-v1.yml',
               'zel-exact25-material-upgrade-loop-v1.yml',
               'zel-trade-methods-pre-shadow-audit-v1.yml',
-              'zel-alpha-auto-validation-chain-v1.yml',
           ):
-              assert target in canonical,target
+              assert target in controller,target
               assert (workflows/target).is_file(),target
-          assert 'flock -n 9' in canonical
-          assert 'single_owner_proved' in canonical
-          print({'direct_1m_owner':direct,'redirects':sorted(redirects),'downstream_targets':'PASS'})
+
+          exact=(workflows/'zel-exact25-material-upgrade-loop-v1.yml').read_text()
+          methods=(workflows/'zel-trade-methods-pre-shadow-audit-v1.yml').read_text()
+          alpha=(workflows/'zel-alpha-auto-validation-chain-v1.yml').read_text()
+          for name,text in {'exact':exact,'methods':methods,'alpha':alpha}.items():
+              header=text.split('\npermissions:',1)[0]
+              assert 'schedule:' not in header,name
+              assert 'workflow_run:' not in header,name
+              assert '\n  prerequisite:\n' in text,name
+          assert 'PASS_DATA_B_RISK_ADAPTER_ABLATION' in exact
+          assert 'PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE' in methods
+          assert 'PASS_STRATEGY_TOP3_BUNDLES_COMPLETE' in alpha
+          assert 'gh workflow run zel-historical-oos-1m-resume-v1.yml' not in alpha
+          print({
+              'direct_1m_owner':direct,
+              'redirects':sorted(redirects),
+              'downstream_controller':'zel-pre-shadow-dag-controller-v1.yml',
+              'receipt_gates':'PASS',
+              'lineage_binding':'PASS',
+          })
           PY

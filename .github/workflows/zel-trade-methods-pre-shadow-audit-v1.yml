@@ -14,15 +14,6 @@ on:
       - backend/tools/zel_trade_methods_pre_shadow_audit_v1.py
       - backend/research/zel_pre_shadow_automatic_improvement_contract_v1.json
       - .github/workflows/zel-trade-methods-pre-shadow-audit-v1.yml
-  schedule:
-    - cron: '13 * * * *'
-  workflow_run:
-    workflows:
-      - ZEL Exact25 Material Upgrade Loop V1
-      - ZEL Exact25 Material Child Probe V2
-      - ZEL Component Autonomy V3
-      - ZEL Alpha Auto Validation Chain V1
-    types: [completed]
 
 permissions:
   contents: write
@@ -65,9 +56,44 @@ jobs:
           assert c['safety']['order_authority']=='BLOCKED',c
           PY
 
-  audit:
+  prerequisite:
     if: github.event_name != 'pull_request'
     needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - id: gate
+        name: Require Exact25 repair receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/runtime_results/zel/exact25_material_upgrade_v1/latest.json')
+          ready=False
+          if p.is_file():
+              d=json.loads(p.read_text())
+              ready=(
+                  d.get('state')=='PASS_EXACT25_MATERIAL_DIAGNOSIS_AND_QUEUE'
+                  and d.get('promotion_authority') is False
+                  and d.get('execution_authority')=='NONE'
+                  and d.get('order_authority')=='BLOCKED'
+              )
+          Path('/tmp/ready').write_text('true' if ready else 'false')
+          print({'exact25_receipt_ready':ready})
+          PY
+          echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
+
+  audit:
+    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'
+    needs: [validate, prerequisite]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

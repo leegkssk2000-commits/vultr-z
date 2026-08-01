@@ -43,41 +43,42 @@ jobs:
           text=header+'\npermissions:'+tail
 
           expression='$'+'{{ steps.gate.outputs.ready }}'
-          block=f'''  prerequisite:
-            if: github.event_name != 'pull_request'
-            needs: validate
-            runs-on: ubuntu-latest
-            timeout-minutes: 10
-            outputs:
-              ready: {expression}
-            steps:
-              - uses: actions/checkout@v4
-                with:
-                  ref: zel-data-expansion-results-v1
-                  path: results
-                  persist-credentials: false
-              - id: gate
-                name: Require strategy Top3 bundle receipt
-                run: |
-                  set -euo pipefail
-                  python - <<'PY2'
-                  import json
-                  from pathlib import Path
-                  p=Path('results/runtime_results/zel/strategy_top3_bundles_v1/latest.json')
-                  ready=False
-                  if p.is_file():
-                      d=json.loads(p.read_text())
-                      ready=(
-                          d.get('state')=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE'
-                          and d.get('promotion_authority') is False
-                          and d.get('execution_authority')=='NONE'
-                          and d.get('order_authority')=='BLOCKED'
-                      )
-                  Path('/tmp/ready').write_text('true' if ready else 'false')
-                  print({{'top3_receipt_ready':ready}})
-                  PY2
-                  echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"
-          '''
+          block='\n'.join([
+              '  prerequisite:',
+              "    if: github.event_name != 'pull_request'",
+              '    needs: validate',
+              '    runs-on: ubuntu-latest',
+              '    timeout-minutes: 10',
+              '    outputs:',
+              f'      ready: {expression}',
+              '    steps:',
+              '      - uses: actions/checkout@v4',
+              '        with:',
+              '          ref: zel-data-expansion-results-v1',
+              '          path: results',
+              '          persist-credentials: false',
+              '      - id: gate',
+              '        name: Require strategy Top3 bundle receipt',
+              '        run: |',
+              '          set -euo pipefail',
+              "          python - <<'PY2'",
+              '          import json',
+              '          from pathlib import Path',
+              "          p=Path('results/runtime_results/zel/strategy_top3_bundles_v1/latest.json')",
+              '          ready=False',
+              '          if p.is_file():',
+              '              d=json.loads(p.read_text())',
+              '              ready=(',
+              "                  d.get('state')=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE'",
+              "                  and d.get('promotion_authority') is False",
+              "                  and d.get('execution_authority')=='NONE'",
+              "                  and d.get('order_authority')=='BLOCKED'",
+              '              )',
+              "          Path('/tmp/ready').write_text('true' if ready else 'false')",
+              "          print({'top3_receipt_ready':ready})",
+              '          PY2',
+              '          echo "ready=$(cat /tmp/ready)" >> "$GITHUB_OUTPUT"',
+          ])+'\n'
           if '\n  prerequisite:\n' not in text:
               text=text.replace('\n  orchestrate:\n','\n'+block+'\n  orchestrate:\n',1)
           old="  orchestrate:\n    if: github.event_name != 'pull_request'\n    needs: validate\n"
@@ -106,12 +107,18 @@ jobs:
           text=p.read_text()
           parsed=yaml.safe_load(text)
           assert isinstance(parsed,dict),parsed
+          jobs=parsed.get('jobs') or {}
+          prerequisite=jobs.get('prerequisite')
+          assert isinstance(prerequisite,dict),prerequisite
+          assert prerequisite.get('needs')=='validate',prerequisite
+          assert isinstance(prerequisite.get('steps'),list),prerequisite
+          orchestrate=jobs.get('orchestrate')
+          assert isinstance(orchestrate,dict),orchestrate
+          assert orchestrate.get('needs')==['validate','prerequisite'],orchestrate
           header=text.split('\npermissions:',1)[0]
           assert 'schedule:' not in header,header
           assert 'workflow_run:' not in header,header
-          assert '\n  prerequisite:\n' in text
           assert 'PASS_STRATEGY_TOP3_BUNDLES_COMPLETE' in text
-          assert "needs: [validate, prerequisite]" in text
           assert 'gh workflow run zel-historical-oos-1m-resume-v1.yml' not in text
           assert "WAIT_DATA_B_WITHOUT_REDISPATCH" in text
           print('PASS_ALPHA_WORKFLOW_CUTOVER_COPY')

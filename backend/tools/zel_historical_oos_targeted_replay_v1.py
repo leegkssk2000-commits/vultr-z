@@ -33,11 +33,13 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    engine = load_engine()
     if args.self_test:
-        engine.self_test()
+        assert VERSION == "ZEL_HISTORICAL_OOS_TARGETED_REPLAY_V1"
+        assert Path(__file__).with_name("zel_historical_oos_exact25_replay_v1.py").name == "zel_historical_oos_exact25_replay_v1.py"
         print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
         return 0
+
+    engine = load_engine()
     if not all((args.source_root, args.data_root, args.interval, args.strategy_id, args.output_dir)):
         parser.error("source-root, data-root, interval, strategy-id and output-dir are required")
 

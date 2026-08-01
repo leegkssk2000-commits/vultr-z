@@ -1,0 +1,81 @@
+name: ZEL BingX Private History Run Index V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-bingx-private-history-run-index-v1.yml
+  workflow_run:
+    workflows: ["ZEL BingX Private History Audit V1"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: zel-bingx-private-history-run-index-v1
+  cancel-in-progress: false
+
+jobs:
+  publish-sanitized-run-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve latest master audit run without private payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for attempt in $(seq 1 60); do
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-bingx-private-history-audit-v1.yml/runs?branch=master&event=push&per_page=1" > /tmp/runs.json
+            python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          d=json.loads(Path('/tmp/runs.json').read_text())
+          rows=d.get('workflow_runs') or []
+          if not rows:
+              sys.exit(2)
+          r=rows[0]
+          out={
+              'schema_version':'zel.bingx.private_history.run_index.v1',
+              'workflow_name':r.get('name'),
+              'run_id':r.get('id'),
+              'run_number':r.get('run_number'),
+              'status':r.get('status'),
+              'conclusion':r.get('conclusion'),
+              'head_sha':r.get('head_sha'),
+              'event':r.get('event'),
+              'created_at':r.get('created_at'),
+              'updated_at':r.get('updated_at'),
+              'artifact_name':f"zel-bingx-private-history-encrypted-v1-{r.get('id')}",
+              'private_payload_included':False,
+              'api_credentials_included':False,
+              'order_authority':'BLOCKED',
+              'execution_authority':'NONE',
+              'action':'hold',
+          }
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          if r.get('status')!='completed':
+              sys.exit(3)
+          PY
+            rc=$?
+            if [ "$rc" -eq 0 ]; then break; fi
+            if [ "$attempt" -eq 60 ]; then exit "$rc"; fi
+            sleep 15
+          done
+      - name: Publish sanitized index to result authority
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          mkdir -p results/runtime_results/zel/bingx_private_history_audit_v1
+          cp out/latest.json results/runtime_results/zel/bingx_private_history_audit_v1/latest.json
+          cd results
+          git config user.name 'zel-bingx-private-history-index-bot'
+          git config user.email 'zel-bingx-private-history-index-bot@users.noreply.github.com'
+          git add runtime_results/zel/bingx_private_history_audit_v1/latest.json
+          git commit -m "result(zel): index encrypted BingX history run ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1

@@ -1,0 +1,213 @@
+name: ZEL Data B Risk Adapter Ablation V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_data_b_risk_adapter_ablation_v1.py
+      - .github/workflows/zel-data-b-risk-adapter-ablation-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_data_b_risk_adapter_ablation_v1.py
+      - .github/workflows/zel-data-b-risk-adapter-ablation-v1.yml
+  workflow_run:
+    workflows:
+      - ZEL Trade Methods Risk Sequence Replay V1
+      - ZEL Historical OOS 1m Resume V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-risk-adapter-ablation-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate ablation engine
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_data_b_risk_adapter_ablation_v1.py
+          python backend/tools/zel_data_b_risk_adapter_ablation_v1.py --self-test
+
+  ablate:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Verify prerequisite authorities
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          seq=json.loads(Path('results/runtime_results/zel/trade_methods_risk_sequence_replay_v1/latest.json').read_text())
+          assert seq['state']=='PASS_NO_LOOKAHEAD_RISK_SEQUENCE_REPLAY',seq
+          assert seq['no_lookahead_proved'] is True,seq
+          assert seq['data_b_binding_allowed'] is True,seq
+          combined=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json').read_text())
+          assert combined['state']=='PASS',combined
+          assert combined['verdict']=='HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',combined
+          assert combined['promotion_authority'] is False,combined
+          PY
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload engines and adapter
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_data_b_risk_adapter_ablation_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/research/adapters/zel_trade_method_risk_mode_adapter_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Ensure exact Data B trade ledgers and run ablation
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          SOURCE=/opt/zel/forward-expansion-v1/source
+          DATA=/opt/zel/historical-oos-v1
+          for interval in 15m 1m; do
+            out="/tmp/zel_historical_oos_exact25_replay_v1_${interval}"
+            if [ ! -s "$out/trades.jsonl.gz" ] || [ ! -s "$out/report.json" ]; then
+              rm -rf "$out"
+              mkdir -p "$out"
+              "$PY" /tmp/zel_historical_oos_exact25_replay_v1.py \
+                --source-root "$SOURCE" \
+                --data-root "$DATA" \
+                --interval "$interval" \
+                --output-dir "$out" \
+                --workers 4
+            fi
+          done
+          rm -rf /tmp/zel_data_b_risk_adapter_ablation_v1
+          mkdir -p /tmp/zel_data_b_risk_adapter_ablation_v1
+          "$PY" /tmp/zel_data_b_risk_adapter_ablation_v1.py \
+            --adapter /tmp/zel_trade_method_risk_mode_adapter_v1.py \
+            --trades-15m /tmp/zel_historical_oos_exact25_replay_v1_15m/trades.jsonl.gz \
+            --trades-1m /tmp/zel_historical_oos_exact25_replay_v1_1m/trades.jsonl.gz \
+            --report-15m /tmp/zel_historical_oos_exact25_replay_v1_15m/report.json \
+            --report-1m /tmp/zel_historical_oos_exact25_replay_v1_1m/report.json \
+            --output-dir /tmp/zel_data_b_risk_adapter_ablation_v1
+          tar -C /tmp/zel_data_b_risk_adapter_ablation_v1 -czf /tmp/zel_data_b_risk_adapter_ablation_v1.tar.gz .
+          REMOTE
+
+      - name: Fetch ablation result
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_risk_adapter_ablation_v1.tar.gz" \
+            /tmp/ablation.tar.gz
+          tar -C out -xzf /tmp/ablation.tar.gz
+
+      - name: Assert terminal contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_DATA_B_RISK_ADAPTER_ABLATION',d
+          assert d['strategy_count']==25,d
+          assert d['intervals']==['15m','1m'],d
+          assert d['total_closed_trade_count']==sum(v['closed_trade_count'] for v in d['source'].values()),d
+          assert d['policy']['no_lookahead'] is True,d
+          assert d['policy']['window_reset'] is True,d
+          assert d['policy']['block_scope']=='REMAINDER_OF_SEALED_WINDOW',d
+          assert d['economic_improvement_claim_allowed'] is False,d
+          assert d['interaction_admission_allowed'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['canonical_trade_methods_mutated'] is False,d
+          assert d['canonical_registry_mutated'] is False,d
+          assert d['runtime_binding_allowed'] is False,d
+          assert d['shadow_start_allowed'] is False,d
+          assert d['selection_authority'] is False and d['promotion_authority'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          assert len(d['strategies'])==25,d
+          PY
+
+      - name: Publish Data B Risk main-effect SSOT
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-data-b-risk-ablation-bot'
+          git config user.email 'zel-data-b-risk-ablation-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/data_b_risk_adapter_ablation_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp out/scoreboard.csv "$root/scoreboard_latest.csv"
+          cd results
+          git add runtime_results/zel/data_b_risk_adapter_ablation_v1
+          git commit -m "result(zel): Data B Risk adapter ablation ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('out/latest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as h:
+              h.write('# ZEL Data B Risk Adapter Ablation V1\n\n')
+              if not p.exists():
+                  h.write('- State: **HOLD_NO_RESULT**\n')
+              else:
+                  d=json.loads(p.read_text())
+                  h.write(f"- State: **{d['state']}**\n")
+                  h.write(f"- Strategies: {d['strategy_count']}\n")
+                  h.write(f"- Closed trades: {d['total_closed_trade_count']}\n")
+                  h.write(f"- Classifications: `{d['classification_counts']}`\n")
+                  h.write('- Interaction admission: **false pending review**\n')
+                  h.write('- Shadow start: **false**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-risk-adapter-ablation-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

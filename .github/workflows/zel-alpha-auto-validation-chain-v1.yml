@@ -1,0 +1,468 @@
+name: ZEL Alpha Auto Validation Chain V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_forward_window_collector_v1.py
+      - backend/tools/zel_alpha_combo_validation_chain_v1.py
+      - backend/research/zel_alpha_combo_improvement_request_v1.json
+      - .github/workflows/zel-alpha-auto-validation-chain-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_forward_window_collector_v1.py
+      - backend/tools/zel_alpha_combo_validation_chain_v1.py
+      - backend/research/zel_alpha_combo_improvement_request_v1.json
+      - .github/workflows/zel-alpha-auto-validation-chain-v1.yml
+  schedule:
+    - cron: '17 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Historical OOS 1m Resume V1
+      - ZEL W1 AI Strategy Improvement Epoch1 V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-alpha-auto-validation-chain-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  W1_END: '2026-08-01T08:30:00Z'
+  W2_END: '2026-08-06T08:30:00Z'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-alpha-primary-w1-multiobjective-v1
+          path: alpha-code
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pandas numpy
+      - name: Validate chain code and safety contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_forward_window_collector_v1.py \
+            backend/tools/zel_alpha_combo_validation_chain_v1.py
+          python -m json.tool backend/research/zel_alpha_combo_improvement_request_v1.json >/dev/null
+          python - <<'PY'
+          import importlib.util,json,sys
+          from pathlib import Path
+          request=json.loads(Path('backend/research/zel_alpha_combo_improvement_request_v1.json').read_text())
+          assert request['target_strategy']=='alpha_combo'
+          assert request['required_validation_order']==[
+              'W1_DIAGNOSIS','DATA_B_15M_AND_1M_REPLAY','W2_NEW_FORWARD',
+              'W3_TEMPORAL_DURABILITY','SEALED_FINAL_HOLDOUT','REAL_SHADOW'
+          ]
+          assert request['max_changed_parameters_per_hypothesis']==1
+          assert request['promotion_authority'] is False
+          assert request['execution_authority']=='NONE'
+          assert request['order_authority']=='BLOCKED'
+          path=Path('backend/tools/zel_forward_window_collector_v1.py')
+          spec=importlib.util.spec_from_file_location('collector_fixture',path)
+          module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+          assert module.parse_utc_ms('2026-08-01T08:30:00Z')==1785573000000
+          assert module.WARMUP_BARS==220
+          assert module.TARGET_BARS_DEFAULT==480
+          PY
+
+  orchestrate:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Checkout immutable historical data
+        uses: actions/checkout@v4
+        with:
+          ref: zel-historical-oos-data-v1
+          path: historical
+          persist-credentials: false
+
+      - name: Checkout Alpha research authority code
+        uses: actions/checkout@v4
+        with:
+          ref: r7a4d-strategy11-alpha-primary-w1-multiobjective-v1
+          path: alpha-code
+          persist-credentials: false
+
+      - name: Checkout W2 append-only data
+        uses: actions/checkout@v4
+        with:
+          ref: strategy11-w2-data-v1
+          path: w2-data
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Checkout W3 append-only data
+        uses: actions/checkout@v4
+        with:
+          ref: strategy11-w3-data-v1
+          path: w3-data
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy groq
+
+      - name: Download immutable Alpha baseline authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-evidence-batch-1-30252022416-attempt-1
+          path: input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30252022416'
+
+      - name: Download immutable Alpha multiobjective authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+          path: input/multiobjective
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30345463070'
+
+      - name: Resolve Data B terminal gate
+        id: datab
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          combined=results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json
+          mkdir -p out/status
+          if [ -s "$combined" ]; then
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            d=json.loads(Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json').read_text())
+            assert d['state']=='PASS',d
+            assert d['verdict']=='HISTORICAL_OOS_EXACT25_MULTI_TIMEFRAME_COMPLETE',d
+            assert d['promotion_authority'] is False,d
+            assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+            PY
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          active=$(gh run list --workflow zel-historical-oos-1m-resume-v1.yml --limit 20 --json status --jq '[.[]|select(.status=="queued" or .status=="in_progress")]|length' || echo 0)
+          if [ "$active" = 0 ]; then
+            gh workflow run zel-historical-oos-1m-resume-v1.yml --ref master
+          fi
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          d={
+            'schema_version':'zel.alpha_auto_chain.status.v1',
+            'state':'WAIT_DATA_B_1M_TERMINAL',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'w2_started':False,'w3_started':False,
+            'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          Path('out/status/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+          echo 'ready=false' >> "$GITHUB_OUTPUT"
+
+      - name: Build Alpha W1 plus Data B evidence
+        if: steps.datab.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p out/alpha-ai/input out/alpha-ai/gemini out/alpha-ai/reviews
+          python - <<'PY'
+          import csv,hashlib,json
+          from pathlib import Path
+          w1_path=Path('results/runtime_results/zel/w1_performance_report_20260801/latest.json')
+          combined_path=Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/combined_latest.json')
+          score_path=Path('results/runtime_results/zel/historical_oos_exact25_replay_v1/15m/scoreboard_latest.csv')
+          w1=json.loads(w1_path.read_text()); combined=json.loads(combined_path.read_text())
+          alpha=next(row for row in csv.DictReader(score_path.open()) if row['strategy_id']=='alpha_combo')
+          variants=w1['alpha']['variants']
+          control={
+            'trade_count':int(alpha['close_count']),
+            'net_R':float(alpha['net_R_ex_funding']),
+            'expectancy_R':float(alpha['expectancy_R_ex_funding']),
+            'profit_factor':float(alpha['profit_factor_ex_funding']),
+            'max_drawdown_R':float(alpha['max_drawdown_R_ex_funding']),
+            'win_rate_pct':float(alpha['win_rate_pct']),
+            'average_MFE_R':float(alpha['average_MFE_R']),
+            'average_MAE_R':float(alpha['average_MAE_R']),
+            'average_exposure_min':float(alpha['average_exposure_min']),
+          }
+          payload={
+            'schema_version':'zel.alpha_combo.ai_evidence.v1',
+            'strategy_id':'alpha_combo','strategy_variant':'TIME54_TIME60_DUAL_CONTROL',
+            'state':'W1_AND_DATA_B_DIAGNOSIS_COMPLETE',
+            'data_fingerprint':hashlib.sha256((w1_path.read_bytes()+combined_path.read_bytes())).hexdigest(),
+            'result_sha256':None,
+            'source_authority':{
+              'ledger_sha256':w1['source_artifact_digest'].removeprefix('sha256:'),
+              'summary_sha256':hashlib.sha256(w1_path.read_bytes()).hexdigest(),
+              'w1_run_id':w1['source_run_id'],
+              'data_b_combined_sha256':hashlib.sha256(combined_path.read_bytes()).hexdigest(),
+            },
+            'control':{'stats':control},
+            'full_stack':{'stats':control},
+            'convergence':{'low_sample_hold':False},
+            'pipeline_decisions':{
+              'failure_fingerprint':'W1_ALL_VARIANTS_NEGATIVE_AND_DATAB_15M_UNSTABLE',
+              'W1_TIME54':variants['TIME54'],
+              'W1_TIME60':variants['TIME60'],
+              'causal_priority':['EXIT_CAPTURE','TIME_EXPOSURE','REGIME_FILTER'],
+              'validation_order':['DATA_B_CHILD_REPLAY','W2_NEW_FORWARD','W3_DURABILITY'],
+            },
+            'module_results':{},
+            'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED'
+          }
+          payload['result_sha256']=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/alpha-ai/input/evidence.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Run Gemini Alpha hypothesis research
+        if: steps.datab.outputs.ready == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          python control/backend/tools/zel_manual_multiaxis_gemini_v2.py run \
+            --result out/alpha-ai/input/evidence.json \
+            --registry control/backend/research/zel_manual_video_registry_v1.json \
+            --request control/backend/research/zel_alpha_combo_improvement_request_v1.json \
+            --out out/alpha-ai/gemini
+
+      - name: Run Groq and Workers Alpha red-team
+        if: steps.datab.outputs.ready == 'true'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          for input in out/alpha-ai/gemini/hypotheses/*.json; do
+            [ -e "$input" ] || continue
+            id=$(basename "$input" .json)
+            set +e
+            timeout 120s python control/scripts/strategy11_ai_review_router.py \
+              --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS --mode execute \
+              --input "$input" \
+              --gemini-artifact out/alpha-ai/gemini/gemini_artifact.json \
+              --output "out/alpha-ai/reviews/${id}.json"
+            rc=$?
+            set -e
+            test -s "out/alpha-ai/reviews/${id}.json" || { echo "AI_REVIEW_RECEIPT_MISSING:$id:rc=$rc"; exit 1; }
+          done
+
+      - name: Run deterministic Alpha Data B multi-timeframe replay
+        id: alpha_datab
+        if: steps.datab.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          baseline=$(find input/evidence -path '*/alpha_combo/summary.json' -print -quit)
+          test -n "$baseline"
+          python control/backend/tools/zel_alpha_combo_validation_chain_v1.py \
+            --mode data-b \
+            --alpha-root alpha-code \
+            --baseline-summary "$baseline" \
+            --multiobjective-root input/multiobjective \
+            --data-root historical/zel_historical_oos_v1 \
+            --out out/alpha-datab
+          state=$(python -c "import json;print(json.load(open('out/alpha-datab/latest.json'))['state'])")
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+
+      - name: Collect W2 exact forward window
+        id: w2
+        if: steps.alpha_datab.outputs.state == 'PASS_DATA_B_ALPHA_CANDIDATE'
+        run: |
+          set -euo pipefail
+          python control/backend/tools/zel_forward_window_collector_v1.py \
+            --stage W2 --authority-end "$W1_END" --target-bars 480 \
+            --data-root w2-data/strategy11_w2_stream_v1 \
+            --status-out w2-data/strategy11_w2_stream_v1/status_latest.json
+          ready=$(python -c "import json;print(str(json.load(open('w2-data/strategy11_w2_stream_v1/manifest.json'))['window_ready']).lower())")
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Persist W2 append-only data
+        if: steps.alpha_datab.outputs.state == 'PASS_DATA_B_ALPHA_CANDIDATE'
+        working-directory: w2-data
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-w2-data-bot'
+          git config user.email 'zel-w2-data-bot@users.noreply.github.com'
+          git add strategy11_w2_stream_v1
+          if git diff --cached --quiet; then exit 0; fi
+          available=$(python -c "import json;print(json.load(open('strategy11_w2_stream_v1/manifest.json'))['available_non_overlap_bars'])")
+          git commit -m "data(zel): W2 forward ${available}/480"
+          git pull --rebase origin strategy11-w2-data-v1
+          git push origin HEAD:strategy11-w2-data-v1
+
+      - name: Validate Alpha on W2
+        id: w2_result
+        if: steps.w2.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          baseline=$(find input/evidence -path '*/alpha_combo/summary.json' -print -quit)
+          python control/backend/tools/zel_alpha_combo_validation_chain_v1.py \
+            --mode forward --stage W2 \
+            --alpha-root alpha-code \
+            --baseline-summary "$baseline" \
+            --multiobjective-root input/multiobjective \
+            --source-root w2-data/strategy11_w2_stream_v1/source \
+            --out out/w2-result
+          state=$(python -c "import json;print(json.load(open('out/w2-result/latest.json'))['state'])")
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+
+      - name: Collect W3 exact forward window
+        id: w3
+        if: steps.w2_result.outputs.state == 'PASS_W2_ALPHA_CONFIRMATION'
+        run: |
+          set -euo pipefail
+          python control/backend/tools/zel_forward_window_collector_v1.py \
+            --stage W3 --authority-end "$W2_END" --target-bars 480 \
+            --data-root w3-data/strategy11_w3_stream_v1 \
+            --status-out w3-data/strategy11_w3_stream_v1/status_latest.json
+          ready=$(python -c "import json;print(str(json.load(open('w3-data/strategy11_w3_stream_v1/manifest.json'))['window_ready']).lower())")
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Persist W3 append-only data
+        if: steps.w2_result.outputs.state == 'PASS_W2_ALPHA_CONFIRMATION'
+        working-directory: w3-data
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-w3-data-bot'
+          git config user.email 'zel-w3-data-bot@users.noreply.github.com'
+          git add strategy11_w3_stream_v1
+          if git diff --cached --quiet; then exit 0; fi
+          available=$(python -c "import json;print(json.load(open('strategy11_w3_stream_v1/manifest.json'))['available_non_overlap_bars'])")
+          git commit -m "data(zel): W3 forward ${available}/480"
+          git pull --rebase origin strategy11-w3-data-v1
+          git push origin HEAD:strategy11-w3-data-v1
+
+      - name: Validate Alpha on W3
+        id: w3_result
+        if: steps.w3.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          baseline=$(find input/evidence -path '*/alpha_combo/summary.json' -print -quit)
+          python control/backend/tools/zel_alpha_combo_validation_chain_v1.py \
+            --mode forward --stage W3 \
+            --alpha-root alpha-code \
+            --baseline-summary "$baseline" \
+            --multiobjective-root input/multiobjective \
+            --source-root w3-data/strategy11_w3_stream_v1/source \
+            --out out/w3-result
+
+      - name: Build chain terminal status
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          def load(path):
+              p=Path(path)
+              return json.loads(p.read_text()) if p.exists() else None
+          datab=load('out/alpha-datab/latest.json')
+          w2_manifest=load('w2-data/strategy11_w2_stream_v1/manifest.json')
+          w2=load('out/w2-result/latest.json')
+          w3_manifest=load('w3-data/strategy11_w3_stream_v1/manifest.json')
+          w3=load('out/w3-result/latest.json')
+          wait=load('out/status/latest.json')
+          if wait:
+              state=wait['state']; next_step='DATA_B_1M_TERMINAL'
+          elif not datab:
+              state='HOLD_ALPHA_DATAB_RESULT_MISSING'; next_step='RETRY_ALPHA_DATAB'
+          elif datab['state']!='PASS_DATA_B_ALPHA_CANDIDATE':
+              state=datab['state']; next_step='ALPHA_NEW_CAUSAL_AXIS_OR_RETAIN_CONTROLS'
+          elif not w2_manifest or not w2_manifest.get('window_ready'):
+              state='W2_FORWARD_COLLECTING'; next_step='W2_480_BARS'
+          elif not w2 or w2['state']!='PASS_W2_ALPHA_CONFIRMATION':
+              state=w2['state'] if w2 else 'HOLD_W2_RESULT_MISSING'; next_step='HOLD_RETAIN_CONTROLS'
+          elif not w3_manifest or not w3_manifest.get('window_ready'):
+              state='W3_FORWARD_COLLECTING'; next_step='W3_480_BARS'
+          elif not w3 or w3['state']!='PASS_W3_ALPHA_CONFIRMATION':
+              state=w3['state'] if w3 else 'HOLD_W3_RESULT_MISSING'; next_step='HOLD_RETAIN_CONTROLS'
+          else:
+              state='PASS_ALPHA_W1_DATAB_W2_W3_READY_FOR_NEW_SEALED'; next_step='SEALED_FINAL_HOLDOUT_PREP'
+          payload={
+            'schema_version':'zel.alpha_auto_chain.status.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,'next':next_step,
+            'data_b_alpha':datab,
+            'w2_manifest':w2_manifest,'w2_result':w2,
+            'w3_manifest':w3_manifest,'w3_result':w3,
+            'canonical_strategy_files_mutated':False,'canonical_registry_mutated':False,
+            'sealed_holdback_accessed':False,'promotion_authority':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED',
+            'paper_enabled':False,'live_enabled':False,'action':'hold'
+          }
+          Path('out/terminal').mkdir(parents=True,exist_ok=True)
+          Path('out/terminal/latest.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish chain results
+        if: always()
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-alpha-chain-bot'
+          git config user.email 'zel-alpha-chain-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          base=results/runtime_results/zel/alpha_auto_validation_chain_v1
+          mkdir -p "$base"
+          cp out/terminal/latest.json "$base/latest.json"
+          cp out/terminal/latest.json "$base/run_${GITHUB_RUN_ID}.json"
+          if [ -s out/alpha-ai/gemini/gemini_artifact.json ]; then
+            cp out/alpha-ai/gemini/gemini_artifact.json "$base/alpha_gemini_latest.json"
+          fi
+          if [ -s out/alpha-datab/latest.json ]; then cp out/alpha-datab/latest.json "$base/data_b_latest.json"; fi
+          if [ -s out/w2-result/latest.json ]; then cp out/w2-result/latest.json "$base/w2_latest.json"; fi
+          if [ -s out/w3-result/latest.json ]; then cp out/w3-result/latest.json "$base/w3_latest.json"; fi
+          cd results
+          git add runtime_results/zel/alpha_auto_validation_chain_v1
+          if git diff --cached --quiet; then exit 0; fi
+          state=$(python -c "import json;print(json.load(open('runtime_results/zel/alpha_auto_validation_chain_v1/latest.json'))['state'])")
+          git commit -m "result(zel): Alpha auto chain ${state} ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-auto-validation-chain-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

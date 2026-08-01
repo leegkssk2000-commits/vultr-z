@@ -1,0 +1,154 @@
+name: ZEL BingX Private History Since 2026 V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_private_history_since_2026_v1.py
+      - .github/workflows/zel-bingx-private-history-since-2026-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_private_history_since_2026_v1.py
+      - .github/workflows/zel-bingx-private-history-since-2026-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-bingx-private-history-since-2026-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate fixed-date read-only audit
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bingx_private_history_since_2026_v1.py
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          p=Path('backend/tools/zel_bingx_private_history_since_2026_v1.py')
+          s=importlib.util.spec_from_file_location('audit_since_2026',p)
+          m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+          assert m.START_UTC.isoformat()=='2026-01-01T00:00:00+00:00'
+          text=p.read_text()
+          assert 'write_endpoint_called' in text
+          assert 'order_authority' in text and 'BLOCKED' in text
+          assert 'execution_authority' in text and 'NONE' in text
+          print('PASS_BINGX_HISTORY_SINCE_2026_CONTRACT')
+          PY
+
+  collect:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-client
+          python -m pip install --disable-pip-version-check --quiet cryptography
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload read-only clients
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_bingx_private_history_fetch_v1.py \
+            backend/tools/zel_bingx_private_history_since_2026_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Query 2026-01-01 through current time
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          PY=/home/z/z/.venv/bin/python
+          if [ ! -x "$PY" ]; then PY=python3; fi
+          rm -f /tmp/zel_bingx_since_2026_raw.json /tmp/zel_bingx_since_2026_summary.json
+          "$PY" /tmp/zel_bingx_private_history_since_2026_v1.py \
+            --base-client /tmp/zel_bingx_private_history_fetch_v1.py \
+            --raw-out /tmp/zel_bingx_since_2026_raw.json \
+            --summary-out /tmp/zel_bingx_since_2026_summary.json \
+            >/tmp/zel_bingx_since_2026.status \
+            2>/tmp/zel_bingx_since_2026.err
+          test -s /tmp/zel_bingx_since_2026_raw.json
+          test -s /tmp/zel_bingx_since_2026_summary.json
+          REMOTE
+          echo 'PASS_BINGX_HISTORY_SINCE_2026_REMOTE'
+      - name: Fetch results to ephemeral runner
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zel-private out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_bingx_since_2026_raw.json" \
+            /tmp/zel-private/raw.json
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_bingx_since_2026_summary.json" \
+            out/zel_bingx_since_2026_summary.json
+          test -s /tmp/zel-private/raw.json
+          test -s out/zel_bingx_since_2026_summary.json
+      - name: Encrypt raw private result
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          raw_path=Path('/tmp/zel-private/raw.json')
+          raw=raw_path.read_bytes()
+          pub=serialization.load_pem_public_key(Path('backend/research/zel_bingx_audit_public_key_v1.pem').read_bytes())
+          key=AESGCM.generate_key(bit_length=256)
+          nonce=os.urandom(12)
+          aad=b'zel-bingx-private-history-since-2026-v1'
+          ciphertext=AESGCM(key).encrypt(nonce,raw,aad)
+          encrypted_key=pub.encrypt(key,padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          package={
+            'schema_version':'zel.encrypted.private_artifact.v1',
+            'algorithm':'RSA-OAEP-SHA256+A256GCM',
+            'aad':base64.b64encode(aad).decode(),
+            'encrypted_key':base64.b64encode(encrypted_key).decode(),
+            'nonce':base64.b64encode(nonce).decode(),
+            'ciphertext':base64.b64encode(ciphertext).decode(),
+            'plaintext_sha256':hashlib.sha256(raw).hexdigest(),
+          }
+          Path('out/zel_bingx_since_2026_raw.enc.json').write_text(json.dumps(package,separators=(',',':'))+'\n')
+          raw_path.unlink()
+          print('PASS_BINGX_HISTORY_SINCE_2026_ENCRYPTED')
+          PY
+      - name: Remove VPS temporary private results
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_bingx_private_history_fetch_v1.py /tmp/zel_bingx_private_history_since_2026_v1.py /tmp/zel_bingx_since_2026_raw.json /tmp/zel_bingx_since_2026_summary.json /tmp/zel_bingx_since_2026.status /tmp/zel_bingx_since_2026.err' \
+            >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-bingx-private-history-since-2026-v1-${{ github.run_id }}
+          path: |
+            out/zel_bingx_since_2026_summary.json
+            out/zel_bingx_since_2026_raw.enc.json
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,113 @@
+name: ZEL ALIMI Feature Install Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_feature_install_audit_v1.py
+      - .github/workflows/zel-alimi-feature-install-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_feature_install_audit_v1.py
+      - .github/workflows/zel-alimi-feature-install-audit-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-alimi-feature-install-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only source
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_alimi_feature_install_audit_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_alimi_feature_install_audit_v1.py').read_text()
+          for x in ('systemctl restart','systemctl reload','systemctl stop','systemctl start','rm -rf','unlink(','rmtree(','write_text(text'):
+              assert x not in t,x
+          assert "'view_mutated': False" in t
+          assert "'frontend_mutated': False" in t
+          assert "'account_balance_semantics': 'REAL_BINGX_LIVE_ACCOUNT_BALANCE_READ_ONLY'" in t
+          assert "'execution_authority': 'NONE'" in t
+          assert "'order_authority': 'BLOCKED'" in t
+          print('PASS_ALIMI_FEATURE_INSTALL_AUDIT_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_feature_install_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_feature_install_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_feature_install_audit_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_feature_install_audit_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_feature_install_audit_v1.py /tmp/zel_alimi_feature_install_audit_v1.json' || true
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_READ_ONLY_ALIMI_FEATURE_INSTALL_AUDIT',d
+          assert d['active_html']['path'],d
+          assert d['policy']['account_balance_semantics']=='REAL_BINGX_LIVE_ACCOUNT_BALANCE_READ_ONLY',d
+          assert d['policy']['view_mutation_allowed'] is False,d
+          s=d['safety']
+          assert s['read_only'] is True and s['frontend_mutated'] is False and s['view_mutated'] is False,d
+          assert s['runtime_mutated'] is False and s['service_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          print(json.dumps({'active_html':d['active_html'],'components':{k:v['state'] for k,v in d['components'].items()}},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/alimi_feature_install_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-alimi-feature-audit-bot'
+          git config user.email 'zel-alimi-feature-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/alimi_feature_install_audit_v1
+          git commit -m "result(zel): ALIMI feature install audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alimi-feature-install-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

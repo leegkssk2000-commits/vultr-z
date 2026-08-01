@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -12,9 +13,10 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE_PATH = ROOT / "backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py"
-VERSION = "ZEL_FORWARD_WINDOW_COLLECTOR_V1"
+VERSION = "ZEL_FORWARD_WINDOW_COLLECTOR_V1_1"
 INTERVAL_MS = 900_000
 TARGET_BARS_DEFAULT = 480
+WARMUP_BARS = 220
 
 
 def load_base() -> Any:
@@ -38,6 +40,10 @@ def parse_utc_ms(value: str) -> int:
     else:
         ts = ts.tz_convert("UTC")
     return int(ts.timestamp() * 1000)
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def validate_frame(frame: pd.DataFrame, first_ms: int, last_ms: int) -> None:
@@ -68,14 +74,13 @@ def validate_frame(frame: pd.DataFrame, first_ms: int, last_ms: int) -> None:
         raise RuntimeError("LOW_INVARIANT")
 
 
-def wait_manifest(stage: str, authority_end_ms: int, target_bars: int, status_out: Path) -> int:
+def base_safe(stage: str, authority_end_ms: int, target_bars: int) -> dict[str, Any]:
     first_ms = authority_end_ms + INTERVAL_MS
     target_end_ms = authority_end_ms + target_bars * INTERVAL_MS
-    payload = {
+    return {
         "schema_version": "zel.forward_window.v1",
         "version": VERSION,
         "stage": stage,
-        "state": "PASS_WAIT_FIRST_CLOSED_BAR",
         "blockers": [],
         "authority_end_ms": authority_end_ms,
         "authority_end": base.iso(authority_end_ms),
@@ -83,13 +88,8 @@ def wait_manifest(stage: str, authority_end_ms: int, target_bars: int, status_ou
         "first_evaluation": base.iso(first_ms),
         "target_end_ms": target_end_ms,
         "target_end": base.iso(target_end_ms),
-        "latest_closed_end_ms": None,
-        "latest_closed_end": None,
-        "available_non_overlap_bars": 0,
         "target_bars": target_bars,
-        "missing_to_target": target_bars,
-        "window_ready": False,
-        "symbols": [],
+        "warmup_bars": WARMUP_BARS,
         "canonical_mutated": False,
         "registry_mutated": False,
         "protected_mutations": 0,
@@ -99,10 +99,117 @@ def wait_manifest(stage: str, authority_end_ms: int, target_bars: int, status_ou
         "paper_enabled": False,
         "live_enabled": False,
     }
+
+
+def write_wait(stage: str, authority_end_ms: int, target_bars: int, status_out: Path) -> int:
+    payload = {
+        **base_safe(stage, authority_end_ms, target_bars),
+        "state": f"PASS_{stage}_WAIT_FIRST_CLOSED_BAR",
+        "latest_closed_end_ms": None,
+        "latest_closed_end": None,
+        "available_non_overlap_bars": 0,
+        "missing_to_target": target_bars,
+        "window_ready": False,
+        "symbols": [],
+        "source_snapshot_ready": False,
+        "source_manifest_sha256": None,
+    }
     base.atomic_json(status_out.parent / "manifest.json", payload)
     base.atomic_json(status_out, payload)
     print(json.dumps({"stage": stage, "state": payload["state"], "available": 0, "missing": target_bars}, sort_keys=True))
     return 0
+
+
+def build_exact_source(
+    *,
+    stage: str,
+    authority_end_ms: int,
+    target_bars: int,
+    root: Path,
+) -> str:
+    evaluation_start_ms = authority_end_ms + INTERVAL_MS
+    evaluation_end_ms = authority_end_ms + target_bars * INTERVAL_MS
+    fetch_start_ms = evaluation_start_ms - WARMUP_BARS * INTERVAL_MS
+    expected_rows = target_bars + WARMUP_BARS
+    source_root = root / "source"
+    files: list[dict[str, Any]] = []
+
+    for symbol in base.SYMBOLS:
+        frame, endpoint, requests = base.fetch_klines(symbol, fetch_start_ms, evaluation_end_ms)
+        validate_frame(frame, fetch_start_ms, evaluation_end_ms)
+        if len(frame) != expected_rows:
+            raise RuntimeError(f"SOURCE_ROWS:{symbol}:{len(frame)}!={expected_rows}")
+        path = source_root / "data" / "market" / f"{stage}-{symbol}.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(path, index=False)
+        files.append({
+            "window_id": stage,
+            "symbol": symbol,
+            "path": str(path.relative_to(source_root)),
+            "sha256": sha256(path),
+            "source": endpoint,
+            "request_count": requests,
+            "rows": len(frame),
+            "fetch_start_ms": fetch_start_ms,
+            "evaluation_start_ms": evaluation_start_ms,
+            "evaluation_end_ms": evaluation_end_ms,
+        })
+
+    funding_sources: dict[str, str] = {}
+    funding_counts: dict[str, int] = {}
+    for symbol in base.SYMBOLS:
+        rows, endpoint = base.fetch_funding(symbol, evaluation_start_ms, evaluation_end_ms)
+        path = source_root / "data" / "funding" / f"{symbol}.json"
+        base.atomic_json(path, {"symbol": symbol, "source": endpoint, "rows": rows})
+        funding_sources[symbol] = endpoint
+        funding_counts[symbol] = len(rows)
+
+    manifest = {
+        "schema_version": "zel.forward_exact_source.v1",
+        "pipeline_version": VERSION,
+        "state": "PASS",
+        "blockers": [],
+        "window_id": stage,
+        "interval_ms": INTERVAL_MS,
+        "warmup_bars": WARMUP_BARS,
+        "evaluation_bars": target_bars,
+        "evaluation_start_ms": evaluation_start_ms,
+        "evaluation_start": base.iso(evaluation_start_ms),
+        "evaluation_end_ms": evaluation_end_ms,
+        "evaluation_end": base.iso(evaluation_end_ms),
+        "files": files,
+        "funding_sources": funding_sources,
+        "funding_event_counts": funding_counts,
+        "canonical_mutated": False,
+        "registry_mutated": False,
+        "protected_mutations": 0,
+        "execution_allowed": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+    }
+    manifest_path = source_root / "data" / "manifest.json"
+    base.atomic_json(manifest_path, manifest)
+    manifest_sha = sha256(manifest_path)
+    status = {
+        "schema_version": "zel.forward_exact_source.status.v1",
+        "state": "PASS",
+        "blockers": [],
+        "stage": stage,
+        "available_non_overlap_bars": target_bars,
+        "missing_bars": 0,
+        "next_eligible_window_end": base.iso(evaluation_end_ms),
+        "W1_manifest_sha256": manifest_sha,
+        "source_manifest_sha256": manifest_sha,
+        "promotion_authority": False,
+        "canonical_mutated": False,
+        "registry_mutated": False,
+        "protected_mutations": 0,
+        "execution_allowed": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+    }
+    base.atomic_json(source_root / "status.json", status)
+    return manifest_sha
 
 
 def main() -> int:
@@ -131,9 +238,9 @@ def main() -> int:
     status_out = Path(args.status_out).resolve()
     root.mkdir(parents=True, exist_ok=True)
     if effective_end < first_ms:
-        return wait_manifest(stage, authority_end_ms, target_bars, status_out)
+        return write_wait(stage, authority_end_ms, target_bars, status_out)
 
-    rows: list[dict[str, Any]] = []
+    symbol_rows: list[dict[str, Any]] = []
     total_added = 0
     for symbol in base.SYMBOLS:
         market_path = root / "market" / f"{symbol}.csv"
@@ -177,14 +284,14 @@ def main() -> int:
             raise RuntimeError(f"FUNDING_EMPTY:{symbol}")
         base.atomic_json(funding_path, {"symbol": symbol, "rows": old_funding, "source": funding_endpoint})
 
-        rows.append({
+        symbol_rows.append({
             "symbol": symbol,
             "rows": len(combined),
             "added_rows": added,
             "first_timestamp_ms": int(combined["timestamp_ms"].iloc[0]),
             "last_timestamp_ms": int(combined["timestamp_ms"].iloc[-1]),
-            "market_sha256": base.sha256(market_path),
-            "funding_sha256": base.sha256(funding_path),
+            "market_sha256": sha256(market_path),
+            "funding_sha256": sha256(funding_path),
             "funding_events": len(old_funding),
             "kline_source": endpoint,
             "funding_source": funding_endpoint,
@@ -193,34 +300,27 @@ def main() -> int:
 
     available = int((effective_end - authority_end_ms) // INTERVAL_MS)
     ready = available >= target_bars
+    source_sha = None
+    if ready:
+        source_sha = build_exact_source(
+            stage=stage,
+            authority_end_ms=authority_end_ms,
+            target_bars=target_bars,
+            root=root,
+        )
+
     manifest = {
-        "schema_version": "zel.forward_window.v1",
-        "version": VERSION,
-        "stage": stage,
+        **base_safe(stage, authority_end_ms, target_bars),
         "state": f"PASS_{stage}_WINDOW_READY" if ready else f"PASS_{stage}_COLLECTING",
-        "blockers": [],
-        "authority_end_ms": authority_end_ms,
-        "authority_end": base.iso(authority_end_ms),
-        "first_evaluation_ms": first_ms,
-        "first_evaluation": base.iso(first_ms),
-        "target_end_ms": target_end_ms,
-        "target_end": base.iso(target_end_ms),
         "latest_closed_end_ms": effective_end,
         "latest_closed_end": base.iso(effective_end),
         "available_non_overlap_bars": available,
-        "target_bars": target_bars,
         "missing_to_target": max(0, target_bars - available),
         "window_ready": ready,
         "total_added_rows_this_run": total_added,
-        "symbols": rows,
-        "canonical_mutated": False,
-        "registry_mutated": False,
-        "protected_mutations": 0,
-        "execution_allowed": False,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
-        "paper_enabled": False,
-        "live_enabled": False,
+        "symbols": symbol_rows,
+        "source_snapshot_ready": ready,
+        "source_manifest_sha256": source_sha,
     }
     base.atomic_json(root / "manifest.json", manifest)
     base.atomic_json(status_out, manifest)
@@ -231,6 +331,7 @@ def main() -> int:
         "missing": manifest["missing_to_target"],
         "added": total_added,
         "ready": ready,
+        "source_manifest_sha256": source_sha,
     }, sort_keys=True))
     return 0
 

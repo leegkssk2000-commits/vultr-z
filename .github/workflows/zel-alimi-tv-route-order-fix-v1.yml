@@ -1,0 +1,115 @@
+name: ZEL ALIMI TV Route Order Fix V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_tv_route_order_fix_v1.py
+      - .github/workflows/zel-alimi-tv-route-order-fix-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_tv_route_order_fix_v1.py
+      - .github/workflows/zel-alimi-tv-route-order-fix-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-alimi-tv-route-order-fix-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate source safety
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_alimi_tv_route_order_fix_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_alimi_tv_route_order_fix_v1.py').read_text()
+          assert "handle /api/tv/observe" in t
+          assert "handle {" in t
+          assert "caddy', 'validate" in t
+          assert "systemctl', 'reload', 'caddy" in t
+          assert 'DATA_B_PROCESS_TOPOLOGY_CHANGED' in t
+          assert "execution_authority': 'NONE" in t
+          assert "order_authority': 'BLOCKED" in t
+          for x in ('systemctl restart','systemctl stop','systemctl start','rm -rf','git reset','git clean','verify=False','curl -k'):
+              assert x not in t,x
+          print('PASS_TV_ROUTE_FIX_STATIC_SAFETY')
+          PY
+
+  repair:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Install and execute reversible route fix
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_tv_route_order_fix_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_tv_route_order_fix_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_tv_route_order_fix_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_tv_route_order_fix_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_tv_route_order_fix_v1.py /tmp/zel_alimi_tv_route_order_fix_v1.json' || true
+      - name: Verify terminal contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state'] in {'PASS_TV_ROUTE_REORDERED','PASS_ALREADY_ORDERED'},d
+          assert d['tv_before_generic'] is True,d
+          assert d['endpoint']['meta'].startswith('200|'),d
+          assert d['endpoint']['json_parseable'] is True,d
+          assert d['data_b_process_topology_unchanged'] is True,d
+          assert d['runtime_mutated'] is False and d['frontend_mutated'] is False,d
+          assert d['shadow_start_allowed'] is False and d['paper_start_allowed'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          print(json.dumps(d,sort_keys=True))
+          PY
+      - name: Publish route-fix receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/alimi_tv_route_order_fix_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-alimi-tv-route-fix-bot'
+          git config user.email 'zel-alimi-tv-route-fix-bot@users.noreply.github.com'
+          git add runtime_results/zel/alimi_tv_route_order_fix_v1
+          git commit -m "result(zel): ALIMI TV route order fix ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alimi-tv-route-order-fix-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

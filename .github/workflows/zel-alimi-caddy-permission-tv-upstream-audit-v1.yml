@@ -1,0 +1,105 @@
+name: ZEL ALIMI Caddy Permission TV Upstream Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_caddy_permission_tv_upstream_audit_v1.py
+      - .github/workflows/zel-alimi-caddy-permission-tv-upstream-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alimi_caddy_permission_tv_upstream_audit_v1.py
+      - .github/workflows/zel-alimi-caddy-permission-tv-upstream-audit-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only audit
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_alimi_caddy_permission_tv_upstream_audit_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_alimi_caddy_permission_tv_upstream_audit_v1.py').read_text()
+          for x in ('chmod ','chown ','setfacl ','systemctl reload','systemctl restart','systemctl stop','systemctl start','rm -rf','git reset','git clean'):
+              assert x not in t,x
+          assert "'caddy_mutated': False" in t
+          assert "'service_mutated': False" in t
+          assert "'execution_authority': 'NONE'" in t
+          assert "'order_authority': 'BLOCKED'" in t
+          print('PASS_PERMISSION_UPSTREAM_AUDIT_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only remote audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_caddy_permission_tv_upstream_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_caddy_permission_tv_upstream_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_caddy_permission_tv_upstream_audit_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_caddy_permission_tv_upstream_audit_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_caddy_permission_tv_upstream_audit_v1.py /tmp/zel_alimi_caddy_permission_tv_upstream_audit_v1.json' || true
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_READ_ONLY_PERMISSION_AND_UPSTREAM_AUDIT',d
+          s=d['safety']
+          assert s['read_only'] is True and s['caddy_mutated'] is False,d
+          assert s['service_mutated'] is False and s['runtime_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          print(json.dumps(d['findings'],sort_keys=True))
+          PY
+      - name: Publish sanitized receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/alimi_caddy_permission_tv_upstream_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-alimi-caddy-upstream-audit-bot'
+          git config user.email 'zel-alimi-caddy-upstream-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/alimi_caddy_permission_tv_upstream_audit_v1
+          git commit -m "result(zel): Caddy permission TV upstream audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alimi-caddy-permission-tv-upstream-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

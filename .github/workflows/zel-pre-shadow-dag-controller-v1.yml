@@ -1,0 +1,137 @@
+name: ZEL Pre-Shadow DAG Controller V1
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - ZEL Data B 1m Single Owner Repair V1
+      - ZEL Data B Risk Adapter Ablation V1
+      - ZEL Exact25 Material Upgrade Loop V1
+      - ZEL Trade Methods Pre-Shadow Audit V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-pre-shadow-dag-controller-v1
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Evaluate ordered receipt DAG
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python control/backend/tools/zel_pre_shadow_receipt_dag_v1.py \
+            --results-root results \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['dispatch_policy']=='ONE_ORDERED_STAGE_AT_A_TIME',d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          assert d['promotion_authority'] is False,d
+          assert d['live_enabled'] is False,d
+          print(json.dumps({
+              'state':d['state'],
+              'passed':d['passed_stage_count'],
+              'blocked':d['first_blocked_stage'],
+              'eligible':d['eligible_next_stage'],
+          },sort_keys=True))
+          PY
+
+      - name: Publish DAG receipt
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-pre-shadow-dag-bot'
+          git config user.email 'zel-pre-shadow-dag-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/pre_shadow_receipt_dag_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git add runtime_results/zel/pre_shadow_receipt_dag_v1
+          git commit -m "result(zel): pre-Shadow receipt DAG ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Dispatch exactly one eligible implemented stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          stage=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('out/latest.json').read_text()).get('eligible_next_stage') or '')
+          PY
+          )
+          case "$stage" in
+            RISK_MAIN_EFFECT)
+              workflow=zel-data-b-risk-adapter-ablation-v1.yml
+              ;;
+            EXACT25_LIVENESS_AND_REPAIR)
+              workflow=zel-exact25-material-upgrade-loop-v1.yml
+              ;;
+            TRADE_METHOD_COVERAGE)
+              workflow=zel-trade-methods-pre-shadow-audit-v1.yml
+              ;;
+            '')
+              echo NO_ELIGIBLE_STAGE
+              exit 0
+              ;;
+            *)
+              echo "HOLD_STAGE_IMPLEMENTATION_REQUIRED:$stage"
+              exit 0
+              ;;
+          esac
+          active=$(gh run list --workflow "$workflow" --limit 30 --json status --jq '[.[]|select(.status=="queued" or .status=="in_progress")]|length')
+          if [ "$active" != 0 ]; then
+            echo "ACTIVE_STAGE_ALREADY_EXISTS:$stage:$active"
+            exit 0
+          fi
+          gh workflow run "$workflow" --ref master
+          echo "DISPATCHED_ONE_STAGE:$stage:$workflow"
+
+      - name: Record authority boundary
+        run: |
+          cat <<'EOF'
+          Controller dispatches at most one receipt-eligible stage.
+          Missing receipt, unsafe authority, unimplemented stage, or active duplicate remains HOLD.
+          Shadow/Paper/Live/order authority remains blocked.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-pre-shadow-dag-controller-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 90

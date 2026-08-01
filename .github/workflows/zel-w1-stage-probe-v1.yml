@@ -1,0 +1,174 @@
+name: ZEL W1 Stage Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-stage-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-w1-stage-probe-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-w1-stage-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate probe contract
+        run: |
+          set -euo pipefail
+          grep -q 'r7a4d-strategy11-w1-native-orchestrator-v1.yml' .github/workflows/zel-w1-stage-probe-v1.yml
+          grep -q 'zel-w1-control-plane-v1.yml' .github/workflows/zel-w1-stage-probe-v1.yml
+          grep -q 'zel-component-autonomy-v3.yml' .github/workflows/zel-w1-stage-probe-v1.yml
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Read latest W1 pipeline runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for item in \
+            native:r7a4d-strategy11-w1-native-orchestrator-v1.yml \
+            control:zel-w1-control-plane-v1.yml \
+            component:zel-component-autonomy-v3.yml; do
+            key=${item%%:*}
+            wf=${item#*:}
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" --branch master --limit 5 \
+              --json databaseId,status,conclusion,createdAt,updatedAt,event,headSha,displayTitle \
+              > "out/${key}_runs.json"
+            latest=$(python -c "import json;d=json.load(open('out/${key}_runs.json'));print(d[0]['databaseId'] if d else '')")
+            if [ -n "$latest" ]; then
+              gh run view "$latest" --repo "$GITHUB_REPOSITORY" \
+                --json databaseId,status,conclusion,createdAt,updatedAt,event,headSha,displayTitle,jobs \
+                > "out/${key}_latest.json"
+            else
+              printf '{}\n' > "out/${key}_latest.json"
+            fi
+          done
+
+      - name: Build exact stage receipt
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def load(name):
+              return json.loads(Path(f'out/{name}_latest.json').read_text())
+
+          native=load('native')
+          control=load('control')
+          component=load('component')
+
+          def compact(run):
+              jobs=[]
+              for job in run.get('jobs') or []:
+                  jobs.append({
+                      'name':job.get('name'),
+                      'status':job.get('status'),
+                      'conclusion':job.get('conclusion'),
+                      'started_at':job.get('startedAt'),
+                      'completed_at':job.get('completedAt'),
+                      'active_step':next((s.get('name') for s in (job.get('steps') or []) if s.get('status')=='in_progress'),None),
+                      'last_completed_step':next((s.get('name') for s in reversed(job.get('steps') or []) if s.get('status')=='completed'),None),
+                  })
+              return {
+                  'run_id':run.get('databaseId'),
+                  'status':run.get('status'),
+                  'conclusion':run.get('conclusion'),
+                  'created_at':run.get('createdAt'),
+                  'updated_at':run.get('updatedAt'),
+                  'event':run.get('event'),
+                  'head_sha':run.get('headSha'),
+                  'title':run.get('displayTitle'),
+                  'jobs':jobs,
+              }
+
+          n=compact(native); c=compact(control); v=compact(component)
+          if n['status']=='completed' and n['conclusion']=='success':
+              if c['status']=='in_progress' or c['status']=='queued':
+                  stage='W1_CONTROL_PLANE_RUNNING'
+              elif c['status']=='completed' and c['conclusion']=='success':
+                  if v['status']=='in_progress' or v['status']=='queued':
+                      stage='COMPONENT_AUTONOMY_V3_RUNNING'
+                  elif v['status']=='completed' and v['conclusion']=='success':
+                      stage='COMPONENT_AUTONOMY_V3_COMPLETED'
+                  elif v.get('run_id'):
+                      stage='COMPONENT_AUTONOMY_V3_TERMINAL_NON_SUCCESS'
+                  else:
+                      stage='W1_CONTROL_PLANE_COMPLETED_WAIT_COMPONENT'
+              elif c.get('run_id'):
+                  stage='W1_CONTROL_PLANE_TERMINAL_NON_SUCCESS'
+              else:
+                  stage='NATIVE_W1_COMPLETED_WAIT_CONTROL_PLANE'
+          else:
+              stage='NATIVE_W1_NOT_COMPLETED'
+
+          payload={
+              'schema_version':'zel.w1_pipeline_stage.v1',
+              'generated_at':datetime.now(timezone.utc).isoformat(),
+              'stage':stage,
+              'native':n,
+              'control_plane':c,
+              'component_v3':v,
+              'paper_enabled':False,
+              'live_enabled':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+          }
+          Path('out/latest.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+
+      - name: Checkout result branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish stage receipt
+        run: |
+          set -euo pipefail
+          mkdir -p results-branch/runtime_results/zel/w1_pipeline_stage
+          cp out/latest.json results-branch/runtime_results/zel/w1_pipeline_stage/latest.json
+          cp out/latest.json "results-branch/runtime_results/zel/w1_pipeline_stage/run_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-w1-stage-probe-bot'
+          git config user.email 'zel-w1-stage-probe-bot@users.noreply.github.com'
+          git add runtime_results/zel/w1_pipeline_stage
+          git commit -m "status(zel): W1 pipeline stage ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-w1-stage-probe-v1-${{ github.run_id }}
+          path: out/latest.json
+          if-no-files-found: error
+          retention-days: 7

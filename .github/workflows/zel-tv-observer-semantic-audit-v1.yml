@@ -1,0 +1,105 @@
+name: ZEL TV Observer Semantic Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_tv_observer_semantic_audit_v1.py
+      - .github/workflows/zel-tv-observer-semantic-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_tv_observer_semantic_audit_v1.py
+      - .github/workflows/zel-tv-observer-semantic-audit-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only source
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_tv_observer_semantic_audit_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_tv_observer_semantic_audit_v1.py').read_text()
+          for x in ('write_text(text','systemctl restart','systemctl reload','systemctl stop','systemctl start','rm -rf','unlink()'):
+              assert x not in t,x
+          assert "'source_mutated': False" in t
+          assert "'service_mutated': False" in t
+          assert "'execution_authority': 'NONE'" in t
+          assert "'order_authority': 'BLOCKED'" in t
+          print('PASS_TV_OBSERVER_SEMANTIC_AUDIT_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only semantic audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_tv_observer_semantic_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_tv_observer_semantic_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_tv_observer_semantic_audit_v1.py'
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_tv_observer_semantic_audit_v1.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_tv_observer_semantic_audit_v1.py /tmp/zel_tv_observer_semantic_audit_v1.json' || true
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_READ_ONLY_TV_OBSERVER_SEMANTIC_AUDIT',d
+          s=d['safety']
+          assert s['read_only'] is True and s['source_mutated'] is False,d
+          assert s['service_mutated'] is False and s['runtime_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          print(json.dumps({'role':d['semantic_role'],'capabilities':d['capabilities'],'conclusion':d['conclusion']},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/tv_observer_semantic_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-tv-observer-semantic-audit-bot'
+          git config user.email 'zel-tv-observer-semantic-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/tv_observer_semantic_audit_v1
+          git commit -m "result(zel): TV observer semantic audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-tv-observer-semantic-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 30

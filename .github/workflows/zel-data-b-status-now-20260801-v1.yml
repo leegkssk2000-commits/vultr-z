@@ -1,0 +1,134 @@
+name: ZEL Data B Status Now 20260801 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-status-now-20260801-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-status-now-20260801-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          set -euo pipefail
+          grep -q 'data_b_status_latest.json' .github/workflows/zel-data-b-status-now-20260801-v1.yml
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Read current Data B and W2/W3 state
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
+          import json, os, subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def pgrep(pattern):
+              p=subprocess.run(["pgrep","-af",pattern],text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+              return [line for line in p.stdout.splitlines() if "pgrep -af" not in line]
+
+          outputs={}
+          for interval in ("15m","1m"):
+              root=Path(f"/tmp/zel_historical_oos_exact25_replay_v1_{interval}")
+              summary=root/"summary.json"
+              report=root/"report.json"
+              outputs[interval]={
+                  "root_exists":root.exists(),
+                  "summary_exists":summary.exists(),
+                  "report_exists":report.exists(),
+                  "summary":json.loads(summary.read_text()) if summary.exists() else None,
+              }
+          payload={
+              "schema_version":"zel.w1_improvement.data_b_status.v1",
+              "generated_at":datetime.now(timezone.utc).isoformat(),
+              "data_b_processes":pgrep("zel_historical_oos_exact25_replay_v1.py"),
+              "outputs":outputs,
+              "data_b_15m_complete":outputs["15m"]["summary_exists"] and outputs["15m"]["report_exists"],
+              "data_b_1m_complete":outputs["1m"]["summary_exists"] and outputs["1m"]["report_exists"],
+              "w2_processes":pgrep("W2|w2"),
+              "w3_processes":pgrep("W3|w3"),
+              "w2_started":False,
+              "w3_started":False,
+              "canonical_producer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-shadow-producer.service"]).returncode==0,
+              "canonical_writer_active":subprocess.run(["systemctl","is-active","--quiet","q4r3-exact25-persistent-single-event-writer.service"]).returncode==0,
+              "load_average":list(os.getloadavg()),
+              "execution_authority":"NONE",
+              "order_authority":"BLOCKED",
+              "paper_enabled":False,
+              "live_enabled":False,
+              "action":"hold"
+          }
+          payload["state"]=(
+              "DATA_B_COMPLETE_READY_FOR_AI_REPLAY" if payload["data_b_15m_complete"] and payload["data_b_1m_complete"]
+              else "DATA_B_15M_COMPLETE_1M_PENDING" if payload["data_b_15m_complete"]
+              else "DATA_B_REPLAY_RUNNING_OR_PENDING"
+          )
+          Path("/tmp/zel_w1_improvement_data_b_status.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          PY'
+      - name: Fetch status
+        run: |
+          mkdir -p result
+          scp -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_w1_improvement_data_b_status.json" result/data_b_status_latest.json
+      - name: Assert safe boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('result/data_b_status_latest.json').read_text())
+          assert d['canonical_producer_active'] is True,d
+          assert d['canonical_writer_active'] is True,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          assert d['paper_enabled'] is False and d['live_enabled'] is False,d
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results-branch
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Publish current stage
+        run: |
+          set -euo pipefail
+          cd results-branch
+          git config user.name 'zel-w1-improvement-status-bot'
+          git config user.email 'zel-w1-improvement-status-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          base=results-branch/runtime_results/zel/w1_strategy_improvement
+          mkdir -p "$base"
+          cp result/data_b_status_latest.json "$base/data_b_status_latest.json"
+          cp result/data_b_status_latest.json "$base/data_b_status_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git add runtime_results/zel/w1_strategy_improvement
+          git commit -m "status(zel): W1 improvement Data B ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1

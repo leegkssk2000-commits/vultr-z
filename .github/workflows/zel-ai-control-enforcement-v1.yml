@@ -1,0 +1,82 @@
+name: ZEL AI Control Enforcement V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_control_enforcement_v1.json
+      - backend/tools/zel_ai_control_gate_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - .github/workflows/zel-ai-control-enforcement-v1.yml
+      - .github/workflows/zel-*.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_control_enforcement_v1.json
+      - backend/tools/zel_ai_control_gate_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - .github/workflows/zel-ai-control-enforcement-v1.yml
+      - .github/workflows/zel-*.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ai-control-enforcement-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ai_control_gate_v1.py \
+            backend/tools/zel_holdout_vault_v1.py
+          python backend/tools/zel_ai_control_gate_v1.py --self-test
+          python backend/tools/zel_holdout_vault_v1.py --self-test
+      - name: Discover protected workflow bypasses
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          set +e
+          python backend/tools/zel_ai_control_gate_v1.py audit-workflows \
+            --workflows-root .github/workflows \
+            --out out/workflow_audit.json
+          code=$?
+          set -e
+          cat out/workflow_audit.json
+          echo "discovery_exit_code=$code"
+      - name: Validate safety boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_ai_control_enforcement_v1.json').read_text())
+          assert c['guard_token']=='ZEL_AI_CONTROL_GATE_V1',c
+          assert c['holdout_vault']['dataset_root_must_be_outside_repository'] is True,c
+          assert c['holdout_vault']['manifest_hmac_required'] is True,c
+          assert c['holdout_vault']['proposer_read_access_forbidden'] is True,c
+          s=c['safety']
+          assert s['active_data_b_1m_mutation'] is False,s
+          assert s['canonical_strategy_mutation'] is False,s
+          assert s['formal_ledger_mutation'] is False,s
+          assert s['runtime_registry_write'] is False,s
+          assert s['execution_authority']=='NONE',s
+          assert s['order_authority']=='BLOCKED',s
+          print('PASS_AI_CONTROL_ENFORCEMENT_FOUNDATION')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-ai-control-enforcement-v1-${{ github.run_id }}
+          path: out
+          retention-days: 30

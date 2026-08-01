@@ -1,0 +1,60 @@
+name: ZEL Lineage Self-Test One-Shot Fix V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_pre_shadow_lineage_controller_v1.py
+      - .github/workflows/zel-lineage-selftest-fix-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Correct self-test chronology
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/tools/zel_pre_shadow_lineage_controller_v1.py')
+          text=p.read_text()
+          old='''        expectation = create_expectation(root, dag, "RISK_MAIN_EFFECT", "ZEL Data B Risk Adapter Ablation V1", "1")
+                  assert expectation["predecessor_receipt_sha256"] == sha256_path(data)
+                  risk = stage_path(root, "RISK_MAIN_EFFECT")
+          '''.replace('                  assert','        assert').replace('                  risk','        risk')
+          new='''        expectation = create_expectation(root, dag, "RISK_MAIN_EFFECT", "ZEL Data B Risk Adapter Ablation V1", "1")
+                  assert expectation["predecessor_receipt_sha256"] == sha256_path(data)
+                  expected_at = expectation["generated_at"]
+                  risk = stage_path(root, "RISK_MAIN_EFFECT")
+          '''.replace('                  assert','        assert').replace('                  expected','        expected').replace('                  risk','        risk')
+          if 'expected_at = expectation["generated_at"]' not in text:
+              assert old in text
+              text=text.replace(old,new,1)
+          text=text.replace('"generated_at": "2026-01-01T00:02:00+00:00",','"generated_at": expected_at,',1)
+          text=text.replace('"created_at": "2026-01-01T00:01:00+00:00",','"created_at": expected_at,',1)
+          p.write_text(text)
+          PY
+          python -m py_compile backend/tools/zel_pre_shadow_lineage_controller_v1.py
+          python backend/tools/zel_pre_shadow_lineage_controller_v1.py --self-test
+      - name: Commit correction
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'zel-lineage-selftest-fix-bot'
+          git config user.email 'zel-lineage-selftest-fix-bot@users.noreply.github.com'
+          git add backend/tools/zel_pre_shadow_lineage_controller_v1.py
+          git commit -m 'test(zel): align lineage fixture chronology'
+          git push origin HEAD:${{ github.head_ref }}

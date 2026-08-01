@@ -1,0 +1,211 @@
+name: ZEL Trade Methods Semantic Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_semantic_audit_v1.py
+      - backend/tools/zel_trade_methods_semantic_gemini_v1.py
+      - .github/workflows/zel-trade-methods-semantic-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_trade_methods_semantic_audit_v1.py
+      - backend/tools/zel_trade_methods_semantic_gemini_v1.py
+      - .github/workflows/zel-trade-methods-semantic-audit-v1.yml
+  schedule:
+    - cron: '23 * * * *'
+  workflow_run:
+    workflows:
+      - ZEL Trade Methods Pre-Shadow Audit V1
+      - ZEL Data B 1m Terminal Repair V2
+      - ZEL Survivor Bundle Gemini V1
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-trade-methods-semantic-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate semantic inventory and Gemini mapper
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_trade_methods_semantic_audit_v1.py \
+            backend/tools/zel_trade_methods_semantic_gemini_v1.py
+          python backend/tools/zel_trade_methods_semantic_audit_v1.py --self-test
+          python backend/tools/zel_trade_methods_semantic_gemini_v1.py --self-test
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Install SSH client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload semantic read-only auditor
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_trade_methods_semantic_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+
+      - name: Build exact AST, import and location inventory on VPS
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_trade_methods_semantic_audit_v1.py \
+               --root /home/z/z \
+               --out /tmp/zel_trade_methods_semantic_audit_latest.json"
+
+      - name: Fetch semantic inventory
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_trade_methods_semantic_audit_latest.json" \
+            out/latest.json
+
+      - name: Run Gemini semantic mapping review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python backend/tools/zel_trade_methods_semantic_gemini_v1.py \
+            --inventory out/latest.json \
+            --out out/gemini_latest.json
+
+      - name: Validate no-write boundary and build deterministic next gate
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          inventory=json.loads(Path('out/latest.json').read_text())
+          gemini=json.loads(Path('out/gemini_latest.json').read_text())
+          assert inventory['canonical_strategy_files_mutated'] is False,inventory
+          assert inventory['canonical_trade_methods_mutated'] is False,inventory
+          assert inventory['canonical_registry_mutated'] is False,inventory
+          assert inventory['promotion_authority'] is False,inventory
+          assert inventory['execution_authority']=='NONE' and inventory['order_authority']=='BLOCKED',inventory
+          assert inventory['shadow_start_allowed'] is False,inventory
+          assert gemini['mapping_is_hypothesis_only'] is True if gemini.get('GEMINI_USED') else True,gemini
+          assert gemini.get('adapter_creation_allowed',False) is False,gemini
+          mapped=[row for row in gemini.get('role_mappings',[]) if row.get('verdict') in {'EXACT_CANDIDATE','POSSIBLE_ALIAS'}]
+          unresolved=[row['role'] for row in gemini.get('role_mappings',[]) if row.get('verdict')=='NO_MATCH']
+          blockers=list(inventory.get('blockers') or [])
+          if str(gemini.get('state','')).startswith('HOLD_'):
+              blockers.append(gemini['state'])
+          d={
+            'schema_version':'zel.trade_methods.semantic_terminal.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_SEMANTIC_DIAGNOSIS_READY' if inventory.get('python_file_count',0)>0 else 'HOLD_NO_TRADE_METHOD_PACKAGE_INVENTORY',
+            'inventory_state':inventory.get('state'),
+            'gemini_state':gemini.get('state'),
+            'inventory_sha256':inventory.get('inventory_sha256'),
+            'mapped_role_count':len(mapped),
+            'unresolved_roles':unresolved,
+            'personal_candidate_count':len(inventory.get('personal_method_candidates') or []),
+            'blockers':sorted(set(blockers)),
+            'next':'DETERMINISTIC_SIGNATURE_TYPE_AND_BEHAVIOR_PROBES_THEN_MINIMAL_COMPATIBILITY_ADAPTER',
+            'canonical_patch_allowed':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'shadow_start_allowed':False,
+            'paper_enabled':False,
+            'live_enabled':False,
+            'action':'hold'
+          }
+          Path('out/terminal_latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Publish semantic inventory and Gemini hypotheses
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-trade-method-semantic-bot'
+          git config user.email 'zel-trade-method-semantic-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/trade_methods_semantic_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp out/gemini_latest.json "$root/gemini_latest.json"
+          cp out/terminal_latest.json "$root/terminal_latest.json"
+          cd results
+          git add runtime_results/zel/trade_methods_semantic_v1
+          git commit -m "result(zel): trade-method semantic diagnosis ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Write summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('out/terminal_latest.json')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as h:
+              h.write('# ZEL Trade Methods Semantic Audit V1\n\n')
+              if not p.exists():
+                  h.write('- State: **HOLD_NO_TERMINAL_RESULT**\n')
+              else:
+                  d=json.loads(p.read_text())
+                  h.write(f"- State: **{d['state']}**\n")
+                  h.write(f"- Gemini: **{d['gemini_state']}**\n")
+                  h.write(f"- Mapped roles: {d['mapped_role_count']}\n")
+                  h.write(f"- Personal candidates: {d['personal_candidate_count']}\n")
+                  h.write(f"- Unresolved roles: {len(d['unresolved_roles'])}\n")
+                  h.write('- Canonical patch allowed: **false**\n')
+                  h.write('- Shadow start allowed: **false**\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-trade-methods-semantic-audit-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -8,6 +8,7 @@ on:
       - backend/research/zel_ai_control_enforcement_v1.json
       - backend/tools/zel_ai_control_gate_v1.py
       - backend/tools/zel_holdout_vault_v1.py
+      - backend/tools/zel_bind_ai_control_workflows_v1.py
       - .github/workflows/zel-ai-control-enforcement-v1.yml
       - .github/workflows/zel-*.yml
   push:
@@ -16,11 +17,12 @@ on:
       - backend/research/zel_ai_control_enforcement_v1.json
       - backend/tools/zel_ai_control_gate_v1.py
       - backend/tools/zel_holdout_vault_v1.py
+      - backend/tools/zel_bind_ai_control_workflows_v1.py
       - .github/workflows/zel-ai-control-enforcement-v1.yml
       - .github/workflows/zel-*.yml
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: zel-ai-control-enforcement-v1-${{ github.ref }}
@@ -40,9 +42,11 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/tools/zel_ai_control_gate_v1.py \
-            backend/tools/zel_holdout_vault_v1.py
+            backend/tools/zel_holdout_vault_v1.py \
+            backend/tools/zel_bind_ai_control_workflows_v1.py
           python backend/tools/zel_ai_control_gate_v1.py --self-test
           python backend/tools/zel_holdout_vault_v1.py --self-test
+          python backend/tools/zel_bind_ai_control_workflows_v1.py --self-test
       - name: Discover protected workflow bypasses
         run: |
           set -euo pipefail
@@ -80,3 +84,33 @@ jobs:
           name: zel-ai-control-enforcement-v1-${{ github.run_id }}
           path: out
           retention-days: 30
+
+  bind:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ github.token }}
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Apply deterministic fail-closed bindings
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_bind_ai_control_workflows_v1.py \
+            --workflows-root .github/workflows
+          git diff --check
+          if git diff --quiet; then
+            echo 'NO_BINDING_CHANGES_REQUIRED'
+            exit 0
+          fi
+          git config user.name 'zel-ai-control-binding-bot'
+          git config user.email 'zel-ai-control-binding-bot@users.noreply.github.com'
+          git add .github/workflows
+          git commit -m 'guard(zel): bind AI control receipts to research workflows'
+          git push origin HEAD:${{ github.head_ref }}

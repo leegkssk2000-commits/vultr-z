@@ -1,0 +1,130 @@
+name: ZEL BingX Execution Evidence Collect V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_bingx_execution_evidence_collector_v1.json
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - .github/workflows/zel-bingx-execution-evidence-collect-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_bingx_execution_evidence_collector_v1.json
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - .github/workflows/zel-bingx-execution-evidence-collect-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-bingx-execution-evidence-collect-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate GET-only collector
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bingx_execution_evidence_collector_v1.py
+          python backend/tools/zel_bingx_execution_evidence_collector_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_bingx_execution_evidence_collector_v1.py').read_text()
+          for token in ('method="POST"','method="PUT"','method="PATCH"','method="DELETE"','requests.post','requests.delete','subprocess','os.system'):
+              assert token not in t,token
+          assert 'method="GET"' in t
+          assert 'credentials_persisted": False' in t
+          assert 'raw_order_ids_persisted": False' in t
+          print('PASS_BINGX_EVIDENCE_COLLECTOR_STATIC')
+          PY
+
+  collect:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
+      BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Collect or publish credential hold
+        run: |
+          set -euo pipefail
+          mkdir -p private out
+          if [[ -z "${BINGX_API_KEY:-}" || -z "${BINGX_SECRET_KEY:-}" ]]; then
+            python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          receipt={
+            'schema_version':'zel.bingx.execution_evidence.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_BINGX_READ_ONLY_CREDENTIALS_MISSING',
+            'evidence_collected':False,
+            'credentials_persisted':False,
+            'raw_order_ids_persisted':False,
+            'methods_used':['GET'],
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          PY
+          else
+            umask 077
+            python backend/tools/zel_bingx_execution_evidence_collector_v1.py \
+              --out-dir private --lookback-days 90
+            cp private/receipt.json out/receipt.json
+            rm -f private/evidence.json private/receipt.json
+          fi
+      - name: Verify redacted receipt only
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/receipt.json').read_text())
+          assert d['state'] in ('PASS_BINGX_READ_ONLY_EVIDENCE_COLLECTED','HOLD_BINGX_READ_ONLY_CREDENTIALS_MISSING'),d
+          assert d['credentials_persisted'] is False,d
+          assert d['raw_order_ids_persisted'] is False,d
+          assert d['methods_used']==['GET'],d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          forbidden=('balance','equity','availableMargin','apiKey','secretKey','signature')
+          text=Path('out/receipt.json').read_text()
+          for token in forbidden:
+              assert token not in text,token
+          print(json.dumps({'state':d['state'],'evidence_collected':d.get('evidence_collected',d['state'].startswith('PASS'))},sort_keys=True))
+          PY
+      - name: Publish receipt only
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/bingx_execution_evidence_collector_v1
+          mkdir -p "$root"
+          cp out/receipt.json "$root/latest.json"
+          cp out/receipt.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-bingx-evidence-bot'
+          git config user.email 'zel-bingx-evidence-bot@users.noreply.github.com'
+          git add runtime_results/zel/bingx_execution_evidence_collector_v1
+          git commit -m "result(zel): BingX evidence collector ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-bingx-evidence-receipt-v1-${{ github.run_id }}
+          path: out/receipt.json
+          retention-days: 30

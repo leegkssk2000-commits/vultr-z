@@ -1,0 +1,145 @@
+name: ZEL Data B 1m Status Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-status-probe-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-status-probe-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-data-b-1m-status-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate read-only contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/zel-data-b-1m-status-probe-v1.yml').read_text()
+          forbidden=['systemctl restart','systemctl stop','kill ','pkill','rm -rf /opt','order','paper_enabled: true','live_enabled: true']
+          for token in forbidden:
+              assert token not in text, token
+          print('PASS_DATA_B_1M_STATUS_PROBE_READ_ONLY')
+          PY
+
+  probe:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Read VPS 1m state
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 - <<'"'"'PY'"'"'
+          import json, os, subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+          root=Path('/tmp/zel_historical_oos_exact25_replay_v1_1m')
+          proc=subprocess.run(['pgrep','-af','zel_historical_oos_exact25_replay_v1.py'],capture_output=True,text=True)
+          lines=[x for x in proc.stdout.splitlines() if '--interval 1m' in x]
+          files={name:{'exists':(root/name).is_file(),'bytes':(root/name).stat().st_size if (root/name).is_file() else 0} for name in ['report.json','summary.json','scoreboard.csv','trades.jsonl.gz']}
+          report_state=None
+          completed=None
+          failures=None
+          closed=None
+          generated=None
+          if files['report.json']['exists']:
+              try:
+                  d=json.loads((root/'report.json').read_text())
+                  report_state=d.get('state')
+                  completed=(d.get('replay') or {}).get('strategy_count_completed')
+                  failures=(d.get('replay') or {}).get('strategy_failure_count')
+                  closed=(d.get('replay') or {}).get('closed_trade_count')
+                  generated=d.get('generated_at')
+              except Exception as exc:
+                  report_state='UNREADABLE:'+type(exc).__name__
+          payload={
+              'schema_version':'zel.data_b.1m.status_probe.v1',
+              'generated_at':datetime.now(timezone.utc).isoformat(),
+              'process_running':bool(lines),
+              'process_count':len(lines),
+              'local_output_dir_exists':root.is_dir(),
+              'local_files':files,
+              'local_report_state':report_state,
+              'strategy_count_completed':completed,
+              'strategy_failure_count':failures,
+              'closed_trade_count':closed,
+              'local_report_generated_at':generated,
+              'read_only':True,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+          }
+          print(json.dumps(payload))
+          PY' > out/vps.json
+      - name: Resolve publication state
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          v=json.loads(Path('out/vps.json').read_text())
+          root=Path('results/runtime_results/zel/historical_oos_exact25_replay_v1')
+          one=(root/'1m/latest.json').is_file()
+          combined=(root/'combined_latest.json').is_file()
+          if one and combined:
+              state='PASS_DATA_B_1M_AND_COMBINED_PUBLISHED'
+          elif v.get('local_report_state')=='PASS' and not one:
+              state='HOLD_1M_LOCAL_PASS_NOT_PUBLISHED'
+          elif v.get('process_running'):
+              state='IN_PROGRESS_DATA_B_1M_REPLAY'
+          else:
+              state='HOLD_1M_NOT_RUNNING_NO_TERMINAL_PUBLICATION'
+          out={**v,
+              'state':state,
+              'result_branch_1m_published':one,
+              'result_branch_combined_published':combined,
+              'checked_at':datetime.now(timezone.utc).isoformat(),
+          }
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(state)
+          PY
+      - name: Publish sanitized probe
+        run: |
+          set -euo pipefail
+          mkdir -p results/runtime_results/zel/data_b_1m_status_probe_v1
+          cp out/latest.json results/runtime_results/zel/data_b_1m_status_probe_v1/latest.json
+          cd results
+          git config user.name 'zel-data-b-status-probe-bot'
+          git config user.email 'zel-data-b-status-probe-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_status_probe_v1/latest.json
+          git commit -m "result(zel): Data B 1m status probe ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1

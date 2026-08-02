@@ -34,9 +34,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate gate and pinned semantic receipt
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Validate gate and pinned semantic receipt
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
           python -m py_compile backend/tools/zel_grid_neutral_entry_fork_gate_v1.py
           python backend/tools/zel_grid_neutral_entry_fork_gate_v1.py --self-test
           python -m json.tool backend/research/zel_grid_neutral_entry_fork_gate_v1.json >/dev/null
@@ -45,11 +61,17 @@ jobs:
           expected_blob=$(python -c "import json; print(json.load(open('$policy_path'))['semantic_summary_blob_sha'])")
           actual_blob=$(git -C results rev-parse "HEAD:$semantic_path")
           test "$actual_blob" = "$expected_blob"
-          mkdir -p out
+          remote_source_sha=$(ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "sha256sum /opt/zel/forward-expansion-v1/source/backend/strategies/grid_rebalance.py | awk '{print \$1}'")
+          test -n "$remote_source_sha"
           python backend/tools/zel_grid_neutral_entry_fork_gate_v1.py \
             --policy "$policy_path" \
             --semantic-summary "results/$semantic_path" \
-            --source-root . \
+            --canonical-source-sha256 "$remote_source_sha" \
             --out out/gate.json
       - name: Verify fail-closed fork decision
         run: |
@@ -59,6 +81,7 @@ jobs:
           row=json.load(open('out/gate.json'))
           assert row['state']=='PASS_GRID_NEUTRAL_ENTRY_FORK_BLOCKED',row
           assert all(row['checks'].values()),row
+          assert row['source_bytes_copied'] is False,row
           assert row['economic_gate_pass'] is False,row
           assert row['fork_blocked'] is True,row
           assert row['tmp_fork_allowed'] is False,row
@@ -74,6 +97,9 @@ jobs:
           assert row['action']=='hold',row
           print({'state':row['state'],'entry_range':row['entry_range_metrics'],'tmp_fork_allowed':row['tmp_fork_allowed'],'next':row['next']})
           PY
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - backend/tools/zel_grid_entry_regime_fork_v1.py
+      - backend/tools/zel_ema_causal_context_helper_v1.py
       - backend/tools/zel_ema_immediate_fail_entry_filter_v1.py
       - .github/workflows/zel-ema-ribbon-gemini-improvement-v2.yml
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
       - name: Validate causal filter tools
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_grid_entry_regime_fork_v1.py backend/tools/zel_ema_immediate_fail_entry_filter_v1.py
+          python -m py_compile backend/tools/zel_ema_causal_context_helper_v1.py backend/tools/zel_ema_immediate_fail_entry_filter_v1.py
       - name: Prepare read-only SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -60,12 +60,12 @@ jobs:
           done
           for attempt in 1 2 3; do
             scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
-              backend/tools/zel_grid_entry_regime_fork_v1.py backend/tools/zel_ema_immediate_fail_entry_filter_v1.py \
+              backend/tools/zel_ema_causal_context_helper_v1.py backend/tools/zel_ema_immediate_fail_entry_filter_v1.py \
               "$VPS_USER@$VPS_HOST:$remote/" && break
             test "$attempt" -lt 3; sleep $((attempt*5))
           done
           timeout 5100s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
-            "$VPS_USER@$VPS_HOST" "cd '$remote' && PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_ema_immediate_fail_entry_filter_v1.py --out result.json" \
+            "$VPS_USER@$VPS_HOST" "cd '$remote' && mv zel_ema_causal_context_helper_v1.py zel_grid_entry_regime_fork_v1.py && PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_ema_immediate_fail_entry_filter_v1.py --out result.json" \
             > out/remote.stdout 2>out/remote.stderr
           for attempt in 1 2 3; do
             scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 "$VPS_USER@$VPS_HOST:$remote/result.json" out/result.json && break

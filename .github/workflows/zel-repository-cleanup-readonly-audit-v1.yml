@@ -1,0 +1,77 @@
+name: ZEL Repository Cleanup Readonly Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_repository_cleanup_readonly_audit_v1.py
+      - .github/workflows/zel-repository-cleanup-readonly-audit-v1.yml
+      - .github/workflows/zel-composite-parallel-v2-recovery-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-repository-cleanup-readonly-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  audit-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate and run read-only audit
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/zel-composite-parallel-v2-recovery-once.yml
+          python -m py_compile backend/tools/zel_repository_cleanup_readonly_audit_v1.py
+          python backend/tools/zel_repository_cleanup_readonly_audit_v1.py --self-test
+          mkdir -p out
+          python backend/tools/zel_repository_cleanup_readonly_audit_v1.py \
+            --root . \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_REPOSITORY_CLEANUP_READONLY_AUDIT',d
+          assert 'results' in d['excluded_top_level'],d
+          assert d['cleanup_performed'] is False,d
+          assert d['deletion_authority'] is False,d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['execution_authority']=='NONE',d
+          assert d['order_authority']=='BLOCKED',d
+          PY
+      - name: Publish audit receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" results-branch
+          dest=results-branch/runtime_results/zel/repository_cleanup_readonly_audit_v1
+          mkdir -p "$dest"
+          cp out/latest.json "$dest/latest.json"
+          cp out/latest.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results-branch
+          git config user.name 'zel-cleanup-readonly-audit-bot'
+          git config user.email 'zel-cleanup-readonly-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/repository_cleanup_readonly_audit_v1
+          git commit -m "result(zel): repository cleanup read-only audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-cleanup-audit-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 90

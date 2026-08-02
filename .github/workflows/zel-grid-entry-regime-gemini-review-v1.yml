@@ -1,0 +1,223 @@
+name: ZEL Grid Entry Regime Gemini Review V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_grid_entry_regime_reconstruction_v2.py
+      - backend/tools/zel_grid_entry_regime_gemini_review_v1.py
+      - backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py
+      - backend/research/zel_grid_entry_regime_gemini_review_v1.json
+      - .github/workflows/zel-grid-entry-regime-gemini-review-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-grid-entry-regime-gemini-review-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_entry_regime_reconstruction_v2.py \
+            backend/tools/zel_grid_entry_regime_gemini_review_v1.py \
+            backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py \
+            backend/tools/zel_strategy_loss_attribution_gemini_v1.py
+          python -m json.tool backend/research/zel_grid_entry_regime_gemini_review_v1.json >/dev/null
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Reconstruct causal entry regimes read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          timeout 1800s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            '/home/z/z/.venv/bin/python - --stdout' \
+            < backend/tools/zel_grid_entry_regime_reconstruction_v2.py \
+            > out/reconstruction.json
+          test -s out/reconstruction.json
+          python -m json.tool out/reconstruction.json >/dev/null
+          python - <<'PY'
+          import json
+          row=json.load(open('out/reconstruction.json'))
+          assert row['state']=='PASS_GRID_ENTRY_REGIME_RECONSTRUCTED',row
+          assert row['trade_count']==580 and row['reconstructed_count']==580,row
+          assert row['unmatched_count']==0,row
+          assert row['context_owner_sha256']=='408ee3edf3899ad626e25f01be19d447af16d4a033996fb5d2c76a516efe82ca',row
+          assert row['regime_owner_sha256']=='1ad1cc721a88cef9f8c08a8ed1727736d61ad036495f5b650f798332ad7b684c',row
+          assert row['reconstructed_regime_counts']=={'range':11,'trend_long':309,'trend_short':260},row
+          assert row['raw_trade_rows_published'] is False,row
+          assert row['raw_event_ids_published'] is False,row
+          assert row['raw_price_data_published'] is False,row
+          assert row['canonical_mutated'] is False,row
+          assert row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({'state':row['state'],'regimes':row['reconstructed_regime_counts'],'range_net_R':row['entry_range_metrics']['net_R'],'legacy_jaccard':row['entry_range_vs_exit_neutral']['jaccard']})
+          PY
+
+      - name: Gemini causal auditor designer and red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python backend/tools/zel_grid_entry_regime_gemini_review_v1.py \
+            --reconstruction out/reconstruction.json \
+            --policy backend/research/zel_grid_entry_regime_gemini_review_v1.json \
+            --out out/gemini_review.json
+
+      - name: Verify Gemini boundaries
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/gemini_review.json'))
+          assert row['gemini_call_count']==3,row
+          assert row['legacy_exit_neutral_rejected'] is True,row
+          assert row['legacy_grid_neutral_fork_retired'] is True,row
+          for key in ('raw_code_sent','raw_trades_sent','raw_event_ids_sent','credentials_sent','canonical_mutated','runtime_mutated','formal_ledger_mutated','shadow_started','paper_started','live_enabled','selection_authority','promotion_authority'):
+              assert row[key] is False,(key,row)
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          assert row['next'] in {'TEST_TREND_STRENGTH_SINGLE_AXIS','TEST_DIRECTIONAL_ROUTER_SINGLE_AXIS','RETIRE_GRID_REBALANCE','NEED_MORE_CAUSAL_EVIDENCE'},row
+          print({'state':row['state'],'models':row['models_used'],'decision_trace':row['decision_trace'],'next':row['next']})
+          PY
+
+      - name: Adjudicate unanimous retirement safely
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py \
+            --reconstruction out/reconstruction.json \
+            --review out/gemini_review.json \
+            --out out/retirement_consensus.json
+
+      - name: Verify retirement receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/retirement_consensus.json'))
+          assert row['state']=='PASS_GRID_REBALANCE_RETIREMENT_CONSENSUS',row
+          assert row['decision']=='RETIRE_GRID_REBALANCE',row
+          assert row['three_way_unanimous'] is True,row
+          assert row['next_research_allowed_for_grid_rebalance'] is False,row
+          assert row['retirement_scope']=='RESEARCH_CANDIDATE_AND_FUTURE_REGIME_TUNING_ONLY',row
+          assert row['canonical_strategy_status']=='PRESERVE_FAIL_CLOSED_INACTIVE',row
+          assert row['source_deleted'] is False,row
+          assert row['production_applied'] is False,row
+          for key in ('canonical_mutated','runtime_mutated','formal_ledger_mutated','shadow_started','paper_started','live_enabled','selection_authority','promotion_authority'):
+              assert row[key] is False,(key,row)
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          assert row['next']=='MOVE_TO_EMA_RIBBON_INTRATRADE_PATH_REPLAY',row
+          print({'state':row['state'],'decision':row['decision'],'next':row['next'],'evidence':row['aggregate_evidence']})
+          PY
+
+      - name: Publish aggregate causal receipts
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          reconstruction=json.load(open('out/reconstruction.json'))
+          review=json.load(open('out/gemini_review.json'))
+          retirement=json.load(open('out/retirement_consensus.json'))
+          summary={
+              'schema_version':'zel.grid_entry_regime_gemini_review.summary.v1',
+              'state':retirement['state'],
+              'strategy_id':'grid_rebalance',
+              'trade_count':reconstruction['trade_count'],
+              'entry_regime_counts':reconstruction['reconstructed_regime_counts'],
+              'entry_regime_metrics':reconstruction['reconstructed_regime_metrics'],
+              'entry_regime_window_metrics':reconstruction['reconstructed_regime_window_metrics'],
+              'legacy_exit_neutral_rejected':True,
+              'legacy_exit_neutral_jaccard':reconstruction['entry_range_vs_exit_neutral']['jaccard'],
+              'gemini_models':review['models_used'],
+              'gemini_decision_trace':retirement['decision_trace'],
+              'decision':retirement['decision'],
+              'retirement_scope':retirement['retirement_scope'],
+              'canonical_strategy_status':retirement['canonical_strategy_status'],
+              'next':retirement['next'],
+              'canonical_mutated':False,
+              'runtime_mutated':False,
+              'formal_ledger_mutated':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True,allow_nan=False)
+          PY
+          git -C results pull --rebase origin zel-data-expansion-results-v1
+          dest=results/runtime_results/zel/grid_entry_regime_gemini_review_v1
+          rm -rf "$dest/latest"
+          mkdir -p "$dest/latest"
+          cp out/reconstruction.json "$dest/latest/reconstruction.json"
+          cp out/gemini_review.json "$dest/latest/gemini_review.json"
+          cp out/retirement_consensus.json "$dest/latest/retirement_consensus.json"
+          cp out/summary.json "$dest/latest/summary.json"
+          cp out/summary.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add runtime_results/zel/grid_entry_regime_gemini_review_v1
+          git commit -m "result(zel): grid retirement consensus ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-grid-entry-regime-gemini-review-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

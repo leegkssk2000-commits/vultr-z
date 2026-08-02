@@ -146,9 +146,10 @@ def build_receipt(
     missing_selected_types = sorted(expected_types - set(selected_distribution["by_type"]))
     if missing_selected_types:
         errors.append("MISSING_SELECTED_TYPES:" + ",".join(missing_selected_types))
-    child_counts = set(selected_distribution["by_child_count"])
-    if not {"2", "3"}.issubset(child_counts):
-        errors.append("CHILD_COUNT_COVERAGE_MISSING")
+    pool_child_counts = set(pool_distribution["by_child_count"])
+    selected_child_counts = set(selected_distribution["by_child_count"])
+    if not pool_child_counts.issubset(selected_child_counts):
+        errors.append("AVAILABLE_CHILD_COUNT_COVERAGE_MISSING")
 
     unordered_seen: set[tuple[str, tuple[str, ...]]] = set()
     symmetric_duplicates = 0
@@ -224,7 +225,9 @@ def self_test() -> None:
     assert set(receipt["selected_distribution"]["by_type"]) == {
         "SEQUENTIAL_COMPOSITE", "CONTEXT_ROUTER", "ADVISORY_COUNCIL"
     }, receipt
-    assert {"2", "3"}.issubset(receipt["selected_distribution"]["by_child_count"]), receipt
+    assert set(receipt["pool_distribution"]["by_child_count"]).issubset(
+        set(receipt["selected_distribution"]["by_child_count"])
+    ), receipt
     assert receipt["factory_enabled"] is False and receipt["activation_enabled"] is False
     assert receipt["execution_authority"] == "NONE"
     assert receipt["order_authority"] == "BLOCKED"

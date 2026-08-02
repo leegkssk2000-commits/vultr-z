@@ -1,0 +1,126 @@
+name: ZEL Composite Trade Lineage Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-trade-lineage-probe-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-trade-lineage-probe-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Extract window and feature lineage without raw values
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/trade_lineage_probe.json <<'PY'
+          import gzip,json
+          from collections import Counter,defaultdict
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('/var/lib/zel-research/data-b-1m-v2/checkpoints')
+          windows=Counter(); symbols=Counter(); regimes=Counter(); sides=Counter(); strategies=Counter()
+          bounds=defaultdict(lambda:{'first_entry_ts':None,'last_exit_ts':None,'trade_count':0})
+          entry_keys=Counter(); exit_keys=Counter(); entry_types=defaultdict(Counter); exit_types=defaultdict(Counter)
+          checkpoints=0; trades=0; errors=[]
+          for path in sorted(root.glob('*.json.gz')):
+              try:
+                  with gzip.open(path,'rt',encoding='utf-8') as handle: payload=json.load(handle)
+                  result=payload.get('result') if isinstance(payload,dict) else None
+                  if not isinstance(result,dict): continue
+                  checkpoints+=1
+                  strategy_id=str(result.get('strategy_id') or 'unknown')
+                  for lane in result.get('lanes') or []:
+                      if not isinstance(lane,dict): continue
+                      for row in lane.get('closed_rows') or []:
+                          if not isinstance(row,dict): continue
+                          trades+=1
+                          window=str(row.get('window_id') or 'unknown')
+                          symbol=str(row.get('symbol') or 'unknown')
+                          regime=str(row.get('regime') or 'unknown')
+                          side=str(row.get('side') or 'unknown')
+                          windows[window]+=1; symbols[symbol]+=1; regimes[regime]+=1; sides[side]+=1; strategies[strategy_id]+=1
+                          entry=str(row.get('entry_ts') or '')
+                          exit_ts=str(row.get('exit_ts') or '')
+                          item=bounds[window]
+                          item['trade_count']+=1
+                          if entry and (item['first_entry_ts'] is None or entry<item['first_entry_ts']): item['first_entry_ts']=entry
+                          if exit_ts and (item['last_exit_ts'] is None or exit_ts>item['last_exit_ts']): item['last_exit_ts']=exit_ts
+                          ef=row.get('entry_features') if isinstance(row.get('entry_features'),dict) else {}
+                          xf=row.get('exit_features') if isinstance(row.get('exit_features'),dict) else {}
+                          entry_keys.update(ef.keys()); exit_keys.update(xf.keys())
+                          for key,value in ef.items(): entry_types[key][type(value).__name__]+=1
+                          for key,value in xf.items(): exit_types[key][type(value).__name__]+=1
+              except Exception as exc:
+                  errors.append({'error':type(exc).__name__})
+          ordered_windows=sorted(bounds.items(),key=lambda item:(item[1]['first_entry_ts'] or '',item[0]))
+          out={
+            'schema_version':'zel.composite.trade_lineage_probe.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_TRADE_LINEAGE_PROBE' if checkpoints and trades and not errors else 'HOLD_TRADE_LINEAGE_PROBE',
+            'checkpoint_count':checkpoints,
+            'closed_trade_count':trades,
+            'window_count':len(windows),
+            'windows':[{'window_id':window,**values} for window,values in ordered_windows],
+            'counts_by_window':dict(sorted(windows.items())),
+            'counts_by_symbol':dict(sorted(symbols.items())),
+            'counts_by_regime':dict(sorted(regimes.items())),
+            'counts_by_side':dict(sorted(sides.items())),
+            'counts_by_strategy':dict(sorted(strategies.items())),
+            'entry_feature_keys':sorted(entry_keys),
+            'exit_feature_keys':sorted(exit_keys),
+            'entry_feature_type_counts':{key:dict(sorted(value.items())) for key,value in sorted(entry_types.items())},
+            'exit_feature_type_counts':{key:dict(sorted(value.items())) for key,value in sorted(exit_types.items())},
+            'parse_errors':errors,
+            'raw_price_values_persisted':False,
+            'active_data_b_1m_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/trade_lineage_probe.json >/dev/null
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-trade-lineage-probe-v1-${{ github.run_id }}
+          path: out/trade_lineage_probe.json
+          retention-days: 30

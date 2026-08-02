@@ -1,0 +1,291 @@
+name: ZEL Composite Post-Terminal Controller V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - backend/research/zel_composite_adapter_contract_v1.json
+      - backend/research/zel_composite_module_registry_v1.json
+      - backend/research/zel_composite_module_factory_contract_v1.json
+      - backend/research/strategy11_portfolio_governor_v1.py
+      - backend/tools/zel_composite_source_rebinding_v1.py
+      - backend/tools/zel_composite_source_live_patch_v1.py
+      - backend/tools/zel_composite_source_inventory_merge_v1.py
+      - backend/tools/zel_bingx_private_history_fetch_v1.py
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - backend/tools/zel_bingx_readonly_secret_connector_v2.py
+      - backend/tools/zel_composite_adapter_contract_validator_v1.py
+      - backend/tools/zel_composite_pinned_registry_v1.py
+      - backend/tools/zel_composite_ablation_plan_v1.py
+      - backend/tools/zel_composite_ablation_plan_v2.py
+      - backend/tools/zel_composite_module_factory_v2.py
+      - backend/tools/zel_composite_module_factory_v3.py
+      - backend/tools/zel_trade_method_runtime_behavior_v1.py
+      - backend/tools/zel_composite_terminal_evaluator_v1.py
+      - backend/tools/zel_composite_terminal_evaluator_v2.py
+      - backend/tools/zel_composite_post_terminal_controller_v2.sh
+      - .github/workflows/zel-composite-post-terminal-controller-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-composite-post-terminal-controller-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate guarded terminal controller
+        run: |
+          set -euo pipefail
+          bash -n backend/tools/zel_composite_post_terminal_controller_v2.sh
+          python -m py_compile \
+            backend/tools/zel_composite_source_rebinding_v1.py \
+            backend/tools/zel_composite_source_live_patch_v1.py \
+            backend/tools/zel_composite_source_inventory_merge_v1.py \
+            backend/tools/zel_bingx_readonly_secret_connector_v2.py \
+            backend/tools/zel_composite_adapter_contract_validator_v1.py \
+            backend/tools/zel_composite_pinned_registry_v1.py \
+            backend/tools/zel_composite_ablation_plan_v1.py \
+            backend/tools/zel_composite_ablation_plan_v2.py \
+            backend/tools/zel_composite_module_factory_v2.py \
+            backend/tools/zel_composite_module_factory_v3.py \
+            backend/tools/zel_trade_method_runtime_behavior_v1.py \
+            backend/tools/zel_composite_terminal_evaluator_v1.py \
+            backend/tools/zel_composite_terminal_evaluator_v2.py \
+            backend/tools/zel_ai_control_gate_v1.py
+          python backend/tools/zel_composite_pinned_registry_v1.py --self-test
+          python backend/tools/zel_composite_ablation_plan_v2.py --self-test
+          python backend/tools/zel_trade_method_runtime_behavior_v1.py --self-test
+          python backend/tools/zel_composite_terminal_evaluator_v1.py --self-test
+          python backend/tools/zel_composite_terminal_evaluator_v2.py --self-test
+          python backend/tools/zel_ai_control_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_composite_adapter_contract_v1.json >/dev/null
+          python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
+          python - <<'PY'
+          from pathlib import Path
+          workflow=Path('.github/workflows/zel-composite-post-terminal-controller-v1.yml').read_text()
+          runner=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
+          workflow_required=(
+            'ZEL_AI_CONTROL_GATE_V1',
+            'zel_ai_control_gate_v1.py verify',
+            '--proposal-receipt',
+            '--stage-id',
+            '--epoch-id',
+            '--predecessor-receipt-sha256',
+            'COMPOSITE_POST_TERMINAL',
+            "needs.ai_control.outputs.ready == 'true'",
+            'needs: [validate, ai_control]',
+          )
+          runner_required=(
+            'terminal_receipt.json',
+            'trades.jsonl.gz',
+            'PASS_COMPOSITE_POST_TERMINAL_SEQUENCE_COMPLETE_RETAIN_INCUMBENT',
+            'PASS_COMPOSITE_W2_FORWARD_PARITY_ONLY_NO_ALPHA',
+            'PASS_COMPOSITE_W3_DURABILITY_PARITY_ONLY_NO_ALPHA',
+            'PASS_COMPOSITE_PORTFOLIO_JOINT_RISK_RETAIN_INCUMBENT_NO_EDGE',
+            'runtime_results/zel/composite_post_terminal_v1',
+          )
+          for marker in workflow_required:
+              assert marker in workflow,marker
+          for marker in runner_required:
+              assert marker in runner,marker
+          forbidden_trigger='workflow' + '_run:'
+          assert forbidden_trigger not in workflow
+          print('PASS_COMPOSITE_POST_TERMINAL_CONTROLLER_GUARDED_STATIC')
+          PY
+
+  ai_control:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.ai_gate.outputs.ready }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - id: ai_gate
+        name: ZEL_AI_CONTROL_GATE_V1 — verify terminal-bound Composite authorization
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          stage_id=COMPOSITE_POST_TERMINAL
+          proposal=results/runtime_results/zel/ai_research_control_plane_v1/composite_post_terminal/latest.json
+          predecessor=results/runtime_results/zel/data_b_1m_v2_watch_v1/latest.json
+          if [ ! -s "$proposal" ] || [ ! -s "$predecessor" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            STAGE_ID="$stage_id" python - <<'PY'
+          import json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/ai_gate.json').write_text(json.dumps({
+            'schema_version':'zel.ai.control_gate.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_AI_CONTROL_GATE_INPUT_MISSING',
+            'stage_id':os.environ['STAGE_ID'],
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            exit 0
+          fi
+          STAGE_ID="$stage_id" PROPOSAL="$proposal" PREDECESSOR="$predecessor" python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          proposal_path=Path(os.environ['PROPOSAL'])
+          predecessor_path=Path(os.environ['PREDECESSOR'])
+          proposal=json.loads(proposal_path.read_text())
+          predecessor=json.loads(predecessor_path.read_text())
+          context=proposal.get('gate_context')
+          assert isinstance(context,dict),proposal
+          assert proposal.get('state')=='PASS_AI_RESEARCH_CONTROL_PLANE',proposal
+          assert proposal.get('economic_claim_allowed') is False,proposal
+          assert proposal.get('candidate_execution_allowed') is False,proposal
+          assert proposal.get('selection_authority') is False,proposal
+          assert proposal.get('promotion_authority') is False,proposal
+          assert proposal.get('execution_authority')=='NONE',proposal
+          assert proposal.get('order_authority')=='BLOCKED',proposal
+          assert context.get('stage_id')==os.environ['STAGE_ID'],context
+          assert context.get('broker_stage_id')==os.environ['STAGE_ID'],context
+          assert context.get('target_workflow')=='zel-composite-post-terminal-controller-v1.yml',context
+          assert predecessor.get('state')=='PASS_DATA_B_1M_V2_TERMINAL',predecessor
+          assert predecessor.get('terminal_complete') is True,predecessor
+          assert predecessor.get('runtime_mutated') is False,predecessor
+          assert predecessor.get('execution_authority')=='NONE',predecessor
+          assert predecessor.get('order_authority')=='BLOCKED',predecessor
+          predecessor_sha=hashlib.sha256(predecessor_path.read_bytes()).hexdigest()
+          assert context.get('predecessor_receipt_sha256')==predecessor_sha,(context,predecessor_sha)
+          epoch=str(context.get('epoch_id') or '')
+          assert epoch,context
+          Path('/tmp/zel_composite_ai_epoch').write_text(epoch)
+          Path('/tmp/zel_composite_predecessor_sha').write_text(predecessor_sha)
+          PY
+          epoch=$(cat /tmp/zel_composite_ai_epoch)
+          predecessor_sha=$(cat /tmp/zel_composite_predecessor_sha)
+          if python control/backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id "$stage_id" \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/ai_gate.json; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-post-terminal-ai-gate-${{ github.run_id }}
+          path: out/ai_gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  execute:
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.ai_control.outputs.ready == 'true'
+    needs: [validate, ai_control]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Execute authorized W1 ablation, W2, W3 and Portfolio Joint Risk
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          SSH_KEY_PATH: ${{ github.workspace }}/.ssh/vps_key
+          RESULTS_DIR: ${{ github.workspace }}/results
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          bash backend/tools/zel_composite_post_terminal_controller_v2.sh
+
+      - name: Remove raw terminal artifacts and SSH key
+        if: always()
+        run: |
+          rm -rf out/terminal out/terminal.tar.gz
+          rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-post-terminal-controller-v2-${{ github.run_id }}
+          path: |
+            out/idempotency.json
+            out/terminal_gate.json
+            out/source_pin_parity.json
+            out/bingx_readonly_receipt.json
+            out/trade_method_behavior.json
+            out/adapter_contract_validation.json
+            out/ablation_order_plan.json
+            out/evaluation
+          if-no-files-found: ignore
+          retention-days: 90

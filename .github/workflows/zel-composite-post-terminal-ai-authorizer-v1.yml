@@ -1,0 +1,188 @@
+name: ZEL Composite Post-Terminal AI Authorizer V1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,37 * * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_post_terminal_ai_authorization_v1.json
+      - backend/research/zel_composite_adapter_contract_v1.json
+      - backend/research/zel_ai_research_control_plane_v1.json
+      - backend/tools/zel_ai_stage_authorization_broker_v1.py
+      - backend/tools/zel_ai_control_gate_v1.py
+      - .github/workflows/zel-composite-post-terminal-ai-authorizer-v1.yml
+      - .github/workflows/zel-composite-post-terminal-controller-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_post_terminal_ai_authorization_v1.json
+      - backend/research/zel_composite_adapter_contract_v1.json
+      - backend/tools/zel_ai_stage_authorization_broker_v1.py
+      - backend/tools/zel_ai_control_gate_v1.py
+      - .github/workflows/zel-composite-post-terminal-ai-authorizer-v1.yml
+      - .github/workflows/zel-composite-post-terminal-controller-v1.yml
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-composite-post-terminal-ai-authorizer-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate dedicated authorization contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ai_stage_authorization_broker_v1.py \
+            backend/tools/zel_ai_control_gate_v1.py
+          python backend/tools/zel_ai_stage_authorization_broker_v1.py --self-test
+          python backend/tools/zel_ai_control_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_composite_post_terminal_ai_authorization_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('backend/research/zel_composite_post_terminal_ai_authorization_v1.json').read_text())
+          assert contract['schema_version']=='zel.ai.stage_authorization_broker.v1',contract
+          assert contract['claim_tier']=='STAGE_AUTHORIZATION_NO_ECONOMIC_CLAIM',contract
+          assert len(contract['stages'])==1,contract
+          stage=contract['stages'][0]
+          assert stage['stage_id']=='COMPOSITE_POST_TERMINAL',stage
+          assert stage['predecessor_path']=='runtime_results/zel/data_b_1m_v2_watch_v1/latest.json',stage
+          assert stage['manifest_path']=='backend/research/zel_composite_adapter_contract_v1.json',stage
+          assert stage['target_workflow']=='zel-composite-post-terminal-controller-v1.yml',stage
+          assert stage['auto_dispatch'] is True,stage
+          assert contract['rules']['terminal_complete_required'] is True,contract
+          assert contract['rules']['generic_latest_mutation_allowed'] is False,contract
+          safety=contract['safety']
+          assert safety['active_data_b_1m_mutation'] is False,safety
+          assert safety['canonical_strategy_mutation'] is False,safety
+          assert safety['formal_ledger_mutation'] is False,safety
+          assert safety['runtime_registry_write'] is False,safety
+          assert safety['selection_authority'] is False,safety
+          assert safety['promotion_authority'] is False,safety
+          assert safety['execution_authority']=='NONE' and safety['order_authority']=='BLOCKED',safety
+          print('PASS_COMPOSITE_POST_TERMINAL_AI_AUTHORIZER_STATIC')
+          PY
+
+  authorize:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.resolve.outputs.ready }}
+      target_workflow: ${{ steps.resolve.outputs.target_workflow }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: resolve
+        name: Build terminal-lineage-bound authorization
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python control/backend/tools/zel_ai_stage_authorization_broker_v1.py \
+            --contract control/backend/research/zel_composite_post_terminal_ai_authorization_v1.json \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --results-root results \
+            --control-root control \
+            --receipt-out out/receipt.json \
+            --status-out out/status.json
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          status=json.loads(Path('out/status.json').read_text())
+          ready=status.get('ready') is True
+          if ready:
+              receipt=json.loads(Path('out/receipt.json').read_text())
+              context=receipt.get('gate_context') or {}
+              assert receipt['state']=='PASS_AI_RESEARCH_CONTROL_PLANE',receipt
+              assert context.get('stage_id')=='COMPOSITE_POST_TERMINAL',context
+              assert context.get('broker_stage_id')=='COMPOSITE_POST_TERMINAL',context
+              assert context.get('target_workflow')=='zel-composite-post-terminal-controller-v1.yml',context
+              assert receipt['economic_claim_allowed'] is False,receipt
+              assert receipt['candidate_execution_allowed'] is False,receipt
+              assert receipt['selection_authority'] is False,receipt
+              assert receipt['promotion_authority'] is False,receipt
+              assert receipt['execution_authority']=='NONE' and receipt['order_authority']=='BLOCKED',receipt
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as handle:
+              handle.write(f"ready={'true' if ready else 'false'}\n")
+              handle.write(f"target_workflow={status.get('target_workflow') or ''}\n")
+          PY
+      - name: Publish stage-specific authorization and status
+        env:
+          READY: ${{ steps.resolve.outputs.ready }}
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-composite-ai-authorizer-bot'
+          git config user.email 'zel-composite-ai-authorizer-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          status_root=results/runtime_results/zel/composite_post_terminal_ai_authorizer_v1
+          mkdir -p "$status_root"
+          cp out/status.json "$status_root/latest.json"
+          cp out/status.json "$status_root/run_${GITHUB_RUN_ID}.json"
+          if [ "$READY" = true ]; then
+            stage_root=results/runtime_results/zel/ai_research_control_plane_v1/composite_post_terminal
+            mkdir -p "$stage_root"
+            cp out/receipt.json "$stage_root/latest.json"
+            cp out/receipt.json "$stage_root/run_${GITHUB_RUN_ID}.json"
+          fi
+          cd results
+          git add runtime_results/zel/composite_post_terminal_ai_authorizer_v1
+          if [ -d runtime_results/zel/ai_research_control_plane_v1/composite_post_terminal ]; then
+            git add runtime_results/zel/ai_research_control_plane_v1/composite_post_terminal
+          fi
+          git commit -m "result(zel): Composite terminal AI authorization ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-post-terminal-ai-authorizer-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  dispatch:
+    if: needs.authorize.outputs.ready == 'true'
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch authorized Composite controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ needs.authorize.outputs.target_workflow }}
+        run: |
+          set -euo pipefail
+          test "$TARGET" = 'zel-composite-post-terminal-controller-v1.yml'
+          gh workflow run "$TARGET" --repo "$GITHUB_REPOSITORY" --ref master
+          echo "DISPATCHED=$TARGET"

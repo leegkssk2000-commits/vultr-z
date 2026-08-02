@@ -1,0 +1,138 @@
+name: ZEL 1m Pending Rescue Validate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_data_b_1m_pending_rescue_contract_v1.json
+      - backend/tools/zel_supertrend_nan_invariant_prover_v1.py
+      - backend/tools/zel_data_b_1m_pending_rescue_v1.py
+      - .github/workflows/zel-1m-pending-rescue-validate-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-1m-pending-rescue-validate-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate static rescue tools
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_supertrend_nan_invariant_prover_v1.py \
+            backend/tools/zel_data_b_1m_pending_rescue_v1.py
+          python -m json.tool backend/research/zel_data_b_1m_pending_rescue_contract_v1.json >/dev/null
+          python backend/tools/zel_supertrend_nan_invariant_prover_v1.py --self-test
+          python backend/tools/zel_data_b_1m_pending_rescue_v1.py --self-test
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Prove invariant and stage pending checkpoints outside active output
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          tar -czf - \
+            backend/research/zel_data_b_1m_pending_rescue_contract_v1.json \
+            backend/tools/zel_supertrend_nan_invariant_prover_v1.py \
+            backend/tools/zel_data_b_1m_pending_rescue_v1.py \
+          | ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "GITHUB_RUN_ID=$GITHUB_RUN_ID bash -s" > out/remote_bundle.json <<'REMOTE'
+          set -euo pipefail
+          tmp=$(mktemp -d /tmp/zel-1m-pending-rescue.XXXXXX)
+          trap 'rm -rf "$tmp"' EXIT
+          tar -xzf - -C "$tmp"
+          py=/home/z/z/.venv/bin/python
+          contract="$tmp/backend/research/zel_data_b_1m_pending_rescue_contract_v1.json"
+          proof="$tmp/proof.json"
+          stage="$tmp/stage"
+          plan="$tmp/plan.json"
+          "$py" "$tmp/backend/tools/zel_supertrend_nan_invariant_prover_v1.py" \
+            --contract "$contract" \
+            --engine-v1 /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root /opt/zel/historical-oos-v1 \
+            --interval 1m \
+            --out "$proof"
+          "$py" "$tmp/backend/tools/zel_data_b_1m_pending_rescue_v1.py" \
+            --contract "$contract" \
+            --proof "$proof" \
+            --engine-v1 /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+            --engine-v2 /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v2.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root /opt/zel/historical-oos-v1 \
+            --output-dir /var/lib/zel-research/data-b-1m-v2 \
+            --stage-dir "$stage" \
+            --interval 1m \
+            --mode stage \
+            --receipt "$plan" >/dev/null
+          "$py" - "$proof" "$plan" "$stage" <<'PY'
+          import gzip,json,sys
+          from pathlib import Path
+          proof=json.load(open(sys.argv[1]));plan=json.load(open(sys.argv[2]));stage=Path(sys.argv[3])
+          assert proof['state']=='PASS_SUPERTREND_NAN_SEMANTIC_INVARIANT',proof
+          assert proof['runtime_hold_parity_pct']==100.0,proof
+          assert proof['runtime_sample_count']>=12,proof
+          assert plan['state']=='PASS_PENDING_RESCUE_STAGED',plan
+          assert plan['completed_checkpoint_count']==23,plan
+          assert plan['pending_units']==['supertrend_pullback','trend_rider'],plan
+          assert plan['generated_checkpoint_count']==2,plan
+          rows={}
+          for sid in plan['pending_units']:
+              path=stage/f'{sid}.json.gz'
+              assert path.is_file(),path
+              with gzip.open(path,'rt',encoding='utf-8') as handle: row=json.load(handle)
+              assert row['input_fingerprint']==plan['input_fingerprint'],row
+              result=row['result']
+              assert result['strategy_id']==sid,result
+              assert all(lane['signal_count']==0 and lane['open_count']==0 and lane['close_count']==0 and lane['error_count']==0 for lane in result['lanes']),result
+              rows[sid]={'lane_count':len(result['lanes']),'strategy_calls':sum(l['strategy_call_count'] for l in result['lanes'])}
+          print(json.dumps({'proof':proof,'plan':plan,'staged':rows},sort_keys=True))
+          PY
+          REMOTE
+          python - <<'PY'
+          import json
+          row=json.load(open('out/remote_bundle.json'))
+          proof=row['proof'];plan=row['plan']
+          assert proof['state']=='PASS_SUPERTREND_NAN_SEMANTIC_INVARIANT',proof
+          assert plan['state']=='PASS_PENDING_RESCUE_STAGED',plan
+          assert plan['service_active_observed'] is True,plan
+          assert plan['existing_checkpoints_mutated'] is False,plan
+          assert plan['canonical_strategy_source_mutated'] is False,plan
+          assert plan['engine_source_mutated'] is False,plan
+          assert plan['execution_authority']=='NONE' and plan['order_authority']=='BLOCKED',plan
+          print({'proof_samples':proof['runtime_sample_count'],'parity':proof['runtime_hold_parity_pct'],'pending':plan['pending_units'],'staged':row['staged']})
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-1m-pending-rescue-validate-v1-${{ github.run_id }}
+          path: out/remote_bundle.json
+          if-no-files-found: error
+          retention-days: 90

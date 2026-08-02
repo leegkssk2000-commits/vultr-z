@@ -1,0 +1,186 @@
+name: ZEL Composite Adapter Behavior Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-adapter-behavior-probe-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-adapter-behavior-probe-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Execute pure resolver probes in isolated temporary home
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/adapter_behavior_probe.json <<'PY'
+          import gzip,hashlib,importlib,json,os,sys,tempfile
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('/home/z/z')
+          sys.path.insert(0,str(root))
+          sys.dont_write_bytecode=True
+          temp_home=tempfile.mkdtemp(prefix='zel-adapter-probe.')
+          os.environ['HOME']=temp_home
+          os.environ['Z_HOME']=str(root)
+          os.environ['Q4R3_SHADOW_ONLY']='1'
+          os.environ['Q4R3_PAPER_ENABLED']='0'
+          os.environ['Q4R3_LIVE_ENABLED']='0'
+          os.environ['Q4R3_ORDER_ENABLED']='0'
+
+          checkpoint_root=Path('/var/lib/zel-research/data-b-1m-v2/checkpoints')
+          strategy_ids=[]
+          for path in sorted(checkpoint_root.glob('*.json.gz')):
+              try:
+                  with gzip.open(path,'rt',encoding='utf-8') as handle:
+                      payload=json.load(handle)
+                  strategy_id=str((payload.get('result') or {}).get('strategy_id') or '')
+                  if strategy_id: strategy_ids.append(strategy_id)
+              except Exception:
+                  pass
+          strategy_ids=sorted(set(strategy_ids))
+
+          registry_path=root/'backend/contracts/ZOS_SKILL_REGISTRY_v1.json'
+          registry=json.loads(registry_path.read_text()) if registry_path.is_file() else {}
+          skill_ids=[]
+          def walk_skills(value):
+              if isinstance(value,dict):
+                  for key,item in value.items():
+                      if key in {'skill_id','id'} and isinstance(item,str) and item.startswith('SK_'):
+                          skill_ids.append(item)
+                      walk_skills(item)
+              elif isinstance(value,list):
+                  for item in value: walk_skills(item)
+          walk_skills(registry)
+          skill_ids=sorted(set(skill_ids))
+
+          config_candidates=[]
+          for path in (
+              root/'backend/strategy25/canonical_strategy25_config_v1.json',
+              root/'backend/config/q4r3_canonical_strategy_owner_manifest_v1.json',
+              root/'backend/contracts/ZOS_STRATEGY_REGISTRY_v1.json',
+          ):
+              if path.is_file():
+                  config_candidates.append({
+                    'path':str(path.relative_to(root)),
+                    'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+                    'top_type':type(json.loads(path.read_text())).__name__,
+                    'top_keys':sorted(json.loads(path.read_text()).keys()) if isinstance(json.loads(path.read_text()),dict) else [],
+                  })
+
+          errors=[]
+          trade_method_rows=[]
+          skill_rows=[]
+          try:
+              tm=importlib.import_module('backend.trade_methods.resolver')
+              for strategy_id in strategy_ids:
+                  for label,skills in (('EMPTY',[]),('ALL_REGISTRY',skill_ids)):
+                      try:
+                          result=tm.h74tm8_resolve_trade_method(strategy_id,skills,0.0)
+                          trade_method_rows.append({
+                            'strategy_id':strategy_id,
+                            'skill_input':label,
+                            'result_type':type(result).__name__,
+                            'result':result,
+                          })
+                      except Exception as exc:
+                          errors.append({'component':'TRADE_METHOD','strategy_id':strategy_id,'skill_input':label,'error':f'{type(exc).__name__}:{exc}'})
+          except Exception as exc:
+              errors.append({'component':'TRADE_METHOD_IMPORT','error':f'{type(exc).__name__}:{exc}'})
+
+          try:
+              sr=importlib.import_module('backend.engine.skill_resolver')
+              bot_dnas={
+                'L':{'identity':{'name':'LBot','family':'L'},'capabilities':{},'skill_refs':{}},
+                'M':{'identity':{'name':'MBot','family':'M'},'capabilities':{},'skill_refs':{}},
+                'O':{'identity':{'name':'OBot','family':'O'},'capabilities':{},'skill_refs':{}},
+                'S':{'identity':{'name':'SBot','family':'S'},'capabilities':{},'skill_refs':{}},
+              }
+              for strategy_id in strategy_ids:
+                  strategy_doc={
+                    'identity':{'strategy_id':strategy_id,'id':strategy_id,'name':strategy_id},
+                    'skill_refs':{'strategy_skills':skill_ids},
+                    'skills':skill_ids,
+                  }
+                  for family,bot_dna in bot_dnas.items():
+                      try:
+                          result=sr.resolve_effective_skills(
+                            strategy_doc,bot_dna,registry,{},'unknown','research',{}
+                          )
+                          skill_rows.append({
+                            'strategy_id':strategy_id,
+                            'bot_family':family,
+                            'result':result,
+                          })
+                      except Exception as exc:
+                          errors.append({'component':'SKILL_PROFILE','strategy_id':strategy_id,'bot_family':family,'error':f'{type(exc).__name__}:{exc}'})
+          except Exception as exc:
+              errors.append({'component':'SKILL_PROFILE_IMPORT','error':f'{type(exc).__name__}:{exc}'})
+
+          out={
+            'schema_version':'zel.composite.adapter_behavior_probe.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_ADAPTER_BEHAVIOR_PROBE' if trade_method_rows and skill_rows and not errors else 'HOLD_ADAPTER_BEHAVIOR_PROBE',
+            'strategy_count':len(strategy_ids),
+            'strategy_ids':strategy_ids,
+            'skill_registry_path':str(registry_path.relative_to(root)) if registry_path.is_file() else None,
+            'skill_registry_sha256':hashlib.sha256(registry_path.read_bytes()).hexdigest() if registry_path.is_file() else None,
+            'skill_id_count':len(skill_ids),
+            'skill_ids':skill_ids,
+            'config_candidates':config_candidates,
+            'trade_method_rows':trade_method_rows,
+            'skill_rows':skill_rows,
+            'errors':errors,
+            'network_requested':False,
+            'writes_requested':False,
+            'active_data_b_1m_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          print(json.dumps(out,indent=2,sort_keys=True,default=str))
+          PY
+          python -m json.tool out/adapter_behavior_probe.json >/dev/null
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-adapter-behavior-probe-v1-${{ github.run_id }}
+          path: out/adapter_behavior_probe.json
+          retention-days: 30

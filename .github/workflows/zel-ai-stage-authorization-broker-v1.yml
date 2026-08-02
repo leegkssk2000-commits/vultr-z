@@ -17,6 +17,11 @@ on:
           - SELECTED_INTERACTIONS
           - STRATEGY_TOP3_BUNDLES
           - ALPHA_LAP_CHALLENGERS
+          - W2_FORWARD
+          - W3_DURABILITY
+          - PORTFOLIO_JOINT_RISK
+          - ROLLBACK_REHEARSAL
+          - PRE_SHADOW_RELEASE
       dispatch_target:
         description: Dispatch the target workflow after publishing a PASS receipt
         required: true
@@ -30,6 +35,7 @@ on:
       - backend/research/zel_ai_stage_authorization_broker_v1.json
       - backend/research/zel_selected_interactions_contract_v1.json
       - backend/research/zel_strategy_top3_bundles_contract_v1.json
+      - backend/research/zel_remaining_static_stages_contract_v1.json
       - backend/tools/zel_ai_stage_authorization_broker_v1.py
       - backend/tools/zel_ai_control_gate_v1.py
       - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
@@ -39,6 +45,7 @@ on:
       - backend/research/zel_ai_stage_authorization_broker_v1.json
       - backend/research/zel_selected_interactions_contract_v1.json
       - backend/research/zel_strategy_top3_bundles_contract_v1.json
+      - backend/research/zel_remaining_static_stages_contract_v1.json
       - backend/tools/zel_ai_stage_authorization_broker_v1.py
       - backend/tools/zel_ai_control_gate_v1.py
       - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
@@ -71,15 +78,26 @@ jobs:
           python -m json.tool backend/research/zel_ai_stage_authorization_broker_v1.json >/dev/null
           python -m json.tool backend/research/zel_selected_interactions_contract_v1.json >/dev/null
           python -m json.tool backend/research/zel_strategy_top3_bundles_contract_v1.json >/dev/null
+          python -m json.tool backend/research/zel_remaining_static_stages_contract_v1.json >/dev/null
           python - <<'PY'
           import json
           from pathlib import Path
           c=json.loads(Path('backend/research/zel_ai_stage_authorization_broker_v1.json').read_text())
           assert c['claim_tier']=='STAGE_AUTHORIZATION_NO_ECONOMIC_CLAIM',c
-          assert len(c['stages'])==7,c
+          assert len(c['stages'])==12,c
           assert sum(1 for row in c['stages'] if row['auto_dispatch'])==2,c
-          assert any(row['stage_id']=='SELECTED_INTERACTIONS' and row['target_workflow']=='zel-selected-interactions-v1.yml' for row in c['stages']),c
-          assert any(row['stage_id']=='STRATEGY_TOP3_BUNDLES' and row['target_workflow']=='zel-strategy-top3-bundles-v1.yml' for row in c['stages']),c
+          expected={
+            'ALPHA_LAP_CHALLENGERS':'zel-alpha-lap-challengers-v1.yml',
+            'W2_FORWARD':'zel-w2-forward-v1.yml',
+            'W3_DURABILITY':'zel-w3-durability-v1.yml',
+            'PORTFOLIO_JOINT_RISK':'zel-portfolio-joint-risk-v1.yml',
+            'ROLLBACK_REHEARSAL':'zel-rollback-rehearsal-v1.yml',
+            'PRE_SHADOW_RELEASE':'zel-pre-shadow-release-v1.yml',
+          }
+          by_id={row['stage_id']:row for row in c['stages']}
+          for stage,target in expected.items():
+              assert by_id[stage]['target_workflow']==target,(stage,by_id.get(stage))
+              assert by_id[stage]['manifest_path']=='backend/research/zel_remaining_static_stages_contract_v1.json'
           assert c['rules']['generic_latest_written_only_immediately_before_target_dispatch'] is True,c
           workflow=Path('.github/workflows/zel-ai-stage-authorization-broker-v1.yml').read_text()
           assert 'git add runtime_results/zel/ai_stage_authorization_broker_v1' in workflow
@@ -206,4 +224,4 @@ jobs:
           gh workflow run "$TARGET" --repo "$GITHUB_REPOSITORY" --ref master
           echo "DISPATCHED=$TARGET"
 
-# trigger: 2026-08-02 broker status publication
+# trigger: 2026-08-02 remaining-static-stages

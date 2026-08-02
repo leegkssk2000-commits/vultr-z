@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - backend/tools/zel_grid_neutral_source_trace_v2.py
+      - backend/tools/zel_grid_neutral_regime_origin_probe_v1.py
       - .github/workflows/zel-grid-neutral-source-trace-v2.yml
   workflow_dispatch:
 
@@ -26,11 +27,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Static validation
-        run: python -m py_compile backend/tools/zel_grid_neutral_source_trace_v2.py
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_neutral_source_trace_v2.py \
+            backend/tools/zel_grid_neutral_regime_origin_probe_v1.py
+
       - name: Prepare read-only SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -43,6 +51,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
       - name: Run source trace v2 read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -60,32 +69,73 @@ jobs:
             'python3 - --runtime-root /home/z/z --terminal-root /var/lib/zel-research/data-b-1m-v2 --stdout' \
             < backend/tools/zel_grid_neutral_source_trace_v2.py \
             > out/source_trace_v2.json
-          rc=$?
+          trace_rc=$?
           set -e
-          test "$rc" -eq 0 -o "$rc" -eq 1
+          test "$trace_rc" -eq 0 -o "$trace_rc" -eq 1
           test -s out/source_trace_v2.json
           python -m json.tool out/source_trace_v2.json >/dev/null
-          printf '%s\n' "$rc" > out/trace_rc.txt
-      - name: Verify safety
+          printf '%s\n' "$trace_rc" > out/trace_rc.txt
+
+      - name: Run exact regime origin probe read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 300s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --runtime-root /home/z/z --terminal-root /var/lib/zel-research/data-b-1m-v2 --stdout' \
+            < backend/tools/zel_grid_neutral_regime_origin_probe_v1.py \
+            > out/regime_origin_probe.json
+          origin_rc=$?
+          set -e
+          test "$origin_rc" -eq 0 -o "$origin_rc" -eq 1
+          test -s out/regime_origin_probe.json
+          python -m json.tool out/regime_origin_probe.json >/dev/null
+          printf '%s\n' "$origin_rc" > out/origin_rc.txt
+
+      - name: Verify safety and summarize
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          row=json.load(open('out/source_trace_v2.json'))
-          assert row['raw_code_published'] is False,row
-          assert row['canonical_mutated'] is False,row
-          assert row['runtime_mutated'] is False,row
-          assert row['formal_ledger_mutated'] is False,row
-          assert row['selection_authority'] is False,row
-          assert row['promotion_authority'] is False,row
-          assert row['execution_authority']=='NONE',row
-          assert row['order_authority']=='BLOCKED',row
-          assert row['action']=='hold',row
-          print({'state':row['state'],'files':row['file_count'],'functions':row['relevant_function_count']})
+          trace=json.load(open('out/source_trace_v2.json'))
+          origin=json.load(open('out/regime_origin_probe.json'))
+          for row in (trace,origin):
+              assert row['raw_code_published'] is False,row
+              assert row['canonical_mutated'] is False,row
+              assert row['runtime_mutated'] is False,row
+              assert row['formal_ledger_mutated'] is False,row
+              assert row['selection_authority'] is False,row
+              assert row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE',row
+              assert row['order_authority']=='BLOCKED',row
+              assert row['action']=='hold',row
+          assert origin['raw_trade_rows_published'] is False,origin
+          print({
+              'trace_state':trace['state'],
+              'candidate_files':trace['candidate_file_count'],
+              'role_counts':trace['role_counts'],
+              'missing_roles':trace['missing_roles'],
+              'origin_state':origin['state'],
+              'writers':origin['regime_writer_count'],
+              'derivers':origin['regime_deriver_count'],
+              'targets':origin['target_function_count'],
+              'missing_targets':origin['missing_targets'],
+              'blockers':origin['blockers'],
+          })
           PY
+
       - name: Cleanup SSH key
         if: always()
         run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

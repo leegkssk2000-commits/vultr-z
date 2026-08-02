@@ -1,0 +1,260 @@
+name: ZEL EMA Reconciled Trailing Gemini V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py
+      - backend/tools/zel_ema_path_semantics_reconciliation_v1.py
+      - backend/tools/zel_ema_trailing_counterfactual_v1.py
+      - .github/workflows/zel-ema-reconciled-trailing-gemini-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-reconciled-trailing-gemini-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
+            backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
+            backend/tools/zel_ema_trailing_counterfactual_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run pinned reconciliation and trailing tournament
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-ema-reconciled-trailing-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
+            backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
+            backend/tools/zel_ema_trailing_counterfactual_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 6900s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail
+             test \"\$(sha256sum /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz | awk '{print \$1}')\" = '62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'
+             test \"\$(sha256sum /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py | awk '{print \$1}')\" = '14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50'
+             cd '$remote'
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               zel_ema_path_semantics_reconciliation_v1.py \
+               --out reconciliation.json
+             python3 - <<'PY'
+import json
+row=json.load(open('reconciliation.json'))
+assert row['state']=='PASS_EMA_PATH_SEMANTICS_RECONCILED',row
+assert row['entry_known_exact_match'] is True,row
+contract=row['best_entry_known_candidate']
+assert contract['candidate_id']=='high_low|exclude_entry|risk_usdt_div_quantity',contract
+assert contract['coverage_count']==424,contract
+assert contract['mfe_mean_abs_error_R']<=0.05,contract
+assert contract['mae_mean_abs_error_R']<=0.05,contract
+PY
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               zel_ema_trailing_counterfactual_v1.py \
+               --reconciliation reconciliation.json \
+               --out trailing.json" > out/remote.stdout 2>out/remote.stderr
+          for name in reconciliation trailing; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$remote/${name}.json" "out/${name}.json"
+          done
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/reconciliation.json >/dev/null
+          python -m json.tool out/trailing.json >/dev/null
+
+      - name: Deterministic gate summary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          reconciliation=json.load(open('out/reconciliation.json'))
+          trailing=json.load(open('out/trailing.json'))
+          contract=reconciliation['best_entry_known_candidate']
+          selected=trailing.get('selected_candidate')
+          summary={
+            'schema_version':'zel.ema.reconciled_trailing.summary.v1',
+            'state':trailing.get('state'),
+            'contract':contract,
+            'baseline_metrics':trailing.get('baseline_metrics'),
+            'selected_candidate':selected,
+            'holdout_pass':trailing.get('holdout_pass'),
+            'blockers':trailing.get('blockers'),
+            'tournament':trailing.get('tournament'),
+            'absolute_positive_all':bool(selected and float((selected.get('metrics') or {}).get('all',{}).get('net_R') or 0)>0),
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True)
+          print({
+            'state':summary['state'],
+            'contract':contract['candidate_id'],
+            'selected':(selected or {}).get('candidate_id'),
+            'holdout_pass':summary['holdout_pass'],
+            'absolute_positive_all':summary['absolute_positive_all'],
+            'blockers':summary['blockers'],
+          })
+          PY
+          python -m json.tool out/summary.json >/dev/null
+
+      - name: Gemini causal review and independent red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python - <<'PY'
+          import json, os, time, urllib.request
+          summary=json.load(open('out/summary.json'))
+          evidence={
+            'contract':summary['contract'],
+            'baseline_metrics':summary['baseline_metrics'],
+            'selected_candidate':summary['selected_candidate'],
+            'holdout_pass':summary['holdout_pass'],
+            'absolute_positive_all':summary['absolute_positive_all'],
+            'blockers':summary['blockers'],
+            'tournament':summary['tournament'],
+            'constraints':{
+              'W1_selection_only':True,
+              'W2_W3_frozen_holdout':True,
+              'one_exit_axis_only':True,
+              'same_bar_new_stop_execution_allowed':False,
+              'no_production_authority':True,
+            },
+          }
+          key=os.environ['GEMINI_API_KEY']
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          def call(role,instruction):
+            prompt=(
+              'You are '+role+' for a read-only systematic trading replay. Use only aggregate evidence. '
+              'Do not override deterministic W1/W2/W3 gates and do not authorize production. '
+              +instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+            )
+            payload={'contents':[{'parts':[{'text':prompt}]}], 'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+            last=None
+            for model in models:
+              try:
+                url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}'
+                req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
+              except Exception as exc:
+                last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+            raise RuntimeError('GEMINI_FAILED:'+str(last))
+          auditor=call('the causal auditor','Return JSON keys verdict, causal_reason, leakage_check. verdict must be PASS, HOLD, or REJECT.')
+          redteam=call('the independent red-team','Return JSON keys verdict, failure_mode, next_axis. verdict must be ACCEPT, REJECT, or MORE_EVIDENCE; next_axis must be TRAILING_SURVIVOR, IMMEDIATE_FAIL_ENTRY_FILTER, TIME_STOP, or RETIRE_EMA.')
+          av=auditor['response'].get('verdict')
+          rv=redteam['response'].get('verdict')
+          na=redteam['response'].get('next_axis')
+          valid=av in {'PASS','HOLD','REJECT'} and rv in {'ACCEPT','REJECT','MORE_EVIDENCE'} and na in {'TRAILING_SURVIVOR','IMMEDIATE_FAIL_ENTRY_FILTER','TIME_STOP','RETIRE_EMA'}
+          deterministic_pass=summary['state']=='PASS_EMA_TRAILING_COUNTERFACTUAL_NONOVERLAP' and summary['holdout_pass'] is True
+          sealed=valid and deterministic_pass and av=='PASS' and rv=='ACCEPT' and na=='TRAILING_SURVIVOR'
+          receipt={
+            'schema_version':'zel.ema.reconciled_trailing.gemini_review.v1',
+            'state':'PASS_GEMINI_EMA_TRAILING_SEALED_HOLDBACK' if sealed else ('PASS_GEMINI_EMA_NEXT_AXIS_READY' if valid else 'HOLD_GEMINI_RESPONSE_INVALID'),
+            'auditor':auditor,
+            'redteam':redteam,
+            'response_valid':valid,
+            'deterministic_pass':deterministic_pass,
+            'sealed_research_holdback':sealed,
+            'next_axis':'TRAILING_SURVIVOR' if sealed else (na if valid else 'RETIRE_EMA'),
+            'raw_trade_rows_sent':False,
+            'raw_prices_sent':False,
+            'private_code_sent':False,
+            'credentials_sent':False,
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({
+            'state':receipt['state'],
+            'deterministic_pass':deterministic_pass,
+            'sealed':sealed,
+            'next_axis':receipt['next_axis'],
+            'auditor':auditor['response'],
+            'redteam':redteam['response'],
+          })
+          PY
+          python -m json.tool out/gemini_review.json >/dev/null
+
+      - name: Verify safety boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          for name in ('trailing','summary','gemini_review'):
+              row=json.load(open(f'out/{name}.json'))
+              for key in ('canonical_mutated','runtime_mutated','selection_authority','promotion_authority'):
+                  if key in row: assert row[key] is False,(name,key,row)
+              if 'execution_authority' in row: assert row['execution_authority']=='NONE',row
+              if 'order_authority' in row: assert row['order_authority']=='BLOCKED',row
+              if 'action' in row: assert row['action']=='hold',row
+          PY
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-reconciled-trailing-gemini-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,94 @@
+{
+  "schema_version": "zel.data_b.1m.v2.stall_diagnosis.receipt.v1",
+  "generated_at": "2026-08-02T15:51:45Z",
+  "state": "HOLD_ALGORITHMIC_COMPLEXITY_LONG_RUNNING_FINAL_TWO",
+  "classification": "CPU_BOUND_LONG_RUNNING_WORKERS_NOT_DEADLOCK",
+  "progress": {
+    "completed_units": 23,
+    "total_units": 25,
+    "progress_pct": 92.0,
+    "last_checkpoint_at": "2026-08-02T13:41:21.715191Z",
+    "heartbeat_age_sec_at_diagnosis": 7179.79342,
+    "terminal_complete": false
+  },
+  "pending_units": [
+    "supertrend_pullback",
+    "trend_rider"
+  ],
+  "process_evidence": {
+    "service_active": true,
+    "service_substate": "running",
+    "main_pid": 4061412,
+    "restart_count": 0,
+    "task_count": 7,
+    "memory_bytes": 207310848,
+    "sample_sec": 20.000,
+    "active_worker_pids": [4061457, 4061459],
+    "worker_cpu_delta_ticks": {
+      "4061457": 1556,
+      "4061459": 1567
+    },
+    "worker_state": {
+      "4061457": "R",
+      "4061459": "R"
+    },
+    "io_read_bytes_delta": 0,
+    "io_write_bytes_delta": 0,
+    "disk_use_pct": 60,
+    "inode_use_pct": 2,
+    "kernel_io_wait_pct": 0
+  },
+  "root_cause": {
+    "primary": "Both remaining strategies recompute ATR, EMA and Supertrend across the full rolling frame on every replay bar.",
+    "engine_behavior": "The replay engine copies up to 420 rows and invokes the strategy once for each 1m bar. Progress and heartbeat are written only when a complete strategy future returns.",
+    "supertrend_pullback": {
+      "owner_path": "backend/strategies/supertrend_pullback.py",
+      "source_lines": 673,
+      "python_for_while_nodes": 3,
+      "rolling_ewm_apply_nodes": 2,
+      "iloc_loc_nodes": 41,
+      "owner_sha256": "b5398dfce04260422f04a758736d210763dc8c6097eeca953af82a56eb80fe25"
+    },
+    "trend_rider": {
+      "owner_path": "backend/strategies/trend_rider.py",
+      "source_lines": 669,
+      "python_for_while_nodes": 3,
+      "rolling_ewm_apply_nodes": 2,
+      "iloc_loc_nodes": 39,
+      "owner_sha256": "0fcb0e42b843cd4cdc388a680b809388acf210482547a1d4790af5f688cff290"
+    },
+    "estimated_complexity": "Approximately 302400 bars times a rolling frame up to 420 rows per strategy, before repeated pandas iloc and indicator work; this is roughly O(N*W) and around 1.27e8 inner-loop row iterations per strategy at the upper bound.",
+    "amplifiers": [
+      "systemd Nice=10",
+      "systemd CPUWeight=30"
+    ],
+    "not_root_cause": [
+      "process death",
+      "worker deadlock",
+      "disk full",
+      "inode exhaustion",
+      "kernel I/O wait",
+      "service restart loop"
+    ]
+  },
+  "observability_defect": {
+    "heartbeat_semantics": "strategy_completion_only",
+    "current_unit_semantics": "last_completed_strategy_not_current_running_worker",
+    "stale_current_unit": "vwap_revert",
+    "eta_valid": false
+  },
+  "safe_next": {
+    "action": "hold",
+    "restart_recommended": false,
+    "reason": "Restarting without a code change repeats the same expensive two strategies. Changing engine or strategy source changes the input fingerprint and may invalidate the 23 resume checkpoints.",
+    "recommended_design": "Build an equivalence-tested incremental Supertrend replay adapter plus a pending-only rescue path, then verify output parity before replacing the active run."
+  },
+  "read_only_diagnosis": true,
+  "runtime_mutated": false,
+  "service_restarted": false,
+  "signal_sent": false,
+  "files_written_on_vps": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "action": "hold"
+}

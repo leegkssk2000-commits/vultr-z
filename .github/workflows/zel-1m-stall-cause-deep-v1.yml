@@ -1,0 +1,153 @@
+name: ZEL 1m Stall Cause Deep V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-1m-stall-cause-deep-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read strategy inventory logs and source complexity
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/deep.json <<'PY'
+          import ast,gzip,json,os,re,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+
+          ROOT=Path('/var/lib/zel-research/data-b-1m-v2')
+          SOURCE=Path('/opt/zel/forward-expansion-v1/source')
+          STRAT=SOURCE/'backend/strategies'
+          LOG=Path('/var/log/zel-research/data-b-1m-v2.log')
+
+          def text(path,limit=2_000_000):
+              try:return path.read_text(errors='replace')[-limit:]
+              except Exception as exc:return f'ERROR:{type(exc).__name__}:{exc}'
+          def jread(path):
+              try:return json.loads(path.read_text())
+              except:return {}
+          progress=jread(ROOT/'progress.json')
+          completed=set(str(x) for x in progress.get('completed_unit_ids',[]) if str(x))
+          files=[]; discovered=set(); source_by_id={}
+          if STRAT.is_dir():
+              for path in sorted(STRAT.rglob('*.py')):
+                  rel=str(path.relative_to(SOURCE))
+                  body=text(path,400_000)
+                  stems={path.stem}
+                  for pattern in (
+                    r"['\"]([a-z][a-z0-9_]{2,64})['\"]\s*:\s*[A-Za-z_]",
+                    r"name\s*=\s*['\"]([a-z][a-z0-9_]{2,64})['\"]",
+                    r"strategy_id\s*=\s*['\"]([a-z][a-z0-9_]{2,64})['\"]",
+                  ):
+                    stems.update(re.findall(pattern,body))
+                  known=[s for s in stems if s in completed or s.endswith(('_trend','_revert','_fade','_combo','_levels','_bias','_scalp','_fail','_break','_sweep','_div','_rebalance','_continue','_reversal'))]
+                  for sid in known:
+                      discovered.add(sid);source_by_id.setdefault(sid,[]).append(rel)
+                  try:
+                      tree=ast.parse(body)
+                      loops=sum(isinstance(n,(ast.For,ast.While,ast.comprehension)) for n in ast.walk(tree))
+                      calls=sum(isinstance(n,ast.Call) for n in ast.walk(tree))
+                      funcs=sum(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) for n in ast.walk(tree))
+                  except Exception:
+                      loops=calls=funcs=None
+                  files.append({'path':rel,'size':path.stat().st_size,'lines':body.count('\n')+1,'loops':loops,'calls':calls,'functions':funcs,'candidate_ids':sorted(known)})
+
+          log=text(LOG,2_000_000)
+          log_ids=set(re.findall(r'\b([a-z][a-z0-9_]{2,64})\b',log))
+          discovered.update(s for s in log_ids if s in completed or s in source_by_id)
+
+          registry_candidates=[]
+          for path in (
+            STRAT/'registry.py',STRAT/'__init__.py',SOURCE/'backend/strategies/registry.py',
+            Path('/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py'),
+            Path('/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v2.py'),
+          ):
+              if path.is_file():registry_candidates.append({'path':str(path),'content':text(path,500_000)})
+
+          # Extract exact strategy names from likely registry/replay text.
+          all_text='\n'.join(item['content'] for item in registry_candidates)
+          expected=set(completed)
+          for token in re.findall(r"['\"]([a-z][a-z0-9_]{2,64})['\"]",all_text):
+              if token in source_by_id or token in completed:
+                  expected.add(token)
+          # Include direct strategy module stems, excluding infrastructure.
+          infra={'__init__','registry','base','common','utils','helpers','types','schema'}
+          for item in files:
+              stem=Path(item['path']).stem
+              if stem not in infra and not stem.startswith('_'):
+                  if stem in source_by_id or stem in log_ids or stem in completed:
+                      expected.add(stem)
+          pending=sorted(expected-completed)
+
+          pending_sources=[]
+          for sid in pending:
+              paths=source_by_id.get(sid,[])
+              for rel in paths:
+                  p=SOURCE/rel
+                  body=text(p,500_000)
+                  pending_sources.append({'strategy_id':sid,'path':rel,'content':body})
+
+          # Log lines mentioning process/task lifecycle or pending IDs.
+          interesting=[]
+          terms=['start','submit','complete','checkpoint','worker','error','fail','strategy']+pending
+          for line in log.splitlines():
+              low=line.lower()
+              if any(term in low for term in terms):interesting.append(line)
+          interesting=interesting[-1000:]
+
+          out={
+            'schema_version':'zel.data_b.1m.v2.stall_cause_deep.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'completed_units':sorted(completed),'completed_count':len(completed),
+            'expected_units':sorted(expected),'expected_count':len(expected),
+            'pending_units':pending,'pending_count':len(pending),
+            'strategy_files':files,'source_by_id':source_by_id,
+            'pending_sources':pending_sources,
+            'registry_and_replay_sources':registry_candidates,
+            'log_tail':log[-200000:],'interesting_log_lines':interesting,
+            'read_only':True,'runtime_mutated':False,'service_restarted':False,
+            'signal_sent':False,'files_written_on_vps':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/deep.json >/dev/null
+          python - <<'PY'
+          import json
+          row=json.load(open('out/deep.json'))
+          print(json.dumps({'completed':row['completed_count'],'expected':row['expected_count'],'pending':row['pending_units'],'pending_sources':[{'strategy_id':x['strategy_id'],'path':x['path']} for x in row['pending_sources']]},indent=2))
+          assert row['read_only'] is True and row['runtime_mutated'] is False,row
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-1m-stall-cause-deep-v1-${{ github.run_id }}
+          path: out/deep.json
+          if-no-files-found: error
+          retention-days: 30

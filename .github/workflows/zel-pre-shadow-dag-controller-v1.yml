@@ -7,6 +7,8 @@ on:
     paths:
       - backend/tools/zel_pre_shadow_receipt_dag_v1.py
       - backend/tools/zel_pre_shadow_lineage_controller_v1.py
+      - backend/research/zel_ai_stage_authorization_broker_v1.json
+      - .github/workflows/zel-component-main-effect-v1.yml
       - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
   workflow_run:
     workflows:
@@ -14,6 +16,7 @@ on:
       - ZEL Data B Risk Adapter Ablation V1
       - ZEL Exact25 Material Upgrade Loop V1
       - ZEL Trade Methods Pre-Shadow Audit V1
+      - ZEL Component Main Effect V1
     types: [completed]
 
 permissions:
@@ -40,9 +43,11 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/tools/zel_pre_shadow_receipt_dag_v1.py \
-            backend/tools/zel_pre_shadow_lineage_controller_v1.py
+            backend/tools/zel_pre_shadow_lineage_controller_v1.py \
+            backend/tools/zel_component_main_effect_receipt_v1.py
           python backend/tools/zel_pre_shadow_receipt_dag_v1.py --self-test
           python backend/tools/zel_pre_shadow_lineage_controller_v1.py --self-test
+          python backend/tools/zel_component_main_effect_receipt_v1.py --self-test
           python - <<'PY'
           from pathlib import Path
           t=Path('.github/workflows/zel-pre-shadow-dag-controller-v1.yml').read_text()
@@ -51,6 +56,10 @@ jobs:
           assert 'Bind completed workflow to expected lineage' in t
           assert 'Create dispatch expectation' in t
           assert 'Dispatch exactly one planned stage' in t
+          assert "'COMPONENT_MAIN_EFFECT'" in t
+          assert "'broker_stage_id':'COMPONENT_MAIN_EFFECT'" in t
+          assert 'zel-component-main-effect-v1.yml' in t
+          assert 'zel-ai-stage-authorization-broker-v1.yml' in t
           print('PASS_PRE_SHADOW_DAG_CONTROLLER_STATIC')
           PY
 
@@ -133,10 +142,17 @@ jobs:
               'EXACT25_LIVENESS_AND_REPAIR':{
                   'workflow_file':'zel-exact25-material-upgrade-loop-v1.yml',
                   'workflow_name':'ZEL Exact25 Material Upgrade Loop V1',
+                  'broker_stage_id':'EXACT25_LIVENESS_AND_REPAIR',
               },
               'TRADE_METHOD_COVERAGE':{
                   'workflow_file':'zel-trade-methods-pre-shadow-audit-v1.yml',
                   'workflow_name':'ZEL Trade Methods Pre-Shadow Audit V1',
+                  'broker_stage_id':'TRADE_METHOD_COVERAGE',
+              },
+              'COMPONENT_MAIN_EFFECT':{
+                  'workflow_file':'zel-component-main-effect-v1.yml',
+                  'workflow_name':'ZEL Component Main Effect V1',
+                  'broker_stage_id':'COMPONENT_MAIN_EFFECT',
               },
           }
           plan={'stage_id':stage,'implemented':stage in mapping,'dispatch':False,'adopt_active':False}
@@ -237,13 +253,23 @@ jobs:
           fi
           stage=$(python -c "import json;print(json.load(open('out/dispatch_plan.json'))['stage_id'])")
           workflow=$(python -c "import json;print(json.load(open('out/dispatch_plan.json'))['workflow_file'])")
-          gh workflow run "$workflow" --ref master
-          echo "DISPATCHED_ONE_STAGE:$stage:$workflow"
+          broker_stage=$(python -c "import json;print(json.load(open('out/dispatch_plan.json')).get('broker_stage_id') or '')")
+          if [ -n "$broker_stage" ]; then
+            gh workflow run zel-ai-stage-authorization-broker-v1.yml \
+              --ref master \
+              -f stage_id="$broker_stage" \
+              -f dispatch_target=true
+            echo "DISPATCHED_VIA_BROKER:$stage:$workflow"
+          else
+            gh workflow run "$workflow" --ref master
+            echo "DISPATCHED_DIRECT:$stage:$workflow"
+          fi
 
       - name: Record authority boundary
         run: |
           cat <<'EOF'
           Controller dispatches at most one receipt-eligible stage.
+          AI-gated stages are authorized by the Stage Authorization Broker before target dispatch.
           Each passing downstream stage requires a binding to the current predecessor receipt SHA and current stage receipt SHA.
           Safe WAIT/HOLD receipts are retryable; parse or authority violations remain blocked.
           Shadow/Paper/Live/order authority remains blocked.

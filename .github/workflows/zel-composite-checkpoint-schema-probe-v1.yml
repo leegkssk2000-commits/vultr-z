@@ -1,0 +1,132 @@
+name: ZEL Composite Checkpoint Schema Probe V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-checkpoint-schema-probe-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-checkpoint-schema-probe-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Extract structural schema from current checkpoints
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/checkpoint_schema.json <<'PY'
+          import gzip,hashlib,json
+          from collections import Counter,defaultdict
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('/var/lib/zel-research/data-b-1m-v2/checkpoints')
+          files=sorted(root.glob('*.json.gz')) if root.is_dir() else []
+          result_keys=Counter()
+          lane_keys=Counter()
+          trade_keys=Counter()
+          trade_key_types=defaultdict(Counter)
+          strategy_ids=[]
+          trade_count=0
+          lane_count=0
+          files_read=0
+          parse_errors=[]
+          for path in files:
+              try:
+                  with gzip.open(path,'rt',encoding='utf-8') as handle:
+                      payload=json.load(handle)
+                  result=payload.get('result') if isinstance(payload,dict) else None
+                  if not isinstance(result,dict):
+                      parse_errors.append({'file_sha256':hashlib.sha256(path.name.encode()).hexdigest(),'error':'RESULT_MISSING'})
+                      continue
+                  files_read+=1
+                  strategy_ids.append(str(result.get('strategy_id') or ''))
+                  result_keys.update(result.keys())
+                  lanes=result.get('lanes') if isinstance(result.get('lanes'),list) else []
+                  lane_count+=len(lanes)
+                  for lane in lanes:
+                      if not isinstance(lane,dict): continue
+                      lane_keys.update(lane.keys())
+                      rows=lane.get('closed_rows') if isinstance(lane.get('closed_rows'),list) else []
+                      for row in rows:
+                          if not isinstance(row,dict): continue
+                          trade_count+=1
+                          trade_keys.update(row.keys())
+                          for key,value in row.items():
+                              trade_key_types[key][type(value).__name__]+=1
+              except Exception as exc:
+                  parse_errors.append({'file_sha256':hashlib.sha256(path.name.encode()).hexdigest(),'error':type(exc).__name__})
+          required_replay_fields={
+              'event_id','strategy','symbol','side','entry_ts','exit_ts','entry_price','exit_price',
+              'realized_R','realized_R_including_funding_estimate','MFE_R','MAE_R','time_exposure_min',
+              'regime','window_id','data_interval','initial_risk_usdt','fee','slippage'
+          }
+          observed=set(trade_keys)
+          missing=sorted(required_replay_fields-observed)
+          state='PASS_CHECKPOINT_SCHEMA_PROBE' if files_read>0 and not parse_errors else 'HOLD_CHECKPOINT_SCHEMA_PROBE'
+          out={
+            'schema_version':'zel.composite.checkpoint_schema_probe.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,
+            'checkpoint_file_count':len(files),
+            'checkpoint_files_read':files_read,
+            'strategy_count':len(set(strategy_ids)),
+            'strategy_ids':sorted(set(strategy_ids)),
+            'result_keys':sorted(result_keys),
+            'lane_keys':sorted(lane_keys),
+            'closed_trade_count':trade_count,
+            'trade_keys':sorted(trade_keys),
+            'trade_key_type_counts':{key:dict(sorted(counts.items())) for key,counts in sorted(trade_key_types.items())},
+            'required_replay_fields':sorted(required_replay_fields),
+            'missing_required_replay_fields':missing,
+            'exact_trade_replay_input_ready':files_read>0 and trade_count>0 and not missing,
+            'parse_errors':parse_errors,
+            'raw_values_persisted':False,
+            'active_data_b_1m_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/checkpoint_schema.json >/dev/null
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-checkpoint-schema-probe-v1-${{ github.run_id }}
+          path: out/checkpoint_schema.json
+          retention-days: 30

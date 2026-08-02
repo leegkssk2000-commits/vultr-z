@@ -1,0 +1,174 @@
+name: ZEL Holdout Runtime Provision V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_holdout_runtime_config_v1.json
+      - backend/tools/zel_holdout_runtime_provision_v1.py
+      - backend/tools/zel_holdout_vault_audit_v1.py
+      - .github/workflows/zel-holdout-runtime-provision-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_holdout_runtime_config_v1.json
+      - backend/tools/zel_holdout_runtime_provision_v1.py
+      - backend/tools/zel_holdout_vault_audit_v1.py
+      - .github/workflows/zel-holdout-runtime-provision-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-holdout-runtime-provision-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate provisioner and redaction boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_holdout_runtime_provision_v1.py \
+            backend/tools/zel_holdout_vault_audit_v1.py
+          python backend/tools/zel_holdout_runtime_provision_v1.py --self-test
+          python backend/tools/zel_holdout_vault_audit_v1.py --self-test
+          python -m json.tool backend/research/zel_holdout_runtime_config_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_holdout_runtime_config_v1.json').read_text())
+          roots=[c['w2_root'],c['w3_root'],c['final_root']]
+          assert len(set(roots))==3,c
+          assert all(path.startswith('/') for path in roots),c
+          assert all(not path.startswith(c['repository_root'].rstrip('/') + '/') for path in roots),c
+          t=Path('backend/tools/zel_holdout_runtime_provision_v1.py').read_text()
+          assert 'hmac_value_disclosed": False' in t
+          assert 'trading_runtime_mutated": False' in t
+          assert 'execution_authority": "NONE"' in t
+          assert 'order_authority": "BLOCKED"' in t
+          print('PASS_HOLDOUT_RUNTIME_PROVISION_STATIC')
+          PY
+
+  provision:
+    if: github.event_name == 'push'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH and upload tools
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/vps_key \
+            backend/research/zel_holdout_runtime_config_v1.json \
+            backend/tools/zel_holdout_runtime_provision_v1.py \
+            backend/tools/zel_holdout_vault_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Provision seven external holdout settings
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
+            set -euo pipefail
+            runner=(python3 /tmp/zel_holdout_runtime_provision_v1.py)
+            if [ "$(id -u)" -ne 0 ]; then runner=(sudo -n python3 /tmp/zel_holdout_runtime_provision_v1.py); fi
+            "${runner[@]}" \
+              --config /tmp/zel_holdout_runtime_config_v1.json \
+              --out /tmp/zel_holdout_runtime_provision_latest.json
+          '
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_runtime_provision_latest.json" \
+            out/provision_latest.json
+      - name: Run immediate read-only post-audit
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
+            set -euo pipefail
+            python3 - <<'PY' >/tmp/zel_holdout_args.env
+          import json,shlex
+          from pathlib import Path
+          c=json.loads(Path("/tmp/zel_holdout_runtime_config_v1.json").read_text())
+          for key in ("repository_root","w2_root","w3_root","final_root","seal_root","evaluator_group"):
+              print(f"{key.upper()}={shlex.quote(str(c[key]))}")
+          print("PROPOSER_USERS=" + shlex.quote(",".join(c.get("proposer_users",[]))))
+          print("HMAC_KEY_FILE=" + shlex.quote(str(c["hmac_key_file"])))
+          PY
+            . /tmp/zel_holdout_args.env
+            test -s "$HMAC_KEY_FILE"
+            python3 /tmp/zel_holdout_vault_audit_v1.py \
+              --repository-root "$REPOSITORY_ROOT" \
+              --w2-root "$W2_ROOT" \
+              --w3-root "$W3_ROOT" \
+              --final-root "$FINAL_ROOT" \
+              --seal-root "$SEAL_ROOT" \
+              --evaluator-group "$EVALUATOR_GROUP" \
+              --proposer-users "$PROPOSER_USERS" \
+              --hmac-configured \
+              --out /tmp/zel_holdout_vault_audit_latest.json
+          '
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_audit_latest.json" \
+            out/audit_latest.json
+      - name: Verify PASS and no trading mutation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('out/provision_latest.json').read_text())
+          a=json.loads(Path('out/audit_latest.json').read_text())
+          assert p['state']=='PASS_HOLDOUT_RUNTIME_PROVISIONED',p
+          assert p['config_items_set']==[
+            'REPOSITORY_ROOT','W2_ROOT','W3_ROOT','FINAL_ROOT',
+            'SEAL_ROOT','EVALUATOR_GROUP','HOLDOUT_HMAC_KEY'
+          ],p
+          assert p['hmac_value_disclosed'] is False,p
+          assert p['trading_runtime_mutated'] is False,p
+          assert a['state']=='PASS_HOLDOUT_VAULT_AUDIT_READY_TO_SEAL',a
+          assert a['holdout_bytes_read'] is False,a
+          assert a['permissions_mutated'] is False,a
+          assert a['execution_authority']=='NONE' and a['order_authority']=='BLOCKED',a
+          print(json.dumps({'provision':p['state'],'audit':a['state']},sort_keys=True))
+          PY
+      - name: Publish redacted receipts only
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          proot=results/runtime_results/zel/holdout_runtime_provision_v1
+          aroot=results/runtime_results/zel/holdout_vault_audit_v1
+          mkdir -p "$proot" "$aroot"
+          cp out/provision_latest.json "$proot/latest.json"
+          cp out/provision_latest.json "$proot/run_${GITHUB_RUN_ID}.json"
+          cp out/audit_latest.json "$aroot/latest.json"
+          cp out/audit_latest.json "$aroot/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-holdout-provision-bot'
+          git config user.email 'zel-holdout-provision-bot@users.noreply.github.com'
+          git add runtime_results/zel/holdout_runtime_provision_v1 runtime_results/zel/holdout_vault_audit_v1
+          git commit -m "result(zel): provision external holdout vault ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - name: Clean temporary files
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_holdout_runtime_config_v1.json /tmp/zel_holdout_runtime_provision_v1.py /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_runtime_provision_latest.json /tmp/zel_holdout_vault_audit_latest.json /tmp/zel_holdout_args.env' || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-holdout-runtime-provision-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

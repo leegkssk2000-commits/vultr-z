@@ -1,0 +1,288 @@
+name: ZEL Composite Pre-Ablation Live Gate V3
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - backend/tools/zel_composite_source_rebinding_v1.py
+      - backend/tools/zel_composite_source_live_patch_v1.py
+      - backend/tools/zel_composite_source_inventory_merge_v1.py
+      - backend/tools/zel_bingx_readonly_secret_connector_v2.py
+      - backend/tools/zel_bingx_private_history_fetch_v1.py
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - .github/workflows/zel-composite-pre-ablation-live-gate-v3.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-pre-ablation-live-gate-v3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate static tools and pin
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/tools/zel_composite_source_rebinding_v1.py \
+            backend/tools/zel_composite_source_live_patch_v1.py \
+            backend/tools/zel_composite_source_inventory_merge_v1.py \
+            backend/tools/zel_bingx_readonly_secret_connector_v2.py \
+            backend/tools/zel_bingx_private_history_fetch_v1.py \
+            backend/tools/zel_bingx_execution_evidence_collector_v1.py
+          python backend/tools/zel_composite_source_rebinding_v1.py --self-test
+          python backend/tools/zel_composite_source_live_patch_v1.py --self-test
+          python backend/tools/zel_composite_source_inventory_merge_v1.py --self-test
+          python backend/tools/zel_bingx_readonly_secret_connector_v2.py --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pin=json.loads(Path('backend/research/zel_composite_live_source_pin_v1.json').read_text())
+          assert pin['schema_version']=='zel.composite.live_source_pin.v1',pin
+          assert pin['module_count']==12 and len(pin['modules'])==12,pin
+          assert len({row['module_id'] for row in pin['modules']})==12,pin
+          assert all(len(row['source_bundle_sha256'])==64 for row in pin['modules']),pin
+          assert pin['safety']['execution_authority']=='NONE'
+          assert pin['safety']['order_authority']=='BLOCKED'
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Rebuild current live source inventory read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          set +e
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 - --root /home/z/z --inventory-stdout" \
+            < backend/tools/zel_composite_source_rebinding_v1.py \
+            > out/live_source_inventory_base.json
+          set -e
+          test -s out/live_source_inventory_base.json
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 - --root /home/z/z --stdout" \
+            < backend/tools/zel_composite_source_live_patch_v1.py \
+            > out/live_source_patch.json
+          python backend/tools/zel_composite_source_inventory_merge_v1.py \
+            --base out/live_source_inventory_base.json \
+            --live-patch out/live_source_patch.json \
+            --git-root "$GITHUB_WORKSPACE" \
+            --out out/live_source_inventory_current.json
+
+      - name: Verify Git-pinned source parity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          pin=json.loads(Path('backend/research/zel_composite_live_source_pin_v1.json').read_text())
+          current=json.loads(Path('out/live_source_inventory_current.json').read_text())
+          expected={row['module_id']:row for row in pin['modules']}
+          actual=current['bindings']
+          mismatches=[]
+          for module_id in sorted(set(expected)|set(actual)):
+              left=expected.get(module_id)
+              right=actual.get(module_id)
+              if not left or not right:
+                  mismatches.append({'module_id':module_id,'reason':'MODULE_SET_MISMATCH'})
+                  continue
+              if left['source_bundle_sha256']!=right['source_bundle_sha256']:
+                  mismatches.append({'module_id':module_id,'reason':'SOURCE_BUNDLE_SHA_DRIFT','expected':left['source_bundle_sha256'],'actual':right['source_bundle_sha256']})
+              if left['file_count']!=right['file_count']:
+                  mismatches.append({'module_id':module_id,'reason':'FILE_COUNT_DRIFT','expected':left['file_count'],'actual':right['file_count']})
+          state='PASS_COMPOSITE_SOURCE_GIT_PIN_VERIFIED' if not mismatches else 'HOLD_COMPOSITE_SOURCE_GIT_PIN_DRIFT'
+          result={
+            'schema_version':'zel.composite.source_git_pin.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,
+            'module_count':len(actual),
+            'verified_module_count':len(actual)-len({row['module_id'] for row in mismatches}),
+            'mismatches':mismatches,
+            'pin_file_sha256':hashlib.sha256(Path('backend/research/zel_composite_live_source_pin_v1.json').read_bytes()).hexdigest(),
+            'current_inventory_receipt_sha256':current['receipt_sha256'],
+            'source_git_pin_required_before_ablation':bool(mismatches),
+            'active_data_b_1m_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          Path('out/source_git_pin_receipt.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(result)
+          PY
+
+      - name: Resolve and validate BingX credential candidates GET-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 - --root /home/z/z --lookback-days 90 --stdout" \
+            < backend/tools/zel_bingx_readonly_secret_connector_v2.py \
+            > out/bingx_readonly_receipt_v2.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/bingx_readonly_receipt_v2.json').read_text())
+          assert row['methods_allowed']==['GET'],row
+          assert row['private_write_endpoints_allowed'] is False,row
+          assert row['credentials_persisted'] is False,row
+          assert row['raw_order_ids_persisted'] is False,row
+          assert row['private_history_persisted'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'candidates':row['credential_candidate_count'],'verified':row['verified_candidate_count']})
+          PY
+
+      - name: Probe live 1m service and terminal read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/data_b_1m_live_gate.json <<'PY'
+          import hashlib,json,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('/var/lib/zel-research/data-b-1m-v2')
+          def cmd(*args):
+              return subprocess.run(args,text=True,capture_output=True).stdout.strip()
+          active=cmd('systemctl','is-active','zel-data-b-1m-v2.service')=='active'
+          enabled=cmd('systemctl','is-enabled','zel-data-b-1m-v2.service')=='enabled'
+          pid=int(cmd('systemctl','show','-p','MainPID','--value','zel-data-b-1m-v2.service') or 0)
+          checkpoints=list((root/'checkpoints').glob('*.json.gz')) if (root/'checkpoints').is_dir() else []
+          progress={}
+          if (root/'progress.json').is_file():
+              try: progress=json.loads((root/'progress.json').read_text())
+              except Exception: progress={'state':'INVALID_PROGRESS_JSON'}
+          terminal={}
+          if (root/'terminal_receipt.json').is_file():
+              try: terminal=json.loads((root/'terminal_receipt.json').read_text())
+              except Exception: terminal={'state':'INVALID_TERMINAL_JSON'}
+          heartbeat=progress.get('heartbeat_at')
+          heartbeat_age_min=None
+          if heartbeat:
+              try:
+                  stamp=datetime.fromisoformat(str(heartbeat).replace('Z','+00:00'))
+                  heartbeat_age_min=(datetime.now(timezone.utc)-stamp).total_seconds()/60.0
+              except Exception: pass
+          terminal_complete=terminal.get('state')=='PASS'
+          if terminal_complete:
+              state='PASS_1M_TERMINAL_AVAILABLE'
+          elif not active:
+              state='HOLD_1M_SERVICE_INACTIVE_NO_TERMINAL'
+          elif heartbeat_age_min is None or heartbeat_age_min>30:
+              state='HOLD_1M_LIVE_HEARTBEAT_STALE'
+          else:
+              state='HOLD_1M_TERMINAL_PENDING'
+          out={
+            'schema_version':'zel.data_b.1m.live_terminal_gate.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,
+            'service_active':active,
+            'service_enabled':enabled,
+            'main_pid':pid,
+            'checkpoint_count':len(checkpoints),
+            'completed_units':progress.get('completed_units'),
+            'total_units':progress.get('total_units'),
+            'progress_state':progress.get('state'),
+            'heartbeat_at':heartbeat,
+            'heartbeat_age_min':heartbeat_age_min,
+            'terminal_complete':terminal_complete,
+            'terminal_state':terminal.get('state'),
+            'terminal_receipt_sha256':hashlib.sha256(json.dumps(terminal,sort_keys=True,separators=(',',':')).encode()).hexdigest() if terminal else None,
+            'read_only':True,
+            'active_data_b_1m_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/data_b_1m_live_gate.json >/dev/null
+
+      - name: Build pre-ablation gate V3
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          source=json.loads(Path('out/source_git_pin_receipt.json').read_text())
+          bingx=json.loads(Path('out/bingx_readonly_receipt_v2.json').read_text())
+          terminal=json.loads(Path('out/data_b_1m_live_gate.json').read_text())
+          blockers=[]
+          if source['state']!='PASS_COMPOSITE_SOURCE_GIT_PIN_VERIFIED': blockers.append('source:'+source['state'])
+          if bingx['state']!='PASS_BINGX_READ_ONLY_SECRET_CONNECTED': blockers.append('bingx:'+bingx['state'])
+          if terminal['state']!='PASS_1M_TERMINAL_AVAILABLE': blockers.append('1m:'+terminal['state'])
+          ready=not blockers
+          result={
+            'schema_version':'zel.composite.pre_ablation_gate.receipt.v3',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_READY_FOR_COMPOSITE_ABLATION_ORDER_PERMUTATION' if ready else 'HOLD_PRE_ABLATION_GATES',
+            'blockers':blockers,
+            'source_state':source['state'],
+            'bingx_state':bingx['state'],
+            'one_minute_state':terminal['state'],
+            'next':'COMPOSITE_ABLATION_ORDER_PERMUTATION' if ready else 'REPAIR_ONLY_LISTED_BLOCKERS',
+            'composite_ablation_started':False,
+            'w2_started':False,
+            'w3_started':False,
+            'portfolio_joint_risk_started':False,
+            'active_data_b_1m_mutated':False,
+            'canonical_strategy_files_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'shadow_started':False,
+            'paper_started':False,
+            'live_enabled':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          result['receipt_sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/pre_ablation_live_gate_v3.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(result)
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-pre-ablation-live-gate-v3-${{ github.run_id }}
+          path: out
+          retention-days: 90

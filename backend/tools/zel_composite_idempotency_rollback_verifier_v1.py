@@ -16,7 +16,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 import zel_composite_terminal_v3_acceptance_harness_v1 as harness
 
-VERSION = "ZEL_COMPOSITE_IDEMPOTENCY_ROLLBACK_VERIFIER_V1_1"
+VERSION = "ZEL_COMPOSITE_IDEMPOTENCY_ROLLBACK_VERIFIER_V1_2"
 VOLATILE_KEYS = {
     "generated_at",
     "receipt_sha256",
@@ -31,7 +31,8 @@ DEFAULT_PROTECTED_PATHS = (
     "backend/research/zel_skill_counterfactual_contract_v1.json",
     "backend/strategies/registry.py",
     "backend/engine/skill_resolver.py",
-    "backend/trade_methods/resolver.py",
+    "backend/tools/zel_trade_method_runtime_behavior_v1.py",
+    "backend/tools/zel_trade_method_historical_adapter_v1.py",
     "backend/lico_market_safety_core.py",
 )
 

@@ -1,0 +1,208 @@
+name: ZEL Holdout Vault Seal V1
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type SEAL_EXTERNAL_HOLDOUT to apply external-vault permissions and seals
+        required: true
+        type: string
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_holdout_vault_seal_contract_v1.json
+      - backend/tools/zel_holdout_vault_audit_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - backend/tools/zel_holdout_vault_seal_runner_v1.py
+      - backend/tools/zel_holdout_vault_seal_exec_v1.sh
+      - .github/workflows/zel-holdout-vault-seal-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-holdout-vault-seal-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate manual-only seal boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_holdout_vault_audit_v1.py \
+            backend/tools/zel_holdout_vault_v1.py \
+            backend/tools/zel_holdout_vault_seal_runner_v1.py
+          bash -n backend/tools/zel_holdout_vault_seal_exec_v1.sh
+          python backend/tools/zel_holdout_vault_audit_v1.py --self-test
+          python backend/tools/zel_holdout_vault_v1.py --self-test
+          python backend/tools/zel_holdout_vault_seal_runner_v1.py --self-test
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          contract=json.loads(Path('backend/research/zel_holdout_vault_seal_contract_v1.json').read_text())
+          workflow=Path('.github/workflows/zel-holdout-vault-seal-v1.yml').read_text()
+          executor=Path('backend/tools/zel_holdout_vault_seal_exec_v1.sh').read_text()
+          remote_match=re.search(r'(?ms)^      - id: remote\n.*?(?=^      - name: Fetch redacted receipts\n)',workflow)
+          assert remote_match,workflow
+          remote_step=remote_match.group(0)
+          assert contract['confirmation_phrase']=='SEAL_EXTERNAL_HOLDOUT',contract
+          assert contract['zones']==['W2_FORWARD','W3_DURABILITY','FINAL_HOLDOUT'],contract
+          assert contract['requirements']['workflow_dispatch_only'] is True,contract
+          assert contract['requirements']['fresh_inline_read_only_audit_required'] is True,contract
+          assert contract['requirements']['raw_holdout_publication_forbidden'] is True,contract
+          assert '\n  schedule:' not in workflow,workflow
+          assert '\n  push:' not in workflow,workflow
+          assert 'SEAL_EXTERNAL_HOLDOUT' in workflow,workflow
+          assert 'zel_holdout_vault_seal_runner_v1.py' in workflow,workflow
+          assert 'IFS= read -r ZEL_HOLDOUT_HMAC_KEY' in executor,executor
+          assert '--hmac-key' not in remote_step,remote_step
+          assert '"$HOLDOUT_HMAC_KEY" | ssh' in remote_step,remote_step
+          assert 'bash /tmp/zel_holdout_vault_seal_exec_v1.sh' in remote_step,remote_step
+          assert contract['safety']['execution_authority']=='NONE',contract
+          assert contract['safety']['order_authority']=='BLOCKED',contract
+          print('PASS_HOLDOUT_VAULT_SEAL_MANUAL_BOUNDARY')
+          PY
+
+  seal:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REPOSITORY_ROOT: ${{ vars.ZEL_REPOSITORY_ROOT }}
+      W2_ROOT: ${{ vars.ZEL_HOLDOUT_W2_ROOT }}
+      W3_ROOT: ${{ vars.ZEL_HOLDOUT_W3_ROOT }}
+      FINAL_ROOT: ${{ vars.ZEL_HOLDOUT_FINAL_ROOT }}
+      SEAL_ROOT: ${{ vars.ZEL_HOLDOUT_SEAL_ROOT }}
+      EVALUATOR_GROUP: ${{ vars.ZEL_HOLDOUT_EVALUATOR_GROUP }}
+      PROPOSER_USERS: ${{ vars.ZEL_HOLDOUT_PROPOSER_USERS }}
+      HOLDOUT_HMAC_KEY: ${{ secrets.ZEL_HOLDOUT_HMAC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Require exact confirmation and complete configuration
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = 'SEAL_EXTERNAL_HOLDOUT'
+          for name in REPOSITORY_ROOT W2_ROOT W3_ROOT FINAL_ROOT SEAL_ROOT EVALUATOR_GROUP HOLDOUT_HMAC_KEY; do
+            test -n "${!name:-}"
+          done
+          python - <<'PY'
+          import os,re
+          for name in ('REPOSITORY_ROOT','W2_ROOT','W3_ROOT','FINAL_ROOT','SEAL_ROOT'):
+              assert re.fullmatch(r'/[A-Za-z0-9._/-]+',os.environ[name]),name
+          assert re.fullmatch(r'[A-Za-z0-9._-]+',os.environ['EVALUATOR_GROUP'])
+          users=os.environ.get('PROPOSER_USERS','')
+          assert not users or re.fullmatch(r'[A-Za-z0-9._,-]+',users)
+          roots=[os.path.normpath(os.environ[name]) for name in ('W2_ROOT','W3_ROOT','FINAL_ROOT')]
+          assert len(set(roots))==3,roots
+          repo=os.path.normpath(os.environ['REPOSITORY_ROOT'])
+          assert all(root!=repo and not root.startswith(repo.rstrip('/')+'/') for root in roots),roots
+          PY
+      - name: Prepare SSH and upload seal tools
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_holdout_vault_audit_v1.py \
+            backend/tools/zel_holdout_vault_v1.py \
+            backend/tools/zel_holdout_vault_seal_runner_v1.py \
+            backend/tools/zel_holdout_vault_seal_exec_v1.sh \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - id: remote
+        name: Run fresh inline audit and manual seal
+        run: |
+          set -euo pipefail
+          set +e
+          printf '%s\n' "$HOLDOUT_HMAC_KEY" | ssh -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "bash /tmp/zel_holdout_vault_seal_exec_v1.sh \
+              --repository-root '$REPOSITORY_ROOT' \
+              --w2-root '$W2_ROOT' \
+              --w3-root '$W3_ROOT' \
+              --final-root '$FINAL_ROOT' \
+              --seal-root '$SEAL_ROOT' \
+              --evaluator-group '$EVALUATOR_GROUP' \
+              --proposer-users '$PROPOSER_USERS' \
+              --out-dir /tmp/zel_holdout_vault_seal_v1"
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+      - name: Fetch redacted receipts
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_seal_v1/seal_summary.json" \
+            out/seal_summary.json
+          for name in pre_audit.json w2_receipt.json w3_receipt.json final_receipt.json post_audit.json; do
+            scp -i ~/.ssh/vps_key \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_seal_v1/$name" \
+              "out/$name" 2>/dev/null || true
+          done
+      - name: Verify PASS and publication boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary=json.loads(Path('out/seal_summary.json').read_text())
+          assert summary['state']=='PASS_EXTERNAL_HOLDOUT_VAULTS_SEALED',summary
+          assert summary['zone_count']==3,summary
+          assert summary['raw_holdout_published'] is False,summary
+          assert summary['runtime_mutated'] is False,summary
+          assert summary['execution_authority']=='NONE' and summary['order_authority']=='BLOCKED',summary
+          assert Path('out/final_receipt.json').is_file(),summary
+          final=json.loads(Path('out/final_receipt.json').read_text())
+          assert final['one_shot_required'] is True,final
+          for path in Path('out').glob('*.json'):
+              text=path.read_text()
+              for token in ('api_key','secret_key','ZEL_HOLDOUT_HMAC_KEY','dataset_root": "/'):
+                  assert token not in text,(path,token)
+          print(json.dumps({'state':summary['state'],'zone_count':summary['zone_count']},sort_keys=True))
+          PY
+      - name: Publish seal receipts
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/holdout_vault_seal_v1
+          mkdir -p "$root"
+          cp out/seal_summary.json "$root/latest.json"
+          cp out/seal_summary.json "$root/run_${GITHUB_RUN_ID}.json"
+          cp out/w2_receipt.json "$root/w2_latest.json"
+          cp out/w3_receipt.json "$root/w3_latest.json"
+          cp out/final_receipt.json "$root/final_latest.json"
+          cp out/post_audit.json "$root/post_audit_latest.json"
+          cd results
+          git config user.name 'zel-holdout-vault-seal-bot'
+          git config user.email 'zel-holdout-vault-seal-bot@users.noreply.github.com'
+          git add runtime_results/zel/holdout_vault_seal_v1
+          git commit -m "result(zel): external holdout vaults sealed ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - name: Clean temporary seal files
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py /tmp/zel_holdout_vault_seal_exec_v1.sh' || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-holdout-vault-seal-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,206 @@
+name: ZEL Grid Neutral Source Lineage Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_grid_neutral_source_lineage_audit_v1.py
+      - backend/tools/zel_grid_neutral_lineage_gemini_review_v1.py
+      - backend/research/zel_grid_neutral_source_lineage_audit_v1.json
+      - .github/workflows/zel-grid-neutral-source-lineage-audit-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-grid-neutral-source-lineage-audit-v1
+  cancel-in-progress: true
+
+jobs:
+  lineage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_neutral_source_lineage_audit_v1.py \
+            backend/tools/zel_grid_neutral_lineage_gemini_review_v1.py \
+            backend/tools/zel_strategy_loss_attribution_gemini_v1.py
+          python -m json.tool backend/research/zel_grid_neutral_source_lineage_audit_v1.json >/dev/null
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run runtime lineage audit read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          set +e
+          timeout 300s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --runtime-root /home/z/z --terminal-root /var/lib/zel-research/data-b-1m-v2 --stdout' \
+            < backend/tools/zel_grid_neutral_source_lineage_audit_v1.py \
+            > out/audit.json
+          audit_rc=$?
+          set -e
+          test "$audit_rc" -eq 0 -o "$audit_rc" -eq 1
+          test -s out/audit.json
+          python -m json.tool out/audit.json >/dev/null
+          printf '%s\n' "$audit_rc" > out/audit_rc.txt
+
+      - name: Verify immutable audit and ledger parity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          audit=json.load(open('out/audit.json'))
+          policy=json.load(open('backend/research/zel_grid_neutral_source_lineage_audit_v1.json'))
+          ledger=audit['trade_ledger']
+          assert audit['strategy_id']==policy['strategy_id'],audit
+          assert ledger['trade_count']==policy['expected_trade_count'],ledger
+          assert ledger['neutral_trade_count']==policy['expected_neutral_trade_count'],ledger
+          for window, expected in policy['expected_window_neutral_trade_counts'].items():
+              actual=ledger['window_regime_counts'].get(f'{window}|neutral')
+              assert actual==expected,(window,actual,expected)
+          assert ledger['raw_rows_published'] is False,ledger
+          assert audit['canonical_mutated'] is False and audit['runtime_mutated'] is False,audit
+          assert audit['formal_ledger_mutated'] is False,audit
+          assert audit['selection_authority'] is False and audit['promotion_authority'] is False,audit
+          assert audit['execution_authority']=='NONE' and audit['order_authority']=='BLOCKED',audit
+          assert audit['action']=='hold',audit
+          print({
+              'state':audit['state'],
+              'sources':audit['strategy_source_count'],
+              'registry_refs':audit['registry_reference_count'],
+              'replay_refs':audit['replay_reference_count'],
+              'regime_candidates':audit['regime_candidate_count'],
+              'blockers':audit['blockers'],
+          })
+          PY
+
+      - name: Gemini causal review and independent red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python backend/tools/zel_grid_neutral_lineage_gemini_review_v1.py \
+            --audit out/audit.json \
+            --policy backend/research/zel_grid_neutral_source_lineage_audit_v1.json \
+            --out out/gemini_review.json
+
+      - name: Verify Gemini boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/gemini_review.json'))
+          assert row['gemini_call_count']==2,row
+          assert row['raw_code_sent'] is False and row['raw_trades_sent'] is False,row
+          assert row['credentials_sent'] is False,row
+          assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['shadow_started'] is False and row['paper_started'] is False and row['live_enabled'] is False,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({
+              'state':row['state'],
+              'models':row['models_used'],
+              'tmp_fork_stage_allowed':row['tmp_fork_stage_allowed'],
+              'decision':row['red_team'].get('decision'),
+          })
+          PY
+
+      - name: Publish redacted lineage receipts
+        run: |
+          set -euo pipefail
+          git -C results pull --rebase origin zel-data-expansion-results-v1
+          dest=results/runtime_results/zel/grid_neutral_source_lineage_audit_v1
+          rm -rf "$dest/latest"
+          mkdir -p "$dest/latest"
+          cp out/audit.json "$dest/latest/audit.json"
+          cp out/gemini_review.json "$dest/latest/gemini_review.json"
+          python - <<'PY'
+          import json
+          audit=json.load(open('out/audit.json'))
+          review=json.load(open('out/gemini_review.json'))
+          summary={
+              'schema_version':'zel.grid_neutral.source_lineage.summary.v1',
+              'state':review['state'],
+              'audit_state':audit['state'],
+              'blockers':audit['blockers'],
+              'tmp_fork_stage_allowed':review['tmp_fork_stage_allowed'],
+              'strategy_source_count':audit['strategy_source_count'],
+              'registry_reference_count':audit['registry_reference_count'],
+              'replay_reference_count':audit['replay_reference_count'],
+              'regime_candidate_count':audit['regime_candidate_count'],
+              'neutral_trade_count':audit['trade_ledger']['neutral_trade_count'],
+              'gemini_models':review['models_used'],
+              'canonical_mutated':False,
+              'runtime_mutated':False,
+              'formal_ledger_mutated':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+              'next':review['next'],
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True)
+          PY
+          cp out/summary.json "$dest/latest/summary.json"
+          cp out/summary.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add runtime_results/zel/grid_neutral_source_lineage_audit_v1
+          git commit -m "result(zel): grid neutral source lineage ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-grid-neutral-source-lineage-audit-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

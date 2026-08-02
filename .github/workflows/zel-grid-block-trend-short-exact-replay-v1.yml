@@ -6,6 +6,7 @@ on:
     paths:
       - backend/research/zel_grid_block_trend_short_exact_replay_v1.json
       - backend/tools/zel_grid_block_trend_short_exact_replay_v1.py
+      - backend/tools/zel_grid_exact_replay_censor_guard_v1.py
       - .github/workflows/zel-grid-block-trend-short-exact-replay-v1.yml
   workflow_dispatch:
 
@@ -36,8 +37,10 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/tools/zel_grid_entry_regime_fork_v1.py \
-            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            backend/tools/zel_grid_exact_replay_censor_guard_v1.py
           python backend/tools/zel_grid_block_trend_short_exact_replay_v1.py --self-test
+          python backend/tools/zel_grid_exact_replay_censor_guard_v1.py --self-test
           python -m json.tool \
             backend/research/zel_grid_block_trend_short_exact_replay_v1.json >/dev/null
 
@@ -81,7 +84,7 @@ jobs:
               '$remote/zel_grid_block_trend_short_exact_replay_v1.py' \
               --policy '$remote/zel_grid_block_trend_short_exact_replay_v1.json' \
               --base-tool '$remote/zel_grid_entry_regime_fork_v1.py' \
-              --stdout" > out/result.json 2>out/stderr.log
+              --stdout" > out/raw_result.json 2>out/stderr.log
           rc=$?
           set -e
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
@@ -90,10 +93,14 @@ jobs:
             tail -n 80 out/stderr.log
             exit "$rc"
           fi
+          python -m json.tool out/raw_result.json >/dev/null
+          python backend/tools/zel_grid_exact_replay_censor_guard_v1.py \
+            --input out/raw_result.json \
+            --output out/result.json
           python -m json.tool out/result.json >/dev/null
-          rm -f out/stderr.log
+          rm -f out/raw_result.json out/stderr.log
 
-      - name: Verify parity, safety and routing boundary
+      - name: Verify parity, censor safety and routing boundary
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -105,6 +112,8 @@ jobs:
           assert row['baseline_meta']['lane_count']==15,row
           assert row['candidate_meta']['lane_count']==15,row
           assert row['candidate_meta']['blocked_entry_signal_count']>0,row
+          assert row['baseline_censored_open_count']==0,row
+          assert row['candidate_censored_open_count']==0,row
           assert row['temporary_raw_rows_deleted'] is True,row
           assert row['source_copy_deleted'] is True,row
           assert row['raw_trade_rows_published'] is False,row
@@ -123,6 +132,8 @@ jobs:
             'baseline_trades':row['all_windows']['baseline']['trade_count'],
             'candidate_trades':row['all_windows']['candidate']['trade_count'],
             'blocked_signals':row['candidate_meta']['blocked_entry_signal_count'],
+            'baseline_censored':row['baseline_censored_open_count'],
+            'candidate_censored':row['candidate_censored_open_count'],
             'w1':row['windows']['1m_w1']['delta'],
             'w2':row['windows']['1m_w2']['delta'],
             'w3':row['windows']['1m_w3']['delta'],

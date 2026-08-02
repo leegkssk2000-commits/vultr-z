@@ -59,9 +59,17 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          SSH=(timeout 90s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "$VPS_USER@$VPS_HOST")
-          "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/terminal_receipt.json' > input/terminal_receipt.json
-          "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz' > input/trades.jsonl.gz
+          timeout 180s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
+            "$VPS_USER@$VPS_HOST" \
+            'tar -C /var/lib/zel-research/data-b-1m-v2 -czf - terminal_receipt.json trades.jsonl.gz' \
+            > input/evidence.tar.gz
+          test -s input/evidence.tar.gz
+          tar -C input -xzf input/evidence.tar.gz
           python - <<'PY'
           import gzip,json
           terminal=json.load(open('input/terminal_receipt.json'))

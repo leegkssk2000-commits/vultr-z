@@ -139,10 +139,10 @@ def main() -> int:
     source_root = Path(source_root_raw)
 
     engine = load_module(args.engine, "zel_entry_regime_engine")
-    producer = engine.import_producer(source_root)
+    engine.worker_init(source_root, args.data_root, "1m")
+    producer = engine._WORKER_PRODUCER
     producer_path = Path(inspect.getsourcefile(producer) or getattr(producer, "__file__", ""))
-    manifest_result = engine.validate_data_manifest(args.data_root, "1m")
-    manifest = manifest_result[0] if isinstance(manifest_result, tuple) else manifest_result
+    manifest = engine._WORKER_MANIFEST
     files = list(manifest.get("files") or []) if isinstance(manifest, Mapping) else []
     file_map: dict[tuple[str, str], Mapping[str, Any]] = {}
     for file_row in files:
@@ -201,8 +201,8 @@ def main() -> int:
     blockers: list[str] = []
     if len(rows) != 580:
         blockers.append("GRID_TRADE_COUNT_MISMATCH")
-    if len(files) != 15:
-        blockers.append("DATA_FILE_COUNT_MISMATCH")
+    if frame_count != len(grouped):
+        blockers.append("USED_LANE_FRAME_COUNT_MISMATCH")
     if len(reconstructed) != len(rows):
         blockers.append("ENTRY_REGIME_RECONSTRUCTION_INCOMPLETE")
     if unmatched:
@@ -221,6 +221,7 @@ def main() -> int:
         "producer_sha256": sha256_file(producer_path),
         "source_root": str(source_root),
         "data_file_count": len(files),
+        "used_lane_count": len(grouped),
         "loaded_frame_count": frame_count,
         "trade_count": len(rows),
         "reconstructed_count": len(reconstructed),

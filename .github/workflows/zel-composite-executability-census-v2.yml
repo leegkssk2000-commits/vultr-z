@@ -1,0 +1,100 @@
+name: ZEL Composite Executability Census V2
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - backend/research/strategy11_portfolio_governor_v1.py
+      - backend/tools/zel_composite_executability_census_v1.py
+      - backend/tools/zel_composite_executability_census_v2.py
+      - .github/workflows/zel-composite-executability-census-v2.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-executability-census-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  semantic-census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate semantic census
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_composite_executability_census_v1.py \
+            backend/tools/zel_composite_executability_census_v2.py
+          python backend/tools/zel_composite_executability_census_v2.py --self-test
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run read-only semantic census
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          tar -czf - \
+            backend/research/zel_composite_live_source_pin_v1.json \
+            backend/research/strategy11_portfolio_governor_v1.py \
+            backend/tools/zel_composite_executability_census_v1.py \
+            backend/tools/zel_composite_executability_census_v2.py \
+          | ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" '
+              set -euo pipefail
+              tmp=$(mktemp -d /tmp/zel-composite-semantic.XXXXXX)
+              trap "rm -rf $tmp" EXIT
+              tar -xzf - -C "$tmp"
+              python3 "$tmp/backend/tools/zel_composite_executability_census_v2.py" \
+                --runtime-root /home/z/z \
+                --git-root "$tmp" \
+                --pin "$tmp/backend/research/zel_composite_live_source_pin_v1.json" \
+                --stdout
+            ' > out/executability_semantic_census.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/executability_semantic_census.json').read_text())
+          assert row['state']=='PASS_COMPOSITE_EXECUTABILITY_SEMANTIC_CENSUS',row
+          assert row['module_count']==12,row
+          assert row['source_pin_verified_count']==12,row
+          assert row['source_error_count']==0,row
+          assert row['economic_claim_allowed'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'modules':row['module_count'],'pin_verified':row['source_pin_verified_count']})
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-executability-semantic-v2-${{ github.run_id }}
+          path: out/executability_semantic_census.json
+          retention-days: 90

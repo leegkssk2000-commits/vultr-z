@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import hashlib
 import json
@@ -141,6 +142,32 @@ def read_trades(path: Path) -> list[dict[str, Any]]:
                 raise RuntimeError(f"TRADE_ROW_NOT_OBJECT:{line_number}")
             rows.append(normalized_row(payload))
     return rows
+
+
+def read_strategy_inventory(path: Path, expected_count: int) -> tuple[list[str], str, int]:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = [dict(row) for row in reader]
+    if not rows or not reader.fieldnames:
+        raise RuntimeError("SCOREBOARD_EMPTY_OR_HEADER_MISSING")
+    preferred = ("strategy_id", "strategy", "strategy_name", "source_strategy_id", "id", "name")
+    candidates = [field for field in preferred if field in reader.fieldnames]
+    candidates.extend(field for field in reader.fieldnames if field not in candidates)
+    for field in candidates:
+        values: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            value = str(row.get(field) or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        if len(values) == expected_count:
+            return values, field, len(rows)
+    raise RuntimeError(
+        "SCOREBOARD_STRATEGY_COLUMN_NOT_FOUND:"
+        + json.dumps({"fields": reader.fieldnames, "row_count": len(rows)}, sort_keys=True)
+    )
 
 
 def max_drawdown(values: Sequence[float]) -> float:
@@ -498,6 +525,7 @@ def red_team_prompt(reviews: Mapping[str, Any], profiles: Sequence[Mapping[str, 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trades", type=Path, required=True)
+    parser.add_argument("--scoreboard", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -506,9 +534,22 @@ def main() -> int:
     rows = read_trades(args.trades)
     if len(rows) != int(policy["expected_trade_count"]):
         raise RuntimeError(f"TRADE_COUNT_MISMATCH:{len(rows)}")
-    strategies_grouped = group_rows(rows, "strategy_id")
-    if len(strategies_grouped) != int(policy["expected_strategy_count"]):
-        raise RuntimeError(f"STRATEGY_COUNT_MISMATCH:{len(strategies_grouped)}")
+    expected_strategy_count = int(policy["expected_strategy_count"])
+    strategy_inventory, inventory_field, scoreboard_row_count = read_strategy_inventory(
+        args.scoreboard, expected_strategy_count
+    )
+    trade_strategies_grouped = group_rows(rows, "strategy_id")
+    unknown_trade_strategy_ids = sorted(set(trade_strategies_grouped) - set(strategy_inventory))
+    if unknown_trade_strategy_ids:
+        raise RuntimeError(
+            "TRADE_STRATEGY_NOT_IN_SCOREBOARD:" + json.dumps(unknown_trade_strategy_ids)
+        )
+    strategies_grouped = {
+        strategy_id: trade_strategies_grouped.get(strategy_id, [])
+        for strategy_id in strategy_inventory
+    }
+    traded_strategy_count = sum(bool(group) for group in strategies_grouped.values())
+    zero_trade_strategy_count = expected_strategy_count - traded_strategy_count
 
     overall = metrics(rows)
     total_gross_loss = float(overall["gross_loss_R"] or 0.0)
@@ -519,8 +560,11 @@ def main() -> int:
     strategy_rows: list[dict[str, Any]] = []
     ordered_ids = sorted(
         strategies_grouped,
-        key=lambda strategy_id: float(metrics(strategies_grouped[strategy_id])["gross_loss_R"] or 0.0),
-        reverse=True,
+        key=lambda strategy_id: (
+            -float(metrics(strategies_grouped[strategy_id])["gross_loss_R"] or 0.0),
+            -int(metrics(strategies_grouped[strategy_id])["trade_count"] or 0),
+            strategy_id,
+        ),
     )
     alias_map = {strategy_id: f"S{index + 1:02d}" for index, strategy_id in enumerate(ordered_ids)}
     for strategy_id in ordered_ids:
@@ -530,6 +574,7 @@ def main() -> int:
             {
                 "strategy_id": strategy_id,
                 "alias": alias_map[strategy_id],
+                "state": "PASS_TRADE_BEARING_STRATEGY" if group else "HOLD_ZERO_TRADE_STRATEGY",
                 "overall": row_metrics,
                 "loss_contribution_pct": float(row_metrics["gross_loss_R"] or 0.0) / max(total_gross_loss, 1e-12) * 100.0,
                 "net_loss_contribution_pct": max(0.0, -float(row_metrics["net_R"] or 0.0)) / max(negative_strategy_net, 1e-12) * 100.0,
@@ -556,6 +601,13 @@ def main() -> int:
         "state": "PASS_STRATEGY_LOSS_ATTRIBUTION_COMPLETE",
         "trade_count": len(rows),
         "strategy_count": len(strategy_rows),
+        "traded_strategy_count": traded_strategy_count,
+        "zero_trade_strategy_count": zero_trade_strategy_count,
+        "strategy_inventory_source": {
+            "path_role": "terminal_scoreboard",
+            "identity_field": inventory_field,
+            "row_count": scoreboard_row_count,
+        },
         "overall": overall,
         "by_window": group_metrics(rows, "window_id"),
         "by_symbol": group_metrics(rows, "symbol"),
@@ -578,7 +630,7 @@ def main() -> int:
     atomic_json(args.out / "attribution.json", attribution)
 
     top_count = int(policy["top_strategy_count"])
-    top = strategy_rows[:top_count]
+    top = [row for row in strategy_rows if int(row["overall"]["trade_count"] or 0) > 0][:top_count]
     anonymized_profiles = [compact_profile(row) for row in top]
     global_profile = {
         "overall": overall,
@@ -656,6 +708,8 @@ def main() -> int:
         "state": "PASS_ATTRIBUTION_AND_GEMINI_IMPROVEMENT_QUEUE_READY",
         "trade_count": len(rows),
         "strategy_count": len(strategy_rows),
+        "traded_strategy_count": traded_strategy_count,
+        "zero_trade_strategy_count": zero_trade_strategy_count,
         "top_strategy_count": len(top),
         "gemini_used": True,
         "gemini_call_count": len(call_log),

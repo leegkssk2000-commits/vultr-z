@@ -26,111 +26,105 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Capture read-only process and heartbeat evidence
+      - name: Capture all process CPU and IO deltas read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/diagnostic.json <<'PY'
-          import json, os, subprocess, time
+          import json, subprocess, time
           from datetime import datetime, timezone
           from pathlib import Path
 
           unit='zel-data-b-1m-v2.service'
           root=Path('/var/lib/zel-research/data-b-1m-v2')
 
-          def cmd(*args):
+          def run(*args):
               p=subprocess.run(args,text=True,capture_output=True)
               return {'rc':p.returncode,'stdout':p.stdout.strip(),'stderr':p.stderr.strip()}
 
           def read_json(path):
-              try:
-                  return json.loads(path.read_text()) if path.is_file() else None
-              except Exception as exc:
-                  return {'_error':type(exc).__name__}
+              try: return json.loads(path.read_text()) if path.is_file() else None
+              except Exception as exc: return {'_error':type(exc).__name__}
 
-          def proc_stat(pid):
-              parts=Path(f'/proc/{pid}/stat').read_text().split()
-              return {'utime_ticks':int(parts[13]),'stime_ticks':int(parts[14]),'state':parts[2]}
+          def snapshot(pid):
+              base=Path(f'/proc/{pid}')
+              if not base.exists(): return None
+              parts=(base/'stat').read_text().split()
+              io={}
+              for line in (base/'io').read_text().splitlines():
+                  k,v=line.split(':',1); io[k.strip()]=int(v.strip())
+              try: wchan=(base/'wchan').read_text().strip()
+              except Exception: wchan=None
+              return {
+                  'pid':pid,
+                  'state':parts[2],
+                  'utime_ticks':int(parts[13]),
+                  'stime_ticks':int(parts[14]),
+                  'io':io,
+                  'wchan':wchan,
+                  'ps':run('ps','-p',str(pid),'-o','pid,ppid,etime,time,%cpu,%mem,stat,wchan:32,cmd')['stdout'],
+              }
 
-          def proc_io(pid):
-              out={}
-              for line in Path(f'/proc/{pid}/io').read_text().splitlines():
-                  k,v=line.split(':',1)
-                  out[k.strip()]=int(v.strip())
-              return out
-
-          show=cmd('systemctl','show',unit,
-              '-p','ActiveState','-p','SubState','-p','MainPID','-p','NRestarts',
-              '-p','CPUUsageNSec','-p','MemoryCurrent','-p','TasksCurrent',
-              '-p','ExecMainStartTimestamp','-p','ActiveEnterTimestamp')
+          show=run('systemctl','show',unit,'-p','ActiveState','-p','SubState','-p','MainPID','-p','NRestarts','-p','CPUUsageNSec','-p','MemoryCurrent','-p','TasksCurrent','-p','ExecMainStartTimestamp')
           props={}
           for line in show['stdout'].splitlines():
               if '=' in line:
                   k,v=line.split('=',1); props[k]=v
-          pid=int(props.get('MainPID') or 0)
-          before={}
-          after={}
-          if pid>0 and Path(f'/proc/{pid}').exists():
-              before={'stat':proc_stat(pid),'io':proc_io(pid),'ts':time.time()}
-              time.sleep(10)
-              after={'stat':proc_stat(pid),'io':proc_io(pid),'ts':time.time()}
+          parent=int(props.get('MainPID') or 0)
+          children=[]
+          if parent:
+              raw=run('pgrep','-P',str(parent))['stdout']
+              children=[int(x) for x in raw.split() if x.isdigit()]
+          pids=[parent]+children if parent else children
+          before={str(pid):snapshot(pid) for pid in pids}
+          time.sleep(10)
+          after={str(pid):snapshot(pid) for pid in pids}
 
-          checkpoints=[]
-          cdir=root/'checkpoints'
-          if cdir.is_dir():
-              for p in sorted(cdir.glob('*.json.gz')):
-                  st=p.stat()
-                  checkpoints.append({'name':p.name,'size':st.st_size,'mtime':datetime.fromtimestamp(st.st_mtime,timezone.utc).isoformat()})
+          deltas={}
+          active=[]
+          for pid in pids:
+              key=str(pid); a=before.get(key); b=after.get(key)
+              if not a or not b:
+                  deltas[key]={'disappeared':True}; continue
+              cpu=(b['utime_ticks']+b['stime_ticks'])-(a['utime_ticks']+a['stime_ticks'])
+              io={k:b['io'].get(k,0)-a['io'].get(k,0) for k in set(a['io'])|set(b['io'])}
+              moving=cpu>0 or any(io.get(k,0)>0 for k in ('read_bytes','write_bytes','syscr','syscw','rchar','wchar'))
+              if moving: active.append(pid)
+              deltas[key]={'cpu_delta_ticks_10s':cpu,'io_delta_10s':io,'active':moving,'state':b['state'],'wchan':b['wchan'],'ps':b['ps']}
 
-          progress_path=root/'progress.json'
-          terminal_path=root/'terminal_receipt.json'
           now=datetime.now(timezone.utc)
+          progress_path=root/'progress.json'
           progress=read_json(progress_path)
-          progress_mtime=None
-          progress_age_sec=None
-          if progress_path.is_file():
-              progress_mtime=datetime.fromtimestamp(progress_path.stat().st_mtime,timezone.utc)
-              progress_age_sec=(now-progress_mtime).total_seconds()
+          progress_age=None
+          if progress_path.is_file(): progress_age=(now-datetime.fromtimestamp(progress_path.stat().st_mtime,timezone.utc)).total_seconds()
+          checkpoints=sorted((root/'checkpoints').glob('*.json.gz'),key=lambda p:p.stat().st_mtime) if (root/'checkpoints').is_dir() else []
 
-          cpu_delta_ticks=None
-          io_delta={}
-          if before and after:
-              cpu_delta_ticks=(after['stat']['utime_ticks']+after['stat']['stime_ticks'])-(before['stat']['utime_ticks']+before['stat']['stime_ticks'])
-              for k in set(before['io'])|set(after['io']):
-                  io_delta[k]=after['io'].get(k,0)-before['io'].get(k,0)
-
-          verdict='HOLD_STALL_UNCLASSIFIED'
-          if pid<=0 or props.get('ActiveState')!='active':
-              verdict='HOLD_SERVICE_NOT_ACTIVE'
-          elif cpu_delta_ticks and cpu_delta_ticks>0:
-              verdict='PASS_PROCESS_COMPUTE_ACTIVE_HEARTBEAT_STALE'
-          elif io_delta.get('read_bytes',0)>0 or io_delta.get('write_bytes',0)>0 or io_delta.get('syscr',0)>0 or io_delta.get('syscw',0)>0:
-              verdict='PASS_PROCESS_IO_ACTIVE_HEARTBEAT_STALE'
+          if props.get('ActiveState')!='active' or parent<=0:
+              state='HOLD_SERVICE_NOT_ACTIVE'
+          elif active:
+              state='PASS_WORKER_OR_PARENT_ACTIVITY_DETECTED'
           else:
-              verdict='HOLD_PROCESS_NO_CPU_OR_IO_DELTA'
+              state='HOLD_ALL_PARENT_AND_WORKERS_NO_CPU_OR_IO_DELTA'
 
           out={
-              'schema_version':'zel.data_b.1m.v2.stall_diagnostic.v1',
+              'schema_version':'zel.data_b.1m.v2.stall_diagnostic.v2',
               'generated_at':now.isoformat(),
-              'state':verdict,
+              'state':state,
               'systemd':props,
-              'systemd_raw':show,
-              'pid':pid,
-              'ps':cmd('ps','-p',str(pid),'-o','pid,ppid,etime,time,%cpu,%mem,stat,wchan:32,cmd') if pid else None,
-              'children':cmd('pgrep','-a','-P',str(pid)) if pid else None,
+              'parent_pid':parent,
+              'child_pids':children,
+              'active_pids_10s':active,
               'before':before,
               'after':after,
-              'cpu_delta_ticks_10s':cpu_delta_ticks,
-              'io_delta_10s':io_delta,
+              'deltas':deltas,
               'progress':progress,
-              'progress_mtime':progress_mtime.isoformat() if progress_mtime else None,
-              'progress_age_sec':progress_age_sec,
-              'terminal_receipt':read_json(terminal_path),
+              'progress_age_sec':progress_age,
               'checkpoint_count':len(checkpoints),
-              'latest_checkpoints':checkpoints[-5:],
-              'journal_tail':cmd('journalctl','-u',unit,'--since','-60 minutes','-n','240','--no-pager'),
+              'latest_checkpoints':[{'name':p.name,'size':p.stat().st_size,'mtime':datetime.fromtimestamp(p.stat().st_mtime,timezone.utc).isoformat()} for p in checkpoints[-5:]],
+              'terminal_receipt':read_json(root/'terminal_receipt.json'),
+              'journal_tail':run('journalctl','-u',unit,'--since','-90 minutes','-n','300','--no-pager'),
               'read_only':True,
               'runtime_mutated':False,
               'execution_authority':'NONE',

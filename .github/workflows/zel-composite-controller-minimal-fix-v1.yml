@@ -26,43 +26,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Permit audited HOLD receipt exit code
+      - name: Apply and validate shell compatibility patch
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          path=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh')
-          text=path.read_text()
-          old='''"${SSH[@]}" \\
-  "python3 - --source-root /home/z/z --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz --stdout" \\
-  < "$ROOT/backend/tools/zel_trade_method_runtime_behavior_v1.py" \\
-  > "$OUT/trade_method_behavior.json"
-          python - <<'PY'
-          '''
-          new='''set +e
-          "${SSH[@]}" \\
-            "python3 - --source-root /home/z/z --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz --stdout" \\
-            < "$ROOT/backend/tools/zel_trade_method_runtime_behavior_v1.py" \\
-            > "$OUT/trade_method_behavior.json"
-          trade_method_behavior_rc=$?
-          set -e
-          test "$trade_method_behavior_rc" -eq 0 -o "$trade_method_behavior_rc" -eq 1
-          python - <<'PY'
-          '''
-          if 'trade_method_behavior_rc=$?' not in text:
-              assert text.count(old)==1,text.count(old)
-              text=text.replace(old,new,1)
-          path.write_text(text)
-          PY
+          python backend/tools/zel_patch_composite_controller_compat_v1.py
           bash -n backend/tools/zel_composite_post_terminal_controller_v2.sh
-          python - <<'PY'
-          from pathlib import Path
-          text=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
-          assert 'trade_method_behavior_rc=$?' in text
-          assert 'test "$trade_method_behavior_rc" -eq 0 -o "$trade_method_behavior_rc" -eq 1' in text
-          assert 'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED' in text
-          print('PASS_TRADE_METHOD_FAIL_CLOSED_EXIT_COMPATIBILITY')
-          PY
+          bash -n backend/tools/zel_composite_post_terminal_controller_v3.sh
       - name: Commit shell-only fix
         run: |
           set -euo pipefail

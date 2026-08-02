@@ -1,0 +1,62 @@
+name: ZEL Bind Composite Controller AI Gate V1
+
+on:
+  push:
+    branches: [zel-composite-post-terminal-dag-v1]
+    paths:
+      - backend/tools/zel_bind_composite_controller_ai_gate_v1.py
+      - .github/workflows/zel-bind-composite-controller-ai-gate-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-bind-composite-controller-ai-gate-v1
+  cancel-in-progress: false
+
+jobs:
+  bind-and-remove-self:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-composite-post-terminal-dag-v1
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind strict AI gate
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bind_composite_controller_ai_gate_v1.py
+          python backend/tools/zel_bind_composite_controller_ai_gate_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/zel-composite-post-terminal-controller-v1.yml').read_text()
+          required=(
+            'ZEL_AI_CONTROL_GATE_V1',
+            'zel_ai_control_gate_v1.py verify',
+            '--proposal-receipt',
+            '--stage-id',
+            'COMPOSITE_POST_TERMINAL',
+            "needs.ai_control.outputs.ready == 'true'",
+            'needs: [validate, ai_control]',
+            'PASS_DATA_B_1M_V2_TERMINAL',
+          )
+          for marker in required:
+              assert marker in text,marker
+          print('PASS_STRICT_AI_GATE_BOUND')
+          PY
+      - name: Remove one-shot binder
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-composite-ai-gate-binder'
+          git config user.email 'zel-composite-ai-gate-binder@users.noreply.github.com'
+          git add .github/workflows/zel-composite-post-terminal-controller-v1.yml
+          git rm \
+            backend/tools/zel_bind_composite_controller_ai_gate_v1.py \
+            .github/workflows/zel-bind-composite-controller-ai-gate-v1.yml
+          git commit -m 'fix(zel): bind Composite controller to strict AI control gate'
+          git push origin HEAD:zel-composite-post-terminal-dag-v1

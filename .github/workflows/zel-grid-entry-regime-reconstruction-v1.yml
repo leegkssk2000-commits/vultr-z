@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-grid-entry-regime-reconstruction-v1
-  cancel-in-progress: true
+  group: zel-grid-entry-regime-reconstruction-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 
 jobs:
   reconstruct:
@@ -25,11 +25,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Static validation
         run: python -m py_compile backend/tools/zel_grid_entry_regime_reconstruction_v1.py
+
       - name: Prepare read-only SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -42,19 +45,21 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Reconstruct entry regimes read-only
+
+      - name: Reconstruct causal entry regimes read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
+          test -n "$VPS_USER"
           set +e
           timeout 1800s ssh \
             -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
-            -o ServerAliveInterval=20 \
-            -o ServerAliveCountMax=10 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
             "$VPS_USER@$VPS_HOST" \
             '/home/z/z/.venv/bin/python - --stdout' \
             < backend/tools/zel_grid_entry_regime_reconstruction_v1.py \
@@ -65,38 +70,70 @@ jobs:
           test -s out/entry_regime_reconstruction.json
           python -m json.tool out/entry_regime_reconstruction.json >/dev/null
           printf '%s\n' "$rc" > out/reconstruction_rc.txt
-      - name: Verify integrity and safety
+
+      - name: Verify causal integrity and safety
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           row=json.load(open('out/entry_regime_reconstruction.json'))
+          assert row['state']=='PASS_GRID_ENTRY_REGIME_CAUSALLY_RECONSTRUCTED',row
           assert row['trade_count']==580,row
+          assert row['reconstructed_count']==580,row
+          assert row['causal_prefix_count']==580,row
+          assert row['unmatched_count']==0,row
+          assert row['duplicate_frame_timestamp_count']==0,row
           assert row['data_file_count']==15,row
+          assert row['loaded_frame_count']==row['used_lane_count'],row
+          assert row['minimum_prefix_bars']>=14,row
+          assert set(row['entry_regime_counts']).issubset({'range','trend_long','trend_short','transition'}),row
+          assert sum(row['entry_regime_counts'].values())==580,row
+          assert row['context_source_sha256']=='408ee3edf3899ad626e25f01be19d447af16d4a033996fb5d2c76a516efe82ca',row
+          assert row['derive_source_sha256']=='1ad1cc721a88cef9f8c08a8ed1727736d61ad036495f5b650f798332ad7b684c',row
+          assert row['classifier_external_to_frozen_source'] is True,row
+          assert row['classifier_stage_status']=='PINNED_RESEARCH_SIDECAR_NOT_BOUND',row
+          assert row['legacy_exit_regime_invalid_for_entry_filter'] is True,row
           assert row['raw_trade_rows_published'] is False,row
           assert row['raw_event_ids_published'] is False,row
+          assert row['raw_price_data_published'] is False,row
           assert row['canonical_mutated'] is False,row
           assert row['runtime_mutated'] is False,row
           assert row['formal_ledger_mutated'] is False,row
+          assert row['shadow_started'] is False,row
+          assert row['paper_started'] is False,row
+          assert row['live_enabled'] is False,row
           assert row['selection_authority'] is False,row
           assert row['promotion_authority'] is False,row
           assert row['execution_authority']=='NONE',row
           assert row['order_authority']=='BLOCKED',row
           assert row['action']=='hold',row
+          candidates={}
+          for regime,value in row['candidate_matrix'].items():
+              candidates[regime]={
+                  'include_net_R':round(value['include_only']['net_R'],6),
+                  'include_pf':value['include_only']['profit_factor'],
+                  'include_trades':value['include_only']['trade_count'],
+                  'exclude_delta_net_R':round(value['exclude_delta']['delta_net_R'],6),
+                  'exclude_retention_pct':round(value['exclude_delta']['trade_retention_pct'],4),
+                  'exclude_window_delta_R':{
+                      window:round(details['exclude_delta']['delta_net_R'],6)
+                      for window,details in value['by_window'].items()
+                  },
+              }
           print({
               'state':row['state'],
-              'reconstructed':row['reconstructed_count'],
-              'unmatched':row['unmatched_count'],
-              'regimes':row['reconstructed_regime_counts'],
-              'entry_neutral':row['entry_neutral_metrics'],
-              'exit_neutral':row['exit_neutral_metrics'],
-              'comparison':row['entry_exit_neutral_comparison'],
+              'regime_counts':row['entry_regime_counts'],
+              'baseline':row['baseline_metrics'],
+              'candidates':candidates,
+              'legacy_drift':row['entry_range_vs_legacy_exit_neutral'],
               'blockers':row['blockers'],
           })
           PY
+
       - name: Cleanup SSH key
         if: always()
         run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

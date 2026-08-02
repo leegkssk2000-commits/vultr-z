@@ -1,0 +1,153 @@
+name: ZEL Data B 1m V2 Stall Diagnose Once
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v2-stall-diagnose-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Capture read-only process and heartbeat evidence
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/diagnostic.json <<'PY'
+          import json, os, subprocess, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          unit='zel-data-b-1m-v2.service'
+          root=Path('/var/lib/zel-research/data-b-1m-v2')
+
+          def cmd(*args):
+              p=subprocess.run(args,text=True,capture_output=True)
+              return {'rc':p.returncode,'stdout':p.stdout.strip(),'stderr':p.stderr.strip()}
+
+          def read_json(path):
+              try:
+                  return json.loads(path.read_text()) if path.is_file() else None
+              except Exception as exc:
+                  return {'_error':type(exc).__name__}
+
+          def proc_stat(pid):
+              parts=Path(f'/proc/{pid}/stat').read_text().split()
+              return {'utime_ticks':int(parts[13]),'stime_ticks':int(parts[14]),'state':parts[2]}
+
+          def proc_io(pid):
+              out={}
+              for line in Path(f'/proc/{pid}/io').read_text().splitlines():
+                  k,v=line.split(':',1)
+                  out[k.strip()]=int(v.strip())
+              return out
+
+          show=cmd('systemctl','show',unit,
+              '-p','ActiveState','-p','SubState','-p','MainPID','-p','NRestarts',
+              '-p','CPUUsageNSec','-p','MemoryCurrent','-p','TasksCurrent',
+              '-p','ExecMainStartTimestamp','-p','ActiveEnterTimestamp')
+          props={}
+          for line in show['stdout'].splitlines():
+              if '=' in line:
+                  k,v=line.split('=',1); props[k]=v
+          pid=int(props.get('MainPID') or 0)
+          before={}
+          after={}
+          if pid>0 and Path(f'/proc/{pid}').exists():
+              before={'stat':proc_stat(pid),'io':proc_io(pid),'ts':time.time()}
+              time.sleep(10)
+              after={'stat':proc_stat(pid),'io':proc_io(pid),'ts':time.time()}
+
+          checkpoints=[]
+          cdir=root/'checkpoints'
+          if cdir.is_dir():
+              for p in sorted(cdir.glob('*.json.gz')):
+                  st=p.stat()
+                  checkpoints.append({'name':p.name,'size':st.st_size,'mtime':datetime.fromtimestamp(st.st_mtime,timezone.utc).isoformat()})
+
+          progress_path=root/'progress.json'
+          terminal_path=root/'terminal_receipt.json'
+          now=datetime.now(timezone.utc)
+          progress=read_json(progress_path)
+          progress_mtime=None
+          progress_age_sec=None
+          if progress_path.is_file():
+              progress_mtime=datetime.fromtimestamp(progress_path.stat().st_mtime,timezone.utc)
+              progress_age_sec=(now-progress_mtime).total_seconds()
+
+          cpu_delta_ticks=None
+          io_delta={}
+          if before and after:
+              cpu_delta_ticks=(after['stat']['utime_ticks']+after['stat']['stime_ticks'])-(before['stat']['utime_ticks']+before['stat']['stime_ticks'])
+              for k in set(before['io'])|set(after['io']):
+                  io_delta[k]=after['io'].get(k,0)-before['io'].get(k,0)
+
+          verdict='HOLD_STALL_UNCLASSIFIED'
+          if pid<=0 or props.get('ActiveState')!='active':
+              verdict='HOLD_SERVICE_NOT_ACTIVE'
+          elif cpu_delta_ticks and cpu_delta_ticks>0:
+              verdict='PASS_PROCESS_COMPUTE_ACTIVE_HEARTBEAT_STALE'
+          elif io_delta.get('read_bytes',0)>0 or io_delta.get('write_bytes',0)>0 or io_delta.get('syscr',0)>0 or io_delta.get('syscw',0)>0:
+              verdict='PASS_PROCESS_IO_ACTIVE_HEARTBEAT_STALE'
+          else:
+              verdict='HOLD_PROCESS_NO_CPU_OR_IO_DELTA'
+
+          out={
+              'schema_version':'zel.data_b.1m.v2.stall_diagnostic.v1',
+              'generated_at':now.isoformat(),
+              'state':verdict,
+              'systemd':props,
+              'systemd_raw':show,
+              'pid':pid,
+              'ps':cmd('ps','-p',str(pid),'-o','pid,ppid,etime,time,%cpu,%mem,stat,wchan:32,cmd') if pid else None,
+              'children':cmd('pgrep','-a','-P',str(pid)) if pid else None,
+              'before':before,
+              'after':after,
+              'cpu_delta_ticks_10s':cpu_delta_ticks,
+              'io_delta_10s':io_delta,
+              'progress':progress,
+              'progress_mtime':progress_mtime.isoformat() if progress_mtime else None,
+              'progress_age_sec':progress_age_sec,
+              'terminal_receipt':read_json(terminal_path),
+              'checkpoint_count':len(checkpoints),
+              'latest_checkpoints':checkpoints[-5:],
+              'journal_tail':cmd('journalctl','-u',unit,'--since','-60 minutes','-n','240','--no-pager'),
+              'read_only':True,
+              'runtime_mutated':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/diagnostic.json >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-data-b-1m-v2-stall-diagnose-once-${{ github.run_id }}
+          path: out/diagnostic.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

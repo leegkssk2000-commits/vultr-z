@@ -6,6 +6,7 @@ on:
     paths:
       - backend/tools/zel_grid_neutral_source_lineage_audit_v1.py
       - backend/tools/zel_grid_source_authority_disambiguation_v1.py
+      - backend/tools/zel_grid_neutral_causal_subset_proof_v1.py
       - backend/tools/zel_grid_neutral_lineage_gemini_review_v1.py
       - backend/research/zel_grid_neutral_source_lineage_audit_v1.json
       - .github/workflows/zel-grid-neutral-source-lineage-audit-v1.yml
@@ -45,6 +46,7 @@ jobs:
           python -m py_compile \
             backend/tools/zel_grid_neutral_source_lineage_audit_v1.py \
             backend/tools/zel_grid_source_authority_disambiguation_v1.py \
+            backend/tools/zel_grid_neutral_causal_subset_proof_v1.py \
             backend/tools/zel_grid_neutral_lineage_gemini_review_v1.py \
             backend/tools/zel_strategy_loss_attribution_gemini_v1.py
           python -m json.tool backend/research/zel_grid_neutral_source_lineage_audit_v1.json >/dev/null
@@ -57,7 +59,7 @@ jobs:
           set -euo pipefail
           test -n "$VPS_SSH_KEY"
           test -n "$VPS_HOST"
-          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out input
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
@@ -111,6 +113,58 @@ jobs:
           python -m json.tool out/source_authority.json >/dev/null
           printf '%s\n' "$authority_rc" > out/source_authority_rc.txt
 
+      - name: Fetch immutable terminal trades for aggregate proof
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          timeout 180s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
+            "$VPS_USER@$VPS_HOST" \
+            'cat /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz' \
+            > input/trades.jsonl.gz
+          test -s input/trades.jsonl.gz
+          python - <<'PY'
+          import gzip
+          with gzip.open('input/trades.jsonl.gz','rt',encoding='utf-8') as handle:
+              count=sum(1 for line in handle if line.strip())
+          assert count==1951,count
+          print({'trades':count})
+          PY
+
+      - name: Prove exact event subset and causal timestamp
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_grid_neutral_causal_subset_proof_v1.py \
+            --trades input/trades.jsonl.gz \
+            --out out/causal_subset_proof.json
+          python - <<'PY'
+          import json
+          row=json.load(open('out/causal_subset_proof.json'))
+          assert row['grid_trade_count']==580,row
+          assert row['neutral_trade_count']==248,row
+          assert row['neutral_window_counts']=={'1m_w1':133,'1m_w2':66,'1m_w3':49},row
+          assert row['raw_event_ids_published'] is False and row['raw_trade_rows_published'] is False,row
+          assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['shadow_started'] is False and row['paper_started'] is False and row['live_enabled'] is False,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({
+              'state':row['state'],
+              'event_subset_pass':row['event_subset_pass'],
+              'causal_timestamp_pass':row['causal_timestamp_pass'],
+              'selected':row['selected_regime_timestamp_candidate'],
+              'blockers':row['blockers'],
+          })
+          PY
+
       - name: Adjudicate duplicate copies against terminal source root
         run: |
           set -euo pipefail
@@ -123,10 +177,12 @@ jobs:
 
           audit=json.load(open('out/audit_raw.json'))
           authority=json.load(open('out/source_authority.json'))
+          proof=json.load(open('out/causal_subset_proof.json'))
           physical=list(audit.get('strategy_sources') or [])
           audit['strategy_source_physical_copy_count']=len(physical)
           audit['strategy_source_copies']=physical
           audit['source_authority']=authority
+          audit['causal_subset_proof']=proof
           blockers=list(audit.get('blockers') or [])
 
           if authority.get('state')=='PASS_GRID_LOGICAL_SOURCE_AUTHORITY_UNIQUE':
@@ -154,6 +210,7 @@ jobs:
               'logical_sources':audit['strategy_source_count'],
               'physical_copies':audit['strategy_source_physical_copy_count'],
               'authority_state':authority['state'],
+              'proof_state':proof['state'],
               'blockers':audit['blockers'],
           })
           PY
@@ -185,6 +242,7 @@ jobs:
               'logical_sources':audit['strategy_source_count'],
               'physical_copies':audit['strategy_source_physical_copy_count'],
               'authority_state':authority['state'],
+              'proof_state':audit['causal_subset_proof']['state'],
               'registry_refs':audit['registry_reference_count'],
               'replay_refs':audit['replay_reference_count'],
               'regime_candidates':audit['regime_candidate_count'],
@@ -235,18 +293,24 @@ jobs:
           mkdir -p "$dest/latest"
           cp out/audit.json "$dest/latest/audit.json"
           cp out/source_authority.json "$dest/latest/source_authority.json"
+          cp out/causal_subset_proof.json "$dest/latest/causal_subset_proof.json"
           cp out/gemini_review.json "$dest/latest/gemini_review.json"
           python - <<'PY'
           import json
           audit=json.load(open('out/audit.json'))
           authority=json.load(open('out/source_authority.json'))
+          proof=json.load(open('out/causal_subset_proof.json'))
           review=json.load(open('out/gemini_review.json'))
           summary={
               'schema_version':'zel.grid_neutral.source_lineage.summary.v1',
               'state':review['state'],
               'audit_state':audit['state'],
               'source_authority_state':authority['state'],
+              'causal_subset_state':proof['state'],
+              'event_subset_pass':proof['event_subset_pass'],
+              'causal_timestamp_pass':proof['causal_timestamp_pass'],
               'blockers':audit['blockers'],
+              'causal_subset_blockers':proof['blockers'],
               'tmp_fork_stage_allowed':review['tmp_fork_stage_allowed'],
               'strategy_source_count':audit['strategy_source_count'],
               'strategy_source_physical_copy_count':audit['strategy_source_physical_copy_count'],
@@ -274,9 +338,11 @@ jobs:
           git commit -m "result(zel): grid neutral source lineage ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
 
-      - name: Cleanup SSH key
+      - name: Cleanup temporary evidence and SSH key
         if: always()
-        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+        run: |
+          rm -rf input
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
 
       - uses: actions/upload-artifact@v4
         if: always()

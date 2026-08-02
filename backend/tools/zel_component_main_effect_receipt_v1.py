@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -81,19 +80,19 @@ def build_receipt(
         errors.append("COMPONENT_RESULT_SHA_INVALID")
     if not SHA_RE.fullmatch(predecessor_sha256):
         errors.append("PREDECESSOR_SHA_INVALID")
-    if active_axis_count > 0 and axis_ai_gate_result != "success":
-        errors.append("MATERIAL_AXIS_AI_GATE_NOT_SUCCESS")
-    if gemini_required and gemini_result != "success":
-        errors.append("REQUIRED_GEMINI_NOT_SUCCESS")
 
     claim_gate = final.get("claim_gate") if isinstance(final.get("claim_gate"), dict) else {}
+    ai_review_complete = (
+        (active_axis_count <= 0 or axis_ai_gate_result == "success")
+        and (not gemini_required or gemini_result == "success")
+    )
     receipt: dict[str, Any] = {
         "schema_version": "zel.component_main_effect.receipt.v1",
         "version": VERSION,
         "generated_at": now_iso(),
         "state": "PASS_COMPONENT_MAIN_EFFECT_COMPLETE" if not errors else "HOLD_COMPONENT_MAIN_EFFECT",
         "stage_id": "COMPONENT_MAIN_EFFECT",
-        "source_workflow": "ZEL Component Autonomy V3",
+        "source_workflow": "ZEL Component Main Effect V1",
         "source_run_id": str(source_run_id),
         "predecessor_stage_id": "TRADE_METHOD_COVERAGE",
         "predecessor_receipt_sha256": predecessor_sha256,
@@ -111,6 +110,8 @@ def build_receipt(
         "axis_ai_gate_result": axis_ai_gate_result,
         "gemini_required": bool(gemini_required),
         "gemini_result": gemini_result,
+        "ai_review_complete": ai_review_complete,
+        "ai_review_deferred_to_selected_interactions": not ai_review_complete,
         "component_attribution_present": isinstance(final.get("component_attribution"), dict),
         "errors": errors,
         "canonical_strategy_files_mutated": False,
@@ -174,14 +175,15 @@ def self_test() -> None:
         "claim_gate": {"claim_tier": "HYPOTHESIS_ONLY"},
     }
     audit = {"state": "PASS_COMPONENT_PIPELINE_AUDIT_V2"}
-    passed = build_receipt(final, audit, predecessor, "c" * 64, "123", 0, "skipped", False, "skipped")
+    passed = build_receipt(final, audit, predecessor, "c" * 64, "123", 1, "deferred", True, "deferred")
     assert passed["state"] == "PASS_COMPONENT_MAIN_EFFECT_COMPLETE", passed
     assert passed["economic_claim_allowed"] is False
     assert passed["selected_interactions_allowed"] is True
+    assert passed["ai_review_deferred_to_selected_interactions"] is True
 
-    held = build_receipt(final, audit, predecessor, "c" * 64, "124", 1, "failure", False, "skipped")
+    held = build_receipt(final, {"state": "HOLD_PIPELINE_AUDIT"}, predecessor, "c" * 64, "124", 0, "skipped", False, "skipped")
     assert held["state"] == "HOLD_COMPONENT_MAIN_EFFECT", held
-    assert "MATERIAL_AXIS_AI_GATE_NOT_SUCCESS" in held["errors"]
+    assert "COMPONENT_PIPELINE_AUDIT_NOT_PASS" in held["errors"]
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 

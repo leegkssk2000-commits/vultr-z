@@ -11,6 +11,10 @@ set -euo pipefail
 ROOT="$GITHUB_WORKSPACE"
 OUT="$ROOT/out"
 RESULTS="$RESULTS_DIR"
+if [ ! -s "$SSH_KEY_PATH" ] && [ -s "$HOME/.ssh/vps_key" ]; then
+  SSH_KEY_PATH="$HOME/.ssh/vps_key"
+fi
+test -s "$SSH_KEY_PATH"
 SSH=(ssh -i "$SSH_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")
 mkdir -p "$OUT"
 

@@ -9,6 +9,7 @@ on:
       - backend/research/zel_composite_adapter_contract_v1.json
       - backend/research/zel_composite_module_registry_v1.json
       - backend/research/zel_composite_module_factory_contract_v1.json
+      - backend/research/zel_skill_counterfactual_contract_v1.json
       - backend/research/strategy11_portfolio_governor_v1.py
       - backend/tools/zel_composite_source_rebinding_v1.py
       - backend/tools/zel_composite_source_live_patch_v1.py
@@ -23,9 +24,14 @@ on:
       - backend/tools/zel_composite_module_factory_v2.py
       - backend/tools/zel_composite_module_factory_v3.py
       - backend/tools/zel_trade_method_runtime_behavior_v1.py
+      - backend/tools/zel_skill_counterfactual_adapter_v1.py
+      - backend/tools/zel_lico_historical_min_data_mapper_v1.py
+      - backend/tools/zel_trade_method_historical_adapter_v1.py
       - backend/tools/zel_composite_terminal_evaluator_v1.py
       - backend/tools/zel_composite_terminal_evaluator_v2.py
+      - backend/tools/zel_composite_terminal_evaluator_v3.py
       - backend/tools/zel_composite_post_terminal_controller_v2.sh
+      - backend/tools/zel_composite_post_terminal_controller_v3.sh
       - .github/workflows/zel-composite-post-terminal-controller-v1.yml
 
 permissions:
@@ -55,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n backend/tools/zel_composite_post_terminal_controller_v2.sh
+          bash -n backend/tools/zel_composite_post_terminal_controller_v3.sh
           python -m py_compile \
             backend/tools/zel_composite_source_rebinding_v1.py \
             backend/tools/zel_composite_source_live_patch_v1.py \
@@ -67,21 +74,30 @@ jobs:
             backend/tools/zel_composite_module_factory_v2.py \
             backend/tools/zel_composite_module_factory_v3.py \
             backend/tools/zel_trade_method_runtime_behavior_v1.py \
+            backend/tools/zel_skill_counterfactual_adapter_v1.py \
+            backend/tools/zel_lico_historical_min_data_mapper_v1.py \
+            backend/tools/zel_trade_method_historical_adapter_v1.py \
             backend/tools/zel_composite_terminal_evaluator_v1.py \
             backend/tools/zel_composite_terminal_evaluator_v2.py \
+            backend/tools/zel_composite_terminal_evaluator_v3.py \
             backend/tools/zel_ai_control_gate_v1.py
           python backend/tools/zel_composite_pinned_registry_v1.py --self-test
           python backend/tools/zel_composite_ablation_plan_v2.py --self-test
           python backend/tools/zel_trade_method_runtime_behavior_v1.py --self-test
+          python backend/tools/zel_skill_counterfactual_adapter_v1.py --self-test
+          python backend/tools/zel_lico_historical_min_data_mapper_v1.py --self-test
+          python backend/tools/zel_trade_method_historical_adapter_v1.py --self-test
           python backend/tools/zel_composite_terminal_evaluator_v1.py --self-test
           python backend/tools/zel_composite_terminal_evaluator_v2.py --self-test
+          python backend/tools/zel_composite_terminal_evaluator_v3.py --self-test
           python backend/tools/zel_ai_control_gate_v1.py --self-test
           python -m json.tool backend/research/zel_composite_adapter_contract_v1.json >/dev/null
           python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
+          python -m json.tool backend/research/zel_skill_counterfactual_contract_v1.json >/dev/null
           python - <<'PY'
           from pathlib import Path
           workflow=Path('.github/workflows/zel-composite-post-terminal-controller-v1.yml').read_text()
-          runner=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
+          runner=Path('backend/tools/zel_composite_post_terminal_controller_v3.sh').read_text()
           workflow_required=(
             'ZEL_AI_CONTROL_GATE_V1',
             'zel_ai_control_gate_v1.py verify',
@@ -92,14 +108,15 @@ jobs:
             'COMPOSITE_POST_TERMINAL',
             "needs.ai_control.outputs.ready == 'true'",
             'needs: [validate, ai_control]',
+            'zel_composite_post_terminal_controller_v3.sh',
           )
           runner_required=(
-            'terminal_receipt.json',
-            'trades.jsonl.gz',
+            'zel_composite_post_terminal_controller_v2.sh',
+            'zel_skill_counterfactual_adapter_v1',
+            'zel_lico_historical_min_data_mapper_v1.py',
+            'zel_trade_method_historical_adapter_v1.py',
+            'zel_composite_terminal_evaluator_v3.py',
             'PASS_COMPOSITE_POST_TERMINAL_SEQUENCE_COMPLETE_RETAIN_INCUMBENT',
-            'PASS_COMPOSITE_W2_FORWARD_PARITY_ONLY_NO_ALPHA',
-            'PASS_COMPOSITE_W3_DURABILITY_PARITY_ONLY_NO_ALPHA',
-            'PASS_COMPOSITE_PORTFOLIO_JOINT_RISK_RETAIN_INCUMBENT_NO_EDGE',
             'runtime_results/zel/composite_post_terminal_v1',
           )
           for marker in workflow_required:
@@ -108,7 +125,7 @@ jobs:
               assert marker in runner,marker
           forbidden_trigger='workflow' + '_run:'
           assert forbidden_trigger not in workflow
-          print('PASS_COMPOSITE_POST_TERMINAL_CONTROLLER_GUARDED_STATIC')
+          print('PASS_COMPOSITE_POST_TERMINAL_CONTROLLER_V3_GUARDED_STATIC')
           PY
 
   ai_control:
@@ -225,7 +242,7 @@ jobs:
       needs.ai_control.outputs.ready == 'true'
     needs: [validate, ai_control]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
@@ -257,7 +274,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Execute authorized W1 ablation, W2, W3 and Portfolio Joint Risk
+      - name: Execute authorized W1 ablation, W2, W3, Joint Risk and adapter lineage
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -266,26 +283,31 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
-          bash backend/tools/zel_composite_post_terminal_controller_v2.sh
+          bash backend/tools/zel_composite_post_terminal_controller_v3.sh
 
       - name: Remove raw terminal artifacts and SSH key
         if: always()
         run: |
-          rm -rf out/terminal out/terminal.tar.gz
+          rm -rf out/terminal out/terminal.tar.gz out/terminal_v3 out/terminal_v3.tar.gz
           rm -f ~/.ssh/vps_key
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: composite-post-terminal-controller-v2-${{ github.run_id }}
+          name: composite-post-terminal-controller-v3-${{ github.run_id }}
           path: |
             out/idempotency.json
+            out/idempotency_v3.json
             out/terminal_gate.json
             out/source_pin_parity.json
             out/bingx_readonly_receipt.json
             out/trade_method_behavior.json
             out/adapter_contract_validation.json
             out/ablation_order_plan.json
+            out/skill_adapter_terminal.json
+            out/lico_mapper_terminal.json
+            out/trade_method_adapter_terminal.json
             out/evaluation
+            out/evaluation_v3
           if-no-files-found: ignore
           retention-days: 90

@@ -1,0 +1,101 @@
+name: ZEL Grid Entry Regime Fork V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_grid_entry_regime_fork_v1.json
+      - backend/tools/zel_grid_entry_regime_fork_v1.py
+      - .github/workflows/zel-grid-entry-regime-fork-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-grid-entry-regime-fork-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_grid_entry_regime_fork_v1.py
+          python backend/tools/zel_grid_entry_regime_fork_v1.py --self-test
+          python -m json.tool backend/research/zel_grid_entry_regime_fork_v1.json >/dev/null
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run causal entry-time reconstruction
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-grid-entry-regime-fork-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/research/zel_grid_entry_regime_fork_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 2400s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_grid_entry_regime_fork_v1.py' \
+              --policy '$remote/zel_grid_entry_regime_fork_v1.json' --stdout" > out/result.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/result.json >/dev/null
+      - name: Verify safety and causal boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/result.json'))
+          assert row['trade_count']==580,row
+          assert row['reconstructed_count']+row['unmatched_count']==580,row
+          assert isinstance(row['terminal_trades_sha256'],str) and len(row['terminal_trades_sha256'])==64,row
+          assert row['raw_trade_rows_published'] is False,row
+          assert row['raw_event_ids_published'] is False,row
+          assert row['context_facts_published'] is False,row
+          assert row['canonical_mutated'] is False,row
+          assert row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['selection_authority'] is False,row
+          assert row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE',row
+          assert row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({'state':row['state'],'ledger_sha':row['terminal_trades_sha256'],'reconstructed':row['reconstructed_count'],'unmatched':row['unmatched_count'],'counts':row['entry_regime_counts'],'eligible':row['eligible_regimes'],'selected':row['selected_research_fork'],'next':row['next']})
+          PY
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-grid-entry-regime-fork-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

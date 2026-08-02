@@ -1,0 +1,46 @@
+name: ZEL Patch Grid Entry Reconstruction V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_patch_grid_entry_reconstruction_v2.py
+      - .github/workflows/zel-patch-grid-entry-reconstruction-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-patch-grid-entry-reconstruction-v2
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply and validate patch
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_patch_grid_entry_reconstruction_v2.py
+          python -m py_compile backend/tools/zel_grid_entry_regime_reconstruction_v1.py
+          grep -q 'engine.worker_init' backend/tools/zel_grid_entry_regime_reconstruction_v1.py
+          grep -q 'USED_LANE_FRAME_COUNT_MISMATCH' backend/tools/zel_grid_entry_regime_reconstruction_v1.py
+      - name: Commit reconstruction fix
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add backend/tools/zel_grid_entry_regime_reconstruction_v1.py
+          git commit -m 'fix(zel): reconstruct entry regimes with worker context' || exit 0
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}

@@ -14,6 +14,7 @@ on:
       - backend/tools/zel_holdout_vault_audit_v1.py
       - backend/tools/zel_holdout_vault_v1.py
       - backend/tools/zel_holdout_vault_seal_runner_v1.py
+      - backend/tools/zel_holdout_vault_seal_exec_v1.sh
       - .github/workflows/zel-holdout-vault-seal-v1.yml
 
 permissions:
@@ -39,6 +40,7 @@ jobs:
             backend/tools/zel_holdout_vault_audit_v1.py \
             backend/tools/zel_holdout_vault_v1.py \
             backend/tools/zel_holdout_vault_seal_runner_v1.py
+          bash -n backend/tools/zel_holdout_vault_seal_exec_v1.sh
           python backend/tools/zel_holdout_vault_audit_v1.py --self-test
           python backend/tools/zel_holdout_vault_v1.py --self-test
           python backend/tools/zel_holdout_vault_seal_runner_v1.py --self-test
@@ -47,6 +49,7 @@ jobs:
           from pathlib import Path
           contract=json.loads(Path('backend/research/zel_holdout_vault_seal_contract_v1.json').read_text())
           workflow=Path('.github/workflows/zel-holdout-vault-seal-v1.yml').read_text()
+          executor=Path('backend/tools/zel_holdout_vault_seal_exec_v1.sh').read_text()
           assert contract['confirmation_phrase']=='SEAL_EXTERNAL_HOLDOUT',contract
           assert contract['zones']==['W2_FORWARD','W3_DURABILITY','FINAL_HOLDOUT'],contract
           assert contract['requirements']['workflow_dispatch_only'] is True,contract
@@ -56,6 +59,8 @@ jobs:
           assert '\n  push:' not in workflow,workflow
           assert 'SEAL_EXTERNAL_HOLDOUT' in workflow,workflow
           assert 'zel_holdout_vault_seal_runner_v1.py' in workflow,workflow
+          assert 'IFS= read -r ZEL_HOLDOUT_HMAC_KEY' in executor,executor
+          assert 'ZEL_HOLDOUT_HMAC_KEY=' not in workflow,workflow
           assert contract['safety']['execution_authority']=='NONE',contract
           assert contract['safety']['order_authority']=='BLOCKED',contract
           print('PASS_HOLDOUT_VAULT_SEAL_MANUAL_BOUNDARY')
@@ -110,6 +115,7 @@ jobs:
             backend/tools/zel_holdout_vault_audit_v1.py \
             backend/tools/zel_holdout_vault_v1.py \
             backend/tools/zel_holdout_vault_seal_runner_v1.py \
+            backend/tools/zel_holdout_vault_seal_exec_v1.sh \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
       - id: remote
         name: Run fresh inline audit and manual seal
@@ -118,25 +124,15 @@ jobs:
           set +e
           printf '%s\n' "$HOLDOUT_HMAC_KEY" | ssh -i ~/.ssh/vps_key \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "REPOSITORY_ROOT='$REPOSITORY_ROOT' W2_ROOT='$W2_ROOT' W3_ROOT='$W3_ROOT' \
-             FINAL_ROOT='$FINAL_ROOT' SEAL_ROOT='$SEAL_ROOT' EVALUATOR_GROUP='$EVALUATOR_GROUP' \
-             PROPOSER_USERS='$PROPOSER_USERS' bash -s" <<'REMOTE'
-          set -euo pipefail
-          IFS= read -r ZEL_HOLDOUT_HMAC_KEY
-          export ZEL_HOLDOUT_HMAC_KEY
-          rm -rf /tmp/zel_holdout_vault_seal_v1
-          mkdir -p /tmp/zel_holdout_vault_seal_v1
-          python3 /tmp/zel_holdout_vault_seal_runner_v1.py \
-            --repository-root "$REPOSITORY_ROOT" \
-            --w2-root "$W2_ROOT" \
-            --w3-root "$W3_ROOT" \
-            --final-root "$FINAL_ROOT" \
-            --seal-root "$SEAL_ROOT" \
-            --evaluator-group "$EVALUATOR_GROUP" \
-            --proposer-users "$PROPOSER_USERS" \
-            --out-dir /tmp/zel_holdout_vault_seal_v1
-          unset ZEL_HOLDOUT_HMAC_KEY
-          REMOTE
+            "bash /tmp/zel_holdout_vault_seal_exec_v1.sh \
+              --repository-root '$REPOSITORY_ROOT' \
+              --w2-root '$W2_ROOT' \
+              --w3-root '$W3_ROOT' \
+              --final-root '$FINAL_ROOT' \
+              --seal-root '$SEAL_ROOT' \
+              --evaluator-group '$EVALUATOR_GROUP' \
+              --proposer-users '$PROPOSER_USERS' \
+              --out-dir /tmp/zel_holdout_vault_seal_v1"
           rc=$?
           set -e
           echo "return_code=$rc" >> "$GITHUB_OUTPUT"
@@ -197,7 +193,7 @@ jobs:
         if: always()
         run: |
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py' || true
+            'rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py /tmp/zel_holdout_vault_seal_exec_v1.sh' || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

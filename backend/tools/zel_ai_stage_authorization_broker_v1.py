@@ -12,14 +12,6 @@ from typing import Any, Mapping
 VERSION = "ZEL_AI_STAGE_AUTHORIZATION_BROKER_V1"
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
-TARGET_RESULT_PATHS = {
-    "EXACT25_LIVENESS_AND_REPAIR": "runtime_results/zel/exact25_material_upgrade_v1/latest.json",
-    "TRADE_METHOD_COVERAGE": "runtime_results/zel/trade_methods_pre_shadow_v1/latest.json",
-    "EXACT25_CHILD_PROBE": "runtime_results/zel/exact25_material_child_probe_v2/latest.json",
-    "COMPONENT_MAIN_EFFECT": "runtime_results/zel/component_autonomy_v3/latest.json",
-    "ALPHA_LAP_CHALLENGERS": "runtime_results/zel/alpha_auto_validation_chain_v1/latest.json",
-}
-
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -75,7 +67,12 @@ def predecessor_is_safe(row: Mapping[str, Any]) -> bool:
 
 
 def existing_authorization_is_current(results_root: Path, stage_id: str, predecessor_sha: str) -> bool:
-    path = results_root / "runtime_results/zel/ai_research_control_plane_v1" / safe_stage_slug(stage_id) / "latest.json"
+    path = (
+        results_root
+        / "runtime_results/zel/ai_research_control_plane_v1"
+        / safe_stage_slug(stage_id)
+        / "latest.json"
+    )
     if not path.is_file():
         return False
     try:
@@ -83,26 +80,38 @@ def existing_authorization_is_current(results_root: Path, stage_id: str, predece
     except Exception:
         return False
     context = row.get("gate_context") or {}
+    gate_stage = stage_id if stage_id != "EXACT25_CHILD_PROBE" else "EXACT25_LIVENESS_AND_REPAIR"
     return (
         row.get("state") == "PASS_AI_RESEARCH_CONTROL_PLANE"
         and context.get("predecessor_receipt_sha256") == predecessor_sha
-        and context.get("stage_id") == str(stage_id if stage_id != "EXACT25_CHILD_PROBE" else "EXACT25_LIVENESS_AND_REPAIR")
+        and context.get("stage_id") == gate_stage
     )
 
 
-def choose_stage(contract: Mapping[str, Any], results_root: Path, requested: str | None) -> tuple[dict[str, Any] | None, str]:
+def choose_stage(
+    contract: Mapping[str, Any],
+    results_root: Path,
+    requested: str | None,
+) -> tuple[dict[str, Any] | None, str]:
     stages = stage_map(contract)
     if requested:
         if requested not in stages:
             return None, "HOLD_STAGE_NOT_ALLOWLISTED"
         return stages[requested], "PASS_MANUAL_STAGE_SELECTED"
+
     for stage_id, row in stages.items():
         if row.get("auto_dispatch") is not True:
             continue
-        predecessor = results_root / str(row["predecessor_path"])
-        if not predecessor.is_file():
+        predecessor_path = results_root / str(row["predecessor_path"])
+        if not predecessor_path.is_file():
             continue
-        predecessor_sha = file_sha(predecessor)
+        try:
+            predecessor = load_object(predecessor_path)
+        except Exception:
+            continue
+        if not predecessor_is_safe(predecessor):
+            continue
+        predecessor_sha = file_sha(predecessor_path)
         if existing_authorization_is_current(results_root, stage_id, predecessor_sha):
             continue
         return row, "PASS_AUTO_STAGE_SELECTED"
@@ -125,6 +134,7 @@ def build_receipt(
         errors.append("BROKER_CONTRACT_SCHEMA")
     if not predecessor_is_safe(predecessor):
         errors.append("PREDECESSOR_NOT_SAFE_PASS")
+
     predecessor_sha = file_sha(predecessor_path)
     manifest_sha = file_sha(manifest_path)
     policy_sha = canonical_sha(policy)
@@ -142,37 +152,45 @@ def build_receipt(
         "candidate_execution_allowed": False,
     }
     candidate_sha = canonical_sha(plan)
-    prompt_sha = canonical_sha({
-        "instruction": "authorize one research stage from immutable predecessor and manifest only",
-        "stage_id": stage_id,
-        "claim_tier": contract["claim_tier"],
-    })
-    context_sha = canonical_sha({"predecessor": predecessor, "manifest": manifest, "plan": plan})
     proposal = {
         "proposal_id": f"stage-auth-{candidate_sha[:20]}",
         "epoch_id": epoch_id,
         "role": "LINEAGE_AUDITOR",
         "provider": "deterministic",
         "model": VERSION,
-        "prompt_sha256": prompt_sha,
-        "context_sha256": context_sha,
+        "prompt_sha256": canonical_sha({
+            "instruction": "authorize one bounded research stage from immutable lineage only",
+            "stage_id": stage_id,
+            "claim_tier": contract["claim_tier"],
+        }),
+        "context_sha256": canonical_sha({
+            "predecessor": predecessor,
+            "manifest": manifest,
+            "plan": plan,
+        }),
         "source_data_sha256": predecessor_sha,
         "parent_variant_sha256": manifest_sha,
         "candidate_sha256": candidate_sha,
         "changed_axis": str(stage["changed_axis"]),
-        "hypothesis": "Permit a bounded research stage without economic, selection, promotion, runtime or order authority.",
-        "expected_failure_mode": "Missing or stale lineage must fail closed before target dispatch.",
+        "hypothesis": "Permit one bounded research stage without economic or execution authority.",
+        "expected_failure_mode": "Missing, unsafe or stale lineage must fail closed before dispatch.",
         "created_at": now_iso(),
         "duplicate_group_id": f"{stage_id}:{predecessor_sha}",
         "claim_tier": contract["claim_tier"],
         "economic_claim_allowed": False,
         "candidate_execution_allowed": False,
     }
-    if not all(SHA_RE.fullmatch(str(proposal[key])) for key in (
-        "prompt_sha256", "context_sha256", "source_data_sha256", "parent_variant_sha256", "candidate_sha256"
-    )):
+    sha_fields = (
+        "prompt_sha256",
+        "context_sha256",
+        "source_data_sha256",
+        "parent_variant_sha256",
+        "candidate_sha256",
+    )
+    if not all(SHA_RE.fullmatch(str(proposal[key])) for key in sha_fields):
         errors.append("PROPOSAL_SHA_FORMAT")
-    result = {
+
+    result: dict[str, Any] = {
         "schema_version": "zel.ai.research_control_plane.receipt.v1",
         "version": VERSION,
         "generated_at": now_iso(),
@@ -215,6 +233,19 @@ def build_receipt(
     return result
 
 
+def status_base(state: str) -> dict[str, Any]:
+    return {
+        "schema_version": "zel.ai.stage_authorization_broker.status.v1",
+        "generated_at": now_iso(),
+        "state": state,
+        "ready": False,
+        "runtime_mutated": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+    }
+
+
 def run(
     contract_path: Path,
     policy_path: Path,
@@ -226,42 +257,24 @@ def run(
     policy = load_object(policy_path)
     stage, selection_state = choose_stage(contract, results_root, requested_stage)
     if stage is None:
-        return None, {
-            "schema_version": "zel.ai.stage_authorization_broker.status.v1",
-            "generated_at": now_iso(),
-            "state": selection_state,
-            "ready": False,
-            "runtime_mutated": False,
-            "execution_authority": "NONE",
-            "order_authority": "BLOCKED",
-            "action": "hold",
-        }
+        return None, status_base(selection_state)
+
     predecessor_path = results_root / str(stage["predecessor_path"])
     manifest_path = control_root / str(stage["manifest_path"])
-    errors: list[str] = []
+    missing = []
     if not predecessor_path.is_file():
-        errors.append("PREDECESSOR_MISSING")
+        missing.append("PREDECESSOR_MISSING")
     if not manifest_path.is_file():
-        errors.append("MANIFEST_MISSING")
-    if errors:
-        return None, {
-            "schema_version": "zel.ai.stage_authorization_broker.status.v1",
-            "generated_at": now_iso(),
-            "state": "HOLD_STAGE_INPUT_MISSING",
-            "stage_id": stage["stage_id"],
-            "errors": errors,
-            "ready": False,
-            "runtime_mutated": False,
-            "execution_authority": "NONE",
-            "order_authority": "BLOCKED",
-            "action": "hold",
-        }
+        missing.append("MANIFEST_MISSING")
+    if missing:
+        status = status_base("HOLD_STAGE_INPUT_MISSING")
+        status.update({"stage_id": stage["stage_id"], "errors": missing})
+        return None, status
+
     receipt = build_receipt(policy, contract, stage, predecessor_path, manifest_path)
     ready = receipt["state"] == "PASS_AI_RESEARCH_CONTROL_PLANE"
-    status = {
-        "schema_version": "zel.ai.stage_authorization_broker.status.v1",
-        "generated_at": now_iso(),
-        "state": "PASS_STAGE_AUTHORIZATION_READY" if ready else "HOLD_STAGE_AUTHORIZATION",
+    status = status_base("PASS_STAGE_AUTHORIZATION_READY" if ready else "HOLD_STAGE_AUTHORIZATION")
+    status.update({
         "selection_state": selection_state,
         "stage_id": stage["stage_id"],
         "gate_stage_id": receipt["gate_context"]["stage_id"],
@@ -270,11 +283,7 @@ def run(
         "ready": ready,
         "receipt_sha256": receipt["receipt_sha256"],
         "predecessor_receipt_sha256": receipt["predecessor_receipt_sha256"],
-        "runtime_mutated": False,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
-        "action": "hold",
-    }
+    })
     return receipt, status
 
 
@@ -298,20 +307,37 @@ def self_test() -> None:
         control = root / "control"
         (results / "runtime_results").mkdir(parents=True)
         control.mkdir()
-        (results / "runtime_results/pred.json").write_text(json.dumps({
-            "state": "PASS_PREDECESSOR", "promotion_authority": False,
-            "execution_authority": "NONE", "order_authority": "BLOCKED"
+        predecessor_path = results / "runtime_results/pred.json"
+        predecessor_path.write_text(json.dumps({
+            "state": "PASS_PREDECESSOR",
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
         }), encoding="utf-8")
-        (control / "manifest.json").write_text(json.dumps({"schema_version": "fixture.v1"}), encoding="utf-8")
+        (control / "manifest.json").write_text(
+            json.dumps({"schema_version": "fixture.v1"}),
+            encoding="utf-8",
+        )
         contract_path = root / "contract.json"
         policy_path = root / "policy.json"
         contract_path.write_text(json.dumps(contract), encoding="utf-8")
         policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
         receipt, status = run(contract_path, policy_path, results, control, None)
         assert receipt and status["state"] == "PASS_STAGE_AUTHORIZATION_READY", status
         assert receipt["economic_claim_allowed"] is False
         assert receipt["gate_context"]["stage_id"] == "EXACT25_LIVENESS_AND_REPAIR"
         assert receipt["policy_sha256"] == canonical_sha(policy)
+
+        predecessor_path.write_text(json.dumps({
+            "state": "WAIT_DATA_B_15M_AND_1M_TERMINAL",
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+        }), encoding="utf-8")
+        blocked_receipt, blocked_status = run(contract_path, policy_path, results, control, None)
+        assert blocked_receipt is None, blocked_receipt
+        assert blocked_status["state"] == "HOLD_NO_ELIGIBLE_STAGE", blocked_status
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 
@@ -332,7 +358,13 @@ def main() -> int:
     required = (args.contract, args.policy, args.results_root, args.control_root, args.status_out)
     if not all(required):
         parser.error("contract, policy, results-root, control-root and status-out are required")
-    receipt, status = run(args.contract, args.policy, args.results_root, args.control_root, args.stage_id or None)
+    receipt, status = run(
+        args.contract,
+        args.policy,
+        args.results_root,
+        args.control_root,
+        args.stage_id or None,
+    )
     args.status_out.parent.mkdir(parents=True, exist_ok=True)
     args.status_out.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if receipt is not None:
@@ -341,8 +373,10 @@ def main() -> int:
         args.receipt_out.parent.mkdir(parents=True, exist_ok=True)
         args.receipt_out.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({
-        "state": status["state"], "ready": status["ready"],
-        "stage_id": status.get("stage_id"), "target_workflow": status.get("target_workflow")
+        "state": status["state"],
+        "ready": status["ready"],
+        "stage_id": status.get("stage_id"),
+        "target_workflow": status.get("target_workflow"),
     }, sort_keys=True))
     return 0
 

@@ -48,7 +48,8 @@ def classify(run: dict[str, Any] | None, remote: dict[str, Any]) -> tuple[str, l
 def build(actions_rows: list[dict[str, Any]], remote: dict[str, Any], recovery: dict[str, Any]) -> dict[str, Any]:
     run = latest_legacy_run(actions_rows)
     cause, evidence = classify(run, remote)
-    state = "PASS_V2_RECOVERY_STARTED" if recovery.get("v2_service_active") else "HOLD_V2_RECOVERY_NOT_ACTIVE"
+    recovered = recovery.get("v2_service_active") is True or recovery.get("terminal_complete") is True
+    state = "PASS_V2_RECOVERY_STARTED" if recovered else "HOLD_V2_RECOVERY_NOT_ACTIVE"
     return {
         "schema_version": "zel.data_b.1m.v2_recovery.receipt.v1",
         "version": VERSION,
@@ -87,7 +88,7 @@ def self_test() -> None:
         "legacy_process_count": 0,
         "terminal_artifact_count": 0,
     }
-    recovery = {"v2_service_active": True}
+    recovery = {"v2_service_active": True, "terminal_complete": False}
     result = build(rows, remote, recovery)
     assert result["state"] == "PASS_V2_RECOVERY_STARTED", result
     assert result["legacy_termination_cause"] == "GITHUB_ACTIONS_420M_TIMEOUT_TERMINATED_ATTACHED_SSH_REPLAY", result

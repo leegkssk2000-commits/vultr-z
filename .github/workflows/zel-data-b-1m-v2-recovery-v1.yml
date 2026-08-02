@@ -1,0 +1,183 @@
+name: ZEL Data B 1m V2 Recovery V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v1.py
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+      - backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+      - .github/workflows/zel-data-b-1m-v2-recovery-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_historical_oos_exact25_replay_v1.py
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+      - backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+      - .github/workflows/zel-data-b-1m-v2-recovery-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-1m-single-owner-global-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate V2 recovery and safety boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+          bash -n backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+          python backend/tools/zel_historical_oos_exact25_replay_v2.py --self-test
+          python backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          w=Path('.github/workflows/zel-data-b-1m-v2-recovery-v1.yml').read_text()
+          s=Path('backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh').read_text()
+          assert 'timeout-minutes: 420' not in w
+          assert 'persistent_systemd_owner' in s
+          assert 'Restart=on-abnormal' in s
+          assert '--output-dir "$OUTPUT_ROOT"' in s
+          assert '--no-resume' not in s
+          assert 'zel-data-b-1m-single-owner-v1.lock' in s
+          assert 'execution_authority' in s and 'order_authority' in s
+          print('PASS_DATA_B_1M_V2_PERSISTENT_RECOVERY_STATIC')
+          PY
+
+  recover:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Read legacy Actions termination evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/zel-data-b-1m-single-owner-repair-v1.yml/runs?per_page=10" > out/raw_runs.json
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          raw=json.loads(Path('out/raw_runs.json').read_text())
+          rows=[]
+          for row in raw.get('workflow_runs',[]):
+              started=row.get('run_started_at') or row.get('created_at')
+              updated=row.get('updated_at')
+              duration=0
+              if started and updated:
+                  duration=max(0,int((datetime.fromisoformat(updated.replace('Z','+00:00'))-datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds()))
+              rows.append({
+                  'name':row.get('name'),
+                  'databaseId':row.get('id'),
+                  'status':row.get('status'),
+                  'conclusion':row.get('conclusion'),
+                  'event':row.get('event'),
+                  'createdAt':row.get('created_at'),
+                  'startedAt':started,
+                  'updatedAt':updated,
+                  'duration_sec':duration,
+              })
+          Path('out/actions_runs.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Prepare SSH and upload recovery tools
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/vps_key \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh \
+            out/actions_runs.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Diagnose V1 termination and start detached V2 owner
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'bash /tmp/zel_data_b_1m_v2_recover_exec_v1.sh /tmp/actions_runs.json /tmp/zel_data_b_1m_remote_diagnostic.json /tmp/zel_data_b_1m_v2_recovery_status.json'
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_1m_remote_diagnostic.json" \
+            out/remote_diagnostic.json
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_data_b_1m_v2_recovery_status.json" \
+            out/recovery_status.json
+      - name: Build and verify recovery receipt
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py \
+            --actions-runs out/actions_runs.json \
+            --remote-diagnostic out/remote_diagnostic.json \
+            --recovery-status out/recovery_status.json \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_V2_RECOVERY_STARTED',d
+          assert d['recovery']['detached_from_github_actions'] is True,d
+          assert d['recovery']['persistent_systemd_owner'] is True,d
+          assert d['recovery']['resume_enabled'] is True,d
+          assert d['canonical_strategy_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          print(json.dumps({'state':d['state'],'cause':d['legacy_termination_cause'],'pid':d['recovery']['v2_main_pid']},sort_keys=True))
+          PY
+      - name: Publish recovery receipt
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v2_recovery_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v2-recovery-bot'
+          git config user.email 'zel-data-b-v2-recovery-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v2_recovery_v1
+          git commit -m "result(zel): Data B 1m V2 recovery ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - name: Clean temporary remote evidence
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_historical_oos_exact25_replay_v1.py /tmp/zel_historical_oos_exact25_replay_v2.py /tmp/zel_data_b_1m_v2_recover_exec_v1.sh /tmp/actions_runs.json /tmp/zel_data_b_1m_remote_diagnostic.json /tmp/zel_data_b_1m_v2_recovery_status.json' || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-1m-v2-recovery-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

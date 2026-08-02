@@ -23,6 +23,12 @@ PROTECTED_FILENAME_MARKERS = (
 EXEMPT_FILENAMES = {
     "zel-ai-research-control-hardening-v1.yml",
     "zel-ai-control-enforcement-v1.yml",
+    "r7a4d-strategy11-component-attribution-v1.yml",
+    "zel-alpha-lap-v2-contract-v1.yml",
+    "zel-component-autonomy-v2.yml",
+    "zel-data-b-replay-owner-policy-v1.yml",
+    "zel-p0-runtime-e2e-closure-v1.yml",
+    "zel-pre-shadow-full-hardening-v1.yml",
 }
 
 

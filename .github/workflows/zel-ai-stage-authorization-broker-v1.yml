@@ -71,6 +71,9 @@ jobs:
           assert len(c['stages'])==5,c
           assert sum(1 for row in c['stages'] if row['auto_dispatch'])==2,c
           assert c['rules']['generic_latest_written_only_immediately_before_target_dispatch'] is True,c
+          workflow=Path('.github/workflows/zel-ai-stage-authorization-broker-v1.yml').read_text()
+          assert 'git add runtime_results/zel/ai_stage_authorization_broker_v1' in workflow
+          assert 'if [ -d runtime_results/zel/ai_research_control_plane_v1 ]; then' in workflow
           s=c['safety']
           assert s['active_data_b_1m_mutation'] is False,s
           assert s['canonical_strategy_mutation'] is False,s
@@ -161,7 +164,10 @@ jobs:
             cp out/receipt.json "$stage_root/run_${GITHUB_RUN_ID}.json"
           fi
           cd results
-          git add runtime_results/zel/ai_stage_authorization_broker_v1 runtime_results/zel/ai_research_control_plane_v1 2>/dev/null || true
+          git add runtime_results/zel/ai_stage_authorization_broker_v1
+          if [ -d runtime_results/zel/ai_research_control_plane_v1 ]; then
+            git add runtime_results/zel/ai_research_control_plane_v1
+          fi
           git commit -m "result(zel): AI stage authorization ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
       - uses: actions/upload-artifact@v4

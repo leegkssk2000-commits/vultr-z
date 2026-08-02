@@ -1,0 +1,87 @@
+name: ZEL CI Noise Suppress Once V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-ci-noise-suppress-once-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-ci-noise-suppress-once-v1
+  cancel-in-progress: false
+
+jobs:
+  suppress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: Remove noisy automatic triggers and preserve explicit DAG routes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+            '.github/workflows/zel-data-b-risk-adapter-ablation-v1.yml': '''on:\n  workflow_dispatch:\n''',
+            '.github/workflows/zel-data-b-skill-bundle-pipeline-v1.yml': '''on:\n  workflow_dispatch:\n  workflow_run:\n    workflows:\n      - ZEL Data B Risk Adapter Ablation V1\n    types: [completed]\n''',
+            '.github/workflows/zel-data-b-replay-owner-policy-v1.yml': '''on:\n  workflow_dispatch:\n''',
+            '.github/workflows/zel-historical-oos-exact25-replay-v3.yml': '''on:\n  workflow_dispatch:\n''',
+            '.github/workflows/zel-survivor-bundle-gemini-v1.yml': '''on:\n  workflow_dispatch:\n  workflow_run:\n    workflows:\n      - ZEL Exact25 Material Upgrade Loop V1\n      - ZEL Exact25 Material Child Probe V2\n      - ZEL Trade Methods Pre-Shadow Audit V1\n      - ZEL Component Autonomy V3\n      - ZEL Alpha Auto Validation Chain V1\n    types: [completed]\n''',
+            '.github/workflows/zel-alpha-auto-validation-chain-v1.yml': '''on:\n  workflow_dispatch:\n''',
+            '.github/workflows/zel-alimi-feature-install-audit-v1.yml': '''on:\n  workflow_dispatch:\n''',
+          }
+
+          changed=[]
+          for filename,new_on in replacements.items():
+              path=Path(filename)
+              text=path.read_text()
+              start=text.index('\non:\n')+1
+              end=text.index('\npermissions:\n',start)
+              updated=text[:start]+new_on+text[end:]
+              if updated != text:
+                  path.write_text(updated)
+                  changed.append(filename)
+
+          Path('ci_noise_suppression_receipt.json').write_text(__import__('json').dumps({
+            'state':'PASS_TRIGGER_NOISE_SUPPRESSED',
+            'changed_files':changed,
+            'automatic_pr_push_removed':True,
+            'hourly_survivor_schedule_removed':True,
+            'explicit_dispatch_preserved':True,
+            'risk_to_skill_workflow_run_preserved':True,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          },indent=2,sort_keys=True)+'\n')
+          assert len(changed)==7,changed
+          PY
+      - name: Commit suppression
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-ci-noise-suppress-bot'
+          git config user.email 'zel-ci-noise-suppress-bot@users.noreply.github.com'
+          git add \
+            .github/workflows/zel-data-b-risk-adapter-ablation-v1.yml \
+            .github/workflows/zel-data-b-skill-bundle-pipeline-v1.yml \
+            .github/workflows/zel-data-b-replay-owner-policy-v1.yml \
+            .github/workflows/zel-historical-oos-exact25-replay-v3.yml \
+            .github/workflows/zel-survivor-bundle-gemini-v1.yml \
+            .github/workflows/zel-alpha-auto-validation-chain-v1.yml \
+            .github/workflows/zel-alimi-feature-install-audit-v1.yml
+          git commit -m 'chore(zel): suppress noisy legacy workflow triggers'
+          git push origin HEAD:master
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-ci-noise-suppress-once-v1-${{ github.run_id }}
+          path: ci_noise_suppression_receipt.json
+          if-no-files-found: error
+          retention-days: 30

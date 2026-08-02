@@ -41,6 +41,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Enforce canonical stage output allowlist
+        env:
+          STAGE_ID: ${{ inputs.stage_id }}
+          OUTPUT_PATH: ${{ inputs.output_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          allowed = {
+              'ALPHA_LAP_CHALLENGERS': 'runtime_results/zel/alpha_lap_v2/challengers_latest.json',
+              'W2_FORWARD': 'runtime_results/zel/w2_forward_v1/latest.json',
+              'W3_DURABILITY': 'runtime_results/zel/w3_durability_v1/latest.json',
+              'PORTFOLIO_JOINT_RISK': 'runtime_results/zel/portfolio_joint_risk_v1/latest.json',
+              'ROLLBACK_REHEARSAL': 'runtime_results/zel/rollback_rehearsal_v1/latest.json',
+              'PRE_SHADOW_RELEASE': 'runtime_results/zel/pre_shadow_release_v1/latest.json',
+          }
+          stage = os.environ['STAGE_ID']
+          output = os.environ['OUTPUT_PATH']
+          assert stage in allowed, stage
+          assert output == allowed[stage], (stage, output, allowed[stage])
+          print(f'PASS_CANONICAL_OUTPUT:{stage}:{output}')
+          PY
       - id: gate
         name: ZEL_AI_CONTROL_GATE_V1 — verify stage-specific authorization
         env:

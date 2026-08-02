@@ -1,0 +1,228 @@
+name: ZEL Strategy Top3 Bundles V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_strategy_top3_bundles_v1.py
+      - backend/research/zel_strategy_top3_bundles_contract_v1.json
+      - .github/workflows/zel-strategy-top3-bundles-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-strategy-top3-bundles-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate structural bundle engine
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_strategy_top3_bundles_v1.py
+          python backend/tools/zel_strategy_top3_bundles_v1.py --self-test
+          python -m json.tool backend/research/zel_strategy_top3_bundles_contract_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          contract=json.loads(Path('backend/research/zel_strategy_top3_bundles_contract_v1.json').read_text())
+          workflow=Path('.github/workflows/zel-strategy-top3-bundles-v1.yml').read_text()
+          assert contract['stage_id']=='STRATEGY_TOP3_BUNDLES',contract
+          assert contract['bundle_policy']['maximum_bundle_count']==3,contract
+          assert contract['bundle_policy']['performance_ranking_forbidden'] is True,contract
+          assert '\n  schedule:' not in workflow,workflow
+          assert '\n  push:' not in workflow,workflow
+          assert 'ai_research_control_plane_v1/strategy_top3_bundles/latest.json' in workflow,workflow
+          assert 'PASS_STRATEGY_TOP3_BUNDLES_COMPLETE' in workflow,workflow
+          assert 'strategy_top3_bundles_v1/latest.json' in workflow,workflow
+          print('PASS_STRATEGY_TOP3_BUNDLES_STATIC')
+          PY
+
+  prerequisite:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - id: gate
+        name: Require stage-specific authorization and current Selected Interactions receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          proposal=results/runtime_results/zel/ai_research_control_plane_v1/strategy_top3_bundles/latest.json
+          predecessor=results/runtime_results/zel/selected_interactions_v1/latest.json
+          if [ ! -s "$proposal" ] || [ ! -s "$predecessor" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/gate.json').write_text(json.dumps({
+            'state':'HOLD_STRATEGY_TOP3_BUNDLES_GATE_INPUT_MISSING',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            exit 0
+          fi
+          predecessor_sha=$(sha256sum "$predecessor" | awk '{print $1}')
+          PROPOSAL="$proposal" PREDECESSOR_SHA="$predecessor_sha" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          row=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          ctx=row.get('gate_context') or {}
+          assert row.get('state')=='PASS_AI_RESEARCH_CONTROL_PLANE',row
+          assert ctx.get('stage_id')=='STRATEGY_TOP3_BUNDLES',ctx
+          assert ctx.get('broker_stage_id')=='STRATEGY_TOP3_BUNDLES',ctx
+          assert ctx.get('target_workflow')=='zel-strategy-top3-bundles-v1.yml',ctx
+          assert ctx.get('predecessor_receipt_sha256')==os.environ['PREDECESSOR_SHA'],ctx
+          Path('/tmp/zel_top3_epoch').write_text(str(ctx['epoch_id']))
+          PY
+          epoch=$(cat /tmp/zel_top3_epoch)
+          if python control/backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id STRATEGY_TOP3_BUNDLES \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/gate.json; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Consume generic authorization before bundling
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-strategy-top3-bundles-bot'
+          git config user.email 'zel-strategy-top3-bundles-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          python - <<'PY'
+          import hashlib,json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          generic=Path('results/runtime_results/zel/ai_research_control_plane_v1/latest.json')
+          stage=Path('results/runtime_results/zel/ai_research_control_plane_v1/strategy_top3_bundles/latest.json')
+          current=json.loads(stage.read_text())
+          if generic.is_file():
+              generic_row=json.loads(generic.read_text())
+              assert generic_row.get('receipt_sha256')==current.get('receipt_sha256'),(generic_row,current)
+          consumed={
+            'schema_version':'zel.ai.stage_authorization.consumed.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'CONSUMED_AI_STAGE_AUTHORIZATION',
+            'stage_id':'STRATEGY_TOP3_BUNDLES',
+            'consumed_receipt_sha256':current['receipt_sha256'],
+            'consumed_by_workflow':'ZEL Strategy Top3 Bundles V1',
+            'consumed_by_run_id':os.environ['GITHUB_RUN_ID'],
+            'runtime_mutated':False,'selection_authority':False,'promotion_authority':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          consumed['receipt_sha256']=hashlib.sha256(json.dumps(consumed,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          generic.write_text(json.dumps(consumed,indent=2,sort_keys=True)+'\n')
+          PY
+          cd results
+          git add runtime_results/zel/ai_research_control_plane_v1/latest.json
+          git commit -m "result(zel): consume Top3 bundle authorization ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-strategy-top3-bundles-gate-${{ github.run_id }}
+          path: out/gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  bundle:
+    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'
+    needs: [validate, prerequisite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Build bounded structural bundles
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/tools/zel_strategy_top3_bundles_v1.py \
+            --selected-interactions results/runtime_results/zel/selected_interactions_v1/latest.json \
+            --contract backend/research/zel_strategy_top3_bundles_contract_v1.json \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          row=json.load(open('out/latest.json'))
+          assert row['state']=='PASS_STRATEGY_TOP3_BUNDLES_COMPLETE',row
+          assert 1<=row['bundle_count']<=3,row
+          assert row['performance_ranking_used'] is False,row
+          assert row['economic_claim_allowed'] is False,row
+          assert row['active_data_b_1m_mutated'] is False,row
+          assert row['canonical_strategy_files_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['runtime_registry_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'bundle_count':row['bundle_count']})
+          PY
+      - name: Publish structural Top3 receipt only
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-strategy-top3-bundles-bot'
+          git config user.email 'zel-strategy-top3-bundles-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/strategy_top3_bundles_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git add runtime_results/zel/strategy_top3_bundles_v1
+          git commit -m "result(zel): structural Top3 bundles ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-strategy-top3-bundles-v1-${{ github.run_id }}
+          path: out/latest.json
+          if-no-files-found: error
+          retention-days: 90

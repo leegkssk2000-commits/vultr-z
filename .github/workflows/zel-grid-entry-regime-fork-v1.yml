@@ -18,13 +18,13 @@ concurrency:
 
 jobs:
   evaluate:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -75,6 +75,7 @@ jobs:
           row=json.load(open('out/result.json'))
           assert row['trade_count']==580,row
           assert row['reconstructed_count']+row['unmatched_count']==580,row
+          assert isinstance(row['terminal_trades_sha256'],str) and len(row['terminal_trades_sha256'])==64,row
           assert row['raw_trade_rows_published'] is False,row
           assert row['raw_event_ids_published'] is False,row
           assert row['context_facts_published'] is False,row
@@ -86,7 +87,7 @@ jobs:
           assert row['execution_authority']=='NONE',row
           assert row['order_authority']=='BLOCKED',row
           assert row['action']=='hold',row
-          print({'state':row['state'],'reconstructed':row['reconstructed_count'],'unmatched':row['unmatched_count'],'counts':row['entry_regime_counts'],'eligible':row['eligible_regimes'],'selected':row['selected_research_fork'],'next':row['next']})
+          print({'state':row['state'],'ledger_sha':row['terminal_trades_sha256'],'reconstructed':row['reconstructed_count'],'unmatched':row['unmatched_count'],'counts':row['entry_regime_counts'],'eligible':row['eligible_regimes'],'selected':row['selected_research_fork'],'next':row['next']})
           PY
       - name: Cleanup SSH key
         if: always()

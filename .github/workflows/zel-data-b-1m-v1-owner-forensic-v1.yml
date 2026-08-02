@@ -1,0 +1,225 @@
+name: ZEL Data B 1m V1 Owner Forensic V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v1-owner-forensic-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-1m-v1-owner-forensic-v1
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Collect candidate Actions runs and logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/logs
+          : > out/all_runs.jsonl
+          for page in 1 2 3 4; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100&page=$page&created=2026-08-01..2026-08-02" \
+              --jq '.workflow_runs[]' >> out/all_runs.jsonl
+          done
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          rows=[]
+          for line in Path('out/all_runs.jsonl').read_text().splitlines():
+              try: row=json.loads(line)
+              except Exception: continue
+              name=str(row.get('name') or '')
+              path=str(row.get('path') or '')
+              hay=(name+' '+path).lower()
+              if not any(token in hay for token in ('data b 1m','historical oos','1m single owner','1m resume','1m terminal','exact25 replay')):
+                  continue
+              started=row.get('run_started_at') or row.get('created_at')
+              updated=row.get('updated_at')
+              duration=0
+              if started and updated:
+                  duration=max(0,int((datetime.fromisoformat(updated.replace('Z','+00:00'))-datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds()))
+              rows.append({
+                'id':row.get('id'),'name':name,'path':path,'event':row.get('event'),
+                'status':row.get('status'),'conclusion':row.get('conclusion'),
+                'created_at':row.get('created_at'),'started_at':started,'updated_at':updated,
+                'duration_sec':duration,'head_sha':row.get('head_sha'),
+              })
+          rows.sort(key=lambda r:(r.get('started_at') or '',r['id'] or 0))
+          Path('out/candidates.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          selected=[r for r in rows if (r.get('started_at') or '') <= '2026-08-01T21:30:00Z' and (r.get('updated_at') or '') >= '2026-08-01T20:30:00Z']
+          selected=selected[-30:]
+          Path('out/selected_candidates.json').write_text(json.dumps(selected,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'candidate_count':len(rows),'selected_count':len(selected)},sort_keys=True))
+          PY
+          python - <<'PY' > out/selected_ids.txt
+          import json
+          for row in json.load(open('out/selected_candidates.json')):
+              print(row['id'])
+          PY
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            set +e
+            gh run view "$run_id" --log > "out/logs/${run_id}.log" 2>"out/logs/${run_id}.err"
+            rc=$?
+            set -e
+            printf '%s %s\n' "$run_id" "$rc" >> out/log_fetch_status.txt
+          done < out/selected_ids.txt
+      - name: Read VPS kernel, reboot and SSH evidence
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/vps_forensic.json <<'PY'
+          import json,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+          def cmd(args):
+              p=subprocess.run(args,text=True,capture_output=True)
+              return {'rc':p.returncode,'stdout':p.stdout,'stderr':p.stderr}
+          start='2026-08-01 20:30:00 UTC'
+          end='2026-08-02 08:00:00 UTC'
+          kernel=cmd(['journalctl','-k','--since',start,'--until',end,'--no-pager'])
+          ssh=cmd(['journalctl','--since',start,'--until',end,'--no-pager','-u','ssh','-u','sshd'])
+          system=cmd(['journalctl','--since',start,'--until',end,'--no-pager','-p','warning..alert'])
+          k=kernel['stdout'].lower()
+          s=system['stdout'].lower()
+          out={
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'window_start':start,'window_end':end,
+            'kernel_oom_detected':any(x in k for x in ('out of memory','oom-kill','killed process')),
+            'kernel_panic_detected':'kernel panic' in k,
+            'segfault_detected':'segfault' in s,
+            'host_reboot_detected':False,
+            'boot_time_epoch':int(next(line.split()[1] for line in Path('/proc/stat').read_text().splitlines() if line.startswith('btime '))),
+            'ssh_log_sha256':__import__('hashlib').sha256(ssh['stdout'].encode()).hexdigest(),
+            'kernel_log_sha256':__import__('hashlib').sha256(kernel['stdout'].encode()).hexdigest(),
+            'system_warning_sha256':__import__('hashlib').sha256(system['stdout'].encode()).hexdigest(),
+            'ssh_disconnect_count':sum(1 for line in ssh['stdout'].splitlines() if any(t in line.lower() for t in ('disconnected from','session closed for user','connection closed'))),
+            'read_only':True,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - name: Identify actual owner run and termination mechanism
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,re
+          from datetime import datetime,timezone
+          from pathlib import Path
+          candidates={int(r['id']):r for r in json.load(open('out/selected_candidates.json'))}
+          evidence=[]
+          for path in sorted(Path('out/logs').glob('*.log')):
+              run_id=int(path.stem)
+              text=path.read_text(errors='replace')
+              lower=text.lower()
+              invoked=(
+                'zel_historical_oos_exact25_replay_v1.py' in text
+                and '--interval 1m' in text
+              )
+              lock_rejected='GLOBAL_1M_LOCK_ALREADY_HELD' in text
+              completed_terminal=all(token in text for token in ('report.json','summary.json','scoreboard.csv','trades.jsonl.gz')) and 'Publish 1m and combined authority' in text and 'Process completed with exit code' not in text[-5000:]
+              abrupt_markers=[]
+              for token in ('The operation was canceled','The operation was cancelled','The job was canceled','The job was cancelled','Received signal','Process completed with exit code','Connection reset','Broken pipe','client_loop: send disconnect','Killed'):
+                  if token.lower() in lower:
+                      abrupt_markers.append(token)
+              command_lines=[line[-600:] for line in text.splitlines() if 'zel_historical_oos_exact25_replay_v1.py' in line and '--interval 1m' in line]
+              row={**candidates.get(run_id,{'id':run_id})}
+              row.update({
+                'invoked_v1_1m':invoked,
+                'global_lock_rejected':lock_rejected,
+                'terminal_publish_observed':completed_terminal,
+                'abrupt_markers':abrupt_markers,
+                'command_line_count':len(command_lines),
+                'log_sha256':__import__('hashlib').sha256(text.encode()).hexdigest(),
+              })
+              evidence.append(row)
+          owners=[r for r in evidence if r['invoked_v1_1m'] and not r['global_lock_rejected']]
+          owners.sort(key=lambda r:(r.get('started_at') or '',r.get('id') or 0))
+          owner=owners[-1] if owners else None
+          lock_rejects=[r for r in evidence if r['global_lock_rejected']]
+          vps=json.load(open('out/vps_forensic.json'))
+          exact=False
+          cause='UNPROVED_OWNER_RUN_NOT_LOCATED'
+          if owner:
+              conclusion=str(owner.get('conclusion') or '').lower()
+              markers=owner.get('abrupt_markers') or []
+              if vps['kernel_oom_detected']:
+                  cause='KERNEL_OOM_KILLED_V1_OWNER'; exact=True
+              elif vps['host_reboot_detected']:
+                  cause='HOST_REBOOT_INTERRUPTED_V1_OWNER'; exact=True
+              elif conclusion in ('cancelled','timed_out'):
+                  cause='ACTIONS_RUN_TERMINATED_ATTACHED_SSH_OWNER'; exact=True
+              elif markers and not owner.get('terminal_publish_observed'):
+                  cause='ATTACHED_SSH_OR_REMOTE_COMMAND_EXITED_WITHOUT_TERMINAL'; exact=True
+              elif conclusion=='failure' and not owner.get('terminal_publish_observed'):
+                  cause='OWNER_ACTIONS_RUN_FAILED_AND_ATTACHED_REMOTE_PROCESS_DID_NOT_SURVIVE'; exact=True
+              else:
+                  cause='OWNER_DISAPPEARED_WITHOUT_TERMINAL_NO_OOM_NO_REBOOT'
+          out={
+            'schema_version':'zel.data_b.1m.v1_owner_forensic.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_CAUSE_CONFIRMED' if exact else 'HOLD_CAUSE_NOT_FULLY_PROVED',
+            'termination_cause':cause,
+            'cause_exact':exact,
+            'actual_owner_run':owner,
+            'owner_candidates':owners,
+            'lock_rejected_runs':lock_rejects,
+            'vps_evidence':vps,
+            'candidate_run_count':len(candidates),
+            'log_evidence_count':len(evidence),
+            'canonical_strategy_mutated':False,'formal_ledger_mutated':False,'runtime_registry_mutated':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'state':out['state'],'cause':cause,'owner_run_id':(owner or {}).get('id'),'lock_reject_count':len(lock_rejects)},sort_keys=True))
+          PY
+      - name: Publish forensic receipt
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v1_owner_forensic_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v1-forensic-bot'
+          git config user.email 'zel-data-b-v1-forensic-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v1_owner_forensic_v1
+          git commit -m "result(zel): Data B 1m V1 owner forensic ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-1m-v1-owner-forensic-v1-${{ github.run_id }}
+          path: |
+            out/latest.json
+            out/candidates.json
+            out/vps_forensic.json
+          if-no-files-found: error
+          retention-days: 90

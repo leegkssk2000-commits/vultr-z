@@ -1,0 +1,169 @@
+name: ZEL Alpha Combo Block Trend Short Exact V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_alpha_combo_block_trend_short_exact_replay_v1.json
+      - backend/tools/zel_alpha_combo_block_trend_short_exact_replay_v1.py
+      - .github/workflows/zel-alpha-combo-block-trend-short-exact-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-alpha-combo-block-trend-short-exact-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            backend/tools/zel_alpha_combo_block_trend_short_exact_replay_v1.py
+          python -m json.tool backend/research/zel_alpha_combo_block_trend_short_exact_replay_v1.json >/dev/null
+          python backend/tools/zel_grid_block_trend_short_exact_replay_v1.py --self-test
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          for attempt in 1 2 3; do ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts && break || sleep $((attempt*5)); done
+      - name: Run isolated exact-source baseline and candidate
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-exact-${GITHUB_RUN_ID}"
+          for attempt in 1 2 3; do
+            ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'" && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          for attempt in 1 2 3; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
+              backend/tools/zel_grid_entry_regime_fork_v1.py \
+              backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+              backend/tools/zel_alpha_combo_block_trend_short_exact_replay_v1.py \
+              backend/research/zel_alpha_combo_block_trend_short_exact_replay_v1.json \
+              "$VPS_USER@$VPS_HOST:$remote/" && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          timeout 6900s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" \
+            "cd '$remote' && PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_alpha_combo_block_trend_short_exact_replay_v1.py --policy zel_alpha_combo_block_trend_short_exact_replay_v1.json --generic-tool zel_grid_block_trend_short_exact_replay_v1.py --base-tool zel_grid_entry_regime_fork_v1.py --out result.json" \
+            > out/remote.stdout 2>out/remote.stderr
+          for attempt in 1 2 3; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 "$VPS_USER@$VPS_HOST:$remote/result.json" out/result.json && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          test -s out/result.json
+          python -m json.tool out/result.json >/dev/null
+      - name: Gemini exact-result red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,time,urllib.request
+          row=json.load(open('out/result.json'))
+          evidence={
+            'state':row.get('state'),
+            'candidate_pass':row.get('candidate_pass'),
+            'terminal_checks':row.get('terminal_checks'),
+            'baseline_parity':row.get('baseline_parity'),
+            'candidate_checks':row.get('candidate_checks'),
+            'baseline_censored':row.get('baseline_censored_open_count'),
+            'candidate_censored':row.get('candidate_censored_open_count'),
+            'all_windows':row.get('all_windows'),
+            'windows':row.get('windows'),
+            'blocked_signals':(row.get('candidate_meta') or {}).get('blocked_entry_signal_count'),
+            'constraints':{
+              'exact_source':True,
+              'W1_rule_frozen_in_W2_W3':True,
+              'zero_censored_required':True,
+              'no_runtime_promotion':True,
+            },
+          }
+          prompt='Red-team this exact-source alpha_combo replay. Return JSON keys verdict,reason,hidden_failure. verdict=ACCEPT|REJECT|MORE_EVIDENCE. Do not authorize production and do not override parity or W1/W2/W3 deterministic gates. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+          payload={'contents':[{'parts':[{'text':prompt}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+          parsed=None;used=None;last=None
+          for model in ['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']:
+            try:
+              req=urllib.request.Request(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+              parsed=json.loads(body['candidates'][0]['content']['parts'][0]['text']); used=model; break
+            except Exception as exc: last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+          if parsed is None: raise RuntimeError('GEMINI_FAILED:'+str(last))
+          valid=parsed.get('verdict') in {'ACCEPT','REJECT','MORE_EVIDENCE'}
+          deterministic=row.get('candidate_pass') is True
+          sealed=valid and deterministic and parsed.get('verdict')=='ACCEPT'
+          receipt={
+            'schema_version':'zel.alpha_combo.exact_replay.gemini_redteam.v1',
+            'state':'PASS_GEMINI_ALPHA_EXACT_SEALED_HOLDBACK' if sealed else 'PASS_GEMINI_ALPHA_EXACT_RESULT_REVIEWED',
+            'model':used,
+            'response':parsed,
+            'response_valid':valid,
+            'deterministic_pass':deterministic,
+            'sealed_research_holdback':sealed,
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({'state':row.get('state'),'candidate_pass':deterministic,'all_delta':(row.get('all_windows') or {}).get('delta'),'gemini':parsed,'sealed':sealed})
+          PY
+      - name: Verify safety and exact gates
+        run: |
+          python - <<'PY'
+          import json
+          row=json.load(open('out/result.json'))
+          gemini=json.load(open('out/gemini_review.json'))
+          assert all(row['terminal_checks'].values()),row
+          assert all(row['baseline_parity'].values()),row
+          assert row['baseline_censored_open_count']==0,row
+          assert row['candidate_censored_open_count']==0,row
+          for value in (row,gemini):
+            assert value['canonical_mutated'] is False and value['runtime_mutated'] is False,value
+            assert value['selection_authority'] is False and value['promotion_authority'] is False,value
+            assert value['execution_authority']=='NONE' and value['order_authority']=='BLOCKED',value
+            assert value['action']=='hold',value
+          PY
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-combo-block-trend-short-exact-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

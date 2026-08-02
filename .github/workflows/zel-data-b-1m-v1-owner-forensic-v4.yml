@@ -1,0 +1,144 @@
+name: ZEL Data B 1m V1 Owner Forensic V4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v1-owner-forensic-v4.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-1m-v1-owner-forensic-v4
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Query every historical 1m owner-capable workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/logs
+          : > out/runs.jsonl
+          workflows=(
+            zel-data-b-1m-single-owner-repair-v1.yml
+            zel-historical-oos-exact25-replay-v1.yml
+            zel-historical-oos-1m-resume-v1.yml
+            zel-historical-oos-exact25-replay-v3.yml
+            zel-data-b-1m-terminal-repair-v2.yml
+            zel-data-b-1m-resume-v1.yml
+            zel-data-b-1m-immediate-chain-v3.yml
+          )
+          for wf in "${workflows[@]}"; do
+            set +e
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/$wf/runs?per_page=50" \
+              --jq --arg wf "$wf" '.workflow_runs[] | . + {queried_workflow:$wf}' >> out/runs.jsonl
+            set -e
+          done
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          rows=[]
+          for line in Path('out/runs.jsonl').read_text().splitlines():
+              try:r=json.loads(line)
+              except Exception:continue
+              start=r.get('run_started_at') or r.get('created_at') or ''
+              end=r.get('updated_at') or ''
+              if not start or not end:continue
+              if start > '2026-08-02T03:30:00Z' or end < '2026-08-01T19:30:00Z':continue
+              duration=max(0,int((datetime.fromisoformat(end.replace('Z','+00:00'))-datetime.fromisoformat(start.replace('Z','+00:00'))).total_seconds()))
+              rows.append({'id':r.get('id'),'name':r.get('name'),'workflow':r.get('queried_workflow'),'event':r.get('event'),'status':r.get('status'),'conclusion':r.get('conclusion'),'started_at':start,'updated_at':end,'duration_sec':duration,'head_sha':r.get('head_sha')})
+          uniq={r['id']:r for r in rows}
+          rows=sorted(uniq.values(),key=lambda r:(r['started_at'],r['id']))
+          Path('out/candidates.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          print('\n'.join(str(r['id']) for r in rows))
+          PY
+          python - <<'PY' > out/ids.txt
+          import json
+          for r in json.load(open('out/candidates.json')):print(r['id'])
+          PY
+          while read -r id; do
+            [ -n "$id" ] || continue
+            set +e
+            gh run view "$id" --log > "out/logs/$id.log" 2>"out/logs/$id.err"
+            echo "$id $?" >> out/log_status.txt
+            set -e
+          done < out/ids.txt
+      - name: Identify launcher and exact terminal mechanism
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          candidates={int(r['id']):r for r in json.load(open('out/candidates.json'))}
+          rows=[]
+          for p in Path('out/logs').glob('*.log'):
+              id=int(p.stem);text=p.read_text(errors='replace');low=text.lower()
+              command='zel_historical_oos_exact25_replay_v1.py' in text and '--interval 1m' in text
+              lock='GLOBAL_1M_LOCK_ALREADY_HELD' in text
+              detached=any(t in text for t in ('nohup ','setsid ','systemd-run ','disown'))
+              killed=any(t.lower() in low for t in ('The operation was canceled','The operation was cancelled','The job was canceled','The job was cancelled','Connection reset','Broken pipe','Killed','Process completed with exit code'))
+              if command or lock:
+                  rows.append({**candidates[id],'direct_command':command,'global_lock_rejected':lock,'detached':detached,'termination_marker':killed,'log_sha256':hashlib.sha256(text.encode()).hexdigest()})
+          owners=[r for r in rows if r['direct_command'] and not r['global_lock_rejected']]
+          owners.sort(key=lambda r:(r['started_at'],r['id']))
+          # Prefer the owner whose run overlaps inferred process start near 20:42 UTC.
+          overlap=[r for r in owners if r['started_at'] <= '2026-08-01T20:50:00Z' and r['updated_at'] >= '2026-08-01T20:35:00Z']
+          owner=(overlap[-1] if overlap else (owners[-1] if owners else None))
+          cause='UNPROVED_NO_HISTORICAL_WORKFLOW_OWNER_FOUND';exact=False
+          if owner:
+              conclusion=str(owner.get('conclusion') or '').lower()
+              if not owner['detached'] and conclusion in ('failure','cancelled','timed_out'):
+                  cause='GITHUB_ACTIONS_OWNER_ENDED_ATTACHED_SSH_V1_PROCESS';exact=True
+              elif not owner['detached'] and owner['termination_marker']:
+                  cause='ATTACHED_SSH_COMMAND_TERMINATED_WITH_OWNER_JOB';exact=True
+              elif owner['detached']:
+                  cause='DETACHED_V1_OWNER_LATER_DISAPPEARED_UNPROVED'
+              else:
+                  cause='V1_OWNER_FOUND_TERMINATION_MECHANISM_UNPROVED'
+          out={'schema_version':'zel.data_b.1m.v1_owner_forensic.v4','generated_at':datetime.now(timezone.utc).isoformat(),'state':'PASS_CAUSE_CONFIRMED' if exact else 'HOLD_CAUSE_NOT_FULLY_PROVED','termination_cause':cause,'cause_exact':exact,'actual_owner_run':owner,'owner_candidates':owners,'relevant_runs':rows,'queried_candidate_count':len(candidates),'canonical_strategy_mutated':False,'formal_ledger_mutated':False,'runtime_registry_mutated':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'state':out['state'],'cause':cause,'owner_id':(owner or {}).get('id'),'candidates':len(candidates),'owners':len(owners)},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v1_owner_forensic_v4
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v1-forensic-bot'
+          git config user.email 'zel-data-b-v1-forensic-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v1_owner_forensic_v4
+          git commit -m "result(zel): Data B 1m V1 owner forensic v4 ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-1m-v1-owner-forensic-v4-${{ github.run_id }}
+          path: |
+            out/latest.json
+            out/candidates.json
+          if-no-files-found: error
+          retention-days: 90

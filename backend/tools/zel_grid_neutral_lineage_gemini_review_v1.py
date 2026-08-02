@@ -41,11 +41,21 @@ def compact_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
         "audit_state": audit.get("state"),
         "strategy_id": audit.get("strategy_id"),
         "counts": {
-            "strategy_source": audit.get("strategy_source_count"),
+            "strategy_source_paths": audit.get("strategy_source_count"),
+            "canonical_strategy_source": audit.get("canonical_strategy_source_count"),
+            "unique_strategy_source_sha": audit.get("unique_strategy_source_sha_count"),
+            "mirror_strategy_source": audit.get("mirror_strategy_source_count"),
+            "canonical_binding_reference": audit.get("canonical_binding_reference_count"),
             "registry_reference": audit.get("registry_reference_count"),
             "replay_reference": audit.get("replay_reference_count"),
             "regime_candidate": audit.get("regime_candidate_count"),
             "static_no_lookahead_regime_candidate": audit.get("static_no_lookahead_regime_candidate_count"),
+        },
+        "source_identity": {
+            "canonical_path": audit.get("canonical_strategy_source_path"),
+            "canonical_sha256": audit.get("canonical_strategy_source_sha256"),
+            "active_owner_unique": audit.get("active_owner_unique"),
+            "all_mirrors_content_identical": audit.get("all_mirrors_content_identical"),
         },
         "blockers": audit.get("blockers"),
         "strategy_sources": [

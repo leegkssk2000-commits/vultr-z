@@ -323,9 +323,27 @@ def main() -> int:
     no_unsafe_regime_candidates = [row for row in regime_candidates if row["static_no_lookahead"]]
     trade_ledger = analyze_grid_trades(terminal_root / "trades.jsonl.gz")
 
+    canonical_relative_path = "backend/strategies/grid_rebalance.py"
+    canonical_sources = [row for row in strategy_sources if row["path"] == canonical_relative_path]
+    unique_strategy_source_shas = sorted({row["sha256"] for row in strategy_sources})
+    mirror_sources = [row for row in strategy_sources if row["path"] != canonical_relative_path]
+    canonical_sha = canonical_sources[0]["sha256"] if len(canonical_sources) == 1 else None
+    all_mirrors_content_identical = bool(canonical_sha) and all(row["sha256"] == canonical_sha for row in mirror_sources)
+    required_binding_paths = {
+        "backend/config/q4r3_canonical_strategy_owner_manifest_v1.json",
+        "backend/strategy25/canonical_strategy_registry_v1.json",
+    }
+    canonical_binding_refs = [row for row in registry_refs if row["path"] in required_binding_paths]
+    active_owner_unique = (
+        len(canonical_sources) == 1
+        and len(unique_strategy_source_shas) == 1
+        and all_mirrors_content_identical
+        and {row["path"] for row in canonical_binding_refs} == required_binding_paths
+    )
+
     blockers: list[str] = []
-    if len(strategy_sources) != 1:
-        blockers.append("GRID_STRATEGY_SOURCE_NOT_UNIQUE")
+    if not active_owner_unique:
+        blockers.append("GRID_ACTIVE_OWNER_LINEAGE_UNRESOLVED")
     if not registry_refs:
         blockers.append("GRID_REGISTRY_BINDING_NOT_FOUND")
     if not replay_refs:
@@ -350,6 +368,14 @@ def main() -> int:
         "strategy_id": "grid_rebalance",
         "source_match_count": len(source_matches),
         "strategy_source_count": len(strategy_sources),
+        "canonical_strategy_source_count": len(canonical_sources),
+        "unique_strategy_source_sha_count": len(unique_strategy_source_shas),
+        "mirror_strategy_source_count": len(mirror_sources),
+        "canonical_strategy_source_path": canonical_relative_path,
+        "canonical_strategy_source_sha256": canonical_sha,
+        "all_mirrors_content_identical": all_mirrors_content_identical,
+        "canonical_binding_reference_count": len(canonical_binding_refs),
+        "active_owner_unique": active_owner_unique,
         "registry_reference_count": len(registry_refs),
         "replay_reference_count": len(replay_refs),
         "regime_candidate_count": len(regime_candidates),

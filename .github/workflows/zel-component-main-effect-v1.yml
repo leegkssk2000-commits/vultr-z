@@ -1,0 +1,307 @@
+name: ZEL Component Main Effect V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_component_main_effect_receipt_v1.py
+      - backend/tools/zel_component_autonomy_v3_runner.py
+      - backend/tools/zel_component_pipeline_audit_v2.py
+      - backend/research/zel_component_autonomy_policy_v3.json
+      - .github/workflows/zel-component-main-effect-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-component-main-effect-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  LEGACY_RUN_ID: '30252022416'
+  LEGACY_ARTIFACT: s11-evidence-batch-5-30252022416-attempt-1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Validate canonical Component main-effect boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_component_main_effect_receipt_v1.py \
+            backend/tools/zel_component_autonomy_v3_runner.py
+          python backend/tools/zel_component_main_effect_receipt_v1.py --self-test
+          python backend/tools/zel_component_autonomy_v3_runner.py fixture --out out/fixture
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --result out/fixture/fixture_result_v3.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v3.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/fixture-audit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          audit=json.loads(Path('out/fixture-audit/report.json').read_text())
+          workflow=Path('.github/workflows/zel-component-main-effect-v1.yml').read_text()
+          assert audit['state']=='PASS_COMPONENT_PIPELINE_AUDIT_V2',audit
+          assert '\n  schedule:' not in workflow,workflow
+          assert '\n  push:' not in workflow,workflow
+          assert 'component_main_effect_v1/latest.json' in workflow,workflow
+          assert 'ai_research_control_plane_v1/component_main_effect/latest.json' in workflow,workflow
+          assert 'CONSUMED_AI_STAGE_AUTHORIZATION' in workflow,workflow
+          assert 'PASS_COMPONENT_MAIN_EFFECT_COMPLETE' in workflow,workflow
+          print('PASS_COMPONENT_MAIN_EFFECT_CANONICAL_STATIC')
+          PY
+
+  prerequisite:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: gate
+        name: Require stage-specific authorization and current Methods predecessor
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          proposal=results/runtime_results/zel/ai_research_control_plane_v1/component_main_effect/latest.json
+          predecessor=results/runtime_results/zel/trade_methods_pre_shadow_v1/latest.json
+          if [ ! -s "$proposal" ] || [ ! -s "$predecessor" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/gate.json').write_text(json.dumps({
+            'state':'HOLD_COMPONENT_MAIN_EFFECT_GATE_INPUT_MISSING',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            exit 0
+          fi
+          predecessor_sha=$(sha256sum "$predecessor" | awk '{print $1}')
+          PROPOSAL="$proposal" PREDECESSOR_SHA="$predecessor_sha" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          row=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          ctx=row.get('gate_context') or {}
+          assert row.get('state')=='PASS_AI_RESEARCH_CONTROL_PLANE',row
+          assert ctx.get('stage_id')=='COMPONENT_MAIN_EFFECT',ctx
+          assert ctx.get('broker_stage_id')=='COMPONENT_MAIN_EFFECT',ctx
+          assert ctx.get('target_workflow')=='zel-component-main-effect-v1.yml',ctx
+          assert ctx.get('predecessor_receipt_sha256')==os.environ['PREDECESSOR_SHA'],ctx
+          Path('/tmp/zel_component_epoch').write_text(str(ctx['epoch_id']))
+          PY
+          epoch=$(cat /tmp/zel_component_epoch)
+          if python control/backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id COMPONENT_MAIN_EFFECT \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/gate.json; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Consume generic authorization before deterministic replay
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-component-main-effect-bot'
+          git config user.email 'zel-component-main-effect-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          python - <<'PY'
+          import hashlib,json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          generic=Path('results/runtime_results/zel/ai_research_control_plane_v1/latest.json')
+          stage=Path('results/runtime_results/zel/ai_research_control_plane_v1/component_main_effect/latest.json')
+          current=json.loads(stage.read_text())
+          if generic.is_file():
+              generic_row=json.loads(generic.read_text())
+              assert generic_row.get('receipt_sha256')==current.get('receipt_sha256'),(generic_row,current)
+          consumed={
+            'schema_version':'zel.ai.stage_authorization.consumed.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'CONSUMED_AI_STAGE_AUTHORIZATION',
+            'stage_id':'COMPONENT_MAIN_EFFECT',
+            'consumed_receipt_sha256':current['receipt_sha256'],
+            'consumed_by_workflow':'ZEL Component Main Effect V1',
+            'consumed_by_run_id':os.environ['GITHUB_RUN_ID'],
+            'runtime_mutated':False,'selection_authority':False,'promotion_authority':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          consumed['receipt_sha256']=hashlib.sha256(json.dumps(consumed,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          generic.parent.mkdir(parents=True,exist_ok=True)
+          generic.write_text(json.dumps(consumed,indent=2,sort_keys=True)+'\n')
+          PY
+          cd results
+          git add runtime_results/zel/ai_research_control_plane_v1/latest.json
+          git commit -m "result(zel): consume Component main-effect authorization ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-main-effect-gate-${{ github.run_id }}
+          path: out/gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    if: github.event_name != 'pull_request' && needs.prerequisite.outputs.ready == 'true'
+    needs: [validate, prerequisite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pandas
+      - name: Download immutable Component baseline authority
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.LEGACY_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.LEGACY_RUN_ID }}
+      - name: Verify baseline authority and run deterministic Component V3
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          policy=json.loads(Path('backend/research/zel_component_autonomy_policy_v3.json').read_text())
+          root=Path('input/evidence/trend_ma_macd')
+          ledger=root/'baseline_trades.json'; summary=root/'summary.json'
+          assert ledger.is_file() and summary.is_file(),root
+          assert hashlib.sha256(ledger.read_bytes()).hexdigest()==policy['source_authorities']['trade_ledger_file_sha256']
+          assert hashlib.sha256(summary.read_bytes()).hexdigest()==policy['source_authorities']['summary_file_sha256']
+          row=json.loads(summary.read_text())
+          assert row['authority']=='READ_ONLY_BASELINE_EVIDENCE_NO_EXECUTION',row
+          PY
+          python backend/tools/zel_component_autonomy_v3_runner.py run \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --ledger input/evidence/trend_ma_macd/baseline_trades.json \
+            --summary input/evidence/trend_ma_macd/summary.json \
+            --out out/state
+          python backend/tools/zel_component_pipeline_audit_v2.py \
+            --policy backend/research/zel_component_autonomy_policy_v3.json \
+            --result out/state/final.json \
+            --core backend/tools/zel_component_autonomy_v2.py \
+            --runner backend/tools/zel_component_autonomy_v2_runner.py \
+            --gemini backend/tools/zel_component_gemini_v2.py \
+            --role-contract backend/contracts/strategy11_role_boundary_zbot_zico_lico_zlice_v1.py \
+            --workflow .github/workflows/zel-component-autonomy-v3.yml \
+            --diagnostic-workflow .github/workflows/zel-component-ai-gate-diagnostic-v1.yml \
+            --out out/audit
+      - name: Build standardized Component main-effect receipt
+        run: |
+          set -euo pipefail
+          active=$(python - <<'PY'
+          import json
+          row=json.load(open('out/state/final.json'))
+          print(sum(1 for value in (row.get('axis_review_eligibility') or {}).values() if value))
+          PY
+          )
+          gemini=$(python - <<'PY'
+          import json
+          row=json.load(open('out/state/final.json'))
+          print('true' if (row.get('ai_usage') or {}).get('gemini_required_this_epoch') is True else 'false')
+          PY
+          )
+          args=()
+          [ "$gemini" != true ] || args+=(--gemini-required)
+          python backend/tools/zel_component_main_effect_receipt_v1.py \
+            --final out/state/final.json \
+            --audit out/audit/report.json \
+            --predecessor results/runtime_results/zel/trade_methods_pre_shadow_v1/latest.json \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --active-axis-count "$active" \
+            --axis-ai-gate-result deferred \
+            --gemini-result deferred \
+            "${args[@]}" \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          row=json.load(open('out/latest.json'))
+          assert row['state']=='PASS_COMPONENT_MAIN_EFFECT_COMPLETE',row
+          assert row['economic_claim_allowed'] is False,row
+          assert row['canonical_strategy_files_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['runtime_registry_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'active_axis_count':row['active_axis_count'],'ai_deferred':row['ai_review_deferred_to_selected_interactions']})
+          PY
+      - name: Publish standardized receipt only
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-component-main-effect-bot'
+          git config user.email 'zel-component-main-effect-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/component_main_effect_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git add runtime_results/zel/component_main_effect_v1
+          git commit -m "result(zel): Component main effect ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-component-main-effect-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

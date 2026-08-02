@@ -1,0 +1,161 @@
+name: ZEL Composite Adapter and Ablation Plan V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - backend/research/zel_composite_adapter_contract_v1.json
+      - backend/research/zel_composite_module_registry_v1.json
+      - backend/research/zel_composite_module_factory_contract_v1.json
+      - backend/research/strategy11_portfolio_governor_v1.py
+      - backend/tools/zel_composite_adapter_contract_validator_v1.py
+      - backend/tools/zel_composite_pinned_registry_v1.py
+      - backend/tools/zel_composite_ablation_plan_v1.py
+      - backend/tools/zel_composite_module_factory_v2.py
+      - backend/tools/zel_composite_module_factory_v3.py
+      - .github/workflows/zel-composite-adapter-ablation-plan-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-composite-adapter-ablation-plan-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate planning tools
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/tools/zel_composite_adapter_contract_validator_v1.py \
+            backend/tools/zel_composite_pinned_registry_v1.py \
+            backend/tools/zel_composite_ablation_plan_v1.py \
+            backend/tools/zel_composite_module_factory_v2.py \
+            backend/tools/zel_composite_module_factory_v3.py
+          python backend/tools/zel_composite_adapter_contract_validator_v1.py --self-test
+          python backend/tools/zel_composite_pinned_registry_v1.py --self-test
+          python backend/tools/zel_composite_ablation_plan_v1.py --self-test
+          python -m json.tool backend/research/zel_composite_adapter_contract_v1.json >/dev/null
+
+      - name: Build pinned registry and Factory V3
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_composite_pinned_registry_v1.py \
+            --registry backend/research/zel_composite_module_registry_v1.json \
+            --pin backend/research/zel_composite_live_source_pin_v1.json \
+            --out-registry out/pinned_registry.json \
+            --out-receipt out/pinned_registry_receipt.json
+          python backend/tools/zel_composite_module_factory_v3.py \
+            --registry out/pinned_registry.json \
+            --contract backend/research/zel_composite_module_factory_contract_v1.json \
+            --checkpoint-ref pre-composite-factory-v1-20260802 \
+            --out out/factory_v3_pinned.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          registry=json.loads(Path('out/pinned_registry_receipt.json').read_text())
+          factory=json.loads(Path('out/factory_v3_pinned.json').read_text())
+          assert registry['state']=='PASS_COMPOSITE_PINNED_REGISTRY',registry
+          assert registry['module_count']==12 and registry['placeholder_source_sha_count']==0,registry
+          assert factory['state']=='PASS_COMPOSITE_FACTORY_V3_BALANCED_STATIC_READY',factory
+          assert factory['candidate_count']==30,factory
+          assert factory['source_rebinding_required_before_activation'] is False,factory
+          assert factory['execution_authority']=='NONE' and factory['order_authority']=='BLOCKED',factory
+          PY
+
+      - name: Build terminal-gated ablation and order plan
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_composite_ablation_plan_v1.py \
+            --factory out/factory_v3_pinned.json \
+            --contract backend/research/zel_composite_adapter_contract_v1.json \
+            --registry out/pinned_registry.json \
+            --out out/ablation_order_plan.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/ablation_order_plan.json').read_text())
+          assert row['state']=='PASS_COMPOSITE_ABLATION_ORDER_PLAN',row
+          assert row['candidate_count']==30,row
+          assert row['terminal_required_before_execution'] is True,row
+          assert row['terminal_pass_observed'] is False,row
+          assert row['exact_replay_started'] is False,row
+          assert row['w2_started'] is False and row['w3_started'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'classes':row['candidate_class_counts'],'w2':row['w2_eligible_candidate_count'],'loo':row['leave_one_out_variant_count'],'valid_orders':row['valid_order_permutation_count']})
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate exact adapter symbols against live pinned sources
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          tar -czf - \
+            backend/research/zel_composite_adapter_contract_v1.json \
+            backend/research/strategy11_portfolio_governor_v1.py \
+            backend/tools/zel_composite_adapter_contract_validator_v1.py \
+          | ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" '
+              set -euo pipefail
+              tmp=$(mktemp -d /tmp/zel-composite-adapters.XXXXXX)
+              trap "rm -rf $tmp" EXIT
+              tar -xzf - -C "$tmp"
+              python3 "$tmp/backend/tools/zel_composite_adapter_contract_validator_v1.py" \
+                --runtime-root /home/z/z \
+                --git-root "$tmp" \
+                --contract "$tmp/backend/research/zel_composite_adapter_contract_v1.json" \
+                --stdout
+            ' > out/adapter_contract_validation.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/adapter_contract_validation.json').read_text())
+          assert row['state']=='PASS_COMPOSITE_ADAPTER_CONTRACTS',row
+          assert row['adapter_count']==12 and row['adapter_pass_count']==12,row
+          assert row['structural_only_module_ids']==['ZICO'],row
+          assert row['post_score_module_ids']==['PORTFOLIO_GOVERNOR'],row
+          assert row['w2_started'] is False and row['w3_started'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'w2_modules':len(row['w2_eligible_module_ids']),'structural':row['structural_only_module_ids'],'post_score':row['post_score_module_ids']})
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: composite-adapter-ablation-plan-v1-${{ github.run_id }}
+          path: out
+          retention-days: 90

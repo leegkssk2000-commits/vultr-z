@@ -45,12 +45,14 @@ jobs:
           python backend/tools/zel_holdout_vault_v1.py --self-test
           python backend/tools/zel_holdout_vault_seal_runner_v1.py --self-test
           python - <<'PY'
-          import json
+          import json,re
           from pathlib import Path
           contract=json.loads(Path('backend/research/zel_holdout_vault_seal_contract_v1.json').read_text())
           workflow=Path('.github/workflows/zel-holdout-vault-seal-v1.yml').read_text()
           executor=Path('backend/tools/zel_holdout_vault_seal_exec_v1.sh').read_text()
-          remote_step=workflow.split('      - id: remote',1)[1].split('      - name: Fetch redacted receipts',1)[0]
+          remote_match=re.search(r'(?ms)^      - id: remote\n.*?(?=^      - name: Fetch redacted receipts\n)',workflow)
+          assert remote_match,workflow
+          remote_step=remote_match.group(0)
           assert contract['confirmation_phrase']=='SEAL_EXTERNAL_HOLDOUT',contract
           assert contract['zones']==['W2_FORWARD','W3_DURABILITY','FINAL_HOLDOUT'],contract
           assert contract['requirements']['workflow_dispatch_only'] is True,contract

@@ -1,0 +1,53 @@
+{
+  "alias": "S07",
+  "failure_clusters": [
+    {
+      "causal_confidence_pct": 85,
+      "cluster": "deep_adverse_mae_le_neg_0_75R",
+      "does_not_prove": "Does not prove whether tightening initial stops alone restores edge without cutting off eventual mean-reverting winners.",
+      "evidence": [
+        "gross_loss_R of -47.22R out of -47.78R overall gross loss across 36 trades",
+        "Overall profit factor is 0.435 with net_R of -26.98R"
+      ]
+    },
+    {
+      "causal_confidence_pct": 75,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "Does not prove that intraday trailing stops will improve net return without tick/intratrade path simulation evidence.",
+      "evidence": [
+        "gross_loss_R of -25.99R across 20 losing trades that reached at least 0.50R MFE",
+        "Average MFE across all trades is 1.18R while win rate is only 22.92%"
+      ]
+    }
+  ],
+  "hypotheses": [
+    {
+      "bounded_parameter_space": [
+        "utc_18_24_only_boolean",
+        "restrict_utc_00_18"
+      ],
+      "change_type": "entry_filter",
+      "falsification_test": "Replay strategy ledger filtering out UTC 00:00-18:00 entries; verify if net_R across 1m_w1, 1m_w2, and 1m_w3 maintains positive expectancy.",
+      "overfit_risk": "HIGH",
+      "priority": 1,
+      "required_replay": "ledger_nonoverlap",
+      "single_axis_change": "Restrict entry execution window to UTC 18:00-24:00 time bucket.",
+      "why": "UTC 18:00-24:00 is the only profitable time window (net_R +5.71R, PF 2.98, WR 66.7%), whereas UTC 00:00-18:00 accounts for -32.69R in net losses."
+    },
+    {
+      "bounded_parameter_space": [
+        "trailing_stop_activation_r_0_50_to_1_00",
+        "trailing_stop_step_r_0_25_to_0_50"
+      ],
+      "change_type": "trailing",
+      "falsification_test": "Execute intratrade path replay applying a trailing stop once MFE reaches +0.50R to verify reduction in favorable_then_loss gross loss without premature exit on winners.",
+      "overfit_risk": "MEDIUM",
+      "priority": 2,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement trailing stop protection triggered when MFE reaches +0.50R.",
+      "why": "Strategy averages 1.19R MFE overall, but 20 trades reach >=0.50R MFE before reverting to generate -25.99R in gross losses."
+    }
+  ],
+  "recommended_next": "WAIT_EVIDENCE",
+  "status": "HOLD"
+}

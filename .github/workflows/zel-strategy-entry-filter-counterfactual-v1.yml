@@ -1,4 +1,4 @@
-name: ZEL Strategy Entry Filter Counterfactual V1
+name: ZEL Strategy Improvement Counterfactual V2
 
 on:
   pull_request:
@@ -80,7 +80,7 @@ jobs:
           print({'terminal':terminal['state'],'trades':count})
           PY
 
-      - name: Execute exact ledger counterfactuals
+      - name: Execute split improvement counterfactuals
         run: |
           set -euo pipefail
           upstream=results/runtime_results/zel/strategy_loss_attribution_gemini_v1/latest
@@ -99,9 +99,12 @@ jobs:
           python - <<'PY'
           import json
           row=json.load(open('out/latest.json'))
-          assert row['state'].startswith('PASS_ENTRY_FILTER_COUNTERFACTUAL_COMPLETE'),row
-          assert row['trade_count']==1951 and row['candidate_count']==5,row
-          assert row['pass_count']+row['policy_conflict_count']+row['rejected_count']==5,row
+          assert row['state'].startswith('PASS_STRATEGY_IMPROVEMENT_COUNTERFACTUAL_SPLIT'),row
+          assert row['trade_count']==1951 and row['candidate_count']==4,row
+          assert row['ledger_candidate_count']==2 and row['path_candidate_count']==2,row
+          assert row['ledger_pass_count']+row['policy_conflict_count']+row['rejected_count']==2,row
+          assert row['path_hold_count']==2,row
+          assert row['queue_contract_verified'] is True,row
           assert row['raw_trade_data_published'] is False,row
           assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
           assert row['formal_ledger_mutated'] is False,row
@@ -112,11 +115,13 @@ jobs:
           for candidate in row['candidates']:
               assert candidate['production_applied'] is False,candidate
               assert candidate['execution_authority']=='NONE' and candidate['order_authority']=='BLOCKED',candidate
+          assert all(candidate['state']=='HOLD_INTRATRADE_PATH_REQUIRED' for candidate in row['path_candidates']),row
           print({
               'state':row['state'],
-              'pass':row['pass_count'],
+              'ledger_pass':row['ledger_pass_count'],
               'policy_conflicts':row['policy_conflict_count'],
               'rejected':row['rejected_count'],
+              'path_holds':row['path_hold_count'],
               'portfolio_delta':row['portfolio_counterfactual']['delta'],
           })
           PY
@@ -134,7 +139,7 @@ jobs:
           git config user.name 'zel-strategy-research-bot'
           git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
           git add runtime_results/zel/strategy_entry_filter_counterfactual_v1
-          git commit -m "result(zel): entry-filter counterfactual ${GITHUB_RUN_ID}" || true
+          git commit -m "result(zel): strategy improvement counterfactual ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
 
       - name: Cleanup raw ledger and SSH key

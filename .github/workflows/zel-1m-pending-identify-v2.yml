@@ -1,0 +1,95 @@
+name: ZEL 1m Pending Identify V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-1m-pending-identify-v2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  identify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Resolve exact pending owners
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" '/home/z/z/.venv/bin/python -' > out/pending.json <<'PY'
+          import ast,importlib.util,json,sys
+          from datetime import datetime,timezone
+          from pathlib import Path
+          ROOT=Path('/var/lib/zel-research/data-b-1m-v2')
+          SOURCE=Path('/opt/zel/forward-expansion-v1/source')
+          progress=json.loads((ROOT/'progress.json').read_text())
+          completed=set(str(x) for x in progress.get('completed_unit_ids',[]))
+          producer_path=SOURCE/'tools/q4r3_exact25_dedicated_shadow_producer.py'
+          spec=importlib.util.spec_from_file_location('zel_pending_registry_probe_v2',producer_path)
+          module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+          manifest,registry=module.load_registry(SOURCE)
+          pending=sorted(set(registry)-completed)
+          owners={}
+          for sid in pending:
+              owner=registry[sid]
+              rel=str(getattr(owner,'owner_path',''))
+              path=SOURCE/rel
+              body=path.read_text(errors='replace') if path.is_file() else ''
+              try:
+                  tree=ast.parse(body)
+                  counts={
+                    'for_while':sum(isinstance(n,(ast.For,ast.While)) for n in ast.walk(tree)),
+                    'comprehensions':sum(isinstance(n,(ast.ListComp,ast.DictComp,ast.SetComp,ast.GeneratorExp)) for n in ast.walk(tree)),
+                    'calls':sum(isinstance(n,ast.Call) for n in ast.walk(tree)),
+                    'rolling_ewm_apply':sum(isinstance(n,ast.Attribute) and n.attr in {'rolling','ewm','expanding','apply','iterrows','itertuples'} for n in ast.walk(tree)),
+                    'iloc_loc':sum(isinstance(n,ast.Attribute) and n.attr in {'iloc','loc'} for n in ast.walk(tree)),
+                  }
+              except Exception as exc:counts={'parse_error':f'{type(exc).__name__}:{exc}'}
+              owners[sid]={'owner_path':rel,'owner_sha256':str(getattr(owner,'owner_sha256','')),'bytes':len(body.encode()),'lines':body.count('\n')+1,'complexity':counts,'source':body}
+          out={
+            'schema_version':'zel.data_b.1m.v2.pending_identify.v2',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'expected_units':sorted(registry),'expected_count':len(registry),
+            'completed_units':sorted(completed),'completed_count':len(completed),
+            'pending_units':pending,'pending_count':len(pending),'pending_owners':owners,
+            'manifest':manifest,
+            'read_only':True,'runtime_mutated':False,'service_restarted':False,'signal_sent':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          print(json.dumps(out,indent=2,sort_keys=True,default=str))
+          PY
+          python -m json.tool out/pending.json >/dev/null
+          python - <<'PY'
+          import json
+          row=json.load(open('out/pending.json'))
+          print(json.dumps({'expected':row['expected_count'],'completed':row['completed_count'],'pending':row['pending_units'],'owners':{k:{x:y for x,y in v.items() if x!='source'} for k,v in row['pending_owners'].items()}},indent=2))
+          assert row['expected_count']==25,row
+          assert row['pending_count']==2,row
+          assert row['read_only'] is True and row['runtime_mutated'] is False,row
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-1m-pending-identify-v2-${{ github.run_id }}
+          path: out/pending.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,54 @@
+name: ZEL Exact Replay Old Run Cleanup Temp
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-exact-replay-old-run-cleanup-temp.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Stop only superseded exact replay processes
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" '
+              for run_id in 30766819663 30767544693; do
+                pattern="zel-grid-block-trend-short-exact-${run_id}"
+                pkill -TERM -f "$pattern" || true
+              done
+              sleep 3
+              for run_id in 30766819663 30767544693; do
+                pattern="zel-grid-block-trend-short-exact-${run_id}"
+                pkill -KILL -f "$pattern" || true
+                rm -rf "/tmp/$pattern"
+              done
+              printf "%s\n" "remaining exact replay processes:"
+              ps -eo pid=,etimes=,pcpu=,args= | \
+                grep "[z]el_grid_block_trend_short_exact_replay_v1.py" || true
+            '
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

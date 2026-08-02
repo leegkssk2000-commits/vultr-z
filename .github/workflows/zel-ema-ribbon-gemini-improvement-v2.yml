@@ -5,7 +5,6 @@ on:
     branches: [master]
     paths:
       - backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py
-      - backend/tools/zel_ema_ribbon_intratrade_path_audit_v2.py
       - backend/tools/zel_ema_path_semantics_reconciliation_v1.py
       - backend/tools/zel_ema_trailing_counterfactual_v1.py
       - .github/workflows/zel-ema-ribbon-gemini-improvement-v2.yml
@@ -32,7 +31,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
           persist-credentials: false
-          fetch-depth: 1
 
       - uses: actions/setup-python@v5
         with:
@@ -43,7 +41,6 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
-            backend/tools/zel_ema_ribbon_intratrade_path_audit_v2.py \
             backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
             backend/tools/zel_ema_trailing_counterfactual_v1.py
 
@@ -60,192 +57,157 @@ jobs:
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Run pinned path audit, reconciliation and trailing tournament
+      - name: Run exact semantics reconciliation and trailing W1 tournament
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
-          remote="/tmp/zel-ema-gemini-improve-${GITHUB_RUN_ID}"
+          remote="/tmp/zel-ema-improve-v2-${GITHUB_RUN_ID}"
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
-            backend/tools/zel_ema_ribbon_intratrade_path_audit_v2.py \
             backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
             backend/tools/zel_ema_trailing_counterfactual_v1.py \
             "$VPS_USER@$VPS_HOST:$remote/"
-
-          set +e
-          timeout 6600s ssh \
+          timeout 6900s ssh \
             -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
             -o BatchMode=yes \
             -o ServerAliveInterval=20 \
             -o ServerAliveCountMax=30 \
             "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail
+             test \"\$(sha256sum /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz | awk '{print \$1}')\" = '62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'
+             test \"\$(sha256sum /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py | awk '{print \$1}')\" = '14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50'
              cd '$remote'
-             /home/z/z/.venv/bin/python zel_ema_ribbon_intratrade_path_audit_v2.py \
-               --base-tool zel_ema_ribbon_intratrade_path_audit_v1.py \
-               --out audit.json
-             audit_state=\$(python3 -c \"import json; print(json.load(open('audit.json'))['state'])\")
-             if [ \"\$audit_state\" = PASS_EMA_RIBBON_POST_ENTRY_PATH_READY ]; then
-               PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
-                 zel_ema_path_semantics_reconciliation_v1.py \
-                 --out reconciliation.json
-               reconcile_state=\$(python3 -c \"import json; print(json.load(open('reconciliation.json'))['state'])\")
-               if [ \"\$reconcile_state\" = PASS_EMA_PATH_SEMANTICS_RECONCILED ]; then
-                 PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
-                   zel_ema_trailing_counterfactual_v1.py \
-                   --reconciliation reconciliation.json \
-                   --out trailing.json
-               fi
-             fi" > out/remote.stdout 2>out/remote.stderr
-          rc=$?
-          set -e
-
-          for name in audit reconciliation trailing; do
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               zel_ema_path_semantics_reconciliation_v1.py \
+               --out reconciliation.json
+             python3 - <<'PY'
+import json
+row=json.load(open('reconciliation.json'))
+assert row['state']=='PASS_EMA_PATH_SEMANTICS_RECONCILED',row
+contract=row['best_entry_known_candidate']
+assert contract['candidate_id']=='high_low|exclude_entry|risk_usdt_div_quantity',contract
+assert contract['coverage_count']==424,contract
+assert contract['mfe_mean_abs_error_R']<=0.05,contract
+assert contract['mae_mean_abs_error_R']<=0.05,contract
+PY
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               zel_ema_trailing_counterfactual_v1.py \
+               --reconciliation reconciliation.json \
+               --out trailing.json" > out/remote.stdout 2>out/remote.stderr
+          for name in reconciliation trailing; do
             scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-              "$VPS_USER@$VPS_HOST:$remote/${name}.json" "out/${name}.json" 2>/dev/null || true
+              "$VPS_USER@$VPS_HOST:$remote/${name}.json" "out/${name}.json"
           done
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
-          if [ "$rc" -ne 0 ]; then
-            tail -n 120 out/remote.stderr
-            exit "$rc"
-          fi
-          test -s out/audit.json
-          python -m json.tool out/audit.json >/dev/null
-          if [ ! -s out/reconciliation.json ]; then
-            printf '%s\n' '{"state":"SKIPPED_BY_AUDIT_GATE","blockers":["AUDIT_NOT_READY"]}' > out/reconciliation.json
-          fi
-          if [ ! -s out/trailing.json ]; then
-            printf '%s\n' '{"state":"SKIPPED_BY_RECONCILIATION_GATE","blockers":["RECONCILIATION_NOT_READY"]}' > out/trailing.json
-          fi
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
           python -m json.tool out/reconciliation.json >/dev/null
           python -m json.tool out/trailing.json >/dev/null
 
-      - name: Gemini causal review, next-axis design and red-team
+      - name: Build deterministic summary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          reconciliation=json.load(open('out/reconciliation.json'))
+          trailing=json.load(open('out/trailing.json'))
+          selected=trailing.get('selected_candidate')
+          all_metrics=(selected or {}).get('all_metrics') or (selected or {}).get('metrics',{}).get('all') or {}
+          summary={
+            'schema_version':'zel.ema.reconciled_trailing.summary.v2',
+            'state':trailing.get('state'),
+            'contract':reconciliation['best_entry_known_candidate'],
+            'baseline_metrics':trailing.get('baseline_metrics'),
+            'selected_candidate':selected,
+            'holdout_pass':trailing.get('holdout_pass'),
+            'blockers':trailing.get('blockers'),
+            'tournament':trailing.get('tournament'),
+            'absolute_net_R_all':all_metrics.get('net_R'),
+            'absolute_positive_all':bool(all_metrics.get('net_R') is not None and float(all_metrics['net_R'])>0),
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True)
+          print({
+            'state':summary['state'],
+            'contract':summary['contract']['candidate_id'],
+            'selected':(selected or {}).get('candidate_id'),
+            'holdout_pass':summary['holdout_pass'],
+            'absolute_net_R_all':summary['absolute_net_R_all'],
+            'blockers':summary['blockers'],
+          })
+          PY
+
+      - name: Gemini causal auditor and red-team
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$GEMINI_API_KEY"
           python - <<'PY'
-          import json, os, time, urllib.error, urllib.request
-          from pathlib import Path
-
-          out=Path('out')
-          audit=json.load(open(out/'audit.json'))
-          reconciliation=json.load(open(out/'reconciliation.json'))
-          trailing=json.load(open(out/'trailing.json'))
-
-          compact={
-            'strategy_id':'ema_ribbon_scalp',
-            'audit':{
-              'state':audit.get('state'),
-              'blockers':audit.get('blockers'),
-              'overall':audit.get('overall'),
-              'path':{
-                'mfe_mean_abs_error_R':(audit.get('path_audit') or {}).get('mfe_mean_abs_error_R'),
-                'mae_mean_abs_error_R':(audit.get('path_audit') or {}).get('mae_mean_abs_error_R'),
-                'mfe_max_abs_error_R':(audit.get('path_audit') or {}).get('mfe_max_abs_error_R'),
-                'mae_max_abs_error_R':(audit.get('path_audit') or {}).get('mae_max_abs_error_R'),
-                'entry_candle_excluded':(audit.get('path_audit') or {}).get('entry_candle_excluded'),
-              },
-              'terminal_lineage':audit.get('terminal_lineage'),
-            },
-            'reconciliation':{
-              'state':reconciliation.get('state'),
-              'blockers':reconciliation.get('blockers'),
-              'best_entry_known_candidate':reconciliation.get('best_entry_known_candidate'),
-              'top_candidates':(reconciliation.get('top_candidates') or [])[:3],
-            },
-            'trailing':{
-              'state':trailing.get('state'),
-              'blockers':trailing.get('blockers'),
-              'selected_candidate':trailing.get('selected_candidate'),
-              'holdout_pass':trailing.get('holdout_pass'),
-              'baseline_metrics':trailing.get('baseline_metrics'),
-              'tournament':trailing.get('tournament'),
-            },
+          import json, os, time, urllib.request
+          summary=json.load(open('out/summary.json'))
+          evidence={
+            'contract':summary['contract'],
+            'baseline_metrics':summary['baseline_metrics'],
+            'selected_candidate':summary['selected_candidate'],
+            'holdout_pass':summary['holdout_pass'],
+            'absolute_net_R_all':summary['absolute_net_R_all'],
+            'blockers':summary['blockers'],
+            'tournament':summary['tournament'],
             'constraints':{
-              'one_axis_only':True,
-              'selection_window':'1m_w1',
-              'holdout_windows':['1m_w2','1m_w3'],
-              'canonical_mutation':False,
-              'runtime_mutation':False,
-              'execution_authority':'NONE',
-              'order_authority':'BLOCKED',
-            }
+              'W1_selection_only':True,
+              'W2_W3_unchanged_holdout':True,
+              'one_exit_axis_only':True,
+              'same_bar_new_stop_execution_allowed':False,
+              'production_authority':False,
+            },
           }
-
-          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
           key=os.environ['GEMINI_API_KEY']
-
-          def call(role, instruction):
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          def call(role,instruction):
             prompt=(
-              'You are the '+role+' for a read-only systematic trading research gate. '
-              'Use only the aggregate JSON evidence. Do not request or infer raw trades, prices, code, credentials or account data. '
-              'No production, selection, promotion, Shadow, Paper or Live authority exists. '
-              +instruction+'\nEVIDENCE='+json.dumps(compact,sort_keys=True,separators=(',',':'))
+              'You are '+role+' for a read-only systematic trading replay. Use aggregate evidence only. '
+              'Do not override deterministic gates and do not authorize production. '+instruction+
+              ' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
             )
-            payload={
-              'contents':[{'parts':[{'text':prompt}]}],
-              'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}
-            }
+            payload={'contents':[{'parts':[{'text':prompt}]}], 'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
             last=None
             for model in models:
-              url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}'
-              request=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
               try:
-                with urllib.request.urlopen(request,timeout=90) as response:
-                  body=json.load(response)
-                text=body['candidates'][0]['content']['parts'][0]['text']
-                parsed=json.loads(text)
-                return {'model':model,'response':parsed}
+                url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}'
+                req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
               except Exception as exc:
-                last=f'{type(exc).__name__}:{exc}'
-                time.sleep(2)
-            raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
-
-          auditor=call(
-            'causal auditor',
-            'Return exactly an object with keys verdict, causal_issue, evidence_required. '
-            'verdict must be PASS, HOLD, or REJECT. Focus on path causality, leakage, chronology and immutable lineage.'
-          )
-          designer=call(
-            'single-axis strategy designer',
-            'Return exactly an object with keys next_axis, single_change, falsification. '
-            'next_axis must be one of TRAILING_SURVIVOR, IMMEDIATE_FAIL_ENTRY_FILTER, TIME_STOP, STOP_EMA_REPAIR. '
-            'Choose only one axis; never combine entry, exit, sizing, skill or advisor changes.'
-          )
-          redteam=call(
-            'independent red-team',
-            'Return exactly an object with keys verdict, reason, hidden_failure. '
-            'verdict must be ACCEPT, REJECT, or MORE_EVIDENCE. Reject overfit, holdout leakage, unresolved path semantics, or negative absolute economics disguised by relative improvement.'
-          )
-
-          allowed_a={'PASS','HOLD','REJECT'}
-          allowed_d={'TRAILING_SURVIVOR','IMMEDIATE_FAIL_ENTRY_FILTER','TIME_STOP','STOP_EMA_REPAIR'}
-          allowed_r={'ACCEPT','REJECT','MORE_EVIDENCE'}
+                last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+            raise RuntimeError('GEMINI_FAILED:'+str(last))
+          auditor=call('causal auditor','Return JSON keys verdict, causal_reason, leakage_check. verdict must be PASS, HOLD, or REJECT.')
+          redteam=call('independent red-team','Return JSON keys verdict, failure_mode, next_axis. verdict must be ACCEPT, REJECT, or MORE_EVIDENCE; next_axis must be TRAILING_SURVIVOR, IMMEDIATE_FAIL_ENTRY_FILTER, TIME_STOP, or RETIRE_EMA.')
           av=auditor['response'].get('verdict')
-          da=designer['response'].get('next_axis')
           rv=redteam['response'].get('verdict')
-          valid=av in allowed_a and da in allowed_d and rv in allowed_r
-          deterministic_pass=trailing.get('state')=='PASS_EMA_TRAILING_COUNTERFACTUAL_NONOVERLAP' and trailing.get('holdout_pass') is True
-          sealed=valid and deterministic_pass and av=='PASS' and da=='TRAILING_SURVIVOR' and rv=='ACCEPT'
-          result={
-            'schema_version':'zel.ema.gemini.improvement.review.v2',
+          na=redteam['response'].get('next_axis')
+          valid=av in {'PASS','HOLD','REJECT'} and rv in {'ACCEPT','REJECT','MORE_EVIDENCE'} and na in {'TRAILING_SURVIVOR','IMMEDIATE_FAIL_ENTRY_FILTER','TIME_STOP','RETIRE_EMA'}
+          deterministic_pass=summary['state']=='PASS_EMA_TRAILING_COUNTERFACTUAL_NONOVERLAP' and summary['holdout_pass'] is True
+          sealed=valid and deterministic_pass and av=='PASS' and rv=='ACCEPT' and na=='TRAILING_SURVIVOR'
+          receipt={
+            'schema_version':'zel.ema.reconciled_trailing.gemini_review.v2',
             'state':'PASS_GEMINI_EMA_TRAILING_SEALED_HOLDBACK' if sealed else ('PASS_GEMINI_EMA_NEXT_AXIS_READY' if valid else 'HOLD_GEMINI_RESPONSE_INVALID'),
             'auditor':auditor,
-            'designer':designer,
             'redteam':redteam,
             'response_valid':valid,
-            'deterministic_trailing_pass':deterministic_pass,
+            'deterministic_pass':deterministic_pass,
             'sealed_research_holdback':sealed,
-            'next_axis': 'TRAILING_SURVIVOR' if sealed else (da if valid else 'STOP_EMA_REPAIR'),
+            'next_axis':'TRAILING_SURVIVOR' if sealed else (na if valid else 'RETIRE_EMA'),
             'raw_trade_rows_sent':False,
             'raw_prices_sent':False,
             'private_code_sent':False,
@@ -258,43 +220,29 @@ jobs:
             'order_authority':'BLOCKED',
             'action':'hold',
           }
-          json.dump(result,open(out/'gemini_review.json','w'),indent=2,sort_keys=True)
-          print({k:result[k] for k in ('state','deterministic_trailing_pass','sealed_research_holdback','next_axis')})
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({
+            'state':receipt['state'],
+            'deterministic_pass':deterministic_pass,
+            'sealed':sealed,
+            'next_axis':receipt['next_axis'],
+            'auditor':auditor['response'],
+            'redteam':redteam['response'],
+          })
           PY
-          python -m json.tool out/gemini_review.json >/dev/null
 
-      - name: Verify safety boundary and summarize
+      - name: Verify safety boundary
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          audit=json.load(open('out/audit.json'))
-          reconciliation=json.load(open('out/reconciliation.json'))
-          trailing=json.load(open('out/trailing.json'))
-          gemini=json.load(open('out/gemini_review.json'))
-          for row in (audit,trailing,gemini):
+          for name in ('trailing','summary','gemini_review'):
+              row=json.load(open(f'out/{name}.json'))
               for key in ('canonical_mutated','runtime_mutated','selection_authority','promotion_authority'):
-                  if key in row: assert row[key] is False,(key,row)
+                  if key in row: assert row[key] is False,(name,key,row)
               if 'execution_authority' in row: assert row['execution_authority']=='NONE',row
               if 'order_authority' in row: assert row['order_authority']=='BLOCKED',row
               if 'action' in row: assert row['action']=='hold',row
-          assert (audit.get('terminal_lineage') or {}).get('terminal_trades_sha_match') is True,audit
-          assert (audit.get('terminal_lineage') or {}).get('engine_sha_match') is True,audit
-          print({
-            'audit_state':audit.get('state'),
-            'audit_blockers':audit.get('blockers'),
-            'mfe_mae_mean_R':[
-              (audit.get('path_audit') or {}).get('mfe_mean_abs_error_R'),
-              (audit.get('path_audit') or {}).get('mae_mean_abs_error_R'),
-            ],
-            'reconciliation_state':reconciliation.get('state'),
-            'contract':reconciliation.get('best_entry_known_candidate'),
-            'trailing_state':trailing.get('state'),
-            'selected':(trailing.get('selected_candidate') or {}).get('candidate_id'),
-            'holdout_pass':trailing.get('holdout_pass'),
-            'gemini_state':gemini.get('state'),
-            'next_axis':gemini.get('next_axis'),
-          })
           PY
 
       - name: Cleanup SSH key

@@ -1,74 +1,81 @@
 {
   "cross_strategy_actions": [
     {
-      "action": "Implement hard stop-loss limits at -0.75R system-wide.",
-      "required_test": "Backtest S01, S02, and S04 with a hard stop at -0.75R to measure the reduction in gross loss against trade retention.",
-      "risk": "May slightly increase win rate but cut off rare high-MFE recovery trades if stop is hit prematurely."
+      "action": "Implement a strict 30-minute time-stop exit across S02, S03, and S06 to truncate the long-exposure decay cluster.",
+      "required_test": "Simulate a flat exit at t=30 minutes on historical trade logs and measure the reduction in gross loss R versus the retention of gross profit R.",
+      "risk": "May prematurely exit trades that require longer consolidation periods before reaching their profit targets, potentially capping maximum upside."
     },
     {
-      "action": "Disable S03 during non-neutral regimes.",
-      "required_test": "Run a historical simulation of S03 with an absolute filter restricting execution to neutral regimes only.",
-      "risk": "Reduces trade count by 57%, but eliminates -217.97R of net losses."
+      "action": "Introduce a break-even stop trigger once trade MFE reaches 0.50R for S01 and S02 to eliminate round-trip losses.",
+      "required_test": "Apply a trailing stop or break-even adjustment rule to S01 and S02 historical trades when MFE >= 0.50R and evaluate the net R impact.",
+      "risk": "Could result in a higher frequency of break-even exits, reducing the average win size and increasing transaction cost drag."
     },
     {
-      "action": "Enforce time-based auto-liquidation for trades exceeding 30 minutes in S02.",
-      "required_test": "Compare S02 performance with a strict 30-minute time-stop against the current average exposure of 40.4 minutes.",
-      "risk": "Could realize losses early on trades that would have otherwise reverted, though current data shows long exposure is highly correlated with loss concentration."
+      "action": "Tighten stop-loss geometry or implement structural stops to mitigate the massive deep adverse MAE concentration.",
+      "required_test": "Compare fixed stop-losses at 0.50R against the current stop-loss configuration to evaluate the trade-off between win rate and average loss size.",
+      "risk": "May lower the win rate by stopping out trades during normal noise/volatility before they can move in the favorable direction."
     }
   ],
   "priority_strategies": [
     {
       "alias": "S01",
-      "first_axis": "exit_logic",
-      "why": "High average MFE (1.08R) but massive loss concentration in deep adverse MAE (-329.06R). Needs hard stop-loss tightening or trailing stop-loss implementation to protect favorable moves."
+      "first_axis": "risk_geometry",
+      "why": "S01 is the largest contributor to system losses (-221.64 R) and has a massive concentration of losses in the deep adverse MAE cluster (329.06 R), indicating that its stop-loss geometry is failing to protect capital."
     },
     {
       "alias": "S02",
-      "first_axis": "entry_filter",
-      "why": "Neutral regime is completely broken (PF 0.126, -188.34R net). Must implement a regime filter to disable trading during neutral/low-volatility conditions."
+      "first_axis": "exit_logic",
+      "why": "S02 suffers from severe duration decay, with 106.40 R of losses concentrated in trades held longer than 30 minutes, requiring an immediate time-based exit rule."
     },
     {
       "alias": "S03",
-      "first_axis": "risk_geometry",
-      "why": "Suffers from massive immediate-fail clusters (-172.53R). Entry logic is highly adverse; requires strict minimum MFE thresholds or immediate execution cancellation if MFE < 0.25R within first 5 minutes."
+      "first_axis": "entry_filter",
+      "why": "S03 has the highest trade count (580) and a massive immediate-fail cluster (172.53 R), indicating that its entry signals are highly adverse and require a volatility or regime filter."
     }
   ],
   "status": "HOLD",
   "system_failure_modes": [
     {
-      "causal_confidence_pct": 85,
-      "evidence": [
-        "S03 immediate_fail_mfe_lt_0_25R gross loss of -172.53R across 230 trades",
-        "Overall system win rate of 35.52% with median R of -0.715",
-        "S03 neutral regime profit factor of 3.12 vs long/short profit factors of < 0.06"
-      ],
-      "mode": "Immediate-Fail Execution Cluster",
-      "scope": "System-wide (S03 dominant)"
-    },
-    {
       "causal_confidence_pct": 90,
       "evidence": [
-        "S01 deep_adverse_mae_le_neg_0_75R gross loss of -329.06R (207 trades)",
-        "S02 deep_adverse_mae_le_neg_0_75R gross loss of -256.94R (206 trades)",
-        "S04 deep_adverse_mae_le_neg_0_75R gross loss of -131.85R (86 trades)"
+        "System-wide fees total 729.31 USDT and slippage totals 145.86 USDT, combining to 875.17 USDT.",
+        "Gross profit is only 664.50 R, meaning transaction costs completely asphyxiate the system's gross returns."
       ],
-      "mode": "Deep Adverse MAE Drift",
-      "scope": "S01, S02, S04, S05, S06"
+      "mode": "Transaction cost asphyxiation due to high trade frequency relative to average trade expectancy.",
+      "scope": "System-wide"
+    },
+    {
+      "causal_confidence_pct": 85,
+      "evidence": [
+        "S01 deep adverse MAE cluster gross loss is 329.06 R (207 trades).",
+        "S02 deep adverse MAE cluster gross loss is 256.94 R (206 trades).",
+        "Overall system average MAE is -0.69 R while win rate is only 35.52%."
+      ],
+      "mode": "Stop-loss geometry failure allowing trades to run to deep adverse excursions without structural invalidation.",
+      "scope": "S01, S02, S04, S05, S06, S07, S08"
+    },
+    {
+      "causal_confidence_pct": 80,
+      "evidence": [
+        "S01 favorable-then-loss cluster gross loss is 135.16 R (94 trades).",
+        "S02 favorable-then-loss cluster gross loss is 129.75 R (138 trades)."
+      ],
+      "mode": "Lack of dynamic profit-taking or trailing stops, allowing trades with MFE >= 0.50R to round-trip into full losses.",
+      "scope": "S01, S02"
     },
     {
       "causal_confidence_pct": 75,
       "evidence": [
-        "S02 neutral regime profit factor of 0.126 (gross loss -215.62R)",
-        "S03 long regime profit factor of 0.043 and short regime of 0.054",
-        "1m_w2 and 1m_w3 windows show severe expectancy decay across all top strategies"
+        "S02 long exposure >= 30m cluster gross loss is 106.40 R (122 trades).",
+        "S03 long exposure >= 30m cluster gross loss is 82.06 R (159 trades)."
       ],
-      "mode": "Neutral Regime Decay and Window Durability Degradation",
-      "scope": "S02, S03"
+      "mode": "Duration decay where edge dissipates rapidly after 30 minutes, turning neutral/favorable trades into losses.",
+      "scope": "S02, S03, S06"
     }
   ],
   "warnings": [
-    "Total fees ($729.31 USDT) and slippage ($145.86 USDT) represent a significant drag relative to net R losses.",
-    "LINKUSDT and SOLUSDT show high loss concentration across multiple strategies (S01, S02, S03).",
-    "W2 and W3 windows show severe performance decay, indicating strategy parameters are highly sensitive to the optimization window."
+    "System-wide drawdown (-748.32 R) is nearly identical to net R (-746.57 R), indicating a continuous downward equity curve with zero recovery.",
+    "Neutral regime is the worst performing environment with a net R of -331.64 R and a profit factor of 0.38.",
+    "S07 has an extremely low win rate of 22.91% and S02 has 26.56%, indicating severe entry signal degradation."
   ]
 }

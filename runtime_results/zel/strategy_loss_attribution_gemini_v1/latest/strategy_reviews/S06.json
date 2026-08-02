@@ -2,48 +2,60 @@
   "alias": "S06",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 90,
-      "cluster": "neutral_regime_decay",
-      "does_not_prove": "that the strategy is completely non-viable, as long and short regimes remain profitable",
+      "causal_confidence_pct": 85,
+      "cluster": "deep_adverse_mae_le_neg_0_75R",
+      "does_not_prove": "Tightening the stop-loss will automatically improve net R, as it may increase the frequency of stop-outs on trades that would have eventually recovered.",
       "evidence": [
-        "Neutral regime net R is -67.82R with a profit factor of 0.066 across 61 trades",
-        "Long regime net R is +39.01R with a profit factor of 3.28"
+        "Gross loss of 93.52 R across 69 trades in the deep adverse MAE cluster.",
+        "Average MAE of -0.83 R against a win rate of only 32.06%."
       ]
     },
     {
-      "causal_confidence_pct": 85,
-      "cluster": "utc_00_06_toxic_liquidity",
-      "does_not_prove": "that all overnight trading is unprofitable, but indicates a structural disadvantage during these hours",
+      "causal_confidence_pct": 75,
+      "cluster": "long_exposure_ge_30m",
+      "does_not_prove": "A strict 30-minute time-stop is universally beneficial, as some trades may require longer consolidation periods before reaching their profit targets.",
       "evidence": [
-        "utc_00_06 hour bucket net R is -23.96R with a profit factor of 0.21",
-        "Excluding utc_00_06 improves net R across all three windows (W1: +9.99R, W2: +9.07R, W3: +4.89R)"
+        "Gross loss of 26.83 R across 25 trades in the long exposure >= 30m cluster.",
+        "Global review identifies S06 as suffering from duration decay where edge dissipates after 30 minutes."
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "regime != neutral"
-      ],
-      "change_type": "entry_filter",
-      "falsification_test": "Replay the strategy excluding all trades initiated during neutral regimes and verify if net R increases by at least 50R while retaining the positive expectancy of long/short regimes.",
-      "overfit_risk": "LOW",
-      "priority": 1,
-      "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Restrict entry to active trend regimes (long and short) only, disabling execution during neutral regimes.",
-      "why": "Neutral regime accounts for the vast majority of the strategy's net losses (-67.82R), whereas active trend regimes are net profitable."
-    },
-    {
-      "bounded_parameter_space": [
         "hour_bucket != utc_00_06"
       ],
       "change_type": "entry_filter",
-      "falsification_test": "Replay the strategy excluding the utc_00_06 hour bucket across W1, W2, and W3 to confirm consistent performance improvement and drawdown reduction.",
+      "falsification_test": "Replay the strategy excluding utc_00_06 trades and verify if the net R improvement persists in out-of-sample periods without degrading the profit factor of other sessions.",
       "overfit_risk": "LOW",
-      "priority": 2,
+      "priority": 1,
       "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Exclude trade execution during the utc_00_06 hour bucket.",
-      "why": "The filter screen shows robust, multi-window validation for excluding the utc_00_06 hour bucket, which currently has a 11.5% win rate and -23.96R net loss."
+      "single_axis_change": "Exclude trades initiated during the utc_00_06 hour bucket.",
+      "why": "The utc_00_06 hour bucket is S06's worst-performing period, with a net R of -23.96 and a profit factor of 0.21. Excluding this bucket improves net R across all three windows (w1: +9.99R, w2: +9.06R, w3: +4.89R) while retaining over 81% of trades."
+    },
+    {
+      "bounded_parameter_space": [
+        "max_exposure_min <= 30"
+      ],
+      "change_type": "time_stop",
+      "falsification_test": "Simulate a flat exit at t=30 minutes on historical trade logs and measure the reduction in gross loss R versus the retention of gross profit R.",
+      "overfit_risk": "MEDIUM",
+      "priority": 2,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement a strict 30-minute time-stop exit.",
+      "why": "S06 suffers from duration decay, with 26.83 R of losses concentrated in trades held longer than 30 minutes. Truncating these trades at 30 minutes prevents further decay."
+    },
+    {
+      "bounded_parameter_space": [
+        "None"
+      ],
+      "change_type": "NO_CHANGE",
+      "falsification_test": "Compare the performance of the modified strategy against S06's live performance over the next 100 trades.",
+      "overfit_risk": "LOW",
+      "priority": 3,
+      "required_replay": "none",
+      "single_axis_change": "Maintain current strategy parameters as a control group.",
+      "why": "S06 has a low win rate of 32.06% and is highly sensitive to transaction costs. If the proposed filters fail to show robust out-of-sample performance, the strategy should be paused or kept unchanged to avoid over-optimization."
     }
   ],
   "recommended_next": "TEST_ONE",

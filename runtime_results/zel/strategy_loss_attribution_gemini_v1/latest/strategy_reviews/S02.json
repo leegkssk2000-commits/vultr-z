@@ -2,48 +2,60 @@
   "alias": "S02",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 90,
-      "cluster": "neutral_regime_decay",
-      "does_not_prove": "That the strategy is completely broken in all market conditions, as the long regime remains highly profitable (PF 2.00, +43.78R).",
+      "causal_confidence_pct": 80,
+      "cluster": "long_exposure_ge_30m",
+      "does_not_prove": "Does not prove that all trades exceeding 30 minutes are unprofitable, as some may eventually reach targets after prolonged consolidation.",
       "evidence": [
-        "Neutral regime net_R of -188.34R with a profit factor of 0.1265 across 222 trades.",
-        "Neutral regime win rate is extremely low at 10.81%."
+        "Gross loss of 106.40 R across 122 trades in the long_exposure_ge_30m cluster.",
+        "Global review identifies S02 as suffering from severe duration decay."
       ]
     },
     {
-      "causal_confidence_pct": 80,
-      "cluster": "long_exposure_ge_30m",
-      "does_not_prove": "That longer hold times are inherently bad, but rather that trades failing to reach targets within 30 minutes decay in expectancy.",
+      "causal_confidence_pct": 85,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "Does not prove that a break-even stop will not prematurely exit trades that experience normal pullbacks before reaching larger targets.",
       "evidence": [
-        "Long exposure >= 30m accounts for 106.40R of gross loss across 122 trades.",
-        "Average exposure min is 40.42 minutes, indicating a significant portion of trades drift without hitting stops or targets."
+        "Gross loss of 129.76 R across 138 trades in the favorable_then_loss_mfe_ge_0_50R cluster.",
+        "Average MFE is 1.10R but win rate is only 26.57%, indicating significant round-tripping."
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "regime IN ('long', 'short')"
+        "No modifications to entry, exit, or risk parameters."
       ],
-      "change_type": "entry_filter",
-      "falsification_test": "Backtest S02 by completely disabling entries when the regime is classified as 'neutral'. The hypothesis is falsified if the net R improvement is offset by a proportional loss of profitable trades in the long/short regimes, or if the profit factor does not rise above 1.0.",
+      "change_type": "NO_CHANGE",
+      "falsification_test": "Compare out-of-sample performance of modified versions against this control baseline.",
       "overfit_risk": "LOW",
-      "priority": 1,
-      "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Disable entries during neutral regimes",
-      "why": "The neutral regime is the single largest source of loss for S02, contributing -188.34R of net losses. Restricting trading to active trend regimes (long/short) preserves the highly profitable long regime (+43.78R) while eliminating the flat-market decay."
+      "priority": 3,
+      "required_replay": "none",
+      "single_axis_change": "Maintain current strategy parameters without modification.",
+      "why": "Serves as the control baseline to compare any future performance against."
     },
     {
       "bounded_parameter_space": [
-        "max_exposure_min <= 30"
+        "Exit trade at exactly 30 minutes from entry if still open."
       ],
       "change_type": "time_stop",
-      "falsification_test": "Replay S02 trades with a hard time-based exit at exactly 30 minutes from entry. The hypothesis is falsified if the realized losses from premature exits exceed the 106.40R gross loss of the long-exposure cluster, or if it significantly degrades the win rate of profitable trades.",
+      "falsification_test": "Simulate flat exit at t=30 minutes on historical trade logs and measure the reduction in gross loss R versus the retention of gross profit R.",
+      "overfit_risk": "LOW",
+      "priority": 1,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement a strict 30-minute time-stop exit.",
+      "why": "S02 has 106.40 R of losses concentrated in trades held longer than 30 minutes, indicating severe duration decay where edge dissipates rapidly."
+    },
+    {
+      "bounded_parameter_space": [
+        "Set stop-loss to entry price once MFE >= 0.50R."
+      ],
+      "change_type": "break_even",
+      "falsification_test": "Apply break-even adjustment rule to historical trades when MFE >= 0.50R and evaluate the net R impact.",
       "overfit_risk": "MEDIUM",
       "priority": 2,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Implement a strict 30-minute time-stop auto-liquidation",
-      "why": "S02 trades that remain open past 30 minutes show severe expectancy decay, accumulating 106.40R in gross losses. Forcing an exit at 30 minutes cuts off these stagnant, drifting trades before they reach deeper adverse MAE levels."
+      "single_axis_change": "Introduce a break-even stop trigger once trade MFE reaches 0.50R.",
+      "why": "S02 has 129.76 R of losses in the favorable-then-loss cluster where MFE >= 0.50R, indicating a lack of protection against round-tripping."
     }
   ],
   "recommended_next": "TEST_ONE",

@@ -2,50 +2,51 @@
   "alias": "S04",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 90,
-      "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "That a simple hard stop at -0.75R will preserve the win rate, as some trades might have recovered, but the massive gross loss of 131.85R relative to the net loss of 67.04R indicates that letting trades drift past -0.75R is highly destructive.",
+      "causal_confidence_pct": 80,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "Does not prove that a break-even stop will always improve net R, as some trades might hit the break-even stop and then go on to hit the original profit target.",
       "evidence": [
-        "deep_adverse_mae_le_neg_0_75R gross loss of 131.85R across 86 trades",
-        "Overall net_R of -67.04R with average MAE of -1.03R"
+        "Gross loss of 60.23 R across 40 trades.",
+        "Average MFE is 1.26 R, but win rate is only 32.03%, showing that many trades go highly favorable before reversing into losses."
       ]
     },
     {
-      "causal_confidence_pct": 80,
-      "cluster": "neutral_regime_decay",
-      "does_not_prove": "That the strategy cannot trade neutral regimes at all, but the neutral regime net_R of -53.33R and profit factor of 0.137 indicates severe underperformance compared to short/long regimes.",
+      "causal_confidence_pct": 85,
+      "cluster": "deep_adverse_mae_le_neg_0_75R",
+      "does_not_prove": "Does not prove that tightening the stop-loss to 0.75R will improve performance, as it might stop out trades that would have otherwise recovered to win.",
       "evidence": [
-        "Neutral regime net_R of -53.33R with profit factor of 0.137 across 46 trades",
-        "Short regime net_R of 0.21R with profit factor of 1.00"
+        "Gross loss of 131.85 R across 86 trades.",
+        "Almost all losses (86 out of 87) experience a deep adverse excursion of <= -0.75R."
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "Hard stop-loss limit set at -0.75R"
+        "None"
       ],
-      "change_type": "loss_cap",
-      "falsification_test": "Replay all S04 trades with a hard stop-loss at -0.75R. If the reduction in gross loss does not improve the net R and profit factor (due to premature stop-outs of winning trades), the hypothesis is falsified.",
+      "change_type": "NO_CHANGE",
+      "falsification_test": "Compare S04 performance against other active strategies in the portfolio to determine if it should be deprecated.",
       "overfit_risk": "LOW",
       "priority": 1,
-      "required_replay": "intratrade_path",
-      "single_axis_change": "Implement a hard stop-loss at -0.75R to truncate the deep adverse MAE drift.",
-      "why": "The deep adverse MAE cluster accounts for almost the entirety of the gross loss (131.85R out of 132.15R). Capping losses at -0.75R directly addresses the primary system-wide failure mode identified in the global review."
+      "required_replay": "none",
+      "single_axis_change": "Maintain current strategy parameters without modification.",
+      "why": "The strategy is currently on HOLD with a very low win rate (32.03%) and profit factor (0.49). Entry filters do not show consistent, robust improvement across all validation windows, and transaction costs are high."
     },
     {
       "bounded_parameter_space": [
-        "Exclude neutral regime from trading"
+        "MFE trigger threshold: 0.40R to 0.60R",
+        "Offset: 0.0R to 0.05R"
       ],
-      "change_type": "entry_filter",
-      "falsification_test": "Filter out all trades executed during 'neutral' regimes. If the net R of the remaining trades (long and short regimes) does not significantly improve or remains negative, the hypothesis is falsified.",
+      "change_type": "break_even",
+      "falsification_test": "Simulate the break-even trigger on historical intratrade path data and verify if the reduction in gross losses outweighs the loss of potential larger wins.",
       "overfit_risk": "MEDIUM",
       "priority": 2,
-      "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Restrict entry to active trend regimes (long and short) and disable trading during neutral regimes.",
-      "why": "Neutral regime trades are highly unprofitable, contributing -53.33R of the total -67.04R net loss, with an extremely low profit factor of 0.137."
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Set a break-even stop once the trade reaches an MFE of 0.50R.",
+      "why": "The favorable_then_loss_mfe_ge_0_50R cluster accounts for 60.23 R of gross losses across 40 trades, indicating a significant portion of trades that perform well initially but round-trip into full losses."
     }
   ],
-  "recommended_next": "TEST_ONE",
+  "recommended_next": "KEEP_CONTROL",
   "status": "HOLD"
 }

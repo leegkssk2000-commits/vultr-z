@@ -4,50 +4,52 @@
     {
       "causal_confidence_pct": 85,
       "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "Does not prove whether tightening initial stops alone restores edge without cutting off eventual mean-reverting winners.",
+      "does_not_prove": "Does not prove that a tighter stop-loss will not increase the frequency of stopped-out trades that would have otherwise recovered, though the low win rate suggests recovery is rare.",
       "evidence": [
-        "gross_loss_R of -47.22R out of -47.78R overall gross loss across 36 trades",
-        "Overall profit factor is 0.435 with net_R of -26.98R"
-      ]
-    },
-    {
-      "causal_confidence_pct": 75,
-      "cluster": "favorable_then_loss_mfe_ge_0_50R",
-      "does_not_prove": "Does not prove that intraday trailing stops will improve net return without tick/intratrade path simulation evidence.",
-      "evidence": [
-        "gross_loss_R of -25.99R across 20 losing trades that reached at least 0.50R MFE",
-        "Average MFE across all trades is 1.18R while win rate is only 22.92%"
+        "Gross loss in this cluster is 47.22 R, representing 98.8% of the total gross loss of 47.78 R.",
+        "36 out of 37 losing trades experienced an adverse excursion deeper than -0.75R."
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "utc_18_24_only_boolean",
-        "restrict_utc_00_18"
+        "None"
       ],
-      "change_type": "entry_filter",
-      "falsification_test": "Replay strategy ledger filtering out UTC 00:00-18:00 entries; verify if net_R across 1m_w1, 1m_w2, and 1m_w3 maintains positive expectancy.",
-      "overfit_risk": "HIGH",
+      "change_type": "NO_CHANGE",
+      "falsification_test": "Compare out-of-sample performance of the unmodified strategy against any proposed modifications over the next 50 trades.",
+      "overfit_risk": "LOW",
       "priority": 1,
-      "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Restrict entry execution window to UTC 18:00-24:00 time bucket.",
-      "why": "UTC 18:00-24:00 is the only profitable time window (net_R +5.71R, PF 2.98, WR 66.7%), whereas UTC 00:00-18:00 accounts for -32.69R in net losses."
+      "required_replay": "none",
+      "single_axis_change": "Maintain current strategy parameters without modification.",
+      "why": "The strategy has a very small sample size of 48 trades across all windows, and none of the non-overlap filter candidates are validated across all three windows (W3 has insufficient trades). Modifying the strategy now carries a high risk of overfitting to noise."
     },
     {
       "bounded_parameter_space": [
-        "trailing_stop_activation_r_0_50_to_1_00",
-        "trailing_stop_step_r_0_25_to_0_50"
+        "stop_loss_R in [-0.75, -0.80]"
       ],
-      "change_type": "trailing",
-      "falsification_test": "Execute intratrade path replay applying a trailing stop once MFE reaches +0.50R to verify reduction in favorable_then_loss gross loss without premature exit on winners.",
-      "overfit_risk": "MEDIUM",
+      "change_type": "risk_geometry",
+      "falsification_test": "Simulate a fixed stop-loss at -0.75R on historical trade logs and verify if the reduction in gross loss R significantly exceeds any loss of gross profit R from prematurely stopped winning trades.",
+      "overfit_risk": "LOW",
       "priority": 2,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Implement trailing stop protection triggered when MFE reaches +0.50R.",
-      "why": "Strategy averages 1.19R MFE overall, but 20 trades reach >=0.50R MFE before reverting to generate -25.99R in gross losses."
+      "single_axis_change": "Tighten the initial stop-loss from the current level to a maximum of 0.75R.",
+      "why": "S07 has 47.22 R of its 47.78 R gross loss concentrated in the deep adverse MAE cluster (MAE <= -0.75R). Tightening the stop-loss to 0.75R will directly truncate these deep losses with minimal impact on the win rate, as these trades rarely recover."
+    },
+    {
+      "bounded_parameter_space": [
+        "mfe_trigger_R == 0.50",
+        "stop_adjustment_R == 0.0"
+      ],
+      "change_type": "break_even",
+      "falsification_test": "Apply a break-even rule at MFE >= 0.50R to historical intratrade paths and measure the net R improvement after accounting for early exits.",
+      "overfit_risk": "MEDIUM",
+      "priority": 3,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement a break-even stop trigger once the trade MFE reaches 0.50R.",
+      "why": "S07 has 20 losses totaling 25.99 R in the favorable-then-loss cluster where MFE >= 0.50R. Moving the stop to break-even at this threshold will eliminate these round-trip losses."
     }
   ],
-  "recommended_next": "WAIT_EVIDENCE",
+  "recommended_next": "TEST_ONE",
   "status": "HOLD"
 }

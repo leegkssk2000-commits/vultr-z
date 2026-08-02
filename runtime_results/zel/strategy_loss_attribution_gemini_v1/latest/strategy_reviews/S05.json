@@ -4,39 +4,58 @@
     {
       "causal_confidence_pct": 85,
       "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "Does not prove that an explicit hard stop will improve total expectancy without verifying trade retention and fill price execution via intratrade path replay.",
+      "does_not_prove": "Does not prove that simply tightening the initial stop-loss to 0.75R will improve net R, as it may stop out trades that would have eventually recovered to be profitable.",
       "evidence": [
-        "69 loss trades in deep MAE (<= -0.75R) account for 109.09R of total 115.43R gross loss.",
-        "Average MAE across all 144 trades is -0.793R."
+        "Gross loss of 109.09 R across 69 trades where MAE went deeper than -0.75R.",
+        "This cluster represents the vast majority of the strategy's total gross loss of 115.43 R."
+      ]
+    },
+    {
+      "causal_confidence_pct": 75,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "Does not prove that a break-even stop trigger at 0.50R will not prematurely exit trades that would have gone on to hit larger profit targets.",
+      "evidence": [
+        "Gross loss of 30.09 R across 24 trades that reached an MFE of at least 0.50R but ultimately ended in a loss."
       ]
     }
   ],
   "hypotheses": [
     {
-      "bounded_parameter_space": [
-        "control_baseline"
-      ],
+      "bounded_parameter_space": [],
       "change_type": "NO_CHANGE",
-      "falsification_test": "Evaluate candidate hypothesis performance against baseline across non-overlapping windows.",
+      "falsification_test": "Compare any new candidate against this baseline; if the candidate does not outperform the baseline net R, reject the candidate.",
       "overfit_risk": "LOW",
       "priority": 1,
       "required_replay": "none",
-      "single_axis_change": "Maintain baseline control configuration for S05.",
-      "why": "Establishes reference performance control."
+      "single_axis_change": "NO_CHANGE",
+      "why": "Maintains the current strategy baseline to serve as a control group during evaluation."
     },
     {
       "bounded_parameter_space": [
-        "regime != 'short'"
+        "regime != short"
       ],
       "change_type": "entry_filter",
-      "falsification_test": "Filter out short regime trades and measure performance across W1, W2, and W3. Falsified if net R delta becomes negative in W2 or W3.",
+      "falsification_test": "Replay the strategy excluding short regime trades. If the out-of-sample net R improvement is less than 5 R or if the profit factor does not improve, falsify the hypothesis.",
       "overfit_risk": "LOW",
       "priority": 2,
       "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Exclude trade execution during short regime conditions.",
-      "why": "Short regime filter shows consistent net R improvement across all three validation windows (W1: +12.01R, W2: +11.54R, W3: +1.60R)."
+      "single_axis_change": "Exclude short regime from entry signals.",
+      "why": "Candidate 1 in the filter screen shows that excluding the short regime improves net R by +12.01 R in W1, +11.54 R in W2, and +1.60 R in W3, showing robust out-of-sample durability."
+    },
+    {
+      "bounded_parameter_space": [
+        "MFE threshold = 0.50R",
+        "Stop adjustment = entry price"
+      ],
+      "change_type": "break_even",
+      "falsification_test": "Simulate the break-even trigger on historical intratrade path data. If the reduction in gross losses is offset by a larger reduction in gross profits (due to premature exits), falsify the hypothesis.",
+      "overfit_risk": "MEDIUM",
+      "priority": 3,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement a break-even stop trigger once trade MFE reaches 0.50R.",
+      "why": "The favorable_then_loss_mfe_ge_0_50R cluster accounts for 30.09 R of gross losses. Protecting capital once a trade goes 0.50R in profit will eliminate these round-trip losses."
     }
   ],
   "recommended_next": "TEST_ONE",
-  "status": "PASS"
+  "status": "HOLD"
 }

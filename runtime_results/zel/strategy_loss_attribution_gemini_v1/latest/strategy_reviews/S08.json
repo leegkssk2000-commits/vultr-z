@@ -4,10 +4,20 @@
     {
       "causal_confidence_pct": 85,
       "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "A hard stop-loss at -0.75R universally improves net R without cutting off recovery paths.",
+      "does_not_prove": "That all trades experiencing MAE <= -0.75R are guaranteed to lose, but it shows that the current stop-loss geometry allows trades to run to deep adverse excursions without structural invalidation, contributing to 91.9% of total gross losses.",
       "evidence": [
-        "Gross loss of 43.42R across 35 trades in deep adverse MAE",
-        "Average MAE is -0.89R overall"
+        "The deep adverse MAE cluster has a gross loss of 43.41 R across 35 losses.",
+        "The overall gross loss of the strategy is 47.20 R, meaning this cluster represents the vast majority of losses.",
+        "The average MAE of the strategy is -0.89 R, which is very close to the average loss size."
+      ]
+    },
+    {
+      "causal_confidence_pct": 80,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "That a break-even stop will always improve net R, as some trades might pull back to break-even before moving to full profit targets.",
+      "evidence": [
+        "The favorable-then-loss cluster has a gross loss of 24.28 R across 22 losses.",
+        "These trades reached at least 0.50 R in profit before reversing into losses, indicating a lack of active trade management or trailing stops."
       ]
     }
   ],
@@ -17,12 +27,26 @@
         "none"
       ],
       "change_type": "NO_CHANGE",
-      "falsification_test": "none",
+      "falsification_test": "N/A",
       "overfit_risk": "LOW",
       "priority": 1,
       "required_replay": "none",
-      "single_axis_change": "none",
-      "why": "Strategy profile shows mixed window performance and insufficient out-of-sample pass count to warrant a change under strict non-overlap and W1/W2/W3 validation rules."
+      "single_axis_change": "Maintain current strategy parameters without applying any entry filters from the filter screen",
+      "why": "The filter screen candidates (such as excluding ETHUSDT or utc_06_12) lack validation on the W3 window due to insufficient trade count, making them invalid under the strict promotion criteria."
+    },
+    {
+      "bounded_parameter_space": [
+        "mfe_trigger_R",
+        "0.40",
+        "0.60"
+      ],
+      "change_type": "break_even",
+      "falsification_test": "Replay historical trades with intratrade path data and verify if the reduction in gross loss from protected round-trips exceeds the loss of potential wins that would have been prematurely stopped out at break-even.",
+      "overfit_risk": "MEDIUM",
+      "priority": 2,
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Set stop-loss to break-even once trade MFE reaches 0.50R",
+      "why": "S08 has a significant favorable-then-loss cluster where 22 trades reached an MFE of >= 0.50R but ultimately resulted in a gross loss of 24.28R. Implementing a break-even trigger will protect capital on these round-trips."
     }
   ],
   "recommended_next": "KEEP_CONTROL",

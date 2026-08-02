@@ -27,6 +27,7 @@ EXEMPT_FILENAMES = {
     "zel-alpha-lap-v2-contract-v1.yml",
     "zel-component-autonomy-v2.yml",
     "zel-data-b-replay-owner-policy-v1.yml",
+    "zel-holdout-vault-seal-v1.yml",
     "zel-p0-runtime-e2e-closure-v1.yml",
     "zel-pre-shadow-full-hardening-v1.yml",
 }

@@ -1,0 +1,195 @@
+name: ZEL Alpha Combo Causal Loss Gemini V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_alpha_combo_causal_loss_audit_v1.py
+      - .github/workflows/zel-alpha-combo-causal-loss-gemini-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-alpha-combo-causal-loss-gemini-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: python -m py_compile backend/tools/zel_alpha_combo_causal_loss_audit_v1.py
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          for attempt in 1 2 3; do ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts && break || sleep $((attempt*5)); done
+      - name: Run immutable alpha_combo causal audit
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-combo-audit-${GITHUB_RUN_ID}"
+          for attempt in 1 2 3; do
+            ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'" && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          for attempt in 1 2 3; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
+              backend/tools/zel_alpha_combo_causal_loss_audit_v1.py "$VPS_USER@$VPS_HOST:$remote/" && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          timeout 5100s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" "cd '$remote' && /home/z/z/.venv/bin/python zel_alpha_combo_causal_loss_audit_v1.py --out audit.json" \
+            > out/remote.stdout 2>out/remote.stderr
+          for attempt in 1 2 3; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 "$VPS_USER@$VPS_HOST:$remote/audit.json" out/audit.json && break
+            test "$attempt" -lt 3; sleep $((attempt*5))
+          done
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          test -s out/audit.json
+          python -m json.tool out/audit.json >/dev/null
+      - name: Gemini causal designer and red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,time,urllib.request
+          row=json.load(open('out/audit.json'))
+          candidates=[]
+          for value in (row.get('single_axis_candidates') or [])[:12]:
+            candidates.append({
+              'candidate_id':value.get('candidate_id'),
+              'rule':value.get('rule'),
+              'w1_pass':value.get('w1_pass'),
+              'holdout_pass':value.get('holdout_pass'),
+              'w1_delta':(value.get('delta') or {}).get('1m_w1'),
+              'w2_delta':(value.get('delta') or {}).get('1m_w2'),
+              'w3_delta':(value.get('delta') or {}).get('1m_w3'),
+            })
+          evidence={
+            'state':row.get('state'),
+            'overall':row.get('overall'),
+            'by_window':row.get('by_window'),
+            'by_side':row.get('by_side'),
+            'by_time_exposure':row.get('by_time_exposure'),
+            'loss_phenotypes':row.get('loss_phenotypes'),
+            'entry_feature_reconstruction':row.get('entry_feature_reconstruction'),
+            'source_candidates':row.get('source_candidates'),
+            'best_w1_candidate':row.get('best_w1_candidate'),
+            'holdout_survivor':row.get('holdout_survivor'),
+            'single_axis_candidates':candidates,
+            'constraints':{
+              'W1_selection_only':True,
+              'W2_W3_frozen':True,
+              'one_axis_only':True,
+              'no_post_entry_feature_as_entry_filter':True,
+              'canonical_mutation':False,
+              'production_authority':False,
+            },
+          }
+          key=os.environ['GEMINI_API_KEY']
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          def call(role,instruction):
+            prompt=(
+              'You are '+role+' for an immutable strategy-repair gate. Use aggregate evidence only. '
+              'Never override deterministic holdout gates and never authorize production. '+instruction+
+              ' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+            )
+            payload={'contents':[{'parts':[{'text':prompt}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+            last=None
+            for model in models:
+              try:
+                req=urllib.request.Request(f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
+              except Exception as exc:
+                last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+            raise RuntimeError('GEMINI_FAILED:'+str(last))
+          designer=call('single-axis causal designer','Return JSON keys verdict,next_axis,change,falsification. verdict=TEST|HOLD|RETIRE. next_axis=ENTRY_FILTER|EXIT_GEOMETRY|TIME_STOP|SOURCE_REBUILD|RETIRE_ALPHA.')
+          redteam=call('independent red-team','Return JSON keys verdict,reason,hidden_failure. verdict=ACCEPT|REJECT|MORE_EVIDENCE.')
+          dv=designer['response'].get('verdict')
+          axis=designer['response'].get('next_axis')
+          rv=redteam['response'].get('verdict')
+          valid=dv in {'TEST','HOLD','RETIRE'} and axis in {'ENTRY_FILTER','EXIT_GEOMETRY','TIME_STOP','SOURCE_REBUILD','RETIRE_ALPHA'} and rv in {'ACCEPT','REJECT','MORE_EVIDENCE'}
+          deterministic_survivor=row.get('holdout_survivor') is not None
+          sealed_entry=valid and deterministic_survivor and dv=='TEST' and axis=='ENTRY_FILTER' and rv=='ACCEPT'
+          next_axis='EXACT_SOURCE_ENTRY_FILTER' if sealed_entry else (axis if valid else 'SOURCE_REBUILD')
+          receipt={
+            'schema_version':'zel.alpha_combo.gemini_causal_review.v1',
+            'state':'PASS_GEMINI_ALPHA_EXACT_REPLAY_READY' if sealed_entry else ('PASS_GEMINI_ALPHA_NEXT_AXIS_READY' if valid else 'HOLD_GEMINI_ALPHA_RESPONSE_INVALID'),
+            'designer':designer,
+            'redteam':redteam,
+            'response_valid':valid,
+            'deterministic_holdout_survivor':deterministic_survivor,
+            'sealed_for_exact_source_replay':sealed_entry,
+            'next_axis':next_axis,
+            'raw_trade_rows_sent':False,
+            'raw_prices_sent':False,
+            'private_code_sent':False,
+            'credentials_sent':False,
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({
+            'audit_state':row.get('state'),
+            'trades':row.get('trade_count'),
+            'net_R':(row.get('overall') or {}).get('net_R'),
+            'best_w1':(row.get('best_w1_candidate') or {}).get('candidate_id'),
+            'holdout_survivor':(row.get('holdout_survivor') or {}).get('candidate_id'),
+            'gemini_state':receipt['state'],
+            'next_axis':receipt['next_axis'],
+            'designer':designer['response'],
+            'redteam':redteam['response'],
+          })
+          PY
+          python -m json.tool out/gemini_review.json >/dev/null
+      - name: Verify safety
+        run: |
+          python - <<'PY'
+          import json
+          for path in ('out/audit.json','out/gemini_review.json'):
+            row=json.load(open(path))
+            assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+            assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+            assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+            assert row['action']=='hold',row
+          PY
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-combo-causal-loss-gemini-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

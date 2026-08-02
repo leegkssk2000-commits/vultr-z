@@ -16,7 +16,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 import zel_composite_terminal_v3_acceptance_harness_v1 as harness
 
-VERSION = "ZEL_COMPOSITE_IDEMPOTENCY_ROLLBACK_VERIFIER_V1"
+VERSION = "ZEL_COMPOSITE_IDEMPOTENCY_ROLLBACK_VERIFIER_V1_1"
 VOLATILE_KEYS = {
     "generated_at",
     "receipt_sha256",
@@ -29,8 +29,10 @@ DEFAULT_PROTECTED_PATHS = (
     "backend/research/zel_composite_module_registry_v1.json",
     "backend/research/zel_composite_module_factory_contract_v1.json",
     "backend/research/zel_skill_counterfactual_contract_v1.json",
-    "backend/strategy25/canonical_strategy25_config_v1.json",
-    "backend/contracts/ZOS_SKILL_REGISTRY_v1.json",
+    "backend/strategies/registry.py",
+    "backend/engine/skill_resolver.py",
+    "backend/trade_methods/resolver.py",
+    "backend/lico_market_safety_core.py",
 )
 
 
@@ -48,7 +50,14 @@ def sha256_path(path: Path) -> str:
 
 def stable_sha(value: Any) -> str:
     return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str).encode("utf-8")
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -65,22 +74,27 @@ def normalize(value: Any) -> Any:
 
 
 def protected_hashes(source_root: Path, paths: Iterable[str]) -> dict[str, str | None]:
-    result: dict[str, str | None] = {}
-    for relative in paths:
-        path = source_root / relative
-        result[relative] = sha256_path(path) if path.is_file() else None
-    return result
+    return {
+        relative: sha256_path(source_root / relative) if (source_root / relative).is_file() else None
+        for relative in paths
+    }
 
 
 def git_ref_sha(source_root: Path, ref: str) -> str | None:
-    proc = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-        cwd=source_root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
+    candidates = [ref]
+    if not ref.startswith("origin/") and ref not in {"HEAD"}:
+        candidates.append(f"origin/{ref}")
+    for candidate in candidates:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+            cwd=source_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    return None
 
 
 def git_status(source_root: Path) -> list[str]:
@@ -101,7 +115,12 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def verify(source_root: Path, out_dir: Path, rollback_ref: str, protected_paths: Iterable[str]) -> dict[str, Any]:
+def verify(
+    source_root: Path,
+    out_dir: Path,
+    rollback_ref: str,
+    protected_paths: Iterable[str],
+) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = tuple(protected_paths)
     before_hashes = protected_hashes(source_root, paths)
@@ -115,26 +134,21 @@ def verify(source_root: Path, out_dir: Path, rollback_ref: str, protected_paths:
     evaluation_a = load_json(run_a / "evaluation/latest.json")
     evaluation_b = load_json(run_b / "evaluation/latest.json")
 
-    semantic_a = normalize(evaluation_a)
-    semantic_b = normalize(evaluation_b)
-    semantic_sha_a = stable_sha(semantic_a)
-    semantic_sha_b = stable_sha(semantic_b)
+    semantic_sha_a = stable_sha(normalize(evaluation_a))
+    semantic_sha_b = stable_sha(normalize(evaluation_b))
     acceptance_sha_a = stable_sha(normalize(summary_a))
     acceptance_sha_b = stable_sha(normalize(summary_b))
 
     after_hashes = protected_hashes(source_root, paths)
     after_status = git_status(source_root)
-    mutations = [
-        path
-        for path in paths
-        if before_hashes.get(path) != after_hashes.get(path)
-    ]
-    missing_protected = [path for path in paths if before_hashes.get(path) is None]
+    mutations = [path for path in paths if before_hashes.get(path) != after_hashes.get(path)]
+    missing = [path for path in paths if before_hashes.get(path) is None]
     status_delta = sorted(set(after_status) - set(before_status))
+
     blockers: list[str] = []
     if rollback_sha is None:
         blockers.append("ROLLBACK_REF_MISSING")
-    if missing_protected:
+    if missing:
         blockers.append("PROTECTED_PATH_MISSING")
     if mutations:
         blockers.append("PROTECTED_PATH_MUTATED")
@@ -158,7 +172,8 @@ def verify(source_root: Path, out_dir: Path, rollback_ref: str, protected_paths:
         "rollback_ref": rollback_ref,
         "rollback_commit_sha": rollback_sha,
         "protected_path_count": len(paths),
-        "missing_protected_paths": missing_protected,
+        "protected_paths": list(paths),
+        "missing_protected_paths": missing,
         "protected_mutations": mutations,
         "tracked_git_status_delta": status_delta,
         "semantic_sha_run_a": semantic_sha_a,
@@ -171,7 +186,7 @@ def verify(source_root: Path, out_dir: Path, rollback_ref: str, protected_paths:
         "run_b_state": summary_b.get("state"),
         "blockers": sorted(set(blockers)),
         "rollback_executed": False,
-        "rollback_ready": rollback_sha is not None and not mutations,
+        "rollback_ready": rollback_sha is not None and not mutations and not missing,
         "active_data_b_1m_mutated": False,
         "canonical_strategy_files_mutated": False,
         "formal_ledger_mutated": False,
@@ -182,7 +197,9 @@ def verify(source_root: Path, out_dir: Path, rollback_ref: str, protected_paths:
         "order_authority": "BLOCKED",
         "action": "hold",
     }
-    result["receipt_sha256"] = stable_sha({key: value for key, value in result.items() if key != "receipt_sha256"})
+    result["receipt_sha256"] = stable_sha(
+        {key: value for key, value in result.items() if key != "receipt_sha256"}
+    )
     (out_dir / "idempotency_rollback_receipt.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

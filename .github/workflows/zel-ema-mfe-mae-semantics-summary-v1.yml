@@ -69,46 +69,46 @@ jobs:
             > out/semantics.json
           python -m json.tool out/semantics.json >/dev/null
 
-      - name: Build compact semantics summary
+      - name: Build minimal semantics SSOT
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           row=json.load(open('out/semantics.json'))
-          writers=[]
+          minimal=[]
+          seen=set()
           for value in row.get('writers',[]):
               facts=value.get('value') or {}
-              writers.append({
-                  'root_label':value.get('root_label'),
+              item={
+                  'root':value.get('root_label'),
                   'path':value.get('path'),
                   'sha256':value.get('sha256'),
-                  'class_name':value.get('class_name'),
-                  'function_name':value.get('function_name'),
+                  'class':value.get('class_name'),
+                  'function':value.get('function_name'),
                   'function_line':value.get('function_line'),
                   'write_line':value.get('line'),
                   'key':value.get('key'),
                   'kind':value.get('kind'),
-                  'uses_high':facts.get('uses_high'),
-                  'uses_low':facts.get('uses_low'),
-                  'uses_close':facts.get('uses_close'),
-                  'uses_open':facts.get('uses_open'),
-                  'uses_entry':facts.get('uses_entry'),
-                  'uses_stop':facts.get('uses_stop'),
-                  'loaded_names':facts.get('loaded_names'),
-                  'calls':facts.get('calls'),
-                  'strings':facts.get('strings'),
-                  'numbers':facts.get('numbers'),
-                  'subscripts':facts.get('subscripts'),
-              })
+                  'high':bool(facts.get('uses_high')),
+                  'low':bool(facts.get('uses_low')),
+                  'close':bool(facts.get('uses_close')),
+                  'open':bool(facts.get('uses_open')),
+                  'entry':bool(facts.get('uses_entry')),
+                  'stop_or_risk':bool(facts.get('uses_stop')),
+              }
+              fingerprint=tuple((key,json.dumps(item[key],sort_keys=True)) for key in sorted(item))
+              if fingerprint in seen:
+                  continue
+              seen.add(fingerprint)
+              minimal.append(item)
+          minimal.sort(key=lambda value:(value['path'] or '',value['function_line'] or 0,value['write_line'] or 0,value['key'] or ''))
           summary={
-              'schema_version':'zel.ema_mfe_mae_semantics_summary.v1',
+              'schema_version':'zel.ema_mfe_mae_semantics_minimal.v1',
               'state':row['state'],
-              'candidate_counts':row['candidate_counts'],
-              'candidate_file_count':row['candidate_file_count'],
-              'writer_count':row['writer_count'],
+              'writer_count':len(minimal),
               'key_counts':row['key_counts'],
               'semantic_mode_counts':row['semantic_mode_counts'],
-              'writers':writers,
+              'writers':minimal,
               'blockers':row['blockers'],
               'raw_code_published':False,
               'raw_trade_rows_published':False,
@@ -121,10 +121,10 @@ jobs:
               'next':row['next'],
           }
           json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True,allow_nan=False)
-          print({'state':summary['state'],'writers':summary['writer_count'],'modes':summary['semantic_mode_counts'],'blockers':summary['blockers']})
+          print(summary)
           PY
 
-      - name: Publish compact summary
+      - name: Publish minimal SSOT
         run: |
           set -euo pipefail
           git -C results pull --rebase origin zel-data-expansion-results-v1
@@ -137,7 +137,7 @@ jobs:
           git config user.name 'zel-strategy-research-bot'
           git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
           git add runtime_results/zel/ema_mfe_mae_semantics_probe_v1
-          git commit -m "result(zel): EMA MFE MAE semantics summary ${GITHUB_RUN_ID}" || true
+          git commit -m "result(zel): minimal EMA MFE MAE semantics ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
 
       - name: Cleanup SSH key

@@ -1,0 +1,226 @@
+name: ZEL Grid Neutral Semantic Final V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_grid_neutral_source_lineage_audit_v1.py
+      - backend/tools/zel_grid_source_authority_disambiguation_v1.py
+      - backend/tools/zel_grid_entry_regime_reconstruction_v2.py
+      - backend/tools/zel_grid_neutral_semantic_gemini_review_v2.py
+      - backend/research/zel_grid_neutral_semantic_correction_v2.json
+      - .github/workflows/zel-grid-neutral-semantic-final-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-grid-neutral-semantic-final-v2
+  cancel-in-progress: true
+
+jobs:
+  final:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_neutral_source_lineage_audit_v1.py \
+            backend/tools/zel_grid_source_authority_disambiguation_v1.py \
+            backend/tools/zel_grid_entry_regime_reconstruction_v2.py \
+            backend/tools/zel_grid_neutral_semantic_gemini_review_v2.py \
+            backend/tools/zel_strategy_loss_attribution_gemini_v1.py
+          python -m json.tool backend/research/zel_grid_neutral_semantic_correction_v2.json >/dev/null
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run source lineage audit read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 300s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --runtime-root /home/z/z --terminal-root /var/lib/zel-research/data-b-1m-v2 --stdout' \
+            < backend/tools/zel_grid_neutral_source_lineage_audit_v1.py > out/source_audit.json
+          rc=$?
+          set -e
+          test "$rc" -eq 0 -o "$rc" -eq 1
+          test -s out/source_audit.json
+          python -m json.tool out/source_audit.json >/dev/null
+      - name: Resolve source authority read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 180s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --runtime-root /home/z/z --terminal-root /var/lib/zel-research/data-b-1m-v2 --stdout' \
+            < backend/tools/zel_grid_source_authority_disambiguation_v1.py > out/source_authority.json
+          rc=$?
+          set -e
+          test "$rc" -eq 0 -o "$rc" -eq 1
+          test -s out/source_authority.json
+          python -m json.tool out/source_authority.json >/dev/null
+      - name: Reconstruct exact entry regimes read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          timeout 1800s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=10 \
+            "$VPS_USER@$VPS_HOST" \
+            '/home/z/z/.venv/bin/python - --stdout' \
+            < backend/tools/zel_grid_entry_regime_reconstruction_v2.py \
+            > out/entry_reconstruction.json
+          test -s out/entry_reconstruction.json
+          python -m json.tool out/entry_reconstruction.json >/dev/null
+      - name: Verify semantic correction
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/entry_reconstruction.json'))
+          entry=row['entry_range_metrics']
+          windows=row['reconstructed_regime_window_metrics']
+          assert row['state']=='PASS_GRID_ENTRY_REGIME_RECONSTRUCTED',row
+          assert row['trade_count']==580 and row['reconstructed_count']==580,row
+          assert row['unmatched_count']==0,row
+          assert entry['trade_count']==11,entry
+          assert entry['net_R'] < 0,entry
+          assert entry['profit_factor'] < 1,entry
+          assert windows['range|1m_w1']['trade_count']==9,windows
+          assert windows['range|1m_w2']['trade_count']==2,windows
+          assert 'range|1m_w3' not in windows,windows
+          assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'entry_range':entry,'exit_neutral':row['exit_neutral_metrics'],'comparison':row['entry_range_vs_exit_neutral']})
+          PY
+      - name: Gemini corrected causal review and red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python backend/tools/zel_grid_neutral_semantic_gemini_review_v2.py \
+            --audit out/source_audit.json \
+            --authority out/source_authority.json \
+            --reconstruction out/entry_reconstruction.json \
+            --policy backend/research/zel_grid_neutral_semantic_correction_v2.json \
+            --out out/gemini_semantic_review.json
+      - name: Verify final block decision
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/gemini_semantic_review.json'))
+          assert row['gemini_call_count']==2,row
+          assert row['economic_gate_pass'] is False,row
+          assert row['tmp_fork_stage_allowed'] is False,row
+          assert row['fork_blocked'] is True,row
+          assert row['raw_code_sent'] is False and row['raw_trades_sent'] is False,row
+          assert row['credentials_sent'] is False,row
+          assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['shadow_started'] is False and row['paper_started'] is False and row['live_enabled'] is False,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({'state':row['state'],'decision':row['red_team'].get('decision'),'fork_blocked':row['fork_blocked'],'next':row['next']})
+          PY
+      - name: Publish immutable semantic correction receipt
+        run: |
+          set -euo pipefail
+          git -C results pull --rebase origin zel-data-expansion-results-v1
+          dest=results/runtime_results/zel/grid_neutral_semantic_correction_v2
+          rm -rf "$dest/latest"
+          mkdir -p "$dest/latest"
+          cp out/source_audit.json "$dest/latest/source_audit.json"
+          cp out/source_authority.json "$dest/latest/source_authority.json"
+          cp out/entry_reconstruction.json "$dest/latest/entry_reconstruction.json"
+          cp out/gemini_semantic_review.json "$dest/latest/gemini_review.json"
+          python - <<'PY'
+          import json
+          source=json.load(open('out/source_audit.json'))
+          authority=json.load(open('out/source_authority.json'))
+          reconstruction=json.load(open('out/entry_reconstruction.json'))
+          review=json.load(open('out/gemini_semantic_review.json'))
+          summary={
+              'schema_version':'zel.grid_neutral.semantic_correction.summary.v2',
+              'state':review['state'],
+              'source_audit_state':source['state'],
+              'source_authority_state':authority['state'],
+              'reconstruction_state':reconstruction['state'],
+              'trade_count':reconstruction['trade_count'],
+              'entry_range_metrics':reconstruction['entry_range_metrics'],
+              'exit_neutral_metrics':reconstruction['exit_neutral_metrics'],
+              'entry_range_vs_exit_neutral':reconstruction['entry_range_vs_exit_neutral'],
+              'economic_gate_pass':review['economic_gate_pass'],
+              'tmp_fork_stage_allowed':review['tmp_fork_stage_allowed'],
+              'fork_blocked':review['fork_blocked'],
+              'gemini_models':review['models_used'],
+              'canonical_mutated':False,
+              'runtime_mutated':False,
+              'formal_ledger_mutated':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+              'next':review['next'],
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True,allow_nan=False)
+          PY
+          cp out/summary.json "$dest/latest/summary.json"
+          cp out/summary.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add runtime_results/zel/grid_neutral_semantic_correction_v2
+          git commit -m "result(zel): grid neutral semantic correction ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-grid-neutral-semantic-final-v2-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

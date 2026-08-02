@@ -50,6 +50,7 @@ jobs:
           contract=json.loads(Path('backend/research/zel_holdout_vault_seal_contract_v1.json').read_text())
           workflow=Path('.github/workflows/zel-holdout-vault-seal-v1.yml').read_text()
           executor=Path('backend/tools/zel_holdout_vault_seal_exec_v1.sh').read_text()
+          remote_step=workflow.split('      - id: remote',1)[1].split('      - name: Fetch redacted receipts',1)[0]
           assert contract['confirmation_phrase']=='SEAL_EXTERNAL_HOLDOUT',contract
           assert contract['zones']==['W2_FORWARD','W3_DURABILITY','FINAL_HOLDOUT'],contract
           assert contract['requirements']['workflow_dispatch_only'] is True,contract
@@ -60,8 +61,9 @@ jobs:
           assert 'SEAL_EXTERNAL_HOLDOUT' in workflow,workflow
           assert 'zel_holdout_vault_seal_runner_v1.py' in workflow,workflow
           assert 'IFS= read -r ZEL_HOLDOUT_HMAC_KEY' in executor,executor
-          assert '--hmac-key' not in workflow,workflow
-          assert 'printf \'%s\\n\' "$HOLDOUT_HMAC_KEY" | ssh' in workflow,workflow
+          assert '--hmac-key' not in remote_step,remote_step
+          assert '"$HOLDOUT_HMAC_KEY" | ssh' in remote_step,remote_step
+          assert 'bash /tmp/zel_holdout_vault_seal_exec_v1.sh' in remote_step,remote_step
           assert contract['safety']['execution_authority']=='NONE',contract
           assert contract['safety']['order_authority']=='BLOCKED',contract
           print('PASS_HOLDOUT_VAULT_SEAL_MANUAL_BOUNDARY')

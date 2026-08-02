@@ -228,10 +228,14 @@ assert row['structural_only_module_ids']==['ZICO'],row
 assert row['post_score_module_ids']==['PORTFOLIO_GOVERNOR'],row
 PY
 
+set +e
 "${SSH[@]}" \
   "python3 - --source-root /home/z/z --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz --stdout" \
   < "$ROOT/backend/tools/zel_trade_method_runtime_behavior_v1.py" \
   > "$OUT/trade_method_behavior.json"
+trade_method_behavior_rc=$?
+set -e
+test "$trade_method_behavior_rc" -eq 0 -o "$trade_method_behavior_rc" -eq 1
 python - <<'PY'
 import json
 row=json.load(open('out/trade_method_behavior.json'))

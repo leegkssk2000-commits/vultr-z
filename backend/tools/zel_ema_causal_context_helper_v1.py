@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 VERSION = "ZEL_EMA_CAUSAL_CONTEXT_HELPER_V1"
+SCOPE = "EMA_ENTRY_CONTEXT_READ_ONLY"
 
 
 def stable_sha(value: Any) -> str:

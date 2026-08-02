@@ -6,6 +6,7 @@ on:
     paths:
       - backend/tools/zel_grid_entry_regime_reconstruction_v2.py
       - backend/tools/zel_grid_entry_regime_gemini_review_v1.py
+      - backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py
       - backend/research/zel_grid_entry_regime_gemini_review_v1.json
       - .github/workflows/zel-grid-entry-regime-gemini-review-v1.yml
   workflow_dispatch:
@@ -46,6 +47,7 @@ jobs:
           python -m py_compile \
             backend/tools/zel_grid_entry_regime_reconstruction_v2.py \
             backend/tools/zel_grid_entry_regime_gemini_review_v1.py \
+            backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py \
             backend/tools/zel_strategy_loss_attribution_gemini_v1.py
           python -m json.tool backend/research/zel_grid_entry_regime_gemini_review_v1.json >/dev/null
 
@@ -129,6 +131,36 @@ jobs:
           print({'state':row['state'],'models':row['models_used'],'decision_trace':row['decision_trace'],'next':row['next']})
           PY
 
+      - name: Adjudicate unanimous retirement safely
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_grid_retirement_consensus_adjudicator_v1.py \
+            --reconstruction out/reconstruction.json \
+            --review out/gemini_review.json \
+            --out out/retirement_consensus.json
+
+      - name: Verify retirement receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/retirement_consensus.json'))
+          assert row['state']=='PASS_GRID_REBALANCE_RETIREMENT_CONSENSUS',row
+          assert row['decision']=='RETIRE_GRID_REBALANCE',row
+          assert row['three_way_unanimous'] is True,row
+          assert row['next_research_allowed_for_grid_rebalance'] is False,row
+          assert row['retirement_scope']=='RESEARCH_CANDIDATE_AND_FUTURE_REGIME_TUNING_ONLY',row
+          assert row['canonical_strategy_status']=='PRESERVE_FAIL_CLOSED_INACTIVE',row
+          assert row['source_deleted'] is False,row
+          assert row['production_applied'] is False,row
+          for key in ('canonical_mutated','runtime_mutated','formal_ledger_mutated','shadow_started','paper_started','live_enabled','selection_authority','promotion_authority'):
+              assert row[key] is False,(key,row)
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          assert row['next']=='MOVE_TO_EMA_RIBBON_INTRATRADE_PATH_REPLAY',row
+          print({'state':row['state'],'decision':row['decision'],'next':row['next'],'evidence':row['aggregate_evidence']})
+          PY
+
       - name: Publish aggregate causal receipts
         run: |
           set -euo pipefail
@@ -136,9 +168,10 @@ jobs:
           import json
           reconstruction=json.load(open('out/reconstruction.json'))
           review=json.load(open('out/gemini_review.json'))
+          retirement=json.load(open('out/retirement_consensus.json'))
           summary={
               'schema_version':'zel.grid_entry_regime_gemini_review.summary.v1',
-              'state':review['state'],
+              'state':retirement['state'],
               'strategy_id':'grid_rebalance',
               'trade_count':reconstruction['trade_count'],
               'entry_regime_counts':reconstruction['reconstructed_regime_counts'],
@@ -147,8 +180,11 @@ jobs:
               'legacy_exit_neutral_rejected':True,
               'legacy_exit_neutral_jaccard':reconstruction['entry_range_vs_exit_neutral']['jaccard'],
               'gemini_models':review['models_used'],
-              'gemini_decision_trace':review['decision_trace'],
-              'next':review['next'],
+              'gemini_decision_trace':retirement['decision_trace'],
+              'decision':retirement['decision'],
+              'retirement_scope':retirement['retirement_scope'],
+              'canonical_strategy_status':retirement['canonical_strategy_status'],
+              'next':retirement['next'],
               'canonical_mutated':False,
               'runtime_mutated':False,
               'formal_ledger_mutated':False,
@@ -164,13 +200,14 @@ jobs:
           mkdir -p "$dest/latest"
           cp out/reconstruction.json "$dest/latest/reconstruction.json"
           cp out/gemini_review.json "$dest/latest/gemini_review.json"
+          cp out/retirement_consensus.json "$dest/latest/retirement_consensus.json"
           cp out/summary.json "$dest/latest/summary.json"
           cp out/summary.json "$dest/run_${GITHUB_RUN_ID}.json"
           cd results
           git config user.name 'zel-strategy-research-bot'
           git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
           git add runtime_results/zel/grid_entry_regime_gemini_review_v1
-          git commit -m "result(zel): grid entry regime Gemini review ${GITHUB_RUN_ID}" || true
+          git commit -m "result(zel): grid retirement consensus ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
 
       - name: Cleanup SSH key

@@ -1,0 +1,151 @@
+name: ZEL Data B 1m V1 Owner Forensic V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v1-owner-forensic-v2.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-1m-v1-owner-forensic-v2
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Discover candidate runs without unsupported filters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/logs
+          : > out/all_runs.jsonl
+          for page in $(seq 1 10); do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100&page=$page" --jq '.workflow_runs[]' >> out/all_runs.jsonl
+          done
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          rows=[]
+          for line in Path('out/all_runs.jsonl').read_text().splitlines():
+              try:r=json.loads(line)
+              except Exception:continue
+              started=r.get('run_started_at') or r.get('created_at') or ''
+              updated=r.get('updated_at') or ''
+              if not ('2026-08-01T19:00:00Z' <= started <= '2026-08-02T08:00:00Z'):
+                  continue
+              hay=(str(r.get('name') or '')+' '+str(r.get('path') or '')).lower()
+              if not any(t in hay for t in ('data b 1m','historical oos','1m single owner','1m resume','1m terminal','exact25 replay')):
+                  continue
+              duration=0
+              if started and updated:
+                  duration=max(0,int((datetime.fromisoformat(updated.replace('Z','+00:00'))-datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds()))
+              rows.append({'id':r.get('id'),'name':r.get('name'),'path':r.get('path'),'event':r.get('event'),'status':r.get('status'),'conclusion':r.get('conclusion'),'started_at':started,'updated_at':updated,'duration_sec':duration,'head_sha':r.get('head_sha')})
+          rows.sort(key=lambda r:(r['started_at'],r['id']))
+          Path('out/candidates.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          for row in rows: print(row['id'])
+          PY
+          python - <<'PY' > out/ids.txt
+          import json
+          for r in json.load(open('out/candidates.json')):print(r['id'])
+          PY
+          while read -r id; do
+            [ -n "$id" ] || continue
+            set +e
+            gh run view "$id" --log > "out/logs/$id.log" 2>"out/logs/$id.err"
+            echo "$id $?" >> out/log_fetch_status.txt
+            set -e
+          done < out/ids.txt
+      - name: Read VPS fault evidence
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/vps.json <<'PY'
+          import json,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+          def run(args):return subprocess.run(args,text=True,capture_output=True).stdout
+          start='2026-08-01 19:00:00 UTC';end='2026-08-02 08:00:00 UTC'
+          kernel=run(['journalctl','-k','--since',start,'--until',end,'--no-pager']).lower()
+          system=run(['journalctl','--since',start,'--until',end,'--no-pager','-p','warning..alert']).lower()
+          out={'generated_at':datetime.now(timezone.utc).isoformat(),'kernel_oom_detected':any(t in kernel for t in ('out of memory','oom-kill','killed process')),'kernel_panic_detected':'kernel panic' in kernel,'segfault_detected':'segfault' in system,'host_reboot_detected':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - name: Classify owner and termination
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          candidates={int(r['id']):r for r in json.load(open('out/candidates.json'))}
+          rows=[]
+          for p in Path('out/logs').glob('*.log'):
+              id=int(p.stem);text=p.read_text(errors='replace');low=text.lower()
+              invoked='zel_historical_oos_exact25_replay_v1.py' in text and '--interval 1m' in text
+              lock='GLOBAL_1M_LOCK_ALREADY_HELD' in text
+              markers=[t for t in ('The operation was canceled','The operation was cancelled','The job was canceled','The job was cancelled','Process completed with exit code','Connection reset','Broken pipe','Killed') if t.lower() in low]
+              row={**candidates[id],'invoked_v1_1m':invoked,'global_lock_rejected':lock,'markers':markers,'log_sha256':hashlib.sha256(text.encode()).hexdigest()}
+              rows.append(row)
+          owners=[r for r in rows if r['invoked_v1_1m'] and not r['global_lock_rejected']]
+          owners.sort(key=lambda r:(r['started_at'],r['id']))
+          owner=owners[-1] if owners else None
+          rejects=[r for r in rows if r['global_lock_rejected']]
+          vps=json.load(open('out/vps.json'))
+          exact=False;cause='UNPROVED_OWNER_RUN_NOT_LOCATED'
+          if owner:
+              c=str(owner.get('conclusion') or '').lower()
+              if vps['kernel_oom_detected']:cause='KERNEL_OOM_KILLED_V1_OWNER';exact=True
+              elif vps['host_reboot_detected']:cause='HOST_REBOOT_INTERRUPTED_V1_OWNER';exact=True
+              elif c in ('cancelled','timed_out'):cause='ACTIONS_TERMINATED_ATTACHED_SSH_OWNER';exact=True
+              elif c=='failure':cause='OWNER_ACTIONS_RUN_FAILED_ATTACHED_V1_DIED_WITH_SESSION';exact=True
+              else:cause='OWNER_V1_DISAPPEARED_NO_OOM_NO_REBOOT'
+          out={'schema_version':'zel.data_b.1m.v1_owner_forensic.v2','generated_at':datetime.now(timezone.utc).isoformat(),'state':'PASS_CAUSE_CONFIRMED' if exact else 'HOLD_CAUSE_NOT_FULLY_PROVED','termination_cause':cause,'cause_exact':exact,'actual_owner_run':owner,'owner_candidates':owners,'lock_rejected_runs':rejects,'candidate_run_count':len(candidates),'log_evidence_count':len(rows),'vps_evidence':vps,'canonical_strategy_mutated':False,'formal_ledger_mutated':False,'runtime_registry_mutated':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'state':out['state'],'cause':cause,'owner_id':(owner or {}).get('id'),'candidates':len(candidates),'rejects':len(rejects)},sort_keys=True))
+          PY
+      - name: Publish receipt
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v1_owner_forensic_v2
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v1-forensic-bot'
+          git config user.email 'zel-data-b-v1-forensic-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v1_owner_forensic_v2
+          git commit -m "result(zel): Data B 1m V1 owner forensic v2 ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-data-b-1m-v1-owner-forensic-v2-${{ github.run_id }}
+          path: |
+            out/latest.json
+            out/candidates.json
+            out/vps.json
+          if-no-files-found: error
+          retention-days: 90

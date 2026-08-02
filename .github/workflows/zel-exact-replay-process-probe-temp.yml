@@ -1,0 +1,55 @@
+name: ZEL Exact Replay Process Probe Temp
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-exact-replay-process-probe-temp.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read exact replay process state
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "printf '%s\n' '=== processes ==='; \
+             ps -eo pid=,ppid=,etimes=,pcpu=,pmem=,stat=,args= | \
+               grep '[z]el_grid_block_trend_short_exact_replay_v1.py' || true; \
+             printf '%s\n' '=== temp dirs ==='; \
+             find /tmp -maxdepth 1 -type d \
+               \( -name 'zel-grid-block-trend-short-exact-*' -o -name 'zel-grid-exact-*' \) \
+               -printf '%f\n' | sort; \
+             printf '%s\n' '=== load ==='; uptime" > out/probe.txt
+          cat out/probe.txt
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact-replay-process-probe-temp-${{ github.run_id }}
+          path: out/probe.txt
+          retention-days: 1

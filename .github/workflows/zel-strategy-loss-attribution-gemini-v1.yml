@@ -66,9 +66,10 @@ jobs:
           SSH=(ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")
           "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/terminal_receipt.json' > input/terminal_receipt.json
           "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/report.json' > input/report.json
+          "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/scoreboard.csv' > input/scoreboard.csv
           "${SSH[@]}" 'cat /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz' > input/trades.jsonl.gz
           python - <<'PY'
-          import gzip,json
+          import csv,gzip,json
           terminal=json.load(open('input/terminal_receipt.json'))
           report=json.load(open('input/report.json'))
           assert terminal['state']=='PASS',terminal
@@ -76,10 +77,21 @@ jobs:
           replay=report['replay']
           assert replay['strategy_count_completed']==25,replay
           assert replay['strategy_failure_count']==0,replay
+          with open('input/scoreboard.csv','r',encoding='utf-8-sig',newline='') as fh:
+              reader=csv.DictReader(fh)
+              scoreboard=list(reader)
+              fields=reader.fieldnames
+          assert scoreboard,scoreboard
           with gzip.open('input/trades.jsonl.gz','rt',encoding='utf-8') as fh:
               count=sum(1 for line in fh if line.strip())
           assert count==1951,count
-          print({'terminal':terminal['state'],'strategies':replay['strategy_count_completed'],'trades':count})
+          print({
+              'terminal':terminal['state'],
+              'completed_strategies':replay['strategy_count_completed'],
+              'scoreboard_rows':len(scoreboard),
+              'scoreboard_fields':fields,
+              'trades':count,
+          })
           PY
 
       - name: Run loss attribution and aggressive Gemini review
@@ -90,6 +102,7 @@ jobs:
           test -n "$GEMINI_API_KEY"
           python backend/tools/zel_strategy_loss_attribution_gemini_v1.py \
             --trades input/trades.jsonl.gz \
+            --scoreboard input/scoreboard.csv \
             --policy backend/research/zel_strategy_loss_attribution_gemini_v1.json \
             --out out
 
@@ -102,6 +115,7 @@ jobs:
           attribution=json.load(open('out/attribution.json'))
           assert row['state']=='PASS_ATTRIBUTION_AND_GEMINI_IMPROVEMENT_QUEUE_READY',row
           assert row['trade_count']==1951 and row['strategy_count']==25,row
+          assert row['traded_strategy_count']==13 and row['zero_trade_strategy_count']==12,row
           assert row['gemini_used'] is True and row['gemini_call_count']>=8,row
           assert row['raw_trades_sent_to_gemini'] is False,row
           assert row['private_code_sent_to_gemini'] is False,row
@@ -115,6 +129,8 @@ jobs:
           assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
           assert row['action']=='hold',row
           assert attribution['strategy_count']==25 and len(attribution['strategies'])==25,attribution
+          assert attribution['traded_strategy_count']==13 and attribution['zero_trade_strategy_count']==12,attribution
+          assert sum(item['state']=='HOLD_ZERO_TRADE_STRATEGY' for item in attribution['strategies'])==12,attribution
           print({
               'state':row['state'],
               'gemini_calls':row['gemini_call_count'],
@@ -122,7 +138,7 @@ jobs:
               'oos_filters':row['oos_filter_candidate_count'],
           })
           PY
-          test -z "$(find out -type f -size +2M -print -quit)"
+          test -z "$(find out -type f -size +5M -print -quit)"
 
       - name: Publish redacted aggregate receipts
         run: |
@@ -154,6 +170,7 @@ jobs:
               out.write('# ZEL Strategy Loss Attribution + Gemini V1\n\n')
               out.write(f"- State: **{row.get('state')}**\n")
               out.write(f"- Trades / strategies: `{row.get('trade_count')}` / `{row.get('strategy_count')}`\n")
+              out.write(f"- Traded / zero-trade: `{row.get('traded_strategy_count')}` / `{row.get('zero_trade_strategy_count')}`\n")
               out.write(f"- Gemini calls: `{row.get('gemini_call_count')}`\n")
               out.write(f"- Approved hypotheses: `{row.get('approved_hypothesis_count')}`\n")
               out.write(f"- W1→W2/W3 filter candidates: `{row.get('oos_filter_candidate_count')}`\n")

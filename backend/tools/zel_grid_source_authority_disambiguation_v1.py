@@ -13,9 +13,10 @@ SCHEMA = "zel.grid.source_authority_disambiguation.receipt.v1"
 STRATEGY_ID = "grid_rebalance"
 IMPLEMENTATION_PATH = "backend/strategies/grid_rebalance.py"
 OWNER_MODULE = "backend.strategies.grid_rebalance"
-CALLABLE = "GridRebalanceLBotStrategy.decide"
 OWNER_MANIFEST_PATH = "backend/config/q4r3_canonical_strategy_owner_manifest_v1.json"
 REGISTRY_PATH = "backend/strategy25/canonical_strategy_registry_v1.json"
+REGISTRY_CONFIG_REF = "backend/strategy25/canonical_strategy25_config_v1.json#/strategies/grid_rebalance"
+REGISTRY_BINDING_SOURCE = "R7.A3E3C_CANONICAL_CONFIG_BUNDLE"
 SECRET_KEY = re.compile(r"(?i)(secret|token|password|api[_-]?key|private[_-]?key|credential)")
 
 
@@ -85,27 +86,35 @@ def strategy_entries(value: Any) -> list[dict[str, Any]]:
                 "strategy_id": item.get("strategy_id") or item.get("strategy"),
                 "owner_path": item.get("owner_path"),
                 "owner_module": item.get("owner_module"),
-                "implementation_path": item.get("implementation_path"),
-                "callable": item.get("callable"),
+                "owner_sha256": item.get("owner_sha256"),
+                "config_ref": item.get("config_ref"),
+                "config_binding_source": item.get("config_binding_source"),
+                "active_allowed": item.get("active_allowed"),
+                "fail_closed": item.get("fail_closed"),
+                "canonical_engine_present": isinstance(item.get("canonical_engine"), Mapping),
                 "safe_contract": safe_scalar_contract(item),
             }
         )
     return rows
 
 
-def exact_manifest_binding(entries: list[dict[str, Any]]) -> bool:
-    return any(
-        row.get("owner_path") == IMPLEMENTATION_PATH
-        and row.get("owner_module") == OWNER_MODULE
-        for row in entries
+def exact_manifest_binding(entries: list[dict[str, Any]], source_sha256: str | None) -> bool:
+    return len(entries) == 1 and bool(
+        entries[0].get("owner_path") == IMPLEMENTATION_PATH
+        and entries[0].get("owner_module") == OWNER_MODULE
+        and source_sha256
+        and entries[0].get("owner_sha256") == source_sha256
     )
 
 
 def exact_registry_binding(entries: list[dict[str, Any]]) -> bool:
-    return any(
-        row.get("implementation_path") == IMPLEMENTATION_PATH
-        and row.get("callable") == CALLABLE
-        for row in entries
+    return len(entries) == 1 and bool(
+        entries[0].get("strategy_id") == STRATEGY_ID
+        and entries[0].get("config_ref") == REGISTRY_CONFIG_REF
+        and entries[0].get("config_binding_source") == REGISTRY_BINDING_SOURCE
+        and entries[0].get("active_allowed") is False
+        and entries[0].get("fail_closed") is True
+        and entries[0].get("canonical_engine_present") is True
     )
 
 
@@ -124,6 +133,7 @@ def root_evidence(root: Path) -> dict[str, Any]:
     source_path = root / IMPLEMENTATION_PATH
     manifest_path = root / OWNER_MANIFEST_PATH
     registry_path = root / REGISTRY_PATH
+    source_sha256 = sha256_file(source_path)
 
     manifest_value: dict[str, Any] | None = None
     registry_value: dict[str, Any] | None = None
@@ -144,12 +154,12 @@ def root_evidence(root: Path) -> dict[str, Any]:
         "root": str(root),
         "source_path": str(source_path),
         "source_exists": source_path.is_file(),
-        "source_sha256": sha256_file(source_path),
+        "source_sha256": source_sha256,
         "owner_manifest_path": str(manifest_path),
         "owner_manifest_exists": manifest_path.is_file(),
         "owner_manifest_sha256": sha256_file(manifest_path),
         "owner_manifest_entries": manifest_entries,
-        "owner_manifest_exact_binding": exact_manifest_binding(manifest_entries),
+        "owner_manifest_exact_binding": exact_manifest_binding(manifest_entries, source_sha256),
         "owner_manifest_error": manifest_error,
         "strategy_registry_path": str(registry_path),
         "strategy_registry_exists": registry_path.is_file(),
@@ -207,18 +217,59 @@ def main() -> int:
     check("terminal_report_parse", report is not None, report_error, None)
     check("terminal_replay_root_absolute", replay_root is not None, str(replay_root) if replay_root else None, "absolute path")
     check("runtime_source_exists", runtime["source_exists"], runtime["source_path"], True)
-    check("runtime_owner_manifest_exact_binding", runtime["owner_manifest_exact_binding"], runtime["owner_manifest_entries"], {"owner_path": IMPLEMENTATION_PATH, "owner_module": OWNER_MODULE})
-    check("runtime_registry_exact_binding", runtime["strategy_registry_exact_binding"], runtime["strategy_registry_entries"], {"implementation_path": IMPLEMENTATION_PATH, "callable": CALLABLE})
+    check(
+        "runtime_owner_manifest_exact_binding",
+        runtime["owner_manifest_exact_binding"],
+        runtime["owner_manifest_entries"],
+        {"owner_path": IMPLEMENTATION_PATH, "owner_module": OWNER_MODULE, "owner_sha256": runtime["source_sha256"]},
+    )
+    check(
+        "runtime_registry_contract_binding",
+        runtime["strategy_registry_exact_binding"],
+        runtime["strategy_registry_entries"],
+        {
+            "config_ref": REGISTRY_CONFIG_REF,
+            "config_binding_source": REGISTRY_BINDING_SOURCE,
+            "active_allowed": False,
+            "fail_closed": True,
+            "canonical_engine_present": True,
+        },
+    )
     check("replay_source_exists", bool(replay and replay["source_exists"]), replay["source_path"] if replay else None, True)
-    check("replay_owner_manifest_exact_binding", bool(replay and replay["owner_manifest_exact_binding"]), replay["owner_manifest_entries"] if replay else None, {"owner_path": IMPLEMENTATION_PATH, "owner_module": OWNER_MODULE})
-    check("replay_registry_exact_binding", bool(replay and replay["strategy_registry_exact_binding"]), replay["strategy_registry_entries"] if replay else None, {"implementation_path": IMPLEMENTATION_PATH, "callable": CALLABLE})
+    check(
+        "replay_owner_manifest_exact_binding",
+        bool(replay and replay["owner_manifest_exact_binding"]),
+        replay["owner_manifest_entries"] if replay else None,
+        {"owner_path": IMPLEMENTATION_PATH, "owner_module": OWNER_MODULE, "owner_sha256": replay["source_sha256"] if replay else None},
+    )
+    check(
+        "replay_registry_contract_binding",
+        bool(replay and replay["strategy_registry_exact_binding"]),
+        replay["strategy_registry_entries"] if replay else None,
+        {
+            "config_ref": REGISTRY_CONFIG_REF,
+            "config_binding_source": REGISTRY_BINDING_SOURCE,
+            "active_allowed": False,
+            "fail_closed": True,
+            "canonical_engine_present": True,
+        },
+    )
     check(
         "runtime_replay_source_sha_parity",
         bool(replay and runtime["source_sha256"] and runtime["source_sha256"] == replay["source_sha256"]),
-        {
-            "runtime": runtime["source_sha256"],
-            "replay": replay["source_sha256"] if replay else None,
-        },
+        {"runtime": runtime["source_sha256"], "replay": replay["source_sha256"] if replay else None},
+        "equal non-null SHA-256",
+    )
+    check(
+        "runtime_replay_owner_manifest_sha_parity",
+        bool(replay and runtime["owner_manifest_sha256"] and runtime["owner_manifest_sha256"] == replay["owner_manifest_sha256"]),
+        {"runtime": runtime["owner_manifest_sha256"], "replay": replay["owner_manifest_sha256"] if replay else None},
+        "equal non-null SHA-256",
+    )
+    check(
+        "runtime_replay_registry_sha_parity",
+        bool(replay and runtime["strategy_registry_sha256"] and runtime["strategy_registry_sha256"] == replay["strategy_registry_sha256"]),
+        {"runtime": runtime["strategy_registry_sha256"], "replay": replay["strategy_registry_sha256"] if replay else None},
         "equal non-null SHA-256",
     )
 
@@ -232,11 +283,17 @@ def main() -> int:
             "canonical_path": runtime["source_path"],
             "terminal_replay_path": replay["source_path"],
             "source_sha256": runtime["source_sha256"],
+            "owner_manifest_sha256": runtime["owner_manifest_sha256"],
+            "registry_sha256": runtime["strategy_registry_sha256"],
+            "registry_active_allowed": False,
+            "stage_status": "STAGED_NOT_BOUND",
             "roles": [
-                "canonical_owner_manifest_bound",
-                "canonical_strategy_registry_bound",
+                "canonical_owner_manifest_path_module_sha_bound",
+                "fail_closed_strategy_registry_contract_bound",
                 "terminal_report_source_root_bound",
-                "runtime_replay_sha256_parity",
+                "runtime_replay_source_sha256_parity",
+                "runtime_replay_manifest_sha256_parity",
+                "runtime_replay_registry_sha256_parity",
             ],
         }
 

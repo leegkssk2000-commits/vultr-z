@@ -1,0 +1,90 @@
+name: ZEL Composite Module Factory V3 Balanced
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_composite_module_factory_v3.py
+      - .github/workflows/zel-composite-module-factory-v3-balanced.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-composite-module-factory-v3-balanced
+  cancel-in-progress: false
+
+env:
+  PRE_FACTORY_CHECKPOINT_REF: pre-composite-factory-v1-20260802
+
+jobs:
+  validate-build-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate rollback and balanced generation
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code origin "refs/heads/${PRE_FACTORY_CHECKPOINT_REF}" >/dev/null
+          python -m py_compile \
+            backend/tools/zel_composite_module_factory_v2.py \
+            backend/tools/zel_composite_module_factory_v3.py
+          python backend/tools/zel_composite_module_factory_v3.py --self-test
+          mkdir -p out
+          python backend/tools/zel_composite_module_factory_v3.py \
+            --registry backend/research/zel_composite_module_registry_v1.json \
+            --contract backend/research/zel_composite_module_factory_contract_v1.json \
+            --checkpoint-ref "${PRE_FACTORY_CHECKPOINT_REF}" \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state']=='PASS_COMPOSITE_FACTORY_V3_BALANCED_STATIC_READY',d
+          assert d['candidate_count']==30,d
+          assert d['symmetric_duplicate_selected_count']==0,d
+          assert d['symmetric_permutation_candidates_removed']>0,d
+          assert set(d['selected_distribution']['by_type'])=={
+            'SEQUENTIAL_COMPOSITE','CONTEXT_ROUTER','ADVISORY_COUNCIL'
+          },d
+          assert set(d['pool_distribution']['by_child_count']).issubset(
+            set(d['selected_distribution']['by_child_count'])
+          ),d
+          assert d['source_rebinding_required_before_activation'] is True,d
+          assert d['factory_enabled'] is False and d['activation_enabled'] is False,d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+      - name: Publish V3 receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" results
+          dest=results/runtime_results/zel/composite_module_factory_v3
+          mkdir -p "$dest"
+          cp out/latest.json "$dest/latest.json"
+          cp out/latest.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-composite-factory-v3-bot'
+          git config user.email 'zel-composite-factory-v3-bot@users.noreply.github.com'
+          git add runtime_results/zel/composite_module_factory_v3
+          git commit -m "result(zel): composite factory v3 balanced ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-factory-v3-${{ github.run_id }}
+          path: out/latest.json
+          retention-days: 90

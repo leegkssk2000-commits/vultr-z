@@ -8,11 +8,13 @@ on:
     branches: [master]
     paths:
       - .github/workflows/zel-data-b-1m-v2-watch-publish-v1.yml
+      - backend/tools/zel_worker_eta_sidecar_v1.py
   pull_request:
     branches: [master]
     paths:
       - .github/workflows/zel-data-b-1m-v2-watch-publish-v1.yml
       - backend/tools/zel_historical_oos_exact25_replay_v2.py
+      - backend/tools/zel_worker_eta_sidecar_v1.py
 
 permissions:
   contents: write
@@ -34,8 +36,11 @@ jobs:
       - name: Validate publisher boundary
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_historical_oos_exact25_replay_v2.py
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_worker_eta_sidecar_v1.py
           python backend/tools/zel_historical_oos_exact25_replay_v2.py --self-test
+          python backend/tools/zel_worker_eta_sidecar_v1.py --self-test
           python - <<'PY'
           from pathlib import Path
           t=Path('.github/workflows/zel-data-b-1m-v2-watch-publish-v1.yml').read_text()
@@ -48,6 +53,8 @@ jobs:
           assert "gh workflow run zel-pre-shadow-dag-controller-v1.yml" in t
           assert "gh workflow run zel-composite-post-terminal-ai-authorizer-v1.yml" in t
           assert "git add runtime_results/zel/data_b_1m_v2_watch_v1" in t
+          assert "zel_worker_eta_sidecar_v1.py" in t
+          assert "runtime_results/zel/data_b_1m_v2_worker_eta_v1" in t
           forbidden=(
             "git add runtime_results/zel/data_b_1m_v2_watch_v1 "
             + "runtime_results/zel/historical_oos_exact25_replay_v1"
@@ -124,6 +131,30 @@ jobs:
           print(json.dumps(out,indent=2,sort_keys=True))
           PY
           python -m json.tool out/status.json >/dev/null
+      - name: Read worker CPU IO heartbeat and bounded ETA
+        run: |
+          set -euo pipefail
+          set +e
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 - --unit zel-data-b-1m-v2.service --root /var/lib/zel-research/data-b-1m-v2 --sample-sec 10 --stdout" \
+            < backend/tools/zel_worker_eta_sidecar_v1.py \
+            > out/worker_eta.json
+          rc=$?
+          set -e
+          python - <<'PY'
+          import json
+          row=json.load(open('out/worker_eta.json'))
+          assert row['schema_version']=='zel.worker_eta_sidecar.v1',row
+          assert row['read_only'] is True and row['runtime_mutated'] is False,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['state'] in {
+            'PASS_WORKER_SIDECAR_TERMINAL','PASS_WORKER_ACTIVITY_OBSERVED',
+            'HOLD_SERVICE_NOT_ACTIVE','HOLD_NO_CPU_OR_IO_ACTIVITY'
+          },row
+          print({'state':row['state'],'completed':row['completed_units'],'total':row['total_units'],'active_workers':row['activity']['active_count'],'eta':row['eta']})
+          PY
+          test "$rc" -eq 0 -o "$rc" -eq 1
       - name: Fetch terminal artifacts when complete
         id: terminal
         run: |
@@ -170,7 +201,7 @@ jobs:
           assert report['execution_authority']=='NONE' and report['order_authority']=='BLOCKED',report
           print(json.dumps({'state':'PASS_V2_TERMINAL_VALIDATED','closed':report['replay']['closed_trade_count']},sort_keys=True))
           PY
-      - name: Publish watch and terminal authority
+      - name: Publish watch, worker ETA and terminal authority
         run: |
           set -euo pipefail
           cd results
@@ -179,9 +210,12 @@ jobs:
           git pull --rebase origin zel-data-expansion-results-v1
           cd ..
           watch_root=results/runtime_results/zel/data_b_1m_v2_watch_v1
-          mkdir -p "$watch_root"
+          worker_root=results/runtime_results/zel/data_b_1m_v2_worker_eta_v1
+          mkdir -p "$watch_root" "$worker_root"
           cp out/status.json "$watch_root/latest.json"
           cp out/status.json "$watch_root/run_${GITHUB_RUN_ID}.json"
+          cp out/worker_eta.json "$worker_root/latest.json"
+          cp out/worker_eta.json "$worker_root/run_${GITHUB_RUN_ID}.json"
           if [ "${{ steps.terminal.outputs.complete }}" = true ]; then
             v2root=results/runtime_results/zel/historical_oos_exact25_replay_v2/1m
             canon=results/runtime_results/zel/historical_oos_exact25_replay_v1
@@ -229,6 +263,7 @@ jobs:
           fi
           cd results
           git add runtime_results/zel/data_b_1m_v2_watch_v1
+          git add runtime_results/zel/data_b_1m_v2_worker_eta_v1
           if [ "${{ steps.terminal.outputs.complete }}" = true ]; then
             git add runtime_results/zel/historical_oos_exact25_replay_v1
             git add runtime_results/zel/historical_oos_exact25_replay_v2

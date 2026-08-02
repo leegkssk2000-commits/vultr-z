@@ -1,0 +1,195 @@
+name: ZEL Parallel Sidecars V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_skill_counterfactual_contract_v1.json
+      - backend/tools/zel_worker_eta_sidecar_v1.py
+      - backend/tools/zel_skill_counterfactual_adapter_v1.py
+      - backend/tools/zel_lico_historical_min_data_mapper_v1.py
+      - backend/tools/zel_trade_method_historical_adapter_v1.py
+      - .github/workflows/zel-parallel-sidecars-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-parallel-sidecars-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate static tools
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_worker_eta_sidecar_v1.py \
+            backend/tools/zel_skill_counterfactual_adapter_v1.py \
+            backend/tools/zel_lico_historical_min_data_mapper_v1.py \
+            backend/tools/zel_trade_method_historical_adapter_v1.py
+          python backend/tools/zel_worker_eta_sidecar_v1.py --self-test
+          python backend/tools/zel_skill_counterfactual_adapter_v1.py --self-test
+          python backend/tools/zel_lico_historical_min_data_mapper_v1.py --self-test
+          python backend/tools/zel_trade_method_historical_adapter_v1.py --self-test
+          python -m json.tool backend/research/zel_skill_counterfactual_contract_v1.json >/dev/null
+
+      - name: Run deterministic adapter fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import gzip,json
+          from pathlib import Path
+          rows=[
+            {
+              'event_id':'e1','strategy_id':'s1','symbol':'BTCUSDT','side':'long',
+              'entry_ts':'2026-01-01T00:00:00Z','exit_ts':'2026-01-01T01:00:00Z',
+              'entry_price':100.0,'exit_price':101.0,'realized_R':1.0,
+              'initial_risk_usdt':10.0,'window_id':'1m_w1',
+              'entry_features':{'regime':'trend'}
+            },
+            {
+              'event_id':'e2','strategy_id':'s2','symbol':'ETHUSDT','side':'long',
+              'entry_ts':'2026-01-02T00:00:00Z','exit_ts':'2026-01-02T01:00:00Z',
+              'entry_price':200.0,'exit_price':198.0,'realized_R':-1.0,
+              'initial_risk_usdt':20.0,'window_id':'1m_w1'
+            }
+          ]
+          with gzip.open('out/trades.jsonl.gz','wt',encoding='utf-8') as handle:
+              for row in rows: handle.write(json.dumps(row)+'\n')
+          Path('out/skill_receipt.json').write_text(json.dumps({
+            'effective_bot_skill_ids':['SK_POS_TRAILING_STOP'],
+            'active_os_guard_skill_ids':['SK_EXEC_MARKOUT_GUARD']
+          }))
+          Path('out/trade_method_behavior.json').write_text(json.dumps({
+            'rows':[
+              {'strategy_id':'s1','registry_enabled':True,'size_multiplier':0.5,'target_r':None,'execution_authority':'NONE','order_authority':'BLOCKED','paper_execution_allowed':False,'live_execution_allowed':False},
+              {'strategy_id':'s2','registry_enabled':False,'size_multiplier':0.0,'target_r':None,'execution_authority':'NONE','order_authority':'BLOCKED','paper_execution_allowed':False,'live_execution_allowed':False}
+            ]
+          }))
+          Path('out/lico_evidence.json').write_text(json.dumps({'rows':[
+            {'event_id':'e1','pos_pct':10,'lev':10,'liq_buffer_pct':15,'funding_8h_pct':0.01,'dd_day_pct':-1,'dd_total_pct':-2,
+             'src_keys':['cf:/price','cf:/pos_pct','cf:/lev','cf:/entry_ts','cf:/liq_buffer_pct','cf:/funding_8h_pct','cf:/dd_day_pct','cf:/dd_total_pct']}
+          ]}))
+          PY
+          set +e
+          python backend/tools/zel_skill_counterfactual_adapter_v1.py \
+            --contract backend/research/zel_skill_counterfactual_contract_v1.json \
+            --resolver-receipt out/skill_receipt.json \
+            --trades out/trades.jsonl.gz \
+            --out out/skill_adapter.json
+          skill_rc=$?
+          python backend/tools/zel_lico_historical_min_data_mapper_v1.py \
+            --trades out/trades.jsonl.gz \
+            --evidence out/lico_evidence.json \
+            --out out/lico_mapper.json
+          lico_rc=$?
+          python backend/tools/zel_trade_method_historical_adapter_v1.py \
+            --trades out/trades.jsonl.gz \
+            --behavior out/trade_method_behavior.json \
+            --out out/trade_method_adapter.json
+          method_rc=$?
+          set -e
+          python - <<'PY'
+          import json
+          skill=json.load(open('out/skill_adapter.json'))
+          lico=json.load(open('out/lico_mapper.json'))
+          method=json.load(open('out/trade_method_adapter.json'))
+          assert skill['state']=='HOLD_SKILL_COUNTERFACTUAL_PARTIAL_OR_BLOCKED',skill
+          assert skill['parity_only_skill_count']==1,skill
+          assert skill['blocked_skill_count']==1,skill
+          assert lico['state']=='HOLD_LICO_HISTORICAL_MIN_DATA_DATASET',lico
+          assert lico['ready_trade_count']==1 and lico['blocked_trade_count']==1,lico
+          assert method['state']=='HOLD_TRADE_METHOD_HISTORICAL_ADAPTER',method
+          assert method['pass_trade_count']==1 and method['blocked_trade_count']==1,method
+          for row in (skill,lico,method):
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+              assert row['active_data_b_1m_mutated'] is False,row
+              assert row['runtime_registry_mutated'] is False,row
+          print({'skill':skill['state'],'lico':lico['state'],'method':method['state']})
+          PY
+          test "$skill_rc" -eq 1
+          test "$lico_rc" -eq 1
+          test "$method_rc" -eq 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-parallel-adapter-fixtures-v1-${{ github.run_id }}
+          path: out
+          retention-days: 30
+
+  live-worker-sidecar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Measure live workers read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          set +e
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "python3 - --unit zel-data-b-1m-v2.service --root /var/lib/zel-research/data-b-1m-v2 --sample-sec 10 --stdout" \
+            < backend/tools/zel_worker_eta_sidecar_v1.py \
+            > out/worker_eta.json
+          rc=$?
+          set -e
+          python - <<'PY'
+          import json
+          row=json.load(open('out/worker_eta.json'))
+          assert row['schema_version']=='zel.worker_eta_sidecar.v1',row
+          assert row['read_only'] is True,row
+          assert row['runtime_mutated'] is False,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['state'] in {
+            'PASS_WORKER_SIDECAR_TERMINAL','PASS_WORKER_ACTIVITY_OBSERVED',
+            'HOLD_SERVICE_NOT_ACTIVE','HOLD_NO_CPU_OR_IO_ACTIVITY'
+          },row
+          print({'state':row['state'],'completed':row['completed_units'],'total':row['total_units'],'active_workers':row['activity']['active_count'],'eta':row['eta']})
+          PY
+          test "$rc" -eq 0 -o "$rc" -eq 1
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-live-worker-eta-v1-${{ github.run_id }}
+          path: out/worker_eta.json
+          if-no-files-found: error
+          retention-days: 30

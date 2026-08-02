@@ -1,0 +1,169 @@
+name: ZEL Data B 1m V2 Immediate Audit V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v2-immediate-audit-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-data-b-1m-v2-immediate-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Resolve longest non-PR legacy execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out ~/.ssh
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/zel-data-b-1m-single-owner-repair-v1.yml/runs?per_page=20" > out/raw_runs.json
+          python - <<'PY'
+          import json
+          from datetime import datetime
+          from pathlib import Path
+          raw=json.loads(Path('out/raw_runs.json').read_text())
+          rows=[]
+          for r in raw.get('workflow_runs',[]):
+              if r.get('event')=='pull_request':
+                  continue
+              started=r.get('run_started_at') or r.get('created_at')
+              updated=r.get('updated_at')
+              duration=0
+              if started and updated:
+                  duration=max(0,int((datetime.fromisoformat(updated.replace('Z','+00:00'))-datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds()))
+              rows.append({'id':r.get('id'),'name':r.get('name'),'event':r.get('event'),'status':r.get('status'),'conclusion':r.get('conclusion'),'started_at':started,'updated_at':updated,'duration_sec':duration})
+          rows.sort(key=lambda r:(r['duration_sec'],r.get('started_at') or ''),reverse=True)
+          Path('out/legacy_runs.json').write_text(json.dumps(rows,indent=2,sort_keys=True)+'\n')
+          selected=rows[0] if rows else {'started_at':'2026-08-01T18:00:00Z','duration_sec':0,'conclusion':None}
+          Path('out/selected_legacy.json').write_text(json.dumps(selected,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Read VPS V2 and historical failure evidence
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/vps_key out/selected_legacy.json "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_selected_legacy_run.json"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/vps.json <<'PY'
+          import json,subprocess,hashlib
+          from datetime import datetime,timezone
+          from pathlib import Path
+          selected=json.loads(Path('/tmp/zel_selected_legacy_run.json').read_text())
+          start=selected.get('started_at') or '2026-08-01T18:00:00Z'
+          def run(args):
+              return subprocess.run(args,text=True,capture_output=True).stdout.strip()
+          root=Path('/var/lib/zel-research/data-b-1m-v2')
+          active=run(['systemctl','is-active','zel-data-b-1m-v2.service'])=='active'
+          enabled=run(['systemctl','is-enabled','zel-data-b-1m-v2.service'])=='enabled'
+          pid=int(run(['systemctl','show','-p','MainPID','--value','zel-data-b-1m-v2.service']) or 0)
+          checkpoints=list((root/'checkpoints').glob('*.json.gz')) if (root/'checkpoints').is_dir() else []
+          progress={}
+          if (root/'progress.json').is_file():
+              try: progress=json.loads((root/'progress.json').read_text())
+              except Exception as exc: progress={'state':'INVALID','error_type':type(exc).__name__}
+          terminal={}
+          if (root/'terminal_receipt.json').is_file():
+              try: terminal=json.loads((root/'terminal_receipt.json').read_text())
+              except Exception as exc: terminal={'state':'INVALID','error_type':type(exc).__name__}
+          kernel=run(['journalctl','-k','--since',start,'--no-pager']).lower()
+          oom=any(token in kernel for token in ('out of memory','oom-kill','killed process'))
+          boot_epoch=int(next(line.split()[1] for line in Path('/proc/stat').read_text().splitlines() if line.startswith('btime ')))
+          start_epoch=int(datetime.fromisoformat(start.replace('Z','+00:00')).timestamp())
+          out={
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'service_active':active,
+            'service_enabled':enabled,
+            'main_pid':pid,
+            'checkpoint_count':len(checkpoints),
+            'progress':progress,
+            'terminal_receipt':terminal,
+            'terminal_complete':terminal.get('state')=='PASS',
+            'kernel_oom_detected':oom,
+            'host_reboot_detected':boot_epoch>start_epoch,
+            'legacy_process_count':len(run(['pgrep','-af','[z]el_historical_oos_exact25_replay_v1.py.*--interval 1m']).splitlines()),
+            'v2_process_count':len(run(['pgrep','-af','[z]el_historical_oos_exact25_replay_v2.py.*--interval 1m']).splitlines()),
+            'output_root_sha256':hashlib.sha256(str(root).encode()).hexdigest(),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - name: Build audit receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          legacy=json.loads(Path('out/selected_legacy.json').read_text())
+          candidates=json.loads(Path('out/legacy_runs.json').read_text())
+          vps=json.loads(Path('out/vps.json').read_text())
+          duration=int(legacy.get('duration_sec') or 0)
+          conclusion=str(legacy.get('conclusion') or '').lower()
+          if vps['kernel_oom_detected']:
+              cause='KERNEL_OOM_KILLED_REPLAY'
+          elif vps['host_reboot_detected']:
+              cause='HOST_REBOOT_INTERRUPTED_REPLAY'
+          elif duration>=410*60 and conclusion in ('failure','cancelled','timed_out'):
+              cause='GITHUB_ACTIONS_420M_JOB_BOUNDARY_TERMINATED_ATTACHED_SSH_REPLAY'
+          else:
+              cause='UNPROVED_ABRUPT_PROCESS_EXIT_NO_TERMINAL'
+          state='PASS_V2_ACTIVE' if vps['service_active'] else ('PASS_V2_TERMINAL' if vps['terminal_complete'] else 'HOLD_V2_NOT_ACTIVE')
+          out={
+            'schema_version':'zel.data_b.1m.v2.immediate_audit.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':state,
+            'legacy_termination_cause':cause,
+            'legacy_execution_run':legacy,
+            'legacy_run_candidates':candidates[:5],
+            'v2':vps,
+            'read_only':True,
+            'active_data_b_1m_mutated':False,
+            'canonical_strategy_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          Path('out/latest.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          assert state in ('PASS_V2_ACTIVE','PASS_V2_TERMINAL'),out
+          print(json.dumps({'state':state,'cause':cause,'checkpoints':vps['checkpoint_count'],'progress_pct':vps['progress'].get('progress_pct')},sort_keys=True))
+          PY
+      - name: Publish immediate audit
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v2_immediate_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v2-audit-bot'
+          git config user.email 'zel-data-b-v2-audit-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v2_immediate_audit_v1
+          git commit -m "result(zel): Data B 1m V2 immediate audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - name: Clean remote temporary file
+        if: always()
+        run: |
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'rm -f /tmp/zel_selected_legacy_run.json' || true

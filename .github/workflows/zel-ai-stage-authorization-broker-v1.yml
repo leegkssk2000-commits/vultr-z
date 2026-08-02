@@ -14,6 +14,7 @@ on:
           - TRADE_METHOD_COVERAGE
           - EXACT25_CHILD_PROBE
           - COMPONENT_MAIN_EFFECT
+          - SELECTED_INTERACTIONS
           - ALPHA_LAP_CHALLENGERS
       dispatch_target:
         description: Dispatch the target workflow after publishing a PASS receipt
@@ -26,6 +27,7 @@ on:
     branches: [master]
     paths:
       - backend/research/zel_ai_stage_authorization_broker_v1.json
+      - backend/research/zel_selected_interactions_contract_v1.json
       - backend/tools/zel_ai_stage_authorization_broker_v1.py
       - backend/tools/zel_ai_control_gate_v1.py
       - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
@@ -33,6 +35,7 @@ on:
     branches: [master]
     paths:
       - backend/research/zel_ai_stage_authorization_broker_v1.json
+      - backend/research/zel_selected_interactions_contract_v1.json
       - backend/tools/zel_ai_stage_authorization_broker_v1.py
       - backend/tools/zel_ai_control_gate_v1.py
       - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
@@ -63,13 +66,15 @@ jobs:
           python backend/tools/zel_ai_stage_authorization_broker_v1.py --self-test
           python backend/tools/zel_ai_control_gate_v1.py --self-test
           python -m json.tool backend/research/zel_ai_stage_authorization_broker_v1.json >/dev/null
+          python -m json.tool backend/research/zel_selected_interactions_contract_v1.json >/dev/null
           python - <<'PY'
           import json
           from pathlib import Path
           c=json.loads(Path('backend/research/zel_ai_stage_authorization_broker_v1.json').read_text())
           assert c['claim_tier']=='STAGE_AUTHORIZATION_NO_ECONOMIC_CLAIM',c
-          assert len(c['stages'])==5,c
+          assert len(c['stages'])==6,c
           assert sum(1 for row in c['stages'] if row['auto_dispatch'])==2,c
+          assert any(row['stage_id']=='SELECTED_INTERACTIONS' and row['target_workflow']=='zel-selected-interactions-v1.yml' for row in c['stages']),c
           assert c['rules']['generic_latest_written_only_immediately_before_target_dispatch'] is True,c
           workflow=Path('.github/workflows/zel-ai-stage-authorization-broker-v1.yml').read_text()
           assert 'git add runtime_results/zel/ai_stage_authorization_broker_v1' in workflow

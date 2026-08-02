@@ -55,16 +55,21 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
-          tar -czf - \
+          bundle="out/rescue_bundle_${GITHUB_RUN_ID}.tar.gz"
+          remote_bundle="/tmp/zel-1m-pending-rescue-bundle-${GITHUB_RUN_ID}.tar.gz"
+          tar -czf "$bundle" \
             backend/research/zel_data_b_1m_pending_rescue_contract_v1.json \
             backend/tools/zel_supertrend_nan_invariant_prover_v1.py \
-            backend/tools/zel_data_b_1m_pending_rescue_v1.py \
-          | ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            "GITHUB_RUN_ID=$GITHUB_RUN_ID bash -s" > out/remote_bundle.json <<'REMOTE'
+            backend/tools/zel_data_b_1m_pending_rescue_v1.py
+          scp -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 \
+            "$bundle" "$VPS_USER@$VPS_HOST:$remote_bundle"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "GITHUB_RUN_ID=$GITHUB_RUN_ID REMOTE_BUNDLE=$remote_bundle bash -s" \
+            > out/remote_bundle.json <<'REMOTE'
           set -euo pipefail
           tmp=$(mktemp -d /tmp/zel-1m-pending-rescue.XXXXXX)
-          trap 'rm -rf "$tmp"' EXIT
-          tar -xzf - -C "$tmp"
+          trap 'rm -rf "$tmp"; rm -f "$REMOTE_BUNDLE"' EXIT
+          tar -xzf "$REMOTE_BUNDLE" -C "$tmp"
           py=/home/z/z/.venv/bin/python
           contract="$tmp/backend/research/zel_data_b_1m_pending_rescue_contract_v1.json"
           proof="$tmp/proof.json"
@@ -113,6 +118,7 @@ jobs:
           print(json.dumps({'proof':proof,'plan':plan,'staged':rows},sort_keys=True))
           PY
           REMOTE
+          rm -f "$bundle"
           python - <<'PY'
           import json
           row=json.load(open('out/remote_bundle.json'))
@@ -126,9 +132,10 @@ jobs:
           assert plan['execution_authority']=='NONE' and plan['order_authority']=='BLOCKED',plan
           print({'proof_samples':proof['runtime_sample_count'],'parity':proof['runtime_hold_parity_pct'],'pending':plan['pending_units'],'staged':row['staged']})
           PY
-      - name: Remove SSH key
+      - name: Remove SSH key and local bundle
         if: always()
-        run: rm -f ~/.ssh/vps_key
+        run: |
+          rm -f ~/.ssh/vps_key out/rescue_bundle_*.tar.gz
       - uses: actions/upload-artifact@v4
         if: always()
         with:

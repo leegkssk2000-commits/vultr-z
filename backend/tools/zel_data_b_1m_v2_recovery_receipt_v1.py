@@ -14,15 +14,31 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def latest_legacy_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidates = [row for row in rows if row.get("name") == "ZEL Data B 1m Single Owner Repair V1"]
-    candidates.sort(key=lambda row: str(row.get("startedAt") or row.get("createdAt") or ""), reverse=True)
+def legacy_run_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [
+        row for row in rows
+        if row.get("name") == "ZEL Data B 1m Single Owner Repair V1"
+        and row.get("event") != "pull_request"
+    ]
+    candidates.sort(
+        key=lambda row: (
+            int(row.get("duration_sec") or 0),
+            str(row.get("startedAt") or row.get("createdAt") or ""),
+        ),
+        reverse=True,
+    )
+    return candidates
+
+
+def select_legacy_execution_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = legacy_run_candidates(rows)
     return candidates[0] if candidates else None
 
 
 def classify(run: dict[str, Any] | None, remote: dict[str, Any]) -> tuple[str, list[str]]:
     evidence: list[str] = []
     if run:
+        evidence.append(f"actions_event={run.get('event')}")
         evidence.append(f"actions_conclusion={run.get('conclusion')}")
         evidence.append(f"actions_duration_sec={run.get('duration_sec')}")
     evidence.append(f"kernel_oom_detected={remote.get('kernel_oom_detected')}")
@@ -36,8 +52,8 @@ def classify(run: dict[str, Any] | None, remote: dict[str, Any]) -> tuple[str, l
         return "HOST_REBOOT_INTERRUPTED_REPLAY", evidence
     conclusion = str((run or {}).get("conclusion") or "").lower()
     duration = int((run or {}).get("duration_sec") or 0)
-    if conclusion in {"timed_out", "cancelled"} and duration >= 410 * 60:
-        return "GITHUB_ACTIONS_420M_TIMEOUT_TERMINATED_ATTACHED_SSH_REPLAY", evidence
+    if conclusion in {"timed_out", "cancelled", "failure"} and duration >= 410 * 60:
+        return "GITHUB_ACTIONS_420M_JOB_BOUNDARY_TERMINATED_ATTACHED_SSH_REPLAY", evidence
     if conclusion == "timed_out":
         return "GITHUB_ACTIONS_TIMEOUT_TERMINATED_ATTACHED_SSH_REPLAY", evidence
     if remote.get("legacy_process_count") == 0 and remote.get("terminal_artifact_count") == 0:
@@ -46,7 +62,8 @@ def classify(run: dict[str, Any] | None, remote: dict[str, Any]) -> tuple[str, l
 
 
 def build(actions_rows: list[dict[str, Any]], remote: dict[str, Any], recovery: dict[str, Any]) -> dict[str, Any]:
-    run = latest_legacy_run(actions_rows)
+    candidates = legacy_run_candidates(actions_rows)
+    run = candidates[0] if candidates else None
     cause, evidence = classify(run, remote)
     recovered = recovery.get("v2_service_active") is True or recovery.get("terminal_complete") is True
     state = "PASS_V2_RECOVERY_STARTED" if recovered else "HOLD_V2_RECOVERY_NOT_ACTIVE"
@@ -57,6 +74,7 @@ def build(actions_rows: list[dict[str, Any]], remote: dict[str, Any], recovery: 
         "state": state,
         "legacy_termination_cause": cause,
         "legacy_run": run,
+        "legacy_run_candidates": candidates[:5],
         "cause_evidence": evidence,
         "remote_diagnostic": remote,
         "recovery": recovery,
@@ -76,12 +94,22 @@ def build(actions_rows: list[dict[str, Any]], remote: dict[str, Any], recovery: 
 
 
 def self_test() -> None:
-    rows = [{
-        "name": "ZEL Data B 1m Single Owner Repair V1",
-        "conclusion": "timed_out",
-        "duration_sec": 420 * 60,
-        "startedAt": "2026-08-01T20:00:00Z",
-    }]
+    rows = [
+        {
+            "name": "ZEL Data B 1m Single Owner Repair V1",
+            "event": "pull_request",
+            "conclusion": "failure",
+            "duration_sec": 20,
+            "startedAt": "2026-08-02T09:50:00Z",
+        },
+        {
+            "name": "ZEL Data B 1m Single Owner Repair V1",
+            "event": "workflow_dispatch",
+            "conclusion": "failure",
+            "duration_sec": 420 * 60,
+            "startedAt": "2026-08-01T20:00:00Z",
+        },
+    ]
     remote = {
         "kernel_oom_detected": False,
         "host_reboot_detected": False,
@@ -91,7 +119,8 @@ def self_test() -> None:
     recovery = {"v2_service_active": True, "terminal_complete": False}
     result = build(rows, remote, recovery)
     assert result["state"] == "PASS_V2_RECOVERY_STARTED", result
-    assert result["legacy_termination_cause"] == "GITHUB_ACTIONS_420M_TIMEOUT_TERMINATED_ATTACHED_SSH_REPLAY", result
+    assert result["legacy_run"]["event"] == "workflow_dispatch", result
+    assert result["legacy_termination_cause"] == "GITHUB_ACTIONS_420M_JOB_BOUNDARY_TERMINATED_ATTACHED_SSH_REPLAY", result
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / "receipt.json"
         path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
@@ -124,5 +153,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# trigger: 2026-08-02T09:52Z persistent-v2-recovery

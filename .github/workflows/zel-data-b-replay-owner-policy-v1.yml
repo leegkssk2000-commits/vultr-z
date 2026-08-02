@@ -7,11 +7,17 @@ on:
     paths:
       - .github/workflows/*.yml
       - .github/workflows/*.yaml
+      - backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+      - backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
   push:
     branches: [master]
     paths:
       - .github/workflows/*.yml
       - .github/workflows/*.yaml
+      - backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+      - backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+      - backend/tools/zel_historical_oos_exact25_replay_v2.py
 
 permissions:
   contents: read
@@ -23,14 +29,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Enforce one direct 1m replay owner and one receipt DAG
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Enforce one persistent 1m replay owner and one receipt DAG
         run: |
           set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py
+          bash -n backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh
+          python backend/tools/zel_historical_oos_exact25_replay_v2.py --self-test
+          python backend/tools/zel_data_b_1m_v2_recovery_receipt_v1.py --self-test
           python - <<'PY'
           from pathlib import Path
           workflows=Path('.github/workflows')
           policy_name='zel-data-b-replay-owner-policy-v1.yml'
-          direct=[]
+          attached=[]
+          persistent=[]
           redirects=[]
           for path in sorted(workflows.glob('*.y*ml')):
               if path.name==policy_name:
@@ -42,10 +57,13 @@ jobs:
                   'python3 /tmp/zel_historical_oos_exact25_replay_v1.py',
               )
               if '--interval 1m' in text and any(marker in text for marker in execution_markers):
-                  direct.append(path.name)
+                  attached.append(path.name)
+              if 'persistent_systemd_owner' in text and 'zel_data_b_1m_v2_recover_exec_v1.sh' in text:
+                  persistent.append(path.name)
               if 'zel-data-b-1m-single-owner-repair-v1.yml/dispatches' in text:
                   redirects.append(path.name)
-          assert direct==['zel-data-b-1m-single-owner-repair-v1.yml'],direct
+          assert attached==[],attached
+          assert persistent==['zel-data-b-1m-v2-recovery-v1.yml'],persistent
           required_redirects={
               'zel-data-b-1m-terminal-repair-v2.yml',
               'zel-historical-oos-1m-resume-v1.yml',
@@ -53,19 +71,27 @@ jobs:
           }
           assert required_redirects.issubset(set(redirects)),redirects
 
+          legacy=(workflows/'zel-data-b-1m-single-owner-repair-v1.yml').read_text()
+          assert 'timeout-minutes: 420' not in legacy
+          assert 'gh workflow run zel-data-b-1m-v2-recovery-v1.yml --ref master' in legacy
+          assert 'zel_historical_oos_exact25_replay_v1.py \\' not in legacy
+
+          recovery=(workflows/'zel-data-b-1m-v2-recovery-v1.yml').read_text()
+          assert 'group: zel-data-b-1m-single-owner-global-v1' in recovery
+          assert 'persistent_systemd_owner' in recovery
+          assert 'timeout-minutes: 420' not in recovery
+          assert 'backend/tools/zel_data_b_1m_v2_recover_exec_v1.sh' in recovery
+          watch=(workflows/'zel-data-b-1m-v2-watch-publish-v1.yml').read_text()
+          assert "cron: '*/15 * * * *'" in watch
+          assert 'terminal_receipt.json' in watch
+          assert 'gh workflow run zel-pre-shadow-dag-controller-v1.yml --ref master' in watch
+
           risk=(workflows/'zel-data-b-risk-adapter-ablation-v1.yml').read_text()
           risk_header=risk.split('\njobs:',1)[0]
           risk_ablate=risk.split('\n  ablate:',1)[1]
           assert 'workflow_run:' not in risk_header
           assert 'zel_historical_oos_exact25_replay_v1.py' not in risk_ablate
           assert '--source-root' not in risk_ablate
-
-          canonical=(workflows/'zel-data-b-1m-single-owner-repair-v1.yml').read_text()
-          assert 'flock -n 9' in canonical
-          assert 'single_owner_proved' in canonical
-          assert 'Dispatch receipt-driven DAG controller only' in canonical
-          assert 'gh workflow run zel-pre-shadow-dag-controller-v1.yml --ref master' in canonical
-          assert 'for workflow in zel-data-b-risk-adapter-ablation-v1.yml' not in canonical
 
           controller_path=workflows/'zel-pre-shadow-dag-controller-v1.yml'
           assert controller_path.is_file(),controller_path
@@ -95,8 +121,9 @@ jobs:
           assert 'PASS_STRATEGY_TOP3_BUNDLES_COMPLETE' in alpha
           assert 'gh workflow run zel-historical-oos-1m-resume-v1.yml' not in alpha
           print({
-              'direct_1m_owner':direct,
-              'redirects':sorted(redirects),
+              'attached_1m_owners':attached,
+              'persistent_1m_owner':persistent,
+              'legacy_redirect':'zel-data-b-1m-v2-recovery-v1.yml',
               'downstream_controller':'zel-pre-shadow-dag-controller-v1.yml',
               'receipt_gates':'PASS',
               'lineage_binding':'PASS',

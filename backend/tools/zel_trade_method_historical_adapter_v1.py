@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_TRADE_METHOD_HISTORICAL_ADAPTER_V1"
+VERSION = "ZEL_TRADE_METHOD_HISTORICAL_ADAPTER_V1_1"
 
 
 def now_iso() -> str:
@@ -55,13 +55,20 @@ def classify_behavior(row: Mapping[str, Any] | None) -> dict[str, Any]:
         return {
             "state": "HOLD_TRADE_METHOD_BEHAVIOR_MISSING",
             "counterfactual_mode": "NONE",
+            "registry_enabled": False,
+            "policy_active": False,
+            "size_multiplier": None,
+            "target_r": None,
+            "target_r_raw": None,
             "r_delta_allowed": False,
             "usdt_reweight_allowed": False,
             "blockers": ["runtime_behavior_missing"],
         }
-    enabled = row.get("registry_enabled") is True
+    registry_enabled = row.get("registry_enabled") is True
     size_multiplier = safe_float(row.get("size_multiplier"))
-    target_r = safe_float(row.get("target_r"))
+    target_raw = row.get("target_r")
+    target_r = safe_float(target_raw)
+    policy_active = registry_enabled or (size_multiplier is not None and size_multiplier > 0)
     authority_safe = (
         str(row.get("execution_authority") or "").upper() == "NONE"
         and str(row.get("order_authority") or "").upper() == "BLOCKED"
@@ -71,25 +78,31 @@ def classify_behavior(row: Mapping[str, Any] | None) -> dict[str, Any]:
     blockers: list[str] = []
     if not authority_safe:
         blockers.append("authority_boundary_unsafe")
-    if not enabled or size_multiplier is None or size_multiplier <= 0:
-        blockers.append("registry_disabled_or_zero_size")
+    if not policy_active:
+        blockers.append("registry_disabled_and_zero_size")
     if target_r is not None:
-        blockers.append("target_r_requires_intratrade_price_path")
+        blockers.append("numeric_target_r_requires_intratrade_price_path")
     if blockers:
         state = "HOLD_TRADE_METHOD_HISTORICAL_COUNTERFACTUAL"
         mode = "DISABLED_OR_PATH_DEPENDENT"
+    elif size_multiplier is None:
+        state = "HOLD_TRADE_METHOD_SIZE_MULTIPLIER_MISSING"
+        mode = "SIZE_UNKNOWN"
+        blockers.append("size_multiplier_missing")
     elif abs(size_multiplier - 1.0) < 1e-12:
         state = "PASS_TRADE_METHOD_R_PARITY_ONLY"
-        mode = "IDENTITY_SIZE"
+        mode = "IDENTITY_SIZE_POLICY"
     else:
         state = "PASS_TRADE_METHOD_USDT_REWEIGHT_PLAN_ONLY"
         mode = "LINEAR_SIZE_PLAN"
     return {
         "state": state,
         "counterfactual_mode": mode,
-        "registry_enabled": enabled,
+        "registry_enabled": registry_enabled,
+        "policy_active": policy_active,
         "size_multiplier": size_multiplier,
         "target_r": target_r,
+        "target_r_raw": target_raw,
         "r_delta_allowed": False,
         "usdt_reweight_allowed": state == "PASS_TRADE_METHOD_USDT_REWEIGHT_PLAN_ONLY",
         "blockers": sorted(set(blockers)),
@@ -120,8 +133,11 @@ def map_trade(trade: Mapping[str, Any], behavior: Mapping[str, Any] | None) -> d
         "r_delta": 0.0,
         "initial_risk_usdt": initial_risk,
         "planned_initial_risk_usdt": planned_risk,
+        "registry_enabled": classification.get("registry_enabled"),
+        "policy_active": classification.get("policy_active"),
         "size_multiplier": classification.get("size_multiplier"),
         "target_r": classification.get("target_r"),
+        "target_r_raw": classification.get("target_r_raw"),
         "blockers": sorted(set(blockers)),
         "linear_cost_scaling_claim_allowed": False,
         "economic_superiority_claim_allowed": False,
@@ -135,6 +151,8 @@ def build(trades_path: Path, behavior_path: Path) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     state_counts: Counter[str] = Counter()
     blocker_counts: Counter[str] = Counter()
+    strategy_counts: Counter[str] = Counter()
+    strategy_pass_counts: Counter[str] = Counter()
     with gzip.open(trades_path, "rt", encoding="utf-8") as handle:
         for raw in handle:
             if not raw.strip():
@@ -147,6 +165,9 @@ def build(trades_path: Path, behavior_path: Path) -> dict[str, Any]:
             rows.append(mapped)
             state_counts[mapped["state"]] += 1
             blocker_counts.update(mapped["blockers"])
+            strategy_counts[strategy_id] += 1
+            if mapped["state"].startswith("PASS_"):
+                strategy_pass_counts[strategy_id] += 1
     pass_count = sum(count for state, count in state_counts.items() if state.startswith("PASS_"))
     state = "PASS_TRADE_METHOD_HISTORICAL_ADAPTER" if rows and pass_count == len(rows) else "HOLD_TRADE_METHOD_HISTORICAL_ADAPTER"
     result: dict[str, Any] = {
@@ -154,11 +175,14 @@ def build(trades_path: Path, behavior_path: Path) -> dict[str, Any]:
         "version": VERSION,
         "generated_at": now_iso(),
         "state": state,
+        "classification_rule": "policy_active=registry_enabled_or_positive_size_multiplier",
         "trade_count": len(rows),
         "pass_trade_count": pass_count,
         "blocked_trade_count": len(rows) - pass_count,
         "state_counts": dict(sorted(state_counts.items())),
         "blocker_counts": dict(sorted(blocker_counts.items())),
+        "strategy_trade_counts": dict(sorted(strategy_counts.items())),
+        "strategy_pass_counts": dict(sorted(strategy_pass_counts.items())),
         "rows": rows,
         "r_delta_sum": 0.0,
         "linear_cost_scaling_claim_allowed": False,
@@ -178,26 +202,31 @@ def build(trades_path: Path, behavior_path: Path) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    safe = {
+    allow_policy = {
         "strategy_id": "s1",
-        "registry_enabled": True,
-        "size_multiplier": 0.5,
-        "target_r": None,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
+        "decision": "ALLOW_POLICY",
+        "registry_enabled": False,
+        "size_multiplier": 1.0,
+        "target_r": "policy",
+        "execution_authority": "none",
+        "order_authority": "blocked",
         "paper_execution_allowed": False,
         "live_execution_allowed": False,
     }
-    mapped = map_trade({"event_id": "e1", "strategy_id": "s1", "realized_R": 1.0, "initial_risk_usdt": 10}, safe)
+    parity = map_trade({"event_id": "e1", "strategy_id": "s1", "realized_R": 1.0, "initial_risk_usdt": 10}, allow_policy)
+    assert parity["state"] == "PASS_TRADE_METHOD_R_PARITY_ONLY", parity
+    assert parity["policy_active"] is True, parity
+    assert parity["r_delta"] == 0.0, parity
+    scaled = dict(allow_policy, registry_enabled=True, size_multiplier=0.5, target_r=None)
+    mapped = map_trade({"event_id": "e2", "strategy_id": "s1", "realized_R": 1.0, "initial_risk_usdt": 10}, scaled)
     assert mapped["state"] == "PASS_TRADE_METHOD_USDT_REWEIGHT_PLAN_ONLY", mapped
     assert mapped["planned_initial_risk_usdt"] == 5.0, mapped
-    assert mapped["r_delta"] == 0.0, mapped
-    disabled = dict(safe, registry_enabled=False, size_multiplier=0.0)
-    hold = map_trade({"event_id": "e2", "strategy_id": "s1", "realized_R": -1.0}, disabled)
+    disabled = dict(allow_policy, size_multiplier=0.0)
+    hold = map_trade({"event_id": "e3", "strategy_id": "s1", "realized_R": -1.0}, disabled)
     assert hold["state"] == "HOLD_TRADE_METHOD_HISTORICAL_COUNTERFACTUAL", hold
-    target = dict(safe, target_r=2.5)
-    target_hold = map_trade({"event_id": "e3", "strategy_id": "s1", "realized_R": 1.0}, target)
-    assert "target_r_requires_intratrade_price_path" in target_hold["blockers"], target_hold
+    target = dict(allow_policy, target_r=2.5)
+    target_hold = map_trade({"event_id": "e4", "strategy_id": "s1", "realized_R": 1.0}, target)
+    assert "numeric_target_r_requires_intratrade_price_path" in target_hold["blockers"], target_hold
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 

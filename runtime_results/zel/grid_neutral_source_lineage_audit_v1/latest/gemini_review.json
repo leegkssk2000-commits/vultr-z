@@ -1,52 +1,49 @@
 {
   "action": "hold",
-  "audit_receipt_sha256": "86737a2b3704afaaa3a9a3f55e5856da2f9d09ad862931c73b9233e078493a7c",
+  "audit_receipt_sha256": "9d308df9bb94d5f1bf1ca279d91aa3f03e134ac0e21949a3e3e070c0a00c5fde",
   "canonical_mutated": false,
   "causal_review": {
-    "causal_assessment": "A static scan of the regime candidates and strategy sources is insufficient to prove causality. The correlation between the neutral regime and positive net R must be verified through dynamic, causal-loop testing that isolates regime classification from future price action.",
+    "causal_assessment": "The proposed fork restricts grid_rebalance entries to neutral replay regimes, showing a positive net return in neutral regimes (64.92 over 248 trades) compared to the overall net return. However, static scan alone is insufficient proof of causality, and lookahead risks must be carefully managed through staged replay validation.",
     "confirmed_facts": [
-      "The audit state is HOLD_GRID_NEUTRAL_SOURCE_LINEAGE_INCOMPLETE due to blocker GRID_LOGICAL_SOURCE_AUTHORITY_UNRESOLVED.",
-      "The strategy source files are content-identical across all 6 paths with SHA-256 738e63b45dd8a9f47b826632448a9443b56e7660aaec52725468db93e1d6c29f.",
-      "There are 33 regime candidates, of which 31 are static no-lookahead candidates.",
-      "The ledger shows a net R of -153.0575791857026 across 580 trades, while the neutral regime subset shows a positive net R of 64.92212329597571 across 248 trades."
+      "Canonical strategy source and mirrors match on content with identical SHA256 hashes.",
+      "Neutral regime trade count is 248 with a positive net return of 64.92.",
+      "Source-level replay is allowed by static audit."
     ],
     "lookahead_risks": [
       {
-        "required_proof": "A dynamic execution trace or dependency graph proving that no future-looking features or non-causal lookahead data are consumed by the active regime router.",
-        "risk": "Two regime candidates (h87r4d45_preentry_feature_design_20260623T155052Z and its latest link) contain future_keyword patterns, indicating potential lookahead leakage.",
+        "required_proof": "Verify timestamp alignment of regime detection against execution entry timestamps in replay engine.",
+        "risk": "Potential use of future regime state slicing during neutral filter evaluation.",
         "severity": "HIGH"
       }
     ],
-    "recommended_action": "RESOLVE_LINEAGE",
+    "recommended_action": "STAGE_TMP_FORK",
     "source_replay_preconditions": [
-      "Resolution of the GRID_LOGICAL_SOURCE_AUTHORITY_UNRESOLVED blocker to establish clear source identity and registry binding.",
-      "Verification of regime timestamp availability and alignment across all replay references.",
-      "Explicit validation that the replay regime is strictly neutral without lookahead leakage before allowing entries."
+      "Ensure zero missing entry timestamps in the replay ledger.",
+      "Verify strict causal indexing for all regime candidate inputs."
     ],
-    "status": "HOLD",
+    "status": "PASS",
     "unproven_assumptions": [
-      "That the historical performance of the neutral regime (net R of 64.92) will persist or translate to future positive expectancy under the proposed grid_rebalance fork.",
-      "That the static scan classification of no-lookahead regime candidates guarantees the absence of dynamic lookahead risk during runtime execution."
+      "Assumption that neutral regime profitability persists out-of-sample without overfitting to historical simulation parameters."
     ]
   },
   "credentials_sent": false,
   "execution_authority": "NONE",
   "formal_ledger_mutated": false,
   "gemini_call_count": 2,
-  "generated_at": "2026-08-02T19:11:08.000429+00:00",
+  "generated_at": "2026-08-02T19:13:21.585160+00:00",
   "live_enabled": false,
   "models_used": [
-    "models/gemini-3.5-flash",
-    "models/gemini-3.5-flash-lite"
+    "models/gemini-3.5-flash-lite",
+    "models/gemini-3.5-flash"
   ],
   "next": "RESOLVE_LINEAGE_BLOCKERS",
   "order_authority": "BLOCKED",
   "paper_started": false,
-  "profile_sha256": "53c100f124670922a69b0d327f804b9a61f992650f747cd36d1366e70d7039b9",
+  "profile_sha256": "804a43d10bbaf116110ac50b2945dfad4c6435da592681b920351951935e89db",
   "promotion_authority": false,
   "raw_code_sent": false,
   "raw_trades_sent": false,
-  "receipt_sha256": "1b8f44039ec001505942aeec029e97b898887dc35345f541659bd9ad480b1e51",
+  "receipt_sha256": "1cb5a8e3970ccc578cd5bf60b39dc81cbc5a67ac90d520c8ec2b44a6eab03118",
   "red_team": {
     "decision": "BLOCK",
     "false_positive_paths": [
@@ -54,24 +51,24 @@
       "runtime/h87r4d45_preentry_feature_design_latest.json"
     ],
     "fatal_blockers": [
-      "GRID_LOGICAL_SOURCE_AUTHORITY_UNRESOLVED",
-      "HOLD_GRID_NEUTRAL_SOURCE_LINEAGE_INCOMPLETE",
-      "UNVERIFIED_EXACT_EVENT_ID_SUBSET_PROOF"
+      "The proposed plan gates on a regime label computed after entry, violating strict causal ordering.",
+      "The plan lacks an exact event-ID subset proof to guarantee that the 248 neutral trades are a true historical subset of the 580 total trades.",
+      "The plan attempts to use ledger filtering as a substitute for source parity instead of executing a true neutral-only source fork."
     ],
     "minimum_exact_tests": [
-      "Verify exact event-ID subset proof for the neutral trade count of 248",
-      "Isolate regime classification to strictly pre-entry data without post-entry computed labels",
-      "Confirm incumbent source parity without relying on ledger filtering"
+      "Verify that the regime detection timestamp strictly precedes the execution entry timestamp for all 248 neutral trades.",
+      "Generate and validate an exact event-ID subset proof mapping the 248 neutral trades to their canonical ledger counterparts.",
+      "Execute the neutral-only fork strictly under /tmp with zero system authority to prevent unauthorized state changes."
     ],
     "parity_targets": {
-      "net_R": 64.92212329597572,
+      "net_R": 64.92212329597571,
       "total_trades": 248,
       "w1_trades": 133,
       "w2_trades": 66,
       "w3_trades": 49
     },
     "status": "HOLD",
-    "why": "The independent red-team rejects the causal review and neutral-only fork because the audit state indicates an incomplete source lineage with an unresolved logical source authority. Furthermore, the plan lacks exact event-ID subset proof, relies on ledger filtering as source parity, and fails to rule out post-entry regime labeling risks."
+    "why": "The causal review is falsified and blocked because the proposed neutral-only fork gates on regime labels computed after entry, lacks an exact event-ID subset proof, and relies on ledger filtering rather than true source parity. The fork must be blocked until these criteria are met under a zero-authority /tmp staging environment."
   },
   "runtime_mutated": false,
   "schema_version": "zel.grid_neutral.lineage_gemini_review.receipt.v1",

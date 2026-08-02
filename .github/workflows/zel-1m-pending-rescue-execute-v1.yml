@@ -1,0 +1,315 @@
+name: ZEL 1m Pending Rescue Execute V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-1m-pending-rescue-execute-v1.yml
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: zel-1m-pending-rescue-execute-v1
+  cancel-in-progress: false
+
+jobs:
+  execute-rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate immutable rescue tools
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/tools/zel_supertrend_nan_invariant_prover_v1.py \
+            backend/tools/zel_data_b_1m_pending_rescue_v1.py
+          python -m json.tool backend/research/zel_data_b_1m_pending_rescue_contract_v1.json >/dev/null
+          python backend/tools/zel_supertrend_nan_invariant_prover_v1.py --self-test
+          python backend/tools/zel_data_b_1m_pending_rescue_v1.py --self-test
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - id: rescue
+        name: Stop, commit two checkpoints and terminalize with original V2 engine
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          bundle="out/pending_rescue_execute_${GITHUB_RUN_ID}.tar.gz"
+          remote_bundle="/tmp/zel-1m-pending-rescue-execute-${GITHUB_RUN_ID}.tar.gz"
+          tar -czf "$bundle" \
+            backend/research/zel_data_b_1m_pending_rescue_contract_v1.json \
+            backend/tools/zel_supertrend_nan_invariant_prover_v1.py \
+            backend/tools/zel_data_b_1m_pending_rescue_v1.py
+          scp -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 \
+            "$bundle" "$VPS_USER@$VPS_HOST:$remote_bundle"
+          set +e
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "GITHUB_RUN_ID=$GITHUB_RUN_ID REMOTE_BUNDLE=$remote_bundle bash -s" \
+            > out/rescue_result.json 2> out/rescue_remote.stderr <<'REMOTE'
+          set -euo pipefail
+          unit=zel-data-b-1m-v2.service
+          output=/var/lib/zel-research/data-b-1m-v2
+          checkpoints="$output/checkpoints"
+          tmp=$(mktemp -d /tmp/zel-1m-pending-rescue-execute.XXXXXX)
+          trap 'rm -rf "$tmp"; rm -f "$REMOTE_BUNDLE"' EXIT
+          tar -xzf "$REMOTE_BUNDLE" -C "$tmp"
+
+          py=/home/z/z/.venv/bin/python
+          contract="$tmp/backend/research/zel_data_b_1m_pending_rescue_contract_v1.json"
+          prover="$tmp/backend/tools/zel_supertrend_nan_invariant_prover_v1.py"
+          rescue="$tmp/backend/tools/zel_data_b_1m_pending_rescue_v1.py"
+          engine1=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py
+          engine2=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v2.py
+          source=/opt/zel/forward-expansion-v1/source
+          data=/opt/zel/historical-oos-v1
+          proof="$tmp/proof.json"
+          stage="$tmp/stage"
+          stage_receipt="$tmp/stage_receipt.json"
+          commit_receipt="$tmp/commit_receipt.json"
+          terminal_log="$tmp/terminalize.log"
+
+          emit_failure() {
+            local state="$1"
+            local reason="$2"
+            STATE="$state" REASON="$reason" PROOF="$proof" STAGE_RECEIPT="$stage_receipt" COMMIT_RECEIPT="$commit_receipt" "$py" - <<'PY'
+          import json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          def read(path):
+              try:return json.loads(Path(path).read_text())
+              except Exception:return {}
+          print(json.dumps({
+            'schema_version':'zel.data_b.1m.pending_rescue.execution.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':os.environ['STATE'],
+            'reason':os.environ['REASON'],
+            'proof':read(os.environ['PROOF']),
+            'stage_receipt':read(os.environ['STAGE_RECEIPT']),
+            'commit_receipt':read(os.environ['COMMIT_RECEIPT']),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },sort_keys=True))
+          PY
+          }
+
+          terminal_ready=$($py - "$output" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          try:
+              terminal=json.loads((root/'terminal_receipt.json').read_text())
+              report=json.loads((root/'report.json').read_text())
+              ready=(terminal.get('state')=='PASS' and report.get('state')=='PASS' and report.get('replay',{}).get('strategy_count_completed')==25)
+          except Exception: ready=False
+          print('true' if ready else 'false')
+          PY
+          )
+          if [ "$terminal_ready" = true ]; then
+            "$py" - "$output" <<'PY'
+          import json,sys
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path(sys.argv[1]);report=json.loads((root/'report.json').read_text());terminal=json.loads((root/'terminal_receipt.json').read_text())
+          print(json.dumps({'schema_version':'zel.data_b.1m.pending_rescue.execution.receipt.v1','generated_at':datetime.now(timezone.utc).isoformat(),'state':'PASS_ALREADY_TERMINAL','strategy_count_completed':report['replay']['strategy_count_completed'],'closed_trade_count':report['replay']['closed_trade_count'],'terminal_state':terminal['state'],'runtime_mutated':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'},sort_keys=True))
+          PY
+            exit 0
+          fi
+
+          "$py" "$prover" \
+            --contract "$contract" --engine-v1 "$engine1" \
+            --source-root "$source" --data-root "$data" --interval 1m --out "$proof"
+          "$py" "$rescue" \
+            --contract "$contract" --proof "$proof" \
+            --engine-v1 "$engine1" --engine-v2 "$engine2" \
+            --source-root "$source" --data-root "$data" \
+            --output-dir "$output" --stage-dir "$stage" --interval 1m \
+            --mode stage --receipt "$stage_receipt" >/dev/null
+          "$py" - "$proof" "$stage_receipt" "$stage" <<'PY'
+          import gzip,json,sys
+          from pathlib import Path
+          proof=json.load(open(sys.argv[1]));plan=json.load(open(sys.argv[2]));stage=Path(sys.argv[3])
+          assert proof['state']=='PASS_SUPERTREND_NAN_SEMANTIC_INVARIANT',proof
+          assert proof['runtime_sample_count']>=12 and proof['runtime_hold_parity_pct']==100.0,proof
+          assert proof['semantic_result']=={'signal_count':0,'open_count':0,'close_count':0,'error_count':0,'deterministic_hold_only':True},proof
+          assert plan['state']=='PASS_PENDING_RESCUE_STAGED',plan
+          assert plan['completed_checkpoint_count']==23,plan
+          assert plan['pending_units']==['supertrend_pullback','trend_rider'],plan
+          assert plan['generated_checkpoint_count']==2,plan
+          for sid in plan['pending_units']:
+              with gzip.open(stage/f'{sid}.json.gz','rt',encoding='utf-8') as handle:row=json.load(handle)
+              assert row['input_fingerprint']==plan['input_fingerprint'],row
+              assert all(l['signal_count']==0 and l['open_count']==0 and l['close_count']==0 and l['error_count']==0 for l in row['result']['lanes']),row
+          PY
+
+          sudo -n systemctl stop "$unit"
+          for _ in $(seq 1 30); do
+            if [ "$(systemctl is-active "$unit" || true)" = inactive ]; then break; fi
+            sleep 1
+          done
+          if [ "$(systemctl is-active "$unit" || true)" != inactive ]; then
+            emit_failure HOLD_RESCUE_SERVICE_STOP_FAILED SERVICE_NOT_INACTIVE
+            exit 1
+          fi
+
+          "$py" "$rescue" \
+            --contract "$contract" --proof "$proof" \
+            --engine-v1 "$engine1" --engine-v2 "$engine2" \
+            --source-root "$source" --data-root "$data" \
+            --output-dir "$output" --stage-dir "$stage" --interval 1m \
+            --mode commit --commit-token COMMIT_EXACT_PENDING_RESCUE_V1 \
+            --receipt "$commit_receipt" >/dev/null
+
+          backup_root=$($py - "$commit_receipt" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1]))['backup_root'])
+          PY
+          )
+          mkdir -p "$backup_root/pre_terminal"
+          "$py" - "$output" "$backup_root/pre_terminal" <<'PY'
+          import json,shutil,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]);backup=Path(sys.argv[2])
+          names=('report.json','summary.json','scoreboard.csv','trades.jsonl.gz','artifact_manifest.json','terminal_receipt.json')
+          present=[]
+          for name in names:
+              src=root/name
+              if src.is_file():
+                  shutil.copy2(src,backup/name);present.append(name)
+          (backup/'present_before.json').write_text(json.dumps({'present':present},indent=2,sort_keys=True)+'\n')
+          PY
+
+          set +e
+          "$py" "$engine2" \
+            --engine-v1 "$engine1" --source-root "$source" --data-root "$data" \
+            --interval 1m --output-dir "$output" --workers 1 \
+            > "$terminal_log" 2>&1
+          terminal_rc=$?
+          set -e
+
+          set +e
+          "$py" - "$output" > "$tmp/validation.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          report=json.loads((root/'report.json').read_text())
+          terminal=json.loads((root/'terminal_receipt.json').read_text())
+          progress=json.loads((root/'progress.json').read_text())
+          manifest=json.loads((root/'artifact_manifest.json').read_text())
+          checkpoints=list((root/'checkpoints').glob('*.json.gz'))
+          assert report['state']=='PASS' and report['interval']=='1m',report
+          assert report['version']=='ZEL_HISTORICAL_OOS_EXACT25_REPLAY_V2',report
+          assert report['replay']['strategy_count_completed']==25,report
+          assert report['replay']['strategy_failure_count']==0,report
+          assert report['replay']['error_count']==0,report
+          assert terminal['state']=='PASS' and terminal['runtime_safe'] is True,terminal
+          assert terminal['strategy_count_completed']==25 and terminal['strategy_failure_count']==0,terminal
+          assert progress['state']=='PASS' and progress['completed_units']==25 and progress['total_units']==25,progress
+          assert manifest['terminal_complete'] is True and manifest['atomic_publication'] is True,manifest
+          assert len(checkpoints)==25,len(checkpoints)
+          assert report['canonical_runtime']['producer_pid_unchanged'] is True,report
+          assert report['canonical_runtime']['writer_pid_unchanged'] is True,report
+          assert report['canonical_runtime']['formal_ledger']['prefix_unchanged'] is True,report
+          assert report['source']['strategy_tree_unchanged'] is True,report
+          assert report['execution_authority']=='NONE' and report['order_authority']=='BLOCKED',report
+          print(json.dumps({'strategy_count_completed':25,'closed_trade_count':report['replay']['closed_trade_count'],'strategy_call_count':report['replay']['strategy_call_count'],'checkpoint_count':25,'terminal_state':terminal['state']},sort_keys=True))
+          PY
+          validation_rc=$?
+          set -e
+
+          if [ "$terminal_rc" -ne 0 ] || [ "$validation_rc" -ne 0 ]; then
+            rm -f "$checkpoints/supertrend_pullback.json.gz" "$checkpoints/trend_rider.json.gz"
+            cp -f "$backup_root/progress.json" "$output/progress.json"
+            "$py" - "$output" "$backup_root/pre_terminal" <<'PY'
+          import json,shutil,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]);backup=Path(sys.argv[2]);names=('report.json','summary.json','scoreboard.csv','trades.jsonl.gz','artifact_manifest.json','terminal_receipt.json')
+          present=set(json.loads((backup/'present_before.json').read_text())['present'])
+          for name in names:
+              target=root/name
+              if name in present: shutil.copy2(backup/name,target)
+              else: target.unlink(missing_ok=True)
+          PY
+            emit_failure HOLD_PENDING_RESCUE_TERMINALIZATION_FAILED "terminal_rc=$terminal_rc validation_rc=$validation_rc rollback=applied"
+            exit 1
+          fi
+
+          "$py" - "$proof" "$stage_receipt" "$commit_receipt" "$tmp/validation.json" "$backup_root" <<'PY'
+          import json,sys
+          from datetime import datetime,timezone
+          proof=json.load(open(sys.argv[1]));stage=json.load(open(sys.argv[2]));commit=json.load(open(sys.argv[3]));validation=json.load(open(sys.argv[4]))
+          print(json.dumps({
+            'schema_version':'zel.data_b.1m.pending_rescue.execution.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_DATA_B_1M_PENDING_RESCUE_TERMINAL',
+            'proof_state':proof['state'],'proof_samples':proof['runtime_sample_count'],'hold_parity_pct':proof['runtime_hold_parity_pct'],
+            'input_fingerprint':stage['input_fingerprint'],'preserved_checkpoint_count':stage['completed_checkpoint_count'],
+            'inserted_checkpoint_ids':commit['inserted_checkpoint_ids'],'rollback_manifest_sha256':commit['rollback_manifest_sha256'],
+            'backup_root':sys.argv[5],**validation,
+            'service_active_after':False,'runtime_mutated':True,'canonical_strategy_source_mutated':False,'engine_source_mutated':False,
+            'formal_ledger_mutated':False,'runtime_registry_mutated':False,
+            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },sort_keys=True))
+          PY
+          REMOTE
+          ssh_rc=$?
+          set -e
+          rm -f "$bundle"
+          python -m json.tool out/rescue_result.json >/dev/null
+          state=$(python - <<'PY'
+          import json
+          print(json.load(open('out/rescue_result.json')).get('state',''))
+          PY
+          )
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          if [ "$ssh_rc" -ne 0 ]; then
+            cat out/rescue_remote.stderr >&2
+            exit "$ssh_rc"
+          fi
+          test "$state" = PASS_DATA_B_1M_PENDING_RESCUE_TERMINAL -o "$state" = PASS_ALREADY_TERMINAL
+
+      - name: Trigger canonical watcher immediately
+        if: steps.rescue.outputs.state == 'PASS_DATA_B_1M_PENDING_RESCUE_TERMINAL' || steps.rescue.outputs.state == 'PASS_ALREADY_TERMINAL'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run zel-data-b-1m-v2-watch-publish-v1.yml --ref master -R leegkssk2000-commits/vultr-z
+
+      - name: Remove SSH key and local bundle
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key out/pending_rescue_execute_*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-1m-pending-rescue-execute-v1-${{ github.run_id }}
+          path: |
+            out/rescue_result.json
+            out/rescue_remote.stderr
+          if-no-files-found: error
+          retention-days: 90

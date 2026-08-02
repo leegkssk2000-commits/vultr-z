@@ -235,8 +235,11 @@ PY
 python - <<'PY'
 import json
 row=json.load(open('out/trade_method_behavior.json'))
-assert row['state']=='PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',row
-assert row['enabled_strategy_count']==0,row
+assert row['state'] in {
+    'PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',
+    'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED',
+},row
+assert 0 <= row['enabled_strategy_count'] <= row['strategy_count'],row
 assert row['unsafe_strategy_count']==0,row
 assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
 PY

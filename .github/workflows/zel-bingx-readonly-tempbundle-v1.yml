@@ -1,0 +1,102 @@
+name: ZEL BingX Readonly Temp Bundle V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_private_history_fetch_v1.py
+      - backend/tools/zel_bingx_execution_evidence_collector_v1.py
+      - backend/tools/zel_bingx_readonly_secret_connector_v2.py
+      - .github/workflows/zel-bingx-readonly-tempbundle-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-bingx-readonly-tempbundle-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-readonly-secret:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate ephemeral bundle
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_bingx_private_history_fetch_v1.py \
+            backend/tools/zel_bingx_execution_evidence_collector_v1.py \
+            backend/tools/zel_bingx_readonly_secret_connector_v2.py
+          python backend/tools/zel_bingx_readonly_secret_connector_v2.py --self-test
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run verified resolver and GET-only collector from temporary directory
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          tar -czf - \
+            backend/tools/zel_bingx_private_history_fetch_v1.py \
+            backend/tools/zel_bingx_execution_evidence_collector_v1.py \
+            backend/tools/zel_bingx_readonly_secret_connector_v2.py \
+          | ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" '
+              set -euo pipefail
+              tmp=$(mktemp -d /tmp/zel-bingx-readonly.XXXXXX)
+              trap "rm -rf $tmp" EXIT
+              tar -xzf - -C "$tmp"
+              python3 "$tmp/backend/tools/zel_bingx_readonly_secret_connector_v2.py" \
+                --root "$tmp" --lookback-days 90 --stdout
+            ' > out/bingx_readonly_tempbundle_receipt.json
+
+      - name: Verify secret and transport boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/bingx_readonly_tempbundle_receipt.json').read_text())
+          assert row['methods_allowed']==['GET'],row
+          assert row['private_write_endpoints_allowed'] is False,row
+          assert row['credentials_persisted'] is False,row
+          assert row['raw_order_ids_persisted'] is False,row
+          assert row['private_history_persisted'] is False,row
+          assert row['active_data_b_1m_mutated'] is False,row
+          assert row['runtime_registry_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'candidates':row['credential_candidate_count'],'verified':row['verified_candidate_count']})
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bingx-readonly-tempbundle-v1-${{ github.run_id }}
+          path: out/bingx_readonly_tempbundle_receipt.json
+          retention-days: 90

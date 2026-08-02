@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: zel-data-b-1m-v2-watch-bootstrap-v1
@@ -17,7 +16,7 @@ concurrency:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,94 +92,38 @@ jobs:
           PY
           python -m json.tool out/status.json >/dev/null
 
-      - name: Fetch and validate terminal artifacts when complete
-        id: terminal
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          set -euo pipefail
-          complete=$(python - <<'PY'
-          import json
-          print('true' if json.load(open('out/status.json')).get('terminal_complete') else 'false')
-          PY
-          )
-          echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          if [ "$complete" != true ]; then
-            exit 0
-          fi
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            'tar -C /var/lib/zel-research/data-b-1m-v2 -czf - report.json summary.json scoreboard.csv trades.jsonl.gz progress.json artifact_manifest.json terminal_receipt.json' \
-            > out/terminal.tar.gz
-          mkdir -p out/terminal
-          tar -C out/terminal -xzf out/terminal.tar.gz
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          root=Path('out/terminal')
-          report=json.loads((root/'report.json').read_text())
-          terminal=json.loads((root/'terminal_receipt.json').read_text())
-          manifest=json.loads((root/'artifact_manifest.json').read_text())
-          progress=json.loads((root/'progress.json').read_text())
-          assert report['state']=='PASS' and report['interval']=='1m',report
-          assert report['version']=='ZEL_HISTORICAL_OOS_EXACT25_REPLAY_V2',report
-          assert report['replay']['strategy_count_completed']==25,report
-          assert report['replay']['strategy_failure_count']==0,report
-          assert terminal['state']=='PASS' and terminal['runtime_safe'] is True,terminal
-          assert terminal['strategy_count_completed']==25 and terminal['strategy_failure_count']==0,terminal
-          assert manifest['terminal_complete'] is True and manifest['atomic_publication'] is True,manifest
-          assert progress['state']=='PASS' and progress['completed_units']==25,progress
-          assert report['canonical_runtime']['producer_pid_unchanged'] is True,report
-          assert report['canonical_runtime']['writer_pid_unchanged'] is True,report
-          assert report['canonical_runtime']['formal_ledger']['prefix_unchanged'] is True,report
-          assert report['source']['strategy_tree_unchanged'] is True,report
-          assert report['execution_authority']=='NONE' and report['order_authority']=='BLOCKED',report
-          PY
-
-      - name: Publish canonical predecessor and terminal authority
+      - name: Publish canonical predecessor atomically
         run: |
           set -euo pipefail
           cd results
           git config user.name 'zel-data-b-watch-bootstrap-bot'
           git config user.email 'zel-data-b-watch-bootstrap-bot@users.noreply.github.com'
           git pull --rebase origin zel-data-expansion-results-v1
-          cd ..
-          watch_root=results/runtime_results/zel/data_b_1m_v2_watch_v1
+          watch_root=runtime_results/zel/data_b_1m_v2_watch_v1
           mkdir -p "$watch_root"
-          cp out/status.json "$watch_root/latest.json"
-          cp out/status.json "$watch_root/bootstrap_${GITHUB_RUN_ID}.json"
-          if [ "${{ steps.terminal.outputs.complete }}" = true ]; then
-            v2root=results/runtime_results/zel/historical_oos_exact25_replay_v2/1m
-            canon=results/runtime_results/zel/historical_oos_exact25_replay_v1/1m
-            mkdir -p "$v2root" "$canon"
-            cp out/terminal/report.json "$v2root/latest.json"
-            cp out/terminal/summary.json "$v2root/summary_latest.json"
-            cp out/terminal/scoreboard.csv "$v2root/scoreboard_latest.csv"
-            cp out/terminal/progress.json "$v2root/progress_latest.json"
-            cp out/terminal/artifact_manifest.json "$v2root/artifact_manifest_latest.json"
-            cp out/terminal/terminal_receipt.json "$v2root/terminal_receipt_latest.json"
-            cp out/terminal/report.json "$canon/latest.json"
-            cp out/terminal/summary.json "$canon/summary_latest.json"
-            cp out/terminal/scoreboard.csv "$canon/scoreboard_latest.csv"
-          fi
-          cd results
-          git add runtime_results/zel/data_b_1m_v2_watch_v1 runtime_results/zel/historical_oos_exact25_replay_v1 runtime_results/zel/historical_oos_exact25_replay_v2 2>/dev/null || true
-          git commit -m "result(zel): bootstrap Data B 1m V2 watch ${GITHUB_RUN_ID}" || true
+          cp ../out/status.json "$watch_root/latest.json"
+          cp ../out/status.json "$watch_root/bootstrap_${GITHUB_RUN_ID}.json"
+          git add "$watch_root"
+          git diff --cached --quiet && { echo 'HOLD_NO_WATCH_DELTA'; exit 0; }
+          git commit -m "result(zel): bootstrap Data B 1m V2 watch ${GITHUB_RUN_ID}"
           git push origin HEAD:zel-data-expansion-results-v1
 
-      - name: Dispatch Composite authorizer after terminal publication
-        if: steps.terminal.outputs.complete == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify published path in local result checkout
         run: |
           set -euo pipefail
-          gh workflow run zel-composite-post-terminal-ai-authorizer-v1.yml --ref master
+          test -s results/runtime_results/zel/data_b_1m_v2_watch_v1/latest.json
+          python - <<'PY'
+          import json
+          row=json.load(open('results/runtime_results/zel/data_b_1m_v2_watch_v1/latest.json'))
+          assert row['schema_version']=='zel.data_b.1m.v2.watch.v1',row
+          assert row['runtime_mutated'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'checkpoints':row['checkpoint_count'],'completed':(row.get('progress') or {}).get('completed_units'),'total':(row.get('progress') or {}).get('total_units')})
+          PY
 
-      - name: Remove raw terminal artifacts and SSH key
+      - name: Remove SSH key
         if: always()
-        run: |
-          rm -rf out/terminal out/terminal.tar.gz
-          rm -f ~/.ssh/vps_key
+        run: rm -f ~/.ssh/vps_key
 
       - uses: actions/upload-artifact@v4
         if: always()

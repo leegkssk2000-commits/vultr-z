@@ -63,6 +63,21 @@ def is_protected_workflow(path: Path, text: str) -> bool:
     return any(marker in text for marker in content_markers)
 
 
+def workflow_gate_wired(text: str) -> bool:
+    verifier_tokens = (
+        "zel_ai_control_gate_v1.py",
+        "--proposal-receipt",
+        "--stage-id",
+        "--epoch-id",
+        "--predecessor-receipt-sha256",
+    )
+    gate_identity = (
+        "ZEL_AI_CONTROL_GATE_V1" in text
+        or "ai_research_control_plane_v1/" in text
+    )
+    return gate_identity and all(token in text for token in verifier_tokens)
+
+
 def audit_workflows(workflows_root: Path) -> dict[str, Any]:
     protected: list[str] = []
     unguarded: list[str] = []
@@ -71,13 +86,7 @@ def audit_workflows(workflows_root: Path) -> dict[str, Any]:
         if not is_protected_workflow(path, text):
             continue
         protected.append(path.name)
-        required = (
-            "ZEL_AI_CONTROL_GATE_V1",
-            "zel_ai_control_gate_v1.py",
-            "--proposal-receipt",
-            "--stage-id",
-        )
-        if not all(token in text for token in required):
+        if not workflow_gate_wired(text):
             unguarded.append(path.name)
     return {
         "schema_version": "zel.ai.control_enforcement.audit.v1",
@@ -199,9 +208,13 @@ def self_test() -> None:
     assert "GATE_CONTEXT_MISSING" in held["errors"], held
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text("ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id", encoding="utf-8")
+        legacy = "ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id --epoch-id --predecessor-receipt-sha256"
+        stage_specific = "ai_research_control_plane_v1/component_main_effect/latest.json zel_ai_control_gate_v1.py --proposal-receipt --stage-id --epoch-id --predecessor-receipt-sha256"
+        (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text(legacy, encoding="utf-8")
+        (root / "zel-component-main-effect-v1.yml").write_text(stage_specific, encoding="utf-8")
         audit = audit_workflows(root)
         assert audit["state"].startswith("PASS"), audit
+        assert audit["protected_workflow_count"] == 2, audit
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 

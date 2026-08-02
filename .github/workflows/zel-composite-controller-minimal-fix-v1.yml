@@ -26,57 +26,52 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Patch exact compatibility guards
+      - name: Permit audited HOLD receipt exit code
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-
-          v2=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh')
-          text=v2.read_text()
-          old="""assert row['state']=='PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',row
-          assert row['enabled_strategy_count']==0,row
-          assert row['unsafe_strategy_count']==0,row
-          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
-          """
-          new="""assert row['state'] in {
-              'PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',
-              'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED',
-          },row
-          assert 0 <= row['enabled_strategy_count'] <= row['strategy_count'],row
-          assert row['unsafe_strategy_count']==0,row
-          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
-          """
-          assert text.count(old)==1,text.count(old)
-          v2.write_text(text.replace(old,new,1))
-
-          v3=Path('backend/tools/zel_composite_post_terminal_controller_v3.sh')
-          text=v3.read_text()
-          old='''ROOT="$GITHUB_WORKSPACE"\nOUT="$ROOT/out"\nRESULTS="$RESULTS_DIR"\nSSH=(ssh -i "$SSH_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")\nmkdir -p "$OUT"\n'''
-          new='''ROOT="$GITHUB_WORKSPACE"\nOUT="$ROOT/out"\nRESULTS="$RESULTS_DIR"\nif [ ! -s "$SSH_KEY_PATH" ] && [ -s "$HOME/.ssh/vps_key" ]; then\n  SSH_KEY_PATH="$HOME/.ssh/vps_key"\nfi\ntest -s "$SSH_KEY_PATH"\nSSH=(ssh -i "$SSH_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")\nmkdir -p "$OUT"\n'''
-          assert text.count(old)==1,text.count(old)
-          v3.write_text(text.replace(old,new,1))
+          path=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh')
+          text=path.read_text()
+          old='''"${SSH[@]}" \\
+  "python3 - --source-root /home/z/z --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz --stdout" \\
+  < "$ROOT/backend/tools/zel_trade_method_runtime_behavior_v1.py" \\
+  > "$OUT/trade_method_behavior.json"
+          python - <<'PY'
+          '''
+          new='''set +e
+          "${SSH[@]}" \\
+            "python3 - --source-root /home/z/z --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz --stdout" \\
+            < "$ROOT/backend/tools/zel_trade_method_runtime_behavior_v1.py" \\
+            > "$OUT/trade_method_behavior.json"
+          trade_method_behavior_rc=$?
+          set -e
+          test "$trade_method_behavior_rc" -eq 0 -o "$trade_method_behavior_rc" -eq 1
+          python - <<'PY'
+          '''
+          if 'trade_method_behavior_rc=$?' not in text:
+              assert text.count(old)==1,text.count(old)
+              text=text.replace(old,new,1)
+          path.write_text(text)
           PY
           bash -n backend/tools/zel_composite_post_terminal_controller_v2.sh
-          bash -n backend/tools/zel_composite_post_terminal_controller_v3.sh
           python - <<'PY'
           from pathlib import Path
-          v2=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
-          v3=Path('backend/tools/zel_composite_post_terminal_controller_v3.sh').read_text()
-          assert 'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED' in v2
-          assert "0 <= row['enabled_strategy_count'] <= row['strategy_count']" in v2
-          assert "row['unsafe_strategy_count']==0" in v2
-          assert '[ -s "$HOME/.ssh/vps_key" ]' in v3
-          assert 'test -s "$SSH_KEY_PATH"' in v3
-          print('PASS_COMPOSITE_CONTROLLER_MINIMAL_FIX_STATIC')
+          text=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
+          assert 'trade_method_behavior_rc=$?' in text
+          assert 'test "$trade_method_behavior_rc" -eq 0 -o "$trade_method_behavior_rc" -eq 1' in text
+          assert 'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED' in text
+          print('PASS_TRADE_METHOD_FAIL_CLOSED_EXIT_COMPATIBILITY')
           PY
       - name: Commit shell-only fix
         run: |
           set -euo pipefail
           git config user.name 'zel-composite-controller-fix-bot'
           git config user.email 'zel-composite-controller-fix-bot@users.noreply.github.com'
-          git add \
-            backend/tools/zel_composite_post_terminal_controller_v2.sh \
-            backend/tools/zel_composite_post_terminal_controller_v3.sh
-          git commit -m 'fix(zel): accept safe enabled methods and resolve SSH key path'
+          git add backend/tools/zel_composite_post_terminal_controller_v2.sh
+          if git diff --cached --quiet; then
+            echo 'PASS_ALREADY_PATCHED'
+            exit 0
+          fi
+          git commit -m 'fix(zel): accept audited Trade Method HOLD exit'
           git push origin HEAD:zel-composite-ssh-path-fix-v1

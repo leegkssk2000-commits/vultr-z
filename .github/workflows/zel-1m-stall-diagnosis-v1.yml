@@ -1,0 +1,232 @@
+name: ZEL 1m Stall Diagnosis V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-1m-stall-diagnosis-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-1m-stall-diagnosis-v1-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect read-only process checkpoint and journal evidence
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/diagnosis.json <<'PY'
+          import gzip,json,os,subprocess,time
+          from datetime import datetime,timezone
+          from pathlib import Path
+
+          UNIT='zel-data-b-1m-v2.service'
+          ROOT=Path('/var/lib/zel-research/data-b-1m-v2')
+
+          def sh(*args):
+              p=subprocess.run(args,text=True,capture_output=True,check=False)
+              return {'rc':p.returncode,'out':p.stdout.strip(),'err':p.stderr.strip()}
+
+          def text(path,default=''):
+              try:return path.read_text(errors='replace')
+              except Exception:return default
+
+          def jread(path):
+              try:
+                  value=json.loads(path.read_text())
+                  return value if isinstance(value,dict) else {'_value':value}
+              except Exception as exc:return {'_error':f'{type(exc).__name__}:{exc}'}
+
+          def descendants(parent):
+              seen=set(); todo=[parent] if parent>0 else []
+              while todo:
+                  cur=todo.pop()
+                  r=sh('pgrep','-P',str(cur))
+                  for token in r['out'].split():
+                      if token.isdigit() and int(token) not in seen:
+                          pid=int(token);seen.add(pid);todo.append(pid)
+              return sorted(seen)
+
+          def snap(pid):
+              base=Path(f'/proc/{pid}')
+              try:
+                  stat=text(base/'stat').split()
+                  status={}
+                  for line in text(base/'status').splitlines():
+                      if ':' in line:
+                          k,v=line.split(':',1);status[k]=v.strip()
+                  io={}
+                  for line in text(base/'io').splitlines():
+                      if ':' in line:
+                          k,v=line.split(':',1)
+                          try:io[k]=int(v.strip())
+                          except:pass
+                  fds=[]
+                  try:
+                      for fd in sorted((base/'fd').iterdir(),key=lambda p:int(p.name))[:64]:
+                          try:fds.append({'fd':fd.name,'target':os.readlink(fd)})
+                          except:pass
+                  except:pass
+                  return {
+                    'pid':pid,'ppid':int(stat[3]),'state':stat[2],
+                    'utime_ticks':int(stat[13]),'stime_ticks':int(stat[14]),
+                    'start_ticks':int(stat[21]),'rss_pages':int(stat[23]),
+                    'threads':status.get('Threads'),'voluntary_ctxt_switches':status.get('voluntary_ctxt_switches'),
+                    'nonvoluntary_ctxt_switches':status.get('nonvoluntary_ctxt_switches'),
+                    'vmrss':status.get('VmRSS'),'vmsize':status.get('VmSize'),
+                    'wchan':text(base/'wchan').strip(),'syscall':text(base/'syscall').strip(),
+                    'cmdline':text(base/'cmdline').replace('\x00',' ').strip(),
+                    'io':io,'fds':fds,
+                  }
+              except Exception as exc:return {'pid':pid,'error':f'{type(exc).__name__}:{exc}'}
+
+          def capture(pids):return {str(pid):snap(pid) for pid in pids}
+
+          props={}
+          for prop in ('ActiveState','SubState','MainPID','NRestarts','ExecMainStartTimestamp','ExecMainStartTimestampMonotonic','CPUUsageNSec','MemoryCurrent','TasksCurrent'):
+              props[prop]=sh('systemctl','show',UNIT,'-p',prop,'--value')['out']
+          try:main_pid=int(props.get('MainPID') or 0)
+          except:main_pid=0
+          pids=([main_pid] if main_pid else [])+descendants(main_pid)
+          before=capture(pids)
+          wall_before=time.time();time.sleep(20);wall_after=time.time()
+          pids_after=sorted(set(pids+descendants(main_pid)))
+          after=capture(pids_after)
+          deltas=[]
+          for key in sorted(set(before)|set(after),key=lambda x:int(x)):
+              a=before.get(key);b=after.get(key)
+              if not isinstance(a,dict) or not isinstance(b,dict) or 'error' in a or 'error' in b:
+                  deltas.append({'pid':int(key),'present_both':False});continue
+              cpu=(b.get('utime_ticks',0)+b.get('stime_ticks',0))-(a.get('utime_ticks',0)+a.get('stime_ticks',0))
+              names=set((a.get('io') or {}))|set((b.get('io') or {}))
+              iod={n:(b.get('io') or {}).get(n,0)-(a.get('io') or {}).get(n,0) for n in sorted(names)}
+              moving=cpu>0 or any(iod.get(n,0)>0 for n in ('read_bytes','write_bytes','rchar','wchar','syscr','syscw'))
+              deltas.append({'pid':int(key),'present_both':True,'cpu_delta_ticks':cpu,'io_delta':iod,'moving':moving,'state':b.get('state'),'wchan':b.get('wchan'),'syscall':b.get('syscall'),'cmdline':b.get('cmdline')})
+
+          progress=jread(ROOT/'progress.json') if (ROOT/'progress.json').is_file() else {}
+          terminal=jread(ROOT/'terminal_receipt.json') if (ROOT/'terminal_receipt.json').is_file() else {}
+          checkpoints=[]
+          discovered=[]
+          for path in sorted((ROOT/'checkpoints').glob('*.json.gz'),key=lambda p:p.stat().st_mtime):
+              row={'name':path.name,'size':path.stat().st_size,'mtime':datetime.fromtimestamp(path.stat().st_mtime,timezone.utc).isoformat()}
+              try:
+                  with gzip.open(path,'rt',encoding='utf-8') as h:value=json.load(h)
+                  result=value.get('result') if isinstance(value,dict) and isinstance(value.get('result'),dict) else {}
+                  sid=str(result.get('strategy_id') or value.get('strategy_id') or '') if isinstance(value,dict) else ''
+                  row.update({'strategy_id':sid,'top_keys':sorted(value.keys())[:50] if isinstance(value,dict) else [],'result_keys':sorted(result.keys())[:80]})
+                  if sid:discovered.append(sid)
+              except Exception as exc:row['error']=f'{type(exc).__name__}:{exc}'
+              checkpoints.append(row)
+
+          completed=[str(x) for x in progress.get('completed_unit_ids',[]) if str(x)] if isinstance(progress,dict) else []
+          journal=sh('journalctl','-u',UNIT,'--no-pager','-n','400','-o','short-iso')
+          status=sh('systemctl','status',UNIT,'--no-pager','-l')
+          unitcat=sh('systemctl','cat',UNIT)
+          ps=sh('ps','-eo','pid,ppid,lstart,etimes,pcpu,pmem,stat,wchan:32,args','--sort=pid')
+          vmstat=sh('vmstat','1','3')
+          loadavg=text(Path('/proc/loadavg')).strip()
+          meminfo='\n'.join(text(Path('/proc/meminfo')).splitlines()[:20])
+          disk=sh('df','-h',str(ROOT))
+          inode=sh('df','-i',str(ROOT))
+
+          moving=[d for d in deltas if d.get('moving')]
+          cpu_total=sum(int(d.get('cpu_delta_ticks') or 0) for d in deltas)
+          io_read=sum(int((d.get('io_delta') or {}).get('read_bytes') or 0) for d in deltas)
+          io_write=sum(int((d.get('io_delta') or {}).get('write_bytes') or 0) for d in deltas)
+          states=[str(d.get('state') or '') for d in deltas if d.get('present_both')]
+          wchans=[str(d.get('wchan') or '') for d in deltas if d.get('present_both')]
+          service_active=props.get('ActiveState')=='active'
+          heartbeat_age=None
+          try:
+              hb=datetime.fromisoformat(str(progress.get('heartbeat_at')).replace('Z','+00:00'))
+              heartbeat_age=(datetime.now(timezone.utc)-hb).total_seconds()
+          except:pass
+
+          if not service_active or main_pid<=0:
+              classification='SERVICE_DEAD_OR_INACTIVE'
+          elif moving and cpu_total>0:
+              classification='CPU_BOUND_LONG_RUNNING_WORKERS'
+          elif moving and (io_read>0 or io_write>0):
+              classification='IO_BOUND_LONG_RUNNING_WORKERS'
+          elif any(s=='D' for s in states):
+              classification='KERNEL_IO_UNINTERRUPTIBLE_WAIT'
+          elif deltas and all((w in ('futex_wait_queue','futex_wait','do_futex','0','') or 'futex' in w) for w in wchans):
+              classification='FUTEX_WAIT_OR_POOL_DEADLOCK_SUSPECT'
+          else:
+              classification='NO_FORWARD_PROGRESS_UNKNOWN_WAIT'
+
+          out={
+            'schema_version':'zel.data_b.1m.v2.stall_diagnosis.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'classification':classification,
+            'service':props,'main_pid':main_pid,'pids':pids_after,
+            'sample_sec':round(wall_after-wall_before,3),'before':before,'after':after,'deltas':deltas,
+            'moving_pid_count':len(moving),'cpu_delta_ticks_total':cpu_total,
+            'io_read_bytes_delta_total':io_read,'io_write_bytes_delta_total':io_write,
+            'progress':progress,'terminal':terminal,'heartbeat_age_sec':heartbeat_age,
+            'checkpoint_count':len(checkpoints),'checkpoints':checkpoints,
+            'completed_units':completed,'discovered_checkpoint_strategy_ids':sorted(set(discovered)),
+            'status':status,'journal':journal,'unit_file':unitcat,'ps':ps,'vmstat':vmstat,
+            'loadavg':loadavg,'meminfo':meminfo,'disk':disk,'inode':inode,
+            'read_only':True,'runtime_mutated':False,'service_restarted':False,
+            'signal_sent':False,'files_written_on_vps':False,
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/diagnosis.json >/dev/null
+          python - <<'PY'
+          import json
+          row=json.load(open('out/diagnosis.json'))
+          print(json.dumps({
+            'classification':row['classification'],'main_pid':row['main_pid'],
+            'pids':row['pids'],'moving_pid_count':row['moving_pid_count'],
+            'cpu_delta_ticks_total':row['cpu_delta_ticks_total'],
+            'io_read_bytes_delta_total':row['io_read_bytes_delta_total'],
+            'io_write_bytes_delta_total':row['io_write_bytes_delta_total'],
+            'completed_units':row['progress'].get('completed_units'),
+            'heartbeat_age_sec':row['heartbeat_age_sec'],'checkpoint_count':row['checkpoint_count'],
+            'nrestarts':row['service'].get('NRestarts')
+          },indent=2,sort_keys=True))
+          assert row['read_only'] is True and row['runtime_mutated'] is False,row
+          assert row['service_restarted'] is False and row['signal_sent'] is False,row
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-1m-stall-diagnosis-v1-${{ github.run_id }}
+          path: out/diagnosis.json
+          if-no-files-found: error
+          retention-days: 30

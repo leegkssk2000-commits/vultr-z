@@ -1,0 +1,82 @@
+name: ZEL Composite Controller Minimal Fix V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-controller-minimal-fix-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-composite-controller-minimal-fix-v1
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-composite-ssh-path-fix-v1
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch exact compatibility guards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          v2=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh')
+          text=v2.read_text()
+          old="""assert row['state']=='PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',row
+          assert row['enabled_strategy_count']==0,row
+          assert row['unsafe_strategy_count']==0,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          """
+          new="""assert row['state'] in {
+              'PASS_TRADE_METHOD_DISABLED_HOLD_BEHAVIOR',
+              'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED',
+          },row
+          assert 0 <= row['enabled_strategy_count'] <= row['strategy_count'],row
+          assert row['unsafe_strategy_count']==0,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          """
+          assert text.count(old)==1,text.count(old)
+          v2.write_text(text.replace(old,new,1))
+
+          v3=Path('backend/tools/zel_composite_post_terminal_controller_v3.sh')
+          text=v3.read_text()
+          old='''ROOT="$GITHUB_WORKSPACE"\nOUT="$ROOT/out"\nRESULTS="$RESULTS_DIR"\nSSH=(ssh -i "$SSH_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")\nmkdir -p "$OUT"\n'''
+          new='''ROOT="$GITHUB_WORKSPACE"\nOUT="$ROOT/out"\nRESULTS="$RESULTS_DIR"\nif [ ! -s "$SSH_KEY_PATH" ] && [ -s "$HOME/.ssh/vps_key" ]; then\n  SSH_KEY_PATH="$HOME/.ssh/vps_key"\nfi\ntest -s "$SSH_KEY_PATH"\nSSH=(ssh -i "$SSH_KEY_PATH" -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST")\nmkdir -p "$OUT"\n'''
+          assert text.count(old)==1,text.count(old)
+          v3.write_text(text.replace(old,new,1))
+          PY
+          bash -n backend/tools/zel_composite_post_terminal_controller_v2.sh
+          bash -n backend/tools/zel_composite_post_terminal_controller_v3.sh
+          python - <<'PY'
+          from pathlib import Path
+          v2=Path('backend/tools/zel_composite_post_terminal_controller_v2.sh').read_text()
+          v3=Path('backend/tools/zel_composite_post_terminal_controller_v3.sh').read_text()
+          assert 'HOLD_TRADE_METHOD_ENABLED_COUNTERFACTUAL_ADAPTER_REQUIRED' in v2
+          assert "0 <= row['enabled_strategy_count'] <= row['strategy_count']" in v2
+          assert "row['unsafe_strategy_count']==0" in v2
+          assert '[ -s "$HOME/.ssh/vps_key" ]' in v3
+          assert 'test -s "$SSH_KEY_PATH"' in v3
+          print('PASS_COMPOSITE_CONTROLLER_MINIMAL_FIX_STATIC')
+          PY
+      - name: Commit shell-only fix
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-composite-controller-fix-bot'
+          git config user.email 'zel-composite-controller-fix-bot@users.noreply.github.com'
+          git add \
+            backend/tools/zel_composite_post_terminal_controller_v2.sh \
+            backend/tools/zel_composite_post_terminal_controller_v3.sh
+          git commit -m 'fix(zel): accept safe enabled methods and resolve SSH key path'
+          git push origin HEAD:zel-composite-ssh-path-fix-v1

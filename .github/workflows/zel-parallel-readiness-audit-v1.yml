@@ -1,0 +1,131 @@
+name: ZEL Parallel Readiness Audit V1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '11 * * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_parallel_readiness_audit_v1.py
+      - backend/tools/zel_pre_shadow_receipt_dag_v1.py
+      - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
+      - .github/workflows/zel-parallel-readiness-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_parallel_readiness_audit_v1.py
+      - backend/tools/zel_pre_shadow_receipt_dag_v1.py
+      - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
+      - .github/workflows/zel-parallel-readiness-audit-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-parallel-readiness-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate audit engine and no-mutation boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_parallel_readiness_audit_v1.py
+          python backend/tools/zel_parallel_readiness_audit_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('backend/tools/zel_parallel_readiness_audit_v1.py').read_text()
+          for token in ('os.chmod(', 'os.chown(', 'subprocess.', 'requests.', 'unlink(', 'rmtree('):
+              assert token not in text,token
+          for token in (
+              'active_data_b_1m_mutated": False',
+              'canonical_strategy_files_mutated": False',
+              'formal_ledger_mutated": False',
+              'runtime_registry_mutated": False',
+          ):
+              assert token in text,token
+          print('PASS_PARALLEL_READINESS_READ_ONLY_BOUNDARY')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit parallel-safe development lanes
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python control/backend/tools/zel_parallel_readiness_audit_v1.py \
+            --control-root control \
+            --results-root results \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state'] in ('PASS_PARALLEL_READINESS_COMPLETE','HOLD_PARALLEL_READINESS_GAPS'),d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          print(json.dumps({
+              'state':d['state'],
+              'ready':d['implementation_ready_count'],
+              'total':d['ordered_stage_count'],
+              'first_gap':d['first_static_gap'],
+              'missing_dispatch':len(d['missing_dispatch_stage_ids']),
+              'unproved_producers':len(d['unproved_producer_stage_ids']),
+          },sort_keys=True))
+          PY
+      - name: Publish read-only audit receipt
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-parallel-readiness-audit-bot'
+          git config user.email 'zel-parallel-readiness-audit-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          root=results/runtime_results/zel/parallel_readiness_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git add runtime_results/zel/parallel_readiness_audit_v1
+          git commit -m "result(zel): parallel readiness audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-parallel-readiness-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          if-no-files-found: error
+          retention-days: 90

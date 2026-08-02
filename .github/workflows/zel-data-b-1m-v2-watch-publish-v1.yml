@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '*/15 * * * *'
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v2-watch-publish-v1.yml
   pull_request:
     branches: [master]
     paths:
@@ -36,11 +40,14 @@ jobs:
           from pathlib import Path
           t=Path('.github/workflows/zel-data-b-1m-v2-watch-publish-v1.yml').read_text()
           assert "schedule:" in t and "*/15 * * * *" in t
+          assert "push:" in t and "branches: [master]" in t
           assert "terminal_receipt.json" in t
           assert "artifact_manifest.json" in t
           assert "strategy_count_completed']==25" in t
           assert "strategy_failure_count']==0" in t
           assert "gh workflow run zel-pre-shadow-dag-controller-v1.yml" in t
+          assert "gh workflow run zel-composite-post-terminal-ai-authorizer-v1.yml" in t
+          assert "runtime_results/zel/data_b_1m_v2_watch_v1" in t
           print('PASS_DATA_B_1M_V2_WATCH_PUBLISH_STATIC')
           PY
 
@@ -219,13 +226,14 @@ jobs:
           git add runtime_results/zel/data_b_1m_v2_watch_v1 runtime_results/zel/historical_oos_exact25_replay_v1 runtime_results/zel/historical_oos_exact25_replay_v2 2>/dev/null || true
           git commit -m "result(zel): Data B 1m V2 watch ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
-      - name: Dispatch receipt DAG after terminal publication
+      - name: Dispatch downstream controllers after terminal publication
         if: steps.terminal.outputs.complete == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh workflow run zel-pre-shadow-dag-controller-v1.yml --ref master
+          gh workflow run zel-composite-post-terminal-ai-authorizer-v1.yml --ref master
       - name: Remove temporary terminal archive
         if: always()
         run: |

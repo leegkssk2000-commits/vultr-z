@@ -1,0 +1,150 @@
+name: ZEL Static Stage Reusable V1
+
+on:
+  workflow_call:
+    inputs:
+      stage_id:
+        required: true
+        type: string
+      predecessor_path:
+        required: true
+        type: string
+      output_path:
+        required: true
+        type: string
+      evidence_path:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  run_stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: gate
+        name: ZEL_AI_CONTROL_GATE_V1 — verify stage-specific authorization
+        env:
+          STAGE_ID: ${{ inputs.stage_id }}
+          PREDECESSOR_PATH: ${{ inputs.predecessor_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          slug=$(printf '%s' "$STAGE_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_')
+          slug=${slug%_}
+          proposal="results/runtime_results/zel/ai_research_control_plane_v1/${slug}/latest.json"
+          predecessor="results/${PREDECESSOR_PATH}"
+          if [ ! -s "$proposal" ] || [ ! -s "$predecessor" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            python - <<'PY'
+          import json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/gate.json').write_text(json.dumps({
+            'schema_version':'zel.ai.control_gate.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_AI_CONTROL_GATE_INPUT_MISSING',
+            'stage_id':os.environ['STAGE_ID'],
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            exit 0
+          fi
+          predecessor_sha=$(sha256sum "$predecessor" | awk '{print $1}')
+          STAGE_ID="$STAGE_ID" PREDECESSOR_SHA="$predecessor_sha" PROPOSAL="$proposal" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.loads(Path(os.environ['PROPOSAL']).read_text())
+          ctx=p.get('gate_context')
+          assert isinstance(ctx,dict),p
+          assert ctx.get('stage_id')==os.environ['STAGE_ID'],ctx
+          assert ctx.get('predecessor_receipt_sha256')==os.environ['PREDECESSOR_SHA'],ctx
+          epoch=str(ctx.get('epoch_id') or '')
+          assert epoch,ctx
+          Path('/tmp/zel_ai_epoch').write_text(epoch)
+          PY
+          epoch=$(cat /tmp/zel_ai_epoch)
+          if python control/backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id "$STAGE_ID" \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/gate.json; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build deterministic stage receipt
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          STAGE_ID: ${{ inputs.stage_id }}
+          PREDECESSOR_PATH: ${{ inputs.predecessor_path }}
+          EVIDENCE_PATH: ${{ inputs.evidence_path }}
+        run: |
+          set -euo pipefail
+          args=(
+            --contract control/backend/research/zel_remaining_static_stages_contract_v1.json
+            --stage-id "$STAGE_ID"
+            --predecessor "results/$PREDECESSOR_PATH"
+            --source-run-id "$GITHUB_RUN_ID"
+            --out out/latest.json
+          )
+          if [ -n "$EVIDENCE_PATH" ]; then
+            args+=(--evidence "results/$EVIDENCE_PATH")
+          fi
+          if [ "$STAGE_ID" = PRE_SHADOW_RELEASE ]; then
+            args+=(
+              --results-root results
+              --dag-tool control/backend/tools/zel_pre_shadow_receipt_dag_v1.py
+            )
+          fi
+          python control/backend/tools/zel_remaining_static_stage_receipt_v1.py "${args[@]}"
+      - name: Publish canonical stage receipt
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          OUTPUT_PATH: ${{ inputs.output_path }}
+          STAGE_ID: ${{ inputs.stage_id }}
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-static-stage-bot'
+          git config user.email 'zel-static-stage-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          mkdir -p "$(dirname "$OUTPUT_PATH")"
+          cp ../out/latest.json "$OUTPUT_PATH"
+          cp ../out/latest.json "$(dirname "$OUTPUT_PATH")/run_${GITHUB_RUN_ID}.json"
+          git add "$OUTPUT_PATH" "$(dirname "$OUTPUT_PATH")/run_${GITHUB_RUN_ID}.json"
+          git commit -m "result(zel): ${STAGE_ID} static receipt ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-static-stage-${{ inputs.stage_id }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

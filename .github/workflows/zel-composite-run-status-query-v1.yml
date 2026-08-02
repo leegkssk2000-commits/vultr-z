@@ -1,0 +1,48 @@
+name: ZEL Composite Run Status Query V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-run-status-query-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query latest controller runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gh run list -R leegkssk2000-commits/vultr-z \
+            --workflow zel-composite-post-terminal-controller-v1.yml \
+            --limit 10 \
+            --json databaseId,status,conclusion,event,headSha,createdAt,updatedAt,url,displayTitle \
+            > out/runs.json
+          python - <<'PY'
+          import json,subprocess
+          from pathlib import Path
+          runs=json.loads(Path('out/runs.json').read_text())
+          latest=runs[0] if runs else None
+          detail={}
+          if latest:
+              proc=subprocess.run(['gh','run','view',str(latest['databaseId']),'-R','leegkssk2000-commits/vultr-z','--json','databaseId,status,conclusion,event,headSha,createdAt,updatedAt,url,jobs'],text=True,capture_output=True,check=False)
+              detail=json.loads(proc.stdout) if proc.returncode==0 and proc.stdout.strip() else {'error':proc.stderr,'returncode':proc.returncode}
+          result={'state':'PASS_COMPOSITE_RUN_STATUS_CAPTURED','run_count':len(runs),'latest':latest,'detail':detail}
+          Path('out/status.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-composite-run-status-query-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 7

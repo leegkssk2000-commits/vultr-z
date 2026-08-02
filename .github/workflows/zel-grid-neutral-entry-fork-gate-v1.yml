@@ -1,4 +1,4 @@
-name: ZEL Grid Neutral Entry Fork Gate V1
+name: ZEL Grid Neutral Entry Fork Gate V2
 
 on:
   pull_request:
@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-grid-neutral-entry-fork-gate-v1-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  group: zel-grid-neutral-entry-fork-gate-v2-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   gate:
@@ -26,18 +26,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           persist-credentials: false
-
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Static and deterministic validation
-        run: |
-          set -euo pipefail
-          python -m py_compile backend/tools/zel_grid_neutral_entry_fork_gate_v1.py
-          python backend/tools/zel_grid_neutral_entry_fork_gate_v1.py --self-test
-          python -m json.tool backend/research/zel_grid_neutral_entry_fork_gate_v1.json >/dev/null
-
       - name: Prepare read-only SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -50,63 +46,64 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
-      - name: Run immutable terminal parity gate
+      - name: Validate gate and pinned semantic receipt
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
-          remote="/tmp/zel-grid-neutral-entry-fork-gate-${GITHUB_RUN_ID}"
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            backend/tools/zel_grid_neutral_entry_fork_gate_v1.py \
-            backend/research/zel_grid_neutral_entry_fork_gate_v1.json \
-            "$VPS_USER@$VPS_HOST:$remote/"
-          set +e
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            "python3 '$remote/zel_grid_neutral_entry_fork_gate_v1.py' \
-              --policy '$remote/zel_grid_neutral_entry_fork_gate_v1.json' \
-              --trades /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz \
-              --source-root /opt/zel/forward-expansion-v1/source \
-              --stdout" > out/gate.json
-          rc=$?
-          set -e
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
-          test "$rc" -eq 0
-          python -m json.tool out/gate.json >/dev/null
-
-      - name: Verify safety and exact parity
+          python -m py_compile backend/tools/zel_grid_neutral_entry_fork_gate_v1.py
+          python backend/tools/zel_grid_neutral_entry_fork_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_grid_neutral_entry_fork_gate_v1.json >/dev/null
+          policy_path=backend/research/zel_grid_neutral_entry_fork_gate_v1.json
+          semantic_path=$(python -c "import json; print(json.load(open('$policy_path'))['semantic_summary_path'])")
+          expected_blob=$(python -c "import json; print(json.load(open('$policy_path'))['semantic_summary_blob_sha'])")
+          actual_blob=$(git -C results rev-parse "HEAD:$semantic_path")
+          test "$actual_blob" = "$expected_blob"
+          remote_source_sha=$(ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "sha256sum /opt/zel/forward-expansion-v1/source/backend/strategies/grid_rebalance.py | awk '{print \$1}'")
+          test -n "$remote_source_sha"
+          python backend/tools/zel_grid_neutral_entry_fork_gate_v1.py \
+            --policy "$policy_path" \
+            --semantic-summary "results/$semantic_path" \
+            --canonical-source-sha256 "$remote_source_sha" \
+            --out out/gate.json
+      - name: Verify fail-closed fork decision
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           row=json.load(open('out/gate.json'))
-          assert row['state']=='PASS_GRID_NEUTRAL_ENTRY_FORK_GATE_READY',row
-          assert row['tmp_fork_allowed'] is True,row
+          assert row['state']=='PASS_GRID_NEUTRAL_ENTRY_FORK_BLOCKED',row
           assert all(row['checks'].values()),row
+          assert row['source_bytes_copied'] is False,row
+          assert row['economic_gate_pass'] is False,row
+          assert row['fork_blocked'] is True,row
+          assert row['tmp_fork_allowed'] is False,row
           assert row['existing_ledger_regime_causal'] is False,row
-          assert row['entry_time_reconstruction_required'] is True,row
-          assert row['process_arguments_published'] is False,row
-          assert row['credentials_published'] is False,row
+          assert row['entry_time_reconstruction_complete'] is True,row
           assert row['canonical_mutated'] is False,row
           assert row['runtime_mutated'] is False,row
           assert row['formal_ledger_mutated'] is False,row
+          assert row['selection_authority'] is False,row
+          assert row['promotion_authority'] is False,row
           assert row['execution_authority']=='NONE',row
           assert row['order_authority']=='BLOCKED',row
           assert row['action']=='hold',row
-          print({'state':row['state'],'checks':row['checks'],'next':row['next']})
+          print({'state':row['state'],'entry_range':row['entry_range_metrics'],'tmp_fork_allowed':row['tmp_fork_allowed'],'next':row['next']})
           PY
-
       - name: Cleanup SSH key
         if: always()
         run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-grid-neutral-entry-fork-gate-v1-${{ github.run_id }}
+          name: zel-grid-neutral-entry-fork-gate-v2-${{ github.run_id }}
           path: out
           if-no-files-found: warn
           retention-days: 90

@@ -1,0 +1,66 @@
+name: ZEL Data B 1m V2 Status Now V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-data-b-1m-v2-status-now-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-data-b-1m-v2-status-now-v1
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: zel-data-expansion-results-v1, path: results, fetch-depth: 0, token: '${{ github.token }}'}
+      - name: Prepare SSH and read V2
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/latest.json <<'PY'
+          import json,subprocess
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('/var/lib/zel-research/data-b-1m-v2')
+          def cmd(args):return subprocess.run(args,text=True,capture_output=True).stdout.strip()
+          active=cmd(['systemctl','is-active','zel-data-b-1m-v2.service'])=='active'
+          enabled=cmd(['systemctl','is-enabled','zel-data-b-1m-v2.service'])=='enabled'
+          pid=int(cmd(['systemctl','show','-p','MainPID','--value','zel-data-b-1m-v2.service']) or 0)
+          progress={}
+          if (root/'progress.json').is_file():
+              try:progress=json.loads((root/'progress.json').read_text())
+              except Exception as e:progress={'state':'INVALID_PROGRESS','error_type':type(e).__name__}
+          terminal={}
+          if (root/'terminal_receipt.json').is_file():
+              try:terminal=json.loads((root/'terminal_receipt.json').read_text())
+              except Exception as e:terminal={'state':'INVALID_TERMINAL','error_type':type(e).__name__}
+          checkpoints=list((root/'checkpoints').glob('*.json.gz')) if (root/'checkpoints').is_dir() else []
+          out={'schema_version':'zel.data_b.1m.v2.status_now.v1','generated_at':datetime.now(timezone.utc).isoformat(),'state':'PASS_V2_TERMINAL' if terminal.get('state')=='PASS' else ('IN_PROGRESS_DATA_B_1M_V2' if active else 'HOLD_V2_NOT_ACTIVE'),'service_active':active,'service_enabled':enabled,'main_pid':pid,'process_count':len(cmd(['pgrep','-af','[z]el_historical_oos_exact25_replay_v2.py.*--interval 1m']).splitlines()),'checkpoint_count':len(checkpoints),'progress':progress,'terminal_complete':terminal.get('state')=='PASS','terminal_receipt':terminal,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/latest.json >/dev/null
+      - name: Publish status
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/data_b_1m_v2_status_now_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-data-b-v2-status-bot'
+          git config user.email 'zel-data-b-v2-status-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          git add runtime_results/zel/data_b_1m_v2_status_now_v1
+          git commit -m "result(zel): Data B 1m V2 status ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1

@@ -1,0 +1,143 @@
+name: ZEL Grid Block Trend Short Exact Replay V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_grid_block_trend_short_exact_replay_v1.json
+      - backend/tools/zel_grid_block_trend_short_exact_replay_v1.py
+      - .github/workflows/zel-grid-block-trend-short-exact-replay-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-grid-block-trend-short-exact-replay-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py
+          python backend/tools/zel_grid_block_trend_short_exact_replay_v1.py --self-test
+          python -m json.tool \
+            backend/research/zel_grid_block_trend_short_exact_replay_v1.json >/dev/null
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run isolated baseline and candidate source replays
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-grid-block-trend-short-exact-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            backend/research/zel_grid_block_trend_short_exact_replay_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+
+          set +e
+          timeout 5100s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python \
+              '$remote/zel_grid_block_trend_short_exact_replay_v1.py' \
+              --policy '$remote/zel_grid_block_trend_short_exact_replay_v1.json' \
+              --base-tool '$remote/zel_grid_entry_regime_fork_v1.py' \
+              --stdout" > out/result.json 2>out/stderr.log
+          rc=$?
+          set -e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          if [ "$rc" -ne 0 ]; then
+            tail -n 80 out/stderr.log
+            exit "$rc"
+          fi
+          python -m json.tool out/result.json >/dev/null
+          rm -f out/stderr.log
+
+      - name: Verify parity, safety and routing boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/result.json'))
+          assert all(row['terminal_checks'].values()),row
+          assert all(row['baseline_parity'].values()),row
+          assert all(row['candidate_checks'].values()),row
+          assert row['baseline_meta']['lane_count']==15,row
+          assert row['candidate_meta']['lane_count']==15,row
+          assert row['candidate_meta']['blocked_entry_signal_count']>0,row
+          assert row['temporary_raw_rows_deleted'] is True,row
+          assert row['source_copy_deleted'] is True,row
+          assert row['raw_trade_rows_published'] is False,row
+          assert row['raw_event_ids_published'] is False,row
+          assert row['canonical_mutated'] is False,row
+          assert row['runtime_mutated'] is False,row
+          assert row['formal_ledger_mutated'] is False,row
+          assert row['selection_authority'] is False,row
+          assert row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE',row
+          assert row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({
+            'state':row['state'],
+            'candidate_pass':row['candidate_pass'],
+            'baseline_trades':row['all_windows']['baseline']['trade_count'],
+            'candidate_trades':row['all_windows']['candidate']['trade_count'],
+            'blocked_signals':row['candidate_meta']['blocked_entry_signal_count'],
+            'w1':row['windows']['1m_w1']['delta'],
+            'w2':row['windows']['1m_w2']['delta'],
+            'w3':row['windows']['1m_w3']['delta'],
+            'next':row['next'],
+          })
+          PY
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-grid-block-trend-short-exact-replay-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

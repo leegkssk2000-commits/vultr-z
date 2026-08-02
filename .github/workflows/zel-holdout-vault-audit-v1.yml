@@ -1,0 +1,183 @@
+name: ZEL Holdout Vault Audit V1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_holdout_vault_audit_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - .github/workflows/zel-holdout-vault-audit-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_holdout_vault_audit_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - .github/workflows/zel-holdout-vault-audit-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-holdout-vault-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate read-only audit and seal tools
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_holdout_vault_audit_v1.py \
+            backend/tools/zel_holdout_vault_v1.py
+          python backend/tools/zel_holdout_vault_audit_v1.py --self-test
+          python backend/tools/zel_holdout_vault_v1.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('backend/tools/zel_holdout_vault_audit_v1.py').read_text()
+          for token in ('os.chown(', 'unlink(', 'rmtree(', 'open("wb")', "open('wb')"):
+              assert token not in t,token
+          assert 'holdout_bytes_read": False' in t
+          assert 'permissions_mutated": False' in t
+          print('PASS_HOLDOUT_VAULT_READ_ONLY_AUDIT_STATIC')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPOSITORY_ROOT: ${{ vars.ZEL_REPOSITORY_ROOT }}
+      W2_ROOT: ${{ vars.ZEL_HOLDOUT_W2_ROOT }}
+      W3_ROOT: ${{ vars.ZEL_HOLDOUT_W3_ROOT }}
+      FINAL_ROOT: ${{ vars.ZEL_HOLDOUT_FINAL_ROOT }}
+      SEAL_ROOT: ${{ vars.ZEL_HOLDOUT_SEAL_ROOT }}
+      EVALUATOR_GROUP: ${{ vars.ZEL_HOLDOUT_EVALUATOR_GROUP }}
+      PROPOSER_USERS: ${{ vars.ZEL_HOLDOUT_PROPOSER_USERS }}
+      HOLDOUT_HMAC_KEY: ${{ secrets.ZEL_HOLDOUT_HMAC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Resolve configuration without exposing values
+        id: config
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          missing=()
+          for name in REPOSITORY_ROOT W2_ROOT W3_ROOT FINAL_ROOT SEAL_ROOT EVALUATOR_GROUP; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          [ -n "${HOLDOUT_HMAC_KEY:-}" ] || missing+=(HOLDOUT_HMAC_KEY)
+          if [ ${#missing[@]} -gt 0 ]; then
+            MISSING=$(IFS=,; echo "${missing[*]}") python - <<'PY'
+          import json,os
+          from datetime import datetime,timezone
+          from pathlib import Path
+          Path('out/latest.json').write_text(json.dumps({
+            'schema_version':'zel.holdout_vault.audit_receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_HOLDOUT_VAULT_CONFIG_MISSING',
+            'missing_config_names':os.environ['MISSING'].split(','),
+            'permissions_mutated':False,
+            'manifests_written':False,
+            'holdout_bytes_read':False,
+            'runtime_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - <<'PY'
+          import os,re
+          paths=('REPOSITORY_ROOT','W2_ROOT','W3_ROOT','FINAL_ROOT','SEAL_ROOT')
+          for name in paths:
+              assert re.fullmatch(r'/[A-Za-z0-9._/-]+',os.environ[name]),name
+          assert re.fullmatch(r'[A-Za-z0-9._-]+',os.environ['EVALUATOR_GROUP'])
+          users=os.environ.get('PROPOSER_USERS','')
+          assert not users or re.fullmatch(r'[A-Za-z0-9._,-]+',users)
+          PY
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Prepare SSH
+        if: steps.config.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Run VPS read-only vault audit
+        if: steps.config.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_holdout_vault_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_holdout_vault_audit_v1.py \
+              --repository-root '$REPOSITORY_ROOT' \
+              --w2-root '$W2_ROOT' \
+              --w3-root '$W3_ROOT' \
+              --final-root '$FINAL_ROOT' \
+              --seal-root '$SEAL_ROOT' \
+              --evaluator-group '$EVALUATOR_GROUP' \
+              --proposer-users '$PROPOSER_USERS' \
+              --hmac-configured \
+              --out /tmp/zel_holdout_vault_audit_latest.json"
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_audit_latest.json" \
+            out/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_audit_latest.json' || true
+      - name: Verify no mutation authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/latest.json').read_text())
+          assert d['state'] in (
+            'PASS_HOLDOUT_VAULT_AUDIT_READY_TO_SEAL',
+            'HOLD_HOLDOUT_VAULT_AUDIT',
+            'HOLD_HOLDOUT_VAULT_CONFIG_MISSING'
+          ),d
+          assert d['permissions_mutated'] is False,d
+          assert d['manifests_written'] is False,d
+          assert d['holdout_bytes_read'] is False,d
+          assert d['runtime_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          print(json.dumps({'state':d['state'],'error_count':len(d.get('errors',[]))},sort_keys=True))
+          PY
+      - name: Publish audit receipt only
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          root=results/runtime_results/zel/holdout_vault_audit_v1
+          mkdir -p "$root"
+          cp out/latest.json "$root/latest.json"
+          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-holdout-vault-audit-bot'
+          git config user.email 'zel-holdout-vault-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel/holdout_vault_audit_v1
+          git commit -m "result(zel): Holdout vault audit ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-holdout-vault-audit-v1-${{ github.run_id }}
+          path: out/latest.json
+          if-no-files-found: error
+          retention-days: 90

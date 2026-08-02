@@ -99,12 +99,15 @@ def validate_gate_receipt(
     predecessor_sha: str,
 ) -> dict[str, Any]:
     errors: list[str] = []
+    expected_policy_sha = canonical_sha(policy)
     if policy.get("schema_version") != "zel.ai.research_control_plane.v1":
         errors.append("POLICY_SCHEMA")
     if proposal.get("schema_version") != "zel.ai.research_control_plane.receipt.v1":
         errors.append("PROPOSAL_SCHEMA")
     if proposal.get("state") != "PASS_AI_RESEARCH_CONTROL_PLANE":
         errors.append("PROPOSAL_NOT_PASS")
+    if proposal.get("policy_sha256") != expected_policy_sha:
+        errors.append("POLICY_SHA_MISMATCH")
     if proposal.get("blind_holdout_access_granted") is not False:
         errors.append("HOLDOUT_ACCESS_GRANTED")
     if proposal.get("runtime_mutated") is not False:
@@ -118,18 +121,34 @@ def validate_gate_receipt(
     if proposal.get("order_authority") != "BLOCKED":
         errors.append("ORDER_AUTHORITY")
     rows = proposal.get("proposal_results")
-    if not isinstance(rows, list) or not rows or not all(row.get("pass") is True for row in rows if isinstance(row, dict)):
+    if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) and row.get("pass") is True for row in rows):
         errors.append("PROPOSAL_RESULTS")
     if not SHA_RE.fullmatch(predecessor_sha):
         errors.append("PREDECESSOR_SHA")
-    meta = proposal.get("gate_context", {})
-    if meta:
+    meta = proposal.get("gate_context")
+    if not isinstance(meta, dict):
+        errors.append("GATE_CONTEXT_MISSING")
+    else:
         if meta.get("stage_id") != stage_id:
             errors.append("STAGE_MISMATCH")
         if meta.get("epoch_id") != epoch_id:
             errors.append("EPOCH_MISMATCH")
         if meta.get("predecessor_receipt_sha256") != predecessor_sha:
             errors.append("PREDECESSOR_MISMATCH")
+    if proposal.get("predecessor_receipt_sha256") not in (None, predecessor_sha):
+        errors.append("TOP_LEVEL_PREDECESSOR_MISMATCH")
+    claim_tier = str(proposal.get("claim_tier") or "")
+    if claim_tier.startswith("STAGE_AUTHORIZATION"):
+        if proposal.get("economic_claim_allowed") is not False:
+            errors.append("STAGE_AUTH_ECONOMIC_CLAIM")
+        if proposal.get("candidate_execution_allowed") is not False:
+            errors.append("STAGE_AUTH_CANDIDATE_EXECUTION")
+    claimed_receipt_sha = proposal.get("receipt_sha256")
+    if claimed_receipt_sha is not None:
+        unsigned = dict(proposal)
+        unsigned.pop("receipt_sha256", None)
+        if claimed_receipt_sha != canonical_sha(unsigned):
+            errors.append("RECEIPT_SHA_MISMATCH")
     result = {
         "schema_version": "zel.ai.control_gate.receipt.v1",
         "version": VERSION,
@@ -137,7 +156,7 @@ def validate_gate_receipt(
         "stage_id": stage_id,
         "epoch_id": epoch_id,
         "predecessor_receipt_sha256": predecessor_sha,
-        "policy_sha256": canonical_sha(policy),
+        "policy_sha256": expected_policy_sha,
         "proposal_receipt_sha256": canonical_sha(proposal),
         "errors": sorted(set(errors)),
         "runtime_mutated": False,
@@ -156,6 +175,7 @@ def self_test() -> None:
     proposal = {
         "schema_version": "zel.ai.research_control_plane.receipt.v1",
         "state": "PASS_AI_RESEARCH_CONTROL_PLANE",
+        "policy_sha256": canonical_sha(policy),
         "blind_holdout_access_granted": False,
         "runtime_mutated": False,
         "selection_authority": False,
@@ -163,13 +183,19 @@ def self_test() -> None:
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "proposal_results": [{"pass": True}],
+        "gate_context": {
+            "stage_id": "EXACT25_LIVENESS_AND_REPAIR",
+            "epoch_id": "e1",
+            "predecessor_receipt_sha256": sha,
+        },
     }
     passed = validate_gate_receipt(policy, proposal, "EXACT25_LIVENESS_AND_REPAIR", "e1", sha)
     assert passed["state"] == "PASS_AI_CONTROL_GATE", passed
     bad = dict(proposal)
-    bad["blind_holdout_access_granted"] = True
+    bad.pop("gate_context")
     held = validate_gate_receipt(policy, bad, "EXACT25_LIVENESS_AND_REPAIR", "e1", sha)
     assert held["state"] == "HOLD_AI_CONTROL_GATE", held
+    assert "GATE_CONTEXT_MISSING" in held["errors"], held
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text("ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id", encoding="utf-8")

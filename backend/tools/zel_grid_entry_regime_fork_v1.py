@@ -173,7 +173,7 @@ def evaluate(policy: Mapping[str, Any], *, engine_path: Path, terminal_root: Pat
     source_root_raw = ((report.get("source") or {}).get("root") if isinstance(report.get("source"), Mapping) else None)
     if not isinstance(source_root_raw, str) or not source_root_raw:
         raise RuntimeError("SOURCE_ROOT_MISSING")
-    engine.worker_init(Path(source_root_raw), data_root, "1m")
+    engine.init_worker(str(Path(source_root_raw)), str(data_root), "1m")
     manifest = engine._WORKER_MANIFEST
     files = list(manifest.get("files") or []) if isinstance(manifest, Mapping) else []
     file_map: dict[tuple[str, str], Mapping[str, Any]] = {}

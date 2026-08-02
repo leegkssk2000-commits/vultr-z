@@ -1,0 +1,155 @@
+name: ZEL Terminal-Independent Hardening V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_intratrade_path_evidence_contract_v1.json
+      - backend/research/zel_lico_provenance_acquisition_contract_v1.json
+      - backend/tools/zel_intratrade_path_evidence_validator_v1.py
+      - backend/tools/zel_lico_provenance_acquisition_planner_v1.py
+      - backend/tools/zel_composite_terminal_v3_acceptance_harness_v1.py
+      - backend/tools/zel_composite_idempotency_rollback_verifier_v1.py
+      - .github/workflows/zel-terminal-independent-hardening-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-terminal-independent-hardening-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate contracts and tools
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/tools/zel_intratrade_path_evidence_validator_v1.py \
+            backend/tools/zel_lico_provenance_acquisition_planner_v1.py \
+            backend/tools/zel_composite_terminal_v3_acceptance_harness_v1.py \
+            backend/tools/zel_composite_idempotency_rollback_verifier_v1.py
+          python -m json.tool backend/research/zel_intratrade_path_evidence_contract_v1.json >/dev/null
+          python -m json.tool backend/research/zel_lico_provenance_acquisition_contract_v1.json >/dev/null
+          python backend/tools/zel_intratrade_path_evidence_validator_v1.py --self-test
+          python backend/tools/zel_lico_provenance_acquisition_planner_v1.py --self-test
+          python backend/tools/zel_composite_terminal_v3_acceptance_harness_v1.py --self-test
+          python backend/tools/zel_composite_idempotency_rollback_verifier_v1.py --self-test
+
+      - name: Validate mixed path evidence and LICO acquisition plans
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          sha='a'*64
+          rows=[
+            {
+              'event_id':'e1','strategy_id':'s1','symbol':'BTCUSDT','side':'long',
+              'entry_ts':'2026-01-01T00:00:00Z','exit_ts':'2026-01-01T00:02:00Z',
+              'timestamp_path':['2026-01-01T00:00:00Z','2026-01-01T00:01:00Z','2026-01-01T00:02:00Z'],
+              'intratrade_price_path':[100,101,102],'position_size_path':[1,1,0],
+              'path_source':'sealed_dataset:/fixture','path_source_sha256':sha,
+              'strategy_config_sha256':sha,'signal_source_sha256':sha,
+              'interval':'1m','timezone':'UTC','entry_price':100
+            },
+            {
+              'event_id':'e2','strategy_id':'s2','symbol':'ETHUSDT','side':'long',
+              'entry_ts':'2026-01-02T00:00:00Z','exit_ts':'2026-01-02T00:02:00Z',
+              'entry_price':200
+            }
+          ]
+          Path('out/mixed_rows.json').write_text(json.dumps({'rows':rows},indent=2))
+          PY
+          set +e
+          python backend/tools/zel_intratrade_path_evidence_validator_v1.py \
+            --contract backend/research/zel_intratrade_path_evidence_contract_v1.json \
+            --input out/mixed_rows.json \
+            --out out/path_validation.json
+          path_rc=$?
+          python backend/tools/zel_lico_provenance_acquisition_planner_v1.py \
+            --contract backend/research/zel_lico_provenance_acquisition_contract_v1.json \
+            --input out/mixed_rows.json \
+            --ssot-data-stale-ms 120000 \
+            --out out/lico_plan.json
+          lico_rc=$?
+          set -e
+          python - <<'PY'
+          import json
+          path=json.load(open('out/path_validation.json'))
+          lico=json.load(open('out/lico_plan.json'))
+          assert path['state']=='HOLD_INTRATRADE_PATH_DATASET',path
+          assert path['pass_count']==1 and path['blocked_count']==1,path
+          assert lico['state']=='PASS_LICO_PROVENANCE_ACQUISITION_DATASET_PLAN',lico
+          assert lico['row_count']==2,lico
+          assert lico['writes_requested'] is False and lico['network_requested'] is False,lico
+          for row in (path,lico):
+              assert row['active_data_b_1m_mutated'] is False,row
+              assert row['canonical_strategy_files_mutated'] is False,row
+              assert row['formal_ledger_mutated'] is False,row
+              assert row['runtime_registry_mutated'] is False,row
+              assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'path':path['state'],'lico':lico['state'],'requests':lico['field_request_counts']})
+          PY
+          test "$path_rc" -eq 1
+          test "$lico_rc" -eq 0
+
+      - name: Execute full synthetic Terminal V3 acceptance
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_composite_terminal_v3_acceptance_harness_v1.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --out-dir out/terminal_v3
+          python - <<'PY'
+          import json
+          row=json.load(open('out/terminal_v3/acceptance_receipt.json'))
+          assert row['state']=='PASS_COMPOSITE_TERMINAL_V3_ACCEPTANCE_HARNESS',row
+          assert row['strategy_count']==25 and row['window_count']==3,row
+          assert row['closed_trade_count']==75 and row['candidate_count']==30,row
+          assert row['economic_survivor_count']==0 and row['incumbent_retained'] is True,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print(row)
+          PY
+
+      - name: Verify semantic idempotency protected hashes and rollback ref
+        run: |
+          set -euo pipefail
+          git rev-parse --verify origin/pre-composite-factory-v1-20260802^{commit}
+          python backend/tools/zel_composite_idempotency_rollback_verifier_v1.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --out-dir out/idempotency \
+            --rollback-ref origin/pre-composite-factory-v1-20260802
+          python - <<'PY'
+          import json
+          row=json.load(open('out/idempotency/idempotency_rollback_receipt.json'))
+          assert row['state']=='PASS_COMPOSITE_IDEMPOTENCY_AND_ROLLBACK',row
+          assert row['semantic_outputs_identical'] is True,row
+          assert row['acceptance_receipts_identical'] is True,row
+          assert row['protected_mutations']==[],row
+          assert row['tracked_git_status_delta']==[],row
+          assert row['rollback_ready'] is True,row
+          assert row['rollback_commit_sha'],row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'rollback':row['rollback_commit_sha'],'semantic':row['semantic_sha_run_a']})
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-terminal-independent-hardening-v1-${{ github.run_id }}
+          path: out
+          retention-days: 30

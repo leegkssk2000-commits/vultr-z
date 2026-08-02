@@ -47,7 +47,12 @@ jobs:
           assert "strategy_failure_count']==0" in t
           assert "gh workflow run zel-pre-shadow-dag-controller-v1.yml" in t
           assert "gh workflow run zel-composite-post-terminal-ai-authorizer-v1.yml" in t
-          assert "runtime_results/zel/data_b_1m_v2_watch_v1" in t
+          assert "git add runtime_results/zel/data_b_1m_v2_watch_v1" in t
+          forbidden=(
+            "git add runtime_results/zel/data_b_1m_v2_watch_v1 "
+            + "runtime_results/zel/historical_oos_exact25_replay_v1"
+          )
+          assert forbidden not in t
           print('PASS_DATA_B_1M_V2_WATCH_PUBLISH_STATIC')
           PY
 
@@ -143,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib,json
+          import json
           from pathlib import Path
           root=Path('out/terminal')
           report=json.loads((root/'report.json').read_text())
@@ -223,8 +228,16 @@ jobs:
           PY
           fi
           cd results
-          git add runtime_results/zel/data_b_1m_v2_watch_v1 runtime_results/zel/historical_oos_exact25_replay_v1 runtime_results/zel/historical_oos_exact25_replay_v2 2>/dev/null || true
-          git commit -m "result(zel): Data B 1m V2 watch ${GITHUB_RUN_ID}" || true
+          git add runtime_results/zel/data_b_1m_v2_watch_v1
+          if [ "${{ steps.terminal.outputs.complete }}" = true ]; then
+            git add runtime_results/zel/historical_oos_exact25_replay_v1
+            git add runtime_results/zel/historical_oos_exact25_replay_v2
+          fi
+          if git diff --cached --quiet; then
+            echo 'HOLD_NO_WATCH_OR_TERMINAL_DELTA'
+            exit 0
+          fi
+          git commit -m "result(zel): Data B 1m V2 watch ${GITHUB_RUN_ID}"
           git push origin HEAD:zel-data-expansion-results-v1
       - name: Dispatch downstream controllers after terminal publication
         if: steps.terminal.outputs.complete == 'true'

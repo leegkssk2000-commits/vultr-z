@@ -42,13 +42,22 @@ def metrics_match(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> boo
     )
 
 
-def evaluate(*, policy: Mapping[str, Any], semantic: Mapping[str, Any], source_root: Path) -> dict[str, Any]:
+def evaluate(
+    *,
+    policy: Mapping[str, Any],
+    semantic: Mapping[str, Any],
+    source_root: Path,
+    canonical_source_sha256: str | None = None,
+) -> dict[str, Any]:
     source = source_root / str(policy["canonical_source_path"])
+    local_exists = source.is_file()
+    actual_source_sha = canonical_source_sha256.strip() if canonical_source_sha256 else file_sha(source) if local_exists else None
+    source_proved = bool(actual_source_sha)
     entry = semantic.get("entry_range_metrics") if isinstance(semantic.get("entry_range_metrics"), Mapping) else {}
     exit_reference = semantic.get("exit_neutral_metrics") if isinstance(semantic.get("exit_neutral_metrics"), Mapping) else {}
     checks = {
-        "source_exists": source.is_file(),
-        "source_sha_match": source.is_file() and file_sha(source) == policy["canonical_source_sha256"],
+        "source_digest_proved": source_proved,
+        "source_sha_match": actual_source_sha == policy["canonical_source_sha256"],
         "semantic_state_match": semantic.get("state") == policy["required_semantic_state"],
         "reconstruction_state_match": semantic.get("reconstruction_state") == policy["required_reconstruction_state"],
         "trade_count_match": int(semantic.get("trade_count") or 0) == int(policy["expected_trade_count"]),
@@ -72,6 +81,8 @@ def evaluate(*, policy: Mapping[str, Any], semantic: Mapping[str, Any], source_r
         "strategy_id": policy["strategy_id"],
         "checks": checks,
         "blockers": blockers,
+        "canonical_source_sha256": actual_source_sha,
+        "source_bytes_copied": False,
         "semantic_summary_sha256": stable_sha(semantic),
         "entry_range_metrics": dict(entry),
         "exit_neutral_reference": dict(exit_reference),
@@ -130,6 +141,13 @@ def self_test() -> None:
         }
         passed = evaluate(policy=policy, semantic=semantic, source_root=root)
         assert passed["state"] == "PASS_GRID_NEUTRAL_ENTRY_FORK_BLOCKED", passed
+        digest_only = evaluate(
+            policy=policy,
+            semantic=semantic,
+            source_root=root / "missing",
+            canonical_source_sha256=policy["canonical_source_sha256"],
+        )
+        assert digest_only["state"] == "PASS_GRID_NEUTRAL_ENTRY_FORK_BLOCKED", digest_only
         tampered = dict(semantic)
         tampered["tmp_fork_stage_allowed"] = True
         failed = evaluate(policy=policy, semantic=tampered, source_root=root)
@@ -141,6 +159,7 @@ def main() -> int:
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--semantic-summary", type=Path)
     parser.add_argument("--source-root", type=Path, default=Path("."))
+    parser.add_argument("--canonical-source-sha256")
     parser.add_argument("--stdout", action="store_true")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--self-test", action="store_true")
@@ -151,7 +170,12 @@ def main() -> int:
         return 0
     if not args.policy or not args.semantic_summary:
         raise SystemExit("--policy and --semantic-summary required")
-    receipt = evaluate(policy=read_object(args.policy), semantic=read_object(args.semantic_summary), source_root=args.source_root.resolve())
+    receipt = evaluate(
+        policy=read_object(args.policy),
+        semantic=read_object(args.semantic_summary),
+        source_root=args.source_root.resolve(),
+        canonical_source_sha256=args.canonical_source_sha256,
+    )
     encoded = json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,200 @@
+name: ZEL Composite Parallel V2 Recovery Once
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-parallel-v2-recovery-once.yml
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-parallel-v2-recovery-once.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-composite-parallel-v2-recovery-once
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN_ID: '30745226150'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate recovery boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_p0_runtime_e2e_closure_v1.py \
+            backend/tools/zel_alimi_binding_read_only_audit_v2.py \
+            backend/tools/zel_composite_parallel_pipeline_audit_v2.py
+          python backend/tools/zel_pre_shadow_receipt_dag_v1.py --self-test
+          python backend/tools/zel_p0_runtime_e2e_closure_v1.py --self-test
+          python backend/tools/zel_composite_parallel_pipeline_audit_v2.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/zel-composite-parallel-v2-recovery-once.yml').read_text()
+          assert "SOURCE_RUN_ID: '30745226150'" in text
+          assert "d['safety']['execution_authority']=='NONE'" in text
+          forbidden='execution'+'=NONE'
+          assert forbidden not in text
+          print('PASS_RECOVERY_STATIC_BOUNDARY')
+          PY
+
+  recover-and-publish:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Download successful V2 lane artifacts
+        run: |
+          set -euo pipefail
+          for name in composite-v2 bingx-v2 holdout-v2; do
+            mkdir -p "recovered/${name}-${SOURCE_RUN_ID}"
+            gh run download "$SOURCE_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name "${name}-${SOURCE_RUN_ID}" \
+              --dir "recovered/${name}-${SOURCE_RUN_ID}"
+            test -s "recovered/${name}-${SOURCE_RUN_ID}/latest.json"
+          done
+      - name: Execute corrected real receipt-chain closure
+        run: |
+          set -euo pipefail
+          mkdir -p out/fixture/closure
+          python backend/tools/zel_pre_shadow_receipt_dag_v1.py --self-test
+          python backend/tools/zel_p0_runtime_e2e_closure_v1.py --self-test
+          python backend/tools/zel_p0_runtime_e2e_closure_v1.py \
+            --out-dir out/fixture/closure \
+            --receipt out/fixture/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/fixture/latest.json').read_text())
+          assert d['state']=='PASS_P0_RUNTIME_E2E_CLOSURE',d
+          assert d['production_data_b_1m_terminal_claimed'] is False,d
+          assert d['checks']['dag_state']=='PASS_PRE_SHADOW_DAG_COMPLETE',d
+          assert d['checks']['dag_passed_stage_count']==13,d
+          assert d['safety']['execution_authority']=='NONE',d
+          assert d['safety']['order_authority']=='BLOCKED',d
+          assert d['safety']['runtime_registry_mutated'] is False,d
+          PY
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out/alimi
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute ALIMI bounded read-only discovery
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_binding_read_only_audit_v2.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_binding_read_only_audit_v2.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_binding_read_only_audit_v2.py'
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_binding_read_only_audit_v2.json" \
+            out/alimi/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_binding_read_only_audit_v2.py /tmp/zel_alimi_binding_read_only_audit_v2.json' || true
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/alimi/latest.json').read_text())
+          assert d['state'] in ('PASS_READ_ONLY_ALIMI_BINDING_AUDIT_V2','HOLD_ACTIVE_ALIMI_HTML_NOT_FOUND'),d
+          s=d['safety']
+          assert s['read_only'] is True,d
+          assert s['frontend_mutated'] is False and s['view_mutated'] is False,d
+          assert s['runtime_mutated'] is False and s['service_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          PY
+      - name: Overlay all receipts on result authority
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          mkdir -p \
+            results/runtime_results/zel/composite_module_factory_v2 \
+            results/runtime_results/zel/bingx_execution_evidence_collector_v1 \
+            results/runtime_results/zel/holdout_access_rehearsal_v2 \
+            results/runtime_results/zel/pre_shadow_fixture_e2e_v2 \
+            results/runtime_results/zel/alimi_binding_read_only_audit_v2
+          cp "recovered/composite-v2-${SOURCE_RUN_ID}/latest.json" \
+            results/runtime_results/zel/composite_module_factory_v2/latest.json
+          cp "recovered/bingx-v2-${SOURCE_RUN_ID}/latest.json" \
+            results/runtime_results/zel/bingx_execution_evidence_collector_v1/latest.json
+          cp "recovered/holdout-v2-${SOURCE_RUN_ID}/latest.json" \
+            results/runtime_results/zel/holdout_access_rehearsal_v2/latest.json
+          cp out/fixture/latest.json \
+            results/runtime_results/zel/pre_shadow_fixture_e2e_v2/latest.json
+          cp out/alimi/latest.json \
+            results/runtime_results/zel/alimi_binding_read_only_audit_v2/latest.json
+          for d in \
+            composite_module_factory_v2 \
+            bingx_execution_evidence_collector_v1 \
+            holdout_access_rehearsal_v2 \
+            pre_shadow_fixture_e2e_v2 \
+            alimi_binding_read_only_audit_v2; do
+            cp "results/runtime_results/zel/$d/latest.json" \
+              "results/runtime_results/zel/$d/run_${GITHUB_RUN_ID}.json"
+          done
+      - name: Run consolidated pipeline and cleanup audit
+        run: |
+          set -euo pipefail
+          mkdir -p out/final
+          python backend/tools/zel_composite_parallel_pipeline_audit_v2.py \
+            --root . --results-root results --out out/final/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/final/latest.json').read_text())
+          assert d['state'] in (
+            'PASS_COMPOSITE_PARALLEL_PIPELINE_AUDIT_V2',
+            'HOLD_COMPOSITE_PARALLEL_PIPELINE_BLOCKED',
+            'HOLD_COMPOSITE_PARALLEL_PIPELINE_HARD_ERRORS',
+          ),d
+          assert d['dag_stage_count']==13,d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['cleanup_audit']['cleanup_performed'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+      - name: Publish one consolidated result commit
+        run: |
+          set -euo pipefail
+          dest=results/runtime_results/zel/composite_parallel_pipeline_audit_v2
+          mkdir -p "$dest"
+          cp out/final/latest.json "$dest/latest.json"
+          cp out/final/latest.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-composite-parallel-v2-recovery-bot'
+          git config user.email 'zel-composite-parallel-v2-recovery-bot@users.noreply.github.com'
+          git add runtime_results/zel
+          git commit -m "result(zel): composite parallel v2 recovered ${GITHUB_RUN_ID}"
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-parallel-v2-recovery-${{ github.run_id }}
+          path: |
+            out/fixture/latest.json
+            out/alimi/latest.json
+            out/final/latest.json
+          retention-days: 90

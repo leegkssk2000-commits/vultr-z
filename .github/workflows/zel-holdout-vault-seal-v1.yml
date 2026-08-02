@@ -10,6 +10,7 @@ on:
   pull_request:
     branches: [master]
     paths:
+      - backend/research/zel_holdout_runtime_config_v1.json
       - backend/research/zel_holdout_vault_seal_contract_v1.json
       - backend/tools/zel_holdout_vault_audit_v1.py
       - backend/tools/zel_holdout_vault_v1.py
@@ -44,10 +45,12 @@ jobs:
           python backend/tools/zel_holdout_vault_audit_v1.py --self-test
           python backend/tools/zel_holdout_vault_v1.py --self-test
           python backend/tools/zel_holdout_vault_seal_runner_v1.py --self-test
+          python -m json.tool backend/research/zel_holdout_runtime_config_v1.json >/dev/null
           python - <<'PY'
           import json,re
           from pathlib import Path
           contract=json.loads(Path('backend/research/zel_holdout_vault_seal_contract_v1.json').read_text())
+          config=json.loads(Path('backend/research/zel_holdout_runtime_config_v1.json').read_text())
           workflow=Path('.github/workflows/zel-holdout-vault-seal-v1.yml').read_text()
           executor=Path('backend/tools/zel_holdout_vault_seal_exec_v1.sh').read_text()
           remote_match=re.search(r'(?ms)^      - id: remote\n.*?(?=^      - name: Fetch redacted receipts\n)',workflow)
@@ -58,13 +61,14 @@ jobs:
           assert contract['requirements']['workflow_dispatch_only'] is True,contract
           assert contract['requirements']['fresh_inline_read_only_audit_required'] is True,contract
           assert contract['requirements']['raw_holdout_publication_forbidden'] is True,contract
+          assert config['schema_version']=='zel.holdout.runtime_config.v1',config
           assert '\n  schedule:' not in workflow,workflow
           assert '\n  push:' not in workflow,workflow
           assert 'SEAL_EXTERNAL_HOLDOUT' in workflow,workflow
           assert 'zel_holdout_vault_seal_runner_v1.py' in workflow,workflow
           assert 'IFS= read -r ZEL_HOLDOUT_HMAC_KEY' in executor,executor
           assert '--hmac-key' not in remote_step,remote_step
-          assert '"$HOLDOUT_HMAC_KEY" | ssh' in remote_step,remote_step
+          assert "cat '$HMAC_KEY_FILE'" in remote_step,remote_step
           assert 'bash /tmp/zel_holdout_vault_seal_exec_v1.sh' in remote_step,remote_step
           assert contract['safety']['execution_authority']=='NONE',contract
           assert contract['safety']['order_authority']=='BLOCKED',contract
@@ -76,39 +80,44 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      REPOSITORY_ROOT: ${{ vars.ZEL_REPOSITORY_ROOT }}
-      W2_ROOT: ${{ vars.ZEL_HOLDOUT_W2_ROOT }}
-      W3_ROOT: ${{ vars.ZEL_HOLDOUT_W3_ROOT }}
-      FINAL_ROOT: ${{ vars.ZEL_HOLDOUT_FINAL_ROOT }}
-      SEAL_ROOT: ${{ vars.ZEL_HOLDOUT_SEAL_ROOT }}
-      EVALUATOR_GROUP: ${{ vars.ZEL_HOLDOUT_EVALUATOR_GROUP }}
-      PROPOSER_USERS: ${{ vars.ZEL_HOLDOUT_PROPOSER_USERS }}
-      HOLDOUT_HMAC_KEY: ${{ secrets.ZEL_HOLDOUT_HMAC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Require exact confirmation and complete configuration
+      - name: Resolve external runtime configuration
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_holdout_runtime_config_v1.json').read_text())
+          mapping={
+            'REPOSITORY_ROOT':'repository_root','W2_ROOT':'w2_root','W3_ROOT':'w3_root',
+            'FINAL_ROOT':'final_root','SEAL_ROOT':'seal_root','EVALUATOR_GROUP':'evaluator_group',
+            'HMAC_KEY_FILE':'hmac_key_file'
+          }
+          for env,key in mapping.items():
+              value=str(c[key])
+              if env.endswith('_ROOT') or env=='HMAC_KEY_FILE':
+                  assert re.fullmatch(r'/[A-Za-z0-9._/-]+',value),env
+              else:
+                  assert re.fullmatch(r'[A-Za-z0-9._-]+',value),env
+              with Path(os.environ['GITHUB_ENV']).open('a') as h:
+                  h.write(f'{env}={value}\n')
+          users=','.join(c.get('proposer_users',[]))
+          assert not users or re.fullmatch(r'[A-Za-z0-9._,-]+',users)
+          with Path(os.environ['GITHUB_ENV']).open('a') as h:
+              h.write(f'PROPOSER_USERS={users}\n')
+          roots=[c['w2_root'],c['w3_root'],c['final_root']]
+          assert len(set(roots))==3,roots
+          repo=c['repository_root'].rstrip('/')+'/'
+          assert all(not root.startswith(repo) for root in roots),roots
+          PY
+      - name: Require exact confirmation
         env:
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           test "$CONFIRMATION" = 'SEAL_EXTERNAL_HOLDOUT'
-          for name in REPOSITORY_ROOT W2_ROOT W3_ROOT FINAL_ROOT SEAL_ROOT EVALUATOR_GROUP HOLDOUT_HMAC_KEY; do
-            test -n "${!name:-}"
-          done
-          python - <<'PY'
-          import os,re
-          for name in ('REPOSITORY_ROOT','W2_ROOT','W3_ROOT','FINAL_ROOT','SEAL_ROOT'):
-              assert re.fullmatch(r'/[A-Za-z0-9._/-]+',os.environ[name]),name
-          assert re.fullmatch(r'[A-Za-z0-9._-]+',os.environ['EVALUATOR_GROUP'])
-          users=os.environ.get('PROPOSER_USERS','')
-          assert not users or re.fullmatch(r'[A-Za-z0-9._,-]+',users)
-          roots=[os.path.normpath(os.environ[name]) for name in ('W2_ROOT','W3_ROOT','FINAL_ROOT')]
-          assert len(set(roots))==3,roots
-          repo=os.path.normpath(os.environ['REPOSITORY_ROOT'])
-          assert all(root!=repo and not root.startswith(repo.rstrip('/')+'/') for root in roots),roots
-          PY
       - name: Prepare SSH and upload seal tools
         run: |
           set -euo pipefail
@@ -127,17 +136,19 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          printf '%s\n' "$HOLDOUT_HMAC_KEY" | ssh -i ~/.ssh/vps_key \
-            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "bash /tmp/zel_holdout_vault_seal_exec_v1.sh \
-              --repository-root '$REPOSITORY_ROOT' \
-              --w2-root '$W2_ROOT' \
-              --w3-root '$W3_ROOT' \
-              --final-root '$FINAL_ROOT' \
-              --seal-root '$SEAL_ROOT' \
-              --evaluator-group '$EVALUATOR_GROUP' \
-              --proposer-users '$PROPOSER_USERS' \
-              --out-dir /tmp/zel_holdout_vault_seal_v1"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "set -euo pipefail; \
+             if [ \"\$(id -u)\" -eq 0 ]; then prefix=(); else prefix=(sudo -n); fi; \
+             \"\${prefix[@]}\" test -s '$HMAC_KEY_FILE'; \
+             \"\${prefix[@]}\" cat '$HMAC_KEY_FILE' | \"\${prefix[@]}\" bash /tmp/zel_holdout_vault_seal_exec_v1.sh \
+               --repository-root '$REPOSITORY_ROOT' \
+               --w2-root '$W2_ROOT' \
+               --w3-root '$W3_ROOT' \
+               --final-root '$FINAL_ROOT' \
+               --seal-root '$SEAL_ROOT' \
+               --evaluator-group '$EVALUATOR_GROUP' \
+               --proposer-users '$PROPOSER_USERS' \
+               --out-dir /tmp/zel_holdout_vault_seal_v1"
           rc=$?
           set -e
           echo "return_code=$rc" >> "$GITHUB_OUTPUT"
@@ -198,7 +209,7 @@ jobs:
         if: always()
         run: |
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py /tmp/zel_holdout_vault_seal_exec_v1.sh' || true
+            'rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py /tmp/zel_holdout_vault_seal_exec_v1.sh || sudo -n rm -rf /tmp/zel_holdout_vault_seal_v1 /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_vault_v1.py /tmp/zel_holdout_vault_seal_runner_v1.py /tmp/zel_holdout_vault_seal_exec_v1.sh' || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

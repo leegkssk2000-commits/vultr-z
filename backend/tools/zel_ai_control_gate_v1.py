@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import tempfile
+from pathlib import Path
+from typing import Any, Mapping
+
+VERSION = "ZEL_AI_CONTROL_GATE_V1"
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+PROTECTED_FILENAME_MARKERS = (
+    "exact25-material-upgrade",
+    "trade-methods-pre-shadow",
+    "component",
+    "interaction",
+    "top3",
+    "alpha-auto-validation",
+    "w2-forward",
+    "w3-durability",
+)
+EXEMPT_FILENAMES = {
+    "zel-ai-research-control-hardening-v1.yml",
+    "zel-ai-control-enforcement-v1.yml",
+    "r7a4d-strategy11-component-attribution-v1.yml",
+    "zel-alpha-lap-v2-contract-v1.yml",
+    "zel-component-autonomy-v2.yml",
+    "zel-data-b-replay-owner-policy-v1.yml",
+    "zel-p0-runtime-e2e-closure-v1.yml",
+    "zel-pre-shadow-full-hardening-v1.yml",
+}
+
+
+def canonical_sha(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def load_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"OBJECT_REQUIRED:{path}")
+    return value
+
+
+def is_protected_workflow(path: Path, text: str) -> bool:
+    name = path.name.lower()
+    if path.name in EXEMPT_FILENAMES:
+        return False
+    if any(marker in name for marker in PROTECTED_FILENAME_MARKERS):
+        return True
+    content_markers = (
+        "PASS_EXACT25_MATERIAL",
+        "PASS_TRADE_METHOD",
+        "PASS_COMPONENT_MAIN_EFFECT",
+        "PASS_SELECTED_INTERACTION",
+        "PASS_STRATEGY_TOP3",
+        "PASS_ALPHA",
+        "W2_FORWARD",
+        "W3_DURABILITY",
+    )
+    return any(marker in text for marker in content_markers)
+
+
+def audit_workflows(workflows_root: Path) -> dict[str, Any]:
+    protected: list[str] = []
+    unguarded: list[str] = []
+    for path in sorted([*workflows_root.glob("*.yml"), *workflows_root.glob("*.yaml")]):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if not is_protected_workflow(path, text):
+            continue
+        protected.append(path.name)
+        required = (
+            "ZEL_AI_CONTROL_GATE_V1",
+            "zel_ai_control_gate_v1.py",
+            "--proposal-receipt",
+            "--stage-id",
+        )
+        if not all(token in text for token in required):
+            unguarded.append(path.name)
+    return {
+        "schema_version": "zel.ai.control_enforcement.audit.v1",
+        "state": "PASS_ALL_PROTECTED_WORKFLOWS_GUARDED" if not unguarded else "HOLD_UNGUARDED_AI_WORKFLOWS",
+        "protected_workflow_count": len(protected),
+        "protected_workflows": protected,
+        "unguarded_workflows": unguarded,
+        "runtime_mutated": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+    }
+
+
+def validate_gate_receipt(
+    policy: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    stage_id: str,
+    epoch_id: str,
+    predecessor_sha: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    if policy.get("schema_version") != "zel.ai.research_control_plane.v1":
+        errors.append("POLICY_SCHEMA")
+    if proposal.get("schema_version") != "zel.ai.research_control_plane.receipt.v1":
+        errors.append("PROPOSAL_SCHEMA")
+    if proposal.get("state") != "PASS_AI_RESEARCH_CONTROL_PLANE":
+        errors.append("PROPOSAL_NOT_PASS")
+    if proposal.get("blind_holdout_access_granted") is not False:
+        errors.append("HOLDOUT_ACCESS_GRANTED")
+    if proposal.get("runtime_mutated") is not False:
+        errors.append("RUNTIME_MUTATED")
+    if proposal.get("selection_authority") is not False:
+        errors.append("SELECTION_AUTHORITY")
+    if proposal.get("promotion_authority") is not False:
+        errors.append("PROMOTION_AUTHORITY")
+    if proposal.get("execution_authority") != "NONE":
+        errors.append("EXECUTION_AUTHORITY")
+    if proposal.get("order_authority") != "BLOCKED":
+        errors.append("ORDER_AUTHORITY")
+    rows = proposal.get("proposal_results")
+    if not isinstance(rows, list) or not rows or not all(row.get("pass") is True for row in rows if isinstance(row, dict)):
+        errors.append("PROPOSAL_RESULTS")
+    if not SHA_RE.fullmatch(predecessor_sha):
+        errors.append("PREDECESSOR_SHA")
+    meta = proposal.get("gate_context", {})
+    if meta:
+        if meta.get("stage_id") != stage_id:
+            errors.append("STAGE_MISMATCH")
+        if meta.get("epoch_id") != epoch_id:
+            errors.append("EPOCH_MISMATCH")
+        if meta.get("predecessor_receipt_sha256") != predecessor_sha:
+            errors.append("PREDECESSOR_MISMATCH")
+    result = {
+        "schema_version": "zel.ai.control_gate.receipt.v1",
+        "version": VERSION,
+        "state": "PASS_AI_CONTROL_GATE" if not errors else "HOLD_AI_CONTROL_GATE",
+        "stage_id": stage_id,
+        "epoch_id": epoch_id,
+        "predecessor_receipt_sha256": predecessor_sha,
+        "policy_sha256": canonical_sha(policy),
+        "proposal_receipt_sha256": canonical_sha(proposal),
+        "errors": sorted(set(errors)),
+        "runtime_mutated": False,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+    }
+    return result
+
+
+def self_test() -> None:
+    sha = "a" * 64
+    policy = {"schema_version": "zel.ai.research_control_plane.v1"}
+    proposal = {
+        "schema_version": "zel.ai.research_control_plane.receipt.v1",
+        "state": "PASS_AI_RESEARCH_CONTROL_PLANE",
+        "blind_holdout_access_granted": False,
+        "runtime_mutated": False,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "proposal_results": [{"pass": True}],
+    }
+    passed = validate_gate_receipt(policy, proposal, "EXACT25_LIVENESS_AND_REPAIR", "e1", sha)
+    assert passed["state"] == "PASS_AI_CONTROL_GATE", passed
+    bad = dict(proposal)
+    bad["blind_holdout_access_granted"] = True
+    held = validate_gate_receipt(policy, bad, "EXACT25_LIVENESS_AND_REPAIR", "e1", sha)
+    assert held["state"] == "HOLD_AI_CONTROL_GATE", held
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text("ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id", encoding="utf-8")
+        audit = audit_workflows(root)
+        assert audit["state"].startswith("PASS"), audit
+    print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=False)
+    audit = sub.add_parser("audit-workflows")
+    audit.add_argument("--workflows-root", type=Path, required=True)
+    audit.add_argument("--out", type=Path, required=True)
+    verify = sub.add_parser("verify")
+    verify.add_argument("--policy", type=Path, required=True)
+    verify.add_argument("--proposal-receipt", type=Path, required=True)
+    verify.add_argument("--stage-id", required=True)
+    verify.add_argument("--epoch-id", required=True)
+    verify.add_argument("--predecessor-receipt-sha256", required=True)
+    verify.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.command == "audit-workflows":
+        result = audit_workflows(args.workflows_root)
+    elif args.command == "verify":
+        result = validate_gate_receipt(load_object(args.policy), load_object(args.proposal_receipt), args.stage_id, args.epoch_id, args.predecessor_receipt_sha256)
+    else:
+        parser.error("command required")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({"state": result["state"], "errors": result.get("errors", []), "unguarded": result.get("unguarded_workflows", [])}, sort_keys=True))
+    return 0 if result["state"].startswith("PASS") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

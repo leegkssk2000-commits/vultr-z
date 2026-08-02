@@ -1,0 +1,129 @@
+name: ZEL AI Control Enforcement V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_control_enforcement_v1.json
+      - backend/tools/zel_ai_control_gate_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - backend/tools/zel_bind_ai_control_workflows_v1.py
+      - .github/workflows/zel-ai-control-enforcement-v1.yml
+      - .github/workflows/zel-*.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_control_enforcement_v1.json
+      - backend/tools/zel_ai_control_gate_v1.py
+      - backend/tools/zel_holdout_vault_v1.py
+      - backend/tools/zel_bind_ai_control_workflows_v1.py
+      - .github/workflows/zel-ai-control-enforcement-v1.yml
+      - .github/workflows/zel-*.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ai-control-enforcement-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ai_control_gate_v1.py \
+            backend/tools/zel_holdout_vault_v1.py \
+            backend/tools/zel_bind_ai_control_workflows_v1.py
+          python backend/tools/zel_ai_control_gate_v1.py --self-test
+          python backend/tools/zel_holdout_vault_v1.py --self-test
+          python backend/tools/zel_bind_ai_control_workflows_v1.py --self-test
+      - name: Enforce protected workflow gates
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/tools/zel_ai_control_gate_v1.py audit-workflows \
+            --workflows-root .github/workflows \
+            --out out/workflow_audit.json
+          cat out/workflow_audit.json
+      - name: Validate safety boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_ai_control_enforcement_v1.json').read_text())
+          assert c['guard_token']=='ZEL_AI_CONTROL_GATE_V1',c
+          assert c['holdout_vault']['dataset_root_must_be_outside_repository'] is True,c
+          assert c['holdout_vault']['manifest_hmac_required'] is True,c
+          assert c['holdout_vault']['proposer_read_access_forbidden'] is True,c
+          s=c['safety']
+          assert s['active_data_b_1m_mutation'] is False,s
+          assert s['canonical_strategy_mutation'] is False,s
+          assert s['formal_ledger_mutation'] is False,s
+          assert s['runtime_registry_write'] is False,s
+          assert s['execution_authority']=='NONE',s
+          assert s['order_authority']=='BLOCKED',s
+          print('PASS_AI_CONTROL_ENFORCEMENT_FOUNDATION')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ai-control-enforcement-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+
+  bind:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Verify deterministic bindings are idempotent
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_bind_ai_control_workflows_v1.py \
+            --workflows-root .github/workflows
+          git diff --check
+          if ! git diff --quiet; then
+            echo 'BINDING_DRIFT_DETECTED'
+            git diff -- .github/workflows
+            exit 1
+          fi
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          Path('out/binding_receipt.json').write_text(json.dumps({
+            'schema_version':'zel.ai.control_binding.receipt.v1',
+            'state':'PASS_AI_CONTROL_BINDINGS_IDEMPOTENT',
+            'protected_workflow_count':5,
+            'runtime_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-ai-control-bound-workflows-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

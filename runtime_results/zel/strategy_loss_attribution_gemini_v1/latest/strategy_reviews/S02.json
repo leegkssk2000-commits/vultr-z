@@ -2,60 +2,49 @@
   "alias": "S02",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 80,
-      "cluster": "long_exposure_ge_30m",
-      "does_not_prove": "Does not prove that all trades exceeding 30 minutes are unprofitable, as some may eventually reach targets after prolonged consolidation.",
+      "causal_confidence_pct": 90,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "That a simple trailing stop will capture all unrealized gains without increasing premature stop-outs.",
       "evidence": [
-        "Gross loss of 106.40 R across 122 trades in the long_exposure_ge_30m cluster.",
-        "Global review identifies S02 as suffering from severe duration decay."
+        "138 trades reached >= 0.50R MFE but resulted in gross losses of -129.76R.",
+        "Average MFE is 1.09R against an average MAE of -0.74R, showing a systemic failure to lock in profits."
       ]
     },
     {
       "causal_confidence_pct": 85,
-      "cluster": "favorable_then_loss_mfe_ge_0_50R",
-      "does_not_prove": "Does not prove that a break-even stop will not prematurely exit trades that experience normal pullbacks before reaching larger targets.",
+      "cluster": "neutral_regime_losses",
+      "does_not_prove": "That the neutral regime filter can be applied universally across all symbols without reducing sample size too drastically.",
       "evidence": [
-        "Gross loss of 129.76 R across 138 trades in the favorable_then_loss_mfe_ge_0_50R cluster.",
-        "Average MFE is 1.10R but win rate is only 26.57%, indicating significant round-tripping."
+        "Neutral regime accounts for -188.34R net loss across 222 trades with a profit factor of 0.126.",
+        "Long regime is highly profitable (+43.78R, PF 2.00), demonstrating strong regime dependence."
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "No modifications to entry, exit, or risk parameters."
+        "exclude_regime: neutral"
       ],
-      "change_type": "NO_CHANGE",
-      "falsification_test": "Compare out-of-sample performance of modified versions against this control baseline.",
-      "overfit_risk": "LOW",
-      "priority": 3,
-      "required_replay": "none",
-      "single_axis_change": "Maintain current strategy parameters without modification.",
-      "why": "Serves as the control baseline to compare any future performance against."
-    },
-    {
-      "bounded_parameter_space": [
-        "Exit trade at exactly 30 minutes from entry if still open."
-      ],
-      "change_type": "time_stop",
-      "falsification_test": "Simulate flat exit at t=30 minutes on historical trade logs and measure the reduction in gross loss R versus the retention of gross profit R.",
+      "change_type": "entry_filter",
+      "falsification_test": "Backtest S02 with neutral regime excluded across W1, W2, and W3; verify OOS pass and drawdown reduction.",
       "overfit_risk": "LOW",
       "priority": 1,
-      "required_replay": "intratrade_path",
-      "single_axis_change": "Implement a strict 30-minute time-stop exit.",
-      "why": "S02 has 106.40 R of losses concentrated in trades held longer than 30 minutes, indicating severe duration decay where edge dissipates rapidly."
+      "required_replay": "ledger_nonoverlap",
+      "single_axis_change": "Exclude trades taken during neutral market regimes.",
+      "why": "Neutral regime generates catastrophic losses (-188.34R, PF 0.126) while long regimes are robust."
     },
     {
       "bounded_parameter_space": [
-        "Set stop-loss to entry price once MFE >= 0.50R."
+        "trailing_stop_activation: 0.50R",
+        "trailing_stop_distance: 0.25R"
       ],
-      "change_type": "break_even",
-      "falsification_test": "Apply break-even adjustment rule to historical trades when MFE >= 0.50R and evaluate the net R impact.",
+      "change_type": "trailing",
+      "falsification_test": "Run historical simulation with trailing stop activated at 0.50R MFE trailing by 0.25R, checking intratrade path evidence.",
       "overfit_risk": "MEDIUM",
       "priority": 2,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Introduce a break-even stop trigger once trade MFE reaches 0.50R.",
-      "why": "S02 has 129.76 R of losses in the favorable-then-loss cluster where MFE >= 0.50R, indicating a lack of protection against round-tripping."
+      "single_axis_change": "Implement a trailing stop-loss activation once trade MFE crosses +0.50R.",
+      "why": "High MFE (1.09R) coupled with deep adverse MAE and large favorable-then-loss clusters indicates open profit decay."
     }
   ],
   "recommended_next": "TEST_ONE",

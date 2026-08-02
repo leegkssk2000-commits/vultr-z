@@ -2,48 +2,28 @@
   "alias": "S01",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 85,
-      "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "Does not prove that entry signals are entirely without edge, but shows that the current stop-loss geometry fails to truncate losses before they reach deep adverse excursions.",
-      "evidence": [
-        "S01 has a massive concentration of losses in the deep adverse MAE cluster, totaling -329.07 R across 207 trades.",
-        "Average MAE is -0.79 R, indicating trades frequently go deep into the red before being stopped out."
-      ]
-    },
-    {
-      "causal_confidence_pct": 80,
+      "causal_confidence_pct": 90,
       "cluster": "favorable_then_loss_mfe_ge_0_50R",
-      "does_not_prove": "Does not prove that the initial entry is poor, but shows a lack of defensive profit protection once a trade moves significantly in our favor.",
+      "does_not_prove": "That a naive trailing stop at 0.50R will improve net performance without suffering from whipsaw.",
       "evidence": [
-        "94 trades reached an MFE of >= 0.50R but ultimately resulted in a gross loss of -135.16 R."
+        "S01 favorable_then_loss_mfe_ge_0_50R gross loss of -135.16R across 94 trades",
+        "Average MFE of 1.08R vs average MAE of -0.79R"
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "regime != 'neutral'"
+        "trailing_activation_mfe = 0.50R",
+        "trailing_distance = 0.25R"
       ],
-      "change_type": "entry_filter",
-      "falsification_test": "Run a historical backtest excluding trades executed during the 'neutral' regime. If the net R does not improve by at least 40 R or if the trade retention falls below 70%, the hypothesis is falsified.",
-      "overfit_risk": "LOW",
-      "priority": 1,
-      "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Exclude entries when the market regime is classified as neutral.",
-      "why": "The neutral regime is S01's worst-performing environment with an expectancy of -0.73 R and a profit factor of 0.26. Excluding it passes the non-overlap filter screen across all three windows (W1, W2, W3) with high trade retention (~74%)."
-    },
-    {
-      "bounded_parameter_space": [
-        "trigger_MFE_R >= 0.50",
-        "adjusted_stop_R = 0.0"
-      ],
-      "change_type": "break_even",
-      "falsification_test": "Replay S01 trades using intratrade path data. If setting the stop-loss to break-even once MFE reaches 0.50R results in a worse net R due to premature stop-outs on ultimately winning trades, the hypothesis is falsified.",
+      "change_type": "trailing",
+      "falsification_test": "Run historical simulation with trailing stop activated at 0.50R MFE trailing by 0.25R and verify net R improvement across all windows.",
       "overfit_risk": "MEDIUM",
-      "priority": 2,
+      "priority": 1,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Move stop-loss to break-even (0.0R) once the trade reaches an MFE of 0.50R.",
-      "why": "S01 suffers from severe round-tripping, with 94 trades (gross loss of 135.16 R) reaching an MFE of >= 0.50R before turning into losses. Implementing a break-even trigger directly addresses this leakage."
+      "single_axis_change": "Implement a trailing stop-loss activation once trade MFE crosses +0.50R.",
+      "why": "High average MFE (1.08R) with significant favorable-then-loss decay indicates failure to secure open profits before mean reversion occurs."
     }
   ],
   "recommended_next": "TEST_ONE",

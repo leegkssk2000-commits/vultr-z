@@ -2,58 +2,40 @@
   "alias": "S05",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 85,
-      "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "Does not prove that simply tightening the initial stop-loss to 0.75R will improve net R, as it may stop out trades that would have eventually recovered to be profitable.",
-      "evidence": [
-        "Gross loss of 109.09 R across 69 trades where MAE went deeper than -0.75R.",
-        "This cluster represents the vast majority of the strategy's total gross loss of 115.43 R."
-      ]
-    },
-    {
-      "causal_confidence_pct": 75,
+      "causal_confidence_pct": 80,
       "cluster": "favorable_then_loss_mfe_ge_0_50R",
-      "does_not_prove": "Does not prove that a break-even stop trigger at 0.50R will not prematurely exit trades that would have gone on to hit larger profit targets.",
+      "does_not_prove": "That a static time stop alone will capture the missing profit without destroying edge on valid trending trades.",
       "evidence": [
-        "Gross loss of 30.09 R across 24 trades that reached an MFE of at least 0.50R but ultimately ended in a loss."
+        "S05 shows significant gross loss of 30.09R across 24 trades that reached >= 0.50R MFE before terminating in a loss.",
+        "Average MFE is 0.86R while average MAE is -0.79R, indicating open profits are consistently given back."
       ]
     }
   ],
   "hypotheses": [
     {
-      "bounded_parameter_space": [],
-      "change_type": "NO_CHANGE",
-      "falsification_test": "Compare any new candidate against this baseline; if the candidate does not outperform the baseline net R, reject the candidate.",
-      "overfit_risk": "LOW",
+      "bounded_parameter_space": [
+        "mfe_activation_threshold: 0.50R",
+        "trailing_distance: 0.25R"
+      ],
+      "change_type": "trailing",
+      "falsification_test": "Run historical simulation with trailing stop activated at 0.50R MFE, trailing by 0.25R; verify net R improves without excessive win-rate degradation.",
+      "overfit_risk": "MEDIUM",
       "priority": 1,
-      "required_replay": "none",
-      "single_axis_change": "NO_CHANGE",
-      "why": "Maintains the current strategy baseline to serve as a control group during evaluation."
+      "required_replay": "intratrade_path",
+      "single_axis_change": "Implement a trailing stop-loss activation once trade MFE crosses +0.50R to protect open equity.",
+      "why": "Intratrade path evidence demonstrates a major failure cluster where trades reach favorable MFE >= 0.50R but decay into losses."
     },
     {
       "bounded_parameter_space": [
-        "regime != short"
+        "exclude_regime: short"
       ],
       "change_type": "entry_filter",
-      "falsification_test": "Replay the strategy excluding short regime trades. If the out-of-sample net R improvement is less than 5 R or if the profit factor does not improve, falsify the hypothesis.",
+      "falsification_test": "Verify OOS performance across 1m_w1, 1m_w2, and 1m_w3 windows when short regime trades are excluded.",
       "overfit_risk": "LOW",
       "priority": 2,
       "required_replay": "ledger_nonoverlap",
-      "single_axis_change": "Exclude short regime from entry signals.",
-      "why": "Candidate 1 in the filter screen shows that excluding the short regime improves net R by +12.01 R in W1, +11.54 R in W2, and +1.60 R in W3, showing robust out-of-sample durability."
-    },
-    {
-      "bounded_parameter_space": [
-        "MFE threshold = 0.50R",
-        "Stop adjustment = entry price"
-      ],
-      "change_type": "break_even",
-      "falsification_test": "Simulate the break-even trigger on historical intratrade path data. If the reduction in gross losses is offset by a larger reduction in gross profits (due to premature exits), falsify the hypothesis.",
-      "overfit_risk": "MEDIUM",
-      "priority": 3,
-      "required_replay": "intratrade_path",
-      "single_axis_change": "Implement a break-even stop trigger once trade MFE reaches 0.50R.",
-      "why": "The favorable_then_loss_mfe_ge_0_50R cluster accounts for 30.09 R of gross losses. Protecting capital once a trade goes 0.50R in profit will eliminate these round-trip losses."
+      "single_axis_change": "Enforce strict regime-based exclusion filters, specifically disabling trades in short regimes.",
+      "why": "Filter screen indicates excluding the short regime passes validation and significantly improves drawdown and net R."
     }
   ],
   "recommended_next": "TEST_ONE",

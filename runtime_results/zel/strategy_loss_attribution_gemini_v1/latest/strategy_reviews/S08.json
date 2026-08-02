@@ -3,52 +3,29 @@
   "failure_clusters": [
     {
       "causal_confidence_pct": 85,
-      "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "That all trades experiencing MAE <= -0.75R are guaranteed to lose, but it shows that the current stop-loss geometry allows trades to run to deep adverse excursions without structural invalidation, contributing to 91.9% of total gross losses.",
-      "evidence": [
-        "The deep adverse MAE cluster has a gross loss of 43.41 R across 35 losses.",
-        "The overall gross loss of the strategy is 47.20 R, meaning this cluster represents the vast majority of losses.",
-        "The average MAE of the strategy is -0.89 R, which is very close to the average loss size."
-      ]
-    },
-    {
-      "causal_confidence_pct": 80,
       "cluster": "favorable_then_loss_mfe_ge_0_50R",
-      "does_not_prove": "That a break-even stop will always improve net R, as some trades might pull back to break-even before moving to full profit targets.",
+      "does_not_prove": "That the entry logic itself is fundamentally flawed, as MFE reaches > 0.50R before decaying into a loss.",
       "evidence": [
-        "The favorable-then-loss cluster has a gross loss of 24.28 R across 22 losses.",
-        "These trades reached at least 0.50 R in profit before reversing into losses, indicating a lack of active trade management or trailing stops."
+        "favorable_then_loss_mfe_ge_0_50R gross_loss_R is 24.28678860896543 across 22 trades",
+        "average_MFE_R is 1.2494323139194219 against average_MAE_R of -0.891258777555226"
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "none"
+        "activation_mfe = 0.50R",
+        "trail_distance = 0.25R"
       ],
-      "change_type": "NO_CHANGE",
-      "falsification_test": "N/A",
-      "overfit_risk": "LOW",
-      "priority": 1,
-      "required_replay": "none",
-      "single_axis_change": "Maintain current strategy parameters without applying any entry filters from the filter screen",
-      "why": "The filter screen candidates (such as excluding ETHUSDT or utc_06_12) lack validation on the W3 window due to insufficient trade count, making them invalid under the strict promotion criteria."
-    },
-    {
-      "bounded_parameter_space": [
-        "mfe_trigger_R",
-        "0.40",
-        "0.60"
-      ],
-      "change_type": "break_even",
-      "falsification_test": "Replay historical trades with intratrade path data and verify if the reduction in gross loss from protected round-trips exceeds the loss of potential wins that would have been prematurely stopped out at break-even.",
+      "change_type": "trailing",
+      "falsification_test": "Run intratrade path replay to ensure trailing stop activation at 0.50R Mfe does not excessively degrade net R through premature whipsaws.",
       "overfit_risk": "MEDIUM",
-      "priority": 2,
+      "priority": 1,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Set stop-loss to break-even once trade MFE reaches 0.50R",
-      "why": "S08 has a significant favorable-then-loss cluster where 22 trades reached an MFE of >= 0.50R but ultimately resulted in a gross loss of 24.28R. Implementing a break-even trigger will protect capital on these round-trips."
+      "single_axis_change": "Implement a trailing stop-loss activation once trade MFE crosses +0.50R to protect open equity from favorable-then-loss decay.",
+      "why": "High average MFE (1.25R) with significant loss accumulation in the favorable-then-loss cluster indicates a lack of profit-securing exits."
     }
   ],
-  "recommended_next": "KEEP_CONTROL",
+  "recommended_next": "TEST_ONE",
   "status": "HOLD"
 }

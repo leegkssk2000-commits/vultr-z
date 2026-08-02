@@ -2,52 +2,28 @@
   "alias": "S07",
   "failure_clusters": [
     {
-      "causal_confidence_pct": 85,
-      "cluster": "deep_adverse_mae_le_neg_0_75R",
-      "does_not_prove": "Does not prove that a tighter stop-loss will not increase the frequency of stopped-out trades that would have otherwise recovered, though the low win rate suggests recovery is rare.",
+      "causal_confidence_pct": 80,
+      "cluster": "favorable_then_loss_mfe_ge_0_50R",
+      "does_not_prove": "That a static trailing stop universally fixes the exit efficiency across all symbols.",
       "evidence": [
-        "Gross loss in this cluster is 47.22 R, representing 98.8% of the total gross loss of 47.78 R.",
-        "36 out of 37 losing trades experienced an adverse excursion deeper than -0.75R."
+        "favorable_then_loss_mfe_ge_0_50R gross_loss_R is 25.99 across 20 trades",
+        "Average MFE is 1.187R while average MAE is -1.043R with net result -26.98R"
       ]
     }
   ],
   "hypotheses": [
     {
       "bounded_parameter_space": [
-        "None"
+        "activation_mfe: 0.50R",
+        "trail_distance: 0.25R"
       ],
-      "change_type": "NO_CHANGE",
-      "falsification_test": "Compare out-of-sample performance of the unmodified strategy against any proposed modifications over the next 50 trades.",
-      "overfit_risk": "LOW",
-      "priority": 1,
-      "required_replay": "none",
-      "single_axis_change": "Maintain current strategy parameters without modification.",
-      "why": "The strategy has a very small sample size of 48 trades across all windows, and none of the non-overlap filter candidates are validated across all three windows (W3 has insufficient trades). Modifying the strategy now carries a high risk of overfitting to noise."
-    },
-    {
-      "bounded_parameter_space": [
-        "stop_loss_R in [-0.75, -0.80]"
-      ],
-      "change_type": "risk_geometry",
-      "falsification_test": "Simulate a fixed stop-loss at -0.75R on historical trade logs and verify if the reduction in gross loss R significantly exceeds any loss of gross profit R from prematurely stopped winning trades.",
-      "overfit_risk": "LOW",
-      "priority": 2,
-      "required_replay": "intratrade_path",
-      "single_axis_change": "Tighten the initial stop-loss from the current level to a maximum of 0.75R.",
-      "why": "S07 has 47.22 R of its 47.78 R gross loss concentrated in the deep adverse MAE cluster (MAE <= -0.75R). Tightening the stop-loss to 0.75R will directly truncate these deep losses with minimal impact on the win rate, as these trades rarely recover."
-    },
-    {
-      "bounded_parameter_space": [
-        "mfe_trigger_R == 0.50",
-        "stop_adjustment_R == 0.0"
-      ],
-      "change_type": "break_even",
-      "falsification_test": "Apply a break-even rule at MFE >= 0.50R to historical intratrade paths and measure the net R improvement after accounting for early exits.",
+      "change_type": "trailing",
+      "falsification_test": "Run intratrade path historical simulation with trailing stop activated at 0.50R MFE and verify net R improvement without excessive whipsaw exits.",
       "overfit_risk": "MEDIUM",
-      "priority": 3,
+      "priority": 1,
       "required_replay": "intratrade_path",
-      "single_axis_change": "Implement a break-even stop trigger once the trade MFE reaches 0.50R.",
-      "why": "S07 has 20 losses totaling 25.99 R in the favorable-then-loss cluster where MFE >= 0.50R. Moving the stop to break-even at this threshold will eliminate these round-trip losses."
+      "single_axis_change": "Apply a trailing stop-loss activation once trade MFE crosses +0.50R to protect open equity.",
+      "why": "High average MFE (1.187R) combined with deep negative net R indicates failure to lock in profits once trades reach favorable excursions."
     }
   ],
   "recommended_next": "TEST_ONE",

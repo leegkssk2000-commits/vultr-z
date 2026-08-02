@@ -47,18 +47,14 @@ jobs:
           python backend/tools/zel_ai_control_gate_v1.py --self-test
           python backend/tools/zel_holdout_vault_v1.py --self-test
           python backend/tools/zel_bind_ai_control_workflows_v1.py --self-test
-      - name: Discover protected workflow bypasses
+      - name: Enforce protected workflow gates
         run: |
           set -euo pipefail
           mkdir -p out
-          set +e
           python backend/tools/zel_ai_control_gate_v1.py audit-workflows \
             --workflows-root .github/workflows \
             --out out/workflow_audit.json
-          code=$?
-          set -e
           cat out/workflow_audit.json
-          echo "discovery_exit_code=$code"
       - name: Validate safety boundary
         run: |
           set -euo pipefail
@@ -80,9 +76,11 @@ jobs:
           print('PASS_AI_CONTROL_ENFORCEMENT_FOUNDATION')
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: zel-ai-control-enforcement-v1-${{ github.run_id }}
           path: out
+          if-no-files-found: error
           retention-days: 30
 
   bind:
@@ -98,23 +96,31 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Generate deterministic fail-closed bindings
+      - name: Verify deterministic bindings are idempotent
         run: |
           set -euo pipefail
           python backend/tools/zel_bind_ai_control_workflows_v1.py \
             --workflows-root .github/workflows
           git diff --check
-          mkdir -p out/bound-workflows
-          for file in \
-            zel-exact25-material-upgrade-loop-v1.yml \
-            zel-trade-methods-pre-shadow-audit-v1.yml \
-            zel-alpha-auto-validation-chain-v1.yml \
-            zel-exact25-material-child-probe-v2.yml \
-            zel-component-autonomy-v3.yml; do
-            cp ".github/workflows/$file" "out/bound-workflows/$file"
-          done
-          git diff -- .github/workflows > out/ai_control_bindings.patch
-          sha256sum out/bound-workflows/*.yml > out/bound-workflows/SHA256SUMS
+          if ! git diff --quiet; then
+            echo 'BINDING_DRIFT_DETECTED'
+            git diff -- .github/workflows
+            exit 1
+          fi
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          Path('out/binding_receipt.json').write_text(json.dumps({
+            'schema_version':'zel.ai.control_binding.receipt.v1',
+            'state':'PASS_AI_CONTROL_BINDINGS_IDEMPOTENT',
+            'protected_workflow_count':5,
+            'runtime_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: zel-ai-control-bound-workflows-${{ github.run_id }}

@@ -124,3 +124,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# trigger: 2026-08-02T09:52Z persistent-v2-recovery

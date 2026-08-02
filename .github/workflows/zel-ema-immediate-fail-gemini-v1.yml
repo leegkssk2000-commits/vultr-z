@@ -1,0 +1,230 @@
+name: ZEL EMA Immediate Fail Gemini V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_grid_entry_regime_fork_v1.py
+      - backend/tools/zel_ema_immediate_fail_entry_filter_v1.py
+      - .github/workflows/zel-ema-immediate-fail-gemini-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-immediate-fail-gemini-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/tools/zel_ema_immediate_fail_entry_filter_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run immutable causal entry-filter tournament
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-ema-immediate-fail-${GITHUB_RUN_ID}"
+          for attempt in 1 2 3; do
+            if ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
+              "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"; then
+              break
+            fi
+            test "$attempt" -lt 3
+            sleep $((attempt * 5))
+          done
+          for attempt in 1 2 3; do
+            if scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
+              backend/tools/zel_grid_entry_regime_fork_v1.py \
+              backend/tools/zel_ema_immediate_fail_entry_filter_v1.py \
+              "$VPS_USER@$VPS_HOST:$remote/"; then
+              break
+            fi
+            test "$attempt" -lt 3
+            sleep $((attempt * 5))
+          done
+          timeout 5100s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; cd '$remote'; PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_ema_immediate_fail_entry_filter_v1.py --out result.json" \
+            > out/remote.stdout 2>out/remote.stderr
+          for attempt in 1 2 3; do
+            if scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ConnectTimeout=20 \
+              "$VPS_USER@$VPS_HOST:$remote/result.json" out/result.json; then
+              break
+            fi
+            test "$attempt" -lt 3
+            sleep $((attempt * 5))
+          done
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          test -s out/result.json
+          python -m json.tool out/result.json >/dev/null
+
+      - name: Gemini causal audit and independent red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python - <<'PY'
+          import json, os, time, urllib.request
+          row=json.load(open('out/result.json'))
+          top=[]
+          for candidate in (row.get('candidates') or [])[:10]:
+            top.append({
+              'candidate_id':candidate.get('candidate_id'),
+              'rule':candidate.get('rule'),
+              'w1_pass':candidate.get('w1_pass'),
+              'w1_blockers':candidate.get('w1_blockers'),
+              'w1_delta':(candidate.get('delta') or {}).get('1m_w1'),
+              'w2_delta':(candidate.get('delta') or {}).get('1m_w2'),
+              'w3_delta':(candidate.get('delta') or {}).get('1m_w3'),
+              'blocked_w1_phenotype':(candidate.get('blocked_phenotype') or {}).get('1m_w1'),
+            })
+          evidence={
+            'state':row.get('state'),
+            'baseline_metrics':row.get('baseline_metrics'),
+            'baseline_immediate_fail_phenotype':row.get('baseline_immediate_fail_phenotype'),
+            'selected_candidate':row.get('selected_candidate'),
+            'confirmation':row.get('confirmation'),
+            'holdout_pass':row.get('holdout_pass'),
+            'blockers':row.get('blockers'),
+            'top_candidates':top,
+            'constraints':{
+              'MFE_phenotype_diagnostic_only':True,
+              'entry_features_only':['entry_regime','side','utc_session'],
+              'W1_selection_only':True,
+              'W2_W3_frozen_holdout':True,
+              'one_axis_only':True,
+              'production_authority':False,
+            },
+          }
+          key=os.environ['GEMINI_API_KEY']
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          def call(role,instruction):
+            prompt=(
+              'You are '+role+' for an immutable systematic trading research gate. '
+              'Use aggregate evidence only. Never use post-entry MFE as an entry feature. '
+              'Do not override W1/W2/W3 deterministic gates and do not authorize production. '
+              +instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+            )
+            payload={'contents':[{'parts':[{'text':prompt}]}], 'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+            last=None
+            for model in models:
+              try:
+                url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}'
+                req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
+              except Exception as exc:
+                last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+            raise RuntimeError('GEMINI_FAILED:'+str(last))
+          auditor=call('causal auditor','Return JSON keys verdict, causal_reason, leakage_check. verdict must be PASS, HOLD, or REJECT.')
+          redteam=call('independent red-team','Return JSON keys verdict, failure_mode, next_axis. verdict must be ACCEPT, REJECT, or MORE_EVIDENCE; next_axis must be EXACT_SOURCE_ENTRY_FILTER, TIME_STOP, or RETIRE_EMA.')
+          av=auditor['response'].get('verdict')
+          rv=redteam['response'].get('verdict')
+          na=redteam['response'].get('next_axis')
+          valid=av in {'PASS','HOLD','REJECT'} and rv in {'ACCEPT','REJECT','MORE_EVIDENCE'} and na in {'EXACT_SOURCE_ENTRY_FILTER','TIME_STOP','RETIRE_EMA'}
+          deterministic_pass=row.get('state')=='PASS_EMA_IMMEDIATE_FAIL_ENTRY_FILTER_READY' and row.get('holdout_pass') is True
+          sealed=valid and deterministic_pass and av=='PASS' and rv=='ACCEPT' and na=='EXACT_SOURCE_ENTRY_FILTER'
+          next_axis='EXACT_SOURCE_ENTRY_FILTER' if sealed else ('TIME_STOP' if not deterministic_pass else (na if valid else 'RETIRE_EMA'))
+          receipt={
+            'schema_version':'zel.ema.immediate_fail.gemini_review.v1',
+            'state':'PASS_GEMINI_EMA_ENTRY_FILTER_EXACT_REPLAY_READY' if sealed else ('PASS_GEMINI_EMA_NEXT_AXIS_READY' if valid else 'HOLD_GEMINI_RESPONSE_INVALID'),
+            'auditor':auditor,
+            'redteam':redteam,
+            'response_valid':valid,
+            'deterministic_pass':deterministic_pass,
+            'sealed_for_exact_source_replay':sealed,
+            'next_axis':next_axis,
+            'raw_trade_rows_sent':False,
+            'raw_prices_sent':False,
+            'private_code_sent':False,
+            'credentials_sent':False,
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({
+            'deterministic_state':row.get('state'),
+            'selected':(row.get('selected_candidate') or {}).get('candidate_id'),
+            'holdout_pass':row.get('holdout_pass'),
+            'gemini_state':receipt['state'],
+            'next_axis':next_axis,
+            'auditor':auditor['response'],
+            'redteam':redteam['response'],
+          })
+          PY
+          python -m json.tool out/gemini_review.json >/dev/null
+
+      - name: Verify safety boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          for name in ('result','gemini_review'):
+            row=json.load(open(f'out/{name}.json'))
+            for key in ('canonical_mutated','runtime_mutated','selection_authority','promotion_authority'):
+              assert row[key] is False,(name,key,row)
+            assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+            assert row['action']=='hold',row
+          PY
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-immediate-fail-gemini-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

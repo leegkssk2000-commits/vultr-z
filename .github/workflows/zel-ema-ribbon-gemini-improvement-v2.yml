@@ -78,27 +78,13 @@ jobs:
             -o ServerAliveInterval=20 \
             -o ServerAliveCountMax=30 \
             "$VPS_USER@$VPS_HOST" \
-            "set -euo pipefail
-             test \"\$(sha256sum /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz | awk '{print \$1}')\" = '62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'
-             test \"\$(sha256sum /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py | awk '{print \$1}')\" = '14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50'
-             cd '$remote'
-             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
-               zel_ema_path_semantics_reconciliation_v1.py \
-               --out reconciliation.json
-             python3 - <<'PY'
-import json
-row=json.load(open('reconciliation.json'))
-assert row['state']=='PASS_EMA_PATH_SEMANTICS_RECONCILED',row
-contract=row['best_entry_known_candidate']
-assert contract['candidate_id']=='high_low|exclude_entry|risk_usdt_div_quantity',contract
-assert contract['coverage_count']==424,contract
-assert contract['mfe_mean_abs_error_R']<=0.05,contract
-assert contract['mae_mean_abs_error_R']<=0.05,contract
-PY
-             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
-               zel_ema_trailing_counterfactual_v1.py \
-               --reconciliation reconciliation.json \
-               --out trailing.json" > out/remote.stdout 2>out/remote.stderr
+            "set -euo pipefail; \
+             test \"\$(sha256sum /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz | awk '{print \$1}')\" = '62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'; \
+             test \"\$(sha256sum /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py | awk '{print \$1}')\" = '14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50'; \
+             cd '$remote'; \
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_ema_path_semantics_reconciliation_v1.py --out reconciliation.json; \
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python zel_ema_trailing_counterfactual_v1.py --reconciliation reconciliation.json --out trailing.json" \
+            > out/remote.stdout 2>out/remote.stderr
           for name in reconciliation trailing; do
             scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
               "$VPS_USER@$VPS_HOST:$remote/${name}.json" "out/${name}.json"
@@ -115,12 +101,18 @@ PY
           import json
           reconciliation=json.load(open('out/reconciliation.json'))
           trailing=json.load(open('out/trailing.json'))
+          contract=reconciliation['best_entry_known_candidate']
+          assert reconciliation['state']=='PASS_EMA_PATH_SEMANTICS_RECONCILED',reconciliation
+          assert contract['candidate_id']=='high_low|exclude_entry|risk_usdt_div_quantity',contract
+          assert contract['coverage_count']==424,contract
+          assert contract['mfe_mean_abs_error_R']<=0.05,contract
+          assert contract['mae_mean_abs_error_R']<=0.05,contract
           selected=trailing.get('selected_candidate')
           all_metrics=(selected or {}).get('all_metrics') or (selected or {}).get('metrics',{}).get('all') or {}
           summary={
             'schema_version':'zel.ema.reconciled_trailing.summary.v2',
             'state':trailing.get('state'),
-            'contract':reconciliation['best_entry_known_candidate'],
+            'contract':contract,
             'baseline_metrics':trailing.get('baseline_metrics'),
             'selected_candidate':selected,
             'holdout_pass':trailing.get('holdout_pass'),
@@ -139,7 +131,7 @@ PY
           json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True)
           print({
             'state':summary['state'],
-            'contract':summary['contract']['candidate_id'],
+            'contract':contract['candidate_id'],
             'selected':(selected or {}).get('candidate_id'),
             'holdout_pass':summary['holdout_pass'],
             'absolute_net_R_all':summary['absolute_net_R_all'],
@@ -237,12 +229,16 @@ PY
           python - <<'PY'
           import json
           for name in ('trailing','summary','gemini_review'):
-              row=json.load(open(f'out/{name}.json'))
-              for key in ('canonical_mutated','runtime_mutated','selection_authority','promotion_authority'):
-                  if key in row: assert row[key] is False,(name,key,row)
-              if 'execution_authority' in row: assert row['execution_authority']=='NONE',row
-              if 'order_authority' in row: assert row['order_authority']=='BLOCKED',row
-              if 'action' in row: assert row['action']=='hold',row
+            row=json.load(open(f'out/{name}.json'))
+            for key in ('canonical_mutated','runtime_mutated','selection_authority','promotion_authority'):
+              if key in row:
+                assert row[key] is False,(name,key,row)
+            if 'execution_authority' in row:
+              assert row['execution_authority']=='NONE',row
+            if 'order_authority' in row:
+              assert row['order_authority']=='BLOCKED',row
+            if 'action' in row:
+              assert row['action']=='hold',row
           PY
 
       - name: Cleanup SSH key

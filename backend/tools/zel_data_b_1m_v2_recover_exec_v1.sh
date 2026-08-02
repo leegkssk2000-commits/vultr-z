@@ -14,8 +14,8 @@ LOCK=/var/lock/zel-data-b-1m-single-owner-v1.lock
 legacy_started_at=$(python3 - "$ACTIONS_JSON" <<'PY'
 import json,sys
 rows=json.load(open(sys.argv[1]))
-rows=[r for r in rows if r.get('name')=='ZEL Data B 1m Single Owner Repair V1']
-rows.sort(key=lambda r:r.get('startedAt') or r.get('createdAt') or '',reverse=True)
+rows=[r for r in rows if r.get('name')=='ZEL Data B 1m Single Owner Repair V1' and r.get('event')!='pull_request']
+rows.sort(key=lambda r:(int(r.get('duration_sec') or 0),r.get('startedAt') or r.get('createdAt') or ''),reverse=True)
 print((rows[0].get('startedAt') or rows[0].get('createdAt') or '2026-08-01T18:00:00Z') if rows else '2026-08-01T18:00:00Z')
 PY
 )

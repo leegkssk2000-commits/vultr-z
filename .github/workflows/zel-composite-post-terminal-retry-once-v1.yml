@@ -1,0 +1,140 @@
+name: ZEL Composite Post-Terminal Retry Once V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-composite-post-terminal-retry-once-v1.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-composite-post-terminal-retry-once-v1
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout master control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify exact AI authorization lineage
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          proposal=results/runtime_results/zel/ai_research_control_plane_v1/composite_post_terminal/latest.json
+          predecessor=results/runtime_results/zel/data_b_1m_v2_watch_v1/latest.json
+          python - "$proposal" "$predecessor" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          proposal_path=Path(sys.argv[1]);predecessor_path=Path(sys.argv[2])
+          proposal=json.loads(proposal_path.read_text());predecessor=json.loads(predecessor_path.read_text());context=proposal['gate_context']
+          assert proposal['state']=='PASS_AI_RESEARCH_CONTROL_PLANE',proposal
+          assert proposal['economic_claim_allowed'] is False and proposal['candidate_execution_allowed'] is False,proposal
+          assert proposal['selection_authority'] is False and proposal['promotion_authority'] is False,proposal
+          assert proposal['execution_authority']=='NONE' and proposal['order_authority']=='BLOCKED',proposal
+          assert context['stage_id']=='COMPOSITE_POST_TERMINAL' and context['broker_stage_id']=='COMPOSITE_POST_TERMINAL',context
+          assert context['target_workflow']=='zel-composite-post-terminal-controller-v1.yml',context
+          assert predecessor['state']=='PASS_DATA_B_1M_V2_TERMINAL' and predecessor['terminal_complete'] is True,predecessor
+          assert predecessor['runtime_mutated'] is False,predecessor
+          assert predecessor['execution_authority']=='NONE' and predecessor['order_authority']=='BLOCKED',predecessor
+          sha=hashlib.sha256(predecessor_path.read_bytes()).hexdigest()
+          assert context['predecessor_receipt_sha256']==sha,(context,sha)
+          Path('out/epoch.txt').write_text(context['epoch_id'])
+          Path('out/predecessor_sha.txt').write_text(sha)
+          PY
+          python backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id COMPOSITE_POST_TERMINAL \
+            --epoch-id "$(cat out/epoch.txt)" \
+            --predecessor-receipt-sha256 "$(cat out/predecessor_sha.txt)" \
+            --out out/ai_gate.json
+
+      - name: Prepare corrected SSH path
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Execute authorized Composite V3 sequence
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          SSH_KEY_PATH: ${{ github.workspace }}/.ssh/vps_key
+          RESULTS_DIR: ${{ github.workspace }}/results
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          bash backend/tools/zel_composite_post_terminal_controller_v3.sh
+
+      - name: Validate published V3 receipt locally
+        run: |
+          set -euo pipefail
+          git -C results pull --rebase origin zel-data-expansion-results-v1
+          python - <<'PY'
+          import json
+          row=json.load(open('results/runtime_results/zel/composite_post_terminal_v1/latest.json'))
+          assert row['state']=='PASS_COMPOSITE_POST_TERMINAL_SEQUENCE_COMPLETE_RETAIN_INCUMBENT',row
+          assert row['version']=='ZEL_COMPOSITE_TERMINAL_EVALUATOR_V3',row
+          assert row['strategy_count_completed']==25 and row['closed_trade_count']==1951,row
+          assert row['parallel_adapter_readiness_bound'] is True,row
+          assert row['economic_survivor_count']==0 and row['incumbent_retained'] is True,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'state':row['state'],'version':row['version'],'trades':row['closed_trade_count'],'blockers':row['parallel_adapter_blocker_counts']})
+          PY
+
+      - name: Cleanup raw artifacts and SSH key
+        if: always()
+        run: |
+          rm -rf out/terminal out/terminal.tar.gz out/terminal_v3 out/terminal_v3.tar.gz
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-composite-post-terminal-retry-once-v1-${{ github.run_id }}
+          path: |
+            out/ai_gate.json
+            out/idempotency.json
+            out/idempotency_v3.json
+            out/terminal_gate.json
+            out/source_pin_parity.json
+            out/bingx_readonly_receipt.json
+            out/trade_method_behavior.json
+            out/adapter_contract_validation.json
+            out/ablation_order_plan.json
+            out/skill_adapter_terminal.json
+            out/lico_mapper_terminal.json
+            out/trade_method_adapter_terminal.json
+            out/evaluation
+            out/evaluation_v3
+          if-no-files-found: ignore
+          retention-days: 90

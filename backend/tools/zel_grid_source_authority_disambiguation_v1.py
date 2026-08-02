@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -15,6 +16,7 @@ OWNER_MODULE = "backend.strategies.grid_rebalance"
 CALLABLE = "GridRebalanceLBotStrategy.decide"
 OWNER_MANIFEST_PATH = "backend/config/q4r3_canonical_strategy_owner_manifest_v1.json"
 REGISTRY_PATH = "backend/strategy25/canonical_strategy_registry_v1.json"
+SECRET_KEY = re.compile(r"(?i)(secret|token|password|api[_-]?key|private[_-]?key|credential)")
 
 
 def sha256_file(path: Path) -> str | None:
@@ -55,6 +57,23 @@ def walk_mappings(value: Any, path: str = "$") -> Iterable[tuple[str, Mapping[st
             yield from walk_mappings(child, f"{path}[{index}]")
 
 
+def safe_scalar_contract(item: Mapping[str, Any]) -> dict[str, Any]:
+    contract: dict[str, Any] = {}
+    for key, value in item.items():
+        key_text = str(key)
+        if SECRET_KEY.search(key_text):
+            contract[key_text] = "<redacted>"
+        elif value is None or isinstance(value, (str, int, float, bool)):
+            contract[key_text] = value
+        elif isinstance(value, list) and len(value) <= 20 and all(
+            child is None or isinstance(child, (str, int, float, bool)) for child in value
+        ):
+            contract[key_text] = value
+        else:
+            contract[key_text] = f"<{type(value).__name__}>"
+    return contract
+
+
 def strategy_entries(value: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for json_path, item in walk_mappings(value):
@@ -68,6 +87,7 @@ def strategy_entries(value: Any) -> list[dict[str, Any]]:
                 "owner_module": item.get("owner_module"),
                 "implementation_path": item.get("implementation_path"),
                 "callable": item.get("callable"),
+                "safe_contract": safe_scalar_contract(item),
             }
         )
     return rows

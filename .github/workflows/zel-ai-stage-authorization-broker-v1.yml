@@ -1,0 +1,191 @@
+name: ZEL AI Stage Authorization Broker V1
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage_id:
+        description: AUTO or one allowlisted stage
+        required: true
+        default: AUTO
+        type: choice
+        options:
+          - AUTO
+          - EXACT25_LIVENESS_AND_REPAIR
+          - TRADE_METHOD_COVERAGE
+          - EXACT25_CHILD_PROBE
+          - COMPONENT_MAIN_EFFECT
+          - ALPHA_LAP_CHALLENGERS
+      dispatch_target:
+        description: Dispatch the target workflow after publishing a PASS receipt
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: '17,47 * * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_stage_authorization_broker_v1.json
+      - backend/tools/zel_ai_stage_authorization_broker_v1.py
+      - backend/tools/zel_ai_control_gate_v1.py
+      - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_ai_stage_authorization_broker_v1.json
+      - backend/tools/zel_ai_stage_authorization_broker_v1.py
+      - backend/tools/zel_ai_control_gate_v1.py
+      - .github/workflows/zel-ai-stage-authorization-broker-v1.yml
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: zel-ai-stage-authorization-broker-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate broker and strict gate
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ai_stage_authorization_broker_v1.py \
+            backend/tools/zel_ai_control_gate_v1.py
+          python backend/tools/zel_ai_stage_authorization_broker_v1.py --self-test
+          python backend/tools/zel_ai_control_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_ai_stage_authorization_broker_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_ai_stage_authorization_broker_v1.json').read_text())
+          assert c['claim_tier']=='STAGE_AUTHORIZATION_NO_ECONOMIC_CLAIM',c
+          assert len(c['stages'])==5,c
+          assert sum(1 for row in c['stages'] if row['auto_dispatch'])==2,c
+          assert c['rules']['generic_latest_written_only_immediately_before_target_dispatch'] is True,c
+          s=c['safety']
+          assert s['active_data_b_1m_mutation'] is False,s
+          assert s['canonical_strategy_mutation'] is False,s
+          assert s['formal_ledger_mutation'] is False,s
+          assert s['runtime_registry_write'] is False,s
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',s
+          print('PASS_AI_STAGE_AUTHORIZATION_BROKER_STATIC')
+          PY
+
+  authorize:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.resolve.outputs.ready }}
+      target_workflow: ${{ steps.resolve.outputs.target_workflow }}
+      auto_dispatch: ${{ steps.resolve.outputs.auto_dispatch }}
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: control
+          persist-credentials: false
+      - name: Checkout result authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - id: resolve
+        name: Build one lineage-bound stage authorization
+        env:
+          REQUESTED_STAGE: ${{ inputs.stage_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=()
+          if [ -n "${REQUESTED_STAGE:-}" ] && [ "$REQUESTED_STAGE" != AUTO ]; then
+            args+=(--stage-id "$REQUESTED_STAGE")
+          fi
+          python control/backend/tools/zel_ai_stage_authorization_broker_v1.py \
+            --contract control/backend/research/zel_ai_stage_authorization_broker_v1.json \
+            --policy control/backend/research/zel_ai_research_control_plane_v1.json \
+            --results-root results \
+            --control-root control \
+            "${args[@]}" \
+            --receipt-out out/receipt.json \
+            --status-out out/status.json
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          d=json.loads(Path('out/status.json').read_text())
+          ready=d.get('ready') is True
+          stage=str(d.get('stage_id') or '')
+          slug=re.sub(r'[^a-z0-9]+','_',stage.lower()).strip('_')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as h:
+              h.write(f"ready={'true' if ready else 'false'}\n")
+              h.write(f"target_workflow={d.get('target_workflow') or ''}\n")
+              h.write(f"auto_dispatch={'true' if d.get('auto_dispatch') is True else 'false'}\n")
+              h.write(f"stage_slug={slug}\n")
+          PY
+      - name: Publish status and PASS receipt immediately before dispatch
+        env:
+          READY: ${{ steps.resolve.outputs.ready }}
+          STAGE_SLUG: ${{ steps.resolve.outputs.stage_slug }}
+        run: |
+          set -euo pipefail
+          cd results
+          git config user.name 'zel-ai-stage-broker-bot'
+          git config user.email 'zel-ai-stage-broker-bot@users.noreply.github.com'
+          git pull --rebase origin zel-data-expansion-results-v1
+          cd ..
+          status_root=results/runtime_results/zel/ai_stage_authorization_broker_v1
+          mkdir -p "$status_root"
+          cp out/status.json "$status_root/latest.json"
+          cp out/status.json "$status_root/run_${GITHUB_RUN_ID}.json"
+          if [ "$READY" = true ]; then
+            generic=results/runtime_results/zel/ai_research_control_plane_v1
+            stage_root="$generic/$STAGE_SLUG"
+            mkdir -p "$stage_root"
+            cp out/receipt.json "$generic/latest.json"
+            cp out/receipt.json "$stage_root/latest.json"
+            cp out/receipt.json "$stage_root/run_${GITHUB_RUN_ID}.json"
+          fi
+          cd results
+          git add runtime_results/zel/ai_stage_authorization_broker_v1 runtime_results/zel/ai_research_control_plane_v1 2>/dev/null || true
+          git commit -m "result(zel): AI stage authorization ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ai-stage-authorization-broker-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+  dispatch:
+    if: >-
+      needs.authorize.outputs.ready == 'true' &&
+      (needs.authorize.outputs.auto_dispatch == 'true' || inputs.dispatch_target == true)
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch exactly one authorized workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ needs.authorize.outputs.target_workflow }}
+        run: |
+          set -euo pipefail
+          test -n "$TARGET"
+          gh workflow run "$TARGET" --repo "$GITHUB_REPOSITORY" --ref master
+          echo "DISPATCHED=$TARGET"

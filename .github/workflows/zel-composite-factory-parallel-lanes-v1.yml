@@ -1,0 +1,429 @@
+name: ZEL Composite Factory Parallel Lanes V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_module_factory_contract_v1.json
+      - backend/research/zel_composite_module_registry_v1.json
+      - backend/tools/zel_composite_module_factory_v1.py
+      - backend/tools/zel_composite_parallel_pipeline_audit_v1.py
+      - .github/workflows/zel-composite-factory-parallel-lanes-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_composite_module_factory_contract_v1.json
+      - backend/research/zel_composite_module_registry_v1.json
+      - backend/tools/zel_composite_module_factory_v1.py
+      - backend/tools/zel_composite_parallel_pipeline_audit_v1.py
+      - .github/workflows/zel-composite-factory-parallel-lanes-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-composite-factory-parallel-lanes-v1
+  cancel-in-progress: false
+
+env:
+  PRE_FACTORY_CHECKPOINT_REF: pre-composite-factory-v1-20260802
+
+jobs:
+  validate-and-build-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate contracts, rollback checkpoint and tools
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code origin "refs/heads/${PRE_FACTORY_CHECKPOINT_REF}" >/dev/null
+          python -m json.tool backend/research/zel_composite_module_factory_contract_v1.json >/dev/null
+          python -m json.tool backend/research/zel_composite_module_registry_v1.json >/dev/null
+          python -m py_compile \
+            backend/tools/zel_composite_module_factory_v1.py \
+            backend/tools/zel_composite_parallel_pipeline_audit_v1.py
+          python backend/tools/zel_composite_module_factory_v1.py --self-test
+          python backend/tools/zel_composite_parallel_pipeline_audit_v1.py --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_composite_module_factory_contract_v1.json').read_text())
+          r=json.loads(Path('backend/research/zel_composite_module_registry_v1.json').read_text())
+          assert c['factory_enabled'] is False,c
+          assert c['generation_policy']['maximum_child_count'] <= 3,c
+          assert c['rollback']['pre_factory_checkpoint_required'] is True,c
+          assert c['safety']['execution_authority']=='NONE',c
+          assert c['safety']['order_authority']=='BLOCKED',c
+          assert r['safety']['activation_enabled'] is False,r
+          assert r['safety']['source_sha_placeholders_require_rebinding_before_activation'] is True,r
+          print('PASS_COMPOSITE_FACTORY_STATIC_BOUNDARY')
+          PY
+      - name: Build static composite hypotheses
+        run: |
+          set -euo pipefail
+          mkdir -p out/static
+          python backend/tools/zel_composite_module_factory_v1.py \
+            --registry backend/research/zel_composite_module_registry_v1.json \
+            --contract backend/research/zel_composite_module_factory_contract_v1.json \
+            --checkpoint-ref "${PRE_FACTORY_CHECKPOINT_REF}" \
+            --out out/static/composite_factory_latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/static/composite_factory_latest.json').read_text())
+          assert d['state']=='PASS_COMPOSITE_FACTORY_STATIC_READY',d
+          assert d['factory_enabled'] is False and d['activation_enabled'] is False,d
+          assert d['rollback']['available'] is True,d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          print(json.dumps({'state':d['state'],'candidate_count':d['candidate_count'],'rejected_count':d['rejected_count']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-static-${{ github.run_id }}
+          path: out/static/composite_factory_latest.json
+          retention-days: 90
+
+  bingx-read-only:
+    if: github.event_name != 'pull_request'
+    needs: validate-and-build-static
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
+      BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Resolve credential presence and collect GET-only evidence
+        run: |
+          set -euo pipefail
+          mkdir -p out/bingx private
+          if [[ -z "${BINGX_API_KEY:-}" || -z "${BINGX_SECRET_KEY:-}" ]]; then
+            python - <<'PY'
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          d={
+            'schema_version':'zel.bingx.execution_evidence.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'HOLD_BINGX_READ_ONLY_CREDENTIALS_MISSING',
+            'credential_resolver':'GITHUB_ACTIONS_SECRET_PRESENCE_ONLY',
+            'evidence_collected':False,
+            'credentials_persisted':False,
+            'raw_order_ids_persisted':False,
+            'methods_used':['GET'],
+            'runtime_application':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/bingx/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+          else
+            umask 077
+            python backend/tools/zel_bingx_execution_evidence_collector_v1.py \
+              --out-dir private --lookback-days 90
+            cp private/receipt.json out/bingx/latest.json
+            rm -f private/evidence.json private/receipt.json
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/bingx/latest.json').read_text())
+          assert d['state'] in ('PASS_BINGX_READ_ONLY_EVIDENCE_COLLECTED','HOLD_BINGX_READ_ONLY_CREDENTIALS_MISSING'),d
+          assert d['credentials_persisted'] is False,d
+          assert d['raw_order_ids_persisted'] is False,d
+          assert d['methods_used']==['GET'],d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bingx-read-only-${{ github.run_id }}
+          path: out/bingx/latest.json
+          retention-days: 90
+
+  holdout-access-rehearsal:
+    if: github.event_name != 'pull_request'
+    needs: bingx-read-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Resolve versioned Holdout settings
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          c=json.loads(Path('backend/research/zel_holdout_runtime_config_v1.json').read_text())
+          mapping={
+            'REPOSITORY_ROOT':'repository_root','W2_ROOT':'w2_root','W3_ROOT':'w3_root',
+            'FINAL_ROOT':'final_root','SEAL_ROOT':'seal_root','EVALUATOR_GROUP':'evaluator_group',
+            'HMAC_KEY_FILE':'hmac_key_file'
+          }
+          for env,key in mapping.items():
+              value=str(c[key])
+              if env.endswith('_ROOT') or env=='HMAC_KEY_FILE':
+                  assert re.fullmatch(r'/[A-Za-z0-9._/-]+',value),env
+              else:
+                  assert re.fullmatch(r'[A-Za-z0-9._-]+',value),env
+              with Path(os.environ['GITHUB_ENV']).open('a') as h:
+                  h.write(f'{env}={value}\n')
+          users=','.join(c.get('proposer_users',[]))
+          with Path(os.environ['GITHUB_ENV']).open('a') as h:
+              h.write(f'PROPOSER_USERS={users}\n')
+          PY
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out/holdout
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Run non-mutating seal/access rehearsal
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_holdout_vault_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_vault_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "set -euo pipefail; \
+             if [ \"\$(id -u)\" -eq 0 ]; then prefix=(); else prefix=(sudo -n); fi; \
+             \"\${prefix[@]}\" test -s '$HMAC_KEY_FILE'; \
+             test \"\$(\"\${prefix[@]}\" stat -c '%a' '$HMAC_KEY_FILE')\" = 600; \
+             \"\${prefix[@]}\" python3 /tmp/zel_holdout_vault_audit_v1.py \
+               --repository-root '$REPOSITORY_ROOT' \
+               --w2-root '$W2_ROOT' \
+               --w3-root '$W3_ROOT' \
+               --final-root '$FINAL_ROOT' \
+               --seal-root '$SEAL_ROOT' \
+               --evaluator-group '$EVALUATOR_GROUP' \
+               --proposer-users '$PROPOSER_USERS' \
+               --hmac-configured \
+               --out /tmp/zel_holdout_access_rehearsal_latest.json; \
+             \"\${prefix[@]}\" chmod 644 /tmp/zel_holdout_access_rehearsal_latest.json"
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_holdout_access_rehearsal_latest.json" \
+            out/holdout/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_access_rehearsal_latest.json || sudo -n rm -f /tmp/zel_holdout_vault_audit_v1.py /tmp/zel_holdout_access_rehearsal_latest.json' || true
+      - name: Verify rehearsal boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/holdout/latest.json').read_text())
+          assert d['state']=='PASS_HOLDOUT_VAULT_AUDIT_READY_TO_SEAL',d
+          assert d['permissions_mutated'] is False,d
+          assert d['manifests_written'] is False,d
+          assert d['holdout_bytes_read'] is False,d
+          assert d['runtime_mutated'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          d['rehearsal']='PASS_NON_MUTATING_SEAL_ACCESS_REHEARSAL'
+          Path('out/holdout/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holdout-rehearsal-${{ github.run_id }}
+          path: out/holdout/latest.json
+          retention-days: 90
+
+  fixture-e2e:
+    if: github.event_name != 'pull_request'
+    needs: holdout-access-rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Run 13-stage fixture and control-plane tests
+        run: |
+          set -euo pipefail
+          mkdir -p out/fixture
+          python backend/tools/zel_parallel_readiness_audit_v1.py --self-test
+          python backend/tools/zel_ai_research_control_plane_v1.py --self-test
+          python backend/tools/zel_holdout_vault_audit_v1.py --self-test
+          python backend/tools/zel_strategy_top3_bundles_v1.py --self-test
+          python - <<'PY'
+          import ast,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          p=Path('backend/tools/zel_pre_shadow_receipt_dag_v1.py')
+          tree=ast.parse(p.read_text(),filename=str(p))
+          stages=None
+          for node in tree.body:
+              if isinstance(node,(ast.Assign,ast.AnnAssign)):
+                  targets=node.targets if isinstance(node,ast.Assign) else [node.target]
+                  if any(isinstance(t,ast.Name) and t.id=='STAGES' for t in targets):
+                      stages=ast.literal_eval(node.value)
+                      break
+          assert isinstance(stages,list) and len(stages)==13,stages
+          ids=[str(x['id']) for x in stages]
+          assert len(ids)==len(set(ids)),ids
+          d={
+            'schema_version':'zel.pre_shadow.fixture_e2e.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_PRE_SHADOW_13_STAGE_FIXTURE_E2E',
+            'stage_count':len(stages),
+            'stage_ids':ids,
+            'economic_evaluation_performed':False,
+            'active_data_b_1m_mutated':False,
+            'canonical_strategy_files_mutated':False,
+            'formal_ledger_mutated':False,
+            'runtime_registry_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/fixture/latest.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixture-e2e-${{ github.run_id }}
+          path: out/fixture/latest.json
+          retention-days: 90
+
+  alimi-read-only:
+    if: github.event_name != 'pull_request'
+    needs: fixture-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out/alimi
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute ALIMI binding read-only audit
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key backend/tools/zel_alimi_feature_install_audit_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_feature_install_audit_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'python3 /tmp/zel_alimi_feature_install_audit_v1.py'
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_alimi_feature_install_audit_v1.json" \
+            out/alimi/latest.json
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'rm -f /tmp/zel_alimi_feature_install_audit_v1.py /tmp/zel_alimi_feature_install_audit_v1.json' || true
+      - name: Verify ALIMI no-mutation boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/alimi/latest.json').read_text())
+          assert d['state']=='PASS_READ_ONLY_ALIMI_FEATURE_INSTALL_AUDIT',d
+          s=d['safety']
+          assert s['read_only'] is True,d
+          assert s['frontend_mutated'] is False and s['view_mutated'] is False,d
+          assert s['runtime_mutated'] is False and s['service_mutated'] is False,d
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED',d
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alimi-read-only-${{ github.run_id }}
+          path: out/alimi/latest.json
+          retention-days: 90
+
+  final-pipeline-audit:
+    if: github.event_name != 'pull_request'
+    needs: [validate-and-build-static, bingx-read-only, holdout-access-rehearsal, fixture-e2e, alimi-read-only]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ github.run_id }}'
+          path: downloaded
+      - name: Clone current result receipts and overlay this run
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch zel-data-expansion-results-v1 \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
+          mkdir -p \
+            results/runtime_results/zel/composite_module_factory_v1 \
+            results/runtime_results/zel/bingx_execution_evidence_collector_v1 \
+            results/runtime_results/zel/holdout_access_rehearsal_v1 \
+            results/runtime_results/zel/pre_shadow_fixture_e2e_v1 \
+            results/runtime_results/zel/alimi_feature_install_audit_v1
+          cp downloaded/composite-static-${GITHUB_RUN_ID}/composite_factory_latest.json \
+            results/runtime_results/zel/composite_module_factory_v1/latest.json
+          cp downloaded/bingx-read-only-${GITHUB_RUN_ID}/latest.json \
+            results/runtime_results/zel/bingx_execution_evidence_collector_v1/latest.json
+          cp downloaded/holdout-rehearsal-${GITHUB_RUN_ID}/latest.json \
+            results/runtime_results/zel/holdout_access_rehearsal_v1/latest.json
+          cp downloaded/fixture-e2e-${GITHUB_RUN_ID}/latest.json \
+            results/runtime_results/zel/pre_shadow_fixture_e2e_v1/latest.json
+          cp downloaded/alimi-read-only-${GITHUB_RUN_ID}/latest.json \
+            results/runtime_results/zel/alimi_feature_install_audit_v1/latest.json
+      - name: Audit pipeline, module optimization and debris candidates
+        run: |
+          set -euo pipefail
+          mkdir -p out/final
+          python backend/tools/zel_composite_parallel_pipeline_audit_v1.py \
+            --root . \
+            --results-root results \
+            --out out/final/latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/final/latest.json').read_text())
+          assert d['state']=='PASS_COMPOSITE_PARALLEL_PIPELINE_AUDIT',d
+          assert d['dag_stage_count']==13,d
+          assert d['active_data_b_1m_mutated'] is False,d
+          assert d['canonical_strategy_files_mutated'] is False,d
+          assert d['formal_ledger_mutated'] is False,d
+          assert d['runtime_registry_mutated'] is False,d
+          assert d['optimization_and_cleanup_audit']['cleanup_performed'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY
+      - name: Publish one consolidated result commit
+        run: |
+          set -euo pipefail
+          root=results/runtime_results/zel/composite_parallel_pipeline_audit_v1
+          mkdir -p "$root"
+          cp out/final/latest.json "$root/latest.json"
+          cp out/final/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          for d in \
+            composite_module_factory_v1 \
+            bingx_execution_evidence_collector_v1 \
+            holdout_access_rehearsal_v1 \
+            pre_shadow_fixture_e2e_v1 \
+            alimi_feature_install_audit_v1; do
+            cp "results/runtime_results/zel/$d/latest.json" \
+              "results/runtime_results/zel/$d/run_${GITHUB_RUN_ID}.json"
+          done
+          cd results
+          git config user.name 'zel-composite-parallel-audit-bot'
+          git config user.email 'zel-composite-parallel-audit-bot@users.noreply.github.com'
+          git add runtime_results/zel
+          git commit -m "result(zel): composite factory parallel lanes ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: composite-parallel-final-${{ github.run_id }}
+          path: out/final/latest.json
+          retention-days: 90

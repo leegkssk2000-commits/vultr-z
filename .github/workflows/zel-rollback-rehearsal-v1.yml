@@ -1,0 +1,36 @@
+name: ZEL Rollback Rehearsal V1
+
+# Guard implementation lives in reusable workflow: ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_remaining_static_stages_contract_v1.json
+      - backend/tools/zel_remaining_static_stage_receipt_v1.py
+      - .github/workflows/zel-static-stage-reusable-v1.yml
+      - .github/workflows/zel-rollback-rehearsal-v1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          python -m py_compile backend/tools/zel_remaining_static_stage_receipt_v1.py
+          python backend/tools/zel_remaining_static_stage_receipt_v1.py --self-test
+          python -m json.tool backend/research/zel_remaining_static_stages_contract_v1.json >/dev/null
+  stage:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    uses: ./.github/workflows/zel-static-stage-reusable-v1.yml
+    with:
+      stage_id: ROLLBACK_REHEARSAL
+      predecessor_path: runtime_results/zel/portfolio_joint_risk_v1/latest.json
+      output_path: runtime_results/zel/rollback_rehearsal_v1/latest.json

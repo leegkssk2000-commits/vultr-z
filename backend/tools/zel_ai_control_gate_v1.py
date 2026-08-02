@@ -31,6 +31,12 @@ EXEMPT_FILENAMES = {
     "zel-p0-runtime-e2e-closure-v1.yml",
     "zel-pre-shadow-full-hardening-v1.yml",
 }
+CONTROL_PLANE_ORCHESTRATORS = {
+    "zel-ai-stage-authorization-broker-v1.yml",
+    "zel-pre-shadow-dag-controller-v1.yml",
+    "zel-pre-shadow-dag-extension-v1.yml",
+}
+REUSABLE_GATE_WORKFLOW = "zel-static-stage-reusable-v1.yml"
 
 
 def canonical_sha(value: Any) -> str:
@@ -46,7 +52,7 @@ def load_object(path: Path) -> dict[str, Any]:
 
 def is_protected_workflow(path: Path, text: str) -> bool:
     name = path.name.lower()
-    if path.name in EXEMPT_FILENAMES:
+    if path.name in EXEMPT_FILENAMES or path.name in CONTROL_PLANE_ORCHESTRATORS:
         return False
     if any(marker in name for marker in PROTECTED_FILENAME_MARKERS):
         return True
@@ -63,7 +69,7 @@ def is_protected_workflow(path: Path, text: str) -> bool:
     return any(marker in text for marker in content_markers)
 
 
-def workflow_gate_wired(text: str) -> bool:
+def direct_gate_wired(text: str) -> bool:
     verifier_tokens = (
         "zel_ai_control_gate_v1.py",
         "--proposal-receipt",
@@ -78,21 +84,43 @@ def workflow_gate_wired(text: str) -> bool:
     return gate_identity and all(token in text for token in verifier_tokens)
 
 
+def workflow_gate_wired(text: str, reusable_gate_is_wired: bool) -> bool:
+    if direct_gate_wired(text):
+        return True
+    delegated = (
+        "uses: ./.github/workflows/zel-static-stage-reusable-v1.yml" in text
+        and reusable_gate_is_wired
+    )
+    return delegated
+
+
 def audit_workflows(workflows_root: Path) -> dict[str, Any]:
+    paths = sorted([*workflows_root.glob("*.yml"), *workflows_root.glob("*.yaml")])
+    texts = {path.name: path.read_text(encoding="utf-8", errors="ignore") for path in paths}
+    reusable_text = texts.get(REUSABLE_GATE_WORKFLOW, "")
+    reusable_gate_is_wired = direct_gate_wired(reusable_text)
+
     protected: list[str] = []
     unguarded: list[str] = []
-    for path in sorted([*workflows_root.glob("*.yml"), *workflows_root.glob("*.yaml")]):
-        text = path.read_text(encoding="utf-8", errors="ignore")
+    delegated: list[str] = []
+    for path in paths:
+        text = texts[path.name]
         if not is_protected_workflow(path, text):
             continue
         protected.append(path.name)
-        if not workflow_gate_wired(text):
+        if "uses: ./.github/workflows/zel-static-stage-reusable-v1.yml" in text:
+            delegated.append(path.name)
+        if not workflow_gate_wired(text, reusable_gate_is_wired):
             unguarded.append(path.name)
     return {
         "schema_version": "zel.ai.control_enforcement.audit.v1",
         "state": "PASS_ALL_PROTECTED_WORKFLOWS_GUARDED" if not unguarded else "HOLD_UNGUARDED_AI_WORKFLOWS",
         "protected_workflow_count": len(protected),
         "protected_workflows": protected,
+        "delegated_workflows": delegated,
+        "reusable_gate_workflow": REUSABLE_GATE_WORKFLOW,
+        "reusable_gate_is_wired": reusable_gate_is_wired,
+        "control_plane_orchestrators": sorted(CONTROL_PLANE_ORCHESTRATORS),
         "unguarded_workflows": unguarded,
         "runtime_mutated": False,
         "execution_authority": "NONE",
@@ -208,13 +236,20 @@ def self_test() -> None:
     assert "GATE_CONTEXT_MISSING" in held["errors"], held
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        legacy = "ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id --epoch-id --predecessor-receipt-sha256"
-        stage_specific = "ai_research_control_plane_v1/component_main_effect/latest.json zel_ai_control_gate_v1.py --proposal-receipt --stage-id --epoch-id --predecessor-receipt-sha256"
-        (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text(legacy, encoding="utf-8")
-        (root / "zel-component-main-effect-v1.yml").write_text(stage_specific, encoding="utf-8")
+        direct = "ZEL_AI_CONTROL_GATE_V1 zel_ai_control_gate_v1.py --proposal-receipt --stage-id --epoch-id --predecessor-receipt-sha256"
+        reusable = root / REUSABLE_GATE_WORKFLOW
+        reusable.write_text(direct + " W2_FORWARD W3_DURABILITY", encoding="utf-8")
+        (root / "zel-exact25-material-upgrade-loop-v1.yml").write_text(direct, encoding="utf-8")
+        (root / "zel-w2-forward-v1.yml").write_text(
+            "uses: ./.github/workflows/zel-static-stage-reusable-v1.yml",
+            encoding="utf-8",
+        )
+        (root / "zel-ai-stage-authorization-broker-v1.yml").write_text("W2_FORWARD", encoding="utf-8")
         audit = audit_workflows(root)
         assert audit["state"].startswith("PASS"), audit
-        assert audit["protected_workflow_count"] == 2, audit
+        assert audit["reusable_gate_is_wired"] is True, audit
+        assert "zel-w2-forward-v1.yml" in audit["delegated_workflows"], audit
+        assert "zel-ai-stage-authorization-broker-v1.yml" not in audit["protected_workflows"], audit
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 

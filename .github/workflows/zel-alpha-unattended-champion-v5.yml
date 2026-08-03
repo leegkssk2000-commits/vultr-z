@@ -1,0 +1,291 @@
+name: ZEL Alpha Unattended Champion V5
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 * * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_autonomy_governance_v1.json
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_autonomy_governance_v1.py
+      - backend/tools/zel_alpha_gemini_governance_v1.py
+      - backend/tools/zel_alpha_unattended_champion_v2.py
+      - backend/tools/zel_alpha_unattended_champion_v3.py
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-alpha-unattended-champion-v5.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_autonomy_governance_v1.json
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_autonomy_governance_v1.py
+      - backend/tools/zel_alpha_gemini_governance_v1.py
+      - backend/tools/zel_alpha_unattended_champion_v2.py
+      - backend/tools/zel_alpha_unattended_champion_v3.py
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-alpha-unattended-champion-v5.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-alpha-unattended-champion-v5-${{ github.event_name == 'pull_request' && github.head_ref || 'master' }}
+  cancel-in-progress: false
+
+env:
+  BASELINE_RUN_ID: '30252022416'
+  BASELINE_ARTIFACT: s11-evidence-batch-1-30252022416-attempt-1
+  MULTIOBJECTIVE_RUN_ID: '30345463070'
+  MULTIOBJECTIVE_ARTIFACT: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+  ALPHA_CODE_REF: r7a4d-strategy11-alpha-primary-w1-multiobjective-v1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - name: Validate clean Alpha V5 control plane
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_alpha_combo_validation_chain_v1.py \
+            backend/tools/zel_autonomy_governance_v1.py \
+            backend/tools/zel_alpha_gemini_governance_v1.py \
+            backend/tools/zel_alpha_unattended_champion_v2.py \
+            backend/tools/zel_alpha_unattended_champion_v3.py \
+            backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool backend/research/zel_autonomy_governance_v1.json >/dev/null
+          python -m json.tool backend/research/zel_alpha_unattended_champion_v2.json >/dev/null
+          python -m json.tool backend/research/zel_exact25_identity_indicator_policy_v1.json >/dev/null
+          python backend/tools/zel_autonomy_governance_v1.py --self-test
+          python backend/tools/zel_autonomy_governance_v1.py \
+            --policy backend/research/zel_autonomy_governance_v1.json \
+            --out /tmp/governance.json
+          PYTHONPATH=backend/tools python backend/tools/zel_alpha_unattended_champion_v2.py \
+            --policy backend/research/zel_alpha_unattended_champion_v2.json --self-test
+          PYTHONPATH=backend/tools python backend/tools/zel_alpha_unattended_champion_v3.py --self-test
+          python backend/tools/zel_alpha_gemini_governance_v1.py --self-test
+          python backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            --policy backend/research/zel_exact25_identity_indicator_policy_v1.json --self-test
+          python backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/zel_autonomy_governance_v1.json'))
+          assert set(p['gemini_contract']['designer_models']).isdisjoint(p['gemini_contract']['redteam_models'])
+          assert p['gemini_contract']['redteam_dissent_is_fail_closed'] is True
+          assert p['top3_entry_gate']['minimum_exact_source_survivors']==3
+          assert p['top3_entry_gate']['minimum_reserve_candidates']==2
+          assert p['resource_policy']['maximum_concurrent_heavy_vps_replays']==1
+          PY
+
+  research:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout control
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          path: control
+          persist-credentials: false
+      - name: Checkout TIME54 TIME60 authority code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ALPHA_CODE_REF }}
+          path: alpha-code
+          persist-credentials: false
+      - name: Checkout immutable Data B
+        uses: actions/checkout@v4
+        with:
+          ref: zel-historical-oos-data-v1
+          path: historical
+          persist-credentials: false
+      - name: Checkout terminal identity results
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: identity-results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BASELINE_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.BASELINE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MULTIOBJECTIVE_ARTIFACT }}
+          path: input/multiobjective
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MULTIOBJECTIVE_RUN_ID }}
+      - name: Restore latest V5 state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/previous
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-alpha-unattended-champion-v5.yml --branch master --status success --limit 30 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-alpha-unattended-champion-v5-state-*' --dir input/previous 2>/dev/null; then break; fi
+          done
+          find input/previous -name state.json -print -quit > input/previous-path.txt || true
+      - name: Terminal identity preflight
+        run: |
+          set -euo pipefail
+          terminal=identity-results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
+          mkdir -p out/identity out/research
+          python control/backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            --policy control/backend/research/zel_exact25_identity_indicator_policy_v1.json \
+            --terminal "$terminal" \
+            --optimizer-policy control/backend/research/zel_alpha_unattended_champion_v2.json \
+            --out out/identity
+          python - <<'PY'
+          import json
+          r=json.load(open('out/identity/latest.json'))
+          assert r['state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',r
+          assert r['strategy_count']==25 and r['trade_count']==1951,r
+          assert not r['quarantined_strategy_ids'],r
+          alpha=next(row for row in r['strategies'] if row['strategy_id']=='alpha_combo')
+          assert alpha['authority_mode']=='SEALED_RESEARCH_AUTHORITY',alpha
+          assert alpha['optimizer_profile']=='ALPHA_TIME54_TIME60_STOP065',alpha
+          PY
+      - name: Prepare read-only source-owner SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Live source-owner preflight 25 of 25
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-v5-source-owner-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            identity-results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
+              --engine /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+              --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/source_owner.json" out/identity/source_owner.json
+          python -m json.tool out/identity/source_owner.json >/dev/null
+      - name: Run one identity-gated deterministic Alpha epoch
+        run: |
+          set -euo pipefail
+          date +%s > out/research_start_epoch.txt
+          baseline=$(find input/evidence -path '*/alpha_combo/summary.json' -print -quit)
+          test -n "$baseline"
+          previous=()
+          if [ -s input/previous-path.txt ]; then previous=(--previous-state "$(cat input/previous-path.txt)"); fi
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_alpha_unattended_champion_v3.py \
+            --identity-receipt out/identity/latest.json \
+            --policy control/backend/research/zel_alpha_unattended_champion_v2.json \
+            --alpha-root alpha-code \
+            --baseline-summary "$baseline" \
+            --multiobjective-root input/multiobjective \
+            --data-root historical/zel_historical_oos_v1 \
+            "${previous[@]}" --out out/research
+          python -m json.tool out/research/latest.json >/dev/null
+          python -m json.tool out/research/state.json >/dev/null
+      - name: Gemini governed next-axis and AI value ledger
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          start=$(cat out/research_start_epoch.txt)
+          now=$(date +%s)
+          minutes=$(python -c "print(max(0,($now-$start))/60.0)")
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_alpha_gemini_governance_v1.py \
+            --governance control/backend/research/zel_autonomy_governance_v1.json \
+            --result out/research/latest.json \
+            --state out/research/state.json \
+            --source-owner out/identity/source_owner.json \
+            --compute-minutes "$minutes" \
+            --out out/research
+      - name: Verify fail-closed safety, identity and ledger
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          result=json.load(open('out/research/latest.json'))
+          state=json.load(open('out/research/state.json'))
+          review=json.load(open('out/research/gemini_review.json'))
+          ledger=json.load(open('out/research/ai_value_ledger_row.json'))
+          source=json.load(open('out/identity/source_owner.json'))
+          assert source['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',source
+          assert not source['quarantined_strategy_ids'],source
+          assert result['identity_preflight_state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',result
+          assert result['raw_canonical_exact25_used_as_control'] is False,result
+          assert result['time54_time60_authority_restored'] is True,result
+          assert result['canonical_mutated'] is False and result['registry_mutated'] is False,result
+          assert result['runtime_mutated'] is False and result['formal_ledger_mutated'] is False,result
+          assert review['state'] in {'PASS_GEMINI_NEXT_AXIS_ACCEPTED','HOLD_GEMINI_FALLBACK_TO_DETERMINISTIC_AXIS'},review
+          assert review['raw_trade_rows_sent'] is False and review['raw_prices_sent'] is False,review
+          assert review['private_code_sent'] is False and review['credentials_sent'] is False,review
+          for key in ('ai_proposed_axis','deterministic_axis','selected_axis','w1_delta_net_R','w2_delta_net_R','w3_delta_net_R','false_positive','receipt_sha256'):
+              assert key in ledger,(key,ledger)
+          for row in (result,state,review,ledger):
+              assert row['selection_authority'] is False,row
+              assert row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE',row
+              assert row['order_authority']=='BLOCKED',row
+              assert row['action']=='hold',row
+          expected=hashlib.sha256(json.dumps({k:v for k,v in state.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert state['receipt_sha256']==expected,state
+          PY
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-unattended-champion-v5-state-${{ github.run_id }}
+          path: out/research
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-unattended-champion-v5-identity-${{ github.run_id }}
+          path: out/identity
+          if-no-files-found: error
+          retention-days: 90

@@ -5,6 +5,7 @@ on:
     branches: [zel-exact25-identity-indicator-autonomy-v1]
     paths:
       - backend/tools/zel_exact25_exit_contract_probe_v1.py
+      - backend/tools/zel_exact25_exit_contract_probe_resumable_v1.py
       - backend/tools/zel_exact25_source_owner_audit_v1.py
       - backend/research/zel_exit_contract_probe_execution_v1.json
       - .github/workflows/zel-exact25-exit-contract-probe-v1.yml
@@ -21,7 +22,7 @@ jobs:
   probe:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 420
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,8 +43,10 @@ jobs:
           mkdir -p out
           python -m py_compile \
             control/backend/tools/zel_exact25_exit_contract_probe_v1.py \
+            control/backend/tools/zel_exact25_exit_contract_probe_resumable_v1.py \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py
           python control/backend/tools/zel_exact25_exit_contract_probe_v1.py --self-test
+          python control/backend/tools/zel_exact25_exit_contract_probe_resumable_v1.py --self-test
           python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
           python -m json.tool control/backend/research/zel_exit_contract_probe_execution_v1.json >/dev/null
       - name: Prepare SSH
@@ -56,40 +59,78 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Source gate and exact exit probe
+      - name: Source-owner audit
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           remote="/tmp/zel-exit-contract-probe-${GITHUB_RUN_ID}"
+          nonce=$(python - <<'PY'
+          import json
+          p=json.load(open('control/backend/research/zel_exit_contract_probe_execution_v1.json'))
+          print(''.join(c if c.isalnum() or c in '-_' else '_' for c in str(p['execution_nonce'])))
+          PY
+          )
+          checkpoint_root="/opt/zel/research-runtime/checkpoints/zel-exit-contract-probe-v1/${nonce}"
           echo "$remote" > out/remote_path.txt
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          echo "$checkpoint_root" > out/checkpoint_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "mkdir -p '$remote' '$checkpoint_root'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py \
             control/backend/tools/zel_exact25_exit_contract_probe_v1.py \
+            control/backend/tools/zel_exact25_exit_contract_probe_resumable_v1.py \
             control/backend/research/zel_exit_contract_probe_execution_v1.json \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
             "$VPS_USER@$VPS_HOST:$remote/"
-          strategy_args=$(python - <<'PY'
-          import json
-          p=json.load(open('control/backend/research/zel_exit_contract_probe_execution_v1.json'))
-          print(' '.join("--strategy '"+s+"'" for s in p['strategy_ids']))
-          PY
-          )
-          timeout 9600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
              /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
                --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' \
-               --out '$remote/source_owner.json'; \
-             /home/z/z/.venv/bin/python '$remote/zel_exact25_exit_contract_probe_v1.py' \
+               --out '$checkpoint_root/source_owner.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/source_owner.json" out/source_owner.json
+          python -m json.tool out/source_owner.json >/dev/null
+      - name: Resumable exact exit probe
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote=$(cat out/remote_path.txt)
+          checkpoint_root=$(cat out/checkpoint_path.txt)
+          set +e
+          timeout 21600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
+             nice -n 15 ionice -c2 -n7 /home/z/z/.venv/bin/python \
+               '$remote/zel_exact25_exit_contract_probe_resumable_v1.py' \
+               --probe '$remote/zel_exact25_exit_contract_probe_v1.py' \
                --engine \"\$engine\" --source-root /home/z/z \
                --data-root /opt/zel/historical-oos-v1 --terminal '$remote/latest.json' \
-               $strategy_args --out '$remote/probe.json'"
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/source_owner.json" out/source_owner.json
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/probe.json" out/probe.json
-          python -m json.tool out/source_owner.json >/dev/null
+               --source-owner '$checkpoint_root/source_owner.json' \
+               --execution '$remote/zel_exit_contract_probe_execution_v1.json' \
+               --checkpoint-dir '$checkpoint_root/strategies' \
+               --heartbeat-out '$checkpoint_root/heartbeat.json' \
+               --out '$checkpoint_root/probe.json'"
+          rc=$?
+          set -e
+          mkdir -p out/strategy-checkpoints
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/heartbeat.json" out/heartbeat.json 2>/dev/null || true
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/probe.json" out/probe.json 2>/dev/null || true
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/strategies/strategy-*.json" \
+            out/strategy-checkpoints/ 2>/dev/null || true
+          printf '%s\n' "$rc" > out/replay_rc.txt
+          if [ "$rc" -ne 0 ]; then
+            echo "Resumable probe exited rc=$rc; checkpoints retained at $checkpoint_root" >&2
+            exit "$rc"
+          fi
+          python -m json.tool out/heartbeat.json >/dev/null
           python -m json.tool out/probe.json >/dev/null
       - name: Verify exact probe
         run: |
@@ -99,24 +140,48 @@ jobs:
           from pathlib import Path
           s=json.loads(Path('out/source_owner.json').read_text())
           r=json.loads(Path('out/probe.json').read_text())
-          assert s['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT' and s['strategy_count']==25 and not s['quarantined_strategy_ids'],s
-          assert r['state']=='PASS_EXIT_CONTRACT_PROBE',r
-          assert r['strategy_count']>=1 and r['trade_count']>0,r
+          p=json.loads(Path('control/backend/research/zel_exit_contract_probe_execution_v1.json').read_text())
+          assert s['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',s
+          assert s['strategy_count']==25 and not s['quarantined_strategy_ids'],s
+          assert r['state']=='PASS_EXIT_CONTRACT_PROBE_RESUMABLE',r
+          assert r['strategy_count']==len(p['strategy_ids'])==5,r
+          assert r['expected_strategy_ids']==p['strategy_ids'],r
+          assert r['completed_strategy_ids']==p['strategy_ids'],r
+          assert r['trade_count']>=int(p['expected_minimum_combined_trade_count']),r
           assert r['all_baseline_parity'] is True,r
+          assert r['unknown_exit_count']==0,r
+          assert r['checkpoint']['completed_count']==5,r
+          assert r['checkpoint']['expected_count']==5,r
+          assert r['checkpoint']['strategy_level_atomic_checkpoint'] is True,r
+          assert r['checkpoint']['resume_enabled'] is True,r
           assert r['portfolio']['early_0_5m_source_loss_rank'],r
-          for row in (r,):
-              assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert r['canonical_mutated'] is False and r['registry_mutated'] is False,r
+          assert r['runtime_mutated'] is False and r['formal_ledger_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          checkpoints=list(Path('out/strategy-checkpoints').glob('strategy-*.json'))
+          assert len(checkpoints)==5,checkpoints
+          for path in checkpoints:
+              row=json.loads(path.read_text())
+              assert row['selection_authority'] is False,row
+              assert row['promotion_authority'] is False,row
               assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
-          print({'strategies':r['strategy_count'],'trades':r['trade_count'],'early_loss_rank':r['portfolio']['early_0_5m_source_loss_rank']})
+          print({
+              'strategies':r['strategy_count'],
+              'trades':r['trade_count'],
+              'unknown_exits':r['unknown_exit_count'],
+              'early_loss_rank':r['portfolio']['early_0_5m_source_loss_rank'],
+          })
           PY
-      - name: Cleanup
+      - name: Cleanup temp path
         if: always()
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           remote=$(cat out/remote_path.txt 2>/dev/null || true)
-          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
           rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
       - uses: actions/upload-artifact@v4
         if: always()

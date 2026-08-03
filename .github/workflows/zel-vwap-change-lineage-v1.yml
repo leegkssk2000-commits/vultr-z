@@ -1,0 +1,78 @@
+name: ZEL VWAP Change Lineage V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/tools/zel_vwap_change_lineage_v1.py
+      - .github/workflows/zel-vwap-change-lineage-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  lineage:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Audit change lineage read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-vwap-change-lineage-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes control/backend/tools/zel_vwap_change_lineage_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_vwap_change_lineage_v1.py' \
+              --root /home/z/z \
+              --expected /home/z/z/runtime/r7a4d2_vwap_revert_geometry_closure/backup_20260721T122922Z/vwap_revert.py \
+              --active /home/z/z/backend/strategies/vwap_revert.py \
+              --plan-dir /home/z/z/runtime/r7a4d2_vwap_revert_geometry_closure \
+              --plan-dir /home/z/z/runtime/r7a4d2_short_selective_canonical_source_snapshot_and_rebaseline_plan \
+              --stdout" > out/result.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/result.json >/dev/null
+      - name: Verify no mutation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/result.json').read_text())
+          assert r['state']=='PASS_VWAP_CHANGE_LINEAGE_AUDIT',r
+          assert r['canonical_mutated'] is False and r['runtime_mutated'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'cause':r['cause'],'next':r['next'],'signals':r['signals'],'comparison':r['source_comparison']})
+          PY
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-vwap-change-lineage-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

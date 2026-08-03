@@ -103,10 +103,17 @@ def validate_optimizer_authority(
 
 def compatible_axes(row: Mapping[str, Any], policy: Mapping[str, Any]) -> list[dict[str, Any]]:
     sample = int(row["metrics"]["trade_count"])
-    axes = [dict(axis) for axis in policy.get("indicator_axes", []) if isinstance(axis, Mapping)]
     if sample == 0:
         return []
-    return axes
+    if row.get("authority_mode") == "SEALED_RESEARCH_AUTHORITY":
+        return []
+    history = (policy.get("strategy_axis_history") or {}).get(str(row.get("strategy_id")), {})
+    tested = set(history.get("tested_axis_ids") or []) if isinstance(history, Mapping) else set()
+    return [
+        dict(axis)
+        for axis in policy.get("indicator_axes", [])
+        if isinstance(axis, Mapping) and str(axis.get("axis_id")) not in tested
+    ]
 
 
 def queue_priority(row: Mapping[str, Any]) -> tuple[float, int, str]:
@@ -307,7 +314,7 @@ def self_test(policy: Mapping[str, Any]) -> int:
     assert result["state"] == "PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY", result
     assert result["quarantined_strategy_ids"] == []
     assert len(result["strategies"]) == 25
-    assert len(result["experiment_queue"]) == 25
+    assert len(result["experiment_queue"]) == 24
     assert result["indicator_axis_count"] >= 15
     print("PASS")
     return 0

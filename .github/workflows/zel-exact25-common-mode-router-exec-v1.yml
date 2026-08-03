@@ -1,0 +1,128 @@
+name: ZEL Exact25 Common Mode Router Exec V1
+
+on:
+  pull_request:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+    paths:
+      - backend/research/zel_exact25_common_mode_router_v1.json
+      - backend/tools/zel_exact25_common_mode_router_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-exact25-common-mode-router-exec-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-exact25-common-mode-router-exec-v1-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile control/backend/tools/zel_exact25_common_mode_router_v1.py control/backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool control/backend/research/zel_exact25_common_mode_router_v1.json >/dev/null
+          python control/backend/tools/zel_exact25_common_mode_router_v1.py --self-test
+          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Live source gate and deterministic route
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-common-mode-router-exec-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            control/backend/tools/zel_exact25_common_mode_router_v1.py \
+            control/backend/research/zel_exact25_common_mode_router_v1.json \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1800s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
+             /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'; \
+             /home/z/z/.venv/bin/python '$remote/zel_exact25_common_mode_router_v1.py' --policy '$remote/zel_exact25_common_mode_router_v1.json' --terminal-root /var/lib/zel-research/data-b-1m-v2 --out '$remote/router.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/source_owner.json" out/source_owner.json
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/router.json" out/router.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+      - name: Gemini red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,time,urllib.request
+          from pathlib import Path
+          r=json.loads(Path('out/router.json').read_text())
+          evidence={k:r[k] for k in ('checks','baseline','cost_scenarios','side_scenarios','exit_capture_ceiling_scenarios','entry_oracle_ceiling_scenarios','selected_route','selected_route_evidence')}
+          evidence['constraints']={'oracle_is_ceiling_only':True,'exact_causal_replay_required':True,'one_route_per_epoch':True,'no_production_authority':True}
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']; response=None; used=None; last=None
+          payload={'contents':[{'parts':[{'text':'You are an independent ZEL causal red-team. Return JSON verdict,route,reason,hidden_failure. ACCEPT only if the deterministic route follows the aggregate evidence. Oracle scenarios are diagnostic ceilings and cannot be promoted. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+          for model in models:
+              try:
+                  url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
+                  req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                  with urllib.request.urlopen(req,timeout=90) as result: body=json.load(result)
+                  response=json.loads(body['candidates'][0]['content']['parts'][0]['text']); used=model; break
+              except Exception as exc: last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+          if response is None: raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
+          verdict=str(response.get('verdict') or '').upper(); route=str(response.get('route') or r['selected_route'])
+          accepted=verdict in {'ACCEPT','APPROVED'} and route==r['selected_route']
+          out={'schema_version':'zel.exact25.common_mode_router.gemini_review.v1','state':'PASS_GEMINI_ROUTE_ACCEPTED' if accepted else 'HOLD_GEMINI_ROUTE_DISSENT','model':used,'response':response,'deterministic_route':r['selected_route'],'accepted':accepted,'raw_trade_rows_sent':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/gemini_review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Verify
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('out/source_owner.json').read_text()); r=json.loads(Path('out/router.json').read_text()); g=json.loads(Path('out/gemini_review.json').read_text())
+          assert s['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT' and s['strategy_count']==25 and not s['quarantined_strategy_ids'],s
+          assert r['state']=='PASS_COMMON_MODE_ROUTE_SELECTED' and r['strategy_count']==25 and r['trade_count']==1951,r
+          assert r['diagnostic_oracles_are_ceiling_only'] is True and r['oracle_promotion_forbidden'] is True,r
+          for row in (r,g):
+              assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'route':r['selected_route'],'evidence':r['selected_route_evidence'],'gemini_state':g['state']})
+          PY
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-common-mode-router-exec-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

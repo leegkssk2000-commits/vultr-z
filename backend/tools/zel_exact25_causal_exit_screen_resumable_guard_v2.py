@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 VERSION = "ZEL_EXACT25_CAUSAL_EXIT_SCREEN_RESUMABLE_GUARD_V2"
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+PRODUCER_RELATIVE_PATH = Path("tools/q4r3_exact25_dedicated_shadow_producer.py")
 VOLATILE_KEYS = {
     "generated_at",
     "updated_at",
@@ -114,12 +115,20 @@ def hash_tree(root: Path) -> dict[str, Any]:
     }
 
 
+def resolve_producer_path(source_root: Path) -> Path:
+    producer_path = source_root / PRODUCER_RELATIVE_PATH
+    if producer_path.is_symlink() or not producer_path.is_file():
+        raise RuntimeError(f"PRODUCER_INPUT_MISSING_OR_INVALID:{producer_path}")
+    return producer_path
+
+
 def build_input_manifest(
     *,
     base_runner_path: Path,
     screen_path: Path,
     engine_path: Path,
     policy_path: Path,
+    source_root: Path,
     data_root: Path,
     terminal_root: Path,
     source_owner_path: Path,
@@ -129,6 +138,7 @@ def build_input_manifest(
     commit = commit_sha.strip().lower()
     if not SHA1_RE.fullmatch(commit):
         raise RuntimeError("COMMIT_SHA40_REQUIRED")
+    producer_path = resolve_producer_path(source_root)
     terminal_files = {
         "report.json": file_sha(terminal_root / "report.json"),
         "trades.jsonl.gz": file_sha(terminal_root / "trades.jsonl.gz"),
@@ -141,7 +151,9 @@ def build_input_manifest(
             "guard_sha256": file_sha(Path(__file__).resolve()),
             "base_runner_sha256": file_sha(base_runner_path),
             "screen_sha256": file_sha(screen_path),
-            "engine_producer_sha256": file_sha(engine_path),
+            "engine_sha256": file_sha(engine_path),
+            "producer_relative_path": PRODUCER_RELATIVE_PATH.as_posix(),
+            "producer_sha256": file_sha(producer_path),
             "policy_sha256": file_sha(policy_path),
         },
         "semantic_receipts": {
@@ -324,6 +336,7 @@ def run_guarded(
         screen_path=screen_path,
         engine_path=engine_path,
         policy_path=policy_path,
+        source_root=source_root,
         data_root=data_root,
         terminal_root=terminal_root,
         source_owner_path=source_owner_path,
@@ -494,26 +507,85 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         data = root / "data"
+        terminal = root / "terminal"
+        source_root = root / "source"
+        producer = source_root / PRODUCER_RELATIVE_PATH
         data.mkdir()
+        terminal.mkdir()
+        producer.parent.mkdir(parents=True)
         (data / "manifest.json").write_text('{"x":1}\n', encoding="utf-8")
-        first = hash_tree(data)
+        (terminal / "report.json").write_text('{"state":"PASS"}\n', encoding="utf-8")
+        (terminal / "trades.jsonl.gz").write_bytes(b"trades")
+        producer.write_text("PRODUCER_V1\n", encoding="utf-8")
+        base_runner = root / "base.py"
+        screen = root / "screen.py"
+        engine = root / "engine.py"
+        policy = root / "policy.json"
+        source_owner = root / "source_owner.json"
+        route = root / "route.json"
+        for path, content in (
+            (base_runner, "BASE\n"),
+            (screen, "SCREEN\n"),
+            (engine, "ENGINE\n"),
+            (policy, '{}\n'),
+            (source_owner, '{"state":"PASS","generated_at":"a","receipt_sha256":"b"}\n'),
+            (route, '{"state":"PASS","generated_at":"a","receipt_sha256":"b"}\n'),
+        ):
+            path.write_text(content, encoding="utf-8")
+        first_tree = hash_tree(data)
         os.utime(data / "manifest.json", None)
-        second = hash_tree(data)
-        assert first["tree_sha256"] == second["tree_sha256"]
+        second_tree = hash_tree(data)
+        assert first_tree["tree_sha256"] == second_tree["tree_sha256"]
         (data / "manifest.json").write_text('{"x":2}\n', encoding="utf-8")
-        third = hash_tree(data)
-        assert first["tree_sha256"] != third["tree_sha256"]
-        receipt = root / "receipt.json"
-        receipt.write_text(
-            json.dumps({"state": "PASS", "generated_at": "a", "receipt_sha256": "b"}),
-            encoding="utf-8",
+        third_tree = hash_tree(data)
+        assert first_tree["tree_sha256"] != third_tree["tree_sha256"]
+        (data / "manifest.json").write_text('{"x":1}\n', encoding="utf-8")
+        first_manifest = build_input_manifest(
+            base_runner_path=base_runner,
+            screen_path=screen,
+            engine_path=engine,
+            policy_path=policy,
+            source_root=source_root,
+            data_root=data,
+            terminal_root=terminal,
+            source_owner_path=source_owner,
+            route_path=route,
+            commit_sha="a" * 40,
         )
-        sha_a = semantic_json_sha(receipt)
-        receipt.write_text(
+        os.utime(producer, None)
+        timestamp_only_manifest = build_input_manifest(
+            base_runner_path=base_runner,
+            screen_path=screen,
+            engine_path=engine,
+            policy_path=policy,
+            source_root=source_root,
+            data_root=data,
+            terminal_root=terminal,
+            source_owner_path=source_owner,
+            route_path=route,
+            commit_sha="a" * 40,
+        )
+        assert first_manifest["manifest_sha256"] == timestamp_only_manifest["manifest_sha256"]
+        producer.write_text("PRODUCER_V2\n", encoding="utf-8")
+        changed_manifest = build_input_manifest(
+            base_runner_path=base_runner,
+            screen_path=screen,
+            engine_path=engine,
+            policy_path=policy,
+            source_root=source_root,
+            data_root=data,
+            terminal_root=terminal,
+            source_owner_path=source_owner,
+            route_path=route,
+            commit_sha="a" * 40,
+        )
+        assert first_manifest["code"]["producer_sha256"] != changed_manifest["code"]["producer_sha256"]
+        assert first_manifest["manifest_sha256"] != changed_manifest["manifest_sha256"]
+        source_owner.write_text(
             json.dumps({"state": "PASS", "generated_at": "c", "receipt_sha256": "d"}),
             encoding="utf-8",
         )
-        assert sha_a == semantic_json_sha(receipt)
+        assert first_manifest["semantic_receipts"]["source_owner_sha256"] == semantic_json_sha(source_owner)
     print("PASS")
     return 0
 

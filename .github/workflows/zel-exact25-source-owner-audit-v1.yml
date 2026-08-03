@@ -65,7 +65,8 @@ jobs:
           set -euo pipefail
           test -n "$VPS_USER"
           remote="/tmp/zel-exact25-source-owner-audit-${GITHUB_RUN_ID}"
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "test -s '$engine'; mkdir -p '$remote'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
@@ -74,8 +75,8 @@ jobs:
           timeout 900s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=20 "$VPS_USER@$VPS_HOST" \
             "/home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
-              --engine /home/z/z/backend/tools/zel_historical_oos_exact25_replay_v1.py \
-              --source-root /home/z/z --terminal '$remote/latest.json' --stdout" \
+              --engine '$engine' --source-root /home/z/z \
+              --terminal '$remote/latest.json' --stdout" \
             > out/result.json 2>out/stderr.log
           rc=$?
           set -e

@@ -1,0 +1,291 @@
+name: ZEL Alpha Unattended Champion V4
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 * * * *'
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_alpha_unattended_champion_v2.py
+      - backend/tools/zel_alpha_unattended_champion_v3.py
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-alpha-unattended-champion-v4.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_alpha_unattended_champion_v2.py
+      - backend/tools/zel_alpha_unattended_champion_v3.py
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-alpha-unattended-champion-v4.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-alpha-unattended-champion-v4-${{ github.event_name == 'pull_request' && github.head_ref || 'master' }}
+  cancel-in-progress: false
+
+env:
+  BASELINE_RUN_ID: '30252022416'
+  BASELINE_ARTIFACT: s11-evidence-batch-1-30252022416-attempt-1
+  MULTIOBJECTIVE_RUN_ID: '30345463070'
+  MULTIOBJECTIVE_ARTIFACT: s11-alpha-multiobjective-auto-v1-30345463070-attempt-1
+  ALPHA_CODE_REF: r7a4d-strategy11-alpha-primary-w1-multiobjective-v1
+
+jobs:
+  validate:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_alpha_combo_validation_chain_v1.py \
+            backend/tools/zel_alpha_unattended_champion_v2.py \
+            backend/tools/zel_alpha_unattended_champion_v3.py \
+            backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool backend/research/zel_alpha_unattended_champion_v2.json >/dev/null
+          python -m json.tool backend/research/zel_exact25_identity_indicator_policy_v1.json >/dev/null
+          PYTHONPATH=backend/tools python backend/tools/zel_alpha_unattended_champion_v2.py \
+            --policy backend/research/zel_alpha_unattended_champion_v2.json --self-test
+          PYTHONPATH=backend/tools python backend/tools/zel_alpha_unattended_champion_v3.py --self-test
+          python backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            --policy backend/research/zel_exact25_identity_indicator_policy_v1.json --self-test
+          python backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+
+  research:
+    needs: validate
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ALPHA_CODE_REF }}
+          path: alpha-code
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-historical-oos-data-v1
+          path: historical
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: identity-results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.BASELINE_ARTIFACT }}
+          path: input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.BASELINE_RUN_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MULTIOBJECTIVE_ARTIFACT }}
+          path: input/multiobjective
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MULTIOBJECTIVE_RUN_ID }}
+      - name: Restore latest V4 state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/previous
+          branch="${GITHUB_HEAD_REF:-master}"
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow zel-alpha-unattended-champion-v4.yml --branch "$branch" --status success --limit 30 --json databaseId --jq '.[].databaseId' 2>/dev/null || true); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'zel-alpha-unattended-champion-v4-state-*' --dir input/previous 2>/dev/null; then break; fi
+          done
+          find input/previous -name state.json -print -quit > input/previous-path.txt || true
+      - name: Terminal identity preflight
+        run: |
+          set -euo pipefail
+          terminal=identity-results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
+          mkdir -p out/identity out/research
+          python control/backend/tools/zel_exact25_identity_indicator_audit_v1.py \
+            --policy control/backend/research/zel_exact25_identity_indicator_policy_v1.json \
+            --terminal "$terminal" \
+            --optimizer-policy control/backend/research/zel_alpha_unattended_champion_v2.json \
+            --out out/identity
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/identity/latest.json').read_text())
+          assert r['state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',r
+          assert r['strategy_count']==25 and r['trade_count']==1951,r
+          assert not r['quarantined_strategy_ids'],r
+          alpha=next(row for row in r['strategies'] if row['strategy_id']=='alpha_combo')
+          assert alpha['authority_mode']=='SEALED_RESEARCH_AUTHORITY',alpha
+          assert alpha['optimizer_profile']=='ALPHA_TIME54_TIME60_STOP065',alpha
+          PY
+      - name: Prepare read-only source-owner SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Live source-owner preflight 25 of 25
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-v4-source-owner-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            identity-results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
+              --engine /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+              --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/source_owner.json" out/identity/source_owner.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/identity/source_owner.json').read_text())
+          assert r['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',r
+          assert r['strategy_count']==25 and not r['quarantined_strategy_ids'],r
+          assert all(r['checks'].values()),r
+          PY
+      - name: Run one identity-gated deterministic Alpha epoch
+        run: |
+          set -euo pipefail
+          baseline=$(find input/evidence -path '*/alpha_combo/summary.json' -print -quit)
+          test -n "$baseline"
+          previous=()
+          if [ -s input/previous-path.txt ]; then previous=(--previous-state "$(cat input/previous-path.txt)"); fi
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_alpha_unattended_champion_v3.py \
+            --identity-receipt out/identity/latest.json \
+            --policy control/backend/research/zel_alpha_unattended_champion_v2.json \
+            --alpha-root alpha-code \
+            --baseline-summary "$baseline" \
+            --multiobjective-root input/multiobjective \
+            --data-root historical/zel_historical_oos_v1 \
+            "${previous[@]}" --out out/research
+      - name: Gemini next-axis design and independent red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          python - <<'PY'
+          import hashlib,json,os,time,urllib.request
+          from pathlib import Path
+          result=json.loads(Path('out/research/latest.json').read_text())
+          state=json.loads(Path('out/research/state.json').read_text())
+          source=json.loads(Path('out/identity/source_owner.json').read_text())
+          allowed=set(result.get('remaining_axis_ids') or []); allowed.discard(result.get('axis_id'))
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          def call(role,instruction,evidence):
+              payload={'contents':[{'parts':[{'text':'You are '+role+'. '+instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+              last=None
+              for model in models:
+                  try:
+                      url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
+                      req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                      with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                      return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
+                  except Exception as exc:
+                      last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+              raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
+          evidence={'state':result.get('state'),'epoch':result.get('epoch'),'current_axis':result.get('axis_id'),'control':result.get('control'),'candidates':result.get('candidates'),'selected_improvement':result.get('selected_improvement'),'champion_found':result.get('champion_found'),'converged':result.get('converged'),'allowed_next_axes':sorted(allowed),'identity_receipt_sha256':result.get('identity_receipt_sha256'),'source_owner_receipt_sha256':source.get('receipt_sha256'),'constraints':{'TIME54_TIME60_authority_only':True,'raw_canonical_exact25_control_forbidden':True,'one_axis_next_epoch':True,'deterministic_gate_overrides_ai':True,'no_production_authority':True}}
+          if result.get('champion_found') or result.get('converged'):
+              designer={'model':None,'response':{'verdict':'STOP','next_axis':None,'reason':'terminal state'}}
+              redteam={'model':None,'response':{'verdict':'ACCEPT','reason':'terminal state'}}
+              accepted=True; selected=None
+          else:
+              designer=call('the causal next-axis designer','Return verdict TEST/HOLD and one exact allowed next_axis.',evidence)
+              proposed=designer['response'].get('next_axis')
+              redteam=call('the independent red-team','Return verdict ACCEPT/REJECT/MORE_EVIDENCE. Reject leakage, repeated-axis mining or unsupported metric logic.',{**evidence,'proposed_next_axis':proposed})
+              accepted=designer['response'].get('verdict')=='TEST' and proposed in allowed and str(redteam['response'].get('verdict')).upper() in {'ACCEPT','APPROVED'}
+              selected=proposed if accepted else result.get('deterministic_next_axis_id')
+          if selected in set(result.get('remaining_axis_ids') or []):
+              state['next_axis_id']=selected
+          review={'schema_version':'zel.alpha.unattended_champion.gemini_review.v4','state':'PASS_GEMINI_NEXT_AXIS_ACCEPTED' if accepted else 'HOLD_GEMINI_FALLBACK_TO_DETERMINISTIC_AXIS','designer':designer,'redteam':redteam,'selected_next_axis':state.get('next_axis_id'),'identity_receipt_sha256':result.get('identity_receipt_sha256'),'source_owner_receipt_sha256':source.get('receipt_sha256'),'raw_trade_rows_sent':False,'raw_prices_sent':False,'private_code_sent':False,'credentials_sent':False,'canonical_mutated':False,'runtime_mutated':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          review['receipt_sha256']=hashlib.sha256(json.dumps(review,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          state['gemini_last_axis_accepted']=accepted
+          state['gemini_last_review_sha256']=review['receipt_sha256']
+          state_without_receipt={key:value for key,value in state.items() if key!='receipt_sha256'}
+          state['receipt_sha256']=hashlib.sha256(json.dumps(state_without_receipt,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          Path('out/research/gemini_review.json').write_text(json.dumps(review,indent=2,sort_keys=True)+'\n')
+          Path('out/research/state.json').write_text(json.dumps(state,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Verify fail-closed safety and receipt freshness
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          result=json.loads(Path('out/research/latest.json').read_text())
+          state=json.loads(Path('out/research/state.json').read_text())
+          review=json.loads(Path('out/research/gemini_review.json').read_text())
+          source=json.loads(Path('out/identity/source_owner.json').read_text())
+          for row in (result,state,review):
+              assert row['selection_authority'] is False,row
+              assert row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE',row
+              assert row['order_authority']=='BLOCKED',row
+          expected=hashlib.sha256(json.dumps({key:value for key,value in state.items() if key!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert state['receipt_sha256']==expected,state
+          assert source['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',source
+          assert not source['quarantined_strategy_ids'],source
+          assert result['identity_preflight_state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',result
+          assert result['raw_canonical_exact25_used_as_control'] is False,result
+          assert result['time54_time60_authority_restored'] is True,result
+          assert result['canonical_mutated'] is False and result['registry_mutated'] is False,result
+          assert result['runtime_mutated'] is False and result['formal_ledger_mutated'] is False,result
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alpha-unattended-champion-v4-state-${{ github.run_id }}
+          path: out/research
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-alpha-unattended-champion-v4-identity-${{ github.run_id }}
+          path: out/identity
+          if-no-files-found: error
+          retention-days: 30

@@ -7,6 +7,7 @@ on:
       - backend/research/zel_exact25_cost_floor_screen_v1.json
       - backend/tools/zel_exact25_cost_floor_screen_v1.py
       - backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py
+      - backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py
       - backend/tools/zel_exact25_cost_geometry_audit_v1.py
       - backend/tools/zel_exact25_selected_indicator_screen_v1.py
       - backend/tools/zel_exact25_source_owner_audit_v1.py
@@ -21,10 +22,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  screen:
+  static:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 420
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+          python -m py_compile \
+            control/backend/tools/zel_exact25_cost_floor_screen_v1.py \
+            control/backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py \
+            control/backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py \
+            control/backend/tools/zel_exact25_cost_geometry_audit_v1.py \
+            control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool control/backend/research/zel_exact25_cost_floor_screen_v1.json >/dev/null
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_cost_floor_screen_v1.py --self-test
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py --self-test
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py --self-test
+          python control/backend/tools/zel_exact25_cost_geometry_audit_v1.py --self-test
+          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('control/backend/research/zel_exact25_cost_floor_screen_v1.json'))
+          assert p['strategy_id']=='scalp_snap',p
+          assert p['axis_id']=='MIN_ENTRY_RISK_DISTANCE_PCT',p
+          assert len(p['candidate_configs'])==6,p
+          assert p['selection_protocol']['entry_time_information_only'] is True,p
+          assert p['selection_protocol']['select_on_w1_only'] is True,p
+          assert p['selection_protocol']['freeze_selected_config_for_w2_w3'] is True,p
+          assert p['selection_protocol']['future_MFE_MAE_forbidden'] is True,p
+          PY
+
+  heavy:
+    needs: static
+    if: >-
+      github.event.pull_request.number == 562 &&
+      github.event.pull_request.head.ref == 'zel-cost-floor-screen-exec-v1' &&
+      github.event.pull_request.base.ref == 'zel-exact25-identity-indicator-autonomy-v1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,40 +88,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Static validation
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
-          python -m py_compile \
-            control/backend/tools/zel_exact25_cost_floor_screen_v1.py \
-            control/backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py \
-            control/backend/tools/zel_exact25_cost_geometry_audit_v1.py \
-            control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
-            control/backend/tools/zel_exact25_source_owner_audit_v1.py
-          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_cost_floor_screen_v1.py --self-test
-          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py --self-test
-          python control/backend/tools/zel_exact25_cost_geometry_audit_v1.py --self-test
-          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
-          python -m json.tool control/backend/research/zel_exact25_cost_floor_screen_v1.json >/dev/null
-          python - <<'PY'
-          import json
-          p=json.load(open('control/backend/research/zel_exact25_cost_floor_screen_v1.json'))
-          assert p['strategy_id']=='scalp_snap',p
-          assert p['axis_id']=='MIN_ENTRY_RISK_DISTANCE_PCT',p
-          assert len(p['candidate_configs'])==6,p
-          assert p['selection_protocol']['entry_time_information_only'] is True,p
-          assert p['selection_protocol']['select_on_w1_only'] is True,p
-          assert p['selection_protocol']['freeze_selected_config_for_w2_w3'] is True,p
-          assert p['selection_protocol']['future_MFE_MAE_forbidden'] is True,p
-          PY
       - name: Prepare SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          mkdir -p out "$GITHUB_WORKSPACE/.ssh" ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
@@ -80,38 +102,38 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           remote="/tmp/zel-cost-floor-screen-${GITHUB_RUN_ID}"
-          nonce=$(python - <<'PY'
-          import json
-          p=json.load(open('control/backend/research/zel_exact25_cost_floor_screen_v1.json'))
-          print(''.join(c if c.isalnum() or c in '-_' else '_' for c in str(p['execution_nonce'])))
-          PY
-          )
-          checkpoint_root="/opt/zel/research-runtime/checkpoints/zel-cost-floor-screen-v1/${nonce}"
+          checkpoint_root="/opt/zel/research-runtime/checkpoints/zel-cost-floor-screen-v2/${PR_HEAD_SHA}"
           echo "$remote" > out/remote_path.txt
           echo "$checkpoint_root" > out/checkpoint_path.txt
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            "mkdir -p '$remote' '$checkpoint_root'"
+            "mkdir -p '$remote' '$checkpoint_root' '$checkpoint_root/candidates'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py \
             control/backend/tools/zel_exact25_cost_geometry_audit_v1.py \
             control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
             control/backend/tools/zel_exact25_cost_floor_screen_v1.py \
             control/backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py \
+            control/backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py \
             control/backend/research/zel_exact25_cost_floor_screen_v1.json \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
             "$VPS_USER@$VPS_HOST:$remote/"
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
-             /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
-               --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' \
-               --out '$checkpoint_root/source_owner.json'; \
-             /home/z/z/.venv/bin/python '$remote/zel_exact25_cost_geometry_audit_v1.py' \
-               --terminal-root /var/lib/zel-research/data-b-1m-v2 \
-               --out '$checkpoint_root/cost_audit.json'"
+             if [ ! -s '$checkpoint_root/source_owner.json' ]; then \
+               /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
+                 --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' \
+                 --out '$checkpoint_root/source_owner.json'; \
+             fi; \
+             if [ ! -s '$checkpoint_root/cost_audit.json' ]; then \
+               /home/z/z/.venv/bin/python '$remote/zel_exact25_cost_geometry_audit_v1.py' \
+                 --terminal-root /var/lib/zel-research/data-b-1m-v2 \
+                 --out '$checkpoint_root/cost_audit.json'; \
+             fi"
           for name in source_owner.json cost_audit.json; do
             scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
               "$VPS_USER@$VPS_HOST:$checkpoint_root/$name" "out/$name"
@@ -130,16 +152,18 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           remote=$(cat out/remote_path.txt)
           checkpoint_root=$(cat out/checkpoint_path.txt)
           set +e
-          timeout 21600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+          timeout 39600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
              nice -n 15 ionice -c2 -n7 env PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
-               '$remote/zel_exact25_cost_floor_screen_resumable_v1.py' \
+               '$remote/zel_exact25_cost_floor_screen_resumable_guard_v2.py' \
+               --base-runner '$remote/zel_exact25_cost_floor_screen_resumable_v1.py' \
                --screen '$remote/zel_exact25_cost_floor_screen_v1.py' \
                --indicator-helper '$remote/zel_exact25_selected_indicator_screen_v1.py' \
                --engine \"\$engine\" \
@@ -149,24 +173,27 @@ jobs:
                --terminal-root /var/lib/zel-research/data-b-1m-v2 \
                --source-owner '$checkpoint_root/source_owner.json' \
                --cost-audit '$checkpoint_root/cost_audit.json' \
-               --checkpoint-dir '$checkpoint_root/units' \
+               --checkpoint-dir '$checkpoint_root/candidates' \
                --heartbeat-out '$checkpoint_root/heartbeat.json' \
+               --input-manifest-out '$checkpoint_root/input_manifest.json' \
+               --commit-sha '$PR_HEAD_SHA' \
                --out '$checkpoint_root/screen.json'"
           rc=$?
           set -e
           mkdir -p out/checkpoints
+          for name in heartbeat.json input_manifest.json screen.json; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$checkpoint_root/$name" "out/$name" 2>/dev/null || true
+          done
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$checkpoint_root/heartbeat.json" out/heartbeat.json 2>/dev/null || true
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$checkpoint_root/screen.json" out/screen.json 2>/dev/null || true
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$checkpoint_root/units/*.json" out/checkpoints/ 2>/dev/null || true
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/candidates/*.json" out/checkpoints/ 2>/dev/null || true
           printf '%s\n' "$rc" > out/replay_rc.txt
           if [ "$rc" -ne 0 ]; then
             echo "Resumable cost-floor screen exited rc=$rc; checkpoints retained at $checkpoint_root" >&2
             exit "$rc"
           fi
           python -m json.tool out/heartbeat.json >/dev/null
+          python -m json.tool out/input_manifest.json >/dev/null
           python -m json.tool out/screen.json >/dev/null
       - name: Gemini screen decision red-team
         env:
@@ -192,19 +219,13 @@ jobs:
               {'config':c['config'],'w1_pass':c['w1_pass'],'w1_blockers':c['w1_blockers'],'w1_retention_pct':c['w1_retention_pct'],'w1_metrics':c['metrics']['1m_w1'],'counters':c['counters'],'integrity':c['integrity']}
               for c in r['candidates']
             ],
-            'constraints':{
-              'entry_time_only':True,
-              'future_MFE_MAE_forbidden':True,
-              'w1_select_then_freeze_w2_w3':True,
-              'all_windows_absolute_positive_required':True,
-              'full_cost_lineage_required':True,
-              'no_production_authority':True
-            }
+            'constraints':{'entry_time_only':True,'future_MFE_MAE_forbidden':True,'w1_select_then_freeze_w2_w3':True,'all_windows_absolute_positive_required':True,'full_cost_lineage_required':True,'no_production_authority':True}
           }
           models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
-          response=None; used=None; last=None
           payload={'contents':[{'parts':[{'text':'You are an independent ZEL causal cost-screen red-team. Return JSON with non-empty keys verdict, reason, hidden_failure. ACCEPT means only the experiment and survivor/no-survivor decision follow the supplied immutable metrics. Reject leakage, W2/W3 retuning, sample destruction, relative-only improvement, incomplete cost lineage, or incorrect cost geometry. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+          response=None; used=None; last=None; attempts=0
           for model in models:
+              attempts += 1
               try:
                   url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
                   req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
@@ -213,34 +234,39 @@ jobs:
                   verdict=str(candidate.get('verdict') or '').strip().upper()
                   reason=str(candidate.get('reason') or '').strip()
                   hidden=str(candidate.get('hidden_failure') or '').strip()
-                  if verdict not in {'ACCEPT','APPROVED','REJECT','MORE_EVIDENCE'} or not reason or not hidden:
+                  if verdict not in {'ACCEPT','REJECT','MORE_EVIDENCE'} or not reason or not hidden:
                       raise RuntimeError('GEMINI_RESPONSE_CONTRACT_INVALID')
                   response=candidate; used=model; break
               except Exception as exc:
                   last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
           if response is None: raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
-          verdict=str(response.get('verdict') or '').upper()
-          accepted=verdict in {'ACCEPT','APPROVED'}
-          out={'schema_version':'zel.exact25.cost_floor_screen.gemini_review.v2','state':'PASS_GEMINI_SCREEN_DECISION_ACCEPTED' if accepted else 'HOLD_GEMINI_SCREEN_DISSENT','model':used,'response':response,'screen_receipt_sha256':r['receipt_sha256'],'accepted':accepted,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          accepted=str(response['verdict']).upper()=='ACCEPT'
+          out={'schema_version':'zel.exact25.cost_floor_screen.gemini_review.v2','state':'PASS_GEMINI_SCREEN_DECISION_ACCEPTED' if accepted else 'HOLD_GEMINI_SCREEN_DISSENT','model':used,'api_attempts':attempts,'response':response,'screen_receipt_sha256':r['receipt_sha256'],'accepted':accepted,'protected_mutations':0,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
           Path('out/gemini_review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          if not accepted:
-              raise RuntimeError('GEMINI_SCREEN_DISSENT_FAIL_CLOSED:'+json.dumps(out,sort_keys=True))
           PY
       - name: Verify exact resumable cost-floor receipt
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
+          import hashlib,json
           from pathlib import Path
+          def verify_sha(row,key='receipt_sha256'):
+              expected=row[key]
+              material={k:v for k,v in row.items() if k!=key}
+              actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+              assert actual==expected,(actual,expected)
           s=json.loads(Path('out/source_owner.json').read_text())
           c=json.loads(Path('out/cost_audit.json').read_text())
+          manifest=json.loads(Path('out/input_manifest.json').read_text())
           r=json.loads(Path('out/screen.json').read_text())
           g=json.loads(Path('out/gemini_review.json').read_text())
           h=json.loads(Path('out/heartbeat.json').read_text())
           assert s['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT' and s['strategy_count']==25 and not s['quarantined_strategy_ids'],s
           assert c['accounting_integrity_pass'] is True and c['selected_route']=='COST_GEOMETRY_AND_TURNOVER_REDESIGN',c
           assert r['state']=='PASS_COST_FLOOR_SCREEN_RESUMABLE_COMPLETE',r
+          assert r['input_manifest_sha256']==manifest['manifest_sha256'],r
+          assert manifest['historical_data']['file_count']>0,manifest
           assert all(r['baseline_parity'].values()),r
           assert r['candidate_count']==6,r
           assert r['checkpoint']['candidate_checkpoint_count']==6,r
@@ -250,10 +276,12 @@ jobs:
           assert r['selection_protocol']['freeze_selected_config_for_w2_w3'] is True,r
           assert r['selection_protocol']['w2_w3_retuning_performed'] is False,r
           assert r['entry_time_information_only'] is True and r['future_MFE_MAE_used'] is False,r
+          assert r['baseline_integrity']['missing_identity_count']==0,r
           assert r['baseline_integrity']['duplicate_trade_count']==0,r
           assert r['baseline_integrity']['unknown_exit_count']==0,r
           assert r['baseline_integrity']['cost_lineage_complete'] is True,r
           for candidate in r['candidates']:
+              assert candidate['integrity']['missing_identity_count']==0,candidate
               assert candidate['integrity']['duplicate_trade_count']==0,candidate
               assert candidate['integrity']['unknown_exit_count']==0,candidate
               assert candidate['integrity']['cost_lineage_complete'] is True,candidate
@@ -265,15 +293,23 @@ jobs:
           for key in ('verdict','reason','hidden_failure'):
               assert str(g['response'].get(key) or '').strip(),g
           for row in (r,g,h):
+              assert row['protected_mutations']==0,row
               assert row['selection_authority'] is False and row['promotion_authority'] is False,row
               assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
               assert row['action']=='hold',row
           assert r['canonical_mutated'] is False and r['registry_mutated'] is False,r
           assert r['runtime_mutated'] is False and r['formal_ledger_mutated'] is False,r
           assert r['shadow_mutated'] is False and r['paper_mutated'] is False and r['live_mutated'] is False,r
+          verify_sha(r); verify_sha(g); verify_sha(h)
           checkpoints=list(Path('out/checkpoints').glob('*.json'))
           assert len(checkpoints)==7,checkpoints
-          print({'strategy':r['strategy_id'],'selected_config':r['selected_config'],'survivor':r['survivor'],'survivor_state':r['survivor_state'],'confirmation':r['confirmation'],'gemini_state':g['state']})
+          for path in checkpoints:
+              row=json.loads(path.read_text())
+              verify_sha(row,'checkpoint_sha256')
+              assert row['protected_mutations']==0,row
+              assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print({'strategy':r['strategy_id'],'selected_config':r['selected_config'],'survivor':r['survivor'],'survivor_state':r['survivor_state'],'gemini_state':g['state'],'input_manifest_sha256':r['input_manifest_sha256']})
           PY
       - name: Cleanup
         if: always()
@@ -282,13 +318,12 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           remote=$(cat out/remote_path.txt 2>/dev/null || true)
-          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
           rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-exact25-cost-floor-screen-v1-${{ github.run_id }}
+          name: zel-exact25-cost-floor-screen-v2-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90

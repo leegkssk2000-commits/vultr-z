@@ -7,6 +7,7 @@ on:
     paths:
       - backend/research/zel_exact25_selected_indicator_screen_v1.json
       - backend/tools/zel_exact25_selected_indicator_screen_v1.py
+      - backend/tools/zel_exact25_selected_indicator_screen_fast_v1.py
       - backend/tools/zel_exact25_source_owner_audit_v1.py
       - .github/workflows/zel-exact25-selected-indicator-screen-v2.yml
 
@@ -14,12 +15,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: zel-exact25-selected-indicator-screen-v2-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  group: zel-exact25-selected-indicator-screen-v2-255453749892fe5ae5ddc1fec773e9b1b916e8ea
+  cancel-in-progress: true
 
 jobs:
   screen:
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -40,7 +41,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
-          python -m py_compile control/backend/tools/zel_exact25_source_owner_audit_v1.py control/backend/tools/zel_exact25_selected_indicator_screen_v1.py
+          python -m py_compile \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
+            control/backend/tools/zel_exact25_selected_indicator_screen_fast_v1.py
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_selected_indicator_screen_fast_v1.py --self-test-fast-wrapper
           python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
           python control/backend/tools/zel_exact25_selected_indicator_screen_v1.py --self-test
           python -m json.tool control/backend/research/zel_exact25_selected_indicator_screen_v1.json >/dev/null
@@ -73,6 +78,7 @@ jobs:
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py \
             control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
+            control/backend/tools/zel_exact25_selected_indicator_screen_fast_v1.py \
             control/backend/research/zel_exact25_selected_indicator_screen_v1.json \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
             "$VPS_USER@$VPS_HOST:$remote/"
@@ -83,7 +89,7 @@ jobs:
              /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'; \
              source_rc=\$?; echo \$source_rc > '$remote/source_owner.rc'; \
              if [ \$source_rc -eq 0 ]; then \
-               /home/z/z/.venv/bin/python '$remote/zel_exact25_selected_indicator_screen_v1.py' --policy '$remote/zel_exact25_selected_indicator_screen_v1.json' --engine \"\$engine\" --terminal-root /var/lib/zel-research/data-b-1m-v2 --data-root /opt/zel/historical-oos-v1 --out '$remote/screen.json'; \
+               PYTHONPATH='$remote' /home/z/z/.venv/bin/python '$remote/zel_exact25_selected_indicator_screen_fast_v1.py' --policy '$remote/zel_exact25_selected_indicator_screen_v1.json' --engine \"\$engine\" --terminal-root /var/lib/zel-research/data-b-1m-v2 --data-root /opt/zel/historical-oos-v1 --out '$remote/screen.json'; \
                echo \$? > '$remote/screen.rc'; \
              else echo 99 > '$remote/screen.rc'; fi" > out/stdout.log 2>out/stderr.log
           ssh_rc=$?

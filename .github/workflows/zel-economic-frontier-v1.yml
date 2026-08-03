@@ -1,0 +1,69 @@
+name: ZEL Economic Frontier V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_economic_frontier_v1.py
+      - .github/workflows/zel-economic-frontier-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_economic_frontier_v1.py
+      - .github/workflows/zel-economic-frontier-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-economic-frontier-v1-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build opportunity-adjusted frontier
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile control/backend/tools/zel_economic_frontier_v1.py
+          python control/backend/tools/zel_economic_frontier_v1.py --self-test
+          python control/backend/tools/zel_economic_frontier_v1.py \
+            --terminal results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/latest.json'))
+          assert r['state']=='PASS_ECONOMIC_FRONTIER_AUDIT',r
+          assert r['strategy_count']==25,r
+          assert r['trade_bearing_strategy_count']==13,r
+          assert r['zero_trade_strategy_count']==12,r
+          assert abs(r['observation_days']-30.0)<1e-9,r
+          assert abs(r['portfolio']['entries_per_day']-(1951/30))<1e-9,r
+          assert r['absolute_positive_durable_point_found'] is False,r
+          assert r['canonical_mutated'] is False and r['runtime_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-economic-frontier-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

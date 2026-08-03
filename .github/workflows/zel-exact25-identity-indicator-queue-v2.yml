@@ -94,9 +94,10 @@ jobs:
                   except Exception as exc:
                       last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
               raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
-          designer=call('the bounded causal experiment designer','Return verdict TEST/HOLD and at most 3 exact queue selections.',{'identity_receipt_sha256':audit['receipt_sha256'],'queue':queue,'constraints':constraints})
+          designer=call('the bounded causal experiment designer','Return verdict TEST/HOLD and at most 3 exact queue selections under key selections or selected_queue.',{'identity_receipt_sha256':audit['receipt_sha256'],'queue':queue,'constraints':constraints})
           allowed={(r['strategy_id'],r['axis_id']):r for r in queue}; selected=[]; seen=set()
-          for proposed in designer['response'].get('selections') or []:
+          proposals=designer['response'].get('selections') or designer['response'].get('selected_queue') or []
+          for proposed in proposals:
               pair=(str(proposed.get('strategy_id')),str(proposed.get('axis_id')))
               if pair in allowed and pair[0] not in seen: selected.append(dict(allowed[pair])); seen.add(pair[0])
               if len(selected)>=3: break

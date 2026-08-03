@@ -27,44 +27,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout control
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
           path: control
           persist-credentials: false
-
-      - name: Checkout immutable terminal receipt
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: zel-data-expansion-results-v1
           path: results
           persist-credentials: false
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Static validation
         run: |
           set -euo pipefail
           python -m py_compile control/backend/tools/zel_exact25_source_owner_audit_v1.py
           python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
           test -s results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
-
       - name: Prepare read-only SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
-          test -n "$VPS_SSH_KEY"
-          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"
           mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
       - name: Run VPS source-owner audit read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -73,36 +65,24 @@ jobs:
           set -euo pipefail
           test -n "$VPS_USER"
           remote="/tmp/zel-exact25-source-owner-audit-${GITHUB_RUN_ID}"
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_source_owner_audit_v1.py \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
             "$VPS_USER@$VPS_HOST:$remote/"
           set +e
-          timeout 900s ssh \
-            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
-            -o BatchMode=yes \
-            -o ServerAliveInterval=20 \
-            -o ServerAliveCountMax=20 \
-            "$VPS_USER@$VPS_HOST" \
+          timeout 900s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=20 "$VPS_USER@$VPS_HOST" \
             "/home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
-              --engine /tmp/zel_historical_oos_exact25_replay_v1.py \
-              --source-root /home/z/z \
-              --terminal '$remote/latest.json' \
-              --stdout" > out/result.json 2>out/stderr.log
+              --engine /home/z/z/backend/tools/zel_historical_oos_exact25_replay_v1.py \
+              --source-root /home/z/z --terminal '$remote/latest.json' --stdout" \
+            > out/result.json 2>out/stderr.log
           rc=$?
           set -e
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
           python -m json.tool out/result.json >/dev/null || true
-          if [ "$rc" -ne 0 ]; then
-            tail -n 120 out/stderr.log
-            test -s out/result.json && python -m json.tool out/result.json || true
-            exit "$rc"
-          fi
+          if [ "$rc" -ne 0 ]; then tail -n 120 out/stderr.log; test -s out/result.json && python -m json.tool out/result.json || true; exit "$rc"; fi
           rm -f out/stderr.log
-
       - name: Verify complete source-owner binding
         run: |
           set -euo pipefail
@@ -111,24 +91,17 @@ jobs:
           from pathlib import Path
           r=json.loads(Path('out/result.json').read_text())
           assert r['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',r
-          assert r['strategy_count']==25,r
-          assert not r['quarantined_strategy_ids'],r
+          assert r['strategy_count']==25 and not r['quarantined_strategy_ids'],r
           assert all(r['checks'].values()),r
-          assert r['canonical_mutated'] is False,r
-          assert r['registry_mutated'] is False,r
-          assert r['runtime_mutated'] is False,r
-          assert r['formal_ledger_mutated'] is False,r
-          assert r['selection_authority'] is False,r
-          assert r['promotion_authority'] is False,r
-          assert r['execution_authority']=='NONE',r
-          assert r['order_authority']=='BLOCKED',r
+          assert r['canonical_mutated'] is False and r['registry_mutated'] is False,r
+          assert r['runtime_mutated'] is False and r['formal_ledger_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
           print({'state':r['state'],'strategies':r['strategy_count'],'quarantine':r['quarantined_strategy_ids'],'receipt_sha256':r['receipt_sha256']})
           PY
-
       - name: Cleanup SSH key
         if: always()
         run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:

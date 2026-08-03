@@ -66,7 +66,8 @@ jobs:
             --input backend/research/zel_economic_hardening_fixture_v1.json \
             --policy backend/research/zel_economic_hardening_policy_v1.json \
             --now 2026-08-03T20:38:00+02:00 \
-            --out out/zel_economic_hardening_h1_h5_receipt_v1.json
+            --artifact-root out \
+            --out zel_economic_hardening_h1_h5_receipt_v1.json
           sha256sum out/zel_economic_hardening_h1_h5_receipt_v1.json | tee out/artifact.sha256
       - name: Verify deterministic control states and safety
         run: |
@@ -78,10 +79,18 @@ jobs:
           assert r['state']=='PASS_H1_H5_CONTROL_ENGINE_EVALUATION',r
           assert r['control_count']==5,r
           assert r['controls']['H1']['state']=='REJECT_FAMILY',r['controls']['H1']
+          assert all(r['controls']['H1']['generation_sequence_complete_by_axis'].values()),r['controls']['H1']
           assert r['controls']['H2']['state']=='PASS_ARCHETYPE_INTAKE',r['controls']['H2']
-          assert r['controls']['H3']['state']=='PASS_BINGX_LIGHT_CALIBRATION',r['controls']['H3']
+          assert r['controls']['H2']['registry_count']==2,r['controls']['H2']
+          assert r['controls']['H3']['state']=='PASS_H3_ENGINE_FIXTURE_ONLY',r['controls']['H3']
+          assert r['controls']['H3']['operational_calibration_pass'] is False,r['controls']['H3']
+          assert r['controls']['H3']['plus_one_bar_stressed_expectancy_R']==0.05,r['controls']['H3']
           assert r['controls']['H4']['state']=='PASS_PLACEBO_NEGATIVE_CONTROLS',r['controls']['H4']
+          assert r['controls']['H4']['candidate_trade_count']==100,r['controls']['H4']
           assert r['controls']['H5']['state']=='PASS_CONCENTRATION_FRAGILITY',r['controls']['H5']
+          assert r['controls']['H5']['expected_leave_one_group_out_count']==12,r['controls']['H5']
+          assert r['controls']['H5']['observed_leave_one_group_out_count']==12,r['controls']['H5']
+          assert not r['controls']['H5']['missing_leave_one_group_out_pairs'],r['controls']['H5']
           for row in [r,*r['controls'].values()]:
               assert row['selection_authority'] is False,row
               assert row['promotion_authority'] is False,row

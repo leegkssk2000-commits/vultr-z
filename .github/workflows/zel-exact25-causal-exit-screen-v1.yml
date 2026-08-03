@@ -8,6 +8,7 @@ on:
       - backend/research/zel_exact25_common_mode_router_v1.json
       - backend/tools/zel_exact25_causal_exit_screen_v1.py
       - backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py
+      - backend/tools/zel_exact25_causal_exit_screen_resumable_guard_v2.py
       - backend/tools/zel_exact25_common_mode_router_v1.py
       - backend/tools/zel_exact25_common_mode_router_v2.py
       - backend/tools/zel_exact25_source_owner_audit_v1.py
@@ -22,8 +23,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  screen:
+  static:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+          python -m py_compile \
+            control/backend/tools/zel_exact25_causal_exit_screen_v1.py \
+            control/backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py \
+            control/backend/tools/zel_exact25_causal_exit_screen_resumable_guard_v2.py \
+            control/backend/tools/zel_exact25_common_mode_router_v1.py \
+            control/backend/tools/zel_exact25_common_mode_router_v2.py \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool control/backend/research/zel_exact25_causal_exit_screen_v1.json >/dev/null
+          python -m json.tool control/backend/research/zel_exact25_common_mode_router_v1.json >/dev/null
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_causal_exit_screen_v1.py --self-test
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py --self-test
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_causal_exit_screen_resumable_guard_v2.py --self-test
+          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_common_mode_router_v2.py --self-test
+          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('control/backend/research/zel_exact25_causal_exit_screen_v1.json'))
+          assert p['strategy_id']=='ema_ribbon_scalp',p
+          assert p['axis_id']=='EXIT_CAPTURE_CONTROL',p
+          assert p['parent_route']=='EXIT_CAPTURE_INTRATRADE_REPLAY',p
+          assert len(p['candidate_configs'])==7,p
+          assert p['selection_protocol']['select_on_w1_only'] is True,p
+          assert p['selection_protocol']['freeze_selected_config_for_w2_w3'] is True,p
+          assert p['selection_protocol']['oracle_mfe_future_value_forbidden'] is True,p
+          PY
+
+  heavy:
+    needs: static
+    if: >-
+      github.event.pull_request.number == 560 &&
+      github.event.pull_request.head.ref == 'zel-causal-exit-screen-exec-v1' &&
+      github.event.pull_request.base.ref == 'zel-exact25-identity-indicator-autonomy-v1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 720
     steps:
@@ -40,41 +90,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Static validation
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
-          python -m py_compile \
-            control/backend/tools/zel_exact25_causal_exit_screen_v1.py \
-            control/backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py \
-            control/backend/tools/zel_exact25_common_mode_router_v1.py \
-            control/backend/tools/zel_exact25_common_mode_router_v2.py \
-            control/backend/tools/zel_exact25_source_owner_audit_v1.py
-          python -m json.tool control/backend/research/zel_exact25_causal_exit_screen_v1.json >/dev/null
-          python -m json.tool control/backend/research/zel_exact25_common_mode_router_v1.json >/dev/null
-          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_causal_exit_screen_v1.py --self-test
-          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py --self-test
-          PYTHONPATH=control/backend/tools python control/backend/tools/zel_exact25_common_mode_router_v2.py --self-test
-          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
-          python - <<'PY'
-          import json
-          p=json.load(open('control/backend/research/zel_exact25_causal_exit_screen_v1.json'))
-          assert p['strategy_id']=='ema_ribbon_scalp',p
-          assert p['axis_id']=='EXIT_CAPTURE_CONTROL',p
-          assert p['parent_route']=='EXIT_CAPTURE_INTRATRADE_REPLAY',p
-          assert len(p['candidate_configs'])==7,p
-          assert p['selection_protocol']['select_on_w1_only'] is True,p
-          assert p['selection_protocol']['freeze_selected_config_for_w2_w3'] is True,p
-          assert p['selection_protocol']['oracle_mfe_future_value_forbidden'] is True,p
-          PY
       - name: Prepare SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          mkdir -p out "$GITHUB_WORKSPACE/.ssh" ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
@@ -86,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           remote="/tmp/zel-causal-exit-screen-${GITHUB_RUN_ID}"
-          checkpoint_root="/opt/zel/research-runtime/checkpoints/zel-causal-exit-screen-v1/${PR_HEAD_SHA}"
+          checkpoint_root="/opt/zel/research-runtime/checkpoints/zel-causal-exit-screen-v2/${PR_HEAD_SHA}"
           echo "$remote" > out/remote_path.txt
           echo "$checkpoint_root" > out/checkpoint_path.txt
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
@@ -97,6 +119,7 @@ jobs:
             control/backend/tools/zel_exact25_common_mode_router_v2.py \
             control/backend/tools/zel_exact25_causal_exit_screen_v1.py \
             control/backend/tools/zel_exact25_causal_exit_screen_resumable_v1.py \
+            control/backend/tools/zel_exact25_causal_exit_screen_resumable_guard_v2.py \
             control/backend/research/zel_exact25_common_mode_router_v1.json \
             control/backend/research/zel_exact25_causal_exit_screen_v1.json \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
@@ -127,6 +150,7 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           remote=$(cat out/remote_path.txt)
@@ -136,7 +160,8 @@ jobs:
             -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
              nice -n 15 ionice -c2 -n7 /home/z/z/.venv/bin/python \
-               '$remote/zel_exact25_causal_exit_screen_resumable_v1.py' \
+               '$remote/zel_exact25_causal_exit_screen_resumable_guard_v2.py' \
+               --base-runner '$remote/zel_exact25_causal_exit_screen_resumable_v1.py' \
                --screen '$remote/zel_exact25_causal_exit_screen_v1.py' \
                --engine \"\$engine\" \
                --policy '$remote/zel_exact25_causal_exit_screen_v1.json' \
@@ -147,14 +172,16 @@ jobs:
                --route '$checkpoint_root/router.json' \
                --checkpoint-dir '$checkpoint_root/candidates' \
                --heartbeat-out '$checkpoint_root/heartbeat.json' \
+               --input-manifest-out '$checkpoint_root/input_manifest.json' \
+               --commit-sha '$PR_HEAD_SHA' \
                --out '$checkpoint_root/screen.json'"
           rc=$?
           set -e
           mkdir -p out/checkpoints
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$checkpoint_root/heartbeat.json" out/heartbeat.json 2>/dev/null || true
-          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$checkpoint_root/screen.json" out/screen.json 2>/dev/null || true
+          for name in heartbeat.json input_manifest.json screen.json; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$checkpoint_root/$name" "out/$name" 2>/dev/null || true
+          done
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST:$checkpoint_root/candidates/*.json" out/checkpoints/ 2>/dev/null || true
           printf '%s\n' "$rc" > out/replay_rc.txt
@@ -163,6 +190,7 @@ jobs:
             exit "$rc"
           fi
           python -m json.tool out/heartbeat.json >/dev/null
+          python -m json.tool out/input_manifest.json >/dev/null
           python -m json.tool out/screen.json >/dev/null
       - name: Gemini selected-result red-team
         env:
@@ -185,25 +213,10 @@ jobs:
             'confirmation':r['confirmation'],
             'survivor':r['survivor'],
             'candidate_summaries':[
-              {
-                'config':c['config'],
-                'w1_pass':c['w1_pass'],
-                'w1_blockers':c['w1_blockers'],
-                'w1_retention_pct':c['w1_retention_pct'],
-                'w1_metrics':c['metrics']['1m_w1'],
-                'counters':c['counters'],
-                'integrity':c['integrity'],
-              }
+              {'config':c['config'],'w1_pass':c['w1_pass'],'w1_blockers':c['w1_blockers'],'w1_retention_pct':c['w1_retention_pct'],'w1_metrics':c['metrics']['1m_w1'],'counters':c['counters'],'integrity':c['integrity']}
               for c in r['candidates']
             ],
-            'constraints':{
-              'hard_risk_exit_preserved':True,
-              'future_mfe_forbidden':True,
-              'w1_select_then_freeze_w2_w3':True,
-              'all_windows_absolute_positive_required':True,
-              'cost_lineage_required':True,
-              'no_production_authority':True,
-            }
+            'constraints':{'hard_risk_exit_preserved':True,'future_mfe_forbidden':True,'w1_select_then_freeze_w2_w3':True,'all_windows_absolute_positive_required':True,'cost_lineage_required':True,'no_production_authority':True}
           }
           models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
           payload={'contents':[{'parts':[{'text':'You are an independent ZEL causal replay red-team. Return JSON keys verdict, reason, and hidden_failure. ACCEPT means only that the experiment and survivor/no-survivor decision follow the supplied immutable metrics; it grants no promotion authority. Reject leakage, hard-risk suppression, W2/W3 retuning, incomplete cost lineage, sample destruction, or relative-only profitability. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
@@ -225,20 +238,7 @@ jobs:
                   last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
           if response is None: raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
           accepted=str(response['verdict']).upper()=='ACCEPT'
-          out={
-            'schema_version':'zel.exact25.causal_exit_screen.gemini_review.v2',
-            'state':'PASS_GEMINI_SCREEN_DECISION_ACCEPTED' if accepted else 'HOLD_GEMINI_SCREEN_DISSENT',
-            'model':used,
-            'api_attempts':attempts,
-            'response':response,
-            'screen_receipt_sha256':r['receipt_sha256'],
-            'accepted':accepted,
-            'selection_authority':False,
-            'promotion_authority':False,
-            'execution_authority':'NONE',
-            'order_authority':'BLOCKED',
-            'action':'hold',
-          }
+          out={'schema_version':'zel.exact25.causal_exit_screen.gemini_review.v2','state':'PASS_GEMINI_SCREEN_DECISION_ACCEPTED' if accepted else 'HOLD_GEMINI_SCREEN_DISSENT','model':used,'api_attempts':attempts,'response':response,'screen_receipt_sha256':r['receipt_sha256'],'accepted':accepted,'protected_mutations':0,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
           out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
           Path('out/gemini_review.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
           PY
@@ -248,13 +248,14 @@ jobs:
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
-          def verify_sha(row):
-              expected=row['receipt_sha256']
-              material={k:v for k,v in row.items() if k!='receipt_sha256'}
+          def verify_sha(row,key='receipt_sha256'):
+              expected=row[key]
+              material={k:v for k,v in row.items() if k!=key}
               actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
               assert actual==expected,(actual,expected)
           s=json.loads(Path('out/source_owner.json').read_text())
           route=json.loads(Path('out/router.json').read_text())
+          manifest=json.loads(Path('out/input_manifest.json').read_text())
           r=json.loads(Path('out/screen.json').read_text())
           g=json.loads(Path('out/gemini_review.json').read_text())
           p=json.loads(Path('control/backend/research/zel_exact25_causal_exit_screen_v1.json').read_text())
@@ -262,7 +263,14 @@ jobs:
           assert route['selected_route']=='EXIT_CAPTURE_INTRATRADE_REPLAY',route
           assert r['state']=='PASS_CAUSAL_EXIT_SCREEN_RESUMABLE_COMPLETE',r
           assert r['strategy_id']=='ema_ribbon_scalp' and r['candidate_count']==len(p['candidate_configs'])==7,r
+          assert r['input_manifest_sha256']==manifest['manifest_sha256'],r
+          assert manifest['historical_data']['file_count']>0,manifest
           assert all(r['baseline_parity'].values()),r
+          for key in ('baseline_integrity','immutable_integrity'):
+              row=r[key] if key in r else None
+              if row is not None:
+                  assert row['missing_identity_count']==0,row
+          assert r['baseline_integrity']['missing_identity_count']==0,r
           assert r['baseline_integrity']['duplicate_trade_count']==0,r
           assert r['baseline_integrity']['unknown_exit_count']==0,r
           assert r['baseline_integrity']['cost_lineage_complete'] is True,r
@@ -279,6 +287,7 @@ jobs:
           for c in r['candidates']:
               assert c['counters']['error_count']==0,c
               assert c['counters']['censored_open_at_window_end']==0,c
+              assert c['integrity']['missing_identity_count']==0,c
               assert c['integrity']['duplicate_trade_count']==0,c
               assert c['integrity']['unknown_exit_count']==0,c
               assert c['integrity']['cost_lineage_complete'] is True,c
@@ -287,6 +296,7 @@ jobs:
           assert str(g['response'].get('hidden_failure') or '').strip(),g
           assert g['screen_receipt_sha256']==r['receipt_sha256'],g
           for row in (r,g):
+              assert row['protected_mutations']==0,row
               assert row['selection_authority'] is False and row['promotion_authority'] is False,row
               assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
               assert row['action']=='hold',row
@@ -297,13 +307,11 @@ jobs:
           assert len(checkpoints)==8,checkpoints
           for path in checkpoints:
               row=json.loads(path.read_text())
-              expected=row['checkpoint_sha256']
-              material={k:v for k,v in row.items() if k!='checkpoint_sha256'}
-              actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
-              assert actual==expected,path
+              verify_sha(row,'checkpoint_sha256')
+              assert row['protected_mutations']==0,row
               assert row['selection_authority'] is False and row['promotion_authority'] is False,row
               assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
-          print({'strategy':r['strategy_id'],'selected_config':r['selected_config'],'survivor':r['survivor'],'survivor_state':r['survivor_state'],'gemini_state':g['state'],'checkpoints':len(checkpoints)})
+          print({'strategy':r['strategy_id'],'selected_config':r['selected_config'],'survivor':r['survivor'],'survivor_state':r['survivor_state'],'gemini_state':g['state'],'checkpoints':len(checkpoints),'input_manifest_sha256':r['input_manifest_sha256']})
           PY
       - name: Cleanup temp path
         if: always()
@@ -312,13 +320,12 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           remote=$(cat out/remote_path.txt 2>/dev/null || true)
-          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
           rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-exact25-causal-exit-screen-v1-${{ github.run_id }}
+          name: zel-exact25-causal-exit-screen-v2-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90

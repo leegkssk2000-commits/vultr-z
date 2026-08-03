@@ -1,0 +1,101 @@
+name: ZEL Exact25 Cost Geometry Audit V1
+
+on:
+  pull_request:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+    paths:
+      - backend/research/zel_cost_geometry_audit_execution_v1.json
+      - backend/tools/zel_exact25_cost_geometry_audit_v1.py
+      - .github/workflows/zel-exact25-cost-geometry-audit-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-exact25-cost-geometry-audit-v1-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile control/backend/tools/zel_exact25_cost_geometry_audit_v1.py
+          python control/backend/tools/zel_exact25_cost_geometry_audit_v1.py --self-test
+          python -m json.tool control/backend/research/zel_cost_geometry_audit_execution_v1.json >/dev/null
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run read-only cost audit
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-cost-geometry-audit-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_cost_geometry_audit_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_exact25_cost_geometry_audit_v1.py' \
+              --terminal-root /var/lib/zel-research/data-b-1m-v2 \
+              --out '$remote/audit.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/audit.json" out/audit.json
+          python -m json.tool out/audit.json >/dev/null
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/audit.json').read_text())
+          p=json.loads(Path('control/backend/research/zel_cost_geometry_audit_execution_v1.json').read_text())
+          assert r['state']=='PASS_COST_GEOMETRY_AUDIT',r
+          assert r['trade_count']==p['expected_trade_count'],r
+          assert r['complete_trade_count']==p['expected_trade_count'],r
+          assert r['selected_route'],r
+          assert r['canonical_mutated'] is False and r['runtime_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'route':r['selected_route'],'portfolio':r['portfolio'],'cost_flip_strategy_count':len(r['cost_flip_strategies'])})
+          PY
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-cost-geometry-audit-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

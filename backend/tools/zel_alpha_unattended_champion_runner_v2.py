@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
-import os
+import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -16,6 +17,74 @@ def read_previous(path: Path | None) -> dict[str, Any] | None:
         return None
     value = engine.read_json(path)
     return value if value.get("schema_version") == engine.STATE_SCHEMA else None
+
+
+def terminal_receipt(
+    *,
+    policy: Mapping[str, Any],
+    previous: Mapping[str, Any],
+    out: Path,
+) -> int:
+    champion_found = previous.get("champion_found") is True
+    converged = previous.get("converged") is True
+    if not champion_found and not converged:
+        return -1
+    safety = dict(policy["safety"])
+    receipt = {
+        "schema_version": engine.SCHEMA,
+        "version": engine.VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "state": (
+            "PASS_ALPHA_CHAMPION_ALREADY_SEALED_FOR_RESEARCH_HOLDBACK"
+            if champion_found
+            else "WAIT_NEW_DATA_FINGERPRINT_ALPHA_CHAMPION_NOT_FOUND"
+        ),
+        "strategy_id": "alpha_combo",
+        "data_fingerprint": previous.get("data_fingerprint"),
+        "epoch": previous.get("epoch"),
+        "champion": previous.get("best_metrics") if champion_found else None,
+        "champion_config": previous.get("best_config") if champion_found else None,
+        "champion_found": champion_found,
+        "converged": converged,
+        "raw_canonical_exact25_used_as_control": False,
+        "time54_time60_authority_restored": True,
+        "raw_trade_rows_published": False,
+        "raw_prices_published": False,
+        "canonical_mutated": False,
+        "registry_mutated": False,
+        "runtime_mutated": False,
+        "formal_ledger_mutated": False,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "shadow_start_allowed": False,
+        "paper_allowed": False,
+        "live_allowed": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+        "next": (
+            "WAIT_SEALED_HOLDBACK_AND_NEW_FORWARD_CONFIRMATION"
+            if champion_found
+            else "WAIT_NEW_IMMUTABLE_DATA_THEN_RESET_SEARCH"
+        ),
+        **safety,
+    }
+    receipt["receipt_sha256"] = engine.stable_sha(receipt)
+    out.mkdir(parents=True, exist_ok=True)
+    engine.write_json(out / "latest.json", receipt)
+    engine.write_json(out / "state.json", previous)
+    print(
+        json.dumps(
+            {
+                "state": receipt["state"],
+                "champion_found": champion_found,
+                "converged": converged,
+                "replay_skipped": True,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def choose_epoch_policy(
@@ -58,10 +127,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--previous-state", type=Path)
+    parser.add_argument("--out", type=Path, required=True)
     known, _ = parser.parse_known_args()
     original_policy = known.policy.resolve()
     policy = engine.read_json(original_policy)
     previous = read_previous(known.previous_state)
+    if previous:
+        terminal = terminal_receipt(policy=policy, previous=previous, out=known.out.resolve())
+        if terminal == 0:
+            return 0
     bounded, axis_id, selected = choose_epoch_policy(policy, previous)
 
     with tempfile.TemporaryDirectory(prefix="zel-alpha-epoch-") as tmp:

@@ -1,0 +1,102 @@
+name: ZEL VWAP Owner Mismatch Diagnosis V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/tools/zel_vwap_owner_mismatch_diagnosis_v1.py
+      - .github/workflows/zel-vwap-owner-mismatch-diagnosis-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile control/backend/tools/zel_vwap_owner_mismatch_diagnosis_v1.py
+          python control/backend/tools/zel_vwap_owner_mismatch_diagnosis_v1.py --self-test
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Diagnose read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-vwap-owner-diagnosis-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_vwap_owner_mismatch_diagnosis_v1.py \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_vwap_owner_mismatch_diagnosis_v1.py' \
+              --root /home/z/z \
+              --producer /home/z/z/tools/q4r3_exact25_dedicated_shadow_producer.py \
+              --loader /home/z/z/backend/engine/q4r3_exact25_shadow_manifest_loader.py \
+              --terminal '$remote/latest.json' --stdout" > out/result.json 2>out/stderr.log
+          rc=$?
+          set -e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/result.json >/dev/null || true
+          if [ "$rc" -ne 0 ]; then
+            tail -n 120 out/stderr.log
+            test -s out/result.json && python -m json.tool out/result.json || true
+            exit 0
+          fi
+          rm -f out/stderr.log
+      - name: Verify no mutation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/result.json').read_text())
+          assert r['canonical_mutated'] is False
+          assert r['registry_mutated'] is False
+          assert r['runtime_mutated'] is False
+          assert r['formal_ledger_mutated'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          print({'state':r['state'],'cause':r['cause'],'active_candidates':r['active_candidate_count'],'mismatches':r['mismatch_count']})
+          PY
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-vwap-owner-mismatch-diagnosis-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

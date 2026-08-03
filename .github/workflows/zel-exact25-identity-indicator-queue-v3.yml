@@ -1,0 +1,177 @@
+name: ZEL Exact25 Identity Indicator Queue V3
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 * * * *'
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - .github/workflows/zel-exact25-identity-indicator-queue-v3.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - backend/tools/zel_exact25_identity_indicator_audit_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - backend/research/zel_alpha_unattended_champion_v2.json
+      - .github/workflows/zel-exact25-identity-indicator-queue-v3.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-exact25-identity-indicator-queue-v3-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  audit-and-plan:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Terminal identity preflight
+        run: |
+          set -euo pipefail
+          identity=control/backend/tools/zel_exact25_identity_indicator_audit_v1.py
+          source_audit=control/backend/tools/zel_exact25_source_owner_audit_v1.py
+          policy=control/backend/research/zel_exact25_identity_indicator_policy_v1.json
+          terminal=results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
+          python -m py_compile "$identity" "$source_audit"
+          python -m json.tool "$policy" >/dev/null
+          python "$identity" --policy "$policy" --self-test
+          python "$source_audit" --self-test
+          mkdir -p out/identity
+          python "$identity" --policy "$policy" --terminal "$terminal" \
+            --optimizer-policy control/backend/research/zel_alpha_unattended_champion_v2.json \
+            --out out/identity
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/identity/latest.json').read_text())
+          assert r['state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',r
+          assert r['strategy_count']==25 and r['trade_count']==1951,r
+          assert not r['quarantined_strategy_ids'],r
+          assert all(r['global_checks'].values()),r
+          alpha=next(row for row in r['strategies'] if row['strategy_id']=='alpha_combo')
+          assert alpha['authority_mode']=='SEALED_RESEARCH_AUTHORITY',alpha
+          assert alpha['optimizer_profile']=='ALPHA_TIME54_TIME60_STOP065',alpha
+          assert alpha['authority']['raw_exact25_optimizer_forbidden'] is True,alpha
+          PY
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Live registry source-owner preflight 25 of 25
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-exact25-identity-queue-v3-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' \
+              --engine /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+              --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/source_owner.json" out/identity/source_owner.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/identity/source_owner.json').read_text())
+          assert r['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',r
+          assert r['strategy_count']==25 and not r['quarantined_strategy_ids'],r
+          assert all(r['checks'].values()),r
+          assert r['canonical_mutated'] is False and r['runtime_mutated'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          PY
+      - name: Gemini selects exactly one bounded strategy-axis experiment
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          python - <<'PY'
+          import hashlib,json,os,time,urllib.request
+          from pathlib import Path
+          identity=json.loads(Path('out/identity/latest.json').read_text())
+          source=json.loads(Path('out/identity/source_owner.json').read_text())
+          queue=identity['experiment_queue'][:12]
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          constraints={'choose_from_queue_only':True,'exactly_one_strategy_axis_per_epoch':True,'one_axis_change_only':True,'entry_causal_only':True,'tested_axes_excluded':True,'sealed_alpha_global_queue_forbidden':True,'w1_select_then_freeze_w2_w3':True,'exact_source_replay_before_survivor':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED'}
+          def call(role,instruction,evidence):
+              payload={'contents':[{'parts':[{'text':'You are '+role+' for ZEL research. '+instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':1536,'responseMimeType':'application/json'}}
+              last=None
+              for model in models:
+                  try:
+                      url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
+                      req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                      with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+                      return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
+                  except Exception as exc:
+                      last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+              raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
+          evidence={'identity_receipt_sha256':identity['receipt_sha256'],'source_owner_receipt_sha256':source['receipt_sha256'],'queue':queue,'constraints':constraints}
+          designer=call('the bounded causal experiment designer','Return JSON verdict TEST/HOLD and exactly one exact queue object under selection.',evidence)
+          proposed=designer['response'].get('selection')
+          if not isinstance(proposed,dict):
+              candidates=designer['response'].get('selections') or designer['response'].get('selected_queue') or []
+              proposed=candidates[0] if candidates else {}
+          allowed={(row['strategy_id'],row['axis_id']):row for row in queue}
+          pair=(str(proposed.get('strategy_id')),str(proposed.get('axis_id')))
+          selected=dict(allowed[pair]) if pair in allowed else None
+          redteam=call('the independent overfit and lineage red-team','Return verdict ACCEPT or REJECT. Review only the single selected experiment. Reject identity ambiguity, leakage, repeated-axis mining, inadequate warmup or sample destruction.',{'identity_receipt_sha256':identity['receipt_sha256'],'source_owner_receipt_sha256':source['receipt_sha256'],'selected_experiment':selected,'constraints':constraints})
+          verdict=str(redteam['response'].get('verdict') or '').upper()
+          accepted=designer['response'].get('verdict')=='TEST' and selected is not None and verdict in {'ACCEPT','APPROVED'}
+          result={'schema_version':'zel.exact25.identity_indicator.gemini_queue.v3','state':'PASS_GEMINI_SINGLE_AXIS_QUEUE_ACCEPTED' if accepted else 'HOLD_GEMINI_QUEUE_REJECTED','identity_receipt_sha256':identity['receipt_sha256'],'source_owner_receipt_sha256':source['receipt_sha256'],'designer':designer,'redteam':redteam,'selected_experiment':selected if accepted else None,'experiment_count':1 if accepted else 0,'raw_trade_rows_sent':False,'raw_prices_sent':False,'private_code_sent':False,'credentials_sent':False,'canonical_mutated':False,'registry_mutated':False,'runtime_mutated':False,'formal_ledger_mutated':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          result['receipt_sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/identity/gemini_queue.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          assert accepted,result
+          assert result['experiment_count']==1,result
+          print({'state':result['state'],'selected':(selected['strategy_id'],selected['axis_id'])})
+          PY
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-identity-indicator-queue-v3-${{ github.run_id }}
+          path: out/identity
+          if-no-files-found: error
+          retention-days: 30

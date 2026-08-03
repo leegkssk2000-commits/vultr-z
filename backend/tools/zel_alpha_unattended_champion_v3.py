@@ -39,6 +39,29 @@ def require_identity(path: Path) -> dict[str, Any]:
     return receipt
 
 
+def validate_restored_state(candidate: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+    if candidate.get("schema_version") != v2.STATE_SCHEMA:
+        raise RuntimeError("RESTORED_STATE_SCHEMA_MISMATCH")
+    if candidate.get("data_fingerprint") != fingerprint:
+        raise RuntimeError("RESTORED_STATE_FINGERPRINT_MISMATCH")
+    expected = str(candidate.get("receipt_sha256") or "")
+    material = {key: value for key, value in candidate.items() if key != "receipt_sha256"}
+    actual = v2.stable_sha(material)
+    if not expected or expected != actual:
+        raise RuntimeError("RESTORED_STATE_RECEIPT_SHA256_MISMATCH")
+    if candidate.get("selection_authority") is not False:
+        raise RuntimeError("RESTORED_STATE_SELECTION_AUTHORITY_INVALID")
+    if candidate.get("promotion_authority") is not False:
+        raise RuntimeError("RESTORED_STATE_PROMOTION_AUTHORITY_INVALID")
+    if candidate.get("execution_authority") != "NONE":
+        raise RuntimeError("RESTORED_STATE_EXECUTION_AUTHORITY_INVALID")
+    if candidate.get("order_authority") != "BLOCKED":
+        raise RuntimeError("RESTORED_STATE_ORDER_AUTHORITY_INVALID")
+    if candidate.get("action") != "hold":
+        raise RuntimeError("RESTORED_STATE_ACTION_INVALID")
+    return candidate
+
+
 def safety_fields(identity: dict[str, Any]) -> dict[str, Any]:
     return {
         "identity_receipt_sha256": identity.get("receipt_sha256"),
@@ -112,12 +135,32 @@ def self_test() -> int:
     temp = Path("/tmp/zel-alpha-v3-identity-self-test.json")
     v2.write_json(temp, identity)
     loaded = require_identity(temp)
-    receipt = terminal_receipt(
-        {"champion_found": False, "converged": True}, "b" * 64, loaded
-    )
+    fingerprint = "b" * 64
+    state = {
+        "schema_version": v2.STATE_SCHEMA,
+        "data_fingerprint": fingerprint,
+        "champion_found": False,
+        "converged": True,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "action": "hold",
+    }
+    state["receipt_sha256"] = v2.stable_sha(state)
+    validated = validate_restored_state(state, fingerprint)
+    receipt = terminal_receipt(validated, fingerprint, loaded)
     assert receipt["state"] == "WAIT_NEW_DATA_FINGERPRINT_ALPHA_CHAMPION_NOT_FOUND"
     assert receipt["canonical_mutated"] is False
     assert receipt["raw_canonical_exact25_used_as_control"] is False
+    corrupted = dict(state)
+    corrupted["converged"] = False
+    try:
+        validate_restored_state(corrupted, fingerprint)
+    except RuntimeError as exc:
+        assert str(exc) == "RESTORED_STATE_RECEIPT_SHA256_MISMATCH"
+    else:
+        raise AssertionError("CORRUPTED_STATE_ACCEPTED")
     temp.unlink(missing_ok=True)
     print("PASS")
     return 0
@@ -159,11 +202,7 @@ def main() -> int:
     previous: dict[str, Any] | None = None
     if args.previous_state and args.previous_state.is_file():
         candidate = v2.read_json(args.previous_state)
-        if (
-            candidate.get("schema_version") == v2.STATE_SCHEMA
-            and candidate.get("data_fingerprint") == fingerprint
-        ):
-            previous = candidate
+        previous = validate_restored_state(candidate, fingerprint)
     args.out.resolve().mkdir(parents=True, exist_ok=True)
     if previous and (
         previous.get("champion_found") is True or previous.get("converged") is True

@@ -1,0 +1,83 @@
+name: ZEL Alpha Autonomy Hardening Patch Once
+
+on:
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2]
+    paths:
+      - .github/workflows/zel-alpha-autonomy-hardening-patch-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - name: Apply deterministic hardening patch
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          tool=Path('backend/tools/zel_alpha_unattended_champion_v2.py')
+          text=tool.read_text()
+          old='if previous and previous.get("champion_found") is True:\n        receipt = {'
+          new='if previous and (previous.get("champion_found") is True or previous.get("converged") is True):\n        terminal_champion = previous.get("champion_found") is True\n        receipt = {'
+          assert old in text
+          text=text.replace(old,new,1)
+          text=text.replace(
+            '"state": "PASS_ALPHA_CHAMPION_ALREADY_SEALED_FOR_RESEARCH_HOLDBACK",',
+            '"state": ("PASS_ALPHA_CHAMPION_ALREADY_SEALED_FOR_RESEARCH_HOLDBACK" if terminal_champion else "WAIT_NEW_DATA_FINGERPRINT_ALPHA_CHAMPION_NOT_FOUND"),',
+            1,
+          )
+          text=text.replace('"champion_found": True,\n            "next": "WAIT_SEALED_HOLDBACK_AND_NEW_FORWARD_CONFIRMATION",',
+            '"champion_found": terminal_champion,\n            "converged": bool(previous.get("converged")),\n            "next": ("WAIT_SEALED_HOLDBACK_AND_NEW_FORWARD_CONFIRMATION" if terminal_champion else "WAIT_NEW_IMMUTABLE_DATA_THEN_RESET_SEARCH"),',1)
+          marker='''            **safety,\n        }\n        write_json(out / "latest.json", receipt)'''
+          replacement='''            **safety,\n            "raw_canonical_exact25_used_as_control": False,\n            "time54_time60_authority_restored": True,\n            "canonical_mutated": False,\n            "registry_mutated": False,\n            "runtime_mutated": False,\n            "formal_ledger_mutated": False,\n            "selection_authority": False,\n            "promotion_authority": False,\n            "shadow_start_allowed": False,\n            "paper_allowed": False,\n            "live_allowed": False,\n            "execution_authority": "NONE",\n            "order_authority": "BLOCKED",\n            "action": "hold",\n        }\n        write_json(out / "latest.json", receipt)'''
+          assert marker in text
+          text=text.replace(marker,replacement,1)
+          text=text.replace('print(json.dumps({"state": receipt["state"], "champion_found": True}, sort_keys=True))',
+                            'print(json.dumps({"state": receipt["state"], "champion_found": terminal_champion, "converged": bool(previous.get("converged"))}, sort_keys=True))',1)
+          tool.write_text(text)
+
+          workflow=Path('.github/workflows/zel-alpha-unattended-champion-v2.yml')
+          y=workflow.read_text()
+          trigger='''      - backend/research/zel_alpha_unattended_champion_v2.json\n      - backend/tools/zel_alpha_unattended_champion_v2.py'''
+          trigger_new='''      - backend/research/zel_alpha_unattended_champion_v2.json\n      - backend/research/zel_exact25_identity_indicator_policy_v1.json\n      - backend/tools/zel_exact25_identity_indicator_audit_v1.py\n      - backend/tools/zel_alpha_unattended_champion_v2.py'''
+          assert y.count(trigger) == 2
+          y=y.replace(trigger,trigger_new)
+          compile_old='''          python -m py_compile \\\n            backend/tools/zel_alpha_combo_validation_chain_v1.py \\\n            backend/tools/zel_alpha_unattended_champion_v2.py'''
+          compile_new='''          python -m py_compile \\\n            backend/tools/zel_alpha_combo_validation_chain_v1.py \\\n            backend/tools/zel_exact25_identity_indicator_audit_v1.py \\\n            backend/tools/zel_alpha_unattended_champion_v2.py'''
+          assert compile_old in y
+          y=y.replace(compile_old,compile_new,1)
+          json_old='''          python -m json.tool backend/research/zel_alpha_unattended_champion_v2.json >/dev/null'''
+          json_new='''          python -m json.tool backend/research/zel_alpha_unattended_champion_v2.json >/dev/null\n          python -m json.tool backend/research/zel_exact25_identity_indicator_policy_v1.json >/dev/null\n          PYTHONPATH=backend/tools python backend/tools/zel_exact25_identity_indicator_audit_v1.py \\\n            --policy backend/research/zel_exact25_identity_indicator_policy_v1.json \\\n            --self-test'''
+          assert json_old in y
+          y=y.replace(json_old,json_new,1)
+          checkout_marker='''      - name: Checkout immutable Data B\n        uses: actions/checkout@v4'''
+          checkout_insert='''      - name: Checkout immutable Exact25 terminal receipts\n        uses: actions/checkout@v4\n        with:\n          ref: zel-data-expansion-results-v1\n          path: identity-results\n          persist-credentials: false\n\n      - name: Checkout immutable Data B\n        uses: actions/checkout@v4'''
+          assert checkout_marker in y
+          y=y.replace(checkout_marker,checkout_insert,1)
+          setup_marker='''      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'\n\n      - name: Install replay dependencies'''
+          preflight='''      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'\n\n      - name: Hard preflight Exact25 strategy identity\n        run: |\n          set -euo pipefail\n          terminal=identity-results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json\n          test -s "$terminal"\n          mkdir -p out/identity-preflight\n          python control/backend/tools/zel_exact25_identity_indicator_audit_v1.py \\\n            --policy control/backend/research/zel_exact25_identity_indicator_policy_v1.json \\\n            --terminal "$terminal" \\\n            --optimizer-policy control/backend/research/zel_alpha_unattended_champion_v2.json \\\n            --out out/identity-preflight\n          python - <<'PY2'\n          import json\n          from pathlib import Path\n          r=json.loads(Path('out/identity-preflight/latest.json').read_text())\n          assert r['state']=='PASS_EXACT25_IDENTITY_AND_INDICATOR_QUEUE_READY',r\n          assert r['strategy_count']==25 and r['trade_count']==1951,r\n          assert not r['quarantined_strategy_ids'],r\n          alpha=next(row for row in r['strategies'] if row['strategy_id']=='alpha_combo')\n          assert alpha['authority_mode']=='SEALED_RESEARCH_AUTHORITY',alpha\n          assert alpha['optimizer_profile']=='ALPHA_TIME54_TIME60_STOP065',alpha\n          assert alpha['authority']['raw_exact25_optimizer_forbidden'] is True,alpha\n          PY2\n\n      - name: Install replay dependencies'''
+          assert setup_marker in y
+          y=y.replace(setup_marker,preflight,1)
+          workflow.write_text(y)
+          PY
+          rm .github/workflows/zel-alpha-autonomy-hardening-patch-once.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/tools/zel_alpha_unattended_champion_v2.py \
+                  .github/workflows/zel-alpha-unattended-champion-v2.yml \
+                  .github/workflows/zel-alpha-autonomy-hardening-patch-once.yml
+          git diff --cached --check
+          git commit -m 'fix(zel): hard-gate unattended Alpha on Exact25 identity'
+          git push origin HEAD:${GITHUB_HEAD_REF}

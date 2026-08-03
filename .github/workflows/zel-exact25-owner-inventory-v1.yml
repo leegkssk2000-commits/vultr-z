@@ -57,7 +57,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Enumerate all owner bindings read-only
+      - name: Audit canonical owner manifest read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -65,7 +65,8 @@ jobs:
           set -euo pipefail
           test -n "$VPS_USER"
           remote="/tmp/zel-exact25-owner-inventory-${GITHUB_RUN_ID}"
-          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          manifest=/home/z/z/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "test -s '$manifest'; mkdir -p '$remote'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             control/backend/tools/zel_exact25_owner_inventory_v1.py \
             results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
@@ -74,7 +75,7 @@ jobs:
           timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
             "/home/z/z/.venv/bin/python '$remote/zel_exact25_owner_inventory_v1.py' \
-              --root /home/z/z --terminal '$remote/latest.json' --stdout" \
+              --root /home/z/z --terminal '$remote/latest.json' --manifest '$manifest' --stdout" \
             > out/result.json 2>out/stderr.log
           rc=$?
           set -e
@@ -98,7 +99,7 @@ jobs:
               'strategies':r['strategy_count'],
               'quarantine_count':r['quarantine_count'],
               'quarantined':r['quarantined_strategy_ids'],
-              'candidate_json_files':r['candidate_json_file_count'],
+              'manifest_sha256':r['canonical_manifest_sha256'],
               'receipt_sha256':r['receipt_sha256'],
           })
           if r['state']!='PASS_EXACT25_OWNER_INVENTORY':

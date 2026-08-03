@@ -1,0 +1,128 @@
+name: ZEL Exact25 Common Mode Router Exec V2
+
+on:
+  pull_request:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+    paths:
+      - backend/research/zel_exact25_common_mode_router_v1.json
+      - backend/tools/zel_exact25_common_mode_router_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-exact25-common-mode-router-exec-v2.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-exact25-common-mode-router-exec-v2-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile control/backend/tools/zel_exact25_common_mode_router_v1.py control/backend/tools/zel_exact25_source_owner_audit_v1.py
+          python -m json.tool control/backend/research/zel_exact25_common_mode_router_v1.json >/dev/null
+          python control/backend/tools/zel_exact25_common_mode_router_v1.py --self-test
+          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run staged remote diagnostics
+        id: remote
+        continue-on-error: true
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -u
+          remote="/tmp/zel-common-mode-router-exec-v2-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'" || exit 90
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            control/backend/tools/zel_exact25_common_mode_router_v1.py \
+            control/backend/research/zel_exact25_common_mode_router_v1.json \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/" || exit 91
+          timeout 1800s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "set +e; engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
+             /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json' >'$remote/source.stdout' 2>'$remote/source.stderr'; source_rc=\$?; echo \$source_rc > '$remote/source.rc'; \
+             if [ \$source_rc -eq 0 ]; then /home/z/z/.venv/bin/python '$remote/zel_exact25_common_mode_router_v1.py' --policy '$remote/zel_exact25_common_mode_router_v1.json' --terminal-root /var/lib/zel-research/data-b-1m-v2 --out '$remote/router.json' >'$remote/router.stdout' 2>'$remote/router.stderr'; router_rc=\$?; else router_rc=99; echo 'SOURCE_GATE_FAILED' > '$remote/router.stderr'; : > '$remote/router.stdout'; fi; echo \$router_rc > '$remote/router.rc'; exit 0" || exit 92
+          for name in source_owner.json source.rc source.stdout source.stderr router.json router.rc router.stdout router.stderr; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/$name" "out/$name" 2>/dev/null || true
+          done
+      - name: Verify staged receipts
+        run: |
+          set -euo pipefail
+          source_rc=$(cat out/source.rc 2>/dev/null || echo 98)
+          router_rc=$(cat out/router.rc 2>/dev/null || echo 98)
+          if [ "$source_rc" -ne 0 ]; then
+            echo "SOURCE_RC=$source_rc"
+            cat out/source.stdout 2>/dev/null || true
+            cat out/source.stderr 2>/dev/null || true
+            test -s out/source_owner.json && python -m json.tool out/source_owner.json || true
+            exit "$source_rc"
+          fi
+          python -m json.tool out/source_owner.json >/dev/null
+          if [ "$router_rc" -ne 0 ]; then
+            echo "ROUTER_RC=$router_rc"
+            cat out/router.stdout 2>/dev/null || true
+            cat out/router.stderr 2>/dev/null || true
+            test -s out/router.json && python -m json.tool out/router.json || true
+            exit "$router_rc"
+          fi
+          python -m json.tool out/router.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('out/source_owner.json').read_text()); r=json.loads(Path('out/router.json').read_text())
+          assert s['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT' and s['strategy_count']==25 and not s['quarantined_strategy_ids'],s
+          assert r['state']=='PASS_COMMON_MODE_ROUTE_SELECTED' and r['strategy_count']==25 and r['trade_count']==1951,r
+          assert r['diagnostic_oracles_are_ceiling_only'] is True and r['oracle_promotion_forbidden'] is True,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'route':r['selected_route'],'evidence':r['selected_route_evidence']})
+          PY
+      - name: Cleanup remote and key
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-common-mode-router-exec-v2-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

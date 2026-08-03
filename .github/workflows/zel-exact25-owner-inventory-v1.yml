@@ -1,0 +1,118 @@
+name: ZEL Exact25 Owner Inventory V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/tools/zel_exact25_owner_inventory_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - backend/research/zel_exact25_identity_indicator_policy_v1.json
+      - .github/workflows/zel-exact25-owner-inventory-v1.yml
+  push:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-exact25-owner-inventory-v1-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile control/backend/tools/zel_exact25_owner_inventory_v1.py
+          python control/backend/tools/zel_exact25_owner_inventory_v1.py --self-test
+          test -s results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Enumerate all owner bindings read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-exact25-owner-inventory-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_owner_inventory_v1.py \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          timeout 1200s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_exact25_owner_inventory_v1.py' \
+              --root /home/z/z --terminal '$remote/latest.json' --stdout" \
+            > out/result.json 2>out/stderr.log
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > out/command_rc.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/result.json >/dev/null
+      - name: Verify fail-closed inventory
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/result.json').read_text())
+          assert r['strategy_count']==25,r
+          assert r['canonical_mutated'] is False and r['registry_mutated'] is False,r
+          assert r['runtime_mutated'] is False and r['formal_ledger_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({
+              'state':r['state'],
+              'strategies':r['strategy_count'],
+              'quarantine_count':r['quarantine_count'],
+              'quarantined':r['quarantined_strategy_ids'],
+              'candidate_json_files':r['candidate_json_file_count'],
+              'receipt_sha256':r['receipt_sha256'],
+          })
+          if r['state']!='PASS_EXACT25_OWNER_INVENTORY':
+              raise SystemExit(1)
+          assert not r['quarantined_strategy_ids'],r
+          assert all(r['checks'].values()),r
+          PY
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-owner-inventory-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

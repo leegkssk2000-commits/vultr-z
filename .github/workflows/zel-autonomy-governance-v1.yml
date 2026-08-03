@@ -1,0 +1,56 @@
+name: ZEL Autonomy Governance V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_autonomy_governance_v1.json
+      - backend/tools/zel_autonomy_governance_v1.py
+      - .github/workflows/zel-autonomy-governance-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_autonomy_governance_v1.json
+      - backend/tools/zel_autonomy_governance_v1.py
+      - .github/workflows/zel-autonomy-governance-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-autonomy-governance-v1-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate policy and fail-closed contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_autonomy_governance_v1.py
+          python -m json.tool backend/research/zel_autonomy_governance_v1.json >/dev/null
+          python backend/tools/zel_autonomy_governance_v1.py --self-test
+          python backend/tools/zel_autonomy_governance_v1.py \
+            --policy backend/research/zel_autonomy_governance_v1.json \
+            --out /tmp/zel-autonomy-governance-receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/zel-autonomy-governance-receipt.json'))
+          assert r['state']=='PASS_AUTONOMY_GOVERNANCE',r
+          assert r['error_count']==0,r
+          assert r['selection_authority'] is False,r
+          assert r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE',r
+          assert r['order_authority']=='BLOCKED',r
+          assert r['action']=='hold',r
+          PY

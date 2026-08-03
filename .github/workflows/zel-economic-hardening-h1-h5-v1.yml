@@ -1,0 +1,125 @@
+name: ZEL Economic Hardening H1-H5 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_economic_hardening_gate_v1.py
+      - backend/research/zel_economic_hardening_policy_v1.json
+      - backend/research/zel_economic_hardening_fixture_v1.json
+      - backend/research/zel_economic_hardening_input_schema_v1.json
+      - .github/workflows/zel-economic-hardening-h1-h5-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-economic-hardening-h1-h5-v1-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic-installation-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate minimal research-only patch scope
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" | tee changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed={
+            'backend/tools/zel_economic_hardening_gate_v1.py',
+            'backend/research/zel_economic_hardening_policy_v1.json',
+            'backend/research/zel_economic_hardening_fixture_v1.json',
+            'backend/research/zel_economic_hardening_input_schema_v1.json',
+            '.github/workflows/zel-economic-hardening-h1-h5-v1.yml',
+          }
+          changed={line.strip() for line in Path('changed.txt').read_text().splitlines() if line.strip()}
+          assert changed and changed <= allowed,(changed,allowed)
+          forbidden=('runtime/','registry/','formal_ledger','shadow/','paper/','live/','order')
+          assert not any(any(token in path.lower() for token in forbidden) for path in changed),changed
+          print({'changed':sorted(changed),'protected_mutations':0})
+          PY
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/tools/zel_economic_hardening_gate_v1.py
+          python backend/tools/zel_economic_hardening_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_economic_hardening_policy_v1.json >/dev/null
+          python -m json.tool backend/research/zel_economic_hardening_fixture_v1.json >/dev/null
+          python -m json.tool backend/research/zel_economic_hardening_input_schema_v1.json >/dev/null
+      - name: Generate immutable H1-H5 fixture receipt
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_economic_hardening_gate_v1.py \
+            --input backend/research/zel_economic_hardening_fixture_v1.json \
+            --policy backend/research/zel_economic_hardening_policy_v1.json \
+            --now 2026-08-03T20:38:00+02:00 \
+            --artifact-root out \
+            --out zel_economic_hardening_h1_h5_receipt_v1.json
+          sha256sum out/zel_economic_hardening_h1_h5_receipt_v1.json | tee out/artifact.sha256
+      - name: Verify deterministic control states and safety
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/zel_economic_hardening_h1_h5_receipt_v1.json').read_text())
+          assert r['state']=='PASS_H1_H5_CONTROL_ENGINE_EVALUATION',r
+          assert r['control_count']==5,r
+          assert r['controls']['H1']['state']=='REJECT_FAMILY',r['controls']['H1']
+          assert all(r['controls']['H1']['generation_sequence_complete_by_axis'].values()),r['controls']['H1']
+          assert r['controls']['H2']['state']=='PASS_ARCHETYPE_INTAKE',r['controls']['H2']
+          assert r['controls']['H2']['registry_count']==2,r['controls']['H2']
+          assert r['controls']['H3']['state']=='PASS_H3_ENGINE_FIXTURE_ONLY',r['controls']['H3']
+          assert r['controls']['H3']['operational_calibration_pass'] is False,r['controls']['H3']
+          assert r['controls']['H3']['plus_one_bar_stressed_expectancy_R']==0.05,r['controls']['H3']
+          assert r['controls']['H4']['state']=='PASS_PLACEBO_NEGATIVE_CONTROLS',r['controls']['H4']
+          assert r['controls']['H4']['candidate_trade_count']==100,r['controls']['H4']
+          assert r['controls']['H5']['state']=='PASS_CONCENTRATION_FRAGILITY',r['controls']['H5']
+          assert r['controls']['H5']['expected_leave_one_group_out_count']==12,r['controls']['H5']
+          assert r['controls']['H5']['observed_leave_one_group_out_count']==12,r['controls']['H5']
+          assert not r['controls']['H5']['missing_leave_one_group_out_pairs'],r['controls']['H5']
+          for row in [r,*r['controls'].values()]:
+              assert row['selection_authority'] is False,row
+              assert row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE',row
+              assert row['order_authority']=='BLOCKED',row
+              assert row['action']=='hold',row
+              assert row['canonical_mutated'] is False,row
+              assert row['registry_mutated'] is False,row
+              assert row['runtime_mutated'] is False,row
+              assert row['formal_ledger_mutated'] is False,row
+              assert row['shadow_mutated'] is False,row
+              assert row['paper_mutated'] is False,row
+              assert row['live_mutated'] is False,row
+              assert row['receipt_sha256'],row
+          assert r['heavy_replay_started'] is False,r
+          print({
+            'state':r['state'],
+            'H1':r['controls']['H1']['state'],
+            'H2':r['controls']['H2']['state'],
+            'H3':r['controls']['H3']['state'],
+            'H4':r['controls']['H4']['state'],
+            'H5':r['controls']['H5']['state'],
+            'protected_mutations':0,
+            'live_order':'BLOCKED',
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-economic-hardening-h1-h5-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

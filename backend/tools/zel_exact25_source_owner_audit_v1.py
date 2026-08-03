@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -59,6 +60,16 @@ def owner_fields(owner: Any) -> dict[str, Any]:
     }
 
 
+def ast_has_callable(path: Path, callable_name: str) -> bool:
+    if not callable_name:
+        return True
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == callable_name:
+            return True
+    return False
+
+
 def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, Any]:
     engine = load_engine(engine_path)
     producer = engine.import_producer(source_root)
@@ -100,19 +111,12 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
             blockers.append("TERMINAL_SCORECARD_MISSING")
         if actual_sha != expected_sha:
             blockers.append("OWNER_SOURCE_SHA_MISMATCH")
-        if fields["callable_name"]:
+        if fields["callable_name"] and resolved.is_file():
             try:
-                spec = importlib.util.spec_from_file_location(
-                    f"zel_owner_{strategy_id}", resolved
-                )
-                if spec is None or spec.loader is None:
-                    raise RuntimeError("SPEC")
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                if not callable(getattr(module, fields["callable_name"], None)):
+                if not ast_has_callable(resolved, fields["callable_name"]):
                     blockers.append("OWNER_CALLABLE_MISSING")
-            except Exception as exc:
-                blockers.append(f"OWNER_IMPORT_OR_CALLABLE_ERROR:{type(exc).__name__}")
+            except (OSError, SyntaxError, UnicodeError) as exc:
+                blockers.append(f"OWNER_AST_ERROR:{type(exc).__name__}")
         identity = {
             "strategy_id": strategy_id,
             "owner_path": str(resolved),
@@ -172,6 +176,11 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
 def self_test() -> int:
     sample = {"a": 1, "b": [2, 3]}
     assert stable_sha(sample) == stable_sha({"b": [2, 3], "a": 1})
+    source = Path("/tmp/zel-source-owner-audit-self-test.py")
+    source.write_text("def strategy(frame, state=None, risk_action='hold'):\n    return {'action':'hold'}\n", encoding="utf-8")
+    assert ast_has_callable(source, "strategy") is True
+    assert ast_has_callable(source, "missing") is False
+    source.unlink(missing_ok=True)
     print("PASS")
     return 0
 

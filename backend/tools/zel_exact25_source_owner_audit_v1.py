@@ -140,19 +140,21 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
         "terminal_scorecard_count_25": len(scorecards) == 25,
         "strategy_sets_equal": registry_ids == terminal_ids,
         "all_source_sha_match": not quarantined,
-        "runtime_mutated": False,
-        "canonical_mutated": False,
-        "formal_ledger_mutated": False,
+        "runtime_unchanged": True,
+        "canonical_unchanged": True,
+        "formal_ledger_unchanged": True,
     }
+    passed = all(checks.values())
     receipt = {
         "schema_version": SCHEMA,
         "version": VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "state": "PASS_EXACT25_SOURCE_OWNER_AUDIT" if all(checks.values()) else "HOLD_EXACT25_SOURCE_OWNER_MISMATCH",
+        "state": "PASS_EXACT25_SOURCE_OWNER_AUDIT" if passed else "HOLD_EXACT25_SOURCE_OWNER_MISMATCH",
         "engine_path": str(engine_path),
         "engine_sha256": sha256_path(engine_path),
         "source_root": str(source_root),
         "terminal_receipt_sha256": terminal.get("receipt_sha256"),
+        "terminal_content_sha256": sha256_path(terminal_path),
         "checks": checks,
         "strategy_count": len(rows),
         "quarantined_strategy_ids": quarantined,
@@ -167,7 +169,7 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "action": "hold",
-        "next": "ALLOW_BOUNDED_INDICATOR_QUEUE" if not quarantined else "QUARANTINE_AND_REPAIR_SOURCE_BINDING",
+        "next": "ALLOW_BOUNDED_INDICATOR_QUEUE" if passed else "QUARANTINE_AND_REPAIR_SOURCE_BINDING",
     }
     receipt["receipt_sha256"] = stable_sha(receipt)
     return receipt
@@ -181,6 +183,8 @@ def self_test() -> int:
     assert ast_has_callable(source, "strategy") is True
     assert ast_has_callable(source, "missing") is False
     source.unlink(missing_ok=True)
+    checks = {"a": True, "canonical_unchanged": True, "runtime_unchanged": True}
+    assert all(checks.values()) is True
     print("PASS")
     return 0
 

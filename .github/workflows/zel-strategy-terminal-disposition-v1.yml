@@ -1,0 +1,71 @@
+name: ZEL Strategy Terminal Disposition V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_strategy_terminal_disposition_v1.json
+      - backend/tools/zel_strategy_terminal_disposition_v1.py
+      - .github/workflows/zel-strategy-terminal-disposition-v1.yml
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_strategy_terminal_disposition_v1.json
+      - backend/tools/zel_strategy_terminal_disposition_v1.py
+      - .github/workflows/zel-strategy-terminal-disposition-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-strategy-terminal-disposition-v1-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Classify Exact25 without mutation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile control/backend/tools/zel_strategy_terminal_disposition_v1.py
+          python -m json.tool control/backend/research/zel_strategy_terminal_disposition_v1.json >/dev/null
+          python control/backend/tools/zel_strategy_terminal_disposition_v1.py --self-test
+          python control/backend/tools/zel_strategy_terminal_disposition_v1.py \
+            --policy control/backend/research/zel_strategy_terminal_disposition_v1.json \
+            --terminal results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            --out out/latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/latest.json'))
+          assert r['state']=='PASS_PROVISIONAL_25_STRATEGY_DISPOSITION',r
+          assert r['strategy_count']==25,r
+          assert r['closed_trade_count']==1951,r
+          assert r['final'] is False,r
+          assert len(r['pending_strategy_ids'])==5,r
+          assert r['canonical_mutated'] is False and r['runtime_mutated'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-strategy-terminal-disposition-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

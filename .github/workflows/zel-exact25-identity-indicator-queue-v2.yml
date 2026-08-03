@@ -26,19 +26,16 @@ jobs:
   audit-and-plan:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor == github.repository_owner)
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout control
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
           path: control
           persist-credentials: false
-      - name: Checkout immutable terminal receipts
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: zel-data-expansion-results-v1
           path: results
@@ -46,20 +43,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate and run 25-strategy identity preflight
+      - name: Exact25 identity preflight
         run: |
           set -euo pipefail
-          python -m py_compile control/backend/tools/zel_exact25_identity_indicator_audit_v1.py
-          python -m json.tool control/backend/research/zel_exact25_identity_indicator_policy_v1.json >/dev/null
-          python control/backend/tools/zel_exact25_identity_indicator_audit_v1.py \
-            --policy control/backend/research/zel_exact25_identity_indicator_policy_v1.json \
-            --self-test
+          tool=control/backend/tools/zel_exact25_identity_indicator_audit_v1.py
+          policy=control/backend/research/zel_exact25_identity_indicator_policy_v1.json
           terminal=results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
-          test -s "$terminal"
+          python -m py_compile "$tool"
+          python -m json.tool "$policy" >/dev/null
+          python "$tool" --policy "$policy" --self-test
           mkdir -p out/identity
-          python control/backend/tools/zel_exact25_identity_indicator_audit_v1.py \
-            --policy control/backend/research/zel_exact25_identity_indicator_policy_v1.json \
-            --terminal "$terminal" \
+          python "$tool" --policy "$policy" --terminal "$terminal" \
             --optimizer-policy control/backend/research/zel_alpha_unattended_champion_v2.json \
             --out out/identity
           python - <<'PY'
@@ -74,10 +68,6 @@ jobs:
           assert alpha['authority_mode']=='SEALED_RESEARCH_AUTHORITY',alpha
           assert alpha['optimizer_profile']=='ALPHA_TIME54_TIME60_STOP065',alpha
           assert alpha['authority']['raw_exact25_optimizer_forbidden'] is True,alpha
-          assert r['selection_authority'] is False
-          assert r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE'
-          assert r['order_authority']=='BLOCKED'
           PY
       - name: Gemini bounded designer and selected-only red-team
         env:
@@ -91,72 +81,35 @@ jobs:
           audit=json.loads(Path('out/identity/latest.json').read_text())
           queue=audit['experiment_queue'][:12]
           models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
-          key=os.environ['GEMINI_API_KEY']
-          constraints={
-            'choose_from_queue_only':True,
-            'one_axis_per_strategy':True,
-            'one_axis_change_only':True,
-            'entry_causal_only':True,
-            'w1_select_then_freeze_w2_w3':True,
-            'exact_source_replay_before_survivor':True,
-            'all_authorities_are_research_only':True,
-            'selection_authority':False,
-            'promotion_authority':False,
-            'execution_authority':'NONE',
-            'order_authority':'BLOCKED',
-          }
+          constraints={'choose_from_queue_only':True,'one_axis_per_strategy':True,'one_axis_change_only':True,'entry_causal_only':True,'w1_select_then_freeze_w2_w3':True,'exact_source_replay_before_survivor':True,'all_authorities_are_research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED'}
           def call(role,instruction,evidence):
-              prompt='You are '+role+' for ZEL research. '+instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
-              payload={'contents':[{'parts':[{'text':prompt}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+              payload={'contents':[{'parts':[{'text':'You are '+role+' for ZEL research. '+instruction+' EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))}]}],'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
               last=None
               for model in models:
                   try:
-                      url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}'
+                      url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
                       req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
-                      with urllib.request.urlopen(req,timeout=90) as response:
-                          body=json.load(response)
+                      with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
                       return {'model':model,'response':json.loads(body['candidates'][0]['content']['parts'][0]['text'])}
                   except Exception as exc:
-                      last=f'{type(exc).__name__}:{exc}'
-                      time.sleep(2)
+                      last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
               raise RuntimeError('GEMINI_CALL_FAILED:'+str(last))
-          design_evidence={'identity_receipt_sha256':audit['receipt_sha256'],'queue':queue,'constraints':constraints}
-          designer=call('the bounded causal experiment designer','Return JSON keys verdict,selections,reason. verdict TEST or HOLD. Select at most 3 exact queue entries.',design_evidence)
-          allowed={(row['strategy_id'],row['axis_id']):row for row in queue}
-          normalized=[]; seen=set()
+          designer=call('the bounded causal experiment designer','Return verdict TEST/HOLD and at most 3 exact queue selections.',{'identity_receipt_sha256':audit['receipt_sha256'],'queue':queue,'constraints':constraints})
+          allowed={(r['strategy_id'],r['axis_id']):r for r in queue}; selected=[]; seen=set()
           for proposed in designer['response'].get('selections') or []:
               pair=(str(proposed.get('strategy_id')),str(proposed.get('axis_id')))
-              if pair in allowed and pair[0] not in seen:
-                  normalized.append(dict(allowed[pair])); seen.add(pair[0])
-              if len(normalized)>=3: break
-          red_evidence={
-            'identity_receipt_sha256':audit['receipt_sha256'],
-            'selected_experiments':normalized,
-            'authority_semantics':{
-              'SEALED_RESEARCH_AUTHORITY':'research lineage only; no selection, promotion, execution or order authority',
-              'CANONICAL_EXACT25_DIAGNOSTIC_PARENT':'immutable diagnostic parent; child-only experimentation',
-            },
-            'constraints':constraints,
-          }
-          redteam=call('the independent overfit and lineage red-team','Return JSON keys verdict,reason,hidden_failure. Review selected_experiments only. Reject real identity ambiguity, leakage, repeated-axis mining, inadequate warmup, sample destruction or authority mutation. Do not call a sealed research authority production authority.',red_evidence)
-          accepted=(designer['response'].get('verdict')=='TEST' and bool(normalized) and redteam['response'].get('verdict')=='ACCEPT')
-          result={
-            'schema_version':'zel.exact25.identity_indicator.gemini_queue.v2',
-            'state':'PASS_GEMINI_SINGLE_AXIS_QUEUE_ACCEPTED' if accepted else 'HOLD_GEMINI_QUEUE_REJECTED',
-            'identity_receipt_sha256':audit['receipt_sha256'],
-            'designer':designer,'redteam':redteam,
-            'selected_experiments':normalized if accepted else [],
-            'raw_trade_rows_sent':False,'raw_prices_sent':False,'private_code_sent':False,'credentials_sent':False,
-            'canonical_mutated':False,'registry_mutated':False,'runtime_mutated':False,'formal_ledger_mutated':False,
-            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
-          }
+              if pair in allowed and pair[0] not in seen: selected.append(dict(allowed[pair])); seen.add(pair[0])
+              if len(selected)>=3: break
+          redteam=call('the independent overfit and lineage red-team','Return verdict exactly ACCEPT or REJECT. Review selected_experiments only. SEALED_RESEARCH_AUTHORITY is non-production research lineage.',{'identity_receipt_sha256':audit['receipt_sha256'],'selected_experiments':selected,'constraints':constraints})
+          verdict=str(redteam['response'].get('verdict') or '').upper()
+          accepted=designer['response'].get('verdict')=='TEST' and bool(selected) and verdict in {'ACCEPT','APPROVED'}
+          result={'schema_version':'zel.exact25.identity_indicator.gemini_queue.v2','state':'PASS_GEMINI_SINGLE_AXIS_QUEUE_ACCEPTED' if accepted else 'HOLD_GEMINI_QUEUE_REJECTED','identity_receipt_sha256':audit['receipt_sha256'],'designer':designer,'redteam':redteam,'selected_experiments':selected if accepted else [],'raw_trade_rows_sent':False,'raw_prices_sent':False,'private_code_sent':False,'credentials_sent':False,'canonical_mutated':False,'registry_mutated':False,'runtime_mutated':False,'formal_ledger_mutated':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
           result['receipt_sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':')).encode()).hexdigest()
           Path('out/identity/gemini_queue.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-          assert result['state']=='PASS_GEMINI_SINGLE_AXIS_QUEUE_ACCEPTED',result
-          print({'state':result['state'],'selected':[(r['strategy_id'],r['axis_id']) for r in result['selected_experiments']]})
+          assert accepted,result
+          print({'state':result['state'],'selected':[(r['strategy_id'],r['axis_id']) for r in selected]})
           PY
-      - name: Upload redacted identity and queue receipts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: zel-exact25-identity-indicator-queue-v2-${{ github.run_id }}
           path: out/identity

@@ -1,0 +1,136 @@
+name: ZEL Exact25 Selected Indicator Screen V2
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [zel-alpha-unattended-champion-v2, master]
+    paths:
+      - backend/research/zel_exact25_selected_indicator_screen_v1.json
+      - backend/tools/zel_exact25_selected_indicator_screen_v1.py
+      - backend/tools/zel_exact25_source_owner_audit_v1.py
+      - .github/workflows/zel-exact25-selected-indicator-screen-v2.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-exact25-selected-indicator-screen-v2-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir pandas numpy
+          python -m py_compile control/backend/tools/zel_exact25_source_owner_audit_v1.py control/backend/tools/zel_exact25_selected_indicator_screen_v1.py
+          python control/backend/tools/zel_exact25_source_owner_audit_v1.py --self-test
+          python control/backend/tools/zel_exact25_selected_indicator_screen_v1.py --self-test
+          python -m json.tool control/backend/research/zel_exact25_selected_indicator_screen_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('control/backend/research/zel_exact25_selected_indicator_screen_v1.json').read_text())
+          assert p['selection_protocol']['exactly_one_strategy_axis_per_epoch'] is True,p
+          assert len(p['experiments'])==1,p
+          assert (p['experiments'][0]['strategy_id'],p['experiments'][0]['axis_id'])==('ema_ribbon_scalp','MACD_HISTOGRAM_SIGN'),p
+          PY
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run staged source gate and one-axis screen
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-selected-indicator-screen-v2-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            control/backend/tools/zel_exact25_source_owner_audit_v1.py \
+            control/backend/tools/zel_exact25_selected_indicator_screen_v1.py \
+            control/backend/research/zel_exact25_selected_indicator_screen_v1.json \
+            results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          timeout 17400s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
+             test -f \"\$engine\" || exit 91; \
+             /home/z/z/.venv/bin/python '$remote/zel_exact25_source_owner_audit_v1.py' --engine \"\$engine\" --source-root /home/z/z --terminal '$remote/latest.json' --out '$remote/source_owner.json'; \
+             source_rc=\$?; echo \$source_rc > '$remote/source_owner.rc'; \
+             if [ \$source_rc -eq 0 ]; then \
+               /home/z/z/.venv/bin/python '$remote/zel_exact25_selected_indicator_screen_v1.py' --policy '$remote/zel_exact25_selected_indicator_screen_v1.json' --engine \"\$engine\" --terminal-root /var/lib/zel-research/data-b-1m-v2 --data-root /opt/zel/historical-oos-v1 --out '$remote/screen.json'; \
+               echo \$? > '$remote/screen.rc'; \
+             else echo 99 > '$remote/screen.rc'; fi" > out/stdout.log 2>out/stderr.log
+          ssh_rc=$?
+          set -e
+          for name in source_owner.json source_owner.rc screen.json screen.rc; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/$name" "out/$name" 2>/dev/null || true
+          done
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          if [ "$ssh_rc" -ne 0 ]; then cat out/stdout.log; cat out/stderr.log; exit "$ssh_rc"; fi
+          source_rc=$(cat out/source_owner.rc)
+          if [ "$source_rc" -ne 0 ]; then python -m json.tool out/source_owner.json || true; exit "$source_rc"; fi
+          screen_rc=$(cat out/screen.rc)
+          if [ "$screen_rc" -ne 0 ]; then cat out/stdout.log; cat out/stderr.log; test -f out/screen.json && python -m json.tool out/screen.json || true; exit "$screen_rc"; fi
+          rm -f out/stdout.log out/stderr.log out/source_owner.rc out/screen.rc
+          python -m json.tool out/source_owner.json >/dev/null
+          python -m json.tool out/screen.json >/dev/null
+      - name: Verify source binding and economic gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=json.loads(Path('out/source_owner.json').read_text())
+          result=json.loads(Path('out/screen.json').read_text())
+          assert source['state']=='PASS_EXACT25_SOURCE_OWNER_AUDIT',source
+          assert source['strategy_count']==25 and not source['quarantined_strategy_ids'],source
+          assert result['state']=='PASS_SELECTED_INDICATOR_SCREEN_COMPLETE',result
+          assert result['experiment_count']==1,result
+          row=result['strategies'][0]
+          assert row['strategy_id']=='ema_ribbon_scalp' and row['axis_id']=='MACD_HISTOGRAM_SIGN',row
+          assert all(row['baseline_parity'].values()),row
+          assert row['candidate_count']>0,row
+          assert result['raw_trade_rows_published'] is False and result['raw_prices_published'] is False,result
+          assert result['source_copy_deleted'] is True,result
+          assert result['canonical_mutated'] is False and result['registry_mutated'] is False,result
+          assert result['runtime_mutated'] is False and result['formal_ledger_mutated'] is False,result
+          assert result['selection_authority'] is False and result['promotion_authority'] is False,result
+          assert result['execution_authority']=='NONE' and result['order_authority']=='BLOCKED',result
+          print({'state':result['state'],'strategy':row['strategy_id'],'axis':row['axis_id'],'survivor':row['survivor'],'selected_config':row['selected_config']})
+          PY
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-exact25-selected-indicator-screen-v2-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

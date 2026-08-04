@@ -1,0 +1,49 @@
+name: ZEL Cancel Superseded EMA Full Replays V1
+
+on:
+  pull_request:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+    paths:
+      - .github/workflows/zel-cancel-superseded-ema-full-replays-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel:
+    if: >-
+      github.event.pull_request.number == 560 &&
+      github.event.pull_request.head.ref == 'zel-causal-exit-screen-exec-v1' &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel only superseded legacy full-replay workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess,time
+          repo=os.environ['GITHUB_REPOSITORY']
+          workflow_id='326041891'
+          cancelled=[]
+          for _ in range(6):
+              raw=subprocess.check_output([
+                  'gh','api',f'repos/{repo}/actions/workflows/{workflow_id}/runs',
+                  '-f','event=pull_request','-f','branch=zel-causal-exit-screen-exec-v1','-f','per_page=20'
+              ],text=True)
+              rows=json.loads(raw).get('workflow_runs',[])
+              active=[r for r in rows if r.get('status') in {'queued','in_progress','pending','waiting','requested'}]
+              for row in active:
+                  run_id=int(row['id'])
+                  result=subprocess.run(['gh','api','--method','POST',f'repos/{repo}/actions/runs/{run_id}/cancel'],text=True,capture_output=True)
+                  if result.returncode==0:
+                      cancelled.append(run_id)
+              if not active:
+                  break
+              time.sleep(5)
+          print({'state':'PASS_SUPERSEDED_LEGACY_REPLAYS_CANCEL_REQUESTED','cancelled_run_ids':sorted(set(cancelled))})
+          PY

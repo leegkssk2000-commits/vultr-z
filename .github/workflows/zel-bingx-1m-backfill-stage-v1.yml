@@ -1,0 +1,135 @@
+name: ZEL BingX 1m Backfill Stage V1
+
+on:
+  pull_request:
+    branches: [zel-sample-expansion-coverage-audit-v1]
+    paths:
+      - backend/tools/zel_bingx_1m_backfill_stage_v1.py
+      - .github/workflows/zel-bingx-1m-backfill-stage-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-bingx-1m-backfill-stage-v1
+  cancel-in-progress: true
+
+jobs:
+  static:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bingx_1m_backfill_stage_v1.py
+          python backend/tools/zel_bingx_1m_backfill_stage_v1.py --self-test --out-dir /tmp/unused --manifest /tmp/unused.json
+          grep -q 'auth_required.*False' backend/tools/zel_bingx_1m_backfill_stage_v1.py
+          grep -q 'economics_inspected.*False' backend/tools/zel_bingx_1m_backfill_stage_v1.py
+          grep -q 'protected_mutations.*0' backend/tools/zel_bingx_1m_backfill_stage_v1.py
+          grep -q 'order_authority.*BLOCKED' backend/tools/zel_bingx_1m_backfill_stage_v1.py
+
+  stage:
+    needs: static
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out/data
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Fetch public BingX 1m history into isolated staging
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-bingx-1m-backfill-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_bingx_1m_backfill_stage_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 9600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_1m_backfill_stage_v1.py' \
+              --out-dir '$remote/data' --manifest '$remote/manifest.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/manifest.json" out/manifest.json
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/data/*.csv.gz" out/data/
+      - name: Independent exact coverage verification
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          r=json.load(open('out/manifest.json'))
+          expected_receipt=r['receipt_sha256']
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual_receipt=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual_receipt==expected_receipt,(actual_receipt,expected_receipt)
+          assert r['state']=='PASS_BINGX_1M_BACKFILL_STAGED',r
+          assert r['expected_total_rows']==r['actual_total_rows']==1080000,r
+          assert r['protected_mutations']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          assert r['economics_inspected'] is False and r['holdout_metrics_inspected'] is False,r
+          interval=60000
+          for item in r['results']:
+              path=Path('out/data')/item['file']
+              digest=hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest==item['file_sha256'],(path,digest,item['file_sha256'])
+              count=0; first=None; last=None; prior=None
+              with gzip.open(path,'rt',encoding='utf-8',newline='') as handle:
+                  for row in csv.DictReader(handle):
+                      ts=int(row['timestamp_ms'])
+                      if first is None:first=ts
+                      if prior is not None:assert ts-prior==interval,(path,prior,ts)
+                      prior=ts;last=ts;count+=1
+              assert count==item['row_count']==216000,(path,count,item['row_count'])
+              assert first==item['start_ms'],(path,first,item['start_ms'])
+              assert last==item['end_exclusive_ms']-interval,(path,last,item['end_exclusive_ms'])
+          print({'state':r['state'],'rows':r['actual_total_rows'],'dataset_sha256':r['dataset_sha256'],'receipt_sha256':r['receipt_sha256']})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-1m-backfill-stage-v1-${{ github.run_id }}
+          path: |
+            out/manifest.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

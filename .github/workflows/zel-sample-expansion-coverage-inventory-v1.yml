@@ -1,0 +1,114 @@
+name: ZEL Sample Expansion Coverage Inventory V1
+
+on:
+  pull_request:
+    branches: [zel-exact25-identity-indicator-autonomy-v1]
+    paths:
+      - backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+      - .github/workflows/zel-sample-expansion-coverage-inventory-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-sample-expansion-coverage-inventory-v1
+  cancel-in-progress: true
+
+jobs:
+  static:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+          grep -q 'economics_inspected.*False' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+          grep -q 'protected_mutations.*0' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+          grep -q 'order_authority.*BLOCKED' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+
+  inventory:
+    needs: static
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only immutable coverage inventory
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-sample-coverage-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_sample_expansion_coverage_inventory_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 9600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_sample_expansion_coverage_inventory_v1.py' \
+              --root /opt/zel/historical-oos-v1 \
+              --root /var/lib/zel-research/data-b-1m-v2 \
+              --out '$remote/coverage_inventory.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/coverage_inventory.json" out/coverage_inventory.json
+      - name: Verify immutable receipt and safety locks
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/coverage_inventory.json'))
+          expected=r['receipt_sha256']
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert r['state']=='PASS_SAMPLE_EXPANSION_COVERAGE_INVENTORY',r
+          assert r['economics_inspected'] is False,r
+          assert r['holdout_metrics_inspected'] is False,r
+          assert r['synthetic_observations_created'] is False,r
+          assert r['protected_mutations']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          assert r['total_file_count']>0,r
+          print({k:r[k] for k in ('state','root_count','total_file_count','total_bytes','receipt_sha256')})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-sample-expansion-coverage-inventory-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

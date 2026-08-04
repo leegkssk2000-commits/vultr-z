@@ -5,11 +5,13 @@ on:
     branches: [master]
     paths:
       - backend/tools/zel_bingx_real_calibration_v1.py
+      - backend/tools/zel_provision_bingx_actions_secrets_v1.py
       - .github/workflows/zel-bingx-real-calibration-v1.yml
   pull_request:
     branches: [master]
     paths:
       - backend/tools/zel_bingx_real_calibration_v1.py
+      - backend/tools/zel_provision_bingx_actions_secrets_v1.py
       - .github/workflows/zel-bingx-real-calibration-v1.yml
   workflow_dispatch:
 
@@ -25,7 +27,7 @@ jobs:
   collect:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,9 +35,10 @@ jobs:
       - name: Static fail-closed validation
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_bingx_real_calibration_v1.py
+          python -m py_compile backend/tools/zel_bingx_real_calibration_v1.py backend/tools/zel_provision_bingx_actions_secrets_v1.py
           grep -q 'order_authority.*BLOCKED' backend/tools/zel_bingx_real_calibration_v1.py
           grep -q 'write_endpoint_called.*False' backend/tools/zel_bingx_real_calibration_v1.py
+          grep -q 'secret_values_logged.*False' backend/tools/zel_provision_bingx_actions_secrets_v1.py
       - name: Prepare SSH and optional GitHub-secret credential bridge
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -52,6 +55,33 @@ jobs:
             printf 'BINGX_API_KEY=%s\nBINGX_SECRET_KEY=%s\n' "$BINGX_API_KEY" "$BINGX_SECRET_KEY" > "$GITHUB_WORKSPACE/.ssh/bingx.env"
           fi
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Attempt one-time Actions secret provisioning from VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-provision-bingx-actions-secrets-${GITHUB_RUN_ID}"
+          echo "$remote" > out/provision_remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/tools/zel_provision_bingx_actions_secrets_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "umask 077; /home/z/z/.venv/bin/python '$remote/zel_provision_bingx_actions_secrets_v1.py' --repo '${GITHUB_REPOSITORY}' --out '$remote/receipt.json'"
+          rc=$?
+          set -e
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/receipt.json" out/provision_receipt.json
+          printf '%s\n' "$rc" > out/provision_rc.txt
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/provision_receipt.json'))
+          expected=r['receipt_sha256']
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert r['secret_values_logged'] is False and r['secret_values_artifacted'] is False,r
+          print({k:r.get(k) for k in ('state','verified_secret_names','source_file_count','blocker','receipt_sha256')})
+          PY
       - name: Collect actual BingX read-only calibration inputs
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -116,7 +146,9 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          provision_remote=$(cat out/provision_remote_path.txt 2>/dev/null || true)
           test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          test -z "$provision_remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$provision_remote'" 2>/dev/null || true
           rm -f "$GITHUB_WORKSPACE/.ssh/vps_key" "$GITHUB_WORKSPACE/.ssh/bingx.env"
 
-# PR verification trigger: actual read-only calibration only; no order or state mutation.
+# One-time provisioning never logs or artifacts secret values. Live/order remain blocked.

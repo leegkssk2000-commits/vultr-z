@@ -22,6 +22,7 @@ ENDPOINT = "/openApi/swap/v3/quote/klines"
 INTERVAL = "1m"
 INTERVAL_MS = 60_000
 CHUNK_LIMIT = 1000
+SAFE_CHUNK_BARS = CHUNK_LIMIT - 1
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "LINK-USDT", "SOL-USDT", "XRP-USDT")
 START_UTC = "2026-01-28T08:30:00+00:00"
 END_EXCLUSIVE_UTC = "2026-06-27T08:30:00+00:00"
@@ -163,11 +164,11 @@ def collect_symbol(symbol: str, out_dir: Path, start_ms: int, end_exclusive_ms: 
     requests = 0
     cursor = start_ms
     while cursor < end_exclusive_ms:
-        chunk_end_exclusive = min(cursor + CHUNK_LIMIT * INTERVAL_MS, end_exclusive_ms)
-        # BingX v3 treats endTime as an exclusive upper bound for this route.
-        # Passing the last candle open skipped exactly one bar at each 1,000-bar boundary.
-        api_end_exclusive = chunk_end_exclusive
-        rows = request_chunk(symbol, cursor, api_end_exclusive)
+        # BingX can return one fewer bar when a request spans the full 1,000-bar limit.
+        # Keep each deterministic request below that boundary; filtering still enforces
+        # the exact frozen half-open interval and detects conflicting duplicates.
+        chunk_end_exclusive = min(cursor + SAFE_CHUNK_BARS * INTERVAL_MS, end_exclusive_ms)
+        rows = request_chunk(symbol, cursor, chunk_end_exclusive)
         requests += 1
         for row in rows:
             timestamp_ms = int(row["timestamp_ms"])
@@ -225,7 +226,8 @@ def main() -> int:
         assert sample["timestamp_ms"] == 1_700_000_000_000
         assert sample["high"] == "12" and sample["low"] == "9"
         assert len(list(expected_timestamps(0, 180_000))) == 3
-        assert list(expected_timestamps(0, CHUNK_LIMIT * INTERVAL_MS))[-1] == (CHUNK_LIMIT - 1) * INTERVAL_MS
+        assert SAFE_CHUNK_BARS == 999
+        assert list(expected_timestamps(0, SAFE_CHUNK_BARS * INTERVAL_MS))[-1] == (SAFE_CHUNK_BARS - 1) * INTERVAL_MS
         print("PASS")
         return 0
 
@@ -247,6 +249,7 @@ def main() -> int:
             "auth_required": False,
             "interval": INTERVAL,
             "chunk_limit": CHUNK_LIMIT,
+            "safe_chunk_bars": SAFE_CHUNK_BARS,
             "source_header": "BX-AI-SKILL",
         },
         "frozen_boundaries": {

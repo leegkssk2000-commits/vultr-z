@@ -1,0 +1,133 @@
+name: ZEL BingX Plus One Bar H3 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - backend/tools/zel_bingx_plus_one_bar_stress_v1.py
+      - backend/tools/zel_economic_hardening_gate_v1.py
+      - backend/research/zel_economic_hardening_policy_v1.json
+      - .github/workflows/zel-bingx-plus-one-bar-h3-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-bingx-plus-one-bar-h3-v1
+  cancel-in-progress: true
+
+jobs:
+  h3:
+    if: github.actor == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_bingx_real_calibration_v1.py \
+            backend/tools/zel_bingx_plus_one_bar_stress_v1.py \
+            backend/tools/zel_economic_hardening_gate_v1.py
+          python -m json.tool backend/research/zel_economic_hardening_policy_v1.json >/dev/null
+          grep -q 'PASS_PLUS_ONE_BAR_STRESS' backend/tools/zel_bingx_plus_one_bar_stress_v1.py
+          grep -q 'PASS_BINGX_LIGHT_CALIBRATION' backend/tools/zel_bingx_plus_one_bar_stress_v1.py
+          grep -q 'order_authority.*BLOCKED' backend/tools/zel_bingx_plus_one_bar_stress_v1.py
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Collect fresh real calibration and execute plus-one-bar stress
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-bingx-plus-one-bar-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_bingx_real_calibration_v1.py \
+            backend/tools/zel_bingx_plus_one_bar_stress_v1.py \
+            backend/tools/zel_economic_hardening_gate_v1.py \
+            backend/research/zel_economic_hardening_policy_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; \
+             BINGX_ENV_FILE='/etc/z-alimi/bingx.env' nice -n 19 ionice -c3 /home/z/z/.venv/bin/python \
+               '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'; \
+             nice -n 19 ionice -c3 /home/z/z/.venv/bin/python \
+               '$remote/zel_bingx_plus_one_bar_stress_v1.py' \
+               --observation '$remote/observation.json' \
+               --terminal-trades '/var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz' \
+               --strategy-id 'ema_ribbon_scalp' \
+               --data-root '/' \
+               --data-root '/opt/zel/historical-oos-v1' \
+               --data-root '/var/lib/zel-research' \
+               --minimum-coverage-pct 95 \
+               --gate '$remote/zel_economic_hardening_gate_v1.py' \
+               --policy '$remote/zel_economic_hardening_policy_v1.json' \
+               --stress-out '$remote/plus_one_bar_stress.json' \
+               --h3-out '$remote/h3_receipt.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/observation.json" \
+            "$VPS_USER@$VPS_HOST:$remote/plus_one_bar_stress.json" \
+            "$VPS_USER@$VPS_HOST:$remote/h3_receipt.json" \
+            out/
+      - name: Verify H3 immutable receipts
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          for path in ('out/observation.json','out/plus_one_bar_stress.json','out/h3_receipt.json'):
+              r=json.load(open(path))
+              expected=r['receipt_sha256']
+              material={k:v for k,v in r.items() if k!='receipt_sha256'}
+              actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+              assert actual==expected,(path,actual,expected)
+          stress=json.load(open('out/plus_one_bar_stress.json'))
+          h3=json.load(open('out/h3_receipt.json'))
+          assert stress['state']=='PASS_PLUS_ONE_BAR_STRESS',stress
+          assert stress['fixture_only'] is False,stress
+          assert stress['trade_count']>0 and stress['coverage_pct']>=95.0,stress
+          assert h3['state']=='PASS_BINGX_LIGHT_CALIBRATION',h3
+          assert h3['operational_calibration_pass'] is True,h3
+          assert h3['blockers']==[],h3
+          assert h3['execution_authority']=='NONE' and h3['order_authority']=='BLOCKED',h3
+          print({
+              'state':h3['state'],
+              'trade_count':stress['trade_count'],
+              'coverage_pct':stress['coverage_pct'],
+              'baseline_expectancy_R':stress['baseline_expectancy_R'],
+              'stressed_expectancy_R':stress['stressed_expectancy_R'],
+              'h3_receipt_sha256':h3['receipt_sha256'],
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-plus-one-bar-h3-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

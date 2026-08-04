@@ -1,0 +1,102 @@
+name: ZEL BingX Real Light Calibration V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - .github/workflows/zel-bingx-real-calibration-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-bingx-real-light-calibration-v1
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_bingx_real_calibration_v1.py
+          grep -q 'order_authority.*BLOCKED' backend/tools/zel_bingx_real_calibration_v1.py
+          grep -q 'write_endpoint_called.*False' backend/tools/zel_bingx_real_calibration_v1.py
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Collect actual BingX read-only calibration inputs
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-bingx-real-calibration-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          rc=$?
+          set -e
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          printf '%s\n' "$rc" > out/collector_rc.txt
+          python -m json.tool out/bingx_real_observation.json >/dev/null
+      - name: Verify immutable read-only receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          expected=r['receipt_sha256']
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert r['protected_mutations']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          assert r['action']=='hold',r
+          if r['state'].startswith('PASS_'):
+              assert r['calibration_mode']=='real',r
+              assert r['account_commission_receipt']['fixture_only'] is False,r
+              assert r['funding_sample_count']>0,r
+              assert r['depth_snapshot_count']>=15,r
+              assert r['latency_sample_count']>=10,r
+          print({k:r.get(k) for k in ('state','maker_fee_pct','taker_fee_pct','funding_p95_abs_pct_8h','latency_ms_p50','latency_ms_p95','blocker')})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-real-light-calibration-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+      - name: Fail closed if actual observation was not collected
+        if: always()
+        run: |
+          state=$(python -c "import json;print(json.load(open('out/bingx_real_observation.json'))['state'])")
+          test "$state" = PASS_BINGX_REAL_OBSERVATION_COLLECTED_STRESS_PENDING
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

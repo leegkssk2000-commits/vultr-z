@@ -1,0 +1,44 @@
+name: ZEL Scalp Resumable Stage V2
+
+on:
+  pull_request:
+    branches: [zel-cost-floor-screen-exec-v1]
+    paths:
+      - backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py
+      - backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py
+      - .github/workflows/zel-exact25-cost-floor-screen-v1.yml
+      - .github/workflows/zel-exact25-cost-floor-screen-stage-v2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  static-only:
+    if: github.event.pull_request.head.ref == 'zel-cost-floor-screen-resumable-stage-v1' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify no heavy staging path
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_exact25_cost_floor_screen_resumable_v1.py \
+            backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py
+          PYTHONPATH=backend/tools python backend/tools/zel_exact25_cost_floor_screen_resumable_guard_v2.py --self-test
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/zel-exact25-cost-floor-screen-v1.yml').read_text()
+          assert "github.event.pull_request.number == 562" in text
+          assert "github.event.pull_request.head.ref == 'zel-cost-floor-screen-exec-v1'" in text
+          assert "--input-manifest-out" in text
+          assert "missing_identity_count" in text
+          assert "protected_mutations" in text
+          print('PASS_STATIC_ONLY_NO_SSH')
+          PY

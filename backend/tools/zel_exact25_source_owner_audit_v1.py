@@ -9,9 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_EXACT25_SOURCE_OWNER_AUDIT_V2"
-SCHEMA = "zel.exact25.source_owner.audit.v2"
+VERSION = "ZEL_EXACT25_SOURCE_OWNER_AUDIT_V3_PRODUCER_BOUND"
+SCHEMA = "zel.exact25.source_owner.audit.v3"
 CANONICAL_MANIFEST_RELATIVE = Path("backend/config/q4r3_canonical_strategy_owner_manifest_v1.json")
+PRODUCER_RELATIVE = Path("tools/q4r3_exact25_dedicated_shadow_producer.py")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -97,10 +98,13 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
     }
 
     manifest_path = (source_root / CANONICAL_MANIFEST_RELATIVE).resolve()
+    producer_path = (source_root / PRODUCER_RELATIVE).resolve()
     manifest = read_json(manifest_path)
     owners = manifest_entries(manifest)
     manifest_sha = sha256_path(manifest_path)
     terminal_manifest_sha = field_text(fingerprint_fields, "owner_manifest_sha256")
+    producer_exists = producer_path.is_file() and not producer_path.is_symlink()
+    producer_sha = sha256_path(producer_path) if producer_exists else None
 
     rows: list[dict[str, Any]] = []
     quarantined: list[str] = []
@@ -182,6 +186,8 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
         "terminal_censored_open_count_0": replay.get("censored_open_at_window_end") == 0,
         "terminal_manifest_sha_matches_active": terminal_manifest_sha == manifest_sha,
         "all_source_sha_match": len(rows) == 25 and not quarantined,
+        "producer_file_present": producer_exists,
+        "producer_sha256_bound": bool(producer_sha and re.fullmatch(r"[0-9a-f]{64}", producer_sha)),
         "runtime_unchanged": True,
         "canonical_unchanged": True,
         "formal_ledger_unchanged": True,
@@ -194,6 +200,8 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
         "state": "PASS_EXACT25_SOURCE_OWNER_AUDIT" if passed else "HOLD_EXACT25_SOURCE_OWNER_MISMATCH",
         "engine_path": str(engine_path),
         "engine_sha256": sha256_path(engine_path),
+        "producer_path": str(producer_path),
+        "producer_sha256": producer_sha,
         "source_root": str(source_root),
         "terminal_path": str(terminal_path),
         "terminal_content_sha256": sha256_path(terminal_path),

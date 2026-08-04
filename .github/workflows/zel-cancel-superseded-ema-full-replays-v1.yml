@@ -26,24 +26,38 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json,os,subprocess,time
+          import json,os,subprocess,time,urllib.parse
           repo=os.environ['GITHUB_REPOSITORY']
           workflow_id='326041891'
           cancelled=[]
-          for _ in range(6):
-              raw=subprocess.check_output([
-                  'gh','api',f'repos/{repo}/actions/workflows/{workflow_id}/runs',
-                  '-f','event=pull_request','-f','branch=zel-causal-exit-screen-exec-v1','-f','per_page=20'
-              ],text=True)
+          query=urllib.parse.urlencode({
+              'event':'pull_request',
+              'branch':'zel-causal-exit-screen-exec-v1',
+              'per_page':20,
+          })
+          endpoint=f'repos/{repo}/actions/workflows/{workflow_id}/runs?{query}'
+          for _ in range(8):
+              raw=subprocess.check_output(
+                  ['gh','api','--method','GET',endpoint], text=True
+              )
               rows=json.loads(raw).get('workflow_runs',[])
-              active=[r for r in rows if r.get('status') in {'queued','in_progress','pending','waiting','requested'}]
+              active=[
+                  r for r in rows
+                  if r.get('status') in {'queued','in_progress','pending','waiting','requested'}
+              ]
               for row in active:
                   run_id=int(row['id'])
-                  result=subprocess.run(['gh','api','--method','POST',f'repos/{repo}/actions/runs/{run_id}/cancel'],text=True,capture_output=True)
+                  result=subprocess.run(
+                      ['gh','api','--method','POST',f'repos/{repo}/actions/runs/{run_id}/cancel'],
+                      text=True,capture_output=True,
+                  )
                   if result.returncode==0:
                       cancelled.append(run_id)
               if not active:
                   break
-              time.sleep(5)
-          print({'state':'PASS_SUPERSEDED_LEGACY_REPLAYS_CANCEL_REQUESTED','cancelled_run_ids':sorted(set(cancelled))})
+              time.sleep(4)
+          print({
+              'state':'PASS_SUPERSEDED_LEGACY_REPLAYS_CANCEL_REQUESTED',
+              'cancelled_run_ids':sorted(set(cancelled)),
+          })
           PY

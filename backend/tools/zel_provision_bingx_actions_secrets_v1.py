@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V3"
+VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V4"
 TARGET_NAMES = ("BINGX_API_KEY", "BINGX_SECRET_KEY")
 KEY_ALIASES = {"bingxapikey", "bingxkey", "bingxaccesskey", "bingxapiaccesskey", "bingxkeyid"}
 SECRET_ALIASES = {"bingxsecretkey", "bingxapisecret", "bingxsecret", "bingxapisecretkey"}
@@ -20,6 +23,7 @@ PRUNE_DIRS = {".git", ".cache", ".venv", "venv", "node_modules", "__pycache__", 
 MAX_FILE_BYTES = 1_048_576
 NAME_HINTS = (".env", "env", "secret", "credential", "config", "bingx", "exchange", "key", ".json", ".yaml", ".yml", ".toml", ".ini", ".service")
 ASSIGNMENT = re.compile(r"^\s*(?:export\s+|Environment=)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*?)\s*$")
+BINGX_BASE = "https://open-api.bingx.com"
 
 
 def stable_sha(value: Any) -> str:
@@ -104,6 +108,23 @@ def parse_text(text: str, context: str) -> tuple[dict[str, str], set[str]]:
     return values, aliases
 
 
+def source_priority(source: str) -> int:
+    low = source.lower()
+    if low.startswith("process_env:"):
+        score = 100
+    elif low.startswith("/home/z/z/"):
+        score = 85
+    elif low.startswith("/etc/"):
+        score = 75
+    elif low.startswith("/opt/"):
+        score = 65
+    else:
+        score = 50
+    if any(token in low for token in ("backup", "archive", "old", "disabled", "sample", "example", "test", "vst")):
+        score -= 40
+    return score
+
+
 def process_environment_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
     out: list[tuple[dict[str, str], str, set[str]]] = []
     proc = Path("/proc")
@@ -112,15 +133,13 @@ def process_environment_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
-        environ = entry / "environ"
         try:
-            raw = environ.read_bytes()
+            raw = (entry / "environ").read_bytes()
         except (OSError, PermissionError):
             continue
-        text = raw.replace(b"\x00", b"\n").decode("utf-8", errors="ignore")
-        values, aliases = parse_text(text, "process_env")
+        values, aliases = parse_text(raw.replace(b"\x00", b"\n").decode("utf-8", errors="ignore"), "process_env")
         if all(name in values for name in TARGET_NAMES):
-            out.append((values, f"proc:{entry.name}", aliases))
+            out.append((values, f"process_env:{entry.name}", aliases))
     return out
 
 
@@ -140,9 +159,8 @@ def candidate_files() -> list[Path]:
                     if path.is_symlink() or not path.is_file():
                         continue
                     size = path.stat().st_size
-                    if size <= 0 or size > MAX_FILE_BYTES:
-                        continue
-                    found.append(path)
+                    if 0 < size <= MAX_FILE_BYTES:
+                        found.append(path)
                 except (OSError, PermissionError):
                     continue
     return sorted(set(found))
@@ -161,21 +179,50 @@ def file_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
     return out
 
 
-def find_unique_pair() -> tuple[dict[str, str] | None, list[str], list[str], str | None]:
-    grouped: dict[str, tuple[dict[str, str], list[str], set[str]]] = {}
+def live_validate(values: dict[str, str]) -> tuple[bool, str | None]:
+    params = {"recvWindow": 5000, "timestamp": int(time.time() * 1000)}
+    query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    signature = hmac.new(values["BINGX_SECRET_KEY"].encode(), query.encode(), hashlib.sha256).hexdigest()
+    request = urllib.request.Request(
+        f"{BINGX_BASE}/openApi/swap/v2/user/commissionRate?{query}&signature={signature}",
+        headers={"X-BX-APIKEY": values["BINGX_API_KEY"], "X-SOURCE-KEY": "BX-AI-SKILL", "User-Agent": VERSION},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            payload = json.loads(response.read())
+    except Exception:
+        return False, None
+    if int(payload.get("code", -1)) != 0:
+        return False, stable_sha({"code": payload.get("code"), "msg": payload.get("msg")})
+    return True, stable_sha(payload.get("data"))
+
+
+def select_pair() -> tuple[dict[str, str] | None, list[str], list[str], int, int, str | None]:
+    grouped: dict[str, dict[str, Any]] = {}
     for values, source, aliases in process_environment_pairs() + file_pairs():
         material = {name: values[name] for name in TARGET_NAMES}
         fingerprint = stable_sha(material)
-        if fingerprint not in grouped:
-            grouped[fingerprint] = (material, [], set())
-        grouped[fingerprint][1].append(source)
-        grouped[fingerprint][2].update(aliases)
-    if len(grouped) == 1:
-        material, sources, aliases = next(iter(grouped.values()))
-        return material, sorted(sources), sorted(aliases), None
-    if len(grouped) > 1:
-        return None, [], [], "MULTIPLE_DISTINCT_BINGX_CREDENTIAL_PAIRS"
-    return None, [], [], "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
+        row = grouped.setdefault(fingerprint, {"values": material, "sources": [], "aliases": set(), "priority": -999})
+        row["sources"].append(source)
+        row["aliases"].update(aliases)
+        row["priority"] = max(int(row["priority"]), source_priority(source))
+    if not grouped:
+        return None, [], [], 0, 0, "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
+    valid: list[dict[str, Any]] = []
+    for row in grouped.values():
+        ok, response_sha = live_validate(row["values"])
+        if ok:
+            row["response_sha"] = response_sha
+            valid.append(row)
+    if not valid:
+        return None, [], [], len(grouped), 0, "NO_VALID_LIVE_BINGX_CREDENTIAL_PAIR"
+    valid.sort(key=lambda row: int(row["priority"]), reverse=True)
+    top_priority = int(valid[0]["priority"])
+    top = [row for row in valid if int(row["priority"]) == top_priority]
+    if len(top) != 1:
+        return None, [], [], len(grouped), len(valid), "MULTIPLE_VALID_LIVE_BINGX_PAIRS_SAME_PRIORITY"
+    selected = top[0]
+    return selected["values"], sorted(selected["sources"]), sorted(selected["aliases"]), len(grouped), len(valid), None
 
 
 def run_quiet(command: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -210,19 +257,21 @@ def main() -> int:
     args = parser.parse_args()
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    values, sources, aliases, blocker = find_unique_pair()
+    values, sources, aliases, pair_count, valid_count, blocker = select_pair()
     passed = False
     names: list[str] = []
     if values is not None and blocker is None:
         passed, blocker, names = provision(args.repo, values)
     receipt = {
-        "schema_version": "zel.bingx.actions_secret_provision.receipt.v3",
+        "schema_version": "zel.bingx.actions_secret_provision.receipt.v4",
         "version": VERSION,
         "state": "PASS_BINGX_ACTIONS_SECRETS_PROVISIONED" if passed else "HOLD_BINGX_ACTIONS_SECRETS_PROVISION",
         "evaluated_at": utc_now(),
         "repository": args.repo,
-        "source_count": len(sources),
-        "source_identity_sha256": stable_sha(sorted(sources)) if sources else None,
+        "discovered_pair_count": pair_count,
+        "live_valid_pair_count": valid_count,
+        "selected_source_count": len(sources),
+        "selected_source_identity_sha256": stable_sha(sorted(sources)) if sources else None,
         "detected_alias_names": aliases,
         "verified_secret_names": [name for name in TARGET_NAMES if name in names],
         "secret_values_logged": False,
@@ -235,7 +284,7 @@ def main() -> int:
     }
     receipt["receipt_sha256"] = stable_sha(receipt)
     out.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"state": receipt["state"], "blocker": blocker, "receipt_sha256": receipt["receipt_sha256"]}, sort_keys=True))
+    print(json.dumps({"state": receipt["state"], "blocker": blocker, "discovered_pair_count": pair_count, "live_valid_pair_count": valid_count, "receipt_sha256": receipt["receipt_sha256"]}, sort_keys=True))
     return 0 if passed else 2
 
 

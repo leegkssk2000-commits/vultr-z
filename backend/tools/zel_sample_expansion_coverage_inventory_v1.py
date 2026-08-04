@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-VERSION = "ZEL_SAMPLE_EXPANSION_COVERAGE_INVENTORY_V2_CONTENT_AWARE"
-SCHEMA = "zel.sample_expansion.coverage_inventory.v2"
+VERSION = "ZEL_SAMPLE_EXPANSION_COVERAGE_INVENTORY_V3_TIMESTAMP_MS"
+SCHEMA = "zel.sample_expansion.coverage_inventory.v3"
 ALLOWED_SUFFIXES = {
     ".csv",
     ".json",
@@ -40,6 +40,10 @@ LINEAGE_KEYWORDS = {
     "trades": ("trade", "fills"),
 }
 TIMESTAMP_COLUMNS = (
+    "timestamp_ms",
+    "time_ms",
+    "open_time_ms",
+    "open_timestamp_ms",
     "timestamp",
     "ts",
     "time",
@@ -430,7 +434,7 @@ def main() -> int:
     content_quality = all(
         bool(row.get("coverage_quality_pass", True))
         for row in roots
-        if row["root"] == str(content_root) if content_root
+        if content_root and row["root"] == str(content_root)
     )
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA,

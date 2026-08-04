@@ -36,15 +36,21 @@ jobs:
           python -m py_compile backend/tools/zel_bingx_real_calibration_v1.py
           grep -q 'order_authority.*BLOCKED' backend/tools/zel_bingx_real_calibration_v1.py
           grep -q 'write_endpoint_called.*False' backend/tools/zel_bingx_real_calibration_v1.py
-      - name: Prepare SSH
+      - name: Prepare SSH and optional GitHub-secret credential bridge
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
+          BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
+          BINGX_SECRET_KEY: ${{ secrets.BINGX_SECRET_KEY }}
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
           printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
           chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          if [ -n "${BINGX_API_KEY:-}" ] && [ -n "${BINGX_SECRET_KEY:-}" ]; then
+            umask 077
+            printf 'BINGX_API_KEY=%s\nBINGX_SECRET_KEY=%s\n' "$BINGX_API_KEY" "$BINGX_SECRET_KEY" > "$GITHUB_WORKSPACE/.ssh/bingx.env"
+          fi
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
       - name: Collect actual BingX read-only calibration inputs
         env:
@@ -56,9 +62,15 @@ jobs:
           echo "$remote" > out/remote_path.txt
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          if [ -s "$GITHUB_WORKSPACE/.ssh/bingx.env" ]; then
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$GITHUB_WORKSPACE/.ssh/bingx.env" "$VPS_USER@$VPS_HOST:$remote/bingx.env"
+            remote_env="BINGX_ENV_FILE='$remote/bingx.env'"
+          else
+            remote_env=""
+          fi
           set +e
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
-            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+            "$remote_env nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
           rc=$?
           set -e
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
@@ -105,6 +117,6 @@ jobs:
         run: |
           remote=$(cat out/remote_path.txt 2>/dev/null || true)
           test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
-          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key" "$GITHUB_WORKSPACE/.ssh/bingx.env"
 
 # PR verification trigger: actual read-only calibration only; no order or state mutation.

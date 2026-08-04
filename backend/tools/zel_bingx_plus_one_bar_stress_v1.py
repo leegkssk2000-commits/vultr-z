@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-VERSION = "ZEL_BINGX_PLUS_ONE_BAR_STRESS_V1"
+VERSION = "ZEL_BINGX_PLUS_ONE_BAR_STRESS_V2"
 
 
 def stable_sha(value: Any) -> str:
@@ -78,27 +78,18 @@ def resolve_source_path(raw: Any, roots: list[Path]) -> Path:
     raise RuntimeError(f"DATA_SOURCE_NOT_FOUND:{text}")
 
 
-def timestamp_column(frame: pd.DataFrame) -> str:
-    for name in ("timestamp", "datetime", "time", "ts", "open_time"):
-        if name in frame.columns:
-            return name
-    raise RuntimeError("TIMESTAMP_COLUMN_NOT_FOUND")
-
-
-def open_column(frame: pd.DataFrame) -> str:
-    for name in ("open", "open_price", "price_open", "close"):
-        if name in frame.columns:
-            return name
-    raise RuntimeError("OPEN_PRICE_COLUMN_NOT_FOUND")
-
-
-def load_timeline(paths: list[Path]) -> pd.DataFrame:
+def load_timeline(paths: list[Path], engine: Any) -> pd.DataFrame:
     parts: list[pd.DataFrame] = []
     for path in paths:
-        frame = pd.read_csv(path)
-        ts_col = timestamp_column(frame)
-        px_col = open_column(frame)
-        part = frame[[ts_col, px_col]].copy()
+        frame = engine.frame_from_csv(path)
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            raise RuntimeError(f"EMPTY_FRAME:{path}")
+        if "timestamp" not in frame.columns:
+            raise RuntimeError(f"NORMALIZED_TIMESTAMP_COLUMN_MISSING:{path}")
+        price_column = "open" if "open" in frame.columns else "close" if "close" in frame.columns else None
+        if price_column is None:
+            raise RuntimeError(f"NORMALIZED_OPEN_OR_CLOSE_MISSING:{path}")
+        part = frame[["timestamp", price_column]].copy()
         part.columns = ["timestamp", "next_open"]
         part["timestamp"] = pd.to_datetime(part["timestamp"], utc=True, errors="coerce")
         part["next_open"] = pd.to_numeric(part["next_open"], errors="coerce")
@@ -149,6 +140,7 @@ def build_stress(
     trades: list[dict[str, Any]],
     *,
     roots: list[Path],
+    engine: Any,
     minimum_coverage_pct: float,
 ) -> dict[str, Any]:
     verify_receipt(observation, "observation")
@@ -161,16 +153,27 @@ def build_stress(
 
     grouped_paths: dict[tuple[str, str], set[Path]] = {}
     for row in trades:
-        group = (str(row.get("symbol") or ""), str(row.get("data_interval") or row.get("interval") or "1m"))
-        grouped_paths.setdefault(group, set()).add(resolve_source_path(row.get("data_source_path"), roots))
-    timelines = {group: load_timeline(sorted(paths)) for group, paths in grouped_paths.items()}
+        group = (
+            str(row.get("symbol") or ""),
+            str(row.get("data_interval") or row.get("interval") or "1m"),
+        )
+        grouped_paths.setdefault(group, set()).add(
+            resolve_source_path(row.get("data_source_path"), roots)
+        )
+    timelines = {
+        group: load_timeline(sorted(paths), engine)
+        for group, paths in grouped_paths.items()
+    }
 
     baseline_values: list[float] = []
     stressed_values: list[float] = []
     result_rows: list[dict[str, Any]] = []
     boundary_excluded = 0
     for row in trades:
-        group = (str(row.get("symbol") or ""), str(row.get("data_interval") or row.get("interval") or "1m"))
+        group = (
+            str(row.get("symbol") or ""),
+            str(row.get("data_interval") or row.get("interval") or "1m"),
+        )
         timeline = timelines[group]
         delayed_entry = next_open(timeline, row.get("entry_ts"))
         delayed_exit = next_open(timeline, row.get("exit_ts"))
@@ -192,18 +195,27 @@ def build_stress(
         fee = (entry_notional + exit_notional) * taker_pct / 100.0
         slip_bps = slippage_bps(observation, max(entry_notional, exit_notional))
         slippage = (entry_notional + exit_notional) * slip_bps / 10000.0
-        exposure_min = max(0.0, finite(row.get("time_exposure_min", 0.0), "time_exposure_min") + 1.0)
-        conservative_funding = -entry_notional * funding_p95_pct / 100.0 * (exposure_min / 480.0)
+        exposure_min = max(
+            0.0,
+            finite(row.get("time_exposure_min", 0.0), "time_exposure_min") + 1.0,
+        )
+        conservative_funding = (
+            -entry_notional * funding_p95_pct / 100.0 * (exposure_min / 480.0)
+        )
         stressed_r = (gross - fee - slippage + conservative_funding) / risk
         baseline_r = finite(
-            row.get("realized_R_including_funding_estimate", row.get("realized_R")),
+            row.get(
+                "realized_R_including_funding_estimate", row.get("realized_R")
+            ),
             "baseline_R",
         )
         baseline_values.append(baseline_r)
         stressed_values.append(stressed_r)
         result_rows.append(
             {
-                "event_id": str(row.get("event_id") or row.get("position_id") or ""),
+                "event_id": str(
+                    row.get("event_id") or row.get("position_id") or ""
+                ),
                 "window_id": str(row.get("window_id") or ""),
                 "side": side,
                 "baseline_R": round(baseline_r, 12),
@@ -235,7 +247,9 @@ def build_stress(
         "maker_fee_pct": observation.get("maker_fee_pct"),
         "taker_fee_pct": observation.get("taker_fee_pct"),
         "funding_p95_abs_pct_8h": observation.get("funding_p95_abs_pct_8h"),
-        "slippage_floor_bps_by_notional": observation.get("slippage_floor_bps_by_notional"),
+        "slippage_floor_bps_by_notional": observation.get(
+            "slippage_floor_bps_by_notional"
+        ),
         "latency_ms_p50": observation.get("latency_ms_p50"),
         "latency_ms_p95": observation.get("latency_ms_p95"),
     }
@@ -294,6 +308,7 @@ def main() -> int:
     parser.add_argument("--terminal-trades", type=Path, required=True)
     parser.add_argument("--strategy-id", default="ema_ribbon_scalp")
     parser.add_argument("--data-root", action="append", default=[])
+    parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--minimum-coverage-pct", type=float, default=95.0)
     parser.add_argument("--gate", type=Path, required=True)
     parser.add_argument("--policy", type=Path, required=True)
@@ -307,17 +322,23 @@ def main() -> int:
         Path("/opt/zel/historical-oos-v1"),
         Path("/var/lib/zel-research"),
     ]
+    engine = load_module(args.engine.resolve(), "zel_plus_one_bar_engine")
     stress = build_stress(
         observation,
         trades,
         roots=roots,
+        engine=engine,
         minimum_coverage_pct=args.minimum_coverage_pct,
     )
     h3 = bind_h3(args.gate, args.policy, observation, stress)
     args.stress_out.parent.mkdir(parents=True, exist_ok=True)
     args.h3_out.parent.mkdir(parents=True, exist_ok=True)
-    args.stress_out.write_text(json.dumps(stress, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    args.h3_out.write_text(json.dumps(h3, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.stress_out.write_text(
+        json.dumps(stress, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    args.h3_out.write_text(
+        json.dumps(h3, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(
         json.dumps(
             {

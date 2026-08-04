@@ -164,8 +164,10 @@ def collect_symbol(symbol: str, out_dir: Path, start_ms: int, end_exclusive_ms: 
     cursor = start_ms
     while cursor < end_exclusive_ms:
         chunk_end_exclusive = min(cursor + CHUNK_LIMIT * INTERVAL_MS, end_exclusive_ms)
-        api_end_inclusive = chunk_end_exclusive - INTERVAL_MS
-        rows = request_chunk(symbol, cursor, api_end_inclusive)
+        # BingX v3 treats endTime as an exclusive upper bound for this route.
+        # Passing the last candle open skipped exactly one bar at each 1,000-bar boundary.
+        api_end_exclusive = chunk_end_exclusive
+        rows = request_chunk(symbol, cursor, api_end_exclusive)
         requests += 1
         for row in rows:
             timestamp_ms = int(row["timestamp_ms"])
@@ -223,6 +225,7 @@ def main() -> int:
         assert sample["timestamp_ms"] == 1_700_000_000_000
         assert sample["high"] == "12" and sample["low"] == "9"
         assert len(list(expected_timestamps(0, 180_000))) == 3
+        assert list(expected_timestamps(0, CHUNK_LIMIT * INTERVAL_MS))[-1] == (CHUNK_LIMIT - 1) * INTERVAL_MS
         print("PASS")
         return 0
 

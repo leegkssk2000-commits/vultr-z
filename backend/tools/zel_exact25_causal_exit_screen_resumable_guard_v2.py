@@ -177,6 +177,14 @@ def finite(value: Any) -> bool:
     return parsed == parsed and parsed not in (float("inf"), float("-inf"))
 
 
+def normalized_exit_reason(row: Mapping[str, Any]) -> str:
+    for key in ("exit_reason", "reason", "close_reason"):
+        value = str(row.get(key) or "").strip().lower()
+        if value:
+            return value
+    return "unknown"
+
+
 def row_integrity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     identities: list[str] = []
     missing_identity_count = 0
@@ -192,8 +200,7 @@ def row_integrity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     unknown_exit_count = sum(
         1
         for row in rows
-        if str(row.get("exit_reason") or row.get("reason") or "unknown").strip().lower()
-        in {"", "unknown", "none", "null"}
+        if normalized_exit_reason(row) in {"", "unknown", "none", "null"}
     )
     required_cost_fields = (
         "fee",
@@ -492,9 +499,24 @@ def self_test() -> int:
             "realized_R_including_funding_estimate": 1.0,
         },
         {
+            "event_id": "b",
+            "close_reason": " take_profit ",
+            "fee": 1.0,
+            "slippage": 0.1,
+            "funding_pnl_estimate_usdt": 0.0,
+            "realized_R_including_funding_estimate": 1.0,
+        },
+        {
             "event_id": "",
             "position_id": "",
             "exit_reason": "stop_loss",
+            "fee": 1.0,
+            "slippage": 0.1,
+            "funding_pnl_estimate_usdt": 0.0,
+            "realized_R_including_funding_estimate": -1.0,
+        },
+        {
+            "event_id": "c",
             "fee": 1.0,
             "slippage": 0.1,
             "funding_pnl_estimate_usdt": 0.0,
@@ -504,6 +526,8 @@ def self_test() -> int:
     integrity = row_integrity(rows)
     assert integrity["missing_identity_count"] == 1
     assert integrity["duplicate_trade_count"] == 0
+    assert integrity["unknown_exit_count"] == 1
+    assert normalized_exit_reason(rows[1]) == "take_profit"
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         data = root / "data"

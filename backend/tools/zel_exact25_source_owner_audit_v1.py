@@ -98,12 +98,14 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
     }
 
     manifest_path = (source_root / CANONICAL_MANIFEST_RELATIVE).resolve()
-    producer_path = (source_root / PRODUCER_RELATIVE).resolve()
+    producer_candidate = source_root / PRODUCER_RELATIVE
+    producer_is_symlink = producer_candidate.is_symlink()
+    producer_path = producer_candidate.resolve()
     manifest = read_json(manifest_path)
     owners = manifest_entries(manifest)
     manifest_sha = sha256_path(manifest_path)
     terminal_manifest_sha = field_text(fingerprint_fields, "owner_manifest_sha256")
-    producer_exists = producer_path.is_file() and not producer_path.is_symlink()
+    producer_exists = producer_path.is_file() and not producer_is_symlink
     producer_sha = sha256_path(producer_path) if producer_exists else None
 
     rows: list[dict[str, Any]] = []
@@ -187,6 +189,7 @@ def run(engine_path: Path, source_root: Path, terminal_path: Path) -> dict[str, 
         "terminal_manifest_sha_matches_active": terminal_manifest_sha == manifest_sha,
         "all_source_sha_match": len(rows) == 25 and not quarantined,
         "producer_file_present": producer_exists,
+        "producer_path_not_symlink": not producer_is_symlink,
         "producer_sha256_bound": bool(producer_sha and re.fullmatch(r"[0-9a-f]{64}", producer_sha)),
         "runtime_unchanged": True,
         "canonical_unchanged": True,
@@ -240,6 +243,15 @@ def self_test() -> int:
     assert ast_has_callable(source, "strategy") is True
     assert ast_has_callable(source, "missing") is False
     source.unlink(missing_ok=True)
+    target = Path("/tmp/zel-source-owner-producer-target.py")
+    link = Path("/tmp/zel-source-owner-producer-link.py")
+    target.write_text("# target\n", encoding="utf-8")
+    link.unlink(missing_ok=True)
+    link.symlink_to(target)
+    assert link.is_symlink() is True
+    assert link.resolve().is_symlink() is False
+    link.unlink(missing_ok=True)
+    target.unlink(missing_ok=True)
     print("PASS")
     return 0
 

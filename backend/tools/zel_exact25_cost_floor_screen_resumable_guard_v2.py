@@ -12,8 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-VERSION = "ZEL_EXACT25_COST_FLOOR_SCREEN_RESUMABLE_GUARD_V2"
+VERSION = "ZEL_EXACT25_COST_FLOOR_SCREEN_RESUMABLE_GUARD_V3_MINIMUM_FIX"
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PRODUCER_RELATIVE = Path("tools/q4r3_exact25_dedicated_shadow_producer.py")
+UNKNOWN_EXIT_VALUES = {"", "unknown", "none", "null"}
 VOLATILE_KEYS = {
     "generated_at",
     "updated_at",
@@ -113,6 +116,40 @@ def hash_tree(root: Path) -> dict[str, Any]:
     }
 
 
+def validate_live_producer_binding(
+    source_root: Path,
+    source_owner: Mapping[str, Any],
+    *,
+    expected_manifest_sha: str | None = None,
+) -> str:
+    producer_candidate = source_root / PRODUCER_RELATIVE
+    if producer_candidate.is_symlink():
+        raise RuntimeError(f"LIVE_PRODUCER_UNRESOLVED_SYMLINK:{producer_candidate}")
+    producer_path = producer_candidate.resolve()
+    if not producer_path.is_file():
+        raise RuntimeError(f"LIVE_PRODUCER_MISSING:{producer_path}")
+
+    receipt_path_text = str(source_owner.get("producer_path") or "").strip()
+    receipt_sha = str(source_owner.get("producer_sha256") or "").strip().lower()
+    checks = source_owner.get("checks")
+    if not receipt_path_text:
+        raise RuntimeError("SOURCE_OWNER_PRODUCER_PATH_MISSING")
+    if not SHA256_RE.fullmatch(receipt_sha):
+        raise RuntimeError("SOURCE_OWNER_PRODUCER_SHA_INVALID")
+    if not isinstance(checks, Mapping) or checks.get("producer_path_not_symlink") is not True:
+        raise RuntimeError("SOURCE_OWNER_PRODUCER_SYMLINK_CHECK_NOT_PASS")
+    receipt_path = Path(receipt_path_text).resolve()
+    if receipt_path != producer_path:
+        raise RuntimeError("SOURCE_OWNER_LIVE_PRODUCER_PATH_MISMATCH")
+
+    actual_sha = file_sha(producer_path)
+    if actual_sha != receipt_sha:
+        raise RuntimeError("SOURCE_OWNER_LIVE_PRODUCER_SHA_MISMATCH")
+    if expected_manifest_sha is not None and actual_sha != expected_manifest_sha:
+        raise RuntimeError("INPUT_MANIFEST_LIVE_PRODUCER_SHA_MISMATCH")
+    return actual_sha
+
+
 def build_input_manifest(
     *,
     base_runner_path: Path,
@@ -129,8 +166,12 @@ def build_input_manifest(
     commit = commit_sha.strip().lower()
     if not SHA1_RE.fullmatch(commit):
         raise RuntimeError("COMMIT_SHA40_REQUIRED")
+    source_owner = json.loads(source_owner_path.read_text(encoding="utf-8"))
+    producer_sha = str(source_owner.get("producer_sha256") or "").strip().lower()
+    if not SHA256_RE.fullmatch(producer_sha):
+        raise RuntimeError("SOURCE_OWNER_PRODUCER_SHA_INVALID")
     manifest = {
-        "schema_version": "zel.exact25.replay_input_manifest.v2",
+        "schema_version": "zel.exact25.replay_input_manifest.v3",
         "version": VERSION,
         "commit_sha": commit,
         "code": {
@@ -139,6 +180,7 @@ def build_input_manifest(
             "screen_sha256": file_sha(screen_path),
             "indicator_helper_sha256": file_sha(indicator_helper_path),
             "engine_producer_sha256": file_sha(engine_path),
+            "source_owner_producer_sha256": producer_sha,
             "policy_sha256": file_sha(policy_path),
         },
         "semantic_receipts": {
@@ -165,6 +207,17 @@ def finite(value: Any) -> bool:
     return parsed == parsed and parsed not in (float("inf"), float("-inf"))
 
 
+def normalized_exit_reason(row: Mapping[str, Any]) -> str:
+    for key in ("exit_reason", "reason", "close_reason"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        value = str(raw).strip().lower()
+        if value:
+            return value
+    return "unknown"
+
+
 def row_integrity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     identities: list[str] = []
     missing_identity_count = 0
@@ -178,10 +231,7 @@ def row_integrity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             identities.append(identity)
     duplicate_count = len(identities) - len(set(identities))
     unknown_exit_count = sum(
-        1
-        for row in rows
-        if str(row.get("exit_reason") or row.get("reason") or "unknown").strip().lower()
-        in {"", "unknown", "none", "null"}
+        1 for row in rows if normalized_exit_reason(row) in UNKNOWN_EXIT_VALUES
     )
     required_cost_fields = (
         "fee",
@@ -205,11 +255,21 @@ def row_integrity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def install_guards(base: Any, input_manifest: Mapping[str, Any]) -> None:
+def install_guards(
+    base: Any,
+    input_manifest: Mapping[str, Any],
+    *,
+    source_root: Path,
+    source_owner: Mapping[str, Any],
+) -> None:
     original_checkpoint_payload = base.checkpoint_payload
+    original_validate_checkpoint = base.validate_checkpoint
     original_baseline_body = base.baseline_body
     original_candidate_body = base.candidate_body
     original_build_receipt = base.build_receipt
+    expected_producer_sha = str(
+        input_manifest["code"]["source_owner_producer_sha256"]
+    )
 
     def checkpoint_payload_guard(*, kind: str, fingerprint: str, body: Mapping[str, Any]) -> dict[str, Any]:
         payload = original_checkpoint_payload(kind=kind, fingerprint=fingerprint, body=body)
@@ -218,6 +278,18 @@ def install_guards(base: Any, input_manifest: Mapping[str, Any]) -> None:
             {key: value for key, value in payload.items() if key != "checkpoint_sha256"}
         )
         return payload
+
+    def validate_checkpoint_guard(
+        path: Path, *, fingerprint: str, kind: str
+    ) -> dict[str, Any]:
+        validate_live_producer_binding(
+            source_root,
+            source_owner,
+            expected_manifest_sha=expected_producer_sha,
+        )
+        return original_validate_checkpoint(
+            path, fingerprint=fingerprint, kind=kind
+        )
 
     def heartbeat_guard(
         path: Path | None,
@@ -280,6 +352,8 @@ def install_guards(base: Any, input_manifest: Mapping[str, Any]) -> None:
         receipt["input_manifest_sha256"] = input_manifest["manifest_sha256"]
         receipt["input_manifest_file_count"] = input_manifest["historical_data"]["file_count"]
         receipt["input_manifest_total_bytes"] = input_manifest["historical_data"]["total_bytes"]
+        receipt["live_producer_sha256"] = expected_producer_sha
+        receipt["live_producer_revalidated_before_checkpoint_reuse"] = True
         receipt.update(SAFETY)
         receipt["receipt_sha256"] = stable_sha(
             {key: value for key, value in receipt.items() if key != "receipt_sha256"}
@@ -288,6 +362,7 @@ def install_guards(base: Any, input_manifest: Mapping[str, Any]) -> None:
 
     base.row_integrity = row_integrity
     base.checkpoint_payload = checkpoint_payload_guard
+    base.validate_checkpoint = validate_checkpoint_guard
     base.heartbeat = heartbeat_guard
     base.baseline_body = baseline_body_guard
     base.candidate_body = candidate_body_guard
@@ -318,6 +393,7 @@ def run_guarded(
     source_owner = base.read_json(source_owner_path)
     cost_audit = base.read_json(cost_audit_path)
     base.validate_external_receipts(source_owner, cost_audit)
+    validate_live_producer_binding(source_root, source_owner)
 
     input_manifest = build_input_manifest(
         base_runner_path=base_runner_path,
@@ -334,13 +410,18 @@ def run_guarded(
     atomic_write_json(input_manifest_out, input_manifest)
     fingerprint = stable_sha(
         {
-            "schema_version": "zel.exact25.cost_floor_screen.input_fingerprint.v2",
+            "schema_version": "zel.exact25.cost_floor_screen.input_fingerprint.v3",
             "input_manifest_sha256": input_manifest["manifest_sha256"],
             "strategy_id": policy["strategy_id"],
             "axis_id": policy["axis_id"],
         }
     )
-    install_guards(base, input_manifest)
+    install_guards(
+        base,
+        input_manifest,
+        source_root=source_root,
+        source_owner=source_owner,
+    )
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     expected_count = 1 + len(policy["candidate_configs"])
@@ -475,7 +556,7 @@ def self_test() -> int:
     rows = [
         {
             "event_id": "a",
-            "exit_reason": "take_profit",
+            "close_reason": " TAKE_PROFIT ",
             "fee": 1.0,
             "slippage": 0.1,
             "funding_pnl_estimate_usdt": 0.0,
@@ -490,10 +571,19 @@ def self_test() -> int:
             "funding_pnl_estimate_usdt": 0.0,
             "realized_R_including_funding_estimate": -1.0,
         },
+        {
+            "event_id": "c",
+            "fee": 1.0,
+            "slippage": 0.1,
+            "funding_pnl_estimate_usdt": 0.0,
+            "realized_R_including_funding_estimate": -1.0,
+        },
     ]
     integrity = row_integrity(rows)
+    assert normalized_exit_reason(rows[0]) == "take_profit"
     assert integrity["missing_identity_count"] == 1
     assert integrity["duplicate_trade_count"] == 0
+    assert integrity["unknown_exit_count"] == 1
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         data = root / "data"
@@ -517,6 +607,28 @@ def self_test() -> int:
             encoding="utf-8",
         )
         assert sha_a == semantic_json_sha(receipt)
+
+        source_root = root / "source"
+        producer = source_root / PRODUCER_RELATIVE
+        producer.parent.mkdir(parents=True)
+        producer.write_text("# producer\n", encoding="utf-8")
+        producer_sha = file_sha(producer)
+        source_owner = {
+            "producer_path": str(producer.resolve()),
+            "producer_sha256": producer_sha,
+            "checks": {"producer_path_not_symlink": True},
+        }
+        assert validate_live_producer_binding(source_root, source_owner) == producer_sha
+        target = source_root / "producer-target.py"
+        target.write_text("# target\n", encoding="utf-8")
+        producer.unlink()
+        producer.symlink_to(target)
+        try:
+            validate_live_producer_binding(source_root, source_owner)
+        except RuntimeError as exc:
+            assert "LIVE_PRODUCER_UNRESOLVED_SYMLINK" in str(exc)
+        else:
+            raise AssertionError("producer symlink must be rejected")
     print("PASS")
     return 0
 

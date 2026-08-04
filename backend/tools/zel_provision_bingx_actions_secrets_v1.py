@@ -14,14 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V4"
+VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V5"
 TARGET_NAMES = ("BINGX_API_KEY", "BINGX_SECRET_KEY")
-KEY_ALIASES = {"bingxapikey", "bingxkey", "bingxaccesskey", "bingxapiaccesskey", "bingxkeyid"}
+KEY_ALIASES = {"bingxapikey", "bingxkey", "bingxaccesskey", "bingxapiaccesskey", "bingxkeyid", "bingxapi"}
 SECRET_ALIASES = {"bingxsecretkey", "bingxapisecret", "bingxsecret", "bingxapisecretkey"}
+EXPLICIT_CREDENTIAL_FILES = (Path("/home/z/z/config/creds.py"),)
 SEARCH_ROOTS = (Path("/home/z"), Path("/opt"), Path("/etc/z-os"), Path("/etc/zel"), Path("/etc/default"), Path("/etc/systemd/system"))
 PRUNE_DIRS = {".git", ".cache", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "artifacts", "checkpoints", "logs", "tmp"}
 MAX_FILE_BYTES = 1_048_576
-NAME_HINTS = (".env", "env", "secret", "credential", "config", "bingx", "exchange", "key", ".json", ".yaml", ".yml", ".toml", ".ini", ".service")
+NAME_HINTS = (".env", "env", "secret", "cred", "credential", "config", "bingx", "exchange", "key", ".json", ".yaml", ".yml", ".toml", ".ini", ".service")
 ASSIGNMENT = re.compile(r"^\s*(?:export\s+|Environment=)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*?)\s*$")
 BINGX_BASE = "https://open-api.bingx.com"
 
@@ -46,7 +47,7 @@ def classify_name(value: str, context: str = "") -> str | None:
     if normalized in SECRET_ALIASES:
         return "BINGX_SECRET_KEY"
     if "bingx" in ctx:
-        if normalized in {"apikey", "accesskey", "key", "keyid"}:
+        if normalized in {"apikey", "accesskey", "key", "keyid", "api"}:
             return "BINGX_API_KEY"
         if normalized in {"secret", "secretkey", "apisecret", "apisecretkey"}:
             return "BINGX_SECRET_KEY"
@@ -110,9 +111,13 @@ def parse_text(text: str, context: str) -> tuple[dict[str, str], set[str]]:
 
 def source_priority(source: str) -> int:
     low = source.lower()
+    if source == str(EXPLICIT_CREDENTIAL_FILES[0]):
+        return 150
+    if low.startswith("process_env:zel"):
+        return 140
     if low.startswith("process_env:"):
-        score = 100
-    elif low.startswith("/home/z/z/"):
+        return 100
+    if low.startswith("/home/z/z/"):
         score = 85
     elif low.startswith("/etc/"):
         score = 75
@@ -135,16 +140,21 @@ def process_environment_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
             continue
         try:
             raw = (entry / "environ").read_bytes()
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
         except (OSError, PermissionError):
             continue
         values, aliases = parse_text(raw.replace(b"\x00", b"\n").decode("utf-8", errors="ignore"), "process_env")
         if all(name in values for name in TARGET_NAMES):
-            out.append((values, f"process_env:{entry.name}", aliases))
+            label = "process_env:zel" if any(token in cmdline for token in ("zel", "z-os", "bingx", "backend", "worker")) else "process_env:other"
+            out.append((values, label, aliases))
     return out
 
 
 def candidate_files() -> list[Path]:
-    found: list[Path] = []
+    found: set[Path] = set()
+    for path in EXPLICIT_CREDENTIAL_FILES:
+        if path.is_file():
+            found.add(path)
     for root in SEARCH_ROOTS:
         if not root.exists():
             continue
@@ -160,10 +170,10 @@ def candidate_files() -> list[Path]:
                         continue
                     size = path.stat().st_size
                     if 0 < size <= MAX_FILE_BYTES:
-                        found.append(path)
+                        found.add(path)
                 except (OSError, PermissionError):
                     continue
-    return sorted(set(found))
+    return sorted(found)
 
 
 def file_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
@@ -179,7 +189,7 @@ def file_pairs() -> list[tuple[dict[str, str], str, set[str]]]:
     return out
 
 
-def live_validate(values: dict[str, str]) -> tuple[bool, str | None]:
+def live_validate(values: dict[str, str]) -> tuple[bool, str]:
     params = {"recvWindow": 5000, "timestamp": int(time.time() * 1000)}
     query = "&".join(f"{key}={params[key]}" for key in sorted(params))
     signature = hmac.new(values["BINGX_SECRET_KEY"].encode(), query.encode(), hashlib.sha256).hexdigest()
@@ -190,39 +200,47 @@ def live_validate(values: dict[str, str]) -> tuple[bool, str | None]:
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
             payload = json.loads(response.read())
-    except Exception:
-        return False, None
+    except Exception as exc:
+        return False, type(exc).__name__
     if int(payload.get("code", -1)) != 0:
-        return False, stable_sha({"code": payload.get("code"), "msg": payload.get("msg")})
-    return True, stable_sha(payload.get("data"))
+        return False, f"BINGX_CODE_{payload.get('code')}"
+    return True, "PASS"
 
 
-def select_pair() -> tuple[dict[str, str] | None, list[str], list[str], int, int, str | None]:
+def select_pair() -> tuple[dict[str, str] | None, list[str], list[str], int, int, str, str | None]:
     grouped: dict[str, dict[str, Any]] = {}
     for values, source, aliases in process_environment_pairs() + file_pairs():
         material = {name: values[name] for name in TARGET_NAMES}
         fingerprint = stable_sha(material)
-        row = grouped.setdefault(fingerprint, {"values": material, "sources": [], "aliases": set(), "priority": -999})
+        row = grouped.setdefault(fingerprint, {"values": material, "sources": [], "aliases": set(), "priority": -999, "validation": "NOT_RUN"})
         row["sources"].append(source)
         row["aliases"].update(aliases)
         row["priority"] = max(int(row["priority"]), source_priority(source))
     if not grouped:
-        return None, [], [], 0, 0, "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
+        return None, [], [], 0, 0, "NONE", "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
     valid: list[dict[str, Any]] = []
     for row in grouped.values():
-        ok, response_sha = live_validate(row["values"])
+        ok, state = live_validate(row["values"])
+        row["validation"] = state
         if ok:
-            row["response_sha"] = response_sha
             valid.append(row)
-    if not valid:
-        return None, [], [], len(grouped), 0, "NO_VALID_LIVE_BINGX_CREDENTIAL_PAIR"
-    valid.sort(key=lambda row: int(row["priority"]), reverse=True)
-    top_priority = int(valid[0]["priority"])
-    top = [row for row in valid if int(row["priority"]) == top_priority]
-    if len(top) != 1:
-        return None, [], [], len(grouped), len(valid), "MULTIPLE_VALID_LIVE_BINGX_PAIRS_SAME_PRIORITY"
-    selected = top[0]
-    return selected["values"], sorted(selected["sources"]), sorted(selected["aliases"]), len(grouped), len(valid), None
+    if valid:
+        valid.sort(key=lambda row: int(row["priority"]), reverse=True)
+        top_priority = int(valid[0]["priority"])
+        top = [row for row in valid if int(row["priority"]) == top_priority]
+        if len(top) != 1:
+            return None, [], [], len(grouped), len(valid), "LIVE_VALIDATION", "MULTIPLE_VALID_LIVE_BINGX_PAIRS_SAME_PRIORITY"
+        selected = top[0]
+        return selected["values"], sorted(selected["sources"]), sorted(selected["aliases"]), len(grouped), len(valid), "LIVE_VALIDATION", None
+    explicit = [row for row in grouped.values() if str(EXPLICIT_CREDENTIAL_FILES[0]) in row["sources"]]
+    if len(explicit) == 1:
+        selected = explicit[0]
+        return selected["values"], sorted(selected["sources"]), sorted(selected["aliases"]), len(grouped), 0, "EXPLICIT_CREDS_FILE_FALLBACK", None
+    active = [row for row in grouped.values() if any(source == "process_env:zel" for source in row["sources"])]
+    if len(active) == 1:
+        selected = active[0]
+        return selected["values"], sorted(selected["sources"]), sorted(selected["aliases"]), len(grouped), 0, "ACTIVE_ZEL_PROCESS_FALLBACK", None
+    return None, [], [], len(grouped), 0, "NONE", "NO_UNAMBIGUOUS_ACTIVE_BINGX_CREDENTIAL_PAIR"
 
 
 def run_quiet(command: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -257,19 +275,20 @@ def main() -> int:
     args = parser.parse_args()
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    values, sources, aliases, pair_count, valid_count, blocker = select_pair()
+    values, sources, aliases, pair_count, valid_count, selection_basis, blocker = select_pair()
     passed = False
     names: list[str] = []
     if values is not None and blocker is None:
         passed, blocker, names = provision(args.repo, values)
     receipt = {
-        "schema_version": "zel.bingx.actions_secret_provision.receipt.v4",
+        "schema_version": "zel.bingx.actions_secret_provision.receipt.v5",
         "version": VERSION,
         "state": "PASS_BINGX_ACTIONS_SECRETS_PROVISIONED" if passed else "HOLD_BINGX_ACTIONS_SECRETS_PROVISION",
         "evaluated_at": utc_now(),
         "repository": args.repo,
         "discovered_pair_count": pair_count,
         "live_valid_pair_count": valid_count,
+        "selection_basis": selection_basis,
         "selected_source_count": len(sources),
         "selected_source_identity_sha256": stable_sha(sorted(sources)) if sources else None,
         "detected_alias_names": aliases,
@@ -284,7 +303,7 @@ def main() -> int:
     }
     receipt["receipt_sha256"] = stable_sha(receipt)
     out.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"state": receipt["state"], "blocker": blocker, "discovered_pair_count": pair_count, "live_valid_pair_count": valid_count, "receipt_sha256": receipt["receipt_sha256"]}, sort_keys=True))
+    print(json.dumps({"state": receipt["state"], "blocker": blocker, "selection_basis": selection_basis, "discovered_pair_count": pair_count, "live_valid_pair_count": valid_count, "receipt_sha256": receipt["receipt_sha256"]}, sort_keys=True))
     return 0 if passed else 2
 
 

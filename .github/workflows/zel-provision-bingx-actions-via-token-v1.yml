@@ -1,0 +1,82 @@
+name: ZEL Provision BingX Actions Via Token V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-provision-bingx-actions-via-token-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  provision:
+    if: github.actor == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Copy authoritative env privately
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:/etc/z-alimi/bingx.env" "$GITHUB_WORKSPACE/.ssh/bingx.env"
+          test -s "$GITHUB_WORKSPACE/.ssh/bingx.env"
+      - name: Set repository Actions secrets without logging values
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          values={}
+          for raw in Path('.ssh/bingx.env').read_text(errors='ignore').splitlines():
+              line=raw.strip()
+              if line.startswith('export '): line=line[7:].strip()
+              if not line or line.startswith('#') or '=' not in line: continue
+              k,v=line.split('=',1); values[k.strip()]=v.strip().strip("'\"")
+          assert values.get('BINGX_API_KEY')
+          assert values.get('BINGX_API_SECRET') or values.get('BINGX_SECRET_KEY')
+          Path('.ssh/api_key').write_text(values['BINGX_API_KEY'])
+          Path('.ssh/secret_key').write_text(values.get('BINGX_API_SECRET') or values['BINGX_SECRET_KEY'])
+          PY
+          gh secret set BINGX_API_KEY --repo "$GITHUB_REPOSITORY" < "$GITHUB_WORKSPACE/.ssh/api_key"
+          gh secret set BINGX_SECRET_KEY --repo "$GITHUB_REPOSITORY" < "$GITHUB_WORKSPACE/.ssh/secret_key"
+          gh secret list --repo "$GITHUB_REPOSITORY" --json name --jq 'map(.name) | sort' > out/secret_names.json
+      - name: Verify names only
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          names=json.load(open('out/secret_names.json'))
+          assert 'BINGX_API_KEY' in names and 'BINGX_SECRET_KEY' in names,names
+          print({'state':'PASS_BINGX_ACTIONS_SECRET_NAMES_VERIFIED','verified':['BINGX_API_KEY','BINGX_SECRET_KEY'],'secret_values_logged':False})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-provision-bingx-actions-via-token-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key" "$GITHUB_WORKSPACE/.ssh/bingx.env" "$GITHUB_WORKSPACE/.ssh/api_key" "$GITHUB_WORKSPACE/.ssh/secret_key"

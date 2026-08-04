@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/tools/zel_sample_expansion_coverage_inventory_v1.py
           grep -q 'economics_inspected.*False' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
+          grep -q 'holdout_metrics_inspected.*False' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
           grep -q 'protected_mutations.*0' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
           grep -q 'order_authority.*BLOCKED' backend/tools/zel_sample_expansion_coverage_inventory_v1.py
 
@@ -74,6 +75,7 @@ jobs:
             "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_sample_expansion_coverage_inventory_v1.py' \
               --root /opt/zel/historical-oos-v1 \
               --root /var/lib/zel-research/data-b-1m-v2 \
+              --content-root /opt/zel/historical-oos-v1 \
               --out '$remote/coverage_inventory.json'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST:$remote/coverage_inventory.json" out/coverage_inventory.json
@@ -94,12 +96,13 @@ jobs:
           assert r['protected_mutations']==0,r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
           assert r['total_file_count']>0,r
-          print({k:r[k] for k in ('state','root_count','total_file_count','total_bytes','receipt_sha256')})
+          assert any(root['content_scanned_file_count']>0 for root in r['roots']),r
+          print({k:r[k] for k in ('state','root_count','total_file_count','total_bytes','content_coverage_quality_pass','receipt_sha256')})
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zel-sample-expansion-coverage-inventory-v1-${{ github.run_id }}
+          name: zel-sample-expansion-coverage-inventory-v2-${{ github.run_id }}
           path: out
           if-no-files-found: error
           retention-days: 90

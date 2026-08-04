@@ -11,18 +11,48 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V1"
-KEY_NAMES = ("BINGX_API_KEY", "BINGX_SECRET_KEY")
+VERSION = "ZEL_PROVISION_BINGX_ACTIONS_SECRETS_V2"
+TARGET_NAMES = ("BINGX_API_KEY", "BINGX_SECRET_KEY")
+KEY_ALIASES = {
+    "bingxapikey",
+    "bingxkey",
+    "bingxaccesskey",
+    "bingxapiaccesskey",
+    "bingxkeyid",
+}
+SECRET_ALIASES = {
+    "bingxsecretkey",
+    "bingxapisecret",
+    "bingxsecret",
+    "bingxapisecretkey",
+}
 SEARCH_ROOTS = (
     Path("/home/z"),
-    Path("/opt/z-os"),
+    Path("/opt"),
     Path("/etc/z-os"),
+    Path("/etc/zel"),
     Path("/etc/default"),
+    Path("/etc/systemd/system"),
 )
 MAX_FILE_BYTES = 1_048_576
-NAME_HINTS = (".env", "env", "secret", "credential", "config")
+NAME_HINTS = (
+    ".env",
+    "env",
+    "secret",
+    "credential",
+    "config",
+    "bingx",
+    "exchange",
+    "key",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".service",
+)
 ASSIGNMENT = re.compile(
-    r"^\s*(?:export\s+)?(?P<name>BINGX_API_KEY|BINGX_SECRET_KEY)\s*=\s*(?P<value>.*?)\s*$"
+    r"^\s*(?:export\s+|Environment=)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*?)\s*$"
 )
 
 
@@ -36,14 +66,32 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def classify_name(value: str, context: str = "") -> str | None:
+    normalized = normalize_name(value)
+    ctx = normalize_name(context)
+    if normalized in KEY_ALIASES:
+        return "BINGX_API_KEY"
+    if normalized in SECRET_ALIASES:
+        return "BINGX_SECRET_KEY"
+    if "bingx" in ctx:
+        if normalized in {"apikey", "accesskey", "key", "keyid"}:
+            return "BINGX_API_KEY"
+        if normalized in {"secret", "secretkey", "apisecret", "apisecretkey"}:
+            return "BINGX_SECRET_KEY"
+    return None
+
+
 def unquote(raw: str) -> str:
     value = raw.strip()
     if not value:
         return ""
-    if value[0] in {'\"', "'"}:
-        quote = value[0]
-        if len(value) < 2 or value[-1] != quote:
-            return ""
+    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+        value = value[1:-1]
+    elif value.startswith("'") and value.endswith("'") and len(value) >= 2:
         value = value[1:-1]
     else:
         value = value.split(" #", 1)[0].strip()
@@ -61,7 +109,8 @@ def candidate_files() -> list[Path]:
             try:
                 if path.is_symlink() or not path.is_file():
                     continue
-                if path.stat().st_size <= 0 or path.stat().st_size > MAX_FILE_BYTES:
+                size = path.stat().st_size
+                if size <= 0 or size > MAX_FILE_BYTES:
                     continue
                 low = path.name.lower()
                 if not any(hint in low for hint in NAME_HINTS):
@@ -72,51 +121,83 @@ def candidate_files() -> list[Path]:
     return sorted(set(found))
 
 
-def parse_candidate(path: Path) -> dict[str, str]:
+def add_value(values: dict[str, str], name: str, raw: Any, context: str = "") -> None:
+    target = classify_name(name, context)
+    if target is None or not isinstance(raw, (str, int, float)):
+        return
+    value = unquote(str(raw))
+    if len(value) < 8:
+        return
+    values[target] = value
+
+
+def walk_json(node: Any, values: dict[str, str], context: str = "") -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            child_context = f"{context}.{key}" if context else str(key)
+            add_value(values, str(key), value, context)
+            walk_json(value, values, child_context)
+    elif isinstance(node, list):
+        for item in node:
+            walk_json(item, values, context)
+
+
+def parse_candidate(path: Path) -> tuple[dict[str, str], list[str]]:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except (OSError, PermissionError):
-        return {}
+        return {}, []
     values: dict[str, str] = {}
+    aliases: list[str] = []
     for line in text.splitlines():
         match = ASSIGNMENT.match(line)
         if not match:
             continue
-        name = match.group("name")
+        source_name = match.group("name")
+        target = classify_name(source_name, path.name)
+        if target is None:
+            continue
         value = unquote(match.group("value"))
-        if value:
-            values[name] = value
-    return values
+        if len(value) >= 8:
+            values[target] = value
+            aliases.append(source_name)
+    if path.suffix.lower() == ".json" or text.lstrip().startswith(("{", "[")):
+        try:
+            walk_json(json.loads(text), values, path.name)
+        except json.JSONDecodeError:
+            pass
+    return values, sorted(set(aliases))
 
 
-def find_unique_pair() -> tuple[dict[str, str] | None, list[str], str | None]:
-    pairs: dict[str, tuple[dict[str, str], list[str]]] = {}
-    partials: dict[str, list[tuple[str, str]]] = {name: [] for name in KEY_NAMES}
+def find_unique_pair() -> tuple[dict[str, str] | None, list[str], list[str], str | None]:
+    pairs: dict[str, tuple[dict[str, str], list[str], set[str]]] = {}
+    partials: dict[str, list[tuple[str, str]]] = {name: [] for name in TARGET_NAMES}
     for path in candidate_files():
-        values = parse_candidate(path)
-        for name in KEY_NAMES:
+        values, aliases = parse_candidate(path)
+        for name in TARGET_NAMES:
             if name in values:
                 partials[name].append((str(path), values[name]))
-        if all(name in values for name in KEY_NAMES):
-            material = {name: values[name] for name in KEY_NAMES}
+        if all(name in values for name in TARGET_NAMES):
+            material = {name: values[name] for name in TARGET_NAMES}
             fingerprint = stable_sha(material)
             if fingerprint not in pairs:
-                pairs[fingerprint] = (material, [])
+                pairs[fingerprint] = (material, [], set())
             pairs[fingerprint][1].append(str(path))
+            pairs[fingerprint][2].update(aliases)
     if len(pairs) == 1:
-        material, paths = next(iter(pairs.values()))
-        return material, paths, None
+        material, paths, aliases = next(iter(pairs.values()))
+        return material, paths, sorted(aliases), None
     if len(pairs) > 1:
-        return None, [], "MULTIPLE_DISTINCT_BINGX_CREDENTIAL_PAIRS"
+        return None, [], [], "MULTIPLE_DISTINCT_BINGX_CREDENTIAL_PAIRS"
 
     unique: dict[str, set[str]] = {
-        name: {value for _, value in partials[name]} for name in KEY_NAMES
+        name: {value for _, value in partials[name]} for name in TARGET_NAMES
     }
-    if all(len(unique[name]) == 1 for name in KEY_NAMES):
-        material = {name: next(iter(unique[name])) for name in KEY_NAMES}
-        paths = sorted({path for name in KEY_NAMES for path, _ in partials[name]})
-        return material, paths, None
-    return None, [], "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
+    if all(len(unique[name]) == 1 for name in TARGET_NAMES):
+        material = {name: next(iter(unique[name])) for name in TARGET_NAMES}
+        paths = sorted({path for name in TARGET_NAMES for path, _ in partials[name]})
+        return material, paths, [], None
+    return None, [], [], "BINGX_CREDENTIAL_PAIR_NOT_FOUND"
 
 
 def run_quiet(command: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -138,7 +219,7 @@ def provision(repo: str, values: dict[str, str]) -> tuple[bool, str | None, list
     auth = run_quiet([gh, "auth", "status", "--hostname", "github.com"])
     if auth.returncode != 0:
         return False, "GH_AUTH_NOT_AVAILABLE_ON_VPS", []
-    for name in KEY_NAMES:
+    for name in TARGET_NAMES:
         result = run_quiet(
             [gh, "secret", "set", name, "--repo", repo],
             stdin=values[name],
@@ -156,7 +237,7 @@ def provision(repo: str, values: dict[str, str]) -> tuple[bool, str | None, list
         )
     except json.JSONDecodeError:
         return False, "GH_SECRET_LIST_INVALID_JSON", []
-    if not all(name in names for name in KEY_NAMES):
+    if not all(name in names for name in TARGET_NAMES):
         return False, "GH_SECRET_NAME_VERIFICATION_FAILED", names
     return True, None, names
 
@@ -169,7 +250,7 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    values, paths, discovery_blocker = find_unique_pair()
+    values, paths, aliases, discovery_blocker = find_unique_pair()
     passed = False
     blocker = discovery_blocker
     names: list[str] = []
@@ -177,14 +258,15 @@ def main() -> int:
         passed, blocker, names = provision(args.repo, values)
 
     receipt = {
-        "schema_version": "zel.bingx.actions_secret_provision.receipt.v1",
+        "schema_version": "zel.bingx.actions_secret_provision.receipt.v2",
         "version": VERSION,
         "state": "PASS_BINGX_ACTIONS_SECRETS_PROVISIONED" if passed else "HOLD_BINGX_ACTIONS_SECRETS_PROVISION",
         "evaluated_at": utc_now(),
         "repository": args.repo,
         "source_file_count": len(paths),
         "source_path_sha256": stable_sha(sorted(paths)) if paths else None,
-        "verified_secret_names": [name for name in KEY_NAMES if name in names],
+        "detected_alias_names": aliases,
+        "verified_secret_names": [name for name in TARGET_NAMES if name in names],
         "secret_values_logged": False,
         "secret_values_artifacted": False,
         "protected_mutations": 0,

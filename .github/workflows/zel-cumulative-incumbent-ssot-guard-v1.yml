@@ -1,0 +1,61 @@
+name: ZEL Cumulative Incumbent SSOT Guard V1
+
+on:
+  push:
+    branches:
+      - zel-cumulative-incumbent-ssot-guard-v1
+    paths:
+      - backend/research/zel_cumulative_incumbent_ssot_v1.json
+      - backend/tools/zel_cumulative_incumbent_ssot_guard_v1.py
+      - .github/workflows/zel-cumulative-incumbent-ssot-guard-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_cumulative_incumbent_ssot_v1.json
+      - backend/tools/zel_cumulative_incumbent_ssot_guard_v1.py
+      - .github/workflows/zel-cumulative-incumbent-ssot-guard-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-cumulative-incumbent-ssot-guard-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate SSOT and baseline-reset guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_cumulative_incumbent_ssot_guard_v1.py
+          python backend/tools/zel_cumulative_incumbent_ssot_guard_v1.py --self-test
+          python -m json.tool backend/research/zel_cumulative_incumbent_ssot_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ssot=json.loads(Path('backend/research/zel_cumulative_incumbent_ssot_v1.json').read_text())
+          assert ssot['raw_terminal']['trade_count']==1951
+          assert ssot['raw_terminal']['incremental_control_allowed'] is False
+          assert ssot['accepted_components'][0]['pull_request']==550
+          assert ssot['accepted_components'][0]['cumulative_inclusion_required'] is True
+          assert ssot['diagnostic_only_results'][0]['pull_request']==580
+          assert ssot['diagnostic_only_results'][0]['cumulative_superiority_claim_allowed'] is False
+          assert ssot['current_cumulative_baseline']['materialization_pull_request']==582
+          assert ssot['comparison_policy']['raw_baseline_incremental_forbidden'] is True
+          assert ssot['authority']['execution_authority']=='NONE'
+          assert ssot['authority']['order_authority']=='BLOCKED'
+          print('PASS_CUMULATIVE_INCUMBENT_SSOT_STATIC')
+          PY

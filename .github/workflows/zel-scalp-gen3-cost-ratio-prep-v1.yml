@@ -1,26 +1,30 @@
-name: ZEL Scalp Gen3 Cost Ratio Prep V1
+name: ZEL Scalp Gen3 Cost Ratio V1
 
 on:
   pull_request:
     branches: [zel-cost-floor-screen-exec-v1]
     paths:
-      - backend/tools/zel_exact25_cost_ratio_helper_v1.py
       - backend/research/zel_exact25_cost_ratio_prep_v1.json
+      - backend/research/zel_exact25_cost_ratio_binding_v1.json
+      - backend/tools/zel_exact25_cost_ratio_helper_v1.py
+      - backend/tools/zel_exact25_expanded_1m_prepare_v1.py
+      - backend/tools/zel_exact25_cost_ratio_screen_v1.py
       - .github/workflows/zel-scalp-gen3-cost-ratio-prep-v1.yml
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: zel-scalp-gen3-cost-ratio-prep-v1
-  cancel-in-progress: true
+  group: zel-scalp-gen3-cost-ratio-v1
+  cancel-in-progress: false
 
 jobs:
-  static-prep:
+  static:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,33 +34,208 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Deterministic helper and policy validation
+      - name: Deterministic execution contract validation
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_exact25_cost_ratio_helper_v1.py
+          python -m py_compile \
+            backend/tools/zel_exact25_cost_ratio_helper_v1.py \
+            backend/tools/zel_exact25_expanded_1m_prepare_v1.py \
+            backend/tools/zel_exact25_cost_ratio_screen_v1.py
           python backend/tools/zel_exact25_cost_ratio_helper_v1.py --self-test
+          python backend/tools/zel_exact25_expanded_1m_prepare_v1.py --self-test
+          python backend/tools/zel_exact25_cost_ratio_screen_v1.py --self-test
+          python -m json.tool backend/research/zel_exact25_cost_ratio_prep_v1.json >/dev/null
+          python -m json.tool backend/research/zel_exact25_cost_ratio_binding_v1.json >/dev/null
           python - <<'PY'
           import json
           p=json.load(open('backend/research/zel_exact25_cost_ratio_prep_v1.json'))
+          b=json.load(open('backend/research/zel_exact25_cost_ratio_binding_v1.json'))
           assert p['strategy_id']=='scalp_snap'
           assert p['axis_id']=='ENTRY_RISK_DISTANCE_TO_ALL_IN_COST_RATIO'
           assert p['generation']==3
-          assert p['dependency']['expanded_dataset_pr']==575
-          assert p['dependency']['economic_replay_allowed_before_dependency_pass'] is False
+          assert p['dependency']['accepted'] is True
+          assert p['dependency']['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
           assert p['candidate_ratio_thresholds']==['0.75','1.00','1.25','1.50','2.00','2.50']
+          assert p['selection_protocol']['double_baseline_parity_required'] is True
           assert p['selection_protocol']['select_on_w1_only'] is True
           assert p['selection_protocol']['freeze_selected_threshold_for_w2_w3'] is True
           assert p['selection_protocol']['future_MFE_MAE_forbidden'] is True
-          assert p['economics_inspected'] is False
-          assert p['protected_mutations']==0
-          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          assert p['positive_gate']['minimum_retention_pct']==60.0
+          assert b['state']=='PASS_GEN3_DEPENDENCIES_BOUND'
+          assert b['expanded_dataset']['artifact_id']==8916685107
+          assert b['expanded_dataset']['dataset_sha256']==p['dependency']['dataset_sha256']
+          assert b['cost_receipt']['state']=='PASS_BINGX_LIGHT_CALIBRATION'
+          assert abs(b['cost_receipt']['all_in_cost_pct']-0.1316910918)<1e-12
+          for row in (p,b):
+              assert row['protected_mutations']==0
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED'
           PY
-      - name: Verify preparation-only scope
+      - name: Verify bounded research-only scope
         run: |
           set -euo pipefail
-          changed=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
           printf '%s\n' "$changed"
-          test "$(printf '%s\n' "$changed" | grep -Ev '^backend/tools/zel_exact25_cost_ratio_helper_v1.py$|^backend/research/zel_exact25_cost_ratio_prep_v1.json$|^\.github/workflows/zel-scalp-gen3-cost-ratio-prep-v1.yml$' | wc -l)" -eq 0
+          test "$(printf '%s\n' "$changed" | grep -Ev '^backend/tools/zel_exact25_cost_ratio_helper_v1.py$|^backend/tools/zel_exact25_expanded_1m_prepare_v1.py$|^backend/tools/zel_exact25_cost_ratio_screen_v1.py$|^backend/research/zel_exact25_cost_ratio_prep_v1.json$|^backend/research/zel_exact25_cost_ratio_binding_v1.json$|^\.github/workflows/zel-scalp-gen3-cost-ratio-prep-v1.yml$' | wc -l)" -eq 0
           ! grep -R "execution_authority.*LIVE\|order_authority.*ENABLED\|live_allowed.*true" \
             backend/tools/zel_exact25_cost_ratio_helper_v1.py \
-            backend/research/zel_exact25_cost_ratio_prep_v1.json
+            backend/tools/zel_exact25_expanded_1m_prepare_v1.py \
+            backend/tools/zel_exact25_cost_ratio_screen_v1.py \
+            backend/research/zel_exact25_cost_ratio_prep_v1.json \
+            backend/research/zel_exact25_cost_ratio_binding_v1.json
+
+  heavy:
+    needs: static
+    if: >-
+      github.event.pull_request.number == 576 &&
+      github.event.pull_request.head.ref == 'zel-scalp-gen3-cost-ratio-prep-v1' &&
+      github.event.pull_request.base.ref == 'zel-cost-floor-screen-exec-v1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Download accepted expanded source artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: leegkssk2000-commits/vultr-z
+          run-id: 30971232337
+          name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
+          path: sealed
+          github-token: ${{ github.token }}
+      - name: Verify downloaded dependency before VPS use
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          m=json.load(open('sealed/manifest.json'))
+          v=json.load(open('sealed/verification_receipt.json'))
+          assert m['dataset_sha256']==v['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
+          assert v['state']=='PASS_BINGX_1M_GAP_EXCLUDED_DATASET_VERIFIED'
+          assert v['verified_total_rows']==1072800 and v['verified_file_count']==10
+          assert v['duplicate_timestamp_count']==v['missing_interval_count']==v['unexpected_timestamp_count']==0
+          expected=v['receipt_sha256']; material={k:x for k,x in v.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected=='b7d04a66c9088803521daf8f9063e032fda20dd3b541ab6e0159ce720c68ba39'
+          PY
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/checkpoints "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Expanded W1-W3 Gen3 replay with one-heavy lock
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-scalp-gen3-${GITHUB_RUN_ID}"
+          checkpoint_root="/opt/zel/research-runtime/checkpoints/scalp-gen3-cost-ratio/${PR_HEAD_SHA}"
+          lock_path="/opt/zel/research-runtime/locks/one-heavy-vps-replay.lock"
+          echo "$remote" > out/remote_path.txt
+          echo "$checkpoint_root" > out/checkpoint_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "mkdir -p '$remote/sealed' '$checkpoint_root/units' /opt/zel/research-runtime/locks"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -r sealed/* "$VPS_USER@$VPS_HOST:$remote/sealed/"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_exact25_selected_indicator_screen_v1.py \
+            backend/tools/zel_exact25_cost_floor_screen_v1.py \
+            backend/tools/zel_exact25_cost_ratio_helper_v1.py \
+            backend/tools/zel_exact25_expanded_1m_prepare_v1.py \
+            backend/tools/zel_exact25_cost_ratio_screen_v1.py \
+            backend/research/zel_exact25_cost_ratio_prep_v1.json \
+            backend/research/zel_exact25_cost_ratio_binding_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          timeout 42600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; exec 9>'$lock_path'; flock -n 9 || { echo ONE_HEAVY_VPS_REPLAY_ACTIVE >&2; exit 75; }; \
+             engine=/opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py; \
+             rm -rf '$remote/expanded-data'; \
+             /home/z/z/.venv/bin/python '$remote/zel_exact25_expanded_1m_prepare_v1.py' \
+               --base-root /opt/zel/historical-oos-v1 \
+               --sealed-root '$remote/sealed' \
+               --out-root '$remote/expanded-data' \
+               --receipt-out '$checkpoint_root/expanded_receipt.json'; \
+             nice -n 15 ionice -c2 -n7 env PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               '$remote/zel_exact25_cost_ratio_screen_v1.py' \
+               --engine \"\$engine\" \
+               --source-root /home/z/z \
+               --data-root '$remote/expanded-data' \
+               --selected-helper '$remote/zel_exact25_selected_indicator_screen_v1.py' \
+               --cost-floor-helper '$remote/zel_exact25_cost_floor_screen_v1.py' \
+               --policy '$remote/zel_exact25_cost_ratio_prep_v1.json' \
+               --binding '$remote/zel_exact25_cost_ratio_binding_v1.json' \
+               --expanded-receipt '$checkpoint_root/expanded_receipt.json' \
+               --checkpoint-dir '$checkpoint_root/units' \
+               --heartbeat-out '$checkpoint_root/heartbeat.json' \
+               --out '$checkpoint_root/screen.json'"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > out/replay_rc.txt
+          for name in expanded_receipt.json heartbeat.json screen.json; do
+            scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$checkpoint_root/$name" "out/$name" 2>/dev/null || true
+          done
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$checkpoint_root/units/*.json" out/checkpoints/ 2>/dev/null || true
+          if [ "$rc" -ne 0 ]; then
+            echo "Gen3 replay exited rc=$rc; deterministic checkpoints retained at $checkpoint_root" >&2
+            exit "$rc"
+          fi
+      - name: Verify terminal Gen3 receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          def verify(row,key='receipt_sha256'):
+              expected=row[key]
+              material={k:v for k,v in row.items() if k!=key}
+              actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+              assert actual==expected,(actual,expected)
+          e=json.load(open('out/expanded_receipt.json'))
+          h=json.load(open('out/heartbeat.json'))
+          r=json.load(open('out/screen.json'))
+          assert e['state']=='PASS_EXPANDED_1M_PARTITIONS_PREPARED' and e['total_1m_rows']==1288800,e
+          assert e['duplicate_timestamp_count']==e['missing_interval_count']==e['unexpected_timestamp_count']==0,e
+          assert r['state']=='PASS_SCALP_GEN3_COST_RATIO_COMPLETE',r
+          assert r['double_baseline_parity']['all_pass'] is True,r
+          assert r['candidate_count']==6,r
+          assert r['threshold_selected_on_w1_only'] is True and r['selected_threshold_frozen_for_w2_w3'] is True,r
+          assert r['future_MFE_MAE_used'] is False,r
+          assert r['protected_mutations']==0 and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          assert h['state']=='PASS' and h['completed_count']==h['expected_count']==9,h
+          verify(e); verify(h); verify(r)
+          print({'state':r['state'],'survivor':r['survivor'],'survivor_state':r['survivor_state'],'receipt_sha256':r['receipt_sha256']})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-scalp-gen3-cost-ratio-v1-${{ github.run_id }}
+          path: |
+            out/expanded_receipt.json
+            out/heartbeat.json
+            out/screen.json
+            out/replay_rc.txt
+            out/checkpoints/*.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

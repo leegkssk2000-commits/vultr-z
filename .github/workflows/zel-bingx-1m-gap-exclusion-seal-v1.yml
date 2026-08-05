@@ -1,0 +1,138 @@
+name: ZEL BingX 1m Gap Exclusion Seal V1
+
+on:
+  pull_request:
+    branches: [zel-bingx-1m-backfill-stage-v1]
+    paths:
+      - backend/research/zel_bingx_1m_gap_exclusion_policy_v1.json
+      - backend/tools/zel_bingx_1m_gap_exclusion_seal_v1.py
+      - .github/workflows/zel-bingx-1m-gap-exclusion-seal-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-bingx-1m-gap-exclusion-seal-v1
+  cancel-in-progress: true
+
+jobs:
+  static:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static fail-closed validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_bingx_1m_backfill_stage_v1.py \
+            backend/tools/zel_bingx_1m_gap_exclusion_seal_v1.py
+          PYTHONPATH=backend/tools python backend/tools/zel_bingx_1m_gap_exclusion_seal_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/zel_bingx_1m_gap_exclusion_policy_v1.json'))
+          assert p['expected_rows_per_symbol']==214560
+          assert p['expected_total_rows']==1072800
+          assert p['pre_registered_exclusion']['start_utc']=='2026-02-13T00:00:00Z'
+          assert p['pre_registered_exclusion']['end_exclusive_utc']=='2026-02-14T00:00:00Z'
+          assert p['pre_registered_exclusion']['apply_to_all_symbols'] is True
+          assert p['economics_inspected'] is False
+          assert p['protected_mutations']==0
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          PY
+
+  stage:
+    needs: static
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out/data
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Stage gap-excluded public BingX 1m history
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-bingx-1m-gap-exclusion-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data' '$remote/research'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_bingx_1m_backfill_stage_v1.py \
+            backend/tools/zel_bingx_1m_gap_exclusion_seal_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/research/zel_bingx_1m_gap_exclusion_policy_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/research/"
+          timeout 9600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
+            "cd '$remote' && nice -n 19 ionice -c3 /home/z/z/.venv/bin/python zel_bingx_1m_gap_exclusion_seal_v1.py \
+              --policy '$remote/research/zel_bingx_1m_gap_exclusion_policy_v1.json' \
+              --out-dir '$remote/data' --manifest '$remote/manifest.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/manifest.json" out/manifest.json
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/data/*.csv.gz" out/data/
+      - name: Independent exact segment verification
+        run: |
+          set -euo pipefail
+          PYTHONPATH=backend/tools python backend/tools/zel_bingx_1m_gap_exclusion_seal_v1.py \
+            --verify --manifest out/manifest.json --out-dir out/data | tee out/verification_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/verification_receipt.json'))
+          assert r['state']=='PASS_BINGX_1M_GAP_EXCLUDED_DATASET_VERIFIED'
+          assert r['verified_file_count']==10
+          assert r['verified_total_rows']==1072800
+          assert r['duplicate_timestamp_count']==0
+          assert r['missing_interval_count']==0
+          assert r['protected_mutations']==0
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-1m-gap-exclusion-seal-v1-${{ github.run_id }}
+          path: |
+            out/manifest.json
+            out/verification_receipt.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

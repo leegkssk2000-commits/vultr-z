@@ -5,6 +5,7 @@ on:
     branches: [zel-sample-expansion-coverage-audit-v1]
     paths:
       - backend/tools/zel_bingx_1m_backfill_stage_v1.py
+      - backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py
       - .github/workflows/zel-bingx-1m-backfill-stage-v1.yml
   workflow_dispatch:
 
@@ -32,8 +33,10 @@ jobs:
       - name: Static fail-closed validation
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_bingx_1m_backfill_stage_v1.py
-          python backend/tools/zel_bingx_1m_backfill_stage_v1.py --self-test --out-dir /tmp/unused --manifest /tmp/unused.json
+          python -m py_compile backend/tools/zel_bingx_1m_backfill_stage_v1.py backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py
+          python backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py --self-test --out-dir /tmp/unused --manifest /tmp/unused.json
+          grep -q 'REPAIR_ROUNDS = 3' backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py
+          grep -q 'COVERAGE_FAIL_AFTER_REPAIR' backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py
           grep -q 'auth_required.*False' backend/tools/zel_bingx_1m_backfill_stage_v1.py
           grep -q 'economics_inspected.*False' backend/tools/zel_bingx_1m_backfill_stage_v1.py
           grep -q 'protected_mutations.*0' backend/tools/zel_bingx_1m_backfill_stage_v1.py
@@ -72,10 +75,11 @@ jobs:
           ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             backend/tools/zel_bingx_1m_backfill_stage_v1.py \
+            backend/tools/zel_bingx_1m_backfill_stage_v1_gaprepair.py \
             "$VPS_USER@$VPS_HOST:$remote/"
           timeout 9600s ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=60 "$VPS_USER@$VPS_HOST" \
-            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_1m_backfill_stage_v1.py' \
+            "cd '$remote' && nice -n 19 ionice -c3 /home/z/z/.venv/bin/python zel_bingx_1m_backfill_stage_v1_gaprepair.py \
               --out-dir '$remote/data' --manifest '$remote/manifest.json'"
           scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST:$remote/manifest.json" out/manifest.json

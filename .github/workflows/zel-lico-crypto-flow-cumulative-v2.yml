@@ -1,0 +1,225 @@
+name: ZEL Lico Crypto Flow Cumulative V2
+
+on:
+  push:
+    branches:
+      - zel-lico-crypto-flow-cumulative-v2
+    paths:
+      - backend/research/zel_lico_crypto_flow_cumulative_contract_v2.json
+      - backend/tools/zel_grid_cumulative_materializer_v1.py
+      - backend/tools/zel_lico_crypto_flow_cumulative_v2.py
+      - .github/workflows/zel-lico-crypto-flow-cumulative-v2.yml
+  pull_request:
+    branches:
+      - zel-lico-crypto-flow-binding-v1
+    paths:
+      - backend/research/zel_lico_crypto_flow_cumulative_contract_v2.json
+      - backend/tools/zel_grid_cumulative_materializer_v1.py
+      - backend/tools/zel_lico_crypto_flow_cumulative_v2.py
+      - .github/workflows/zel-lico-crypto-flow-cumulative-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-lico-crypto-flow-cumulative-v2
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate cumulative contract and tools
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/tools/zel_grid_cumulative_materializer_v1.py \
+            backend/tools/zel_lico_crypto_flow_cumulative_v2.py \
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            backend/tools/zel_lico_crypto_flow_v1.py
+          python backend/tools/zel_grid_cumulative_materializer_v1.py --self-test
+          python backend/tools/zel_lico_crypto_flow_cumulative_v2.py --self-test
+          python -m json.tool backend/research/zel_lico_crypto_flow_cumulative_contract_v2.json >/dev/null
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          contract_path=Path('backend/research/zel_lico_crypto_flow_cumulative_contract_v2.json')
+          materializer_path=Path('backend/tools/zel_grid_cumulative_materializer_v1.py')
+          evaluator_path=Path('backend/tools/zel_lico_crypto_flow_cumulative_v2.py')
+          workflow_path=Path('.github/workflows/zel-lico-crypto-flow-cumulative-v2.yml')
+          c=json.loads(contract_path.read_text())
+          assert c['raw_terminal']['sha256']=='62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'
+          assert c['raw_terminal']['trade_count']==1951
+          assert c['incumbent']['pull_request']==550
+          assert c['incumbent']['candidate_id']=='BLOCK_ENTRY_REGIME_TREND_SHORT'
+          assert c['incumbent']['exact_source_replay_required'] is True
+          assert c['incumbent']['ledger_level_approximation_forbidden'] is True
+          assert c['lico']['parent_pull_request']==580
+          assert c['lico']['select_on_w1_only'] is True
+          assert c['lico']['freeze_selected_config_through_w2_w3'] is True
+          assert c['comparison']['raw_minus_746_incremental_comparison_forbidden'] is True
+          assert c['parallelism']['maximum_heavy_replays']==1
+          assert c['authority']['execution_authority']=='NONE'
+          assert c['authority']['order_authority']=='BLOCKED'
+          for path in (materializer_path,evaluator_path):
+              text=path.read_text()
+              for marker in ('protected_mutations','order_authority','raw_trade_rows_published'):
+                  assert marker in text,(path,marker)
+          receipt={
+            'schema_version':'zel.lico.crypto_flow.cumulative.static.v2',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_LICO_CRYPTO_CUMULATIVE_STATIC',
+            'contract_sha256':hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+            'materializer_sha256':hashlib.sha256(materializer_path.read_bytes()).hexdigest(),
+            'evaluator_sha256':hashlib.sha256(evaluator_path.read_bytes()).hexdigest(),
+            'workflow_sha256':hashlib.sha256(workflow_path.read_bytes()).hexdigest(),
+            'protected_mutations':0,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/static_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print('PASS_LICO_CRYPTO_CUMULATIVE_STATIC')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lico-crypto-cumulative-static-${{ github.run_id }}
+          path: out/static_receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cumulative_replay_and_efficacy:
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare read-only VPS transport
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out/private
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Wait for one-heavy lock and materialize exact PR550 incumbent
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-lico-cumulative-${GITHUB_RUN_ID}"
+          lock_path="/opt/zel/research-runtime/locks/one-heavy-vps-replay.lock"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote' /opt/zel/research-runtime/locks"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            backend/tools/zel_grid_cumulative_materializer_v1.py \
+            backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            backend/tools/zel_grid_entry_regime_fork_v1.py \
+            backend/research/zel_grid_block_trend_short_exact_replay_v1.json \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 42600s ssh -i ~/.ssh/vps_key -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=60 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; exec 9>'$lock_path'; flock -w 42000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
+             /home/z/z/.venv/bin/python '$remote/zel_grid_cumulative_materializer_v1.py' \
+               --policy '$remote/zel_grid_block_trend_short_exact_replay_v1.json' \
+               --grid-tool '$remote/zel_grid_block_trend_short_exact_replay_v1.py' \
+               --base-tool '$remote/zel_grid_entry_regime_fork_v1.py' \
+               --engine /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py \
+               --terminal-root /var/lib/zel-research/data-b-1m-v2 \
+               --data-root /opt/zel/historical-oos-v1 \
+               --candidate-rows-out '$remote/grid_candidate.jsonl.gz' \
+               --receipt-out '$remote/grid_materializer_receipt.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/grid_candidate.jsonl.gz" out/private/grid_candidate.jsonl.gz
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/grid_materializer_receipt.json" out/grid_materializer_receipt.json
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:/var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz" out/private/trades.jsonl.gz
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+
+      - name: Build cumulative portfolio and evaluate incremental Lico efficacy
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_lico_crypto_flow_cumulative_v2.py \
+            --cumulative-contract backend/research/zel_lico_crypto_flow_cumulative_contract_v2.json \
+            --lico-contract backend/research/zel_lico_crypto_flow_contract_v1.json \
+            --raw-terminal out/private/trades.jsonl.gz \
+            --grid-candidate out/private/grid_candidate.jsonl.gz \
+            --grid-receipt out/grid_materializer_receipt.json \
+            --lico-engine backend/tools/zel_lico_crypto_flow_v1.py \
+            --grid-tool backend/tools/zel_grid_block_trend_short_exact_replay_v1.py \
+            --out out/lico_crypto_cumulative_effectiveness.json
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          path=Path('out/lico_crypto_cumulative_effectiveness.json')
+          row=json.loads(path.read_text())
+          expected=row['receipt_sha256']
+          material={k:v for k,v in row.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['comparison_authority']=='CUMULATIVE_INCUMBENT_VS_CUMULATIVE_PLUS_LICO_ONLY'
+          assert row['raw_minus_746_used_as_incremental_baseline'] is False
+          assert row['grid_checks'] and all(row['grid_checks'].values())
+          assert row['cumulative_checks'] and all(row['cumulative_checks'].values())
+          assert row['binding']['future_snapshot_leak_count']==0
+          assert row['protected_mutations']==0
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['action']=='hold'
+          print(json.dumps({
+            'state':row['state'],
+            'cumulative_trade_count':row['lineage']['cumulative_trade_count'],
+            'selected_config_id':row['selected_config_id'],
+            'survivor':row['survivor'],
+            'receipt_sha256':row['receipt_sha256']
+          },sort_keys=True))
+          PY
+
+      - name: Delete all private ledgers and SSH key
+        if: always()
+        run: |
+          rm -rf out/private
+          rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lico-crypto-cumulative-effectiveness-${{ github.run_id }}
+          path: |
+            out/grid_materializer_receipt.json
+            out/lico_crypto_cumulative_effectiveness.json
+          if-no-files-found: error
+          retention-days: 90

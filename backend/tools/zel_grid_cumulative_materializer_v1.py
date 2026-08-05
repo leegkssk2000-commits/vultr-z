@@ -179,6 +179,7 @@ def build(
         "candidate_pass": True,
         "private_candidate_rows_sha256": grid.file_sha(candidate_rows_out),
         "private_candidate_rows_published": False,
+        "raw_trade_rows_published": False,
         "canonical_mutated": False,
         "registry_mutated": False,
         "runtime_mutated": False,

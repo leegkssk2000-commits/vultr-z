@@ -1,0 +1,61 @@
+name: ZEL Scalp Gen3 Cost Ratio Prep V1
+
+on:
+  pull_request:
+    branches: [zel-cost-floor-screen-exec-v1]
+    paths:
+      - backend/tools/zel_exact25_cost_ratio_helper_v1.py
+      - backend/research/zel_exact25_cost_ratio_prep_v1.json
+      - .github/workflows/zel-scalp-gen3-cost-ratio-prep-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-scalp-gen3-cost-ratio-prep-v1
+  cancel-in-progress: true
+
+jobs:
+  static-prep:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Deterministic helper and policy validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_exact25_cost_ratio_helper_v1.py
+          python backend/tools/zel_exact25_cost_ratio_helper_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/zel_exact25_cost_ratio_prep_v1.json'))
+          assert p['strategy_id']=='scalp_snap'
+          assert p['axis_id']=='ENTRY_RISK_DISTANCE_TO_ALL_IN_COST_RATIO'
+          assert p['generation']==3
+          assert p['dependency']['expanded_dataset_pr']==575
+          assert p['dependency']['economic_replay_allowed_before_dependency_pass'] is False
+          assert p['candidate_ratio_thresholds']==['0.75','1.00','1.25','1.50','2.00','2.50']
+          assert p['selection_protocol']['select_on_w1_only'] is True
+          assert p['selection_protocol']['freeze_selected_threshold_for_w2_w3'] is True
+          assert p['selection_protocol']['future_MFE_MAE_forbidden'] is True
+          assert p['economics_inspected'] is False
+          assert p['protected_mutations']==0
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          PY
+      - name: Verify preparation-only scope
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
+          printf '%s\n' "$changed"
+          test "$(printf '%s\n' "$changed" | grep -Ev '^backend/tools/zel_exact25_cost_ratio_helper_v1.py$|^backend/research/zel_exact25_cost_ratio_prep_v1.json$|^\.github/workflows/zel-scalp-gen3-cost-ratio-prep-v1.yml$' | wc -l)" -eq 0
+          ! grep -R "execution_authority.*LIVE\|order_authority.*ENABLED\|live_allowed.*true" \
+            backend/tools/zel_exact25_cost_ratio_helper_v1.py \
+            backend/research/zel_exact25_cost_ratio_prep_v1.json

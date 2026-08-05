@@ -10,18 +10,17 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
-VERSION = "ZEL_EXACT25_EXPANDED_1M_PREPARE_V1"
-SCHEMA = "zel.exact25.expanded_1m.prepare.v1"
+VERSION = "ZEL_EXACT25_EXPANDED_1M_PREPARE_V2"
+SCHEMA = "zel.exact25.expanded_1m.prepare.v2"
 INTERVAL_MS = 60_000
 CSV_FIELDS = ("timestamp_ms", "open", "high", "low", "close", "volume")
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "LINKUSDT", "SOLUSDT", "XRPUSDT")
-WINDOWS = (
-    ("1m_w1", "W1_PRE", 1769589000000, 1770940800000),
-    ("1m_w1", "W1_POST", 1771027200000, 1774773000000),
-    ("1m_w2", "W2", 1774773000000, 1779957000000),
-    ("1m_w3", "W3", 1779957000000, 1785141000000),
+WINDOWS: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = (
+    ("1m_w1", ((1769589000000, 1770940800000), (1771027200000, 1774773000000))),
+    ("1m_w2", ((1774773000000, 1779957000000),)),
+    ("1m_w3", ((1779957000000, 1785141000000),)),
 )
 
 
@@ -85,32 +84,38 @@ def load_symbol_rows(base_root: Path, sealed_root: Path, symbol: str) -> dict[in
     return rows
 
 
-def write_segment(path: Path, rows: Mapping[int, Mapping[str, str]], start_ms: int, end_ms: int) -> dict[str, Any]:
+def write_window(path: Path, rows: Mapping[int, Mapping[str, str]], ranges: Sequence[tuple[int, int]]) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
-    prior: int | None = None
+    first: int | None = None
+    last: int | None = None
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        for timestamp in range(start_ms, end_ms, INTERVAL_MS):
-            row = rows.get(timestamp)
-            if row is None:
-                raise RuntimeError(f"EXPANDED_SEGMENT_GAP:{path}:{timestamp}")
-            if prior is not None and timestamp - prior != INTERVAL_MS:
-                raise RuntimeError(f"EXPANDED_SEGMENT_NONCONTIGUOUS:{path}:{prior}:{timestamp}")
-            writer.writerow(row)
-            prior = timestamp
-            count += 1
-    expected = (end_ms - start_ms) // INTERVAL_MS
-    if count != expected:
-        raise RuntimeError(f"EXPANDED_SEGMENT_COUNT_MISMATCH:{path}:{count}:{expected}")
+        for start_ms, end_ms in ranges:
+            prior: int | None = None
+            for timestamp in range(start_ms, end_ms, INTERVAL_MS):
+                row = rows.get(timestamp)
+                if row is None:
+                    raise RuntimeError(f"EXPANDED_SEGMENT_GAP:{path}:{timestamp}")
+                if prior is not None and timestamp - prior != INTERVAL_MS:
+                    raise RuntimeError(f"EXPANDED_SEGMENT_NONCONTIGUOUS:{path}:{prior}:{timestamp}")
+                writer.writerow(row)
+                first = timestamp if first is None else first
+                last = timestamp
+                prior = timestamp
+                count += 1
+    expected = sum((end - start) // INTERVAL_MS for start, end in ranges)
+    if count != expected or first is None or last is None:
+        raise RuntimeError(f"EXPANDED_WINDOW_COUNT_MISMATCH:{path}:{count}:{expected}")
     return {
         "row_count": count,
         "sha256": file_sha(path),
-        "start_ms": start_ms,
-        "end_exclusive_ms": end_ms,
-        "first_timestamp_ms": start_ms,
-        "last_timestamp_ms": end_ms - INTERVAL_MS,
+        "start_ms": ranges[0][0],
+        "end_exclusive_ms": ranges[-1][1],
+        "first_timestamp_ms": first,
+        "last_timestamp_ms": last,
+        "excluded_gap_count": max(0, len(ranges) - 1),
         "missing_interval_count": 0,
         "duplicate_timestamp_count": 0,
     }
@@ -182,16 +187,10 @@ def run(base_root: Path, sealed_root: Path, out_root: Path, receipt_out: Path) -
     for symbol in SYMBOLS:
         rows = load_symbol_rows(base_root, sealed_root, symbol)
         template = choose_template(removed_1m, symbol)
-        for window_id, segment_id, start_ms, end_ms in WINDOWS:
-            relative = Path("market") / "1m" / window_id / f"{symbol}_{segment_id}.csv"
-            result = write_segment(out_root / relative, rows, start_ms, end_ms)
-            output = {
-                "symbol": symbol,
-                "window_id": window_id,
-                "segment_id": segment_id,
-                "relative_path": relative.as_posix(),
-                **result,
-            }
+        for window_id, ranges in WINDOWS:
+            relative = Path("market") / "1m" / window_id / f"{symbol}.csv"
+            result = write_window(out_root / relative, rows, ranges)
+            output = {"symbol": symbol, "window_id": window_id, "relative_path": relative.as_posix(), "ranges": [list(pair) for pair in ranges], **result}
             outputs.append(output)
             new_manifest_rows.append(manifest_row(template, symbol=symbol, window_id=window_id, relative_path=relative.as_posix(), result=result, source_dataset_sha=expected_dataset_sha))
     manifest["files"] = preserved + new_manifest_rows
@@ -209,11 +208,11 @@ def run(base_root: Path, sealed_root: Path, out_root: Path, receipt_out: Path) -
             "1m_w2": ["2026-03-29T08:30:00Z", "2026-05-28T08:30:00Z"],
             "1m_w3": ["2026-05-28T08:30:00Z", "2026-07-27T08:30:00Z"],
         },
-        "segment_count": len(outputs),
+        "market_file_count": len(outputs),
         "row_count": sum(int(row["row_count"]) for row in outputs),
     }
     manifest["expanded_1m"]["partition_sha256"] = stable_sha([
-        {key: row[key] for key in ("symbol", "window_id", "segment_id", "relative_path", "row_count", "sha256", "start_ms", "end_exclusive_ms")}
+        {key: row[key] for key in ("symbol", "window_id", "relative_path", "row_count", "sha256", "start_ms", "end_exclusive_ms")}
         for row in outputs
     ])
     atomic_json(manifest_path, manifest)
@@ -256,11 +255,10 @@ def run(base_root: Path, sealed_root: Path, out_root: Path, receipt_out: Path) -
 
 
 def self_test() -> int:
-    assert (1770940800000 - 1769589000000) // INTERVAL_MS == 22_530
-    assert (1774773000000 - 1771027200000) // INTERVAL_MS == 62_430
-    assert (1779957000000 - 1774773000000) // INTERVAL_MS == 86_400
-    assert (1785141000000 - 1779957000000) // INTERVAL_MS == 86_400
-    assert sum((end - start) // INTERVAL_MS for _, _, start, end in WINDOWS) == 257_760
+    counts = [sum((end - start) // INTERVAL_MS for start, end in ranges) for _, ranges in WINDOWS]
+    assert counts == [84_960, 86_400, 86_400], counts
+    assert sum(counts) == 257_760
+    assert len(WINDOWS) * len(SYMBOLS) == 15
     print("PASS")
     return 0
 
@@ -278,7 +276,7 @@ def main() -> int:
     if not all((args.base_root, args.sealed_root, args.out_root, args.receipt_out)):
         parser.error("base-root, sealed-root, out-root, receipt-out required")
     receipt = run(args.base_root.resolve(), args.sealed_root.resolve(), args.out_root.resolve(), args.receipt_out.resolve())
-    print(json.dumps({"state": receipt["state"], "partition_sha256": receipt["partition_sha256"], "total_1m_rows": receipt["total_1m_rows"]}, sort_keys=True))
+    print(json.dumps({"state": receipt["state"], "partition_sha256": receipt["partition_sha256"], "market_file_count": receipt["market_file_count"], "total_1m_rows": receipt["total_1m_rows"]}, sort_keys=True))
     return 0
 
 

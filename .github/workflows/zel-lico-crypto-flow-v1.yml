@@ -7,12 +7,14 @@ on:
     paths:
       - backend/research/zel_lico_crypto_flow_contract_v1.json
       - backend/tools/zel_lico_crypto_flow_v1.py
+      - backend/tests/test_zel_lico_crypto_flow_v1.py
       - .github/workflows/zel-lico-crypto-flow-v1.yml
   pull_request:
     branches: [master]
     paths:
       - backend/research/zel_lico_crypto_flow_contract_v1.json
       - backend/tools/zel_lico_crypto_flow_v1.py
+      - backend/tests/test_zel_lico_crypto_flow_v1.py
       - .github/workflows/zel-lico-crypto-flow-v1.yml
   workflow_dispatch:
 
@@ -42,8 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m py_compile backend/tools/zel_lico_crypto_flow_v1.py
-          python backend/tools/zel_lico_crypto_flow_v1.py --self-test
+          python -m py_compile \
+            backend/tools/zel_lico_crypto_flow_v1.py \
+            backend/tests/test_zel_lico_crypto_flow_v1.py
+          python backend/tests/test_zel_lico_crypto_flow_v1.py
           python -m json.tool backend/research/zel_lico_crypto_flow_contract_v1.json >/dev/null
           python - <<'PY'
           import hashlib,json
@@ -51,6 +55,7 @@ jobs:
           from pathlib import Path
           contract_path=Path('backend/research/zel_lico_crypto_flow_contract_v1.json')
           engine_path=Path('backend/tools/zel_lico_crypto_flow_v1.py')
+          test_path=Path('backend/tests/test_zel_lico_crypto_flow_v1.py')
           workflow_path=Path('.github/workflows/zel-lico-crypto-flow-v1.yml')
           contract=json.loads(contract_path.read_text())
           engine=engine_path.read_text()
@@ -74,6 +79,7 @@ jobs:
             'state':'PASS_LICO_CRYPTO_FLOW_STATIC',
             'contract_sha256':hashlib.sha256(contract_path.read_bytes()).hexdigest(),
             'engine_sha256':hashlib.sha256(engine_path.read_bytes()).hexdigest(),
+            'test_sha256':hashlib.sha256(test_path.read_bytes()).hexdigest(),
             'workflow_sha256':hashlib.sha256(workflow_path.read_bytes()).hexdigest(),
             'protected_mutations':0,
             'selection_authority':False,

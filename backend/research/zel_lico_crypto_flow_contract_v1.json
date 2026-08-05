@@ -1,0 +1,106 @@
+{
+  "schema_version": "zel.lico.crypto_flow.contract.v1",
+  "version": "ZEL_LICO_CRYPTO_FLOW_CONTRACT_V1",
+  "component": "Lico",
+  "role": "crypto_market_flow_observer",
+  "issue": 579,
+  "source": {
+    "venue": "BingX",
+    "market": "USDT-M perpetual public market data",
+    "base_url": "https://open-api.bingx.com",
+    "kline_endpoint": "/openApi/swap/v3/quote/klines",
+    "funding_endpoint": "/openApi/swap/v2/quote/fundingRate",
+    "symbols": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT",
+      "XRP-USDT",
+      "LINK-USDT"
+    ],
+    "interval": "1h",
+    "source_key": "bingx:public:usdtm",
+    "interpolation_allowed": false,
+    "synthetic_candles_allowed": false
+  },
+  "features": {
+    "lookback_hours": 72,
+    "btc_return_hours": [4, 24],
+    "breadth_return_hours": 4,
+    "rotation_return_hours": 24,
+    "volume_window_hours": 24,
+    "funding_optional_for_price_states": true
+  },
+  "research_thresholds": {
+    "risk_off_btc_4h_lte_pct": -2.0,
+    "risk_off_breadth_lte": 0.2,
+    "risk_on_btc_4h_gte_pct": 2.0,
+    "risk_on_breadth_gte": 0.8,
+    "rotation_alt_relative_24h_gte_pct": 2.0,
+    "rotation_breadth_gte": 0.6,
+    "crowded_long_funding_median_gte_pct": 0.03,
+    "crowded_short_funding_median_lte_pct": -0.03,
+    "maximum_snapshot_age_ms": 7200000,
+    "minimum_market_coverage_pct": 95.0,
+    "minimum_binding_coverage_pct": 95.0
+  },
+  "states": [
+    "RISK_ON",
+    "RISK_OFF",
+    "ROTATION",
+    "CROWDED_LONG",
+    "CROWDED_SHORT",
+    "NEUTRAL",
+    "HOLD_DATA_GAP"
+  ],
+  "candidate_filters": [
+    {
+      "config_id": "BLOCK_LONG_RISK_OFF",
+      "description": "Suppress only long entries whose entry-time Lico Crypto state is RISK_OFF."
+    },
+    {
+      "config_id": "BLOCK_SHORT_RISK_ON",
+      "description": "Suppress only short entries whose entry-time Lico Crypto state is RISK_ON."
+    },
+    {
+      "config_id": "BLOCK_CROWDED_SAME_SIDE",
+      "description": "Suppress long entries in CROWDED_LONG and short entries in CROWDED_SHORT."
+    },
+    {
+      "config_id": "BLOCK_DIRECTIONAL_CONFLICT",
+      "description": "Suppress longs in RISK_OFF and shorts in RISK_ON using one frozen directional-conflict rule."
+    }
+  ],
+  "evaluation": {
+    "expected_terminal_trade_count": 1951,
+    "select_on_w1_only": true,
+    "freeze_selected_config_through_w2_w3": true,
+    "minimum_retention_pct": 60.0,
+    "minimum_confirmation_trade_count": 15,
+    "net_R_gt": 0.0,
+    "profit_factor_gte": 1.0,
+    "expectancy_R_gt": 0.0,
+    "payoff_ratio_gte": 1.0,
+    "errors_max": 0,
+    "duplicates_max": 0,
+    "censored_open_max": 0,
+    "unknown_exit_max": 0,
+    "future_mfe_mae_forbidden": true,
+    "entry_time_asof_only": true
+  },
+  "authority": {
+    "observer_only": true,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "runtime_binding": false,
+    "shadow_allowed": false,
+    "paper_allowed": false,
+    "live_allowed": false,
+    "allowed_actions": [
+      "hold",
+      "route_change"
+    ],
+    "default_action": "hold"
+  }
+}

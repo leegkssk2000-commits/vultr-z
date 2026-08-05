@@ -1,0 +1,122 @@
+name: ZEL BTC Regime Event Dataset V1
+
+on:
+  pull_request:
+    paths:
+      - backend/research/zel_btc_regime_event_catalog_v1.json
+      - backend/tools/zel_bingx_btc_regime_event_dataset_v1.py
+      - .github/workflows/zel-btc-regime-event-dataset-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-btc-regime-event-dataset-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Deterministic collector self-test
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_bingx_btc_regime_event_dataset_v1.py --self-test
+      - name: Validate frozen research-only catalog
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p='backend/research/zel_btc_regime_event_catalog_v1.json'
+          row=json.load(open(p))
+          assert row['schema_version']=='zel.btc.regime_event_catalog.v1'
+          assert row['symbol']=='BTC-USDT'
+          assert row['source']['auth_required'] is False
+          assert row['source']['endpoint']=='/openApi/swap/v3/quote/klines'
+          assert row['skeleton']['interval']=='1h'
+          assert row['detector']['strategy_economics_hidden'] is True
+          assert row['drilldown']['interpolation_forbidden'] is True
+          assert row['drilldown']['synthetic_candles_forbidden'] is True
+          assert len(row['anchors'])>=10
+          safety=row['safety']
+          assert safety['protected_mutations']==0
+          assert safety['selection_authority'] is False
+          assert safety['promotion_authority'] is False
+          assert safety['execution_authority']=='NONE'
+          assert safety['order_authority']=='BLOCKED'
+          assert safety['action']=='hold'
+          PY
+
+  collect:
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Collect BingX BTC event-regime corpus
+        run: |
+          set -euo pipefail
+          mkdir -p out/data
+          python backend/tools/zel_bingx_btc_regime_event_dataset_v1.py \
+            --catalog backend/research/zel_btc_regime_event_catalog_v1.json \
+            --out-dir out/data \
+            --manifest out/manifest.json
+      - name: Independently verify immutable corpus
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          def stable(value):
+              return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          def fsha(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              return h.hexdigest()
+          m=json.load(open('out/manifest.json'))
+          expected=m['receipt_sha256']; material={k:v for k,v in m.items() if k!='receipt_sha256'}
+          assert stable(material)==expected
+          assert m['state']=='PASS_BTC_REGIME_EVENT_DATASET_COLLECTED'
+          assert m['skeleton']['row_count']>0
+          assert m['detected_event_count']>0
+          assert m['accepted_event_window_count']>0
+          assert m['interpolation_used'] is False and m['synthetic_candles_used'] is False
+          assert m['event_labels_used_for_strategy_selection'] is False
+          assert m['protected_mutations']==0
+          assert m['execution_authority']=='NONE' and m['order_authority']=='BLOCKED'
+          material=[]
+          for item in m['data_files']:
+              path=Path(item['path'])
+              assert path.is_file() and not path.is_symlink()
+              assert fsha(path)==item['sha256']
+              with gzip.open(path,'rt',encoding='utf-8',newline='') as handle:
+                  reader=csv.DictReader(handle)
+                  prior=None; count=0
+                  for row in reader:
+                      ts=int(row['timestamp_ms'])
+                      assert prior is None or ts>prior
+                      prior=ts; count+=1
+                  assert count>0
+              material.append({'path':item['path'],'sha256':item['sha256']})
+          assert stable(material)==m['dataset_sha256']
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-btc-regime-event-dataset-v1-${{ github.run_id }}
+          path: |
+            out/manifest.json
+            out/data/**/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

@@ -1,0 +1,224 @@
+name: ZEL Lico Crypto Flow V1
+
+on:
+  push:
+    branches:
+      - zel-lico-crypto-flow-binding-v1
+    paths:
+      - backend/research/zel_lico_crypto_flow_contract_v1.json
+      - backend/tools/zel_lico_crypto_flow_v1.py
+      - .github/workflows/zel-lico-crypto-flow-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_lico_crypto_flow_contract_v1.json
+      - backend/tools/zel_lico_crypto_flow_v1.py
+      - .github/workflows/zel-lico-crypto-flow-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-lico-crypto-flow-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate Lico Crypto Flow contract and engine
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/tools/zel_lico_crypto_flow_v1.py
+          python backend/tools/zel_lico_crypto_flow_v1.py --self-test
+          python -m json.tool backend/research/zel_lico_crypto_flow_contract_v1.json >/dev/null
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime,timezone
+          from pathlib import Path
+          contract_path=Path('backend/research/zel_lico_crypto_flow_contract_v1.json')
+          engine_path=Path('backend/tools/zel_lico_crypto_flow_v1.py')
+          workflow_path=Path('.github/workflows/zel-lico-crypto-flow-v1.yml')
+          contract=json.loads(contract_path.read_text())
+          engine=engine_path.read_text()
+          workflow=workflow_path.read_text()
+          assert contract['component']=='Lico'
+          assert contract['authority']['observer_only'] is True
+          assert contract['authority']['selection_authority'] is False
+          assert contract['authority']['promotion_authority'] is False
+          assert contract['authority']['execution_authority']=='NONE'
+          assert contract['authority']['order_authority']=='BLOCKED'
+          assert contract['evaluation']['select_on_w1_only'] is True
+          assert contract['evaluation']['freeze_selected_config_through_w2_w3'] is True
+          assert contract['evaluation']['future_mfe_mae_forbidden'] is True
+          assert contract['evaluation']['entry_time_asof_only'] is True
+          for marker in ('bisect_right','future_snapshot_leak_count','selected_frozen_w2_w3','protected_mutations','raw_trade_rows_published'):
+              assert marker in engine,marker
+          assert 'zel-heavy' not in workflow
+          receipt={
+            'schema_version':'zel.lico.crypto_flow.static.receipt.v1',
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'state':'PASS_LICO_CRYPTO_FLOW_STATIC',
+            'contract_sha256':hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+            'engine_sha256':hashlib.sha256(engine_path.read_bytes()).hexdigest(),
+            'workflow_sha256':hashlib.sha256(workflow_path.read_bytes()).hexdigest(),
+            'protected_mutations':0,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }
+          Path('out/static_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print('PASS_LICO_CRYPTO_FLOW_STATIC')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lico-crypto-flow-static-${{ github.run_id }}
+          path: out/static_receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  bind_and_evaluate:
+    needs: static
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare read-only VPS transport
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p ~/.ssh out/private
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Locate immutable 1,951-trade terminal ledger read-only
+        id: terminal
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote_path=$(ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'python3 - <<'"'"'PY'"'"'
+          import gzip,os
+          roots=("/var/lib/zel-research","/opt/zel","/tmp")
+          skip={"proc","sys","dev","node_modules","venv",".venv","backups","backup","archive","quarantine"}
+          candidates=[]
+          for root in roots:
+              if not os.path.isdir(root):
+                  continue
+              root_depth=root.rstrip(os.sep).count(os.sep)
+              for current,dirs,files in os.walk(root):
+                  depth=current.count(os.sep)-root_depth
+                  dirs[:]=[d for d in dirs if d not in skip and depth < 7]
+                  if "trades.jsonl.gz" not in files:
+                      continue
+                  path=os.path.join(current,"trades.jsonl.gz")
+                  try:
+                      count=0
+                      with gzip.open(path,"rt",encoding="utf-8") as handle:
+                          for raw in handle:
+                              if raw.strip():
+                                  count+=1
+                                  if count>1951:
+                                      break
+                      if count==1951:
+                          candidates.append((os.path.getmtime(path),path))
+                  except Exception:
+                      pass
+          if not candidates:
+              raise SystemExit("TERMINAL_1951_NOT_FOUND")
+          candidates.sort(reverse=True)
+          print(candidates[0][1])
+          PY')
+          test -n "$remote_path"
+          case "$remote_path" in
+            /var/lib/zel-research/*|/opt/zel/*|/tmp/*) ;;
+            *) echo "UNSAFE_REMOTE_PATH:$remote_path" >&2; exit 1 ;;
+          esac
+          scp -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST:$remote_path" out/private/trades.jsonl.gz
+          test -s out/private/trades.jsonl.gz
+          echo "terminal_sha=$(sha256sum out/private/trades.jsonl.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Bind Lico Crypto Flow at entry time and evaluate W1 to frozen W2/W3
+        run: |
+          set -euo pipefail
+          set +e
+          python backend/tools/zel_lico_crypto_flow_v1.py \
+            --contract backend/research/zel_lico_crypto_flow_contract_v1.json \
+            --trades out/private/trades.jsonl.gz \
+            --out out/lico_crypto_flow_effectiveness.json
+          rc=$?
+          set -e
+          test -s out/lico_crypto_flow_effectiveness.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path=Path('out/lico_crypto_flow_effectiveness.json')
+          row=json.loads(path.read_text())
+          assert row['protected_mutations']==0,row
+          assert row['selection_authority'] is False,row
+          assert row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE',row
+          assert row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          assert row.get('future_mfe_mae_used') is False,row
+          assert row.get('entry_time_asof_only') is True,row
+          assert row.get('raw_trade_rows_published') is False,row
+          if not str(row['state']).startswith('PASS_'):
+              raise SystemExit(f"NON_ACCEPTED_TERMINAL:{row['state']}")
+          print(json.dumps({
+            'state':row['state'],
+            'trade_count':row['terminal_trade_count'],
+            'binding_coverage_pct':row['binding']['binding_coverage_pct'],
+            'selected_config_id':row['effectiveness']['selected_config_id'],
+            'survivor':row['effectiveness']['survivor'],
+            'diagnostic_incumbent_config_id':row['effectiveness']['diagnostic_incumbent_config_id'],
+            'receipt_sha256':row['receipt_sha256']
+          },sort_keys=True))
+          PY
+          test "$rc" -eq 0
+
+      - name: Delete raw terminal ledger and SSH key
+        if: always()
+        run: |
+          rm -rf out/private
+          rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lico-crypto-flow-effectiveness-${{ github.run_id }}
+          path: out/lico_crypto_flow_effectiveness.json
+          if-no-files-found: error
+          retention-days: 90

@@ -37,24 +37,28 @@ def main() -> None:
     if manifest.get("execution_authority") != "NONE" or manifest.get("order_authority") != "BLOCKED":
         raise SystemExit("authority boundary mismatch")
 
-    source = args.repo_root / "backend/research/momentum_breakout_continuation_v1.py"
-    trial = args.repo_root / "backend/research/zel_scalp_momentum_generation1_trial_plan_v1.json"
-    control = args.repo_root / "backend/research/zel_scalp_momentum_replay_control_plan_v1.json"
-    design = args.repo_root / "backend/research/zel_scalp_momentum_breakout_continuation_design_v1.json"
-    for path in (source, trial, control, design):
+    bindings = {
+        "candidate_source_sha256": args.repo_root / "backend/research/momentum_breakout_continuation_v1.py",
+        "trial_plan_sha256": args.repo_root / "backend/research/zel_scalp_momentum_generation1_trial_plan_v1.json",
+        "control_plan_sha256": args.repo_root / "backend/research/zel_scalp_momentum_replay_control_plan_v1.json",
+        "design_receipt_sha256": args.repo_root / "backend/research/zel_scalp_momentum_breakout_continuation_design_v1.json",
+        "feature_strategy_ssot_sha256": args.repo_root / "backend/research/zel_feature_strategy_ssot_v1.py",
+        "intent_adapters_sha256": args.repo_root / "backend/research/zel_strategy_intent_adapters_v1.py",
+        "feature_contribution_plan_sha256": args.repo_root / "backend/research/zel_momentum_feature_contribution_plan_v1.json",
+    }
+    for path in bindings.values():
         if not path.is_file():
             raise SystemExit(f"missing momentum binding input: {path}")
 
+    prior_references = manifest["references"]
     manifest["schema_version"] = "zel.scalp.momentum.materialized_dataset.v1"
     manifest["state"] = "PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS"
     manifest["strategy_id"] = "momentum_breakout_continuation_v1"
     manifest["references"] = {
-        "candidate_source_sha256": sha256_file(source),
-        "trial_plan_sha256": sha256_file(trial),
-        "control_plan_sha256": sha256_file(control),
-        "design_receipt_sha256": sha256_file(design),
-        "cost_receipt_sha256": manifest["references"]["cost_receipt_sha256"],
-        "funding_receipt_sha256": manifest["references"]["funding_receipt_sha256"],
+        key: sha256_file(path) for key, path in bindings.items()
+    } | {
+        "cost_receipt_sha256": prior_references["cost_receipt_sha256"],
+        "funding_receipt_sha256": prior_references["funding_receipt_sha256"],
     }
     manifest["selection_authority"] = False
     manifest["promotion_authority"] = False
@@ -71,6 +75,7 @@ def main() -> None:
         "strategy_id": manifest["strategy_id"],
         "file_count": manifest["file_count"],
         "total_rows": manifest["total_rows"],
+        "binding_count": len(manifest["references"]),
         "receipt": manifest["manifest_receipt_sha256"],
     }, sort_keys=True))
 

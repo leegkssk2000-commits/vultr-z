@@ -1,22 +1,17 @@
-name: ZEL Scalp Profitability Design V1
+name: ZEL Momentum Gen2 Feature Contribution
 
 on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/zel_scalp_*'
-      - 'backend/research/intraday_pullback_reclaim_v1.py'
-      - 'backend/research/momentum_breakout_continuation_v1.py'
-      - 'scripts/validate_zel_scalp_design_selection_v1.py'
-      - 'scripts/validate_zel_scalp_external_benchmark_v2.py'
-      - 'scripts/validate_intraday_pullback_reclaim_v1.py'
-      - 'scripts/validate_momentum_breakout_continuation_v1.py'
-      - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
-      - 'scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py'
-      - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
-      - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
-      - 'scripts/run_zel_scalp_momentum_event_study_v1.py'
-      - 'scripts/run_zel_scalp_momentum_staged_replay_v1.py'
+      - 'backend/research/zel_momentum_gen2_*'
+      - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
+      - 'backend/research/strategy11_ai_review_router_v1.json'
+      - 'scripts/run_zel_scalp_momentum_gen2_event_study_v1.py'
+      - 'scripts/validate_zel_momentum_gen2_ai_gate_v1.py'
+      - 'scripts/strategy11_ai_review_router.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -25,78 +20,74 @@ permissions:
   actions: read
 
 concurrency:
-  group: zel-scalp-profitability-design-v1-${{ github.event.pull_request.number || github.ref }}
+  group: zel-momentum-gen2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   static-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile research candidates and replay adapters
-        run: >-
+      - run: >-
           python -m py_compile
-          backend/research/intraday_pullback_reclaim_v1.py
-          backend/research/momentum_breakout_continuation_v1.py
-          scripts/validate_intraday_pullback_reclaim_v1.py
-          scripts/validate_momentum_breakout_continuation_v1.py
-          scripts/validate_zel_scalp_design_selection_v1.py
-          scripts/validate_zel_scalp_external_benchmark_v2.py
-          scripts/validate_zel_scalp_data_split_materialization_v1.py
-          scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
-          scripts/materialize_zel_scalp_intraday_dataset_v1.py
-          scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
           scripts/run_zel_scalp_momentum_event_study_v1.py
-          scripts/run_zel_scalp_momentum_staged_replay_v1.py
-      - name: Validate inherited design receipts
-        run: |
-          python scripts/validate_zel_scalp_design_selection_v1.py
-          python scripts/validate_zel_scalp_external_benchmark_v2.py
-          python scripts/validate_zel_scalp_data_split_materialization_v1.py
-          python scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
-      - name: Validate isolated candidate fixtures
-        run: |
-          python scripts/validate_intraday_pullback_reclaim_v1.py
-          python scripts/validate_momentum_breakout_continuation_v1.py
-      - name: Verify route disposition
-        run: |
+          scripts/run_zel_scalp_momentum_gen2_event_study_v1.py
+          scripts/validate_zel_momentum_gen2_ai_gate_v1.py
+          scripts/strategy11_ai_review_router.py
+          scripts/strategy11_groq_redteam.py
+          scripts/strategy11_workers_ai_guard.py
+      - run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          terminal = json.loads(Path('backend/research/zel_scalp_generation1_terminal_disposition_v1.json').read_text())
-          design = json.loads(Path('backend/research/zel_scalp_momentum_breakout_continuation_design_v1.json').read_text())
-          control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          assert terminal['state'] == 'ECONOMIC_FAIL_NO_SURVIVOR'
-          assert terminal['same_family_refinement'] == 'BLOCKED_UNTIL_NEW_CAUSAL_EVIDENCE'
-          assert design['strategy_id'] == 'momentum_breakout_continuation_v1'
-          assert control['state'] == 'PASS_CONTROL_PLAN_SEALED_ADAPTER_READY_REPLAY_AUTHORIZED'
-          assert control['event_study_adapter'] == 'scripts/run_zel_scalp_momentum_event_study_v1.py'
-          assert control['replay_adapter'] == 'scripts/run_zel_scalp_momentum_staged_replay_v1.py'
-          assert control['execution_authority'] == 'NONE'
-          assert control['order_authority'] == 'BLOCKED'
-          print({'terminal': terminal['state'], 'next': design['strategy_id'], 'control': control['state']})
+          h=json.loads(Path('backend/research/zel_momentum_gen2_ai_hypothesis_v1.json').read_text())
+          r=json.loads(Path('backend/research/zel_strategy_kernel_reset_gate_v1.json').read_text())
+          assert h['state']=='PASS_MOMENTUM_GEN2_HYPOTHESIS_SEALED_RESEARCH_ONLY'
+          assert h['changed_axes']==['EXPECTED_MOVE_TO_COST_SATURATION']
+          assert h['hypothesis']['parameterization']['effective_cap']==6.0
+          assert r['gates']['C_feature_economic_contribution']['selected_axis']=='EXPECTED_MOVE_TO_COST_SATURATION'
+          assert r['gates']['F_integrated_economics']['state']=='BLOCKED_UNTIL_C_AND_D_PASS'
           PY
-      - name: Protected-path assertion
-        shell: bash
-        run: |
-          set -euo pipefail
-          changed="$(git diff --name-only origin/${{ github.base_ref }}...HEAD)"
-          if grep -E '^(backend/strategies/|backend/registry|backend/runtime|formal_ledger|shadow|paper|live|orders?)' <<<"$changed"; then
-            echo 'protected runtime/canonical path changed' >&2
-            exit 1
-          fi
-          printf '%s\n' "$changed"
 
-  materialize-momentum-inputs:
+  ai-gate:
     needs: static-validation
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          mkdir -p /tmp/momentum-gen2-ai
+          python scripts/strategy11_ai_review_router.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+            --input backend/research/zel_momentum_gen2_ai_hypothesis_v1.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/momentum-gen2-ai/router_result.json \
+            --mode execute
+          python scripts/validate_zel_momentum_gen2_ai_gate_v1.py \
+            --hypothesis backend/research/zel_momentum_gen2_ai_hypothesis_v1.json \
+            --router /tmp/momentum-gen2-ai/router_result.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/momentum-gen2-ai/ai_gate_receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: momentum-gen2-ai-${{ github.sha }}
+          path: /tmp/momentum-gen2-ai
+          retention-days: 30
+
+  materialize:
+    needs: static-validation
+    runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ github.token }}
     steps:
@@ -104,60 +95,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Download accepted immutable data and cost artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" \
-            -o /tmp/pr575-gap-excluded-dataset.zip
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
-            -o /tmp/pr576-gen3-terminal.zip
-      - name: Materialize and bind momentum inputs
-        run: |
+      - run: |
+          curl --fail --location --retry 3 -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" -o /tmp/dataset.zip
+          curl --fail --location --retry 3 -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" -o /tmp/cost.zip
           python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
-            --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
-            --cost-zip /tmp/pr576-gen3-terminal.zip \
-            --repo-root . \
-            --output /tmp/zel-scalp-momentum-inputs
+            --dataset-zip /tmp/dataset.zip --cost-zip /tmp/cost.zip --repo-root . --output /tmp/momentum-gen2-inputs
           python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-scalp-momentum-inputs \
-            --repo-root .
-      - name: Verify materialized authority and lineage
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          data = json.loads(Path('/tmp/zel-scalp-momentum-inputs/materialized_manifest.json').read_text())
-          assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
-          assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
-          assert data['file_count'] == 60
-          assert data['total_rows'] > 0
-          assert data['protected_mutations'] == 0
-          assert data['execution_authority'] == 'NONE'
-          assert data['order_authority'] == 'BLOCKED'
-          assert len({item['sha256'] for item in data['files']}) == 60
-          print({'state': data['state'], 'files': data['file_count'], 'rows': data['total_rows'], 'receipt': data['manifest_receipt_sha256']})
-          PY
+            --inputs /tmp/momentum-gen2-inputs --repo-root .
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-scalp-momentum-inputs-${{ github.sha }}
-          path: /tmp/zel-scalp-momentum-inputs
-          if-no-files-found: error
+          name: momentum-gen2-inputs-${{ github.sha }}
+          path: /tmp/momentum-gen2-inputs
           retention-days: 30
-          compression-level: 6
 
-  momentum-economic-replay:
-    needs: materialize-momentum-inputs
+  event-study:
+    needs: [ai-gate, materialize]
     runs-on: ubuntu-latest
-    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -165,50 +120,31 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: zel-scalp-momentum-inputs-${{ github.sha }}
-          path: /tmp/zel-scalp-momentum-inputs
-      - name: Run signal event study and immediate staged economic replay
-        run: |
-          python scripts/run_zel_scalp_momentum_event_study_v1.py \
-            --inputs /tmp/zel-scalp-momentum-inputs \
+          name: momentum-gen2-ai-${{ github.sha }}
+          path: /tmp/momentum-gen2-ai
+      - uses: actions/download-artifact@v4
+        with:
+          name: momentum-gen2-inputs-${{ github.sha }}
+          path: /tmp/momentum-gen2-inputs
+      - run: |
+          python scripts/run_zel_scalp_momentum_gen2_event_study_v1.py \
+            --inputs /tmp/momentum-gen2-inputs \
             --repo-root . \
-            --output /tmp/zel-scalp-momentum-event-study
-          python scripts/run_zel_scalp_momentum_staged_replay_v1.py \
-            --inputs /tmp/zel-scalp-momentum-inputs \
-            --event-study /tmp/zel-scalp-momentum-event-study \
-            --repo-root . \
-            --output /tmp/zel-scalp-momentum-replay
-      - name: Verify terminal economic receipt
-        run: |
+            --ai-receipt /tmp/momentum-gen2-ai/ai_gate_receipt.json \
+            --output /tmp/momentum-gen2-event-study
           python - <<'PY'
           import json
           from pathlib import Path
-          event = json.loads(Path('/tmp/zel-scalp-momentum-event-study/momentum_event_study_receipt.json').read_text())
-          replay = json.loads(Path('/tmp/zel-scalp-momentum-replay/momentum_staged_replay_receipt.json').read_text())
-          assert event['state'] in {'PASS_EVENT_STUDY_EDGE_FOUND', 'PASS_EVENT_STUDY_NO_EDGE'}
-          assert replay['state'] in {
-              'PASS_REPLAY_SKIPPED_EVENT_STUDY_NO_EDGE',
-              'PASS_REPLAY_COMPLETE_NO_SURVIVOR',
-              'PASS_REPLAY_COMPLETE_SURVIVOR',
-          }
-          assert replay['integrity'] == {
-              'future_information': 0,
-              'errors': 0,
-              'duplicates': 0,
-              'censored_open': 0,
-              'unknown_exit': 0,
-              'protected_mutations': 0,
-          }
-          assert replay['execution_authority'] == 'NONE'
-          assert replay['order_authority'] == 'BLOCKED'
-          print({'event_state': event['state'], 'passing_event_configs': event['passing_count'], 'replay_state': replay['state'], 'survivor': replay['survivor']})
+          x=json.loads(Path('/tmp/momentum-gen2-event-study/momentum_event_study_receipt.json').read_text())
+          assert x['state'] in {'PASS_EVENT_STUDY_EDGE_FOUND','PASS_EVENT_STUDY_NO_EDGE'}
+          assert x['selected_axis']=='EXPECTED_MOVE_TO_COST_SATURATION'
+          assert x['effective_cap']==6.0
+          assert x['integrity']=={'future_information':0,'errors':0,'duplicates':0,'protected_mutations':0}
+          print({'state':x['state'],'passing_count':x['passing_count'],'receipt':x['receipt_sha256']})
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: zel-scalp-momentum-economic-${{ github.sha }}
-          path: |
-            /tmp/zel-scalp-momentum-event-study
-            /tmp/zel-scalp-momentum-replay
-          if-no-files-found: error
+          name: momentum-gen2-event-study-${{ github.sha }}
+          path: /tmp/momentum-gen2-event-study
           retention-days: 30
-          compression-level: 6

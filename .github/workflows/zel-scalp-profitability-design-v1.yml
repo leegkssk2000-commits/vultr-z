@@ -1,6 +1,11 @@
 name: ZEL Momentum Gen2 Feature Contribution
 
 on:
+  workflow_run:
+    workflows:
+      - Codex Action Read-Only Smoke
+    types:
+      - completed
   pull_request:
     branches: [master]
     paths:
@@ -15,19 +20,24 @@ on:
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
+env:
+  TARGET_REF: zel-momentum-gen2-feature-contribution-v1
+
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: zel-momentum-gen2-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: zel-momentum-gen2-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   static-validation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -57,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -81,7 +93,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: momentum-gen2-ai-${{ github.sha }}
+          name: momentum-gen2-ai-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/momentum-gen2-ai
           retention-days: 30
 
@@ -92,6 +104,8 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -106,7 +120,7 @@ jobs:
             --inputs /tmp/momentum-gen2-inputs --repo-root .
       - uses: actions/upload-artifact@v4
         with:
-          name: momentum-gen2-inputs-${{ github.sha }}
+          name: momentum-gen2-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/momentum-gen2-inputs
           retention-days: 30
 
@@ -115,16 +129,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: momentum-gen2-ai-${{ github.sha }}
+          name: momentum-gen2-ai-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/momentum-gen2-ai
       - uses: actions/download-artifact@v4
         with:
-          name: momentum-gen2-inputs-${{ github.sha }}
+          name: momentum-gen2-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/momentum-gen2-inputs
       - run: |
           python scripts/run_zel_scalp_momentum_gen2_event_study_v1.py \
@@ -145,6 +161,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: momentum-gen2-event-study-${{ github.sha }}
+          name: momentum-gen2-event-study-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/momentum-gen2-event-study
           retention-days: 30

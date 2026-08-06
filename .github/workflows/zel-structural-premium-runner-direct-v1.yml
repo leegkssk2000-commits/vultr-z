@@ -1,4 +1,4 @@
-name: ZEL Structural Premium Runner Direct V1
+name: ZEL Structural Premium MAIN Replay V1
 
 on:
   push:
@@ -13,34 +13,39 @@ permissions:
   actions: read
 
 concurrency:
-  group: zel-structural-premium-runner-direct-v1
+  group: zel-structural-premium-main-replay-v1
   cancel-in-progress: true
 
 jobs:
-  runner-probe:
+  runner-and-main-replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: zel-structural-premium-runner-recovery-v1
           persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Validate restored structural-premium contract
+
+      - name: Validate structural-premium contract and replay tool
         run: |
           set -euo pipefail
-          python -m py_compile scripts/validate_zel_structural_premium_route_v1.py
+          python -m py_compile \
+            scripts/validate_zel_structural_premium_route_v1.py \
+            backend/tools/zel_structural_premium_main_replay_v1.py
           python scripts/validate_zel_structural_premium_route_v1.py
-      - name: Seal runner assignment
+
+      - name: Seal assigned runner
         env:
           RUNNER_NAME_VALUE: ${{ runner.name }}
           RUNNER_OS_VALUE: ${{ runner.os }}
           RUNNER_ARCH_VALUE: ${{ runner.arch }}
         run: |
           set -euo pipefail
-          mkdir -p out
+          mkdir -p out/private
           python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -64,8 +69,71 @@ jobs:
           Path('out/runner_direct_receipt.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
           print(json.dumps(row,sort_keys=True))
           PY
+
+      - name: Copy immutable terminal ledger read-only
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:/var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz" \
+            out/private/trades.jsonl.gz
+          test -s out/private/trades.jsonl.gz
+
+      - name: Run structural-premium MAIN replay
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_structural_premium_main_replay_v1.py \
+            --ledger out/private/trades.jsonl.gz \
+            --out out/structural_premium_main_replay.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          path=Path('out/structural_premium_main_replay.json')
+          row=json.loads(path.read_text())
+          expected=row['receipt_sha256']
+          material={k:v for k,v in row.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['state'] in {'PASS_STRUCTURAL_PREMIUM_MAIN_SURVIVOR','PASS_STRUCTURAL_PREMIUM_MAIN_REPLAY_NO_SURVIVOR'}
+          assert all(row['integrity_checks'].values()),row['integrity_checks']
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['protected_mutations']==0
+          print(json.dumps({
+              'state':row['state'],
+              'main_trades':row['counts']['main_long'],
+              'net_R':row['main']['ALL']['net_R'],
+              'profit_factor':row['main']['ALL']['profit_factor'],
+              'win_rate_pct':row['main']['ALL']['win_rate_pct'],
+              'payoff_ratio':row['main']['ALL']['payoff_ratio'],
+              'max_drawdown_R':row['main']['ALL']['max_drawdown_R'],
+              'survivor':row['survivor'],
+              'receipt_sha256':row['receipt_sha256']
+          },sort_keys=True))
+          PY
+
+      - name: Delete private ledger and SSH key
+        if: always()
+        run: |
+          rm -rf out/private
+          rm -f ~/.ssh/vps_key
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: structural-premium-runner-direct-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/runner_direct_receipt.json
+          name: structural-premium-main-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/runner_direct_receipt.json
+            out/structural_premium_main_replay.json
+          if-no-files-found: error
           retention-days: 30

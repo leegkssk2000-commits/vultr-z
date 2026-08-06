@@ -17,7 +17,7 @@ on:
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
       - 'scripts/run_zel_momentum_feature_contribution_v1.py'
-      - 'scripts/run_zel_momentum_timeout_geometry_v1.py'
+      - 'scripts/run_zel_momentum_stop_geometry_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile strategy kernel and timeout-geometry stage
+      - name: Compile strategy kernel and stop-geometry stage
         run: >-
           python -m py_compile
           backend/research/zel_feature_strategy_ssot_v1.py
@@ -58,7 +58,7 @@ jobs:
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
           scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
           scripts/run_zel_momentum_feature_contribution_v1.py
-          scripts/run_zel_momentum_timeout_geometry_v1.py
+          scripts/run_zel_momentum_stop_geometry_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
@@ -71,7 +71,7 @@ jobs:
           python scripts/validate_momentum_breakout_continuation_v1.py
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
-      - name: Verify frozen-entry timeout route
+      - name: Verify frozen-entry stop route
         run: |
           python - <<'PY'
           import json
@@ -79,30 +79,30 @@ jobs:
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          target = json.loads(Path('backend/research/zel_momentum_target_geometry_disposition_v1.json').read_text())
-          timeout = json.loads(Path('backend/research/zel_momentum_timeout_geometry_plan_v1.json').read_text())
+          timeout = json.loads(Path('backend/research/zel_momentum_timeout_geometry_disposition_v1.json').read_text())
+          stop = json.loads(Path('backend/research/zel_momentum_stop_geometry_plan_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
           assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
-          assert target['state'] == 'FAIL_TARGET_ONLY_NO_SURVIVOR'
-          assert target['source_run'] == 31107944576
-          assert target['source_artifact_id'] == 8970422254
-          assert target['source_receipt_sha256'] == '05be6979233d3f888dea54b447bc1e9a7c895cddb45d1a0bdd26f77ac1e6b3bf'
-          assert target['next_gate'] == 'TIMEOUT_GEOMETRY_REDESIGN'
-          assert timeout['state'] == 'PASS_TIMEOUT_GEOMETRY_PLAN_SEALED_RESEARCH_ONLY'
-          assert timeout['source_variant_id'] == 'TARGET_R_2'
-          assert timeout['frozen_entry_count'] == 130
-          assert timeout['single_causal_axis'] == 'MAX_HOLD_BARS'
-          assert timeout['max_hold_bars_candidates'] == [3, 4, 5, 6, 8, 10, 12]
-          assert target['execution_authority'] == 'NONE'
-          assert target['order_authority'] == 'BLOCKED'
-          assert target['protected_mutations'] == 0
+          assert timeout['state'] == 'FAIL_TIMEOUT_ONLY_NO_SURVIVOR'
+          assert timeout['source_run'] == 31108557400
+          assert timeout['source_artifact_id'] == 8970662444
+          assert timeout['source_receipt_sha256'] == '4875b9e90c61cdfe3139fc02357cadec83c317ba14ac01fcc30b5c8ce02234f1'
+          assert timeout['next_gate'] == 'STOP_GEOMETRY_REDESIGN'
+          assert stop['state'] == 'PASS_STOP_GEOMETRY_PLAN_SEALED_RESEARCH_ONLY'
+          assert stop['source_variant_id'] == 'TIMEOUT_12'
+          assert stop['frozen_entry_count'] == 130
+          assert stop['single_causal_axis'] == 'PLANNED_RISK_MULTIPLIER'
+          assert stop['planned_risk_multiplier_candidates'] == [0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.8]
+          assert timeout['execution_authority'] == 'NONE'
+          assert timeout['order_authority'] == 'BLOCKED'
+          assert timeout['protected_mutations'] == 0
           print({
               'boundary': boundary['state'],
-              'target': target['state'],
-              'next': target['next_gate'],
-              'frozen_entries': timeout['frozen_entry_count'],
-              'timeout_candidates': len(timeout['max_hold_bars_candidates']),
+              'timeout': timeout['state'],
+              'next': timeout['next_gate'],
+              'frozen_entries': stop['frozen_entry_count'],
+              'stop_candidates': len(stop['planned_risk_multiplier_candidates']),
           })
           PY
       - name: Protected-path assertion
@@ -116,7 +116,7 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-  materialize-timeout-inputs:
+  materialize-stop-inputs:
     needs: strategy-kernel-gate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -127,14 +127,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Download immutable data, cost and target-geometry artifacts
+      - name: Download immutable data, cost and timeout-geometry artifacts
         shell: bash
         run: |
           set -euo pipefail
           for spec in \
             '8916685107:/tmp/pr575-gap-excluded-dataset.zip' \
             '8950849008:/tmp/pr576-gen3-terminal.zip' \
-            '8970422254:/tmp/target-geometry-source.zip'; do
+            '8970662444:/tmp/timeout-geometry-source.zip'; do
             id="${spec%%:*}"
             output="${spec#*:}"
             curl --fail --location --retry 3 \
@@ -144,17 +144,17 @@ jobs:
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
               -o "${output}"
           done
-      - name: Materialize and bind timeout-geometry inputs
+      - name: Materialize and bind stop-geometry inputs
         run: |
           python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
             --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
             --cost-zip /tmp/pr576-gen3-terminal.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-timeout-inputs
+            --output /tmp/zel-momentum-stop-inputs
           python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-momentum-timeout-inputs \
+            --inputs /tmp/zel-momentum-stop-inputs \
             --repo-root .
-          cp /tmp/target-geometry-source.zip /tmp/zel-momentum-timeout-inputs/source-target-geometry.zip
+          cp /tmp/timeout-geometry-source.zip /tmp/zel-momentum-stop-inputs/source-timeout-geometry.zip
       - name: Verify frozen-entry lineage bindings
         run: |
           python - <<'PY'
@@ -162,10 +162,10 @@ jobs:
           import json
           from pathlib import Path
 
-          root = Path('/tmp/zel-momentum-timeout-inputs')
+          root = Path('/tmp/zel-momentum-stop-inputs')
           data = json.loads((root / 'materialized_manifest.json').read_text())
           refs = data['references']
-          source_sha = hashlib.sha256((root / 'source-target-geometry.zip').read_bytes()).hexdigest()
+          source_sha = hashlib.sha256((root / 'source-timeout-geometry.zip').read_bytes()).hexdigest()
           assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
           assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
           assert data['file_count'] == 60
@@ -173,13 +173,13 @@ jobs:
           for key in (
               'feature_strategy_ssot_sha256',
               'intent_adapters_sha256',
-              'target_geometry_disposition_sha256',
-              'timeout_geometry_plan_sha256',
+              'timeout_geometry_disposition_sha256',
+              'stop_geometry_plan_sha256',
               'cost_receipt_sha256',
               'funding_receipt_sha256',
           ):
               assert refs[key]
-          assert source_sha == '1a9e0713147f7839163ed42940ddd09e64fb42d5703d261536939cbf807fecda'
+          assert source_sha == '9e216ac923e0cd215af5d59917e2da16fd3ab1817a36e00c892a4a4d7af49ebd'
           assert data['protected_mutations'] == 0
           assert data['execution_authority'] == 'NONE'
           assert data['order_authority'] == 'BLOCKED'
@@ -187,14 +187,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-timeout-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-timeout-inputs
+          name: zel-momentum-stop-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-stop-inputs
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
 
-  momentum-timeout-geometry:
-    needs: materialize-timeout-inputs
+  momentum-stop-geometry:
+    needs: materialize-stop-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -204,27 +204,27 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: zel-momentum-timeout-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-timeout-inputs
-      - name: Run frozen-entry timeout geometry counterfactual
+          name: zel-momentum-stop-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-stop-inputs
+      - name: Run frozen-entry stop geometry counterfactual
         run: |
-          python scripts/run_zel_momentum_timeout_geometry_v1.py \
-            --inputs /tmp/zel-momentum-timeout-inputs \
-            --source-artifact /tmp/zel-momentum-timeout-inputs/source-target-geometry.zip \
+          python scripts/run_zel_momentum_stop_geometry_v1.py \
+            --inputs /tmp/zel-momentum-stop-inputs \
+            --source-artifact /tmp/zel-momentum-stop-inputs/source-timeout-geometry.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-timeout-geometry
-      - name: Verify timeout geometry receipt
+            --output /tmp/zel-momentum-stop-geometry
+      - name: Verify stop geometry receipt
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          receipt = json.loads(Path('/tmp/zel-momentum-timeout-geometry/timeout_geometry_receipt.json').read_text())
+          receipt = json.loads(Path('/tmp/zel-momentum-stop-geometry/stop_geometry_receipt.json').read_text())
           assert receipt['state'] in {
-              'PASS_TIMEOUT_GEOMETRY_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
-              'PASS_TIMEOUT_GEOMETRY_COUNTERFACTUAL_NO_SURVIVOR',
+              'PASS_STOP_GEOMETRY_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
+              'PASS_STOP_GEOMETRY_COUNTERFACTUAL_NO_SURVIVOR',
           }
-          assert len(receipt['results']) == 7
+          assert len(receipt['results']) == 8
           assert receipt['integrity']['errors'] == 0
           assert receipt['integrity']['duplicates'] == 0
           assert receipt['integrity']['source_entry_rows'] == 130
@@ -244,8 +244,8 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-timeout-geometry-${{ github.sha }}
-          path: /tmp/zel-momentum-timeout-geometry
+          name: zel-momentum-stop-geometry-${{ github.sha }}
+          path: /tmp/zel-momentum-stop-geometry
           if-no-files-found: error
           retention-days: 30
           compression-level: 6

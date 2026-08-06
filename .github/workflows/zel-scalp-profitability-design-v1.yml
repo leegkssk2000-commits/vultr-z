@@ -14,8 +14,9 @@ on:
       - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
       - 'scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py'
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
-      - 'scripts/run_zel_scalp_generation1_replay_v1.py'
-      - 'scripts/run_zel_scalp_momentum_generation1_replay_v1.py'
+      - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
+      - 'scripts/run_zel_scalp_momentum_event_study_v1.py'
+      - 'scripts/run_zel_scalp_momentum_staged_replay_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -25,7 +26,7 @@ permissions:
 
 concurrency:
   group: zel-scalp-profitability-design-v1-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   static-validation:
@@ -38,7 +39,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile research candidates
+      - name: Compile research candidates and replay adapters
         run: >-
           python -m py_compile
           backend/research/intraday_pullback_reclaim_v1.py
@@ -50,6 +51,9 @@ jobs:
           scripts/validate_zel_scalp_data_split_materialization_v1.py
           scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
+          scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
+          scripts/run_zel_scalp_momentum_event_study_v1.py
+          scripts/run_zel_scalp_momentum_staged_replay_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
@@ -70,18 +74,13 @@ jobs:
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
           assert terminal['state'] == 'ECONOMIC_FAIL_NO_SURVIVOR'
           assert terminal['same_family_refinement'] == 'BLOCKED_UNTIL_NEW_CAUSAL_EVIDENCE'
-          assert design['state'] == 'PASS_DESIGN_SEALED_IMPLEMENTATION_STARTED_REPLAY_NOT_YET_AUTHORIZED'
           assert design['strategy_id'] == 'momentum_breakout_continuation_v1'
-          assert design['execution_authority'] == 'NONE'
-          assert design['order_authority'] == 'BLOCKED'
-          assert control['state'] == 'PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER'
-          assert control['legacy_trial_plan_disposition'] == 'DIAGNOSTIC_COVERAGE_ONLY_NOT_SELECTION_AUTHORITY'
-          print({
-              'terminal': terminal['state'],
-              'next': design['strategy_id'],
-              'state': design['state'],
-              'control': control['state'],
-          })
+          assert control['state'] == 'PASS_CONTROL_PLAN_SEALED_ADAPTER_READY_REPLAY_AUTHORIZED'
+          assert control['event_study_adapter'] == 'scripts/run_zel_scalp_momentum_event_study_v1.py'
+          assert control['replay_adapter'] == 'scripts/run_zel_scalp_momentum_staged_replay_v1.py'
+          assert control['execution_authority'] == 'NONE'
+          assert control['order_authority'] == 'BLOCKED'
+          print({'terminal': terminal['state'], 'next': design['strategy_id'], 'control': control['state']})
           PY
       - name: Protected-path assertion
         shell: bash
@@ -94,7 +93,122 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-# Economic replay is intentionally absent until the momentum candidate source SHA,
-# staged control plan, negative controls, marginal-expectancy cutoff and dedicated
-# replay adapter are sealed. This prevents both multivariate W1 overfit and the
-# terminal pullback/reclaim family from being rerun after route_change.
+  materialize-momentum-inputs:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download accepted immutable data and cost artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" \
+            -o /tmp/pr575-gap-excluded-dataset.zip
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
+            -o /tmp/pr576-gen3-terminal.zip
+      - name: Materialize and bind momentum inputs
+        run: |
+          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
+            --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
+            --cost-zip /tmp/pr576-gen3-terminal.zip \
+            --repo-root . \
+            --output /tmp/zel-scalp-momentum-inputs
+          python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
+            --inputs /tmp/zel-scalp-momentum-inputs \
+            --repo-root .
+      - name: Verify materialized authority and lineage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/zel-scalp-momentum-inputs/materialized_manifest.json').read_text())
+          assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
+          assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
+          assert data['file_count'] == 60
+          assert data['total_rows'] > 0
+          assert data['protected_mutations'] == 0
+          assert data['execution_authority'] == 'NONE'
+          assert data['order_authority'] == 'BLOCKED'
+          assert len({item['sha256'] for item in data['files']}) == 60
+          print({'state': data['state'], 'files': data['file_count'], 'rows': data['total_rows'], 'receipt': data['manifest_receipt_sha256']})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-scalp-momentum-inputs-${{ github.sha }}
+          path: /tmp/zel-scalp-momentum-inputs
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  momentum-economic-replay:
+    needs: materialize-momentum-inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-scalp-momentum-inputs-${{ github.sha }}
+          path: /tmp/zel-scalp-momentum-inputs
+      - name: Run signal event study and immediate staged economic replay
+        run: |
+          python scripts/run_zel_scalp_momentum_event_study_v1.py \
+            --inputs /tmp/zel-scalp-momentum-inputs \
+            --repo-root . \
+            --output /tmp/zel-scalp-momentum-event-study
+          python scripts/run_zel_scalp_momentum_staged_replay_v1.py \
+            --inputs /tmp/zel-scalp-momentum-inputs \
+            --event-study /tmp/zel-scalp-momentum-event-study \
+            --repo-root . \
+            --output /tmp/zel-scalp-momentum-replay
+      - name: Verify terminal economic receipt
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          event = json.loads(Path('/tmp/zel-scalp-momentum-event-study/momentum_event_study_receipt.json').read_text())
+          replay = json.loads(Path('/tmp/zel-scalp-momentum-replay/momentum_staged_replay_receipt.json').read_text())
+          assert event['state'] in {'PASS_EVENT_STUDY_EDGE_FOUND', 'PASS_EVENT_STUDY_NO_EDGE'}
+          assert replay['state'] in {
+              'PASS_REPLAY_SKIPPED_EVENT_STUDY_NO_EDGE',
+              'PASS_REPLAY_COMPLETE_NO_SURVIVOR',
+              'PASS_REPLAY_COMPLETE_SURVIVOR',
+          }
+          assert replay['integrity'] == {
+              'future_information': 0,
+              'errors': 0,
+              'duplicates': 0,
+              'censored_open': 0,
+              'unknown_exit': 0,
+              'protected_mutations': 0,
+          }
+          assert replay['execution_authority'] == 'NONE'
+          assert replay['order_authority'] == 'BLOCKED'
+          print({'event_state': event['state'], 'passing_event_configs': event['passing_count'], 'replay_state': replay['state'], 'survivor': replay['survivor']})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-scalp-momentum-economic-${{ github.sha }}
+          path: |
+            /tmp/zel-scalp-momentum-event-study
+            /tmp/zel-scalp-momentum-replay
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

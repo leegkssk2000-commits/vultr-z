@@ -51,6 +51,8 @@ def main() -> None:
         "target_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_target_geometry_plan_v1.json",
         "target_geometry_disposition_sha256": args.repo_root / "backend/research/zel_momentum_target_geometry_disposition_v1.json",
         "timeout_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_timeout_geometry_plan_v1.json",
+        "timeout_geometry_disposition_sha256": args.repo_root / "backend/research/zel_momentum_timeout_geometry_disposition_v1.json",
+        "stop_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_stop_geometry_plan_v1.json",
     }
     for path in bindings.values():
         if not path.is_file():

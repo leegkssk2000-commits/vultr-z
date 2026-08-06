@@ -143,7 +143,7 @@ def main() -> None:
         raise AssertionError("5m gap must fail closed")
 
     misaligned_regime = [
-        module.Bar(bar.ts - module.FIVE_MIN_MS, bar.open, bar.high, bar.low, bar.close, bar.volume)
+        module.Bar(bar.ts - module.FIFTEEN_MIN_MS, bar.open, bar.high, bar.low, bar.close, bar.volume)
         for bar in regime
     ]
     try:
@@ -151,7 +151,13 @@ def main() -> None:
     except ValueError as exc:
         assert "alignment mismatch" in str(exc)
     else:
-        raise AssertionError("5m/15m close mismatch must fail closed")
+        raise AssertionError("stale 15m regime must fail closed")
+
+    latest_closed_regime = [
+        module.Bar(bar.ts - module.FIVE_MIN_MS, bar.open, bar.high, bar.low, bar.close, bar.volume)
+        for bar in regime
+    ]
+    assert module.compute_features(latest_closed_regime, setup, config).signal_ts == setup[-1].ts
 
     print("PASS_ZEL_FEATURE_STRATEGY_SSOT_V1")
 

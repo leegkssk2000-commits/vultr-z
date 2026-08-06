@@ -45,6 +45,8 @@ def main() -> None:
         "feature_strategy_ssot_sha256": args.repo_root / "backend/research/zel_feature_strategy_ssot_v1.py",
         "intent_adapters_sha256": args.repo_root / "backend/research/zel_strategy_intent_adapters_v1.py",
         "feature_contribution_plan_sha256": args.repo_root / "backend/research/zel_momentum_feature_contribution_plan_v1.json",
+        "feature_contribution_disposition_sha256": args.repo_root / "backend/research/zel_momentum_feature_contribution_disposition_v1.json",
+        "cost_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_cost_geometry_plan_v1.json",
     }
     for path in bindings.values():
         if not path.is_file():

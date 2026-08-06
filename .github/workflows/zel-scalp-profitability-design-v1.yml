@@ -17,7 +17,7 @@ on:
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
       - 'scripts/run_zel_momentum_feature_contribution_v1.py'
-      - 'scripts/run_zel_momentum_cost_geometry_v1.py'
+      - 'scripts/run_zel_momentum_target_geometry_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile strategy kernel, candidates and validators
+      - name: Compile strategy kernel and target-geometry stage
         run: >-
           python -m py_compile
           backend/research/zel_feature_strategy_ssot_v1.py
@@ -58,22 +58,20 @@ jobs:
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
           scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
           scripts/run_zel_momentum_feature_contribution_v1.py
-          scripts/run_zel_momentum_cost_geometry_v1.py
+          scripts/run_zel_momentum_target_geometry_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
           python scripts/validate_zel_scalp_external_benchmark_v2.py
           python scripts/validate_zel_scalp_data_split_materialization_v1.py
           python scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
-      - name: Validate isolated candidate fixtures
+      - name: Validate strategy kernel and DecisionIntent parity
         run: |
           python scripts/validate_intraday_pullback_reclaim_v1.py
           python scripts/validate_momentum_breakout_continuation_v1.py
-      - name: Validate feature correctness and DecisionIntent parity
-        run: |
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
-      - name: Verify feature attribution disposition and next route
+      - name: Verify frozen-entry target route
         run: |
           python - <<'PY'
           import json
@@ -81,33 +79,30 @@ jobs:
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          attribution = json.loads(Path('backend/research/zel_momentum_feature_contribution_disposition_v1.json').read_text())
-          cost_plan = json.loads(Path('backend/research/zel_momentum_cost_geometry_plan_v1.json').read_text())
+          cost = json.loads(Path('backend/research/zel_momentum_cost_geometry_disposition_v1.json').read_text())
+          target = json.loads(Path('backend/research/zel_momentum_target_geometry_plan_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
-          assert {row['code'] for row in boundary['critical_findings']} == {
-              'DUPLICATE_QUALITY_WEIGHTING',
-              'RISK_GEOMETRY_REANCHOR',
-          }
           assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
-          assert attribution['state'] == 'FAIL_NET_AFTER_COST_POSITIVE_GROSS_EDGE'
-          assert attribution['source_run'] == 31105868829
-          assert attribution['source_artifact_id'] == 8969525059
-          assert attribution['source_receipt_sha256'] == 'bfcce7cfa81873795742578d21ff5a984b2e6e0822a2fdad22589df81d353bcd'
-          assert attribution['next_gate'] == 'COST_GEOMETRY_THRESHOLD_DIAGNOSIS'
-          assert cost_plan['state'] == 'PASS_COST_GEOMETRY_PLAN_SEALED_RESEARCH_ONLY'
-          assert cost_plan['single_causal_axis'] == 'EXPECTED_MOVE_TO_COST_THRESHOLD'
-          assert len(cost_plan['profiles']) == 2
-          assert len(cost_plan['expected_move_to_cost_thresholds']) == 7
-          assert attribution['execution_authority'] == 'NONE'
-          assert attribution['order_authority'] == 'BLOCKED'
-          assert attribution['protected_mutations'] == 0
+          assert cost['state'] == 'FAIL_THRESHOLD_ONLY_NO_RETENTION_COMPLIANT_SURVIVOR'
+          assert cost['source_run'] == 31106632314
+          assert cost['source_artifact_id'] == 8969922473
+          assert cost['source_receipt_sha256'] == '3a9c4bd079f61547fb17e2f53a8d9ce8e26651702273902b4f4a1e21ddcfe835'
+          assert cost['next_gate'] == 'TARGET_GEOMETRY_COUNTERFACTUAL_ON_FROZEN_ENTRIES'
+          assert target['state'] == 'PASS_TARGET_GEOMETRY_PLAN_SEALED_RESEARCH_ONLY'
+          assert target['source_variant_id'] == 'F5_CURRENT_FULL_SET__EMC_4'
+          assert target['frozen_entry_count'] == 130
+          assert target['single_causal_axis'] == 'TARGET_R'
+          assert len(target['target_r_candidates']) == 8
+          assert cost['execution_authority'] == 'NONE'
+          assert cost['order_authority'] == 'BLOCKED'
+          assert cost['protected_mutations'] == 0
           print({
               'boundary': boundary['state'],
-              'attribution': attribution['state'],
-              'next': attribution['next_gate'],
-              'cost_variants': len(cost_plan['profiles']) * len(cost_plan['expected_move_to_cost_thresholds']),
-              'legacy_economic_replay': 'BLOCKED',
+              'cost': cost['state'],
+              'next': cost['next_gate'],
+              'frozen_entries': target['frozen_entry_count'],
+              'target_candidates': len(target['target_r_candidates']),
           })
           PY
       - name: Protected-path assertion
@@ -121,7 +116,7 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-  materialize-cost-inputs:
+  materialize-target-inputs:
     needs: strategy-kernel-gate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -132,40 +127,45 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Download accepted immutable data and cost artifacts
+      - name: Download immutable data, cost and cost-geometry artifacts
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" \
-            -o /tmp/pr575-gap-excluded-dataset.zip
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
-            -o /tmp/pr576-gen3-terminal.zip
-      - name: Materialize and bind cost-geometry inputs
+          for spec in \
+            '8916685107:/tmp/pr575-gap-excluded-dataset.zip' \
+            '8950849008:/tmp/pr576-gen3-terminal.zip' \
+            '8969922473:/tmp/cost-geometry-source.zip'; do
+            id="${spec%%:*}"
+            output="${spec#*:}"
+            curl --fail --location --retry 3 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
+              -o "${output}"
+          done
+      - name: Materialize and bind target-geometry inputs
         run: |
           python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
             --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
             --cost-zip /tmp/pr576-gen3-terminal.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-cost-inputs
+            --output /tmp/zel-momentum-target-inputs
           python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-momentum-cost-inputs \
+            --inputs /tmp/zel-momentum-target-inputs \
             --repo-root .
-      - name: Verify cost-geometry lineage bindings
+          cp /tmp/cost-geometry-source.zip /tmp/zel-momentum-target-inputs/source-cost-geometry.zip
+      - name: Verify frozen-entry lineage bindings
         run: |
           python - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
 
-          data = json.loads(Path('/tmp/zel-momentum-cost-inputs/materialized_manifest.json').read_text())
+          root = Path('/tmp/zel-momentum-target-inputs')
+          data = json.loads((root / 'materialized_manifest.json').read_text())
           refs = data['references']
+          source_sha = hashlib.sha256((root / 'source-cost-geometry.zip').read_bytes()).hexdigest()
           assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
           assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
           assert data['file_count'] == 60
@@ -173,30 +173,30 @@ jobs:
           for key in (
               'feature_strategy_ssot_sha256',
               'intent_adapters_sha256',
-              'feature_contribution_disposition_sha256',
-              'cost_geometry_plan_sha256',
-              'control_plan_sha256',
+              'cost_geometry_disposition_sha256',
+              'target_geometry_plan_sha256',
               'cost_receipt_sha256',
               'funding_receipt_sha256',
           ):
               assert refs[key]
+          assert source_sha == '12ed887caa0db035f4b0bcc8e19ff5ce3c2d0461b1ae1f4f77cf0e59c0967ce6'
           assert data['protected_mutations'] == 0
           assert data['execution_authority'] == 'NONE'
           assert data['order_authority'] == 'BLOCKED'
-          print({'state': data['state'], 'files': data['file_count'], 'rows': data['total_rows'], 'bindings': len(refs)})
+          print({'state': data['state'], 'files': data['file_count'], 'rows': data['total_rows'], 'bindings': len(refs), 'source_sha': source_sha})
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-cost-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-cost-inputs
+          name: zel-momentum-target-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-target-inputs
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
 
-  momentum-cost-geometry:
-    needs: materialize-cost-inputs
+  momentum-target-geometry:
+    needs: materialize-target-inputs
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -204,33 +204,34 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: zel-momentum-cost-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-cost-inputs
-      - name: Run single-axis cost geometry diagnosis
+          name: zel-momentum-target-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-target-inputs
+      - name: Run frozen-entry target geometry counterfactual
         run: |
-          python scripts/run_zel_momentum_cost_geometry_v1.py \
-            --inputs /tmp/zel-momentum-cost-inputs \
+          python scripts/run_zel_momentum_target_geometry_v1.py \
+            --inputs /tmp/zel-momentum-target-inputs \
+            --source-artifact /tmp/zel-momentum-target-inputs/source-cost-geometry.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-cost-geometry
-      - name: Verify cost geometry receipt
+            --output /tmp/zel-momentum-target-geometry
+      - name: Verify target geometry receipt
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          receipt = json.loads(Path('/tmp/zel-momentum-cost-geometry/cost_geometry_receipt.json').read_text())
+          receipt = json.loads(Path('/tmp/zel-momentum-target-geometry/target_geometry_receipt.json').read_text())
           assert receipt['state'] in {
-              'PASS_COST_GEOMETRY_DIAGNOSIS_SURVIVOR_FOUND_SELECTION_NOT_AUTHORIZED',
-              'PASS_COST_GEOMETRY_DIAGNOSIS_NO_RETENTION_COMPLIANT_SURVIVOR',
+              'PASS_TARGET_GEOMETRY_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
+              'PASS_TARGET_GEOMETRY_COUNTERFACTUAL_NO_SURVIVOR',
           }
-          assert len(receipt['results']) == 14
-          assert receipt['integrity'] == {
-              'errors': 0,
-              'duplicates': 0,
-              'protected_mutations': 0,
-              'execution_authority': 'NONE',
-              'order_authority': 'BLOCKED',
-          }
+          assert len(receipt['results']) == 8
+          assert receipt['integrity']['errors'] == 0
+          assert receipt['integrity']['duplicates'] == 0
+          assert receipt['integrity']['source_entry_rows'] == 130
+          assert receipt['integrity']['base_metric_parity'] is True
+          assert receipt['integrity']['protected_mutations'] == 0
+          assert receipt['integrity']['execution_authority'] == 'NONE'
+          assert receipt['integrity']['order_authority'] == 'BLOCKED'
           assert receipt['selection_authority'] is False
           assert receipt['promotion_authority'] is False
           print({
@@ -243,8 +244,8 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-cost-geometry-${{ github.sha }}
-          path: /tmp/zel-momentum-cost-geometry
+          name: zel-momentum-target-geometry-${{ github.sha }}
+          path: /tmp/zel-momentum-target-geometry
           if-no-files-found: error
           retention-days: 30
           compression-level: 6

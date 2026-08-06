@@ -11,6 +11,7 @@ on:
       - 'scripts/validate_intraday_pullback_reclaim_v1.py'
       - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
+      - 'scripts/run_zel_scalp_generation1_replay_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -42,6 +43,7 @@ jobs:
           scripts/validate_zel_scalp_external_benchmark_v2.py
           scripts/validate_zel_scalp_data_split_materialization_v1.py
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
+          scripts/run_zel_scalp_generation1_replay_v1.py
       - name: Validate sealed design receipt
         run: python scripts/validate_zel_scalp_design_selection_v1.py
       - name: Validate external benchmark evidence boundary
@@ -122,6 +124,60 @@ jobs:
         with:
           name: zel-scalp-materialized-inputs-${{ github.sha }}
           path: /tmp/zel-scalp-materialized-inputs
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  generation1-economic-replay:
+    needs: materialize-replay-inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-scalp-materialized-inputs-${{ github.sha }}
+          path: /tmp/zel-scalp-materialized-inputs
+      - name: Execute W1 selection and frozen W2 W3 replay
+        run: >-
+          python scripts/run_zel_scalp_generation1_replay_v1.py
+          --inputs /tmp/zel-scalp-materialized-inputs
+          --repo-root .
+          --output /tmp/zel-scalp-generation1-replay
+      - name: Verify terminal replay authority and integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path('/tmp/zel-scalp-generation1-replay/generation1_replay_receipt.json').read_text())
+          assert receipt['state'] in {'PASS_REPLAY_COMPLETE_SURVIVOR', 'PASS_REPLAY_COMPLETE_NO_SURVIVOR'}
+          assert receipt['trial_count'] == 48
+          assert receipt['integrity'] == {
+              'future_information': 0,
+              'errors': 0,
+              'duplicates': 0,
+              'censored_open': 0,
+              'unknown_exit': 0,
+              'protected_mutations': 0,
+          }
+          assert receipt['execution_authority'] == 'NONE'
+          assert receipt['order_authority'] == 'BLOCKED'
+          assert receipt['action'] == 'hold'
+          print({
+              'state': receipt['state'],
+              'selected_config_id': receipt['selected_config_id'],
+              'survivor': receipt['survivor'],
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-scalp-generation1-replay-${{ github.sha }}
+          path: /tmp/zel-scalp-generation1-replay
           if-no-files-found: error
           retention-days: 30
           compression-level: 6

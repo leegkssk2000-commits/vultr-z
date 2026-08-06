@@ -47,6 +47,8 @@ def main() -> None:
         "feature_contribution_plan_sha256": args.repo_root / "backend/research/zel_momentum_feature_contribution_plan_v1.json",
         "feature_contribution_disposition_sha256": args.repo_root / "backend/research/zel_momentum_feature_contribution_disposition_v1.json",
         "cost_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_cost_geometry_plan_v1.json",
+        "cost_geometry_disposition_sha256": args.repo_root / "backend/research/zel_momentum_cost_geometry_disposition_v1.json",
+        "target_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_target_geometry_plan_v1.json",
     }
     for path in bindings.values():
         if not path.is_file():

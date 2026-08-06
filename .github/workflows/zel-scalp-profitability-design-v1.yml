@@ -13,6 +13,9 @@ on:
       - 'backend/research/zel_session_event_ai_binding_v1.json'
       - 'backend/research/strategy11_ai_review_router_v1.json'
       - 'backend/tools/zel_session_event_gemini_research_gate_v1.py'
+      - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
+      - 'scripts/run_zel_session_event_replay_v1.py'
+      - 'scripts/validate_zel_session_event_replay_v1.py'
       - 'scripts/strategy11_ai_review_router.py'
       - 'scripts/strategy11_groq_redteam.py'
       - 'scripts/strategy11_workers_ai_guard.py'
@@ -24,6 +27,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -135,7 +139,7 @@ jobs:
           scripts/validate_zel_feature_strategy_ssot_v1.py
           scripts/validate_zel_strategy_kernel_parity_v1.py
 
-      - name: Validate boundary ownership, feature correctness and adapter parity
+      - name: Validate boundary, feature correctness and adapter parity
         run: |
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
@@ -148,41 +152,133 @@ jobs:
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
           assert boundary['next_gate'] == 'FEATURE_CORRECTNESS_AND_PARITY'
-          assert reset['state'] == 'HOLD_ARCHITECTURE_RESET_BEFORE_ECONOMIC_REPLAY'
+          assert reset['state'] == 'PASS_ARCHITECTURE_GATES_A_B_E_READY_FOR_SINGLE_AXIS_CONTRIBUTION'
           assert reset['gates']['A_boundary_audit']['state'] == 'PASS'
-          assert reset['gates']['C_feature_economic_contribution']['state'] == 'BLOCKED_UNTIL_B_PASS'
-          assert reset['gates']['F_integrated_economics']['state'] == 'BLOCKED_UNTIL_A_THROUGH_E_PASS'
+          assert reset['gates']['B_feature_correctness']['state'] == 'PASS_IMMUTABLE_VALIDATION'
+          assert reset['gates']['C_feature_economic_contribution']['state'] == 'READY_SINGLE_AXIS_RESEARCH_ONLY'
+          assert reset['gates']['E_adapter_parity']['state'] == 'PASS_IMMUTABLE_VALIDATION'
+          assert reset['gates']['E_adapter_parity']['observed_intent_parity_pct'] == 100.0
+          assert reset['gates']['F_integrated_economics']['state'] == 'BLOCKED_UNTIL_C_AND_D_PASS'
+          assert reset['next_gate'] == 'C_SINGLE_AXIS_FEATURE_ECONOMIC_CONTRIBUTION'
           assert reset['authority']['selection_authority'] is False
           assert reset['authority']['promotion_authority'] is False
           assert reset['authority']['execution_authority'] == 'NONE'
           assert reset['authority']['order_authority'] == 'BLOCKED'
           assert reset['authority']['protected_mutations'] == 0
           assert reset['authority']['live_order'] == 'BLOCKED'
-          print({
-              'boundary': boundary['state'],
-              'reset': reset['state'],
-              'next_gate': reset['next_gate'],
-              'live_order': reset['authority']['live_order'],
-          })
           PY
 
-      - name: Assert replay and tuning remain disabled during reset
+      - name: Assert only the preregistered single-axis replay is enabled
         shell: bash
         run: |
           set -euo pipefail
           workflow='.github/workflows/zel-scalp-profitability-design-v1.yml'
-          if grep -E 'run_zel_.*(replay|feature_contribution|cost_geometry|stop_geometry|target_geometry|timeout_geometry|breakeven|partial_exit|trailing_runner)' "$workflow"; then
-            echo 'economic replay or tuning is forbidden before architecture gates A-E pass' >&2
+          prefix='python scripts/run_zel_'
+          suffix='(feature_contribution|cost_geometry|stop_geometry|target_geometry|timeout_geometry|breakeven|partial_exit|trailing_runner)'
+          if grep -E "${prefix}${suffix}" "$workflow"; then
+            echo 'integrated economics or tuning remains forbidden before C and D pass' >&2
             exit 1
           fi
+          replay_count="$(grep -E -c '^[[:space:]]+python scripts/run_zel_session_event_replay_v1.py' "$workflow")"
+          test "$replay_count" -eq 1
 
       - name: Protected-path assertion
         shell: bash
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only origin/${{ github.base_ref }}...HEAD)"
+          base_ref="${{ github.base_ref || 'master' }}"
+          git fetch --no-tags origin "$base_ref"
+          changed="$(git diff --name-only "origin/${base_ref}"...HEAD)"
           if grep -E '^(backend/strategies/|backend/registry|backend/runtime|formal_ledger|shadow|paper|live|orders?)' <<<"$changed"; then
             echo 'protected runtime/canonical path changed' >&2
             exit 1
           fi
           printf '%s\n' "$changed"
+
+  session-event-deterministic-replay:
+    needs:
+      - session-event-ai-research-gate
+      - architecture-reset-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download bound AI gate receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-session-event-ai-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-session-event-ai
+
+      - name: Download immutable dataset and cost artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zel-session-event-replay
+          for spec in \
+            '8916685107:/tmp/zel-dataset.zip' \
+            '8950849008:/tmp/zel-cost.zip'
+          do
+            artifact_id="${spec%%:*}"
+            output="${spec#*:}"
+            curl --fail-with-body --location --retry 3 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              --output "$output"
+          done
+          sha256sum /tmp/zel-dataset.zip /tmp/zel-cost.zip
+
+      - name: Materialize immutable 15m replay inputs
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-session-event-inputs
+          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
+            --dataset-zip /tmp/zel-dataset.zip \
+            --cost-zip /tmp/zel-cost.zip \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output /tmp/zel-session-event-inputs
+
+      - name: Compile deterministic replay and validator
+        run: >-
+          python -m py_compile
+          scripts/run_zel_session_event_replay_v1.py
+          scripts/validate_zel_session_event_replay_v1.py
+
+      - name: Run sealed research-window replay
+        run: |
+          set -euo pipefail
+          python scripts/run_zel_session_event_replay_v1.py \
+            --inputs /tmp/zel-session-event-inputs \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --ai-receipt /tmp/zel-session-event-ai/ai_gate_receipt.json \
+            --window research \
+            --output /tmp/zel-session-event-replay
+
+      - name: Validate deterministic edge gate
+        run: |
+          set -euo pipefail
+          python scripts/validate_zel_session_event_replay_v1.py \
+            --receipt /tmp/zel-session-event-replay/session_event_replay_receipt.json \
+            --ledger /tmp/zel-session-event-replay/session_event_ledger.jsonl.gz \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --ai-receipt /tmp/zel-session-event-ai/ai_gate_receipt.json \
+            --inputs /tmp/zel-session-event-inputs \
+            --output /tmp/zel-session-event-replay/session_event_validation_receipt.json
+
+      - name: Upload deterministic replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-session-event-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-session-event-replay
+          if-no-files-found: warn
+          retention-days: 30

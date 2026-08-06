@@ -1,0 +1,71 @@
+name: ZEL Structural Premium Runner Direct V1
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - backend/research/zel_structural_premium_runner_direct_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-runner-direct-v1
+  cancel-in-progress: true
+
+jobs:
+  runner-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-structural-premium-runner-recovery-v1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate restored structural-premium contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/validate_zel_structural_premium_route_v1.py
+          python scripts/validate_zel_structural_premium_route_v1.py
+      - name: Seal runner assignment
+        env:
+          RUNNER_NAME_VALUE: ${{ runner.name }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          row = {
+              'schema_version': 'zel.structural_premium.runner_direct_receipt.v1',
+              'state': 'PASS_GITHUB_HOSTED_RUNNER_ASSIGNED',
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'head_sha': os.environ['GITHUB_SHA'],
+              'runner_name': os.environ.get('RUNNER_NAME_VALUE',''),
+              'runner_os': os.environ.get('RUNNER_OS_VALUE',''),
+              'runner_arch': os.environ.get('RUNNER_ARCH_VALUE',''),
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'protected_mutations': 0,
+              'action': 'hold'
+          }
+          if not row['runner_name'] or not row['runner_os'] or not row['runner_arch']:
+              raise SystemExit('runner assignment metadata missing')
+          row['receipt_sha256'] = hashlib.sha256(json.dumps(row,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/runner_direct_receipt.json').write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-premium-runner-direct-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/runner_direct_receipt.json
+          retention-days: 30

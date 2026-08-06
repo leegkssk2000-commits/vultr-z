@@ -12,6 +12,7 @@ on:
       - 'scripts/validate_intraday_pullback_reclaim_v1.py'
       - 'scripts/validate_momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
+      - 'scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py'
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/run_zel_scalp_generation1_replay_v1.py'
       - 'scripts/run_zel_scalp_momentum_generation1_replay_v1.py'
@@ -47,12 +48,14 @@ jobs:
           scripts/validate_zel_scalp_design_selection_v1.py
           scripts/validate_zel_scalp_external_benchmark_v2.py
           scripts/validate_zel_scalp_data_split_materialization_v1.py
+          scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
           python scripts/validate_zel_scalp_external_benchmark_v2.py
           python scripts/validate_zel_scalp_data_split_materialization_v1.py
+          python scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
       - name: Validate isolated candidate fixtures
         run: |
           python scripts/validate_intraday_pullback_reclaim_v1.py
@@ -64,13 +67,21 @@ jobs:
           from pathlib import Path
           terminal = json.loads(Path('backend/research/zel_scalp_generation1_terminal_disposition_v1.json').read_text())
           design = json.loads(Path('backend/research/zel_scalp_momentum_breakout_continuation_design_v1.json').read_text())
+          control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
           assert terminal['state'] == 'ECONOMIC_FAIL_NO_SURVIVOR'
           assert terminal['same_family_refinement'] == 'BLOCKED_UNTIL_NEW_CAUSAL_EVIDENCE'
           assert design['state'] == 'PASS_DESIGN_SEALED_IMPLEMENTATION_STARTED_REPLAY_NOT_YET_AUTHORIZED'
           assert design['strategy_id'] == 'momentum_breakout_continuation_v1'
           assert design['execution_authority'] == 'NONE'
           assert design['order_authority'] == 'BLOCKED'
-          print({'terminal': terminal['state'], 'next': design['strategy_id'], 'state': design['state']})
+          assert control['state'] == 'PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER'
+          assert control['legacy_trial_plan_disposition'] == 'DIAGNOSTIC_COVERAGE_ONLY_NOT_SELECTION_AUTHORITY'
+          print({
+              'terminal': terminal['state'],
+              'next': design['strategy_id'],
+              'state': design['state'],
+              'control': control['state'],
+          })
           PY
       - name: Protected-path assertion
         shell: bash
@@ -84,5 +95,6 @@ jobs:
           printf '%s\n' "$changed"
 
 # Economic replay is intentionally absent until the momentum candidate source SHA,
-# bounded trial plan and dedicated replay adapter are sealed. This prevents the
+# staged control plan, negative controls, marginal-expectancy cutoff and dedicated
+# replay adapter are sealed. This prevents both multivariate W1 overfit and the
 # terminal pullback/reclaim family from being rerun after route_change.

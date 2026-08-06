@@ -1,0 +1,97 @@
+{
+  "schema_version": "zel.scalp.momentum.replay_control_plan.v1",
+  "strategy_id": "momentum_breakout_continuation_v1",
+  "state": "PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER",
+  "legacy_trial_plan": "backend/research/zel_scalp_momentum_generation1_trial_plan_v1.json",
+  "legacy_trial_plan_disposition": "DIAGNOSTIC_COVERAGE_ONLY_NOT_SELECTION_AUTHORITY",
+  "selection_policy": {
+    "window": "W1_ONLY",
+    "freeze_through": ["W2", "W3"],
+    "same_source_required": true,
+    "same_data_lineage_required": true,
+    "minimum_trades_per_window": 60,
+    "hard_gates": {
+      "net_R_gt": 0.0,
+      "profit_factor_gte": 1.0,
+      "expectancy_R_gt": 0.0,
+      "payoff_gte": 1.0,
+      "errors_eq": 0,
+      "duplicates_eq": 0,
+      "censored_open_eq": 0,
+      "unknown_exit_eq": 0
+    }
+  },
+  "staged_search": [
+    {
+      "stage_id": "S1_ENTRY_STRUCTURE",
+      "purpose": "select signal geometry without co-optimizing risk and exit",
+      "parameters": [
+        "regime_lookback",
+        "directional_efficiency_min",
+        "breakout_lookback",
+        "breakout_buffer_atr",
+        "expansion_atr_multiple",
+        "relative_volume_min"
+      ],
+      "fixed_parameters": {
+        "stop_atr_multiple": 1.1,
+        "target_r": 1.6,
+        "max_hold_bars": 12,
+        "expected_move_to_cost_min": 3.0
+      },
+      "maximum_trials": 24,
+      "selection_window": "W1_ONLY"
+    },
+    {
+      "stage_id": "S2_RISK_EXIT",
+      "purpose": "optimize risk and exit only after the entry structure is frozen",
+      "parameters": [
+        "stop_atr_multiple",
+        "target_r",
+        "max_hold_bars",
+        "expected_move_to_cost_min"
+      ],
+      "inherits_frozen_stage": "S1_ENTRY_STRUCTURE",
+      "maximum_trials": 12,
+      "selection_window": "W1_ONLY"
+    }
+  ],
+  "negative_controls": [
+    {
+      "control_id": "NO_SIGNAL_PLACEBO",
+      "definition": "emit no entries over the same windows and verify zero-trade accounting without promotion authority",
+      "required": true
+    },
+    {
+      "control_id": "DIRECTION_REVERSAL",
+      "definition": "replay the selected signal timestamps with symmetric opposite-direction risk geometry as a non-promotable falsification control",
+      "required": true
+    },
+    {
+      "control_id": "PLUS_ONE_BAR_DELAY",
+      "definition": "delay entry by one additional closed 5m bar while preserving the frozen risk-distance and target-R contract",
+      "required": true
+    }
+  ],
+  "marginal_expectancy_cutoff": {
+    "quality_score": "expected_move_to_cost",
+    "method": "W1 descending decile accumulation",
+    "selection_rule": "stop before the first added decile whose incremental net expectancy is less than or equal to zero",
+    "selected_on": "W1_ONLY",
+    "frozen_unchanged_on": ["W2", "W3"],
+    "minimum_opportunity_retention_pct": 60.0
+  },
+  "stress_required_after_candidate_survival": [
+    "DOUBLE_ALL_IN_COST",
+    "P95_FUNDING",
+    "PLUS_ONE_BAR_DELAY",
+    "SYMBOL_CONCENTRATION",
+    "WINDOW_CONCENTRATION"
+  ],
+  "promotion_authority": false,
+  "selection_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "protected_mutations": 0,
+  "action": "hold"
+}

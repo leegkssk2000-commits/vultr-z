@@ -8,6 +8,15 @@ on:
       - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
       - 'backend/research/zel_feature_strategy_ssot_v1.py'
       - 'backend/research/zel_strategy_intent_adapters_v1.py'
+      - 'backend/research/zel_session_event_continuation_plan_v1.json'
+      - 'backend/research/zel_session_event_external_evidence_registry_v1.json'
+      - 'backend/research/strategy11_ai_review_router_v1.json'
+      - 'backend/tools/zel_session_event_gemini_research_gate_v1.py'
+      - 'scripts/strategy11_ai_review_router.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - 'scripts/strategy11_github_models_review.py'
+      - 'scripts/validate_zel_session_event_ai_gate_v1.py'
       - 'scripts/validate_zel_feature_strategy_ssot_v1.py'
       - 'scripts/validate_zel_strategy_kernel_parity_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
@@ -21,7 +30,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  session-event-ai-research-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install AI review client
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Compile mandatory AI research chain
+        run: >-
+          python -m py_compile
+          backend/tools/zel_session_event_gemini_research_gate_v1.py
+          scripts/strategy11_ai_review_router.py
+          scripts/strategy11_groq_redteam.py
+          scripts/strategy11_workers_ai_guard.py
+          scripts/validate_zel_session_event_ai_gate_v1.py
+
+      - name: Generate Gemini multimodal hypothesis from sealed evidence
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_V3_2_API_KEY: ${{ secrets.GEMINI_V3_2_API_KEY }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-session-event-ai
+          python backend/tools/zel_session_event_gemini_research_gate_v1.py \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --registry backend/research/zel_session_event_external_evidence_registry_v1.json \
+            --output-dir /tmp/zel-session-event-ai
+
+      - name: Execute Gemini, Groq and Workers AI advisory chain
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/strategy11_ai_review_router.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+            --input /tmp/zel-session-event-ai/router_input.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/zel-session-event-ai/router_result.json \
+            --mode execute \
+            --gemini-artifact /tmp/zel-session-event-ai/gemini_artifact.json
+
+      - name: Fail closed unless all required providers were actually used
+        run: |
+          set -euo pipefail
+          python scripts/validate_zel_session_event_ai_gate_v1.py \
+            --gemini /tmp/zel-session-event-ai/gemini_artifact.json \
+            --router /tmp/zel-session-event-ai/router_result.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/zel-session-event-ai/ai_gate_receipt.json
+
+      - name: Upload immutable AI evidence and lineage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-session-event-ai-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-session-event-ai
+          if-no-files-found: warn
+          retention-days: 14
+
   architecture-reset-gate:
+    needs: session-event-ai-research-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

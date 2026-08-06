@@ -1,0 +1,169 @@
+name: ZEL Session Event Replay V1
+
+on:
+  push:
+    branches:
+      - zel-scalp-profitability-design-v1
+    paths:
+      - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
+      - 'backend/research/zel_session_event_continuation_plan_v1.json'
+      - 'backend/research/zel_session_event_external_evidence_registry_v1.json'
+      - 'backend/research/zel_session_event_ai_binding_v1.json'
+      - 'backend/tools/zel_session_event_gemini_research_gate_v1.py'
+      - 'scripts/run_zel_session_event_replay_v1.py'
+      - 'scripts/validate_zel_session_event_replay_v1.py'
+      - '.github/workflows/zel-session-event-replay-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
+      - 'backend/research/zel_session_event_continuation_plan_v1.json'
+      - 'backend/research/zel_session_event_external_evidence_registry_v1.json'
+      - 'backend/research/zel_session_event_ai_binding_v1.json'
+      - 'backend/tools/zel_session_event_gemini_research_gate_v1.py'
+      - 'scripts/run_zel_session_event_replay_v1.py'
+      - 'scripts/validate_zel_session_event_replay_v1.py'
+      - '.github/workflows/zel-session-event-replay-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: zel-session-event-replay-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  ai-bound-deterministic-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate architecture gates before replay
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/zel_feature_strategy_ssot_v1.py \
+            backend/research/zel_strategy_intent_adapters_v1.py \
+            scripts/validate_zel_feature_strategy_ssot_v1.py \
+            scripts/validate_zel_strategy_kernel_parity_v1.py \
+            backend/tools/zel_session_event_gemini_research_gate_v1.py \
+            scripts/strategy11_ai_review_router.py \
+            scripts/strategy11_groq_redteam.py \
+            scripts/strategy11_workers_ai_guard.py \
+            scripts/validate_zel_session_event_ai_gate_v1.py \
+            scripts/run_zel_session_event_replay_v1.py \
+            scripts/validate_zel_session_event_replay_v1.py
+          python scripts/validate_zel_feature_strategy_ssot_v1.py
+          python scripts/validate_zel_strategy_kernel_parity_v1.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          reset = json.loads(Path('backend/research/zel_strategy_kernel_reset_gate_v1.json').read_text())
+          assert reset['state'] == 'PASS_ARCHITECTURE_GATES_A_B_E_READY_FOR_SINGLE_AXIS_CONTRIBUTION'
+          assert reset['gates']['B_feature_correctness']['state'] == 'PASS_IMMUTABLE_VALIDATION'
+          assert reset['gates']['C_feature_economic_contribution']['state'] == 'READY_SINGLE_AXIS_RESEARCH_ONLY'
+          assert reset['gates']['E_adapter_parity']['state'] == 'PASS_IMMUTABLE_VALIDATION'
+          assert reset['gates']['F_integrated_economics']['state'] == 'BLOCKED_UNTIL_C_AND_D_PASS'
+          assert reset['authority']['execution_authority'] == 'NONE'
+          assert reset['authority']['order_authority'] == 'BLOCKED'
+          assert reset['authority']['protected_mutations'] == 0
+          PY
+
+      - name: Install AI review client
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Generate mandatory Gemini hypothesis
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_V3_2_API_KEY: ${{ secrets.GEMINI_V3_2_API_KEY }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-session-event-ai /tmp/zel-session-event-replay
+          mkdir -p /tmp/zel-session-event-replay
+          python backend/tools/zel_session_event_gemini_research_gate_v1.py \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --registry backend/research/zel_session_event_external_evidence_registry_v1.json \
+            --output-dir /tmp/zel-session-event-ai
+
+      - name: Execute Groq and Workers AI red-team chain
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/strategy11_ai_review_router.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+            --input /tmp/zel-session-event-ai/router_input.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/zel-session-event-ai/router_result.json \
+            --mode execute \
+            --gemini-artifact /tmp/zel-session-event-ai/gemini_artifact.json
+          python scripts/validate_zel_session_event_ai_gate_v1.py \
+            --gemini /tmp/zel-session-event-ai/gemini_artifact.json \
+            --router /tmp/zel-session-event-ai/router_result.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/zel-session-event-ai/ai_gate_receipt.json
+
+      - name: Download immutable dataset and cost artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for spec in \
+            '8916685107:/tmp/zel-dataset.zip' \
+            '8950849008:/tmp/zel-cost.zip'
+          do
+            artifact_id="${spec%%:*}"
+            output="${spec#*:}"
+            curl --fail-with-body --location --retry 3 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              --output "$output"
+          done
+          sha256sum /tmp/zel-dataset.zip /tmp/zel-cost.zip
+
+      - name: Materialize and run deterministic research replay
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-session-event-inputs
+          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
+            --dataset-zip /tmp/zel-dataset.zip \
+            --cost-zip /tmp/zel-cost.zip \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output /tmp/zel-session-event-inputs
+          python scripts/run_zel_session_event_replay_v1.py \
+            --inputs /tmp/zel-session-event-inputs \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --ai-receipt /tmp/zel-session-event-ai/ai_gate_receipt.json \
+            --window research \
+            --output /tmp/zel-session-event-replay
+          python scripts/validate_zel_session_event_replay_v1.py \
+            --receipt /tmp/zel-session-event-replay/session_event_replay_receipt.json \
+            --ledger /tmp/zel-session-event-replay/session_event_ledger.jsonl.gz \
+            --plan backend/research/zel_session_event_continuation_plan_v1.json \
+            --ai-receipt /tmp/zel-session-event-ai/ai_gate_receipt.json \
+            --inputs /tmp/zel-session-event-inputs \
+            --output /tmp/zel-session-event-replay/session_event_validation_receipt.json
+
+      - name: Upload AI and replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-session-event-replay-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/zel-session-event-ai
+            /tmp/zel-session-event-replay
+          if-no-files-found: warn
+          retention-days: 30

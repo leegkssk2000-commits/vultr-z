@@ -6,12 +6,15 @@ on:
     paths:
       - 'backend/research/zel_scalp_*'
       - 'backend/research/intraday_pullback_reclaim_v1.py'
+      - 'backend/research/momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_scalp_design_selection_v1.py'
       - 'scripts/validate_zel_scalp_external_benchmark_v2.py'
       - 'scripts/validate_intraday_pullback_reclaim_v1.py'
+      - 'scripts/validate_momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/run_zel_scalp_generation1_replay_v1.py'
+      - 'scripts/run_zel_scalp_momentum_generation1_replay_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -34,24 +37,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile research candidate
+      - name: Compile research candidates
         run: >-
           python -m py_compile
           backend/research/intraday_pullback_reclaim_v1.py
+          backend/research/momentum_breakout_continuation_v1.py
           scripts/validate_intraday_pullback_reclaim_v1.py
+          scripts/validate_momentum_breakout_continuation_v1.py
           scripts/validate_zel_scalp_design_selection_v1.py
           scripts/validate_zel_scalp_external_benchmark_v2.py
           scripts/validate_zel_scalp_data_split_materialization_v1.py
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
-          scripts/run_zel_scalp_generation1_replay_v1.py
-      - name: Validate sealed design receipt
-        run: python scripts/validate_zel_scalp_design_selection_v1.py
-      - name: Validate external benchmark evidence boundary
-        run: python scripts/validate_zel_scalp_external_benchmark_v2.py
+      - name: Validate inherited design receipts
+        run: |
+          python scripts/validate_zel_scalp_design_selection_v1.py
+          python scripts/validate_zel_scalp_external_benchmark_v2.py
+          python scripts/validate_zel_scalp_data_split_materialization_v1.py
       - name: Validate isolated candidate fixtures
-        run: python scripts/validate_intraday_pullback_reclaim_v1.py
-      - name: Validate sealed data split contract
-        run: python scripts/validate_zel_scalp_data_split_materialization_v1.py
+        run: |
+          python scripts/validate_intraday_pullback_reclaim_v1.py
+          python scripts/validate_momentum_breakout_continuation_v1.py
+      - name: Verify route disposition
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          terminal = json.loads(Path('backend/research/zel_scalp_generation1_terminal_disposition_v1.json').read_text())
+          design = json.loads(Path('backend/research/zel_scalp_momentum_breakout_continuation_design_v1.json').read_text())
+          assert terminal['state'] == 'ECONOMIC_FAIL_NO_SURVIVOR'
+          assert terminal['same_family_refinement'] == 'BLOCKED_UNTIL_NEW_CAUSAL_EVIDENCE'
+          assert design['state'] == 'PASS_DESIGN_SEALED_IMPLEMENTATION_STARTED_REPLAY_NOT_YET_AUTHORIZED'
+          assert design['strategy_id'] == 'momentum_breakout_continuation_v1'
+          assert design['execution_authority'] == 'NONE'
+          assert design['order_authority'] == 'BLOCKED'
+          print({'terminal': terminal['state'], 'next': design['strategy_id'], 'state': design['state']})
+          PY
       - name: Protected-path assertion
         shell: bash
         run: |
@@ -63,121 +83,6 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-  materialize-replay-inputs:
-    needs: static-validation
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Download accepted immutable dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" \
-            -o /tmp/pr575-gap-excluded-dataset.zip
-          curl --fail --location --retry 3 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
-            -o /tmp/pr576-gen3-terminal.zip
-      - name: Materialize sealed 3m 5m 15m replay inputs
-        run: >-
-          python scripts/materialize_zel_scalp_intraday_dataset_v1.py
-          --dataset-zip /tmp/pr575-gap-excluded-dataset.zip
-          --cost-zip /tmp/pr576-gen3-terminal.zip
-          --repo-root .
-          --output /tmp/zel-scalp-materialized-inputs
-      - name: Independent manifest assertions
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          path = Path('/tmp/zel-scalp-materialized-inputs/materialized_manifest.json')
-          data = json.loads(path.read_text())
-          assert data['state'] == 'PASS_MATERIALIZED_REPLAY_INPUTS'
-          assert data['file_count'] == 60
-          assert data['total_rows'] > 0
-          assert data['protected_mutations'] == 0
-          assert data['execution_authority'] == 'NONE'
-          assert data['order_authority'] == 'BLOCKED'
-          assert len({item['sha256'] for item in data['files']}) == 60
-          print({
-              'state': data['state'],
-              'file_count': data['file_count'],
-              'total_rows': data['total_rows'],
-              'receipt': data['manifest_receipt_sha256'],
-          })
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zel-scalp-materialized-inputs-${{ github.sha }}
-          path: /tmp/zel-scalp-materialized-inputs
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 6
-
-  generation1-economic-replay:
-    needs: materialize-replay-inputs
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - uses: actions/download-artifact@v4
-        with:
-          name: zel-scalp-materialized-inputs-${{ github.sha }}
-          path: /tmp/zel-scalp-materialized-inputs
-      - name: Execute W1 selection and frozen W2 W3 replay
-        run: >-
-          python scripts/run_zel_scalp_generation1_replay_v1.py
-          --inputs /tmp/zel-scalp-materialized-inputs
-          --repo-root .
-          --output /tmp/zel-scalp-generation1-replay
-      - name: Verify terminal replay authority and integrity
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          receipt = json.loads(Path('/tmp/zel-scalp-generation1-replay/generation1_replay_receipt.json').read_text())
-          assert receipt['state'] in {'PASS_REPLAY_COMPLETE_SURVIVOR', 'PASS_REPLAY_COMPLETE_NO_SURVIVOR'}
-          assert receipt['trial_count'] == 48
-          assert receipt['integrity'] == {
-              'future_information': 0,
-              'errors': 0,
-              'duplicates': 0,
-              'censored_open': 0,
-              'unknown_exit': 0,
-              'protected_mutations': 0,
-          }
-          assert receipt['execution_authority'] == 'NONE'
-          assert receipt['order_authority'] == 'BLOCKED'
-          assert receipt['action'] == 'hold'
-          print({
-              'state': receipt['state'],
-              'selected_config_id': receipt['selected_config_id'],
-              'survivor': receipt['survivor'],
-          })
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zel-scalp-generation1-replay-${{ github.sha }}
-          path: /tmp/zel-scalp-generation1-replay
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 6
+# Economic replay is intentionally absent until the momentum candidate source SHA,
+# bounded trial plan and dedicated replay adapter are sealed. This prevents the
+# terminal pullback/reclaim family from being rerun after route_change.

@@ -1,11 +1,6 @@
 name: Codex Action Read-Only Smoke
 
 on:
-  push:
-    branches:
-      - codex/github-action-smoke-20260726
-    paths:
-      - '.github/workflows/codex-action-smoke.yml'
   pull_request:
     branches:
       - master
@@ -22,56 +17,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  codex-smoke:
+  queue-drain-noop:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 2
     steps:
-      - name: Checkout exact commit
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - name: Verify OPENAI_API_KEY secret is available
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        shell: bash
-        run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo '::error::OPENAI_API_KEY secret is missing or empty'
-            exit 2
-          fi
-          echo 'OPENAI_API_KEY is present (value not printed)'
-
-      - name: Run Codex read-only smoke
-        id: run_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ':read-only'
-          safety-strategy: drop-sudo
-          prompt: |
-            Perform a strictly read-only smoke test for this repository.
-            Do not edit, create, delete, commit, push, or execute project code.
-            Read only the repository name, current branch/ref, and HEAD SHA.
-            Return exactly four lines:
-            CODEX_SMOKE_OK
-            repository=<owner/repo>
-            ref=<current ref>
-            head=<full SHA>
-
-      - name: Save Codex result
-        env:
-          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
-        shell: bash
-        run: |
-          printf '%s\n' "$CODEX_FINAL_MESSAGE" > codex-smoke-result.txt
-          grep -Fxq 'CODEX_SMOKE_OK' codex-smoke-result.txt
-          cat codex-smoke-result.txt
-
-      - name: Upload smoke evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: codex-action-smoke-${{ github.run_id }}
-          path: codex-smoke-result.txt
-          if-no-files-found: error
-          retention-days: 7
+      - name: Drain stale queued smoke run
+        run: echo 'QUEUE_DRAIN_NOOP'

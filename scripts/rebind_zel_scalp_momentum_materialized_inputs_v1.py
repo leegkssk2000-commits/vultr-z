@@ -61,6 +61,7 @@ def main() -> None:
         "partial_exit_plan_sha256": args.repo_root / "backend/research/zel_momentum_partial_exit_plan_v1.json",
         "partial_exit_disposition_sha256": args.repo_root / "backend/research/zel_momentum_partial_exit_disposition_v1.json",
         "trailing_runner_plan_sha256": args.repo_root / "backend/research/zel_momentum_trailing_runner_plan_v1.json",
+        "trailing_runner_source_sha256": args.repo_root / "scripts/run_zel_momentum_trailing_runner_v1.py",
     }
     for path in bindings.values():
         if not path.is_file():

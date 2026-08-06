@@ -1,0 +1,150 @@
+name: ZEL Momentum Gen2 Feature Contribution
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_momentum_gen2_*'
+      - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
+      - 'backend/research/strategy11_ai_review_router_v1.json'
+      - 'scripts/run_zel_scalp_momentum_gen2_event_study_v1.py'
+      - 'scripts/validate_zel_momentum_gen2_ai_gate_v1.py'
+      - 'scripts/strategy11_ai_review_router.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - '.github/workflows/zel-scalp-profitability-design-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-momentum-gen2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: >-
+          python -m py_compile
+          scripts/run_zel_scalp_momentum_event_study_v1.py
+          scripts/run_zel_scalp_momentum_gen2_event_study_v1.py
+          scripts/validate_zel_momentum_gen2_ai_gate_v1.py
+          scripts/strategy11_ai_review_router.py
+          scripts/strategy11_groq_redteam.py
+          scripts/strategy11_workers_ai_guard.py
+      - run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          h=json.loads(Path('backend/research/zel_momentum_gen2_ai_hypothesis_v1.json').read_text())
+          r=json.loads(Path('backend/research/zel_strategy_kernel_reset_gate_v1.json').read_text())
+          assert h['state']=='PASS_MOMENTUM_GEN2_HYPOTHESIS_SEALED_RESEARCH_ONLY'
+          assert h['changed_axes']==['EXPECTED_MOVE_TO_COST_SATURATION']
+          assert h['hypothesis']['parameterization']['effective_cap']==6.0
+          assert r['gates']['C_feature_economic_contribution']['selected_axis']=='EXPECTED_MOVE_TO_COST_SATURATION'
+          assert r['gates']['F_integrated_economics']['state']=='BLOCKED_UNTIL_C_AND_D_PASS'
+          PY
+
+  ai-gate:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+        run: |
+          mkdir -p /tmp/momentum-gen2-ai
+          python scripts/strategy11_ai_review_router.py \
+            --stage PRE_REPLAY_EXTERNAL_HYPOTHESIS \
+            --input backend/research/zel_momentum_gen2_ai_hypothesis_v1.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/momentum-gen2-ai/router_result.json \
+            --mode execute
+          python scripts/validate_zel_momentum_gen2_ai_gate_v1.py \
+            --hypothesis backend/research/zel_momentum_gen2_ai_hypothesis_v1.json \
+            --router /tmp/momentum-gen2-ai/router_result.json \
+            --policy backend/research/strategy11_ai_review_router_v1.json \
+            --output /tmp/momentum-gen2-ai/ai_gate_receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: momentum-gen2-ai-${{ github.sha }}
+          path: /tmp/momentum-gen2-ai
+          retention-days: 30
+
+  materialize:
+    needs: static-validation
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          curl --fail --location --retry 3 -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" -o /tmp/dataset.zip
+          curl --fail --location --retry 3 -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" -o /tmp/cost.zip
+          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
+            --dataset-zip /tmp/dataset.zip --cost-zip /tmp/cost.zip --repo-root . --output /tmp/momentum-gen2-inputs
+          python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
+            --inputs /tmp/momentum-gen2-inputs --repo-root .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: momentum-gen2-inputs-${{ github.sha }}
+          path: /tmp/momentum-gen2-inputs
+          retention-days: 30
+
+  event-study:
+    needs: [ai-gate, materialize]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: momentum-gen2-ai-${{ github.sha }}
+          path: /tmp/momentum-gen2-ai
+      - uses: actions/download-artifact@v4
+        with:
+          name: momentum-gen2-inputs-${{ github.sha }}
+          path: /tmp/momentum-gen2-inputs
+      - run: |
+          python scripts/run_zel_scalp_momentum_gen2_event_study_v1.py \
+            --inputs /tmp/momentum-gen2-inputs \
+            --repo-root . \
+            --ai-receipt /tmp/momentum-gen2-ai/ai_gate_receipt.json \
+            --output /tmp/momentum-gen2-event-study
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('/tmp/momentum-gen2-event-study/momentum_event_study_receipt.json').read_text())
+          assert x['state'] in {'PASS_EVENT_STUDY_EDGE_FOUND','PASS_EVENT_STUDY_NO_EDGE'}
+          assert x['selected_axis']=='EXPECTED_MOVE_TO_COST_SATURATION'
+          assert x['effective_cap']==6.0
+          assert x['integrity']=={'future_information':0,'errors':0,'duplicates':0,'protected_mutations':0}
+          print({'state':x['state'],'passing_count':x['passing_count'],'receipt':x['receipt_sha256']})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: momentum-gen2-event-study-${{ github.sha }}
+          path: /tmp/momentum-gen2-event-study
+          retention-days: 30

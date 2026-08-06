@@ -8,7 +8,7 @@ on:
       - 'backend/research/zel_strategy_kernel_*'
       - 'backend/research/zel_feature_strategy_ssot_v1.py'
       - 'backend/research/zel_strategy_intent_adapters_v1.py'
-      - 'backend/research/zel_momentum_feature_contribution_plan_v1.json'
+      - 'backend/research/zel_momentum_*'
       - 'backend/research/intraday_pullback_reclaim_v1.py'
       - 'backend/research/momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_*'
@@ -17,6 +17,7 @@ on:
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
       - 'scripts/run_zel_momentum_feature_contribution_v1.py'
+      - 'scripts/run_zel_momentum_cost_geometry_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -57,6 +58,7 @@ jobs:
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
           scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
           scripts/run_zel_momentum_feature_contribution_v1.py
+          scripts/run_zel_momentum_cost_geometry_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
@@ -71,7 +73,7 @@ jobs:
         run: |
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
-      - name: Verify architecture reset disposition
+      - name: Verify feature attribution disposition and next route
         run: |
           python - <<'PY'
           import json
@@ -79,26 +81,32 @@ jobs:
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          plan = json.loads(Path('backend/research/zel_momentum_feature_contribution_plan_v1.json').read_text())
+          attribution = json.loads(Path('backend/research/zel_momentum_feature_contribution_disposition_v1.json').read_text())
+          cost_plan = json.loads(Path('backend/research/zel_momentum_cost_geometry_plan_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
           assert {row['code'] for row in boundary['critical_findings']} == {
               'DUPLICATE_QUALITY_WEIGHTING',
               'RISK_GEOMETRY_REANCHOR',
           }
-          assert control['state'] == 'PASS_STRATEGY_KERNEL_BOUND_REPLAY_BLOCKED_PENDING_FEATURE_CONTRIBUTION'
-          assert control['next_gate'] == 'FEATURE_ECONOMIC_CONTRIBUTION'
           assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
-          assert plan['state'] == 'PASS_PLAN_SEALED_RESEARCH_ATTRIBUTION_ONLY'
-          assert len(plan['variants']) == 6
-          assert control['execution_authority'] == 'NONE'
-          assert control['order_authority'] == 'BLOCKED'
-          assert control['protected_mutations'] == 0
+          assert attribution['state'] == 'FAIL_NET_AFTER_COST_POSITIVE_GROSS_EDGE'
+          assert attribution['source_run'] == 31105868829
+          assert attribution['source_artifact_id'] == 8969525059
+          assert attribution['source_receipt_sha256'] == 'bfcce7cfa81873795742578d21ff5a984b2e6e0822a2fdad22589df81d353bcd'
+          assert attribution['next_gate'] == 'COST_GEOMETRY_THRESHOLD_DIAGNOSIS'
+          assert cost_plan['state'] == 'PASS_COST_GEOMETRY_PLAN_SEALED_RESEARCH_ONLY'
+          assert cost_plan['single_causal_axis'] == 'EXPECTED_MOVE_TO_COST_THRESHOLD'
+          assert len(cost_plan['profiles']) == 2
+          assert len(cost_plan['expected_move_to_cost_thresholds']) == 7
+          assert attribution['execution_authority'] == 'NONE'
+          assert attribution['order_authority'] == 'BLOCKED'
+          assert attribution['protected_mutations'] == 0
           print({
               'boundary': boundary['state'],
-              'kernel': control['state'],
-              'next': control['next_gate'],
-              'feature_variants': len(plan['variants']),
+              'attribution': attribution['state'],
+              'next': attribution['next_gate'],
+              'cost_variants': len(cost_plan['profiles']) * len(cost_plan['expected_move_to_cost_thresholds']),
               'legacy_economic_replay': 'BLOCKED',
           })
           PY
@@ -113,7 +121,7 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-  materialize-feature-inputs:
+  materialize-cost-inputs:
     needs: strategy-kernel-gate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -140,23 +148,23 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
             -o /tmp/pr576-gen3-terminal.zip
-      - name: Materialize and bind strategy-kernel inputs
+      - name: Materialize and bind cost-geometry inputs
         run: |
           python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
             --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
             --cost-zip /tmp/pr576-gen3-terminal.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-feature-inputs
+            --output /tmp/zel-momentum-cost-inputs
           python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-momentum-feature-inputs \
+            --inputs /tmp/zel-momentum-cost-inputs \
             --repo-root .
-      - name: Verify strategy-kernel lineage bindings
+      - name: Verify cost-geometry lineage bindings
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          data = json.loads(Path('/tmp/zel-momentum-feature-inputs/materialized_manifest.json').read_text())
+          data = json.loads(Path('/tmp/zel-momentum-cost-inputs/materialized_manifest.json').read_text())
           refs = data['references']
           assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
           assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
@@ -165,7 +173,8 @@ jobs:
           for key in (
               'feature_strategy_ssot_sha256',
               'intent_adapters_sha256',
-              'feature_contribution_plan_sha256',
+              'feature_contribution_disposition_sha256',
+              'cost_geometry_plan_sha256',
               'control_plan_sha256',
               'cost_receipt_sha256',
               'funding_receipt_sha256',
@@ -178,16 +187,16 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-feature-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-feature-inputs
+          name: zel-momentum-cost-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-cost-inputs
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
 
-  momentum-feature-contribution:
-    needs: materialize-feature-inputs
+  momentum-cost-geometry:
+    needs: materialize-cost-inputs
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -195,23 +204,26 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: zel-momentum-feature-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-feature-inputs
-      - name: Run isolated feature economic contribution study
+          name: zel-momentum-cost-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-cost-inputs
+      - name: Run single-axis cost geometry diagnosis
         run: |
-          python scripts/run_zel_momentum_feature_contribution_v1.py \
-            --inputs /tmp/zel-momentum-feature-inputs \
+          python scripts/run_zel_momentum_cost_geometry_v1.py \
+            --inputs /tmp/zel-momentum-cost-inputs \
             --repo-root . \
-            --output /tmp/zel-momentum-feature-contribution
-      - name: Verify feature contribution receipt
+            --output /tmp/zel-momentum-cost-geometry
+      - name: Verify cost geometry receipt
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          receipt = json.loads(Path('/tmp/zel-momentum-feature-contribution/feature_contribution_receipt.json').read_text())
-          assert receipt['state'] == 'PASS_FEATURE_CONTRIBUTION_COMPLETE_SELECTION_NOT_AUTHORIZED'
-          assert len(receipt['results']) == 6
+          receipt = json.loads(Path('/tmp/zel-momentum-cost-geometry/cost_geometry_receipt.json').read_text())
+          assert receipt['state'] in {
+              'PASS_COST_GEOMETRY_DIAGNOSIS_SURVIVOR_FOUND_SELECTION_NOT_AUTHORIZED',
+              'PASS_COST_GEOMETRY_DIAGNOSIS_NO_RETENTION_COMPLIANT_SURVIVOR',
+          }
+          assert len(receipt['results']) == 14
           assert receipt['integrity'] == {
               'errors': 0,
               'duplicates': 0,
@@ -221,18 +233,18 @@ jobs:
           }
           assert receipt['selection_authority'] is False
           assert receipt['promotion_authority'] is False
-          assert receipt['next_gate'] == 'W1_FEATURE_SELECTION_AFTER_ATTRIBUTION'
           print({
               'state': receipt['state'],
-              'ranking': receipt['research_ranking'],
+              'survivors': receipt['hard_gate_survivors'],
+              'top3': receipt['research_ranking'][:3],
               'next': receipt['next_gate'],
               'receipt': receipt['receipt_sha256'],
           })
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-feature-contribution-${{ github.sha }}
-          path: /tmp/zel-momentum-feature-contribution
+          name: zel-momentum-cost-geometry-${{ github.sha }}
+          path: /tmp/zel-momentum-cost-geometry
           if-no-files-found: error
           retention-days: 30
           compression-level: 6

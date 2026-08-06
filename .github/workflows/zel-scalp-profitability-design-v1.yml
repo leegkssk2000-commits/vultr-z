@@ -17,7 +17,7 @@ on:
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
       - 'scripts/run_zel_momentum_feature_contribution_v1.py'
-      - 'scripts/run_zel_momentum_breakeven_v1.py'
+      - 'scripts/run_zel_momentum_partial_exit_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile strategy kernel and breakeven stage
+      - name: Compile strategy kernel and partial-exit stage
         run: >-
           python -m py_compile
           backend/research/zel_feature_strategy_ssot_v1.py
@@ -58,7 +58,7 @@ jobs:
           scripts/materialize_zel_scalp_intraday_dataset_v1.py
           scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
           scripts/run_zel_momentum_feature_contribution_v1.py
-          scripts/run_zel_momentum_breakeven_v1.py
+          scripts/run_zel_momentum_partial_exit_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
@@ -71,7 +71,7 @@ jobs:
           python scripts/validate_momentum_breakout_continuation_v1.py
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
-      - name: Verify frozen-entry breakeven route
+      - name: Verify frozen-entry partial-exit route
         run: |
           python - <<'PY'
           import json
@@ -79,30 +79,31 @@ jobs:
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          early = json.loads(Path('backend/research/zel_momentum_early_invalidation_disposition_v1.json').read_text())
-          breakeven = json.loads(Path('backend/research/zel_momentum_breakeven_plan_v1.json').read_text())
+          breakeven = json.loads(Path('backend/research/zel_momentum_breakeven_disposition_v1.json').read_text())
+          partial = json.loads(Path('backend/research/zel_momentum_partial_exit_plan_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
           assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
-          assert early['state'] == 'FAIL_EARLY_INVALIDATION_NO_SURVIVOR'
-          assert early['source_run'] == 31109534201
-          assert early['source_artifact_id'] == 8971070905
-          assert early['source_receipt_sha256'] == '7edf0a61b8cdb643c4d128cdaaf693ed641895109c526ffe0a4f9787748299f3'
-          assert early['next_gate'] == 'BREAKEVEN_POLICY_REDESIGN'
-          assert breakeven['state'] == 'PASS_BREAKEVEN_PLAN_SEALED_RESEARCH_ONLY'
-          assert breakeven['source_variant_id'] == 'EARLY_INVALIDATION_12'
-          assert breakeven['frozen_entry_count'] == 130
-          assert breakeven['single_causal_axis'] == 'BREAKEVEN_TRIGGER_R'
-          assert breakeven['breakeven_trigger_r_candidates'] == [None, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
-          assert early['execution_authority'] == 'NONE'
-          assert early['order_authority'] == 'BLOCKED'
-          assert early['protected_mutations'] == 0
+          assert breakeven['state'] == 'FAIL_BREAKEVEN_NO_SURVIVOR'
+          assert breakeven['source_run'] == 31110081710
+          assert breakeven['source_artifact_id'] == 8971299114
+          assert breakeven['source_receipt_sha256'] == 'd8ef5b50269ebadd3ab7a9f1c9137bb11b2047c61155a12c72b82eaadd290828'
+          assert breakeven['next_gate'] == 'PARTIAL_EXIT_POLICY_REDESIGN'
+          assert partial['state'] == 'PASS_PARTIAL_EXIT_PLAN_SEALED_RESEARCH_ONLY'
+          assert partial['source_variant_id'] == 'BREAKEVEN_DISABLED'
+          assert partial['frozen_entry_count'] == 130
+          assert partial['single_causal_axis'] == 'PARTIAL_EXIT_FRACTION_AT_FIXED_1R'
+          assert partial['partial_trigger_r'] == 1.0
+          assert partial['partial_exit_fraction_candidates'] == [None, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+          assert breakeven['execution_authority'] == 'NONE'
+          assert breakeven['order_authority'] == 'BLOCKED'
+          assert breakeven['protected_mutations'] == 0
           print({
               'boundary': boundary['state'],
-              'early': early['state'],
-              'next': early['next_gate'],
-              'frozen_entries': breakeven['frozen_entry_count'],
-              'breakeven_candidates': len(breakeven['breakeven_trigger_r_candidates']),
+              'breakeven': breakeven['state'],
+              'next': breakeven['next_gate'],
+              'frozen_entries': partial['frozen_entry_count'],
+              'partial_candidates': len(partial['partial_exit_fraction_candidates']),
           })
           PY
       - name: Protected-path assertion
@@ -116,7 +117,7 @@ jobs:
           fi
           printf '%s\n' "$changed"
 
-  materialize-breakeven-inputs:
+  materialize-partial-inputs:
     needs: strategy-kernel-gate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -127,14 +128,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Download immutable data, cost and early-invalidation artifacts
+      - name: Download immutable data, cost and breakeven artifacts
         shell: bash
         run: |
           set -euo pipefail
           for spec in \
             '8916685107:/tmp/pr575-gap-excluded-dataset.zip' \
             '8950849008:/tmp/pr576-gen3-terminal.zip' \
-            '8971070905:/tmp/early-invalidation-source.zip'; do
+            '8971299114:/tmp/breakeven-source.zip'; do
             id="${spec%%:*}"
             output="${spec#*:}"
             curl --fail --location --retry 3 \
@@ -144,17 +145,17 @@ jobs:
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
               -o "${output}"
           done
-      - name: Materialize and bind breakeven inputs
+      - name: Materialize and bind partial-exit inputs
         run: |
           python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
             --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
             --cost-zip /tmp/pr576-gen3-terminal.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-breakeven-inputs
+            --output /tmp/zel-momentum-partial-inputs
           python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-momentum-breakeven-inputs \
+            --inputs /tmp/zel-momentum-partial-inputs \
             --repo-root .
-          cp /tmp/early-invalidation-source.zip /tmp/zel-momentum-breakeven-inputs/source-early-invalidation.zip
+          cp /tmp/breakeven-source.zip /tmp/zel-momentum-partial-inputs/source-breakeven.zip
       - name: Verify frozen-entry lineage bindings
         run: |
           python - <<'PY'
@@ -162,10 +163,10 @@ jobs:
           import json
           from pathlib import Path
 
-          root = Path('/tmp/zel-momentum-breakeven-inputs')
+          root = Path('/tmp/zel-momentum-partial-inputs')
           data = json.loads((root / 'materialized_manifest.json').read_text())
           refs = data['references']
-          source_sha = hashlib.sha256((root / 'source-early-invalidation.zip').read_bytes()).hexdigest()
+          source_sha = hashlib.sha256((root / 'source-breakeven.zip').read_bytes()).hexdigest()
           assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
           assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
           assert data['file_count'] == 60
@@ -173,13 +174,13 @@ jobs:
           for key in (
               'feature_strategy_ssot_sha256',
               'intent_adapters_sha256',
-              'early_invalidation_disposition_sha256',
-              'breakeven_plan_sha256',
+              'breakeven_disposition_sha256',
+              'partial_exit_plan_sha256',
               'cost_receipt_sha256',
               'funding_receipt_sha256',
           ):
               assert refs[key]
-          assert source_sha == 'ef796fc77024c7d9dd69c63f94187b8f86cd0214f9033913678e4ec7ab45a05d'
+          assert source_sha == 'b0cd5a505c93a5e34419f62565a8fc15421b52768203b0cd7236269a37ec4b80'
           assert data['protected_mutations'] == 0
           assert data['execution_authority'] == 'NONE'
           assert data['order_authority'] == 'BLOCKED'
@@ -187,14 +188,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-breakeven-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-breakeven-inputs
+          name: zel-momentum-partial-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-partial-inputs
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
 
-  momentum-breakeven:
-    needs: materialize-breakeven-inputs
+  momentum-partial-exit:
+    needs: materialize-partial-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -204,25 +205,25 @@ jobs:
           python-version: '3.11'
       - uses: actions/download-artifact@v4
         with:
-          name: zel-momentum-breakeven-inputs-${{ github.sha }}
-          path: /tmp/zel-momentum-breakeven-inputs
-      - name: Run frozen-entry breakeven counterfactual
+          name: zel-momentum-partial-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-partial-inputs
+      - name: Run frozen-entry partial-exit counterfactual
         run: |
-          python scripts/run_zel_momentum_breakeven_v1.py \
-            --inputs /tmp/zel-momentum-breakeven-inputs \
-            --source-artifact /tmp/zel-momentum-breakeven-inputs/source-early-invalidation.zip \
+          python scripts/run_zel_momentum_partial_exit_v1.py \
+            --inputs /tmp/zel-momentum-partial-inputs \
+            --source-artifact /tmp/zel-momentum-partial-inputs/source-breakeven.zip \
             --repo-root . \
-            --output /tmp/zel-momentum-breakeven
-      - name: Verify breakeven receipt
+            --output /tmp/zel-momentum-partial-exit
+      - name: Verify partial-exit receipt
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          receipt = json.loads(Path('/tmp/zel-momentum-breakeven/breakeven_receipt.json').read_text())
+          receipt = json.loads(Path('/tmp/zel-momentum-partial-exit/partial_exit_receipt.json').read_text())
           assert receipt['state'] in {
-              'PASS_BREAKEVEN_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
-              'PASS_BREAKEVEN_COUNTERFACTUAL_NO_SURVIVOR',
+              'PASS_PARTIAL_EXIT_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
+              'PASS_PARTIAL_EXIT_COUNTERFACTUAL_NO_SURVIVOR',
           }
           assert len(receipt['results']) == 7
           assert receipt['integrity']['errors'] == 0
@@ -244,8 +245,8 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: zel-momentum-breakeven-${{ github.sha }}
-          path: /tmp/zel-momentum-breakeven
+          name: zel-momentum-partial-exit-${{ github.sha }}
+          path: /tmp/zel-momentum-partial-exit
           if-no-files-found: error
           retention-days: 30
           compression-level: 6

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,11 +14,19 @@ RECEIPT_PATH = ROOT / "backend/research/zel_scalp_design_selection_receipt_v1.js
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("intraday_pullback_reclaim_v1", MODULE_PATH)
+    module_name = "intraday_pullback_reclaim_v1"
+    spec = importlib.util.spec_from_file_location(module_name, MODULE_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError("module load failure")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # dataclasses resolves postponed annotations through sys.modules while the
+    # class decorators execute, so register the dynamic module first.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 

@@ -55,6 +55,8 @@ def main() -> None:
         "stop_geometry_plan_sha256": args.repo_root / "backend/research/zel_momentum_stop_geometry_plan_v1.json",
         "stop_geometry_disposition_sha256": args.repo_root / "backend/research/zel_momentum_stop_geometry_disposition_v1.json",
         "early_invalidation_plan_sha256": args.repo_root / "backend/research/zel_momentum_early_invalidation_plan_v1.json",
+        "early_invalidation_disposition_sha256": args.repo_root / "backend/research/zel_momentum_early_invalidation_disposition_v1.json",
+        "breakeven_plan_sha256": args.repo_root / "backend/research/zel_momentum_breakeven_plan_v1.json",
     }
     for path in bindings.values():
         if not path.is_file():

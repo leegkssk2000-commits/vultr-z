@@ -15,7 +15,10 @@ def main() -> None:
 
     assert control["schema_version"] == "zel.scalp.momentum.replay_control_plan.v1"
     assert control["strategy_id"] == "momentum_breakout_continuation_v1"
-    assert control["state"] == "PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER"
+    assert control["state"] in {
+        "PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER",
+        "PASS_CONTROL_PLAN_SEALED_ADAPTER_READY_REPLAY_AUTHORIZED",
+    }
     assert control["legacy_trial_plan_disposition"] == "DIAGNOSTIC_COVERAGE_ONLY_NOT_SELECTION_AUTHORITY"
 
     assert trial["strategy_id"] == control["strategy_id"]
@@ -61,7 +64,7 @@ def main() -> None:
                 "legacy_trials": trial["trial_count"],
                 "stages": [stage["stage_id"] for stage in stages],
                 "controls": sorted(controls),
-                "heavy_replay": "BLOCKED_PENDING_ADAPTER",
+                "heavy_replay": "AUTHORIZED" if control["state"].endswith("REPLAY_AUTHORIZED") else "BLOCKED_PENDING_ADAPTER",
             },
             sort_keys=True,
         )

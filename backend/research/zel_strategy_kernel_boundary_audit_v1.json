@@ -1,0 +1,49 @@
+{
+  "schema_version": "zel.strategy_kernel.boundary_audit.v1",
+  "state": "PASS_BOUNDARY_OWNERSHIP_SEALED",
+  "scope": [
+    "backend/research/momentum_breakout_continuation_v1.py",
+    "scripts/run_zel_scalp_momentum_event_study_v1.py",
+    "scripts/run_zel_scalp_momentum_staged_replay_v1.py"
+  ],
+  "classifications": [
+    {"rule": "OHLCV validation and timestamp monotonicity", "owner": "FEATURE", "disposition": "retain_once_in_feature_ssot"},
+    {"rule": "true range and ATR", "owner": "FEATURE", "disposition": "move_to_feature_ssot"},
+    {"rule": "15m directional efficiency and regime direction", "owner": "FEATURE", "disposition": "calculate_in_feature_ssot; threshold_in_strategy_policy"},
+    {"rule": "5m breakout reference and ATR buffer", "owner": "FEATURE", "disposition": "calculate_in_feature_ssot; threshold_in_strategy_policy"},
+    {"rule": "confirmation-bar expansion divided by ATR", "owner": "FEATURE", "disposition": "calculate_in_feature_ssot; threshold_in_strategy_policy"},
+    {"rule": "relative volume", "owner": "FEATURE", "disposition": "calculate_once_in_feature_ssot"},
+    {"rule": "expected move to all-in cost", "owner": "STRATEGY_POLICY", "disposition": "calculate_once_after planned risk and target"},
+    {"rule": "quality = expected_move_to_cost * relative_volume", "owner": "STRATEGY_POLICY", "disposition": "remove replay/event-study ownership; emit in DecisionIntent"},
+    {"rule": "quality cutoff", "owner": "STRATEGY_POLICY", "disposition": "W1 may select a frozen value; adapters only consume it"},
+    {"rule": "structural invalidation and ATR stop", "owner": "STRATEGY_POLICY", "disposition": "emit immutable invalidation and planned risk"},
+    {"rule": "target R and target price", "owner": "STRATEGY_POLICY", "disposition": "emit immutable target policy"},
+    {"rule": "max hold and timeout", "owner": "STRATEGY_POLICY", "disposition": "emit immutable holding policy"},
+    {"rule": "next eligible bar entry timing", "owner": "EXECUTION", "disposition": "adapter resolves fill only"},
+    {"rule": "next-bar stop/target re-anchoring", "owner": "INVALID_DUPLICATE", "disposition": "forbidden; adapter must preserve intent risk geometry or reject intent"},
+    {"rule": "stop-first same-bar ambiguity", "owner": "EXECUTION", "disposition": "retain as conservative fill convention"},
+    {"rule": "fees, slippage, funding, delay, rejects and partial fills", "owner": "EXECUTION", "disposition": "adapter only"},
+    {"rule": "forward-return deciles, bootstrap CI and monotonicity", "owner": "METRIC", "disposition": "diagnostic only; cannot create a second signal"},
+    {"rule": "WR, Net R, PF, payoff, expectancy and DD", "owner": "METRIC", "disposition": "independent ledger recomputation"}
+  ],
+  "critical_findings": [
+    {
+      "code": "DUPLICATE_QUALITY_WEIGHTING",
+      "finding": "relative_volume and expected_move_to_cost were strategy filters and were multiplied again by event study/replay for ranking and cutoff",
+      "risk": "double weighting, signal reordering and hidden second strategy"
+    },
+    {
+      "code": "RISK_GEOMETRY_REANCHOR",
+      "finding": "replay rebuilt stop and target around next-bar fill using confirmation-bar planned risk",
+      "risk": "DecisionIntent and simulated economics can diverge from strategy policy"
+    }
+  ],
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "protected_mutations": 0
+  },
+  "next_gate": "FEATURE_CORRECTNESS_AND_PARITY"
+}

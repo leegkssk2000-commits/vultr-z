@@ -182,7 +182,8 @@ def compute_features(regime_15m: Sequence[Bar], setup_5m: Sequence[Bar], config:
     setup = tuple(setup_5m[-required_setup:])
     _validate_timeframe(regime, FIFTEEN_MIN_MS, "15m")
     _validate_timeframe(setup, FIVE_MIN_MS, "5m")
-    if regime[-1].ts != setup[-1].ts:
+    regime_lag_ms = setup[-1].ts - regime[-1].ts
+    if regime_lag_ms < 0 or regime_lag_ms >= FIFTEEN_MIN_MS:
         raise ValueError("5m/15m close alignment mismatch")
 
     confirm = setup[-1]

@@ -57,6 +57,8 @@ def main() -> None:
         "early_invalidation_plan_sha256": args.repo_root / "backend/research/zel_momentum_early_invalidation_plan_v1.json",
         "early_invalidation_disposition_sha256": args.repo_root / "backend/research/zel_momentum_early_invalidation_disposition_v1.json",
         "breakeven_plan_sha256": args.repo_root / "backend/research/zel_momentum_breakeven_plan_v1.json",
+        "breakeven_disposition_sha256": args.repo_root / "backend/research/zel_momentum_breakeven_disposition_v1.json",
+        "partial_exit_plan_sha256": args.repo_root / "backend/research/zel_momentum_partial_exit_plan_v1.json",
     }
     for path in bindings.values():
         if not path.is_file():
@@ -66,9 +68,7 @@ def main() -> None:
     manifest["schema_version"] = "zel.scalp.momentum.materialized_dataset.v1"
     manifest["state"] = "PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS"
     manifest["strategy_id"] = "momentum_breakout_continuation_v1"
-    manifest["references"] = {
-        key: sha256_file(path) for key, path in bindings.items()
-    } | {
+    manifest["references"] = {key: sha256_file(path) for key, path in bindings.items()} | {
         "cost_receipt_sha256": prior_references["cost_receipt_sha256"],
         "funding_receipt_sha256": prior_references["funding_receipt_sha256"],
     }

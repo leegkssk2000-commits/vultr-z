@@ -5,42 +5,25 @@ on:
     branches: [master]
     paths:
       - 'backend/research/zel_strategy_kernel_boundary_audit_v1.json'
+      - 'backend/research/zel_strategy_kernel_reset_gate_v1.json'
       - 'backend/research/zel_feature_strategy_ssot_v1.py'
       - 'backend/research/zel_strategy_intent_adapters_v1.py'
-      - 'backend/research/zel_scalp_momentum_replay_control_plan_v1.json'
-      - 'backend/research/zel_momentum_partial_exit_disposition_v1.json'
-      - 'backend/research/zel_momentum_trailing_runner_plan_v1.json'
-      - 'backend/research/intraday_pullback_reclaim_v1.py'
-      - 'backend/research/momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_feature_strategy_ssot_v1.py'
       - 'scripts/validate_zel_strategy_kernel_parity_v1.py'
-      - 'scripts/validate_zel_scalp_design_selection_v1.py'
-      - 'scripts/validate_zel_scalp_external_benchmark_v2.py'
-      - 'scripts/validate_zel_scalp_data_split_materialization_v1.py'
-      - 'scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py'
-      - 'scripts/validate_intraday_pullback_reclaim_v1.py'
-      - 'scripts/validate_momentum_breakout_continuation_v1.py'
-      - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
-      - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
-      - 'scripts/run_zel_momentum_feature_contribution_v1.py'
-      - 'scripts/run_zel_momentum_trailing_runner_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: zel-scalp-profitability-design-v1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  trailing-runner-contiguous:
+  architecture-reset-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,72 +33,54 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Compile strategy kernel and trailing-runner stage
+      - name: Compile strategy-centered SSOT and thin adapters
         run: >-
           python -m py_compile
           backend/research/zel_feature_strategy_ssot_v1.py
           backend/research/zel_strategy_intent_adapters_v1.py
-          backend/research/intraday_pullback_reclaim_v1.py
-          backend/research/momentum_breakout_continuation_v1.py
           scripts/validate_zel_feature_strategy_ssot_v1.py
           scripts/validate_zel_strategy_kernel_parity_v1.py
-          scripts/validate_intraday_pullback_reclaim_v1.py
-          scripts/validate_momentum_breakout_continuation_v1.py
-          scripts/validate_zel_scalp_design_selection_v1.py
-          scripts/validate_zel_scalp_external_benchmark_v2.py
-          scripts/validate_zel_scalp_data_split_materialization_v1.py
-          scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
-          scripts/materialize_zel_scalp_intraday_dataset_v1.py
-          scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
-          scripts/run_zel_momentum_feature_contribution_v1.py
-          scripts/run_zel_momentum_trailing_runner_v1.py
 
-      - name: Validate inherited receipts and DecisionIntent parity
+      - name: Validate boundary ownership, feature correctness and adapter parity
         run: |
-          python scripts/validate_zel_scalp_design_selection_v1.py
-          python scripts/validate_zel_scalp_external_benchmark_v2.py
-          python scripts/validate_zel_scalp_data_split_materialization_v1.py
-          python scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
-          python scripts/validate_intraday_pullback_reclaim_v1.py
-          python scripts/validate_momentum_breakout_continuation_v1.py
           python scripts/validate_zel_feature_strategy_ssot_v1.py
           python scripts/validate_zel_strategy_kernel_parity_v1.py
-
-      - name: Verify frozen-entry trailing-runner route
-        run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
-          control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
-          partial = json.loads(Path('backend/research/zel_momentum_partial_exit_disposition_v1.json').read_text())
-          trailing = json.loads(Path('backend/research/zel_momentum_trailing_runner_plan_v1.json').read_text())
+          reset = json.loads(Path('backend/research/zel_strategy_kernel_reset_gate_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
-          assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
-          assert partial['state'] == 'FAIL_PARTIAL_EXIT_NO_SURVIVOR'
-          assert partial['source_run'] == 31114038830
-          assert partial['source_artifact_id'] == 8972927218
-          assert partial['source_artifact_sha256'] == 'b30a839fa56aa54232565896ca1525ec3bc4ad7baafae38d90fad7b187121f00'
-          assert partial['source_receipt_sha256'] == '4b29241f02a4de224622ca73c782bcdd513dd2d03f0bc5967b95e5f2bfd1b1e7'
-          assert partial['next_gate'] == 'TRAILING_RUNNER_POLICY_REDESIGN'
-          assert trailing['state'] == 'PASS_TRAILING_RUNNER_PLAN_SEALED_RESEARCH_ONLY'
-          assert trailing['source_variant_id'] == 'PARTIAL_DISABLED'
-          assert trailing['frozen_entry_count'] == 130
-          assert trailing['single_causal_axis'] == 'TRAILING_RUNNER_POLICY'
-          assert len(trailing['policy_candidates']) == 7
-          assert trailing['execution_authority'] == 'NONE'
-          assert trailing['order_authority'] == 'BLOCKED'
-          assert trailing['protected_mutations'] == 0
+          assert boundary['next_gate'] == 'FEATURE_CORRECTNESS_AND_PARITY'
+          assert reset['state'] == 'HOLD_ARCHITECTURE_RESET_BEFORE_ECONOMIC_REPLAY'
+          assert reset['gates']['A_boundary_audit']['state'] == 'PASS'
+          assert reset['gates']['C_feature_economic_contribution']['state'] == 'BLOCKED_UNTIL_B_PASS'
+          assert reset['gates']['F_integrated_economics']['state'] == 'BLOCKED_UNTIL_A_THROUGH_E_PASS'
+          assert reset['authority']['selection_authority'] is False
+          assert reset['authority']['promotion_authority'] is False
+          assert reset['authority']['execution_authority'] == 'NONE'
+          assert reset['authority']['order_authority'] == 'BLOCKED'
+          assert reset['authority']['protected_mutations'] == 0
+          assert reset['authority']['live_order'] == 'BLOCKED'
           print({
               'boundary': boundary['state'],
-              'partial': partial['state'],
-              'next': partial['next_gate'],
-              'frozen_entries': trailing['frozen_entry_count'],
-              'trailing_candidates': len(trailing['policy_candidates']),
+              'reset': reset['state'],
+              'next_gate': reset['next_gate'],
+              'live_order': reset['authority']['live_order'],
           })
           PY
+
+      - name: Assert replay and tuning remain disabled during reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow='.github/workflows/zel-scalp-profitability-design-v1.yml'
+          if grep -E 'run_zel_.*(replay|feature_contribution|cost_geometry|stop_geometry|target_geometry|timeout_geometry|breakeven|partial_exit|trailing_runner)' "$workflow"; then
+            echo 'economic replay or tuning is forbidden before architecture gates A-E pass' >&2
+            exit 1
+          fi
 
       - name: Protected-path assertion
         shell: bash
@@ -127,118 +92,3 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$changed"
-
-      - name: Download immutable corpus, costs and partial-exit source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/zel-source
-          for spec in \
-            '8916685107:/tmp/zel-source/pr575-gap-excluded-dataset.zip' \
-            '8950849008:/tmp/zel-source/pr576-gen3-terminal.zip' \
-            '8972927218:/tmp/zel-source/partial-exit-source.zip'; do
-            id="${spec%%:*}"
-            output="${spec#*:}"
-            curl --fail --location --retry 3 --retry-delay 2 \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
-              -o "${output}"
-          done
-          echo 'b30a839fa56aa54232565896ca1525ec3bc4ad7baafae38d90fad7b187121f00  /tmp/zel-source/partial-exit-source.zip' | sha256sum --check --strict
-
-      - name: Materialize and bind immutable inputs
-        run: |
-          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
-            --dataset-zip /tmp/zel-source/pr575-gap-excluded-dataset.zip \
-            --cost-zip /tmp/zel-source/pr576-gen3-terminal.zip \
-            --repo-root . \
-            --output /tmp/zel-momentum-trailing-inputs
-          python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
-            --inputs /tmp/zel-momentum-trailing-inputs \
-            --repo-root .
-          cp /tmp/zel-source/partial-exit-source.zip /tmp/zel-momentum-trailing-inputs/source-partial-exit.zip
-
-      - name: Verify immutable lineage bindings
-        run: |
-          python - <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-
-          root = Path('/tmp/zel-momentum-trailing-inputs')
-          data = json.loads((root / 'materialized_manifest.json').read_text())
-          refs = data['references']
-          source_sha = hashlib.sha256((root / 'source-partial-exit.zip').read_bytes()).hexdigest()
-          assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
-          assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
-          assert data['file_count'] == 60
-          assert data['total_rows'] > 0
-          for key in (
-              'feature_strategy_ssot_sha256',
-              'intent_adapters_sha256',
-              'partial_exit_disposition_sha256',
-              'trailing_runner_plan_sha256',
-              'cost_receipt_sha256',
-              'funding_receipt_sha256',
-          ):
-              assert refs[key]
-          assert source_sha == 'b30a839fa56aa54232565896ca1525ec3bc4ad7baafae38d90fad7b187121f00'
-          assert data['protected_mutations'] == 0
-          assert data['execution_authority'] == 'NONE'
-          assert data['order_authority'] == 'BLOCKED'
-          print({
-              'state': data['state'],
-              'files': data['file_count'],
-              'rows': data['total_rows'],
-              'bindings': len(refs),
-              'source_sha': source_sha,
-          })
-          PY
-
-      - name: Run frozen-entry trailing-runner counterfactual immediately
-        run: |
-          python scripts/run_zel_momentum_trailing_runner_v1.py \
-            --inputs /tmp/zel-momentum-trailing-inputs \
-            --source-artifact /tmp/zel-momentum-trailing-inputs/source-partial-exit.zip \
-            --repo-root . \
-            --output /tmp/zel-momentum-trailing-runner
-
-      - name: Verify trailing-runner receipt
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          receipt = json.loads(Path('/tmp/zel-momentum-trailing-runner/trailing_runner_receipt.json').read_text())
-          assert receipt['state'] in {
-              'PASS_TRAILING_RUNNER_COUNTERFACTUAL_SURVIVOR_FOUND_SEQUENCE_REQUIRED',
-              'PASS_TRAILING_RUNNER_COUNTERFACTUAL_NO_SURVIVOR',
-          }
-          assert len(receipt['results']) == 7
-          assert receipt['integrity']['errors'] == 0
-          assert receipt['integrity']['duplicates'] == 0
-          assert receipt['integrity']['source_entry_rows'] == 130
-          assert receipt['integrity']['base_metric_parity'] is True
-          assert receipt['integrity']['protected_mutations'] == 0
-          assert receipt['integrity']['execution_authority'] == 'NONE'
-          assert receipt['integrity']['order_authority'] == 'BLOCKED'
-          assert receipt['selection_authority'] is False
-          assert receipt['promotion_authority'] is False
-          print({
-              'state': receipt['state'],
-              'survivors': receipt['hard_gate_survivors'],
-              'top3': receipt['research_ranking'][:3],
-              'next': receipt['next_gate'],
-              'receipt': receipt['receipt_sha256'],
-          })
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zel-momentum-trailing-runner-${{ github.sha }}
-          path: /tmp/zel-momentum-trailing-runner
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 6

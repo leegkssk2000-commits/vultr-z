@@ -1,0 +1,175 @@
+name: ZEL Structural Premium Runner Recovery V1
+
+on:
+  push:
+    branches:
+      - zel-structural-premium-runner-recovery-v1
+    paths:
+      - backend/research/zel_structural_premium_route_v1.json
+      - scripts/validate_zel_structural_premium_route_v1.py
+      - .github/workflows/zel-structural-premium-runner-recovery-v1.yml
+  pull_request:
+    branches:
+      - master
+    paths:
+      - backend/research/zel_structural_premium_route_v1.json
+      - scripts/validate_zel_structural_premium_route_v1.py
+      - .github/workflows/zel-structural-premium-runner-recovery-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-runner-recovery-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate restored strategy contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/validate_zel_structural_premium_route_v1.py
+          python scripts/validate_zel_structural_premium_route_v1.py
+      - name: Seal assigned-runner receipt
+        env:
+          RUNNER_NAME_VALUE: ${{ runner.name }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          row = {
+              "schema_version": "zel.structural_premium.runner_receipt.v1",
+              "state": "PASS_GITHUB_HOSTED_RUNNER_ASSIGNED",
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "head_sha": os.environ["GITHUB_SHA"],
+              "runner_name": os.environ.get("RUNNER_NAME_VALUE", ""),
+              "runner_os": os.environ.get("RUNNER_OS_VALUE", ""),
+              "runner_arch": os.environ.get("RUNNER_ARCH_VALUE", ""),
+              "execution_authority": "NONE",
+              "order_authority": "BLOCKED",
+              "protected_mutations": 0,
+              "action": "hold"
+          }
+          if not row["runner_name"] or not row["runner_os"] or not row["runner_arch"]:
+              raise SystemExit("runner assignment metadata missing")
+          material = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+          row["receipt_sha256"] = hashlib.sha256(material).hexdigest()
+          Path("out/runner_receipt.json").write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(row, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-premium-runner-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/runner_receipt.json
+          retention-days: 30
+
+  inheritance-audit:
+    needs: runner-probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove third-generation marker and strategy inheritance
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path(".")
+          excluded = {
+              "backend/research/zel_structural_premium_route_v1.json",
+              "scripts/validate_zel_structural_premium_route_v1.py",
+              ".github/workflows/zel-structural-premium-runner-recovery-v1.yml",
+          }
+          markers = ["POST129", "BEST_ALLOW", "allow", "admission"]
+          strategies = [
+              "vwap_revert",
+              "support_resistance",
+              "liquidity_sweep",
+              "trend_rider",
+              "market_structure",
+          ]
+          needles = markers + strategies
+          matches = {needle: [] for needle in needles}
+          allowed_roots = [Path("backend"), Path("scripts"), Path("data"), Path("runtime")]
+
+          for base in allowed_roots:
+              if not base.exists():
+                  continue
+              for path in base.rglob("*"):
+                  if not path.is_file() or str(path) in excluded or path.stat().st_size > 2_000_000:
+                      continue
+                  try:
+                      text = path.read_text(encoding="utf-8")
+                  except (UnicodeDecodeError, OSError):
+                      continue
+                  for needle in needles:
+                      if needle in text:
+                          matches[needle].append(str(path))
+
+          missing_markers = [x for x in markers if not matches[x]]
+          missing_strategies = [x for x in strategies if not matches[x]]
+          state = (
+              "PASS_THIRD_GENERATION_STRUCTURAL_PREMIUM_INHERITANCE_FOUND"
+              if not missing_markers and not missing_strategies
+              else "HOLD_THIRD_GENERATION_INHERITANCE_INCOMPLETE"
+          )
+          row = {
+              "schema_version": "zel.structural_premium.inheritance_audit.v1",
+              "state": state,
+              "head_sha": "${{ github.sha }}",
+              "matches": matches,
+              "missing_markers": missing_markers,
+              "missing_strategies": missing_strategies,
+              "main": ["vwap_revert|enter_long", "support_resistance|enter_long"],
+              "reserve": ["liquidity_sweep|enter_long", "trend_rider|enter_long"],
+              "filter_only": ["market_structure|enter_long"],
+              "replay_started": False,
+              "selection_authority": False,
+              "promotion_authority": False,
+              "execution_authority": "NONE",
+              "order_authority": "BLOCKED",
+              "protected_mutations": 0,
+              "action": "hold"
+          }
+          material = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+          row["receipt_sha256"] = hashlib.sha256(material).hexdigest()
+          Path("out/inheritance_audit.json").write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(row, sort_keys=True))
+          if state != "PASS_THIRD_GENERATION_STRUCTURAL_PREMIUM_INHERITANCE_FOUND":
+              raise SystemExit(2)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-inheritance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/inheritance_audit.json
+          if-no-files-found: error
+          retention-days: 30

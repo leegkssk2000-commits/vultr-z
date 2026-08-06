@@ -1,0 +1,185 @@
+{
+  "schema_version": "zel.scalp.design_selection_receipt.v1",
+  "generated_at": "2026-08-06T04:03:00Z",
+  "state": "PASS_DESIGN_SELECTED_IMPLEMENTATION_ALLOWED_RESEARCH_ONLY",
+  "issue": 587,
+  "pr": 588,
+  "supersedes": {
+    "strategy_id": "scalp_snap",
+    "disposition": "ECONOMIC_FAIL_FROZEN",
+    "same_family_repair_allowed": false,
+    "terminal_reference": {
+      "pr": 576,
+      "artifact_id": 8950849008,
+      "raw_trades": 2716,
+      "raw_net_R": -1721.02,
+      "best_retention_valid_trades": 1816,
+      "best_retention_valid_net_R": -780.64,
+      "best_retention_valid_profit_factor": 0.378,
+      "best_retention_valid_expectancy_R": -0.430,
+      "survivor_count": 0
+    }
+  },
+  "input_receipts": {
+    "inherited_autopsy_path": "backend/research/zel_scalp_inherited_autopsy_v1.json",
+    "inherited_owner_sha256": "c39847a06899a2e5f7c925069dbf643078da11a8d59eea9e04722d42bc7d20a4",
+    "architecture_matrix_path": "backend/research/zel_scalp_architecture_matrix_v1.json",
+    "bingx_feasibility_path": "backend/research/zel_scalp_bingx_microstructure_feasibility_v1.json",
+    "bingx_route": "3M_5M_TRIGGER_WITH_15M_REGIME_INTRADAY",
+    "true_microstructure_permitted": false
+  },
+  "selected_architecture": {
+    "strategy_id": "intraday_pullback_reclaim_v1",
+    "family": "trend_continuation_pullback_reclaim",
+    "selection_reason": "Highest feasibility-adjusted route with lower entry adverse-selection risk than first-breakout chasing while preserving a causal continuation edge and a holding horizon large enough to clear stressed BingX costs.",
+    "market": "BingX USDT-M perpetual futures",
+    "symbols_initial": ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT"],
+    "direction_policy": "LONG_PRIMARY_SHORT_SEPARATE_CONSERVATIVE_ABLATION",
+    "timeframes": {
+      "regime": "15m",
+      "setup": "5m",
+      "execution": "3m_or_5m_NEXT_BAR_CONSERVATIVE"
+    },
+    "expected_holding_horizon": "3_to_18_setup_bars",
+    "causal_edge": "A directional regime that survives a controlled pullback and then reclaims a pre-entry reference level can indicate continuation after temporary liquidity-taking rather than entry at the most adverse point of the initial impulse.",
+    "failure_mechanism": "The edge should disappear in weak/non-directional regimes, deep structural reversals, low expected-range conditions, event-gap conditions, or when all-in execution cost consumes too much of the planned move."
+  },
+  "decision_time_features": {
+    "regime": [
+      "15m directional slope/structure computed only from closed bars",
+      "15m realized-volatility state",
+      "15m trend persistence or directional efficiency"
+    ],
+    "setup": [
+      "5m impulse established before pullback",
+      "pullback depth relative to pre-entry impulse or ATR",
+      "reclaim close above a frozen pre-entry reference for long; mirrored separately for short",
+      "volume/range confirmation only if independently available and pre-registered"
+    ],
+    "cost_and_execution": [
+      "expected gross move to stressed all-in cost ratio",
+      "spread/slippage floor from accepted BingX calibration receipt",
+      "funding horizon aligned to expected holding duration",
+      "next-bar conservative entry semantics"
+    ],
+    "forbidden": [
+      "future MFE/MAE",
+      "same-bar hindsight entry",
+      "future event labels",
+      "assumed maker fill",
+      "synthetic L2/order-flow history",
+      "forward-filled missing candles"
+    ]
+  },
+  "order_lifecycle": {
+    "entry_default": "TAKER_OR_CONSERVATIVE_LIMIT_AS_MARKETABLE; no maker-fill assumption",
+    "entry_timing": "next eligible bar after reclaim confirmation",
+    "stop": "pre-entry structural invalidation or ATR-bounded stop, selected only in W1 from frozen bounds",
+    "target": "fixed-R or structure target from frozen bounds",
+    "timeout": "mandatory no-progress and maximum-bars timeout",
+    "breakeven": "disabled in generation 1 unless tested later as a distinct causal exit axis",
+    "partial_trailing": "disabled in generation 1; standalone later only after base edge is positive",
+    "simultaneous_signal_policy": "one position per symbol and one owner; no stacking, DCA or martingale"
+  },
+  "risk_and_sizing": {
+    "research_position_size": "normalized 1R only",
+    "production_sizing_authority": false,
+    "max_open_positions": 1,
+    "leverage_assumption": "not used to manufacture edge; report exposure separately",
+    "loss_cap": "one structural stop per trade; no widening after entry",
+    "daily_stop": "research metric only; runtime authority remains blocked"
+  },
+  "all_in_cost_contract": {
+    "baseline_all_in_cost_pct": 0.1316910918,
+    "components_pct": {
+      "round_trip_fee": 0.10,
+      "slippage_stress": 0.0216910918,
+      "funding_horizon": 0.01
+    },
+    "entry_cost_margin_rule": "candidate expected gross move must exceed all-in cost by a frozen W1-selected multiple",
+    "stress": ["2x_all_in_cost", "P95_funding", "plus_one_bar_entry", "wider_slippage_by_regime"],
+    "mark_last_separation_required": true
+  },
+  "bounded_generation_1_search": {
+    "design_principle": "coarse bounded search only; no inherited scalp_snap thresholds",
+    "trial_budget_max": 48,
+    "dimensions": {
+      "regime_lookback_15m_bars": [12, 24, 48],
+      "directional_efficiency_min": [0.20, 0.35, 0.50],
+      "impulse_atr_multiple": [0.8, 1.2, 1.6],
+      "pullback_fraction": [0.25, 0.40, 0.55],
+      "reclaim_confirmation": ["close", "close_plus_range"],
+      "stop_atr_multiple": [0.8, 1.1, 1.4],
+      "target_R": [1.2, 1.6, 2.0],
+      "max_hold_bars": [6, 12, 18],
+      "expected_move_to_cost_min": [2.0, 3.0, 4.0]
+    },
+    "search_reduction_rule": "Use a deterministic fractional/coarse design capped at 48 configurations; do not enumerate the Cartesian product.",
+    "W1_selection_objective": "maximize positive Net R/day subject to Net R>0, PF>=1, expectancy>0, payoff>=1, minimum sample and no hard-gate violation",
+    "W2_W3_policy": "freeze the exact selected configuration and source SHA; no retuning"
+  },
+  "data_split_contract": {
+    "research_design_data": "separate from W1/W2/W3 and final event stress",
+    "W1": "selection only",
+    "W2": "frozen OOS validation",
+    "W3": "frozen OOS validation",
+    "event_corpus": "independent stress only after candidate freeze under PR 586 contract",
+    "split_sha_required_before_replay": true,
+    "purge_embargo_required": true,
+    "trial_ledger_required": true
+  },
+  "falsification": {
+    "economic_fail_if": [
+      "no W1 configuration has Net R>0, PF>=1, expectancy>0 and payoff>=1 with sufficient sample",
+      "selected W1 configuration is non-positive in either W2 or W3",
+      "2x-cost or plus-one-bar stress removes positive expectancy",
+      "positive economics depend on one symbol, one short interval, or one regime beyond concentration limits",
+      "adjacent parameters are materially unstable",
+      "retention/sample falls below the frozen minimum",
+      "independent recomputation or A/B parity fails"
+    ],
+    "no_relative_improvement_credit": true,
+    "maximum_generations_same_family_same_data_sha": 2
+  },
+  "rejected_alternatives": [
+    {
+      "family": "momentum_breakout_continuation",
+      "reason": "High score but first-impulse chasing has higher adverse-selection and slippage-tail risk; retained as a future independent family, not combined into generation 1."
+    },
+    {
+      "family": "order_flow_imbalance_microprice",
+      "reason": "Historical event-time L2/trade/queue/fill evidence is not proven available."
+    },
+    {
+      "family": "maker_spread_capture_market_making",
+      "reason": "Cannot validate queue position, cancel latency, partial fills and inventory/adverse-selection risk with the current bar corpus."
+    },
+    {
+      "family": "mean_reversion_liquidity_sweep",
+      "reason": "Secondary route with larger liquidation-cascade tail risk; defer until the continuation family is independently resolved."
+    },
+    {
+      "family": "cross_venue_spot_perp_basis_arbitrage",
+      "reason": "Conflicts with BingX-only active exchange policy and requires synchronized dual-leg execution."
+    },
+    {
+      "family": "hybrid_regime_router",
+      "reason": "Router is prohibited until at least two standalone positive families exist."
+    }
+  ],
+  "implementation_authority": {
+    "new_research_candidate_code_allowed": true,
+    "canonical_mutation_allowed": false,
+    "registry_mutation_allowed": false,
+    "runtime_mutation_allowed": false,
+    "shadow_allowed": false,
+    "paper_allowed": false,
+    "live_allowed": false,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "action": "route_change"
+  },
+  "receipt_sha_policy": "SHA256 over canonical JSON bytes must be emitted by the validator before any economic replay."
+}

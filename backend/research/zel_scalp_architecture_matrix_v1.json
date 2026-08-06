@@ -1,0 +1,125 @@
+{
+  "schema_version": "zel.scalp.architecture_matrix.v1",
+  "generated_at": "2026-08-06T00:57:00Z",
+  "state": "PRELIMINARY_MATRIX_COMPLETE_BINGX_FEASIBILITY_PENDING",
+  "score_scale": "0 worst, 5 best; execution_risk, overfit_risk and tail_risk are reverse-scored so 5 means lower risk",
+  "weights": {
+    "causal_edge_clarity": 0.16,
+    "bingx_feasibility": 0.14,
+    "data_availability": 0.13,
+    "cost_margin": 0.15,
+    "holding_horizon_fit": 0.10,
+    "execution_risk_reverse": 0.10,
+    "sample_capacity": 0.08,
+    "overfit_risk_reverse": 0.06,
+    "tail_risk_reverse": 0.05,
+    "expected_net_R_day_prior": 0.03
+  },
+  "sources": [
+    {
+      "id": "NAUTILUS_BACKTESTING",
+      "url": "https://nautilustrader.io/docs/latest/concepts/backtesting/",
+      "finding": "L2/L3 data is required for depth-aware matching and partial fills; bars cannot recreate higher-granularity order-book data."
+    },
+    {
+      "id": "NAUTILUS_EXECUTION_FLOW",
+      "url": "https://nautilustrader.io/docs/nightly/concepts/backtesting/execution-flow/",
+      "finding": "Market data updates the simulated exchange before strategy callbacks, preserving deterministic event ordering."
+    },
+    {
+      "id": "QUANTCONNECT_REALITY_MODELS",
+      "url": "https://www.quantconnect.com/docs/v2/writing-algorithms/reality-modeling/key-concepts",
+      "finding": "Fill, slippage, fee and brokerage models must be customized when default high-liquidity assumptions are invalid."
+    },
+    {
+      "id": "QUANTCONNECT_FILL_MODELS",
+      "url": "https://www.quantconnect.com/docs/v2/writing-algorithms/reality-modeling/trade-fills/key-concepts",
+      "finding": "Fill models determine fill price and quantity, can include spread cost and support partial-fill behavior."
+    },
+    {
+      "id": "HUMMINGBOT_CONTROLLERS",
+      "url": "https://hummingbot.org/strategies/v2-strategies/controllers/",
+      "finding": "Separate market-data/control logic from order executors and support directional, market-making and arbitrage families."
+    },
+    {
+      "id": "FREQTRADE_BACKTEST_HYPEROPT",
+      "url": "https://www.freqtrade.io/en/stable/hyperopt/",
+      "finding": "Use bounded parameter spaces and explicit guard/trigger separation; optimization output is not profitability proof."
+    }
+  ],
+  "rows": [
+    {
+      "archetype": "momentum_breakout_continuation",
+      "scores": {"causal_edge_clarity":4,"bingx_feasibility":5,"data_availability":5,"cost_margin":4,"holding_horizon_fit":5,"execution_risk_reverse":4,"sample_capacity":4,"overfit_risk_reverse":4,"tail_risk_reverse":3,"expected_net_R_day_prior":4},
+      "weighted_score": 4.38,
+      "route": "LEADING_OHLCV_INTRADAY_CANDIDATE",
+      "design_note": "3m/5m trigger with 15m regime, volatility and volume expansion; expected move must exceed stressed all-in cost by a pre-registered multiple."
+    },
+    {
+      "archetype": "pullback_reclaim",
+      "scores": {"causal_edge_clarity":4,"bingx_feasibility":5,"data_availability":5,"cost_margin":4,"holding_horizon_fit":5,"execution_risk_reverse":4,"sample_capacity":4,"overfit_risk_reverse":3,"tail_risk_reverse":4,"expected_net_R_day_prior":4},
+      "weighted_score": 4.33,
+      "route": "LEADING_OHLCV_INTRADAY_CANDIDATE",
+      "design_note": "Trend/regime established first, then pullback and reclaim confirmation; lower adverse-selection risk than chasing first breakout."
+    },
+    {
+      "archetype": "volatility_expansion",
+      "scores": {"causal_edge_clarity":4,"bingx_feasibility":5,"data_availability":5,"cost_margin":4,"holding_horizon_fit":4,"execution_risk_reverse":3,"sample_capacity":4,"overfit_risk_reverse":4,"tail_risk_reverse":3,"expected_net_R_day_prior":4},
+      "weighted_score": 4.17,
+      "route": "COMBINE_ONLY_IF_NONREDUNDANT",
+      "design_note": "Potential trigger family for breakout candidate, not a separate filter accumulation. Must control event-gap and slippage tails."
+    },
+    {
+      "archetype": "hybrid_regime_router",
+      "scores": {"causal_edge_clarity":3,"bingx_feasibility":5,"data_availability":5,"cost_margin":4,"holding_horizon_fit":5,"execution_risk_reverse":4,"sample_capacity":4,"overfit_risk_reverse":2,"tail_risk_reverse":4,"expected_net_R_day_prior":4},
+      "weighted_score": 4.03,
+      "route": "DEFER_UNTIL_STANDALONE_EDGE_EXISTS",
+      "design_note": "Useful only after at least two standalone positive families exist; otherwise router complexity hides weak base edges."
+    },
+    {
+      "archetype": "mean_reversion_liquidity_sweep",
+      "scores": {"causal_edge_clarity":4,"bingx_feasibility":4,"data_availability":4,"cost_margin":3,"holding_horizon_fit":4,"execution_risk_reverse":3,"sample_capacity":4,"overfit_risk_reverse":3,"tail_risk_reverse":2,"expected_net_R_day_prior":3},
+      "weighted_score": 3.55,
+      "route": "SECONDARY_CANDIDATE",
+      "design_note": "Requires explicit exhaustion/reclaim evidence and hard timeout; vulnerable to catching continuation during liquidation cascades."
+    },
+    {
+      "archetype": "session_event_driven_scalp",
+      "scores": {"causal_edge_clarity":3,"bingx_feasibility":4,"data_availability":4,"cost_margin":4,"holding_horizon_fit":4,"execution_risk_reverse":2,"sample_capacity":2,"overfit_risk_reverse":2,"tail_risk_reverse":2,"expected_net_R_day_prior":3},
+      "weighted_score": 3.23,
+      "route": "STRESS_DATASET_ONLY_FIRST",
+      "design_note": "Event labels must never select parameters. Sparse events and gap/slippage tails make this unsuitable as the first standalone family."
+    },
+    {
+      "archetype": "order_flow_imbalance_microprice",
+      "scores": {"causal_edge_clarity":5,"bingx_feasibility":3,"data_availability":1,"cost_margin":4,"holding_horizon_fit":5,"execution_risk_reverse":2,"sample_capacity":5,"overfit_risk_reverse":3,"tail_risk_reverse":3,"expected_net_R_day_prior":4},
+      "weighted_score": 3.42,
+      "route": "CONDITIONAL_ON_EVENT_TIME_L2_HISTORY",
+      "design_note": "Best true-Scalp causal candidate, but invalid without historical book/trade sequence, queue/fill and account latency evidence."
+    },
+    {
+      "archetype": "maker_spread_capture_market_making",
+      "scores": {"causal_edge_clarity":5,"bingx_feasibility":3,"data_availability":1,"cost_margin":5,"holding_horizon_fit":5,"execution_risk_reverse":1,"sample_capacity":5,"overfit_risk_reverse":3,"tail_risk_reverse":1,"expected_net_R_day_prior":4},
+      "weighted_score": 3.36,
+      "route": "REJECT_UNTIL_QUEUE_AND_INVENTORY_MODEL_EXISTS",
+      "design_note": "Spread capture is not testable with bars. Requires queue position, cancel latency, adverse-selection and inventory-risk simulation."
+    },
+    {
+      "archetype": "cross_venue_spot_perp_basis_arbitrage",
+      "scores": {"causal_edge_clarity":5,"bingx_feasibility":2,"data_availability":2,"cost_margin":4,"holding_horizon_fit":3,"execution_risk_reverse":1,"sample_capacity":3,"overfit_risk_reverse":5,"tail_risk_reverse":2,"expected_net_R_day_prior":3},
+      "weighted_score": 3.17,
+      "route": "OUT_OF_SCOPE_SINGLE_EXCHANGE_FIRST",
+      "design_note": "Needs synchronized multi-venue balances, transfer/counterparty controls and dual-leg execution; conflicts with BingX-only active exchange policy."
+    }
+  ],
+  "preliminary_selection": {
+    "selected_family": null,
+    "leading_pair": ["momentum_breakout_continuation","pullback_reclaim"],
+    "decision": "HOLD_UNTIL_BINGX_FEASIBILITY_AND_OWNER_AUTOPSY_COMPLETE",
+    "reason": "OHLCV intraday routes currently dominate feasibility-adjusted score; true microstructure routes remain conditional on data resolution."
+  },
+  "protected_mutations": 0,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "action": "hold"
+}

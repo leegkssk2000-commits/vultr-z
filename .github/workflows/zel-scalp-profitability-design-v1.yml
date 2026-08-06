@@ -1,0 +1,45 @@
+name: ZEL Scalp Profitability Design V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_scalp_*'
+      - 'backend/research/intraday_pullback_reclaim_v1.py'
+      - 'scripts/validate_zel_scalp_design_selection_v1.py'
+      - 'scripts/validate_intraday_pullback_reclaim_v1.py'
+      - '.github/workflows/zel-scalp-profitability-design-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-scalp-profitability-design-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile research candidate
+        run: python -m py_compile backend/research/intraday_pullback_reclaim_v1.py scripts/validate_intraday_pullback_reclaim_v1.py scripts/validate_zel_scalp_design_selection_v1.py
+      - name: Validate sealed design receipt
+        run: python scripts/validate_zel_scalp_design_selection_v1.py
+      - name: Validate isolated candidate fixtures
+        run: python scripts/validate_intraday_pullback_reclaim_v1.py
+      - name: Protected-path assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only origin/${{ github.base_ref }}...HEAD)"
+          if grep -E '^(backend/strategies/|backend/registry|backend/runtime|formal_ledger|shadow|paper|live|orders?)' <<<"$changed"; then
+            echo 'protected runtime/canonical path changed' >&2
+            exit 1
+          fi
+          printf '%s\n' "$changed"

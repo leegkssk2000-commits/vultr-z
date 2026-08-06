@@ -15,11 +15,24 @@ def main() -> None:
 
     assert control["schema_version"] == "zel.scalp.momentum.replay_control_plan.v1"
     assert control["strategy_id"] == "momentum_breakout_continuation_v1"
-    assert control["state"] in {
-        "PASS_CONTROL_PLAN_SEALED_HEAVY_REPLAY_BLOCKED_PENDING_ADAPTER",
-        "PASS_CONTROL_PLAN_SEALED_ADAPTER_READY_REPLAY_AUTHORIZED",
-    }
+    assert control["state"] == "PASS_STRATEGY_KERNEL_BOUND_REPLAY_BLOCKED_PENDING_FEATURE_CONTRIBUTION"
     assert control["legacy_trial_plan_disposition"] == "DIAGNOSTIC_COVERAGE_ONLY_NOT_SELECTION_AUTHORITY"
+    assert control["legacy_adapters_disposition"] == "BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY"
+    assert control["next_gate"] == "FEATURE_ECONOMIC_CONTRIBUTION"
+
+    kernel = control["strategy_kernel"]
+    assert kernel["feature_policy_ssot"] == "backend/research/zel_feature_strategy_ssot_v1.py"
+    assert kernel["intent_adapters"] == "backend/research/zel_strategy_intent_adapters_v1.py"
+    assert kernel["boundary_audit"] == "backend/research/zel_strategy_kernel_boundary_audit_v1.json"
+    assert kernel["feature_validator"] == "scripts/validate_zel_feature_strategy_ssot_v1.py"
+    assert kernel["parity_validator"] == "scripts/validate_zel_strategy_kernel_parity_v1.py"
+    assert kernel["required_gate_order"] == [
+        "BOUNDARY_OWNERSHIP",
+        "FEATURE_CORRECTNESS",
+        "REPLAY_PAPER_DECISION_INTENT_PARITY",
+        "FEATURE_ECONOMIC_CONTRIBUTION",
+        "INTEGRATED_ECONOMIC_REPLAY",
+    ]
 
     assert trial["strategy_id"] == control["strategy_id"]
     assert trial["trial_count"] == 48
@@ -57,18 +70,14 @@ def main() -> None:
     assert control["protected_mutations"] == 0
     assert control["action"] == "hold"
 
-    print(
-        json.dumps(
-            {
-                "state": control["state"],
-                "legacy_trials": trial["trial_count"],
-                "stages": [stage["stage_id"] for stage in stages],
-                "controls": sorted(controls),
-                "heavy_replay": "AUTHORIZED" if control["state"].endswith("REPLAY_AUTHORIZED") else "BLOCKED_PENDING_ADAPTER",
-            },
-            sort_keys=True,
-        )
-    )
+    print(json.dumps({
+        "state": control["state"],
+        "legacy_trials": trial["trial_count"],
+        "stages": [stage["stage_id"] for stage in stages],
+        "controls": sorted(controls),
+        "heavy_replay": "BLOCKED_PENDING_FEATURE_CONTRIBUTION",
+        "next_gate": control["next_gate"],
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ on:
       - 'backend/research/zel_strategy_kernel_*'
       - 'backend/research/zel_feature_strategy_ssot_v1.py'
       - 'backend/research/zel_strategy_intent_adapters_v1.py'
+      - 'backend/research/zel_momentum_feature_contribution_plan_v1.json'
       - 'backend/research/intraday_pullback_reclaim_v1.py'
       - 'backend/research/momentum_breakout_continuation_v1.py'
       - 'scripts/validate_zel_*'
@@ -15,8 +16,7 @@ on:
       - 'scripts/validate_momentum_breakout_continuation_v1.py'
       - 'scripts/materialize_zel_scalp_intraday_dataset_v1.py'
       - 'scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py'
-      - 'scripts/run_zel_scalp_momentum_event_study_v1.py'
-      - 'scripts/run_zel_scalp_momentum_staged_replay_v1.py'
+      - 'scripts/run_zel_momentum_feature_contribution_v1.py'
       - '.github/workflows/zel-scalp-profitability-design-v1.yml'
   workflow_dispatch:
 
@@ -54,6 +54,9 @@ jobs:
           scripts/validate_zel_scalp_external_benchmark_v2.py
           scripts/validate_zel_scalp_data_split_materialization_v1.py
           scripts/validate_zel_scalp_momentum_replay_control_plan_v1.py
+          scripts/materialize_zel_scalp_intraday_dataset_v1.py
+          scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py
+          scripts/run_zel_momentum_feature_contribution_v1.py
       - name: Validate inherited design receipts
         run: |
           python scripts/validate_zel_scalp_design_selection_v1.py
@@ -76,9 +79,9 @@ jobs:
 
           boundary = json.loads(Path('backend/research/zel_strategy_kernel_boundary_audit_v1.json').read_text())
           control = json.loads(Path('backend/research/zel_scalp_momentum_replay_control_plan_v1.json').read_text())
+          plan = json.loads(Path('backend/research/zel_momentum_feature_contribution_plan_v1.json').read_text())
 
           assert boundary['state'] == 'PASS_BOUNDARY_OWNERSHIP_SEALED'
-          assert boundary['next_gate'] == 'FEATURE_CORRECTNESS_AND_PARITY'
           assert {row['code'] for row in boundary['critical_findings']} == {
               'DUPLICATE_QUALITY_WEIGHTING',
               'RISK_GEOMETRY_REANCHOR',
@@ -86,6 +89,8 @@ jobs:
           assert control['state'] == 'PASS_STRATEGY_KERNEL_BOUND_REPLAY_BLOCKED_PENDING_FEATURE_CONTRIBUTION'
           assert control['next_gate'] == 'FEATURE_ECONOMIC_CONTRIBUTION'
           assert control['legacy_adapters_disposition'] == 'BLOCKED_NO_SELECTION_OR_ECONOMIC_AUTHORITY'
+          assert plan['state'] == 'PASS_PLAN_SEALED_RESEARCH_ATTRIBUTION_ONLY'
+          assert len(plan['variants']) == 6
           assert control['execution_authority'] == 'NONE'
           assert control['order_authority'] == 'BLOCKED'
           assert control['protected_mutations'] == 0
@@ -93,6 +98,7 @@ jobs:
               'boundary': boundary['state'],
               'kernel': control['state'],
               'next': control['next_gate'],
+              'feature_variants': len(plan['variants']),
               'legacy_economic_replay': 'BLOCKED',
           })
           PY
@@ -106,3 +112,127 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$changed"
+
+  materialize-feature-inputs:
+    needs: strategy-kernel-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download accepted immutable data and cost artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8916685107/zip" \
+            -o /tmp/pr575-gap-excluded-dataset.zip
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/8950849008/zip" \
+            -o /tmp/pr576-gen3-terminal.zip
+      - name: Materialize and bind strategy-kernel inputs
+        run: |
+          python scripts/materialize_zel_scalp_intraday_dataset_v1.py \
+            --dataset-zip /tmp/pr575-gap-excluded-dataset.zip \
+            --cost-zip /tmp/pr576-gen3-terminal.zip \
+            --repo-root . \
+            --output /tmp/zel-momentum-feature-inputs
+          python scripts/rebind_zel_scalp_momentum_materialized_inputs_v1.py \
+            --inputs /tmp/zel-momentum-feature-inputs \
+            --repo-root .
+      - name: Verify strategy-kernel lineage bindings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/zel-momentum-feature-inputs/materialized_manifest.json').read_text())
+          refs = data['references']
+          assert data['state'] == 'PASS_MOMENTUM_MATERIALIZED_REPLAY_INPUTS'
+          assert data['strategy_id'] == 'momentum_breakout_continuation_v1'
+          assert data['file_count'] == 60
+          assert data['total_rows'] > 0
+          for key in (
+              'feature_strategy_ssot_sha256',
+              'intent_adapters_sha256',
+              'feature_contribution_plan_sha256',
+              'control_plan_sha256',
+              'cost_receipt_sha256',
+              'funding_receipt_sha256',
+          ):
+              assert refs[key]
+          assert data['protected_mutations'] == 0
+          assert data['execution_authority'] == 'NONE'
+          assert data['order_authority'] == 'BLOCKED'
+          print({'state': data['state'], 'files': data['file_count'], 'rows': data['total_rows'], 'bindings': len(refs)})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-momentum-feature-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-feature-inputs
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  momentum-feature-contribution:
+    needs: materialize-feature-inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: zel-momentum-feature-inputs-${{ github.sha }}
+          path: /tmp/zel-momentum-feature-inputs
+      - name: Run isolated feature economic contribution study
+        run: |
+          python scripts/run_zel_momentum_feature_contribution_v1.py \
+            --inputs /tmp/zel-momentum-feature-inputs \
+            --repo-root . \
+            --output /tmp/zel-momentum-feature-contribution
+      - name: Verify feature contribution receipt
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          receipt = json.loads(Path('/tmp/zel-momentum-feature-contribution/feature_contribution_receipt.json').read_text())
+          assert receipt['state'] == 'PASS_FEATURE_CONTRIBUTION_COMPLETE_SELECTION_NOT_AUTHORIZED'
+          assert len(receipt['results']) == 6
+          assert receipt['integrity'] == {
+              'errors': 0,
+              'duplicates': 0,
+              'protected_mutations': 0,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+          }
+          assert receipt['selection_authority'] is False
+          assert receipt['promotion_authority'] is False
+          assert receipt['next_gate'] == 'W1_FEATURE_SELECTION_AFTER_ATTRIBUTION'
+          print({
+              'state': receipt['state'],
+              'ranking': receipt['research_ranking'],
+              'next': receipt['next_gate'],
+              'receipt': receipt['receipt_sha256'],
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-momentum-feature-contribution-${{ github.sha }}
+          path: /tmp/zel-momentum-feature-contribution
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

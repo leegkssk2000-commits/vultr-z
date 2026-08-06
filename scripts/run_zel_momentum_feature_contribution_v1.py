@@ -184,9 +184,10 @@ def simulate_variant(module, inputs: Path, config, variant_id: str, all_in_cost_
         max_drawdown = max(max_drawdown, peak - cumulative)
 
     elapsed_days = max(((last_ts or 0) - (first_ts or 0)) / DAY_MS, 1.0)
-    profit_factor = sum(wins) / abs(sum(losses)) if losses else (math.inf if wins else 0.0)
+    profit_factor = sum(wins) / abs(sum(losses)) if losses else None
     avg_win = fmean(wins) if wins else 0.0
     avg_loss = fmean(losses) if losses else 0.0
+    payoff = avg_win / abs(avg_loss) if avg_loss < 0 else None
     metrics = {
         "variant_id": variant_id,
         "signals": signals,
@@ -195,7 +196,9 @@ def simulate_variant(module, inputs: Path, config, variant_id: str, all_in_cost_
         "net_R": sum(net_values),
         "net_R_per_day": sum(net_values) / elapsed_days,
         "profit_factor": profit_factor,
-        "payoff": avg_win / abs(avg_loss) if avg_loss < 0 else (math.inf if avg_win > 0 else 0.0),
+        "profit_factor_unbounded": bool(wins and not losses),
+        "payoff": payoff,
+        "payoff_unbounded": bool(avg_win > 0 and avg_loss >= 0),
         "expectancy_R": fmean(net_values) if net_values else 0.0,
         "avg_win_R": avg_win,
         "avg_loss_R": avg_loss,
@@ -206,6 +209,16 @@ def simulate_variant(module, inputs: Path, config, variant_id: str, all_in_cost_
         "duplicates": len(ordered) - len({row["trade_id"] for row in ordered}),
     }
     return metrics, ordered
+
+
+def numeric_delta(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline is None:
+        return None
+    return float(value) - float(baseline)
+
+
+def ranking_value(value: float | None) -> float:
+    return math.inf if value is None else float(value)
 
 
 def main() -> None:
@@ -268,8 +281,8 @@ def main() -> None:
             "win_rate_pct": float(row["win_rate_pct"]) - float(baseline["win_rate_pct"]),
             "net_R": float(row["net_R"]) - float(baseline["net_R"]),
             "net_R_per_day": float(row["net_R_per_day"]) - float(baseline["net_R_per_day"]),
-            "profit_factor": float(row["profit_factor"]) - float(baseline["profit_factor"]),
-            "payoff": float(row["payoff"]) - float(baseline["payoff"]),
+            "profit_factor": numeric_delta(row["profit_factor"], baseline["profit_factor"]),
+            "payoff": numeric_delta(row["payoff"], baseline["payoff"]),
             "expectancy_R": float(row["expectancy_R"]) - float(baseline["expectancy_R"]),
             "avg_loss_R": float(row["avg_loss_R"]) - float(baseline["avg_loss_R"]),
             "max_drawdown_R": float(row["max_drawdown_R"]) - float(baseline["max_drawdown_R"]),
@@ -277,7 +290,11 @@ def main() -> None:
 
     ranking = [row["variant_id"] for row in sorted(
         results,
-        key=lambda row: (float(row["net_R_per_day"]), float(row["profit_factor"]), float(row["expectancy_R"])),
+        key=lambda row: (
+            float(row["net_R_per_day"]),
+            ranking_value(row["profit_factor"]),
+            float(row["expectancy_R"]),
+        ),
         reverse=True,
     )]
     integrity = {
@@ -303,8 +320,8 @@ def main() -> None:
         "results": results,
         "research_ranking": ranking,
         "integrity": integrity,
-        "selection_authority": false,
-        "promotion_authority": false,
+        "selection_authority": False,
+        "promotion_authority": False,
         "next_gate": "W1_FEATURE_SELECTION_AFTER_ATTRIBUTION",
         "action": "hold",
     }

@@ -41,12 +41,16 @@ jobs:
             backend/tools/zel_structural_premium_registry_restore_v2.py
           python backend/tools/zel_structural_premium_coverage_revalidation_v1.py self-test
           python backend/tools/zel_structural_premium_registry_restore_v2.py --self-test
+          python backend/tools/zel_structural_premium_registry_restore_v2.py --help | grep -F -- '--source-root'
+          python backend/tools/zel_structural_premium_registry_restore_v2.py --help | grep -F -- '--engine-v1'
+          python backend/tools/zel_structural_premium_registry_restore_v2.py --help | grep -F -- '--engine-v2'
 
       - name: Download accepted expanded 1m artifact
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf /tmp/zel-sp-coverage /tmp/zel-sp-preflight /tmp/zel-sp-coverage-bundle.tar
           mkdir -p /tmp/zel-sp-coverage
           curl --fail --location --retry 3 \
             -H "Accept: application/vnd.github+json" \
@@ -78,7 +82,7 @@ jobs:
           print({'state':row['state'],'rows':row['total_market_rows'],'dataset_sha256':row['dataset_sha256']})
           PY
 
-      - name: Build isolated exact replay bundle
+      - name: Build and locally prove isolated replay transport contract
         run: |
           set -euo pipefail
           mkdir -p /tmp/zel-sp-coverage/engine
@@ -86,6 +90,8 @@ jobs:
           cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-coverage/engine/replay_v2.py
           cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-coverage/evaluate.py
           cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-coverage/engine/zel_sp_registry_restore_v2.py
+          test ! -e /tmp/zel-sp-coverage/restore.py
+
           python - <<'PY'
           from pathlib import Path
           evaluator=Path('/tmp/zel-sp-coverage/evaluate.py')
@@ -94,12 +100,33 @@ jobs:
           assert text.count(old)==1
           evaluator.write_text(text.replace(old,'        "long_only_projection_explicit": True,'))
           PY
+
           python -m py_compile \
             /tmp/zel-sp-coverage/engine/replay_v1.py \
             /tmp/zel-sp-coverage/engine/replay_v2.py \
             /tmp/zel-sp-coverage/evaluate.py \
             /tmp/zel-sp-coverage/engine/zel_sp_registry_restore_v2.py
-          sha256sum /tmp/zel-sp-coverage/engine/zel_sp_registry_restore_v2.py > /tmp/zel-sp-coverage/restore.sha256
+          python /tmp/zel-sp-coverage/engine/zel_sp_registry_restore_v2.py --self-test
+          sha256sum /tmp/zel-sp-coverage/engine/zel_sp_registry_restore_v2.py | awk '{print $1}' > /tmp/zel-sp-coverage/restore.sha256.hex
+          test "$(wc -c < /tmp/zel-sp-coverage/restore.sha256.hex)" -eq 65
+
+          tar -C /tmp/zel-sp-coverage -cf /tmp/zel-sp-coverage-bundle.tar \
+            data engine evaluate.py restore.sha256.hex
+          tar -tf /tmp/zel-sp-coverage-bundle.tar | grep -Fx 'engine/zel_sp_registry_restore_v2.py'
+          tar -tf /tmp/zel-sp-coverage-bundle.tar | grep -Fx 'engine/replay_v1.py'
+          tar -tf /tmp/zel-sp-coverage-bundle.tar | grep -Fx 'engine/replay_v2.py'
+          tar -tf /tmp/zel-sp-coverage-bundle.tar | grep -Fx 'evaluate.py'
+          tar -tf /tmp/zel-sp-coverage-bundle.tar | grep -Fx 'restore.sha256.hex'
+
+          rm -rf /tmp/zel-sp-preflight
+          mkdir -p /tmp/zel-sp-preflight
+          tar -C /tmp/zel-sp-preflight -xf /tmp/zel-sp-coverage-bundle.tar
+          test -f /tmp/zel-sp-preflight/engine/zel_sp_registry_restore_v2.py
+          test -f /tmp/zel-sp-preflight/restore.sha256.hex
+          test "$(cat /tmp/zel-sp-preflight/restore.sha256.hex)" = "$(sha256sum /tmp/zel-sp-preflight/engine/zel_sp_registry_restore_v2.py | awk '{print $1}')"
+          python /tmp/zel-sp-preflight/engine/zel_sp_registry_restore_v2.py --self-test
+          python /tmp/zel-sp-preflight/engine/zel_sp_registry_restore_v2.py --help | grep -F -- '--source-root'
+          rm -rf /tmp/zel-sp-preflight
 
       - name: Prepare read-only VPS transport
         env:
@@ -111,11 +138,11 @@ jobs:
           test -n "$VPS_SSH_KEY"
           test -n "$VPS_HOST"
           test -n "$VPS_USER"
+          test -s /tmp/zel-sp-coverage-bundle.tar
           mkdir -p ~/.ssh /tmp/zel-sp-coverage/result
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          tar -C /tmp/zel-sp-coverage -cf /tmp/zel-sp-coverage-bundle.tar data engine evaluate.py restore.sha256
 
       - name: Restore five-strategy registry coverage and rerun exact W1 to W3 replay
         env:
@@ -125,7 +152,7 @@ jobs:
           set -euo pipefail
           remote="/tmp/zel-structural-premium-coverage-${GITHUB_RUN_ID}"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            "mkdir -p '$remote' /opt/zel/research-runtime/locks"
+            "rm -rf '$remote'; mkdir -p '$remote' /opt/zel/research-runtime/locks"
           scp -i ~/.ssh/vps_key -o BatchMode=yes \
             /tmp/zel-sp-coverage-bundle.tar "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
 
@@ -133,15 +160,22 @@ jobs:
           timeout 21300s ssh -i ~/.ssh/vps_key -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
             "$VPS_USER@$VPS_HOST" \
-            "set -euo pipefail; cd '$remote'; tar -xf bundle.tar; mkdir -p output aggregate; \
-             sha256sum -c restore.sha256; \
+            "set -euo pipefail; cd '$remote'; \
+             tar -tf bundle.tar | grep -Fx 'engine/zel_sp_registry_restore_v2.py'; \
+             tar -tf bundle.tar | grep -Fx 'restore.sha256.hex'; \
+             tar -xf bundle.tar; mkdir -p output aggregate; \
+             test -f engine/zel_sp_registry_restore_v2.py; \
+             test -f restore.sha256.hex; \
+             test \"\$(cat restore.sha256.hex)\" = \"\$(sha256sum engine/zel_sp_registry_restore_v2.py | awk '{print \$1}')\"; \
              /home/z/z/.venv/bin/python engine/zel_sp_registry_restore_v2.py --self-test; \
+             /home/z/z/.venv/bin/python engine/zel_sp_registry_restore_v2.py --help | grep -F -- '--source-root'; \
              exec 9>'$REMOTE_LOCK'; flock -w 18000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
              /home/z/z/.venv/bin/python engine/zel_sp_registry_restore_v2.py \
                --source-root /opt/zel/forward-expansion-v1/source \
                --engine-v1 engine/replay_v1.py \
                --engine-v2 engine/replay_v2.py \
                --output aggregate/registry_restore.json; \
+             test -s aggregate/registry_restore.json; \
              /home/z/z/.venv/bin/python -m py_compile engine/replay_v1.py engine/replay_v2.py; \
              GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/replay_v2.py \
                --engine-v1 engine/replay_v1.py \
@@ -151,11 +185,13 @@ jobs:
                --output-dir output \
                --workers 4 \
                --no-resume; \
+             test -s output/report.json; test -s output/trades.jsonl.gz; \
              /home/z/z/.venv/bin/python evaluate.py evaluate \
                --report output/report.json \
                --ledger output/trades.jsonl.gz \
                --dataset-manifest data/manifest.json \
                --output aggregate/coverage_revalidation.json; \
+             test -s aggregate/coverage_revalidation.json; \
              cp output/summary.json aggregate/exact_replay_summary.json; \
              cp data/manifest.json aggregate/expanded_dataset_manifest.json; \
              rm -f output/trades.jsonl.gz; test ! -e output/trades.jsonl.gz"
@@ -218,7 +254,7 @@ jobs:
         if: always()
         run: |
           rm -f ~/.ssh/vps_key /tmp/zel-sp-coverage-bundle.tar
-          rm -rf /tmp/zel-sp-coverage/data /tmp/zel-sp-coverage/engine
+          rm -rf /tmp/zel-sp-coverage /tmp/zel-sp-preflight
 
       - uses: actions/upload-artifact@v4
         if: always()

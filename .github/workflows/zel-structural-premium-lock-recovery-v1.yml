@@ -1,0 +1,97 @@
+name: ZEL Structural Premium Lock Recovery V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_lock_recovery_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-structural-premium-lock-recovery-v1
+  cancel-in-progress: true
+
+jobs:
+  recover-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REMOTE_LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY" && test -n "$VPS_HOST" && test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Diagnose and recover stale research replay lock only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          lock=/opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+          mkdir -p "$(dirname "$lock")"
+          touch "$lock"
+
+          echo "LOCK_DIAG_BEGIN"
+          lslocks -o PID,COMMAND,TYPE,MODE,PATH 2>/dev/null | grep -F "$lock" || true
+          pids="$(fuser "$lock" 2>/dev/null || true)"
+          if [ -z "${pids// /}" ]; then
+            flock -n "$lock" -c 'echo LOCK_ALREADY_FREE'
+            echo "LOCK_RECOVERY_STATE=PASS_FREE"
+            exit 0
+          fi
+
+          safe=1
+          for pid in $pids; do
+            [ -r "/proc/$pid/cmdline" ] || continue
+            cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" || true)"
+            cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+            etime="$(ps -o etime= -p "$pid" 2>/dev/null | xargs || true)"
+            echo "LOCK_HOLDER pid=$pid etime=$etime cwd=$cwd cmd=$cmd"
+            case "$cmd|$cwd" in
+              *zel-structural-premium-v3-*|*replay_v2.py*structural-premium-v3*|*structural-premium-v3*replay_v2.py*) ;;
+              *) safe=0 ;;
+            esac
+          done
+
+          if [ "$safe" -ne 1 ]; then
+            echo "LOCK_RECOVERY_STATE=HOLD_NON_RESEARCH_HOLDER" >&2
+            exit 74
+          fi
+
+          echo "LOCK_RECOVERY_ACTION=TERM_RESEARCH_ORPHAN"
+          kill -TERM $pids 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 1
+            remain="$(fuser "$lock" 2>/dev/null || true)"
+            [ -z "${remain// /}" ] && break
+          done
+          remain="$(fuser "$lock" 2>/dev/null || true)"
+          if [ -n "${remain// /}" ]; then
+            echo "LOCK_RECOVERY_ACTION=KILL_RESEARCH_ORPHAN remain=$remain"
+            kill -KILL $remain 2>/dev/null || true
+            sleep 1
+          fi
+
+          flock -n "$lock" -c 'echo LOCK_RECOVERED_FREE'
+          echo "LOCK_RECOVERY_STATE=PASS_RECOVERED"
+          echo "LOCK_DIAG_END"
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

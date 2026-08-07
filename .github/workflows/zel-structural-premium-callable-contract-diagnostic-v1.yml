@@ -1,0 +1,95 @@
+name: ZEL Structural Premium Callable Contract Diagnostic V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_callable_contract_diagnostic_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_ROOT: /opt/zel/forward-expansion-v1/source
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh /tmp/zel-sp-contract-diag
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Inspect actual callable signatures and source
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "SOURCE_ROOT='$SOURCE_ROOT' bash -s" <<'REMOTE' > /tmp/zel-sp-contract-diag/contracts.json
+          set -euo pipefail
+          /home/z/z/.venv/bin/python - <<'PY'
+          import contextlib, importlib.util, inspect, io, json, os, sys
+          from pathlib import Path
+
+          root=Path(os.environ['SOURCE_ROOT'])
+          producer_path=root/'tools/q4r3_exact25_dedicated_shadow_producer.py'
+          spec=importlib.util.spec_from_file_location('zel_contract_diag_producer', producer_path)
+          producer=importlib.util.module_from_spec(spec); sys.modules[spec.name]=producer; spec.loader.exec_module(producer)
+          _, registry=producer.load_registry(root)
+          out={'schema_version':'zel.structural_premium.callable_contracts.v1','registry':{},'support_resistance_v4':{},'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+          for sid in ('vwap_revert','liquidity_sweep','trend_rider'):
+              owner=registry[sid]
+              fn=getattr(owner,'strategy',None)
+              out['registry'][sid]={
+                  'owner_path':str(getattr(owner,'owner_path','')),
+                  'signature':str(inspect.signature(fn)) if callable(fn) else None,
+                  'source':inspect.getsource(fn)[:2500] if callable(fn) else None,
+              }
+
+          p=root/'backend/strategies_v4/support_resistance_v4.py'
+          modspec=importlib.util.spec_from_file_location('zel_contract_diag_sr',p)
+          mod=importlib.util.module_from_spec(modspec); sys.modules[modspec.name]=mod
+          old_argv=list(sys.argv); old_cwd=Path.cwd(); old_path=list(sys.path)
+          try:
+              sys.path[:]=[str(p.parent),str(root),str(root/'backend')]+old_path
+              os.chdir(p.parent); sys.argv=[str(p),'--help']
+              with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                  try: modspec.loader.exec_module(mod)
+                  except SystemExit as exc:
+                      if exc.code not in (0,None): raise
+          finally:
+              sys.argv=old_argv; sys.path[:]=old_path; os.chdir(old_cwd)
+          for name in ('evaluate','strategy','generate_signal','signal','decide'):
+              fn=getattr(mod,name,None)
+              if callable(fn):
+                  out['support_resistance_v4'][name]={
+                      'signature':str(inspect.signature(fn)),
+                      'source':inspect.getsource(fn)[:4000],
+                  }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          REMOTE
+          python -m json.tool /tmp/zel-sp-contract-diag/contracts.json >/dev/null
+          cat /tmp/zel-sp-contract-diag/contracts.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-callable-contracts-${{ github.run_id }}
+          path: /tmp/zel-sp-contract-diag/contracts.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

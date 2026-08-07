@@ -187,8 +187,7 @@ jobs:
             -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
             "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; cd '$remote'; \
-             persistent_output='$REMOTE_CHECKPOINT_ROOT/output'; \
-             tar -xf bundle.tar; mkdir -p aggregate preflight \"$REMOTE_CHECKPOINT_ROOT/output\"; \
+             tar -xf bundle.tar; mkdir -p aggregate preflight '$REMOTE_CHECKPOINT_ROOT/output'; \
              sha256sum -c transport.sha256; \
              test -f engine/zel_structural_premium_registry_restore_v2.py; \
              test -f engine/zel_structural_premium_registry_restore_v3.py; \
@@ -224,14 +223,14 @@ jobs:
              GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/replay_v2.py \
                --engine-v1 engine/replay_v1.py \
                --source-root /opt/zel/forward-expansion-v1/source \
-               --data-root data --interval 1m --output-dir \"$persistent_output\" --workers 4; \
-             test -s \"$persistent_output/report.json\"; test -s \"$persistent_output/trades.jsonl.gz\"; \
+               --data-root data --interval 1m --output-dir '$REMOTE_CHECKPOINT_ROOT/output' --workers 4; \
+             test -s '$REMOTE_CHECKPOINT_ROOT/output/report.json'; test -s '$REMOTE_CHECKPOINT_ROOT/output/trades.jsonl.gz'; \
              /home/z/z/.venv/bin/python evaluate.py evaluate \
-               --report \"$persistent_output/report.json\" --ledger \"$persistent_output/trades.jsonl.gz\" \
+               --report '$REMOTE_CHECKPOINT_ROOT/output/report.json' --ledger '$REMOTE_CHECKPOINT_ROOT/output/trades.jsonl.gz' \
                --dataset-manifest data/manifest.json --output aggregate/coverage_revalidation.json; \
              test -s aggregate/coverage_revalidation.json; \
-             cp \"$persistent_output/summary.json\" aggregate/exact_replay_summary.json; \
-             cp \"$persistent_output/progress.json\" aggregate/replay_progress.json; \
+             cp '$REMOTE_CHECKPOINT_ROOT/output/summary.json' aggregate/exact_replay_summary.json; \
+             cp '$REMOTE_CHECKPOINT_ROOT/output/progress.json' aggregate/replay_progress.json; \
              cp data/manifest.json aggregate/expanded_dataset_manifest.json; \
              cp preflight/registry_restore.json aggregate/vps_restore_preflight.json; \
              cp preflight/overlay_patch_receipt.json aggregate/vps_incumbent_overlay_preflight.json; \

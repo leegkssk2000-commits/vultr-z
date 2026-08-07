@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-VERSION = "ZEL_STRUCTURAL_PREMIUM_REGISTRY_RESTORE_V4"
+VERSION = "ZEL_STRUCTURAL_PREMIUM_REGISTRY_RESTORE_V4_CALLABLE_FIX"
 V3_PATH = Path(__file__).with_name("zel_structural_premium_registry_restore_v3.py")
 ENTRY_TARGETS = (
     "vwap_revert",
@@ -17,6 +17,7 @@ ENTRY_TARGETS = (
     "trend_rider",
 )
 FILTER_ONLY = ("market_structure",)
+SUPPORT_RESISTANCE_REGISTRY_ALIAS = "sr_levels"
 
 
 def _load_v3() -> Any:
@@ -31,6 +32,8 @@ def _load_v3() -> Any:
 
 V3 = _load_v3()
 _BASE_PATCH_ENGINES = V3.V2.patch_engines
+_BASE_HARDENED_HELPER_SOURCE = V3.hardened_helper_source
+_BASE_RESOLVE = V3.V2.resolve
 
 
 def sha256_path(path: Path) -> str:
@@ -41,16 +44,80 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def patch_engines_entry_owners_only(engine_v1: Path, engine_v2: Path, mapping: dict[str, dict[str, Any]]) -> None:
-    """Use the hardened V3 resolver but replay only the four actual entry owners.
+def hardened_helper_source_with_registry_adapters(mapping: dict[str, dict[str, Any]]) -> str:
+    """Extend V3's deterministic adapter to registry owners too.
 
-    market_structure is explicitly FILTER_ONLY in the coverage contract and must not be
-    fabricated into an entry-producing strategy merely to satisfy a strategy-count gate.
+    V3 adapted only source-discovered callables. Exact registry owners were returned raw,
+    so replay called one-positional/keyword-only strategies as (current,state,risk_action)
+    and every bar failed with TypeError. This wraps both registry and source owners onto
+    the same replay contract without touching canonical strategy files.
     """
+    text = _BASE_HARDENED_HELPER_SOURCE(mapping)
+    old = '''        if row["kind"] == "registry":
+            actual_id = row["actual_id"]
+            if actual_id not in raw_registry:
+                raise RuntimeError(f"RESTORE_ACTUAL_ID_MISSING:{logical_id}:{actual_id}")
+            restored[logical_id] = raw_registry[actual_id]
+            continue
+'''
+    new = '''        if row["kind"] == "registry":
+            actual_id = row["actual_id"]
+            if actual_id not in raw_registry:
+                raise RuntimeError(f"RESTORE_ACTUAL_ID_MISSING:{logical_id}:{actual_id}")
+            owner = raw_registry[actual_id]
+            strategy = getattr(owner, "strategy", None)
+            if not callable(strategy):
+                raise RuntimeError(f"RESTORE_REGISTRY_STRATEGY_CALLABLE_MISSING:{logical_id}:{actual_id}")
+            strategy = _adapt_strategy(strategy, logical_id)
+            restored[logical_id] = _SimpleNamespace(
+                strategy=strategy,
+                owner_path=str(getattr(owner, "owner_path", row.get("owner_path", ""))),
+                owner_sha256=str(getattr(owner, "owner_sha256", row.get("owner_sha256", ""))),
+            )
+            continue
+'''
+    if text.count(old) != 1:
+        raise RuntimeError(f"V3_REGISTRY_ADAPTER_ANCHOR:{text.count(old)}")
+    return text.replace(old, new)
+
+
+def resolve_entry_owner_mapping(source_root: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Resolve entry owners, but forbid the non-trading support_resistance_v4 evaluator.
+
+    The old heuristic selected backend/strategies_v4/support_resistance_v4.py:evaluate,
+    whose contract is candidate evaluation rather than OHLCV entry generation. The actual
+    support/resistance trading owner in the canonical 25-strategy registry is sr_levels.
+    """
+    mapping, available = _BASE_RESOLVE(source_root)
+    producer_path = source_root / "tools/q4r3_exact25_dedicated_shadow_producer.py"
+    producer = V3.V2.load_module(producer_path, "zel_structural_premium_v4_alias_producer")
+    _, registry = producer.load_registry(source_root)
+    if SUPPORT_RESISTANCE_REGISTRY_ALIAS not in registry:
+        raise RuntimeError(f"SUPPORT_RESISTANCE_ALIAS_MISSING:{SUPPORT_RESISTANCE_REGISTRY_ALIAS}")
+    owner = registry[SUPPORT_RESISTANCE_REGISTRY_ALIAS]
+    owner_path = str(getattr(owner, "owner_path", ""))
+    owner_sha = str(getattr(owner, "owner_sha256", ""))
+    if not owner_path or not owner_sha:
+        raise RuntimeError("SUPPORT_RESISTANCE_ALIAS_OWNER_METADATA_MISSING")
+    mapping["support_resistance"] = {
+        "kind": "registry",
+        "actual_id": SUPPORT_RESISTANCE_REGISTRY_ALIAS,
+        "owner_path": owner_path,
+        "owner_sha256": owner_sha,
+        "score": 20_000,
+        "resolver": {"kind": "explicit_registry_alias", "alias": SUPPORT_RESISTANCE_REGISTRY_ALIAS},
+    }
+    return mapping, available
+
+
+def patch_engines_entry_owners_only(engine_v1: Path, engine_v2: Path, mapping: dict[str, dict[str, Any]]) -> None:
+    """Replay only the four actual entry-owner contracts; market_structure stays FILTER_ONLY."""
     if set(mapping) != set(ENTRY_TARGETS):
         raise RuntimeError(f"ENTRY_OWNER_MAPPING_SET:{sorted(mapping)}")
     if any(key in mapping for key in FILTER_ONLY):
         raise RuntimeError("FILTER_ONLY_PROMOTED_TO_ENTRY_OWNER")
+    if mapping["support_resistance"].get("kind") != "registry" or mapping["support_resistance"].get("actual_id") != SUPPORT_RESISTANCE_REGISTRY_ALIAS:
+        raise RuntimeError(f"SUPPORT_RESISTANCE_MAPPING_NOT_EXPLICIT:{mapping['support_resistance']}")
 
     _BASE_PATCH_ENGINES(engine_v1, engine_v2, mapping)
     for path in (engine_v1, engine_v2):
@@ -65,13 +132,23 @@ def patch_engines_entry_owners_only(engine_v1: Path, engine_v2: Path, mapping: d
 def install_entry_owner_contract() -> None:
     V3.TARGETS = ENTRY_TARGETS
     V3.V2.TARGETS = ENTRY_TARGETS
+    V3.hardened_helper_source = hardened_helper_source_with_registry_adapters
     V3.install_hardening()
+    V3.V2.resolve = resolve_entry_owner_mapping
     V3.V2.patch_engines = patch_engines_entry_owners_only
 
 
 def self_test() -> None:
-    # First preserve every hardening check already established by V3.
+    # Preserve V3 import isolation/signature hardening, then prove the registry branch is adapted too.
     V3.self_test()
+    helper = hardened_helper_source_with_registry_adapters({
+        "vwap_revert": {"kind": "registry", "actual_id": "vwap_revert", "owner_path": "x.py", "owner_sha256": "x"},
+        "support_resistance": {"kind": "registry", "actual_id": "sr_levels", "owner_path": "y.py", "owner_sha256": "y"},
+        "liquidity_sweep": {"kind": "registry", "actual_id": "liquidity_sweep", "owner_path": "z.py", "owner_sha256": "z"},
+        "trend_rider": {"kind": "registry", "actual_id": "trend_rider", "owner_path": "t.py", "owner_sha256": "t"},
+    })
+    assert "RESTORE_REGISTRY_STRATEGY_CALLABLE_MISSING" in helper
+    assert "strategy = _adapt_strategy(strategy, logical_id)" in helper
     install_entry_owner_contract()
     assert tuple(V3.TARGETS) == ENTRY_TARGETS
     assert tuple(V3.V2.TARGETS) == ENTRY_TARGETS
@@ -84,6 +161,9 @@ def self_test() -> None:
         "entry_targets": list(ENTRY_TARGETS),
         "filter_only": list(FILTER_ONLY),
         "filter_only_replayed_as_entry_owner": False,
+        "registry_signature_adapter": True,
+        "support_resistance_actual_id": SUPPORT_RESISTANCE_REGISTRY_ALIAS,
+        "support_resistance_nontrading_evaluator_forbidden": True,
         "v3_hardening_preserved": True,
     }, sort_keys=True))
 
@@ -109,6 +189,8 @@ def main() -> int:
         raise RuntimeError(f"ENTRY_OWNER_RESOLUTION_COUNT:{sorted(mapping)}")
     if "market_structure" in mapping:
         raise RuntimeError("FILTER_ONLY_MARKET_STRUCTURE_MUST_NOT_BE_ENTRY_OWNER")
+    if mapping["support_resistance"].get("actual_id") != SUPPORT_RESISTANCE_REGISTRY_ALIAS:
+        raise RuntimeError(f"SUPPORT_RESISTANCE_ALIAS_NOT_BOUND:{mapping['support_resistance']}")
 
     V3.V2.patch_engines(args.engine_v1.resolve(), args.engine_v2.resolve(), mapping)
 
@@ -126,6 +208,9 @@ def main() -> int:
         "filter_only_count": len(FILTER_ONLY),
         "filter_only_replayed_as_entry_owner": False,
         "market_structure_entry_owner": False,
+        "registry_signature_adapter": True,
+        "support_resistance_actual_id": SUPPORT_RESISTANCE_REGISTRY_ALIAS,
+        "support_resistance_nontrading_evaluator_forbidden": True,
         "engine_v1_sha256": sha256_path(args.engine_v1),
         "engine_v2_sha256": sha256_path(args.engine_v2),
         "import_argv_isolated": True,
@@ -154,6 +239,8 @@ def main() -> int:
         "entry_owner_count": payload["entry_owner_count"],
         "filter_only": payload["filter_only"],
         "filter_only_replayed_as_entry_owner": False,
+        "registry_signature_adapter": True,
+        "support_resistance_actual_id": payload["support_resistance_actual_id"],
         "mapping": {
             key: {
                 "kind": row["kind"],

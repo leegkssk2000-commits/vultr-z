@@ -1,0 +1,309 @@
+name: ZEL Structural Premium Auto Improvement V1
+
+on:
+  workflow_run:
+    workflows: ["ZEL Structural Premium Coverage Revalidation V3"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: Successful Coverage Revalidation V3 run id
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-auto-improvement-v1
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SOURCE_ARTIFACT_ID: '8916685107'
+      REMOTE_LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gate A controller and overlay contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_structural_premium_auto_improvement_v1.py \
+            backend/tools/zel_structural_premium_overlay_patch_v1.py \
+            backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
+            backend/tools/zel_structural_premium_registry_restore_v2.py \
+            backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_structural_premium_registry_restore_v4.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py
+          python backend/tools/zel_structural_premium_auto_improvement_v1.py self-test
+          python backend/tools/zel_structural_premium_overlay_patch_v1.py --self-test
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/zel_structural_premium_incumbent_overlay_v1.json')
+          r=json.loads(p.read_text())
+          assert r['schema_version']=='zel.structural_premium.overlay.v1'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print({'state':'PASS_INCUMBENT_CONTRACT','generation':r['generation'],'candidate_id':r['candidate_id']})
+          PY
+
+      - name: Gate B acquire successful baseline artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-auto
+          mkdir -p /tmp/zel-auto/baseline /tmp/zel-auto/result
+          run_id="$EVENT_RUN_ID"
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then run_id="$INPUT_RUN_ID"; fi
+          test -n "$run_id"
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+            -o /tmp/zel-auto/artifacts.json
+          artifact_id=$(jq -r '.artifacts[] | select(.name|startswith("structural-premium-coverage-revalidation-v3-")) | .id' /tmp/zel-auto/artifacts.json | head -n1)
+          test -n "$artifact_id" && test "$artifact_id" != "null"
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            -o /tmp/zel-auto/baseline.zip
+          unzip -q /tmp/zel-auto/baseline.zip -d /tmp/zel-auto/baseline
+          test -s /tmp/zel-auto/baseline/coverage_revalidation.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-auto/baseline/coverage_revalidation.json').read_text())
+          assert r['integrity']['all_pass'] is True,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'state':r['state'],'survivor':r['survivor'],'receipt':r['receipt_sha256']})
+          PY
+          cp backend/research/zel_structural_premium_incumbent_overlay_v1.json /tmp/zel-auto/incumbent.json
+
+      - name: Gate C materialize immutable replay dataset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/zel-auto/source.zip
+          python backend/tools/zel_structural_premium_coverage_revalidation_v1.py materialize \
+            --source-zip /tmp/zel-auto/source.zip --output-root /tmp/zel-auto/data
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-auto/data/manifest.json').read_text())
+          assert r['state']=='PASS_HISTORICAL_OOS_DATA_READY'
+          assert r['total_market_rows']==960150 and len(r['files'])==15 and len(r['windows'])==3
+          assert r['duplicate_timestamp_count']==0 and r['missing_interval_count']==0
+          assert r['synthetic_rows_created']==0 and r['forward_overlap_count']==0
+          print({'state':r['state'],'rows':r['total_market_rows'],'dataset_sha256':r['dataset_sha256']})
+          PY
+
+      - name: Gate D build sealed optimizer bundle
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zel-auto/engine /tmp/zel-auto/tools
+          cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-auto/engine/replay_v1.py
+          cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-auto/engine/replay_v2.py
+          cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-auto/engine/zel_structural_premium_registry_restore_v2.py
+          cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-auto/engine/zel_structural_premium_registry_restore_v3.py
+          cp backend/tools/zel_structural_premium_registry_restore_v4.py /tmp/zel-auto/engine/zel_structural_premium_registry_restore_v4.py
+          cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-auto/evaluate.py
+          cp backend/tools/zel_structural_premium_overlay_patch_v1.py /tmp/zel-auto/tools/overlay_patch.py
+          cp backend/tools/zel_structural_premium_auto_improvement_v1.py /tmp/zel-auto/tools/auto_improvement.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/zel-auto/evaluate.py')
+          t=p.read_text()
+          old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "long_only_projection_explicit": True,')
+          old='        "five_strategies_completed": int(report_replay.get("strategy_count_completed") or -1) == 5,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "four_entry_owners_completed": int(report_replay.get("strategy_count_completed") or -1) == 4,')
+          old='            "filter_only": [f"{value}|enter_long" for value in FILTER_ONLY],'
+          assert t.count(old)==1
+          t=t.replace(old,'            "filter_only": [f"{value}|filter_only" for value in FILTER_ONLY],')
+          p.write_text(t)
+          PY
+          python -m py_compile /tmp/zel-auto/engine/*.py /tmp/zel-auto/tools/*.py /tmp/zel-auto/evaluate.py
+          python /tmp/zel-auto/tools/auto_improvement.py catalog \
+            --incumbent /tmp/zel-auto/incumbent.json \
+            --baseline /tmp/zel-auto/baseline/coverage_revalidation.json \
+            --out-dir /tmp/zel-auto/candidates
+          (
+            cd /tmp/zel-auto
+            sha256sum engine/*.py tools/*.py evaluate.py incumbent.json baseline/coverage_revalidation.json data/manifest.json > transport.sha256
+            sha256sum -c transport.sha256
+          )
+          tar -C /tmp/zel-auto -cf /tmp/zel-auto-bundle.tar data engine tools evaluate.py incumbent.json baseline candidates transport.sha256
+
+      - name: Gate E bounded automatic candidate replay and selection
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY" && test -n "$VPS_HOST" && test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          remote="/tmp/zel-structural-premium-auto-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'; mkdir -p '$remote' /opt/zel/research-runtime/locks"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/zel-auto-bundle.tar "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
+          timeout 21300s ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$VPS_USER@$VPS_HOST" "REMOTE='$remote' LOCK='$REMOTE_LOCK' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$REMOTE"
+          tar -xf bundle.tar
+          sha256sum -c transport.sha256
+          mkdir -p aggregate
+          exec 9>"$LOCK"
+          flock -w 18000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }
+          shopt -s nullglob
+          for candidate_json in candidates/G*.json; do
+            candidate_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["candidate_id"])' "$candidate_json")
+            out="candidates/$candidate_id"
+            mkdir -p "$out/engine" "$out/output"
+            cp engine/replay_v1.py "$out/engine/replay_v1.py"
+            cp engine/replay_v2.py "$out/engine/replay_v2.py"
+            set +e
+            /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
+              --source-root /opt/zel/forward-expansion-v1/source \
+              --engine-v1 "$out/engine/replay_v1.py" --engine-v2 "$out/engine/replay_v2.py" \
+              --output "$out/registry_restore.json"
+            restore_rc=$?
+            if [ "$restore_rc" -eq 0 ]; then
+              /home/z/z/.venv/bin/python tools/overlay_patch.py \
+                --engine-v1 "$out/engine/replay_v1.py" --candidate-json "$candidate_json" \
+                --receipt "$out/overlay_patch_receipt.json"
+              patch_rc=$?
+            else
+              patch_rc=99
+            fi
+            if [ "$restore_rc" -eq 0 ] && [ "$patch_rc" -eq 0 ]; then
+              GITHUB_RUN_ID="${GITHUB_RUN_ID:-auto}" /home/z/z/.venv/bin/python "$out/engine/replay_v2.py" \
+                --engine-v1 "$out/engine/replay_v1.py" \
+                --source-root /opt/zel/forward-expansion-v1/source \
+                --data-root data --interval 1m --output-dir "$out/output" --workers 4 --no-resume
+              replay_rc=$?
+            else
+              replay_rc=98
+            fi
+            eval_rc=97
+            if [ -s "$out/output/report.json" ] && [ -s "$out/output/trades.jsonl.gz" ]; then
+              /home/z/z/.venv/bin/python evaluate.py evaluate \
+                --report "$out/output/report.json" --ledger "$out/output/trades.jsonl.gz" \
+                --dataset-manifest data/manifest.json --output "$out/coverage_revalidation.json"
+              eval_rc=$?
+            fi
+            if [ ! -s "$out/coverage_revalidation.json" ]; then
+              python - "$out/failure.json" "$restore_rc" "$patch_rc" "$replay_rc" "$eval_rc" <<'PY'
+          import json,sys
+          p,restore_rc,patch_rc,replay_rc,eval_rc=sys.argv[1:]
+          json.dump({"state":"CANDIDATE_REJECTED_INFRA_OR_REPLAY_FAILURE","restore_rc":int(restore_rc),"patch_rc":int(patch_rc),"replay_rc":int(replay_rc),"evaluate_rc":int(eval_rc)},open(p,'w'),indent=2,sort_keys=True)
+          PY
+            fi
+            rm -f "$out/output/trades.jsonl.gz"
+            set -e
+          done
+          /home/z/z/.venv/bin/python tools/auto_improvement.py select \
+            --incumbent incumbent.json --baseline baseline/coverage_revalidation.json \
+            --candidates-dir candidates --output aggregate/selection.json
+          cp candidates/catalog.json aggregate/catalog.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('aggregate/selection.json').read_text())
+          Path('aggregate/status.json').write_text(json.dumps({
+              'state':s['state'],'accepted':s['accepted'],
+              'winner':None if s['winner'] is None else s['winner']['candidate_id'],
+              'baseline_score':s['baseline_metrics']['score'],
+              'winner_score':None if s['winner'] is None else s['winner']['metrics']['score'],
+              'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+          REMOTE_SCRIPT
+          scp -i ~/.ssh/vps_key -o BatchMode=yes -r "$VPS_USER@$VPS_HOST:$remote/aggregate" /tmp/zel-auto/result/
+          scp -i ~/.ssh/vps_key -o BatchMode=yes -r "$VPS_USER@$VPS_HOST:$remote/candidates" /tmp/zel-auto/result/
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+
+      - name: Gate F persist accepted research incumbent only
+        run: |
+          set -euo pipefail
+          selection=/tmp/zel-auto/result/aggregate/selection.json
+          test -s "$selection"
+          accepted=$(jq -r '.accepted' "$selection")
+          if [ "$accepted" != "true" ]; then
+            echo "AUTO_IMPROVEMENT_PLATEAU_NO_COMMIT"
+            exit 0
+          fi
+          mkdir -p /tmp/zel-auto/new
+          jq '.new_incumbent' "$selection" > /tmp/zel-auto/new/incumbent.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-auto/new/incumbent.json').read_text())
+          assert r['schema_version']=='zel.structural_premium.overlay.v1'
+          assert r['research_only'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print({'state':'PASS_NEW_INCUMBENT','candidate_id':r['candidate_id'],'generation':r['generation']})
+          PY
+          git config user.name "zel-research-bot"
+          git config user.email "zel-research-bot@users.noreply.github.com"
+          git fetch origin master
+          git checkout master
+          git pull --ff-only origin master
+          cp /tmp/zel-auto/new/incumbent.json backend/research/zel_structural_premium_incumbent_overlay_v1.json
+          git add backend/research/zel_structural_premium_incumbent_overlay_v1.json
+          if git diff --cached --quiet; then
+            echo "AUTO_IMPROVEMENT_NO_CHANGE"
+            exit 0
+          fi
+          candidate_id=$(jq -r '.candidate_id' /tmp/zel-auto/new/incumbent.json)
+          generation=$(jq -r '.generation' /tmp/zel-auto/new/incumbent.json)
+          git commit -m "research: auto improve structural premium ${candidate_id} generation ${generation}"
+          git push origin master
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key /tmp/zel-auto-bundle.tar
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-auto-improvement-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-auto/result
+          if-no-files-found: warn
+          retention-days: 90

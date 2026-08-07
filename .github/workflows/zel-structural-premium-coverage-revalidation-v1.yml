@@ -33,11 +33,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Validate coverage tool
+      - name: Validate coverage and registry restoration tools
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_structural_premium_coverage_revalidation_v1.py
+          python -m py_compile \
+            backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
+            backend/tools/zel_structural_premium_registry_restore_v1.py
           python backend/tools/zel_structural_premium_coverage_revalidation_v1.py self-test
+          python backend/tools/zel_structural_premium_registry_restore_v1.py --self-test
 
       - name: Download accepted expanded 1m artifact
         env:
@@ -75,46 +78,27 @@ jobs:
           print({'state':row['state'],'rows':row['total_market_rows'],'dataset_sha256':row['dataset_sha256']})
           PY
 
-      - name: Build isolated five-strategy exact replay engines
+      - name: Build isolated exact replay bundle
         run: |
           set -euo pipefail
           mkdir -p /tmp/zel-sp-coverage/engine
           cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-sp-coverage/engine/replay_v1.py
           cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-coverage/engine/replay_v2.py
           cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-coverage/evaluate.py
+          cp backend/tools/zel_structural_premium_registry_restore_v1.py /tmp/zel-sp-coverage/restore.py
           python - <<'PY'
           from pathlib import Path
-          strategies="('vwap_revert', 'support_resistance', 'liquidity_sweep', 'trend_rider', 'market_structure')"
-          p1=Path('/tmp/zel-sp-coverage/engine/replay_v1.py')
-          t=p1.read_text()
-          assert t.count('EXPECTED_STRATEGY_COUNT = 25')==1
-          assert t.count('EXPECTED_DATA_ROWS = 302_400')==1
-          t=t.replace('EXPECTED_STRATEGY_COUNT = 25','EXPECTED_STRATEGY_COUNT = 5')
-          t=t.replace('EXPECTED_DATA_ROWS = 302_400','EXPECTED_DATA_ROWS = 960_150')
-          old='    _, _WORKER_REGISTRY = _WORKER_PRODUCER.load_registry(_WORKER_SOURCE_ROOT)\n    if len(_WORKER_REGISTRY) != EXPECTED_STRATEGY_COUNT:'
-          new=f'    _, _WORKER_REGISTRY = _WORKER_PRODUCER.load_registry(_WORKER_SOURCE_ROOT)\n    _WORKER_REGISTRY = {{key: value for key, value in _WORKER_REGISTRY.items() if key in {strategies}}}\n    if len(_WORKER_REGISTRY) != EXPECTED_STRATEGY_COUNT:'
-          assert old in t
-          p1.write_text(t.replace(old,new))
-
-          p2=Path('/tmp/zel-sp-coverage/engine/replay_v2.py')
-          t=p2.read_text()
-          assert t.count('EXPECTED_STRATEGY_COUNT = 25')==1
-          t=t.replace('EXPECTED_STRATEGY_COUNT = 25','EXPECTED_STRATEGY_COUNT = 5')
-          old='    _, registry = producer.load_registry(source_root)\n    if len(registry) != EXPECTED_STRATEGY_COUNT:'
-          new=f'    _, registry = producer.load_registry(source_root)\n    registry = {{key: value for key, value in registry.items() if key in {strategies}}}\n    if len(registry) != EXPECTED_STRATEGY_COUNT:'
-          assert old in t
-          p2.write_text(t.replace(old,new))
-
           evaluator=Path('/tmp/zel-sp-coverage/evaluate.py')
-          t=evaluator.read_text()
+          text=evaluator.read_text()
           old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
-          assert old in t
-          evaluator.write_text(t.replace(old,'        "long_only_projection_explicit": True,'))
+          assert text.count(old)==1
+          evaluator.write_text(text.replace(old,'        "long_only_projection_explicit": True,'))
           PY
           python -m py_compile \
             /tmp/zel-sp-coverage/engine/replay_v1.py \
             /tmp/zel-sp-coverage/engine/replay_v2.py \
-            /tmp/zel-sp-coverage/evaluate.py
+            /tmp/zel-sp-coverage/evaluate.py \
+            /tmp/zel-sp-coverage/restore.py
 
       - name: Prepare read-only VPS transport
         env:
@@ -130,9 +114,9 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          tar -C /tmp/zel-sp-coverage -cf /tmp/zel-sp-coverage-bundle.tar data engine evaluate.py
+          tar -C /tmp/zel-sp-coverage -cf /tmp/zel-sp-coverage-bundle.tar data engine evaluate.py restore.py
 
-      - name: Run exact five-strategy expanded replay and frozen W1 to W3 revalidation
+      - name: Restore five-strategy registry coverage and rerun exact W1 to W3 replay
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -143,11 +127,19 @@ jobs:
             "mkdir -p '$remote' /opt/zel/research-runtime/locks"
           scp -i ~/.ssh/vps_key -o BatchMode=yes \
             /tmp/zel-sp-coverage-bundle.tar "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
+
+          set +e
           timeout 21300s ssh -i ~/.ssh/vps_key -o BatchMode=yes \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
             "$VPS_USER@$VPS_HOST" \
             "set -euo pipefail; cd '$remote'; tar -xf bundle.tar; mkdir -p output aggregate; \
              exec 9>'$REMOTE_LOCK'; flock -w 18000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
+             /home/z/z/.venv/bin/python restore.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --engine-v1 engine/replay_v1.py \
+               --engine-v2 engine/replay_v2.py \
+               --output aggregate/registry_restore.json; \
+             /home/z/z/.venv/bin/python -m py_compile engine/replay_v1.py engine/replay_v2.py; \
              GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/replay_v2.py \
                --engine-v1 engine/replay_v1.py \
                --source-root /opt/zel/forward-expansion-v1/source \
@@ -164,16 +156,16 @@ jobs:
              cp output/summary.json aggregate/exact_replay_summary.json; \
              cp data/manifest.json aggregate/expanded_dataset_manifest.json; \
              rm -f output/trades.jsonl.gz; test ! -e output/trades.jsonl.gz"
-          scp -i ~/.ssh/vps_key -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$remote/aggregate/coverage_revalidation.json" \
-            /tmp/zel-sp-coverage/result/coverage_revalidation.json
-          scp -i ~/.ssh/vps_key -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$remote/aggregate/exact_replay_summary.json" \
-            /tmp/zel-sp-coverage/result/exact_replay_summary.json
-          scp -i ~/.ssh/vps_key -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST:$remote/aggregate/expanded_dataset_manifest.json" \
-            /tmp/zel-sp-coverage/result/expanded_dataset_manifest.json
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          remote_rc=$?
+          set -e
+
+          for name in registry_restore.json coverage_revalidation.json exact_replay_summary.json expanded_dataset_manifest.json; do
+            scp -i ~/.ssh/vps_key -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$remote/aggregate/$name" \
+              "/tmp/zel-sp-coverage/result/$name" || true
+          done
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          exit "$remote_rc"
 
       - name: Verify terminal aggregate receipt
         run: |
@@ -181,6 +173,15 @@ jobs:
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
+          restore=json.loads(Path('/tmp/zel-sp-coverage/result/registry_restore.json').read_text())
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED',restore
+          assert restore['restored_count']==5,restore
+          assert sorted(restore['targets'])==sorted([
+              'vwap_revert','support_resistance','liquidity_sweep','trend_rider','market_structure'
+          ]),restore
+          assert restore['canonical_source_mutations']==0,restore
+          assert restore['isolated_replay_patch_only'] is True,restore
+
           p=Path('/tmp/zel-sp-coverage/result/coverage_revalidation.json')
           row=json.loads(p.read_text())
           expected=row['receipt_sha256']
@@ -196,6 +197,7 @@ jobs:
           assert row['selection_authority'] is False and row['promotion_authority'] is False,row
           assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
           print(json.dumps({
+              'restore_mapping':restore['mapping'],
               'state':row['state'],
               'coverage_restored':row['coverage']['coverage_restored'],
               'selected_configuration':row['selection']['selected_configuration'],
@@ -219,5 +221,5 @@ jobs:
         with:
           name: structural-premium-coverage-revalidation-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/zel-sp-coverage/result
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90

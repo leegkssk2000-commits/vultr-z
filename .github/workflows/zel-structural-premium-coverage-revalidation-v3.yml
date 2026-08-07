@@ -1,0 +1,242 @@
+name: ZEL Structural Premium Coverage Revalidation V3
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_coverage_revalidation_trigger_v3.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-coverage-revalidation-v3
+  cancel-in-progress: true
+
+jobs:
+  sealed-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SOURCE_ARTIFACT_ID: '8916685107'
+      REMOTE_LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gate 1 canonical source contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
+            backend/tools/zel_structural_premium_registry_restore_v2.py \
+            backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py
+          python backend/tools/zel_structural_premium_coverage_revalidation_v1.py self-test
+          python backend/tools/zel_structural_premium_registry_restore_v3.py --self-test
+          python backend/tools/zel_structural_premium_registry_restore_v3.py --help | grep -F -- '--source-root'
+          grep -F 'with_name("zel_structural_premium_registry_restore_v2.py")' backend/tools/zel_structural_premium_registry_restore_v3.py
+
+      - name: Gate 2 immutable dataset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-sp-v3 /tmp/zel-sp-v3-preflight /tmp/zel-sp-v3-bundle.tar
+          mkdir -p /tmp/zel-sp-v3
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/zel-sp-v3/source.zip
+          test -s /tmp/zel-sp-v3/source.zip
+          python backend/tools/zel_structural_premium_coverage_revalidation_v1.py materialize \
+            --source-zip /tmp/zel-sp-v3/source.zip \
+            --output-root /tmp/zel-sp-v3/data
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-sp-v3/data/manifest.json').read_text())
+          assert r['state']=='PASS_HISTORICAL_OOS_DATA_READY',r
+          assert r['total_market_rows']==960150,r
+          assert len(r['files'])==15 and len(r['windows'])==3,r
+          assert r['duplicate_timestamp_count']==0 and r['missing_interval_count']==0,r
+          assert r['synthetic_rows_created']==0 and r['forward_overlap_count']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'state':r['state'],'rows':r['total_market_rows'],'dataset_sha256':r['dataset_sha256']})
+          PY
+
+      - name: Gate 3 canonical bundle plus local extracted preflight
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zel-sp-v3/engine /tmp/zel-sp-v3/result
+          cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-sp-v3/engine/replay_v1.py
+          cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-v3/engine/replay_v2.py
+          cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-v3/evaluate.py
+          cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v2.py
+          cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v3.py
+          test ! -e /tmp/zel-sp-v3/engine/zel_sp_registry_restore_v2.py
+          test ! -e /tmp/zel-sp-v3/engine/zel_sp_registry_restore_v3.py
+
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/zel-sp-v3/evaluate.py')
+          t=p.read_text()
+          old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
+          assert t.count(old)==1
+          p.write_text(t.replace(old,'        "long_only_projection_explicit": True,'))
+          PY
+
+          python -m py_compile /tmp/zel-sp-v3/engine/*.py /tmp/zel-sp-v3/evaluate.py
+          python /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v3.py --self-test
+          (
+            cd /tmp/zel-sp-v3
+            sha256sum \
+              engine/zel_structural_premium_registry_restore_v2.py \
+              engine/zel_structural_premium_registry_restore_v3.py \
+              engine/replay_v1.py engine/replay_v2.py evaluate.py > transport.sha256
+            sha256sum -c transport.sha256
+          )
+          tar -C /tmp/zel-sp-v3 -cf /tmp/zel-sp-v3-bundle.tar data engine evaluate.py transport.sha256
+
+          mkdir -p /tmp/zel-sp-v3-preflight
+          tar -C /tmp/zel-sp-v3-preflight -xf /tmp/zel-sp-v3-bundle.tar
+          (
+            cd /tmp/zel-sp-v3-preflight
+            sha256sum -c transport.sha256
+            test -f engine/zel_structural_premium_registry_restore_v2.py
+            test -f engine/zel_structural_premium_registry_restore_v3.py
+            test ! -e engine/zel_sp_registry_restore_v2.py
+            test ! -e engine/zel_sp_registry_restore_v3.py
+            python engine/zel_structural_premium_registry_restore_v3.py --self-test
+            python engine/zel_structural_premium_registry_restore_v3.py --help | grep -F -- '--source-root'
+          )
+          rm -rf /tmp/zel-sp-v3-preflight
+
+      - name: Gate 4 prepare read-only VPS transport
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY" && test -n "$VPS_HOST" && test -n "$VPS_USER"
+          test -s /tmp/zel-sp-v3-bundle.tar
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Gate 5 exact VPS restore preflight then one full W1 W2 W3 replay
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-structural-premium-v3-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "rm -rf '$remote'; mkdir -p '$remote' /opt/zel/research-runtime/locks"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/zel-sp-v3-bundle.tar \
+            "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
+
+          set +e
+          timeout 21300s ssh -i ~/.ssh/vps_key -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; cd '$remote'; \
+             tar -xf bundle.tar; mkdir -p output aggregate preflight; \
+             sha256sum -c transport.sha256; \
+             test -f engine/zel_structural_premium_registry_restore_v2.py; \
+             test -f engine/zel_structural_premium_registry_restore_v3.py; \
+             test ! -e engine/zel_sp_registry_restore_v2.py; \
+             test ! -e engine/zel_sp_registry_restore_v3.py; \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py --self-test; \
+             cp engine/replay_v1.py preflight/replay_v1.py; cp engine/replay_v2.py preflight/replay_v2.py; \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --engine-v1 preflight/replay_v1.py --engine-v2 preflight/replay_v2.py \
+               --output preflight/registry_restore.json; \
+             test -s preflight/registry_restore.json; \
+             grep -F '\"state\": \"PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED\"' preflight/registry_restore.json; \
+             grep -F '\"restored_count\": 5' preflight/registry_restore.json; \
+             grep -F '\"import_argv_isolated\": true' preflight/registry_restore.json; \
+             /home/z/z/.venv/bin/python -m py_compile preflight/replay_v1.py preflight/replay_v2.py; \
+             exec 9>'$REMOTE_LOCK'; flock -w 18000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+               --output aggregate/registry_restore.json; \
+             test -s aggregate/registry_restore.json; \
+             /home/z/z/.venv/bin/python -m py_compile engine/replay_v1.py engine/replay_v2.py; \
+             GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/replay_v2.py \
+               --engine-v1 engine/replay_v1.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --data-root data --interval 1m --output-dir output --workers 4 --no-resume; \
+             test -s output/report.json; test -s output/trades.jsonl.gz; \
+             /home/z/z/.venv/bin/python evaluate.py evaluate \
+               --report output/report.json --ledger output/trades.jsonl.gz \
+               --dataset-manifest data/manifest.json --output aggregate/coverage_revalidation.json; \
+             test -s aggregate/coverage_revalidation.json; \
+             cp output/summary.json aggregate/exact_replay_summary.json; \
+             cp data/manifest.json aggregate/expanded_dataset_manifest.json; \
+             cp preflight/registry_restore.json aggregate/vps_restore_preflight.json; \
+             rm -f output/trades.jsonl.gz"
+          remote_rc=$?
+          set -e
+
+          for name in registry_restore.json coverage_revalidation.json exact_replay_summary.json expanded_dataset_manifest.json vps_restore_preflight.json; do
+            scp -i ~/.ssh/vps_key -o BatchMode=yes \
+              "$VPS_USER@$VPS_HOST:$remote/aggregate/$name" "/tmp/zel-sp-v3/result/$name" || true
+          done
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          exit "$remote_rc"
+
+      - name: Gate 6 verify terminal receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/zel-sp-v3/result')
+          pre=json.loads((root/'vps_restore_preflight.json').read_text())
+          assert pre['state']=='PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED' and pre['restored_count']==5,pre
+          restore=json.loads((root/'registry_restore.json').read_text())
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED',restore
+          assert restore['schema_version']=='zel.structural_premium.registry_restore.v3',restore
+          assert restore['restored_count']==5,restore
+          assert restore['import_argv_isolated'] and restore['import_env_isolated'] and restore['import_cwd_isolated'],restore
+          assert restore['canonical_source_mutations']==0 and restore['isolated_replay_patch_only'] is True,restore
+          row=json.loads((root/'coverage_revalidation.json').read_text())
+          expected=row['receipt_sha256']
+          actual=hashlib.sha256(json.dumps({k:v for k,v in row.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['state'] in {'PASS_STRUCTURAL_PREMIUM_COVERAGE_SURVIVOR','PASS_STRUCTURAL_PREMIUM_COVERAGE_REVALIDATED_NO_SURVIVOR'},row
+          assert row['integrity']['all_pass'] is True,row
+          assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print(json.dumps({'state':row['state'],'restore_mapping':restore['mapping'],'coverage_restored':row['coverage']['coverage_restored'],'selected_configuration':row['selection']['selected_configuration'],'W1':row['selected']['windows']['W1'],'W2':row['selected']['windows']['W2'],'W3':row['selected']['windows']['W3'],'survivor':row['survivor'],'blockers':row['blockers'],'receipt_sha256':row['receipt_sha256']},sort_keys=True))
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key /tmp/zel-sp-v3-bundle.tar
+          rm -rf /tmp/zel-sp-v3 /tmp/zel-sp-v3-preflight
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-coverage-revalidation-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-sp-v3/result
+          if-no-files-found: warn
+          retention-days: 90

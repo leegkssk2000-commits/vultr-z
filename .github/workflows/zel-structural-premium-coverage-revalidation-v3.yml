@@ -39,12 +39,15 @@ jobs:
             backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
             backend/tools/zel_structural_premium_registry_restore_v2.py \
             backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_structural_premium_registry_restore_v4.py \
             backend/tools/zel_historical_oos_exact25_replay_v1.py \
             backend/tools/zel_historical_oos_exact25_replay_v2.py
           python backend/tools/zel_structural_premium_coverage_revalidation_v1.py self-test
           python backend/tools/zel_structural_premium_registry_restore_v3.py --self-test
-          python backend/tools/zel_structural_premium_registry_restore_v3.py --help | grep -F -- '--source-root'
-          grep -F 'with_name("zel_structural_premium_registry_restore_v2.py")' backend/tools/zel_structural_premium_registry_restore_v3.py
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --self-test
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --help | grep -F -- '--source-root'
+          grep -F 'FILTER_ONLY = ("market_structure",)' backend/tools/zel_structural_premium_registry_restore_v4.py
+          grep -F 'filter_only_replayed_as_entry_owner": False' backend/tools/zel_structural_premium_registry_restore_v4.py
 
       - name: Gate 2 immutable dataset
         env:
@@ -85,6 +88,7 @@ jobs:
           cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-v3/evaluate.py
           cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v2.py
           cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v3.py
+          cp backend/tools/zel_structural_premium_registry_restore_v4.py /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v4.py
           test ! -e /tmp/zel-sp-v3/engine/zel_sp_registry_restore_v2.py
           test ! -e /tmp/zel-sp-v3/engine/zel_sp_registry_restore_v3.py
 
@@ -94,16 +98,24 @@ jobs:
           t=p.read_text()
           old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
           assert t.count(old)==1
-          p.write_text(t.replace(old,'        "long_only_projection_explicit": True,'))
+          t=t.replace(old,'        "long_only_projection_explicit": True,')
+          old='        "five_strategies_completed": int(report_replay.get("strategy_count_completed") or -1) == 5,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "four_entry_owners_completed": int(report_replay.get("strategy_count_completed") or -1) == 4,')
+          old='            "filter_only": [f"{value}|enter_long" for value in FILTER_ONLY],'
+          assert t.count(old)==1
+          t=t.replace(old,'            "filter_only": [f"{value}|filter_only" for value in FILTER_ONLY],')
+          p.write_text(t)
           PY
 
           python -m py_compile /tmp/zel-sp-v3/engine/*.py /tmp/zel-sp-v3/evaluate.py
-          python /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v3.py --self-test
+          python /tmp/zel-sp-v3/engine/zel_structural_premium_registry_restore_v4.py --self-test
           (
             cd /tmp/zel-sp-v3
             sha256sum \
               engine/zel_structural_premium_registry_restore_v2.py \
               engine/zel_structural_premium_registry_restore_v3.py \
+              engine/zel_structural_premium_registry_restore_v4.py \
               engine/replay_v1.py engine/replay_v2.py evaluate.py > transport.sha256
             sha256sum -c transport.sha256
           )
@@ -116,10 +128,11 @@ jobs:
             sha256sum -c transport.sha256
             test -f engine/zel_structural_premium_registry_restore_v2.py
             test -f engine/zel_structural_premium_registry_restore_v3.py
+            test -f engine/zel_structural_premium_registry_restore_v4.py
             test ! -e engine/zel_sp_registry_restore_v2.py
             test ! -e engine/zel_sp_registry_restore_v3.py
-            python engine/zel_structural_premium_registry_restore_v3.py --self-test
-            python engine/zel_structural_premium_registry_restore_v3.py --help | grep -F -- '--source-root'
+            python engine/zel_structural_premium_registry_restore_v4.py --self-test
+            python engine/zel_structural_premium_registry_restore_v4.py --help | grep -F -- '--source-root'
           )
           rm -rf /tmp/zel-sp-v3-preflight
 
@@ -158,21 +171,21 @@ jobs:
              sha256sum -c transport.sha256; \
              test -f engine/zel_structural_premium_registry_restore_v2.py; \
              test -f engine/zel_structural_premium_registry_restore_v3.py; \
-             test ! -e engine/zel_sp_registry_restore_v2.py; \
-             test ! -e engine/zel_sp_registry_restore_v3.py; \
-             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py --self-test; \
+             test -f engine/zel_structural_premium_registry_restore_v4.py; \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py --self-test; \
              cp engine/replay_v1.py preflight/replay_v1.py; cp engine/replay_v2.py preflight/replay_v2.py; \
-             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
                --source-root /opt/zel/forward-expansion-v1/source \
                --engine-v1 preflight/replay_v1.py --engine-v2 preflight/replay_v2.py \
                --output preflight/registry_restore.json; \
              test -s preflight/registry_restore.json; \
-             grep -F '\"state\": \"PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED\"' preflight/registry_restore.json; \
-             grep -F '\"restored_count\": 5' preflight/registry_restore.json; \
-             grep -F '\"import_argv_isolated\": true' preflight/registry_restore.json; \
+             grep -F '\"state\": \"PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED\"' preflight/registry_restore.json; \
+             grep -F '\"restored_count\": 4' preflight/registry_restore.json; \
+             grep -F '\"filter_only_replayed_as_entry_owner\": false' preflight/registry_restore.json; \
+             grep -F '\"market_structure_entry_owner\": false' preflight/registry_restore.json; \
              /home/z/z/.venv/bin/python -m py_compile preflight/replay_v1.py preflight/replay_v2.py; \
              exec 9>'$REMOTE_LOCK'; flock -w 18000 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
-             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v3.py \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
                --source-root /opt/zel/forward-expansion-v1/source \
                --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
                --output aggregate/registry_restore.json; \
@@ -209,11 +222,14 @@ jobs:
           from pathlib import Path
           root=Path('/tmp/zel-sp-v3/result')
           pre=json.loads((root/'vps_restore_preflight.json').read_text())
-          assert pre['state']=='PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED' and pre['restored_count']==5,pre
+          assert pre['state']=='PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED',pre
+          assert pre['restored_count']==4 and pre['entry_owner_count']==4,pre
+          assert pre['filter_only']==['market_structure'] and pre['filter_only_replayed_as_entry_owner'] is False,pre
           restore=json.loads((root/'registry_restore.json').read_text())
-          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_REGISTRY_COVERAGE_RESTORED',restore
-          assert restore['schema_version']=='zel.structural_premium.registry_restore.v3',restore
-          assert restore['restored_count']==5,restore
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED',restore
+          assert restore['schema_version']=='zel.structural_premium.registry_restore.v4',restore
+          assert restore['restored_count']==4 and restore['entry_owner_count']==4,restore
+          assert restore['market_structure_entry_owner'] is False and restore['filter_only_replayed_as_entry_owner'] is False,restore
           assert restore['import_argv_isolated'] and restore['import_env_isolated'] and restore['import_cwd_isolated'],restore
           assert restore['canonical_source_mutations']==0 and restore['isolated_replay_patch_only'] is True,restore
           row=json.loads((root/'coverage_revalidation.json').read_text())
@@ -222,9 +238,10 @@ jobs:
           assert actual==expected,(actual,expected)
           assert row['state'] in {'PASS_STRUCTURAL_PREMIUM_COVERAGE_SURVIVOR','PASS_STRUCTURAL_PREMIUM_COVERAGE_REVALIDATED_NO_SURVIVOR'},row
           assert row['integrity']['all_pass'] is True,row
+          assert row['contract']['market_structure_entry_owner'] is False,row
           assert row['selection_authority'] is False and row['promotion_authority'] is False,row
           assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
-          print(json.dumps({'state':row['state'],'restore_mapping':restore['mapping'],'coverage_restored':row['coverage']['coverage_restored'],'selected_configuration':row['selection']['selected_configuration'],'W1':row['selected']['windows']['W1'],'W2':row['selected']['windows']['W2'],'W3':row['selected']['windows']['W3'],'survivor':row['survivor'],'blockers':row['blockers'],'receipt_sha256':row['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'state':row['state'],'restore_mapping':restore['mapping'],'filter_only':restore['filter_only'],'coverage_restored':row['coverage']['coverage_restored'],'selected_configuration':row['selection']['selected_configuration'],'W1':row['selected']['windows']['W1'],'W2':row['selected']['windows']['W2'],'W3':row['selected']['windows']['W3'],'survivor':row['survivor'],'blockers':row['blockers'],'receipt_sha256':row['receipt_sha256']},sort_keys=True))
           PY
 
       - name: Cleanup

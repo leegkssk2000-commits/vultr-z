@@ -1,0 +1,111 @@
+name: ZEL Structural Premium Callable Smoke V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_callable_smoke_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Local compile and restore self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_structural_premium_registry_restore_v2.py \
+            backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_structural_premium_registry_restore_v4.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --self-test
+
+      - name: Prepare SSH bundle
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh /tmp/zel-sp-smoke/engine
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-smoke/engine/
+          cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-sp-smoke/engine/
+          cp backend/tools/zel_structural_premium_registry_restore_v4.py /tmp/zel-sp-smoke/engine/
+          cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-sp-smoke/engine/replay_v1.py
+          cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-smoke/engine/replay_v2.py
+          tar -C /tmp/zel-sp-smoke -cf /tmp/zel-sp-smoke.tar engine
+
+      - name: Exact four-owner callable smoke on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-sp-callable-smoke-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'; mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/zel-sp-smoke.tar "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "REMOTE='$remote' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$REMOTE"
+          tar -xf bundle.tar
+          /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+            --output restore.json
+          /home/z/z/.venv/bin/python - <<'PY'
+          import importlib.util, json, math, sys
+          from pathlib import Path
+          import pandas as pd
+
+          engine_path=Path('engine/replay_v1.py').resolve()
+          spec=importlib.util.spec_from_file_location('zel_sp_smoke_engine',engine_path)
+          engine=importlib.util.module_from_spec(spec); sys.modules[spec.name]=engine; spec.loader.exec_module(engine)
+          source_root=Path('/opt/zel/forward-expansion-v1/source')
+          producer=engine.import_producer(source_root)
+          _, raw=producer.load_registry(source_root)
+          registry=engine._restore_structural_premium_registry(source_root,raw)
+          assert sorted(registry)==sorted(['vwap_revert','support_resistance','liquidity_sweep','trend_rider']),sorted(registry)
+
+          n=400
+          rows=[]
+          px=100.0
+          for i in range(n):
+              drift=0.015*math.sin(i/17.0)+0.01
+              o=px; c=max(1.0,o*(1+drift/100.0)); h=max(o,c)*1.002; l=min(o,c)*0.998
+              rows.append({'open':o,'high':h,'low':l,'close':c,'volume':1000.0+(i%25)*10.0})
+              px=c
+          df=pd.DataFrame(rows)
+          results={}
+          for sid,owner in registry.items():
+              value=owner.strategy(df,{},'hold')
+              assert isinstance(value,dict),(sid,type(value),value)
+              results[sid]={
+                  'action':value.get('action'),
+                  'side':value.get('side'),
+                  'confidence':value.get('confidence'),
+                  'keys':sorted(value.keys()),
+              }
+          print(json.dumps({'state':'PASS_FOUR_OWNER_CALLABLE_SMOKE','results':results,'execution_authority':'NONE','order_authority':'BLOCKED'},sort_keys=True))
+          PY
+          REMOTE
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key /tmp/zel-sp-smoke.tar
+          rm -rf /tmp/zel-sp-smoke

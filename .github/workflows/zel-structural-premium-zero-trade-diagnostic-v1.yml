@@ -1,0 +1,166 @@
+name: ZEL Structural Premium Zero Trade Diagnostic V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_zero_trade_diagnostic_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-structural-premium-zero-trade-diagnostic-v1
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REMOTE_OUTPUT: /opt/zel/research-runtime/checkpoints/structural-premium-v3/output
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY" && test -n "$VPS_HOST" && test -n "$VPS_USER"
+          mkdir -p ~/.ssh /tmp/zel-sp-zero-trade-diag
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read-only diagnose persistent replay output
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "REMOTE_OUTPUT='$REMOTE_OUTPUT' bash -s" <<'REMOTE' > /tmp/zel-sp-zero-trade-diag/diagnostic.json
+          set -euo pipefail
+          /home/z/z/.venv/bin/python - <<'PY'
+          import gzip, json, os
+          from pathlib import Path
+
+          root = Path(os.environ['REMOTE_OUTPUT'])
+          report_path = root / 'report.json'
+          progress_path = root / 'progress.json'
+          summary_path = root / 'summary.json'
+          if not report_path.is_file():
+              raise SystemExit(f'REPORT_MISSING:{report_path}')
+
+          report = json.loads(report_path.read_text())
+          progress = json.loads(progress_path.read_text()) if progress_path.is_file() else None
+          summary = json.loads(summary_path.read_text()) if summary_path.is_file() else None
+          replay = report.get('replay') or {}
+          scorecards = report.get('scorecards') or []
+
+          rows = []
+          for card in scorecards:
+              rows.append({
+                  'strategy_id': card.get('strategy_id'),
+                  'strategy_call_count': int(card.get('strategy_call_count') or 0),
+                  'signal_count': int(card.get('signal_count') or 0),
+                  'valid_entry_count': int(card.get('valid_entry_count') or 0),
+                  'open_count': int(card.get('open_count') or 0),
+                  'censored_open_at_window_end': int(card.get('censored_open_at_window_end') or 0),
+                  'error_count': int(card.get('error_count') or 0),
+                  'sample_count': int((card.get('closed_metrics_ex_funding') or {}).get('sample_count') or 0),
+                  'expectancy_R': (card.get('closed_metrics_ex_funding') or {}).get('expectancy_R'),
+                  'failure_fingerprint': card.get('failure_fingerprint'),
+                  'claim_tier': card.get('claim_tier'),
+              })
+
+          calls = sum(r['strategy_call_count'] for r in rows)
+          signals = sum(r['signal_count'] for r in rows)
+          valid = sum(r['valid_entry_count'] for r in rows)
+          opens = sum(r['open_count'] for r in rows)
+          closed = int(replay.get('closed_trade_count') or 0)
+          errors = sum(r['error_count'] for r in rows)
+
+          if calls == 0:
+              bottleneck = 'STRATEGY_NOT_CALLED'
+          elif signals == 0:
+              bottleneck = 'STRATEGY_CALLED_BUT_ZERO_SIGNALS'
+          elif valid == 0:
+              bottleneck = 'SIGNAL_TO_VALID_ENTRY_NORMALIZATION'
+          elif opens == 0:
+              bottleneck = 'VALID_ENTRY_TO_OPEN'
+          elif closed == 0:
+              bottleneck = 'OPEN_TO_CLOSE_OR_LEDGER'
+          else:
+              bottleneck = 'NO_ZERO_TRADE_BOTTLENECK'
+
+          checkpoints = []
+          cp_root = root / 'checkpoints'
+          if cp_root.is_dir():
+              for p in sorted(cp_root.glob('*.json.gz')):
+                  try:
+                      with gzip.open(p, 'rt', encoding='utf-8') as h:
+                          payload = json.load(h)
+                      result = payload.get('result') or {}
+                      checkpoints.append({
+                          'file': p.name,
+                          'strategy_id': result.get('strategy_id'),
+                          'result_keys': sorted(result.keys()),
+                          'strategy_call_count': int(result.get('strategy_call_count') or 0),
+                          'signal_count': int(result.get('signal_count') or 0),
+                          'valid_entry_count': int(result.get('valid_entry_count') or 0),
+                          'open_count': int(result.get('open_count') or 0),
+                          'error_count': int(result.get('error_count') or 0),
+                      })
+                  except Exception as exc:
+                      checkpoints.append({'file': p.name, 'read_error': f'{type(exc).__name__}:{exc}'})
+
+          out = {
+              'schema_version': 'zel.structural_premium.zero_trade_diagnostic.v1',
+              'state': 'PASS_DIAGNOSTIC_CAPTURED',
+              'report_state': report.get('state'),
+              'report_verdict': report.get('verdict'),
+              'input_fingerprint': (report.get('checkpoint') or {}).get('input_fingerprint'),
+              'runtime_safe': (report.get('canonical_runtime') is not None),
+              'strategy_count_completed': int(replay.get('strategy_count_completed') or 0),
+              'strategy_failure_count': int(replay.get('strategy_failure_count') or 0),
+              'totals': {
+                  'strategy_call_count': calls,
+                  'signal_count': signals,
+                  'valid_entry_count': valid,
+                  'open_count': opens,
+                  'closed_trade_count': closed,
+                  'error_count': errors,
+              },
+              'bottleneck': bottleneck,
+              'scorecards': rows,
+              'checkpoints': checkpoints,
+              'progress': progress,
+              'summary': summary,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'action': 'hold',
+          }
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+          REMOTE
+          python -m json.tool /tmp/zel-sp-zero-trade-diag/diagnostic.json >/dev/null
+          cat /tmp/zel-sp-zero-trade-diag/diagnostic.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-zero-trade-diagnostic-${{ github.run_id }}
+          path: /tmp/zel-sp-zero-trade-diag/diagnostic.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

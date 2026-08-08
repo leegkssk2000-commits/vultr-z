@@ -37,15 +37,19 @@ jobs:
           set -u
           G=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen1
           echo '===ACTIVE_WORKERS==='
-          pgrep -af "$G/runs/.*/engine/lane_.*\.py" || true
+          ps -eo pid,pcpu,pmem,etime,cmd | grep "$G/runs/.*/engine/lane_" | grep -v grep || true
           for cid in B60 B75 C120; do
             echo "===${cid}==="
             for phase in w1 w2 w3; do
               d="$G/runs/$cid/replay_${phase}/lane_checkpoints/vwap_revert"
               printf '%s_COUNT=' "$phase"
               find "$d" -type f -name '*.json.gz' 2>/dev/null | wc -l || true
+              echo "${phase}_CHECKPOINTS="
+              find "$d" -type f -name '*.json.gz' -printf '%TY-%Tm-%Td %TH:%TM:%TS %f\n' 2>/dev/null | sort || true
               s="$G/runs/$cid/result/${phase}_score.json"
               if [ -s "$s" ]; then echo "${phase}_SCORE="; cat "$s"; fi
+              l="$G/runs/$cid/logs/${phase}.log"
+              if [ -s "$l" ]; then echo "${phase}_LOG_TAIL="; tail -25 "$l"; fi
             done
             echo "CONTRACT="; cat "$G/runs/$cid/contract.sha256" 2>/dev/null || true
           done

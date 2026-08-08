@@ -42,43 +42,23 @@ jobs:
           OUT=/opt/zel/research-runtime/checkpoints/structural-premium-v3/output
           echo '===STATUS_JSON==='
           cat "$JOB/status.json" 2>/dev/null || echo '{}'
-          echo '===PID==='
-          pid="$(cat "$JOB/runner.pid" 2>/dev/null || true)"
-          echo "pid=$pid"
-          if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo 'runner_alive=true'; else echo 'runner_alive=false'; fi
-          echo '===STRATEGY_CHECKPOINTS==='
-          find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -printf '%f\n' 2>/dev/null | sort || true
-          echo '===LANE_COUNTS_BY_STRATEGY==='
-          for s in liquidity_sweep support_resistance trend_rider vwap_revert; do
-            c="$(find "$OUT/lane_checkpoints/$s" -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
-            echo "$s=$c"
-          done
-          echo '===REPORT_JSON==='
-          cat "$OUT/report.json" 2>/dev/null || echo '{}'
-          echo '===SUMMARY_JSON==='
-          cat "$OUT/summary.json" 2>/dev/null || echo '{}'
-          echo '===SCOREBOARD==='
-          cat "$OUT/scoreboard.csv" 2>/dev/null || true
-          echo '===CHECKPOINT_SUMMARY==='
-          /home/z/z/.venv/bin/python - "$OUT" <<'PY'
-          import gzip,json,sys
-          from pathlib import Path
-          out=Path(sys.argv[1])
-          for p in sorted((out/'checkpoints').glob('*.json.gz')):
-              try:
-                  with gzip.open(p,'rt',encoding='utf-8') as f: x=json.load(f)
-              except Exception as e:
-                  print(p.name, 'READ_ERR', repr(e)); continue
-              def scalar_map(d):
-                  if not isinstance(d,dict): return {}
-                  keys=('strategy_id','state','failure','error_count','errors','strategy_failure_count','strategy_failures','censored_open_count','censored_open','trade_count','signal_count','entry_count','long_trade_count','short_trade_count','bars_processed','rows_processed')
-                  return {k:d.get(k) for k in keys if k in d}
-              print(json.dumps({'file':p.name,'top':scalar_map(x),'result':scalar_map(x.get('result')),'summary':scalar_map(x.get('summary'))},sort_keys=True,default=str))
+          echo '===REPORT_REPLAY_COUNTS==='
+          /home/z/z/.venv/bin/python - "$OUT/report.json" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1])); r=x.get('replay',{})
+          print(json.dumps({k:r.get(k) for k in ('censored_open_at_window_end','error_count','strategy_failure_count','signal_count','valid_entry_count','closed_trade_count')},sort_keys=True))
           PY
-          echo '===COVERAGE_REVALIDATION==='
-          cat "$JOB/result/coverage_revalidation.json" 2>/dev/null || echo '{}'
-          echo '===EVAL_V2_LOG_TAIL==='
-          tail -n 120 "$JOB/evaluate_v2.log" 2>/dev/null || true
+          echo '===EVALUATOR_FILES==='
+          find "$JOB" -maxdepth 4 -type f \( -name '*.py' -o -name '*.sh' \) -print 2>/dev/null | sort
+          echo '===EVALUATOR_FIELD_REFERENCES==='
+          grep -RInE 'censored_open_zero|errors_zero|strategy_failures_zero|censored_open_at_window_end|strategy_failure_count|error_count|NO_W1_ADMISSIBLE_CONFIGURATION|sample_gate_min_active_strategies' "$JOB" --include='*.py' --include='*.sh' 2>/dev/null | head -n 300 || true
+          echo '===RESUME_SCRIPT==='
+          sed -n '1,260p' "$JOB/resume_fingerprint_fix_v1.sh" 2>/dev/null || true
+          echo '===COVERAGE_REVALIDATION_SHORT==='
+          /home/z/z/.venv/bin/python - "$JOB/result/coverage_revalidation.json" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1])); print(json.dumps({'blockers':x.get('blockers'),'report_checks':x.get('integrity',{}).get('report_checks'),'coverage':x.get('coverage'),'selection':x.get('selection')},sort_keys=True))
+          PY
           REMOTE
       - name: Cleanup
         if: always()

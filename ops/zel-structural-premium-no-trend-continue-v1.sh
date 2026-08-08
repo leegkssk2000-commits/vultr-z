@@ -6,7 +6,7 @@ NEW=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
 PY=/home/z/z/.venv/bin/python
 CANON=/opt/zel/forward-expansion-v1/source
 
-for p in "$OLD/work/engine/replay_v1.py" "$OLD/work/engine/replay_v2.py" "$OLD/work/evaluate.py" "$OLD/work/data/manifest.json"; do test -s "$p"; done
+for p in "$OLD/work/engine/replay_v1.py" "$OLD/work/engine/replay_v2.py" "$OLD/work/engine/lane_checkpoint_v2.py" "$OLD/work/evaluate.py" "$OLD/work/data/manifest.json"; do test -s "$p"; done
 test -d "$SRC/work/replay/lane_checkpoints"
 test -d "$SRC/work/source"
 
@@ -15,26 +15,33 @@ CANON_TR=$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1
 CANON_MAN=$(sha256sum "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" | awk '{print $1}')
 CANON_BIND=$(sha256sum "$CANON/backend/config/q4r3_exact25_shadow_binding_v1.json" | awk '{print $1}')
 
-# trend_rider targeted runner must remain stopped.
-if pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' >/dev/null; then
-  PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
-  [ -z "$PIDS" ] || kill -TERM $PIDS || true
-  sleep 2
-fi
-if pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' >/dev/null; then
-  PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
-  [ -z "$PIDS" ] || kill -KILL $PIDS || true
-  sleep 1
-fi
+# trend_rider branch is deferred; make sure its old workers are gone while preserving checkpoints.
+PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
+if [ -n "$PIDS" ]; then kill -TERM $PIDS || true; sleep 2; fi
+PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
+if [ -n "$PIDS" ]; then kill -KILL $PIDS || true; sleep 1; fi
+if pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' >/dev/null; then echo TARGETED_RUNNER_STILL_ALIVE; exit 61; fi
 
 rm -rf "$NEW"
 mkdir -p "$NEW/work/replay/lane_checkpoints" "$NEW/work/engine" "$NEW/result" "$NEW/logs"
 cp -a "$SRC/work/source" "$NEW/work/source"
 cp "$OLD/work/engine/replay_v1.py" "$NEW/work/engine/replay_v1_no_trend.py"
-cp "$OLD/work/engine/replay_v2.py" "$NEW/work/engine/replay_v2.py"
+cp "$OLD/work/engine/replay_v2.py" "$NEW/work/engine/replay_v2_no_trend.py"
+cp "$OLD/work/engine/lane_checkpoint_v2.py" "$NEW/work/engine/lane_checkpoint_v2.py"
 cp "$OLD/work/evaluate.py" "$NEW/work/evaluate.py"
 
-# Research-only registry override: exclude trend_rider, retain exactly 3 owners.
+# Exact contract adaptation in research copies only: 4 owners -> 3 owners.
+"$PY" - "$NEW/work/engine/replay_v1_no_trend.py" "$NEW/work/engine/replay_v2_no_trend.py" <<'PYC'
+from pathlib import Path
+import sys
+for raw in sys.argv[1:]:
+    p=Path(raw); t=p.read_text(); old='EXPECTED_STRATEGY_COUNT = 4'; new='EXPECTED_STRATEGY_COUNT = 3'
+    if t.count(old)!=1: raise SystemExit(f'EXPECTED_COUNT_ANCHOR:{p}:{t.count(old)}')
+    p.write_text(t.replace(old,new,1))
+    print('PASS_EXPECTED_STRATEGY_COUNT_3',p)
+PYC
+
+# Research-only registry override: remove trend_rider after canonical EXACT25 load/verification.
 cat >> "$NEW/work/engine/replay_v1_no_trend.py" <<'PYOVR'
 
 _z_original_restore_structural_premium_registry = _restore_structural_premium_registry
@@ -47,27 +54,7 @@ def _restore_structural_premium_registry(source_root, registry):
     return restored
 PYOVR
 
-# Robustly adapt only the copied replay_v2 registry cardinality guard.
-"$PY" - "$NEW/work/engine/replay_v2.py" <<'PYPATCH'
-from pathlib import Path
-import sys
-p=Path(sys.argv[1]); lines=p.read_text().splitlines()
-hits=[i for i,line in enumerate(lines) if 'REGISTRY_COUNT:' in line]
-if len(hits)!=1:
-    raise SystemExit(f'REGISTRY_COUNT_RAISE_HITS:{len(hits)}')
-i=hits[0]
-j=i-1
-while j>=0 and not lines[j].strip(): j-=1
-if j<0 or not lines[j].lstrip().startswith('if ') or 'len(registry)' not in lines[j]:
-    raise SystemExit(f'REGISTRY_GUARD_NOT_FOUND:{lines[j] if j>=0 else "NONE"}')
-indent=lines[j][:len(lines[j])-len(lines[j].lstrip())]
-old_guard=lines[j]
-lines[j]=indent+'if len(registry) != 3:'
-p.write_text('\n'.join(lines)+'\n')
-print('PASS_REPLAY_V2_THREE_OWNER_CONTRACT', old_guard, '=>', lines[j])
-PYPATCH
-
-# Copy only the completed lanes for retained strategies. No trend lane and no market replay.
+# Copy exactly 45 completed retained lanes; never copy trend_rider.
 for s in liquidity_sweep vwap_revert support_resistance; do
   test -d "$SRC/work/replay/lane_checkpoints/$s"
   mkdir -p "$NEW/work/replay/lane_checkpoints/$s"
@@ -78,26 +65,45 @@ done
 from pathlib import Path
 import gzip,json,sys
 root=Path(sys.argv[1]); out=Path(sys.argv[2])
-expected={"liquidity_sweep":15,"vwap_revert":15,"support_resistance":15}
-counts={}; errors=[]
+expected={"liquidity_sweep":15,"vwap_revert":15,"support_resistance":15}; counts={}; errors=[]
 for s,n in expected.items():
     files=sorted((root/s).glob('*.json.gz')); counts[s]=len(files)
     if len(files)!=n: errors.append(f'{s}:{len(files)}!={n}')
     seen=set()
     for f in files:
-        with gzip.open(f,'rt',encoding='utf-8') as h: payload=json.load(h)
-        if payload.get('strategy_id')!=s: errors.append(f'bad_strategy:{f.name}')
-        key=(payload.get('window_id'),payload.get('symbol'),payload.get('interval'))
+        with gzip.open(f,'rt',encoding='utf-8') as h: p=json.load(h)
+        if p.get('strategy_id')!=s: errors.append(f'bad_strategy:{f.name}')
+        key=(p.get('window_id'),p.get('symbol'),p.get('interval'))
         if key in seen: errors.append(f'duplicate:{s}:{key}')
         seen.add(key)
-        if not isinstance(payload.get('result'),dict): errors.append(f'bad_result:{f.name}')
+        if not isinstance(p.get('result'),dict): errors.append(f'bad_result:{f.name}')
 payload={"state":"PASS_TREND_RIDER_EXCLUDED_45_LANES_READY" if not errors else "HOLD_NO_TREND_LANE_INTEGRITY","retained_strategies":sorted(expected),"excluded_strategies":["trend_rider"],"lane_counts":counts,"completed_lanes":sum(counts.values()),"expected_lanes":45,"errors":errors,"canonical_mutations":0,"execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n'); print(json.dumps(payload,sort_keys=True))
 if errors: raise SystemExit(62)
 PYCHK
 
-# Aggregate only existing 45 checkpoints.
-"$PY" "$NEW/work/engine/replay_v2.py" --engine-v1 "$NEW/work/engine/replay_v1_no_trend.py" --source-root "$NEW/work/source" --data-root "$OLD/work/data" --interval 1m --output-dir "$NEW/work/replay" --workers 4 2>&1 | tee "$NEW/logs/aggregate.log"
+# Convert the 45 existing lane checkpoints into 3 strategy checkpoints. pending_units must be zero.
+"$PY" "$NEW/work/engine/lane_checkpoint_v2.py" \
+  --engine-v1 "$NEW/work/engine/replay_v1_no_trend.py" \
+  --engine-v2 "$NEW/work/engine/replay_v2_no_trend.py" \
+  --source-root "$NEW/work/source" \
+  --data-root "$OLD/work/data" \
+  --interval 1m \
+  --output-dir "$NEW/work/replay" \
+  --workers 1 2>&1 | tee "$NEW/logs/lane_finalize.log"
+
+grep -q '"total_units": 45' "$NEW/logs/lane_finalize.log"
+grep -q '"pending_units": 0' "$NEW/logs/lane_finalize.log"
+
+# Replay-v2 now consumes completed strategy checkpoints; no row replay is expected.
+"$PY" "$NEW/work/engine/replay_v2_no_trend.py" \
+  --engine-v1 "$NEW/work/engine/replay_v1_no_trend.py" \
+  --source-root "$NEW/work/source" \
+  --data-root "$OLD/work/data" \
+  --interval 1m \
+  --output-dir "$NEW/work/replay" \
+  --workers 1 2>&1 | tee "$NEW/logs/aggregate.log"
+
 test -s "$NEW/work/replay/report.json"
 test -s "$NEW/work/replay/trades.jsonl.gz"
 
@@ -114,7 +120,7 @@ payload={"state":"PASS_GATE6_NO_TREND_INPUT_COMPLETE" if rc==0 else "HOLD_GATE6_
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n'); print(json.dumps(payload,sort_keys=True))
 PYG6
 
-# Canonical files must remain byte-identical.
+# Canonical source remains untouched.
 test "$(sha256sum "$CANON/backend/strategies/sr_levels.py" | awk '{print $1}')" = "$CANON_SR"
 test "$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1}')" = "$CANON_TR"
 test "$(sha256sum "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" | awk '{print $1}')" = "$CANON_MAN"

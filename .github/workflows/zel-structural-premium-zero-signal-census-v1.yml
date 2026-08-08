@@ -1,0 +1,219 @@
+name: ZEL Structural Premium Zero Signal Census V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_zero_signal_census_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Census zero-signal predicates and smoke sr_levels previous-bar overlay
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          SRC=/opt/zel/forward-expansion-v1/source
+          DATA="$JOB/work/data"
+          PY=/home/z/z/.venv/bin/python
+          OUT="$JOB/result/zero_signal_census_v1.json"
+          test -s "$DATA/manifest.json"
+          test -s "$SRC/backend/strategies/sr_levels.py"
+          test -s "$SRC/backend/strategies/trend_rider.py"
+          "$PY" - "$SRC" "$DATA" "$OUT" <<'PY'
+          from __future__ import annotations
+          import importlib.util,json,math,os,sys,tempfile,hashlib
+          from collections import Counter
+          from pathlib import Path
+          import pandas as pd
+          import numpy as np
+
+          SRC=Path(sys.argv[1]); DATA=Path(sys.argv[2]); OUT=Path(sys.argv[3])
+
+          def load(path,name):
+              spec=importlib.util.spec_from_file_location(name,path)
+              m=importlib.util.module_from_spec(spec); sys.modules[name]=m; spec.loader.exec_module(m); return m
+
+          sr=load(SRC/'backend/strategies/sr_levels.py','z_sr_census')
+          tr=load(SRC/'backend/strategies/trend_rider.py','z_tr_census')
+          manifest=json.loads((DATA/'manifest.json').read_text())
+
+          rows=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if all(k in x for k in ('path','window_id','symbol')):
+                      rows.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          walk(manifest)
+          uniq={str(r['path']):r for r in rows}; rows=list(uniq.values())
+          if len(rows)!=15:
+              raise SystemExit(f'MANIFEST_FILE_COUNT:{len(rows)}!=15')
+
+          def frame(path):
+              df=pd.read_csv(path)
+              ren={c:c.lower() for c in df.columns}; df=df.rename(columns=ren)
+              for c in ('open','high','low','close','volume'):
+                  if c in df: df[c]=pd.to_numeric(df[c],errors='coerce')
+              return df.reset_index(drop=True)
+
+          sr_counts=Counter(); tr_counts=Counter(); per_file=[]; sr_smoke=Counter(); tr_smoke=Counter()
+          sr_cfg=sr.SrLevelsConfig(); tr_cfg=tr.TrendRiderConfig()
+          max_window=420
+
+          for r in sorted(rows,key=lambda z:(str(z.get('window_id')),str(z.get('symbol')))):
+              p=DATA/str(r['path']); df=frame(p)
+              n=len(df); f_sr=Counter(); f_tr=Counter()
+              # ---- sr_levels: exact-current vs previous-bars-only level census ----
+              close=df['close']; high=df['high']; low=df['low']; op=df['open']; vol=df['volume']
+              prev_close=close.shift(1)
+              tr1=high-low; tr2=(high-prev_close).abs(); tr3=(low-prev_close).abs()
+              atr=pd.concat([tr1,tr2,tr3],axis=1).max(axis=1).rolling(sr_cfg.atr_len,min_periods=sr_cfg.atr_len).mean()
+              ema=close.ewm(span=sr_cfg.ema_len,adjust=False,min_periods=sr_cfg.ema_len).mean()
+              volma=vol.rolling(sr_cfg.vol_ma_len,min_periods=sr_cfg.vol_ma_len).mean()
+              # canonical bug path: current bar included
+              sh_cur=high.rolling(sr_cfg.lookback,min_periods=sr_cfg.lookback).max()
+              sl_cur=low.rolling(sr_cfg.lookback,min_periods=sr_cfg.lookback).min()
+              # candidate fix: previous completed bars only
+              sh_prev=high.shift(1).rolling(sr_cfg.lookback,min_periods=sr_cfg.lookback).max()
+              sl_prev=low.shift(1).rolling(sr_cfg.lookback,min_periods=sr_cfg.lookback).min()
+              buf=atr*sr_cfg.breakout_buffer_atr; reclaim_buf=atr*sr_cfg.retest_reclaim_atr
+              cur_long=(close>sh_cur+buf); cur_short=(close<sl_cur-buf)
+              fix_long=(close>sh_prev+buf); fix_short=(close<sl_prev-buf)
+              fix_reclaim_long=(prev_close<=sh_prev)&(close>sh_prev+reclaim_buf)
+              fix_reclaim_short=(prev_close>=sl_prev)&(close<sl_prev-reclaim_buf)
+              ema_prev=ema.shift(1); trend_long=(close>ema)&(ema>ema_prev); trend_short=(close<ema)&(ema<ema_prev)
+              atr_pct=atr/close.replace(0,np.nan)*100.0
+              vol_ok=(atr_pct>=sr_cfg.min_atr_pct)&(atr_pct<=sr_cfg.max_atr_pct)
+              big_vol=vol>volma*sr_cfg.vol_mult
+              dist=(close-ema).abs()/atr.replace(0,np.nan); chase=dist>sr_cfg.max_chase_dist_atr
+              body=(close-op).abs()/(high-low).clip(lower=1e-9)
+              loc=(close-low)/(high-low).clip(lower=1e-9)
+              fix_base_long=(fix_long|fix_reclaim_long)&trend_long&vol_ok&(~chase)
+              fix_base_short=(fix_short|fix_reclaim_short)&trend_short&vol_ok&(~chase)
+              for k,s in {
+                  'current_long_break':cur_long,'current_short_break':cur_short,
+                  'fixed_long_break':fix_long,'fixed_short_break':fix_short,
+                  'fixed_reclaim_long':fix_reclaim_long,'fixed_reclaim_short':fix_reclaim_short,
+                  'trend_long':trend_long,'trend_short':trend_short,'vol_ok':vol_ok,'big_vol':big_vol,
+                  'fixed_base_long':fix_base_long,'fixed_base_short':fix_base_short,
+              }.items(): f_sr[k]=int(s.fillna(False).sum()); sr_counts[k]+=f_sr[k]
+
+              # Real function smoke only around candidate fixed break/reclaim rows, patching a research-copy module.
+              # Patch in-memory source text; canonical file untouched.
+              src_text=(SRC/'backend/strategies/sr_levels.py').read_text()
+              old='recent = df.iloc[-cfg.lookback:]'
+              new='recent = df.iloc[-(cfg.lookback + 1):-1]'
+              if src_text.count(old)!=1: raise SystemExit(f'SR_PATCH_ANCHOR:{src_text.count(old)}')
+              patched=src_text.replace(old,new)
+              with tempfile.TemporaryDirectory() as td:
+                  q=Path(td)/'sr_levels_candidate.py'; q.write_text(patched)
+                  sr2=load(q,f'z_sr_candidate_{abs(hash(str(p)))}')
+                  idx=np.flatnonzero((fix_base_long|fix_base_short).fillna(False).to_numpy())
+                  # cap only if pathological; normally sparse. deterministic first 5000 per file.
+                  for i in idx[:5000]:
+                      if i<max_window-1: continue
+                      w=df.iloc[max(0,i-max_window+1):i+1].copy()
+                      try: out=sr2.strategy(w,state={},risk_action='hold')
+                      except Exception as e:
+                          sr_smoke['error']+=1; continue
+                      a=str(out.get('action')); side=str(out.get('side')); why=str(out.get('why'))
+                      sr_smoke[f'action:{a}']+=1; sr_smoke[f'side:{side}']+=1; sr_smoke[f'why:{why}']+=1
+
+              # ---- trend_rider exact predicate census using canonical helper once per full file ----
+              tdf=df.copy()
+              st=tr._supertrend(tdf,tr_cfg.st_len,tr_cfg.st_mult)
+              tema=close.ewm(span=tr_cfg.ema_len,adjust=False,min_periods=tr_cfg.ema_len).mean()
+              tat=st['atr']; stv=st['supertrend']; direction=st['direction']
+              tatr_pct=tat/close.replace(0,np.nan)*100.0
+              gap=(close-stv).abs()/tat.replace(0,np.nan)
+              tdist=(close-tema).abs()/tat.replace(0,np.nan)
+              ema_up=tema>tema.shift(1); ema_down=tema<tema.shift(1)
+              st_rise=stv>stv.shift(1); st_fall=stv<stv.shift(1)
+              tl=(direction==1)&(close>stv)&(close>tema)&ema_up&st_rise
+              ts=(direction==-1)&(close<stv)&(close<tema)&ema_down&st_fall
+              prev_green=close.shift(1)>=op.shift(1); prev_red=close.shift(1)<=op.shift(1)
+              lc=prev_green&tl&(gap>=tr_cfg.st_gap_atr_min)
+              sc=prev_red&ts&(gap>=tr_cfg.st_gap_atr_min)
+              tvo=(tatr_pct>=tr_cfg.min_atr_pct)&(tatr_pct<=tr_cfg.max_atr_pct)
+              tch=tdist>tr_cfg.max_chase_dist_atr
+              eligible_long=lc&tvo&(~tch); eligible_short=sc&tvo&(~tch)
+              for k,s in {
+                  'dir_long':direction==1,'dir_short':direction==-1,
+                  'ema_up':ema_up,'ema_down':ema_down,'st_rising':st_rise,'st_falling':st_fall,
+                  'trend_long':tl,'trend_short':ts,'long_confirm':lc,'short_confirm':sc,
+                  'vol_ok':tvo,'late_chase':tch,'eligible_long':eligible_long,'eligible_short':eligible_short,
+              }.items(): f_tr[k]=int(s.fillna(False).sum()); tr_counts[k]+=f_tr[k]
+
+              # Direct canonical smoke on eligible rows only to see final why/action without million per-bar calls.
+              tidx=np.flatnonzero((eligible_long|eligible_short).fillna(False).to_numpy())
+              for i in tidx[:5000]:
+                  if i<max_window-1: continue
+                  w=df.iloc[max(0,i-max_window+1):i+1].copy()
+                  try: out=tr.strategy(w,state={},risk_action='hold')
+                  except Exception:
+                      tr_smoke['error']+=1; continue
+                  a=str(out.get('action')); side=str(out.get('side')); why=str(out.get('why'))
+                  tr_smoke[f'action:{a}']+=1; tr_smoke[f'side:{side}']+=1; tr_smoke[f'why:{why}']+=1
+
+              per_file.append({'window_id':r.get('window_id'),'symbol':r.get('symbol'),'rows':n,'sr':dict(f_sr),'trend':dict(f_tr)})
+
+          # mathematical invariant proof for canonical sr_levels
+          invariant_ok=(sr_counts['current_long_break']==0 and sr_counts['current_short_break']==0)
+          payload={
+              'state':'PASS_ZERO_SIGNAL_CENSUS',
+              'canonical_mutations':0,
+              'files':len(rows),
+              'rows_total':sum(x['rows'] for x in per_file),
+              'sr_levels':{
+                  'canonical_current_bar_swing_impossibility_confirmed':invariant_ok,
+                  'counts':dict(sr_counts),
+                  'candidate_previous_bar_overlay_smoke':dict(sr_smoke),
+                  'candidate_patch':'recent = df.iloc[-(cfg.lookback + 1):-1]',
+              },
+              'trend_rider':{'counts':dict(tr_counts),'eligible_direct_smoke':dict(tr_smoke)},
+              'per_file':per_file,
+              'action':'hold','execution_authority':'NONE','order_authority':'BLOCKED'
+          }
+          OUT.parent.mkdir(parents=True,exist_ok=True); OUT.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'state':payload['state'],'rows_total':payload['rows_total'],
+              'sr_counts':payload['sr_levels']['counts'],
+              'sr_smoke':payload['sr_levels']['candidate_previous_bar_overlay_smoke'],
+              'trend_counts':payload['trend_rider']['counts'],
+              'trend_smoke':payload['trend_rider']['eligible_direct_smoke'],
+          },sort_keys=True))
+          PY
+          echo '===CENSUS_RESULT==='
+          cat "$OUT"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

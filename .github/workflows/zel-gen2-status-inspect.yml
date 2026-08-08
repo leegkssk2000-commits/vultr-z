@@ -1,0 +1,60 @@
+name: ZEL Gen2 Status Inspect
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-gen2-status-inspect.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Inspect Gen2
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          G=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen2
+          echo '===PROCESSES==='; pgrep -af "$G/runs/.*/engine/lane_.*\.py" || true
+          echo '===BASELINE==='; cat "$G/result/baseline_w12.json" 2>/dev/null || true
+          echo '===W2_SELECTION==='; cat "$G/result/w2_selection.json" 2>/dev/null || true
+          echo '===W12_SELECTION==='; cat "$G/result/w12_selection.json" 2>/dev/null || true
+          echo '===TERMINAL==='; cat "$G/result/terminal_receipt.json" 2>/dev/null || true
+          for d in "$G"/runs/*; do
+            [ -d "$d" ] || continue
+            cid=$(basename "$d")
+            echo "===CID:$cid==="
+            for phase in w2 w1 w3; do
+              c=$(find "$d/replay_${phase}/lane_checkpoints/vwap_revert" -type f -name '*.json.gz' 2>/dev/null | wc -l || true)
+              echo "$phase.count=$c"
+              echo "$phase.score="; cat "$d/result/${phase}_score.json" 2>/dev/null || true
+              echo "$phase.log.tail="; tail -10 "$d/logs/${phase}.log" 2>/dev/null || true
+            done
+          done
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

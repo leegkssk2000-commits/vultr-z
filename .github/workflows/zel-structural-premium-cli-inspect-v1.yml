@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect six-axis implementation
+      - name: Locate closed-loop runner
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,11 +37,12 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
-          echo '===SIX_AXIS_SYMBOLS==='
-          grep -n -E 'SIX_AXIS|FREQUENCY|COST_EXECUTION|RISK_EXPOSURE|INTERACTION|PORTFOLIO|ROBUSTNESS|closed|candidate|incumbent' "$E" | tail -220 || true
-          echo '===OVERLAY_990_1220==='
-          sed -n '990,1220p' "$E"
+          echo '===CANDIDATE_FILES==='
+          find /opt/zel/research-runtime -maxdepth 6 -type f \( -iname '*candidate*' -o -iname '*closed*loop*' -o -iname '*six*axis*' -o -iname '*overlay*' \) -printf '%p\n' 2>/dev/null | sort | tail -250
+          echo '===CLOSED_LOOP_REFS==='
+          grep -RIl --exclude='*.gz' --exclude='*.csv' --exclude='*.log' -E 'closed_loop_axes|COST_EXECUTION|RISK_EXPOSURE|PORTFOLIO|ROBUSTNESS' /opt/zel/research-runtime 2>/dev/null | sort | tail -150
+          echo '===JOB_DIRS==='
+          find /opt/zel/research-runtime/jobs -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -100
           REMOTE
       - name: Cleanup
         if: always()

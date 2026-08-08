@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect replay capacity and progress
+      - name: Inspect partial candidate delta
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,16 +37,46 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
           G=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen0
-          echo '===CAPACITY==='; echo NPROC=$(nproc); free -h; uptime; vmstat 1 2 | tail -1 || true
-          echo '===TOP_CPU==='; ps -eo pid,pcpu,pmem,etime,cmd --sort=-pcpu | head -18
-          for cid in A B C; do
-            echo "===${cid}_W12_COUNT==="; find "$G/runs/$cid/replay_w12/lane_checkpoints/vwap_revert" -type f -name '*.json.gz' 2>/dev/null | wc -l || true
-            echo "===${cid}_W12_LOG_TAIL==="; tail -12 "$G/runs/$cid/logs/w12.log" 2>/dev/null || true
-            echo "===${cid}_W12_SCORE==="; cat "$G/runs/$cid/result/w12_score.json" 2>/dev/null || true
-          done
-          echo '===SELECTION==='; cat "$G/result/w12_selection.json" 2>/dev/null || true
-          echo '===TERMINAL==='; cat "$G/result/terminal_receipt.json" 2>/dev/null || true
+          BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/lane_checkpoints/vwap_revert
+          ENG=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
+          echo '===COUNTS==='; for cid in A B C; do printf '%s ' "$cid"; find "$G/runs/$cid/replay_w12/lane_checkpoints/vwap_revert" -type f -name '*.json.gz' 2>/dev/null | wc -l || true; done
+          "$PY" - "$ENG" "$BASE" "$G" <<'PY'
+import gzip,importlib.util,json,sys
+from pathlib import Path
+engp,basep,g=Path(sys.argv[1]),Path(sys.argv[2]),Path(sys.argv[3])
+spec=importlib.util.spec_from_file_location('delta_engine',engp); e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e; spec.loader.exec_module(e)
+def read_lane(p):
+    with gzip.open(p,'rt',encoding='utf-8') as h: return json.load(h)
+def key(row): return (str(row.get('window_id')),str(row.get('symbol')))
+base={key(read_lane(p)):read_lane(p) for p in basep.glob('*.json.gz')}
+for cid in ('A','B','C'):
+    root=g/'runs'/cid/'replay_w12/lane_checkpoints/vwap_revert'
+    files=sorted(root.glob('*.json.gz')) if root.exists() else []
+    if not files: continue
+    cand_rows=[]; base_rows=[]; lane_keys=[]
+    for p in files:
+        d=read_lane(p); k=key(d); lane_keys.append(k)
+        for r in (d.get('result') or {}).get('closed_rows') or []:
+            if r.get('side')=='long': cand_rows.append(r)
+        b=base.get(k)
+        if b:
+            for r in (b.get('result') or {}).get('closed_rows') or []:
+                if r.get('side')=='long': base_rows.append(r)
+    cm=e.metrics(cand_rows); bm=e.metrics(base_rows)
+    print('CANDIDATE',cid,'LANES',lane_keys)
+    print('BASE_MATCHED',json.dumps(bm,sort_keys=True))
+    print('CAND_MATCHED',json.dumps(cm,sort_keys=True))
+    print('DELTA',json.dumps({
+      'sample':int(cm.get('sample_count') or 0)-int(bm.get('sample_count') or 0),
+      'net_R':float(cm.get('net_R') or 0)-float(bm.get('net_R') or 0),
+      'pf':float(cm.get('profit_factor') or 0)-float(bm.get('profit_factor') or 0),
+      'maxDD_R':float(cm.get('max_drawdown_R') or 0)-float(bm.get('max_drawdown_R') or 0),
+      'wr_pp':float(cm.get('win_rate_pct') or 0)-float(bm.get('win_rate_pct') or 0),
+    },sort_keys=True))
+PY
+          echo '===ACTIVE==='; pgrep -af "$G/runs/.*/engine/lane_w12.py" || true
           REMOTE
       - name: Cleanup
         if: always()

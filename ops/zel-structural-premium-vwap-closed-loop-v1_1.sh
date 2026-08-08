@@ -7,7 +7,7 @@ DUR=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
 BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
 CANON=/opt/zel/forward-expansion-v1/source
 PY=/home/z/z/.venv/bin/python
-CONTRACT_VERSION=VWAP_CLOSED_LOOP_V1_2_RESUME_W3_CANON_GUARDS
+CONTRACT_VERSION=VWAP_CLOSED_LOOP_V1_3_ADOPT_VALIDATED_CACHE
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BASE_RUNNER="$SCRIPT_DIR/zel-structural-premium-vwap-closed-loop-v1.sh"
 test -s "$BASE_RUNNER"
@@ -66,14 +66,12 @@ CURRENT_FP=$(
 FP_FILE="$GEN/result/runner_contract_fingerprint.sha256"
 OLD_FP=$(cat "$FP_FILE" 2>/dev/null || true)
 
-# Unknown provenance is not resumable. This catches Gen0 caches produced before v1.2.
+# Pre-v1.3 cache may be adopted only after the strict candidate validation below.
 if [ -z "$OLD_FP" ] && [ -d "$GEN/runs" ] && find "$GEN/runs" -type f -print -quit 2>/dev/null | grep -q .; then
-  rm -rf "$GEN/runs" "$GEN/merged_A" "$GEN/merged_B" "$GEN/merged_C"
-  rm -f "$GEN/result/w12_selection.json" "$GEN/result/terminal_receipt.json" "$GEN/result/research_incumbent.json"
-  echo "INVALIDATE_UNPROVENANCED_GEN0_CACHE"
+  echo "ADOPT_PRE_GUARD_CACHE_PENDING_VALIDATION"
 fi
 
-# Engine/data/runner changes invalidate all candidate replay caches.
+# Once a guarded fingerprint exists, any contract drift invalidates every replay cache.
 if [ -n "$OLD_FP" ] && [ "$OLD_FP" != "$CURRENT_FP" ]; then
   rm -rf "$GEN/runs" "$GEN/merged_A" "$GEN/merged_B" "$GEN/merged_C"
   rm -f "$GEN/result/w12_selection.json" "$GEN/result/terminal_receipt.json" "$GEN/result/research_incumbent.json"
@@ -83,7 +81,8 @@ printf '%s\n' "$CURRENT_FP" > "$FP_FILE.tmp"
 mv -f "$FP_FILE.tmp" "$FP_FILE"
 echo "PASS_RUNNER_CONTRACT_FINGERPRINT $CURRENT_FP"
 
-# Cached candidate engines must still match their candidate JSON and compile cleanly.
+# Cached candidate engines must match their candidate JSON, compile cleanly, and contain
+# valid vwap-only lane checkpoints before resume is accepted.
 for cid in A B C; do
   run="$GEN/runs/$cid"
   cjson="$GEN/candidates/$cid.json"
@@ -106,16 +105,21 @@ for cid in A B C; do
       "$run/engine/lane_w3.py" >/dev/null 2>&1 || valid=0
   fi
   if [ "$valid" = 1 ]; then
-    "$PY" - "$run/engine/replay_v1_candidate.py" "$cjson" <<'PYCV' >/dev/null 2>&1 || valid=0
-import ast,json,re,sys
+    "$PY" - "$run/engine/replay_v1_candidate.py" "$cjson" "$run/replay_w12/lane_checkpoints/vwap_revert" <<'PYCV' >/dev/null 2>&1 || valid=0
+import ast,gzip,json,re,sys
 from pathlib import Path
-engine=Path(sys.argv[1]).read_text(); candidate=json.loads(Path(sys.argv[2]).read_text())
+engine=Path(sys.argv[1]).read_text(); candidate=json.loads(Path(sys.argv[2]).read_text()); lane_root=Path(sys.argv[3])
 m=re.search(r'^_ZEL_OVERLAY = json\.loads\((.+)\)$',engine,re.M)
 if not m: raise SystemExit(2)
 encoded=ast.literal_eval(m.group(1)); embedded=json.loads(encoded)
 if embedded.get('overlay_sha256') != candidate.get('overlay_sha256'): raise SystemExit(3)
 if embedded.get('candidate_id') != candidate.get('candidate_id'): raise SystemExit(4)
 if embedded.get('parameters') != candidate.get('parameters'): raise SystemExit(5)
+for p in lane_root.glob('*.json.gz') if lane_root.exists() else []:
+    with gzip.open(p,'rt',encoding='utf-8') as h: row=json.load(h)
+    if row.get('strategy_id')!='vwap_revert': raise SystemExit(6)
+    if str(row.get('window_id')) not in {'1m_w1','1m_w2'}: raise SystemExit(7)
+    if not isinstance(row.get('result'),dict): raise SystemExit(8)
 PYCV
   fi
   if [ "$valid" != 1 ]; then
@@ -129,7 +133,7 @@ done
 # Base runner: W1/W2 selection first; W3 may execute only for that winner.
 bash "$BASE_RUNNER"
 
-# Explicit post-run W3 seal and finite-score checks. Fail closed on any leakage.
+# Explicit post-run W3 seal and finite-score checks. Fail closed on leakage/NaN.
 "$PY" - "$GEN" <<'PYPOST'
 import json,math,sys
 from pathlib import Path
@@ -142,13 +146,12 @@ for cid in ('A','B','C'):
     d=json.loads(p.read_text()); score=float(d['diagnostic_score'])
     if not math.isfinite(score): raise SystemExit(f'NONFINITE_W12_SCORE:{cid}')
     for w,m in d.get('metrics',{}).items():
-        for k in ('net_R','max_drawdown_R'):
+        for k in ('net_R','max_drawdown_R','profit_factor'):
             v=m.get(k)
             if v is None or not math.isfinite(float(v)): raise SystemExit(f'NONFINITE_METRIC:{cid}:{w}:{k}')
-        pf=m.get('profit_factor')
-        if pf is None or not math.isfinite(float(pf)): raise SystemExit(f'NONFINITE_METRIC:{cid}:{w}:profit_factor')
 for cid in ('A','B','C'):
-    w3=list((g/'runs'/cid/'replay_w3/lane_checkpoints/vwap_revert').glob('*.json.gz')) if (g/'runs'/cid/'replay_w3/lane_checkpoints/vwap_revert').exists() else []
+    p=g/'runs'/cid/'replay_w3/lane_checkpoints/vwap_revert'
+    w3=list(p.glob('*.json.gz')) if p.exists() else []
     if winner is None and w3: raise SystemExit(f'W3_LEAK_WITHOUT_W12_WINNER:{cid}:{len(w3)}')
     if winner is not None and cid != winner and w3: raise SystemExit(f'W3_LEAK_NONWINNER:{cid}:{len(w3)}')
 if winner is not None:
@@ -160,5 +163,5 @@ if term.get('research_only') is not True: raise SystemExit('TERMINAL_NOT_RESEARC
 if term.get('promotion_authority') is not False: raise SystemExit('PROMOTION_AUTHORITY_NOT_FALSE')
 if term.get('execution_authority') != 'NONE': raise SystemExit('EXECUTION_AUTHORITY_NOT_NONE')
 if term.get('order_authority') != 'BLOCKED': raise SystemExit('ORDER_AUTHORITY_NOT_BLOCKED')
-print(json.dumps({'state':'PASS_V1_2_POST_GUARDS','winner':winner,'w3_seal':True,'finite_scores':True,'research_only':True},sort_keys=True))
+print(json.dumps({'state':'PASS_V1_3_POST_GUARDS','winner':winner,'w3_seal':True,'finite_scores':True,'research_only':True},sort_keys=True))
 PYPOST

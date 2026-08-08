@@ -6,6 +6,9 @@ GEN="$ROOT/gen0"
 DUR=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
 BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
 CONTRACT_VERSION=VWAP_CLOSED_LOOP_V1_1_CACHE_FINGERPRINT
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BASE_RUNNER="$SCRIPT_DIR/zel-structural-premium-vwap-closed-loop-v1.sh"
+test -s "$BASE_RUNNER"
 
 for p in \
   "$DUR/work/engine/replay_v1.py" \
@@ -22,7 +25,7 @@ mkdir -p "$GEN/result"
 CURRENT_FP=$(
   {
     printf '%s\n' "$CONTRACT_VERSION"
-    sha256sum \
+    sha256sum "$BASE_RUNNER" \
       "$DUR/work/engine/replay_v1.py" \
       "$DUR/work/engine/replay_v2.py" \
       "$DUR/work/engine/lane_checkpoint_v2.py" \
@@ -47,5 +50,5 @@ mv -f "$FP_FILE.tmp" "$FP_FILE"
 echo "PASS_RUNNER_CONTRACT_FINGERPRINT $CURRENT_FP"
 
 # The base runner still performs per-candidate SHA validation. This wrapper adds
-# engine/data/contract invalidation so candidate-only hashes cannot resume stale lanes.
-exec bash ops/zel-structural-premium-vwap-closed-loop-v1.sh
+# engine/data/runner-contract invalidation so stale candidate lanes cannot be resumed.
+exec bash "$BASE_RUNNER"

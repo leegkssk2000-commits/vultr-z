@@ -70,6 +70,9 @@ for cid in ("A", "B", "C"):
     print("BASE_MATCHED", json.dumps(bm, sort_keys=True))
     print("CAND_MATCHED", json.dumps(cm, sort_keys=True))
     print("DELTA", json.dumps(delta, sort_keys=True))
+    score = g / "runs" / cid / "result" / "w12_score.json"
+    if score.exists():
+        print("W12_SCORE", cid, score.read_text().strip())
 PYCODE
 
 echo '===ACTIVE==='

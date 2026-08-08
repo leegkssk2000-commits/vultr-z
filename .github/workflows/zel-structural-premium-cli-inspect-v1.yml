@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect overlay tooling
+      - name: Inspect linked AI integrations
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,11 +37,19 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          J=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
-          echo '===INCUMBENT_OVERLAY==='; cat "$J/work/incumbent_overlay.json"
-          echo '===INCUMBENT_PATCH_RECEIPT==='; cat "$J/result/incumbent_overlay_patch.json"
-          echo '===OVERLAY_PATCH_TOOL==='; sed -n '1,320p' "$J/work/tools/overlay_patch.py"
-          echo '===JOB_FILES==='; find "$J/work" -maxdepth 2 -type f -printf '%p\n' | sort | tail -150
+          echo '===AI_FILES===' 
+          find /opt/zel /home/z/z -type f \
+            \( -iname '*gemini*' -o -iname '*openrouter*' -o -iname '*grok*' -o -iname '*zbot*' -o -iname '*zico*' -o -iname '*lico*' -o -iname '*zlice*' -o -iname '*council*' -o -iname '*advisor*' \) \
+            -not -path '*/.venv/*' -not -path '*/node_modules/*' -not -path '*/__pycache__/*' 2>/dev/null | sort | head -300 || true
+          echo '===AI_CODE_REFS===' 
+          grep -RIl --exclude='*.gz' --exclude='*.csv' --exclude='*.log' --exclude='*.bak*' \
+            --exclude-dir='.venv' --exclude-dir='node_modules' --exclude-dir='__pycache__' \
+            -E 'OPENROUTER|openrouter|GEMINI|gemini|GROK|grok|ZBot|zbot|Zico|zico|Lico|lico|Zlice|zlice|AI council|ai_council|model_router|llm' \
+            /opt/zel /home/z/z 2>/dev/null | sort | head -300 || true
+          echo '===SYSTEMD_AI_UNITS===' 
+          systemctl list-unit-files --type=service --no-pager 2>/dev/null | grep -Ei 'zel|zbot|zico|lico|zlice|gemini|openrouter|grok|ai' | head -200 || true
+          echo '===STRUCTURAL_TOOLS===' 
+          find /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work -maxdepth 3 -type f -printf '%p\n' 2>/dev/null | sort
           REMOTE
       - name: Cleanup
         if: always()

@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - ops/zel-structural-premium-vwap-closed-loop-gen1.sh
+      - ops/zel-vwap-gen1-ai-review.sh
       - .github/workflows/zel-vwap-gen1-ai-review.yml
   workflow_dispatch:
 
@@ -35,62 +36,20 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Stage runner
+      - name: Stage and review Gen1 runner
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/vps_key -o BatchMode=yes ops/zel-structural-premium-vwap-closed-loop-gen1.sh "$VPS_USER@$VPS_HOST:/tmp/zel-vwap-gen1-review.sh"
-      - name: Gemini and Sol review
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
-          set -euo pipefail
-          C=/home/z/z/_ai_council
-          OUT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory
-          mkdir -p "$OUT"
-          set -a; . "$C/.env"; set +a
-          BASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
-          python3 - <<'PY'
-import json,pathlib
-code=pathlib.Path('/tmp/zel-vwap-gen1-review.sh').read_text()
-q=("Review this ZEL research-only Gen1 VWAP LONG closed-loop runner for concrete correctness bugs. "
-   "Requirements: Gen0 A/B/C all failed; Gen1 candidates are B60/B75 changing only B max_hold and C120 changing only C target; "
-   "all candidates run W1 first, only W1 survivors may run W2, exactly one W12 winner may open W3; "
-   "support_resistance/liquidity_sweep stable 30 lanes must be reused only after W3 PASS; trend_rider excluded; canonical/paper/live/order/promotion mutation forbidden. "
-   "Check window leakage, checkpoint contamination, candidate fingerprinting/resume, scoring gates, W3 seal, canonical guard, aggregation, shell/Python errors. "
-   "Return first line VERDICT=GO or VERDICT=BLOCK, then CRITICAL/MAJOR/MINOR findings and exact minimal fixes. CODE:\n"+code)
-pathlib.Path('/tmp/gemini_review_body.json').write_text(json.dumps({'model':'google/gemini-3.1-pro-preview','messages':[{'role':'user','content':q}],'temperature':0.0,'max_tokens':1800},ensure_ascii=False))
-PY
-          GCODE=$(curl -sS -m 240 -o "$OUT/gen1_gemini_review.json" -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/gemini_review_body.json "$BASE/chat/completions" || true)
-          echo GEMINI_HTTP_CODE=$GCODE
-          test "$GCODE" = 200
-          python3 - <<'PY'
-import json,pathlib
-r=json.loads(pathlib.Path('/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/gen1_gemini_review.json').read_text())
-g=((r.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-code=pathlib.Path('/tmp/zel-vwap-gen1-review.sh').read_text()
-q=("You are final code-review judge for a research-only ZEL Gen1 VWAP runner. No live/order/promotion authority. "
-   "Independently inspect the code and Gemini review. Return first line VERDICT=GO only if there is no CRITICAL correctness/safety bug; otherwise VERDICT=BLOCK. "
-   "Focus on window leakage, stale checkpoint reuse across changed candidate engines, W3 leakage, canonical mutation, aggregation mismatch, shell/Python runtime errors. "
-   "CODE:\n"+code+"\nGEMINI_REVIEW:\n"+g)
-pathlib.Path('/tmp/sol_review_body.json').write_text(json.dumps({'model':'openai/gpt-5.6-sol','messages':[{'role':'user','content':q}],'temperature':0.0,'max_tokens':1800},ensure_ascii=False))
-PY
-          SCODE=$(curl -sS -m 300 -o "$OUT/gen1_sol_review.json" -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/sol_review_body.json "$BASE/chat/completions" || true)
-          echo SOL_HTTP_CODE=$SCODE
-          test "$SCODE" = 200
-          python3 - <<'PY'
-import json,pathlib
-for name in ('gen1_gemini_review','gen1_sol_review'):
- p=pathlib.Path('/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory')/(name+'.json')
- d=json.loads(p.read_text()); text=((d.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
- print('===',name,'==='); print(text)
-PY
-          REMOTE
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            ops/zel-structural-premium-vwap-closed-loop-gen1.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/zel-vwap-gen1-review.sh"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            ops/zel-vwap-gen1-ai-review.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/zel-vwap-gen1-ai-review.sh"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            'bash /tmp/zel-vwap-gen1-ai-review.sh'
       - name: Cleanup
         if: always()
         run: rm -f ~/.ssh/vps_key

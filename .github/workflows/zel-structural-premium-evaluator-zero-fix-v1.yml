@@ -1,0 +1,143 @@
+name: ZEL Structural Premium Evaluator Zero Fix V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_evaluator_zero_fix_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  fix-and-revalidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Patch evaluator only and revalidate existing 60/60 artifacts
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          OUT=/opt/zel/research-runtime/checkpoints/structural-premium-v3/output
+          EVAL="$JOB/work/evaluate.py"
+          RESULT="$JOB/result"
+          PY=/home/z/z/.venv/bin/python
+          test -s "$EVAL"; test -s "$OUT/report.json"; test -s "$OUT/trades.jsonl.gz"
+
+          echo '===PRE_ARTIFACT_HASHES==='
+          sha256sum "$OUT/report.json" "$OUT/trades.jsonl.gz" "$OUT/terminal_receipt.json"
+          find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -print0 | sort -z | xargs -0 sha256sum
+
+          cp -an "$EVAL" "$EVAL.bak.zero-v1"
+          "$PY" - "$EVAL" <<'PY'
+          from pathlib import Path
+          import os,sys,tempfile
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          reps={
+            'int(report_replay.get("strategy_failure_count") or -1) == 0':'report_replay.get("strategy_failure_count") == 0',
+            'int(report_replay.get("error_count") or -1) == 0':'report_replay.get("error_count") == 0',
+            'int(report_replay.get("censored_open_at_window_end") or -1) == 0':'report_replay.get("censored_open_at_window_end") == 0',
+          }
+          changed=0
+          for old,new in reps.items():
+              n=s.count(old)
+              if n==1:
+                  s=s.replace(old,new); changed+=1
+              elif n==0 and new in s:
+                  pass
+              else:
+                  raise SystemExit(f'PATCH_CONTRACT_MISMATCH old={old!r} count={n}')
+          fd,tmp=tempfile.mkstemp(prefix='.evaluate.zero-v1.',dir=str(p.parent))
+          with os.fdopen(fd,'w') as f:
+              f.write(s); f.flush(); os.fsync(f.fileno())
+          os.replace(tmp,p)
+          print(f'PATCHED_ZERO_VALUE_CHECKS changed={changed}')
+          PY
+          "$PY" -m py_compile "$EVAL"
+          grep -nE 'strategy_failures_zero|errors_zero|censored_open_zero' "$EVAL"
+
+          set +e
+          "$PY" "$EVAL" evaluate \
+            --report "$OUT/report.json" --ledger "$OUT/trades.jsonl.gz" \
+            --dataset-manifest "$JOB/work/data/manifest.json" \
+            --output "$RESULT/coverage_revalidation.json" \
+            > "$JOB/evaluate_fix_v1.log" 2>&1
+          eval_rc=$?
+          set -e
+          echo "EVALUATE_RC=$eval_rc"
+          cat "$JOB/evaluate_fix_v1.log"
+
+          "$PY" - "$OUT/report.json" "$RESULT/coverage_revalidation.json" "$RESULT/gate6_durable_receipt.json" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          report=json.loads(Path(sys.argv[1]).read_text())
+          row=json.loads(Path(sys.argv[2]).read_text())
+          replay=report['replay']
+          assert replay['censored_open_at_window_end']==0,replay
+          assert replay['error_count']==0,replay
+          assert replay['strategy_failure_count']==0,replay
+          checks=row['integrity']['report_checks']
+          for k in ('censored_open_zero','errors_zero','strategy_failures_zero'):
+              assert checks[k] is True,(k,checks)
+          bad=[b for b in row.get('blockers',[]) if b in ('REPORT_CENSORED_OPEN_ZERO','REPORT_ERRORS_ZERO','REPORT_STRATEGY_FAILURES_ZERO')]
+          assert not bad,bad
+          expected=row['receipt_sha256']
+          actual=hashlib.sha256(json.dumps({k:v for k,v in row.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          print(json.dumps({
+              'state':row.get('state'),
+              'integrity_all_pass':row.get('integrity',{}).get('all_pass'),
+              'coverage_restored':row.get('coverage',{}).get('coverage_restored'),
+              'survivor':row.get('survivor'),
+              'selected_configuration':row.get('selection',{}).get('selected_configuration'),
+              'blockers':row.get('blockers'),
+              'report_checks':checks,
+          },sort_keys=True))
+          if row.get('integrity',{}).get('all_pass') is True:
+              receipt={
+                'state':'PASS_GATE6_TERMINAL_VERIFICATION',
+                'economic_state':row.get('state'),
+                'coverage_restored':row.get('coverage',{}).get('coverage_restored'),
+                'selected_configuration':row.get('selection',{}).get('selected_configuration'),
+                'survivor':row.get('survivor'),
+                'blockers':row.get('blockers'),
+                'receipt_sha256':row.get('receipt_sha256'),
+                'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+              }
+              Path(sys.argv[3]).write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+              print('GATE6_TECHNICAL_INTEGRITY_PASS')
+          else:
+              print('GATE6_TECHNICAL_INTEGRITY_HOLD')
+          PY
+
+          echo '===POST_ARTIFACT_HASHES==='
+          sha256sum "$OUT/report.json" "$OUT/trades.jsonl.gz" "$OUT/terminal_receipt.json"
+          find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -print0 | sort -z | xargs -0 sha256sum
+          echo '===GATE6_RECEIPT==='
+          cat "$RESULT/gate6_durable_receipt.json" 2>/dev/null || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

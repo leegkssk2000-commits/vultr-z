@@ -1,0 +1,341 @@
+name: ZEL Structural Premium Targeted Fix Replay V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-structural-premium-targeted-fix-replay-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Build research copy, patch, preflight, seed unchanged lanes, launch durable replay
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          OLD=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          CANON=/opt/zel/forward-expansion-v1/source
+          NEW=/opt/zel/research-runtime/jobs/structural-premium-targeted-fix-v1
+          PY=/home/z/z/.venv/bin/python
+          EXPECTED_TREND_SHA=0fcb0e42b843cd4cdc388a680b809388acf210482547a1d4790af5f688cff290
+
+          test -s "$OLD/work/data/manifest.json"
+          test -s "$OLD/work/engine/replay_v1.py"
+          test -s "$OLD/work/engine/replay_v2.py"
+          test -s "$OLD/work/engine/lane_checkpoint_v2.py"
+          test -s "$OLD/work/evaluate.py"
+          test -s "$CANON/backend/strategies/sr_levels.py"
+          test -s "$CANON/backend/strategies/trend_rider.py"
+
+          # Never launch a duplicate structural replay.
+          if pgrep -af 'replay_v2.py|lane_checkpoint_v2.py' | grep -vE 'grep|targeted-fix-replay' >/tmp/zel_targeted_existing.$$; then
+            echo 'DUPLICATE_REPLAY_PROCESS_FOUND'
+            cat /tmp/zel_targeted_existing.$$
+            rm -f /tmp/zel_targeted_existing.$$
+            exit 31
+          fi
+          rm -f /tmp/zel_targeted_existing.$$
+
+          TREND_SHA_BEFORE=$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1}')
+          SR_SHA_BEFORE=$(sha256sum "$CANON/backend/strategies/sr_levels.py" | awk '{print $1}')
+          test "$TREND_SHA_BEFORE" = "$EXPECTED_TREND_SHA"
+
+          if [ -e "$NEW" ]; then
+            mv "$NEW" "${NEW}.previous.$(date -u +%Y%m%dT%H%M%SZ)"
+          fi
+          mkdir -p "$NEW/work" "$NEW/result" "$NEW/logs"
+
+          # Full isolated copy: no symlink/hardlink write-through into canonical source.
+          cp -a "$CANON" "$NEW/work/source"
+          CAND="$NEW/work/source"
+          OUT="$NEW/work/replay"
+          mkdir -p "$OUT"
+
+          "$PY" - "$CAND" "$TREND_SHA_BEFORE" "$SR_SHA_BEFORE" <<'PY'
+          from pathlib import Path
+          import hashlib,json,sys
+          root=Path(sys.argv[1]); trend_before=sys.argv[2]; sr_before=sys.argv[3]
+          sr=root/'backend/strategies/sr_levels.py'
+          tr=root/'backend/strategies/trend_rider.py'
+
+          sr_text=sr.read_text()
+          sr_old='recent = df.iloc[-cfg.lookback:]'
+          sr_new='recent = df.iloc[-(cfg.lookback + 1):-1]'
+          if sr_text.count(sr_old)!=1:
+              raise SystemExit(f'SR_PATCH_ANCHOR_COUNT:{sr_text.count(sr_old)}')
+          sr.write_text(sr_text.replace(sr_old,sr_new))
+
+          tr_text=tr.read_text()
+          tr_old='''    for i in range(len(df)):\n        if i == 0:\n            direction.iloc[i] = 1.0\n            st.iloc[i] = lowerband.iloc[i]\n            continue\n'''
+          tr_new='''    for i in range(len(df)):\n        # ATR warm-up rows are undefined. Do not let their NaNs poison the\n        # recursive Supertrend bands/state. Initialize on the first valid ATR.\n        if pd.isna(atr.iloc[i]):\n            continue\n        if (\n            i == 0\n            or pd.isna(final_upperband.iloc[i - 1])\n            or pd.isna(final_lowerband.iloc[i - 1])\n            or pd.isna(st.iloc[i - 1])\n        ):\n            final_upperband.iloc[i] = upperband.iloc[i]\n            final_lowerband.iloc[i] = lowerband.iloc[i]\n            direction.iloc[i] = 1.0\n            st.iloc[i] = lowerband.iloc[i]\n            continue\n'''
+          if tr_text.count(tr_old)!=1:
+              raise SystemExit(f'TREND_PATCH_ANCHOR_COUNT:{tr_text.count(tr_old)}')
+          tr.write_text(tr_text.replace(tr_old,tr_new))
+
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          payload={
+              'state':'PATCHED_RESEARCH_COPY_ONLY',
+              'canonical_trend_sha256_before':trend_before,
+              'canonical_sr_sha256_before':sr_before,
+              'candidate_trend_sha256':sha(tr),
+              'candidate_sr_sha256':sha(sr),
+              'sr_patch':'previous_completed_bars_only',
+              'trend_patch':'nan_safe_first_valid_atr_initialization',
+              'canonical_mutations':0,
+              'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold',
+          }
+          (root.parent.parent/'result'/'candidate_patch_receipt.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+
+          # Fast all-data candidate proof before expensive replay.
+          "$PY" - "$CAND" "$OLD/work/data" "$NEW/result/candidate_census.json" <<'PY'
+          from pathlib import Path
+          from collections import Counter
+          import importlib.util,json,sys
+          import numpy as np
+          import pandas as pd
+
+          src=Path(sys.argv[1]); data=Path(sys.argv[2]); outp=Path(sys.argv[3])
+          def load(path,name):
+              spec=importlib.util.spec_from_file_location(name,path)
+              m=importlib.util.module_from_spec(spec); sys.modules[name]=m; spec.loader.exec_module(m); return m
+          sr=load(src/'backend/strategies/sr_levels.py','z_sr_targeted')
+          tr=load(src/'backend/strategies/trend_rider.py','z_tr_targeted')
+          sc=sr.SrLevelsConfig(); tc=tr.TrendRiderConfig()
+          manifest=json.loads((data/'manifest.json').read_text())
+          files=[x for x in manifest.get('files',[]) if isinstance(x,dict) and x.get('kind')=='market' and x.get('interval')=='1m']
+          if len(files)!=15: raise SystemExit(f'MARKET_FILE_COUNT:{len(files)}')
+          sr_count=Counter(); tr_count=Counter(); sr_enter=0; tr_enter=0; errors=[]
+
+          for meta in sorted(files,key=lambda x:(str(x['window_id']),str(x['symbol']))):
+              df=pd.read_csv(data/str(meta['path']))
+              df=df.rename(columns={c:c.lower() for c in df.columns}).reset_index(drop=True)
+              for c in ('open','high','low','close','volume'):
+                  df[c]=pd.to_numeric(df[c],errors='coerce')
+              close,high,low,op,vol=(df['close'],df['high'],df['low'],df['open'],df['volume'])
+
+              # sr_levels candidate predicates, same contract as prior census.
+              prev_close=close.shift(1)
+              atr=pd.concat([high-low,(high-prev_close).abs(),(low-prev_close).abs()],axis=1).max(axis=1).rolling(sc.atr_len,min_periods=sc.atr_len).mean()
+              ema=close.ewm(span=sc.ema_len,adjust=False,min_periods=sc.ema_len).mean()
+              volma=vol.rolling(sc.vol_ma_len,min_periods=sc.vol_ma_len).mean()
+              sh=high.shift(1).rolling(sc.lookback,min_periods=sc.lookback).max()
+              sl=low.shift(1).rolling(sc.lookback,min_periods=sc.lookback).min()
+              buf=atr*sc.breakout_buffer_atr; rbuf=atr*sc.retest_reclaim_atr
+              br_l=close>sh+buf; br_s=close<sl-buf
+              rc_l=(prev_close<=sh)&(close>sh+rbuf); rc_s=(prev_close>=sl)&(close<sl-rbuf)
+              trend_l=(close>ema)&(ema>ema.shift(1)); trend_s=(close<ema)&(ema<ema.shift(1))
+              atr_pct=atr/close.replace(0,np.nan)*100.0
+              vol_ok=(atr_pct>=sc.min_atr_pct)&(atr_pct<=sc.max_atr_pct)
+              chase=((close-ema).abs()/atr.replace(0,np.nan))>sc.max_chase_dist_atr
+              base_l=(br_l|rc_l)&trend_l&vol_ok&(~chase)
+              base_s=(br_s|rc_s)&trend_s&vol_ok&(~chase)
+              sr_count['break_long']+=int(br_l.fillna(False).sum()); sr_count['break_short']+=int(br_s.fillna(False).sum())
+              sr_count['base_long']+=int(base_l.fillna(False).sum()); sr_count['base_short']+=int(base_s.fillna(False).sum())
+              for i in np.flatnonzero((base_l|base_s).fillna(False).to_numpy()):
+                  if i<419: continue
+                  try:
+                      r=sr.strategy(df.iloc[max(0,i-419):i+1].copy(),state={},risk_action='hold')
+                      if str(r.get('action'))=='enter': sr_enter+=1
+                  except Exception as e: errors.append(f'sr:{meta["window_id"]}:{meta["symbol"]}:{type(e).__name__}:{e}')
+
+              # trend_rider after NaN-safe Supertrend initialization.
+              st=tr._supertrend(df,tc.st_len,tc.st_mult)
+              tema=close.ewm(span=tc.ema_len,adjust=False,min_periods=tc.ema_len).mean()
+              tat=st['atr']; sv=st['supertrend']; direction=st['direction']
+              rise=sv>sv.shift(1); fall=sv<sv.shift(1)
+              tl=(direction==1)&(close>sv)&(close>tema)&(tema>tema.shift(1))&rise
+              ts=(direction==-1)&(close<sv)&(close<tema)&(tema<tema.shift(1))&fall
+              gap=(close-sv).abs()/tat.replace(0,np.nan)
+              lc=(close.shift(1)>=op.shift(1))&tl&(gap>=tc.st_gap_atr_min)
+              shc=(close.shift(1)<=op.shift(1))&ts&(gap>=tc.st_gap_atr_min)
+              tpct=tat/close.replace(0,np.nan)*100.0
+              tvo=(tpct>=tc.min_atr_pct)&(tpct<=tc.max_atr_pct)
+              tch=((close-tema).abs()/tat.replace(0,np.nan))>tc.max_chase_dist_atr
+              el=lc&tvo&(~tch); es=shc&tvo&(~tch)
+              tr_count['dir_long']+=int((direction==1).fillna(False).sum()); tr_count['dir_short']+=int((direction==-1).fillna(False).sum())
+              tr_count['st_rising']+=int(rise.fillna(False).sum()); tr_count['st_falling']+=int(fall.fillna(False).sum())
+              tr_count['trend_long']+=int(tl.fillna(False).sum()); tr_count['trend_short']+=int(ts.fillna(False).sum())
+              tr_count['eligible_long']+=int(el.fillna(False).sum()); tr_count['eligible_short']+=int(es.fillna(False).sum())
+              idx=np.flatnonzero((el|es).fillna(False).to_numpy())
+              for i in idx[:60]:
+                  if i<419: continue
+                  try:
+                      r=tr.strategy(df.iloc[max(0,i-419):i+1].copy(),state={},risk_action='hold')
+                      if str(r.get('action'))=='enter': tr_enter+=1
+                  except Exception as e: errors.append(f'trend:{meta["window_id"]}:{meta["symbol"]}:{type(e).__name__}:{e}')
+
+          ok=(sr_enter>0 and tr_count['st_rising']>0 and tr_count['st_falling']>0 and (tr_count['eligible_long']+tr_count['eligible_short'])>0 and tr_enter>0 and not errors)
+          payload={
+              'state':'PASS_TARGETED_CANDIDATE_CENSUS' if ok else 'HOLD_TARGETED_CANDIDATE_CENSUS',
+              'files':len(files),'rows_total':sum(int(x.get('rows') or 0) for x in files),
+              'sr_counts':dict(sr_count),'sr_direct_enter':sr_enter,
+              'trend_counts':dict(tr_count),'trend_direct_enter':tr_enter,
+              'error_count':len(errors),'errors':errors[:20],
+              'canonical_mutations':0,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold',
+          }
+          outp.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(payload,sort_keys=True))
+          if not ok: raise SystemExit(41)
+          PY
+
+          TREND_SHA_AFTER=$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1}')
+          SR_SHA_AFTER=$(sha256sum "$CANON/backend/strategies/sr_levels.py" | awk '{print $1}')
+          test "$TREND_SHA_AFTER" = "$TREND_SHA_BEFORE"
+          test "$SR_SHA_AFTER" = "$SR_SHA_BEFORE"
+
+          # Seed ONLY unchanged strategies. Changed sr/trend lanes are deliberately excluded.
+          "$PY" - "$OLD/work/data/manifest.json" "$OUT" "$NEW/result/seed_receipt.json" "$NEW" <<'PY'
+          from pathlib import Path
+          import gzip,json,shutil,sys
+          manifest=Path(sys.argv[1]); out=Path(sys.argv[2]); receipt=Path(sys.argv[3]); new=Path(sys.argv[4])
+          m=json.loads(manifest.read_text())
+          market={(str(x['window_id']),str(x['symbol']),str(x['interval'])):str(x['sha256']) for x in m.get('files',[]) if isinstance(x,dict) and x.get('kind')=='market'}
+          wanted={'liquidity_sweep','vwap_revert'}
+          candidates=[]
+          for root in Path('/opt/zel/research-runtime').rglob('lane_checkpoints'):
+              try:
+                  if new in root.parents or root==new: continue
+              except Exception: pass
+              valid=[]; keys=set()
+              for strategy in wanted:
+                  d=root/strategy
+                  if not d.is_dir(): continue
+                  for f in d.glob('*.json.gz'):
+                      try:
+                          with gzip.open(f,'rt',encoding='utf-8') as h: p=json.load(h)
+                      except Exception: continue
+                      key=(str(p.get('window_id')),str(p.get('symbol')),str(p.get('interval')))
+                      if p.get('strategy_id')!=strategy or key not in market or p.get('source_sha256')!=market[key]: continue
+                      r=p.get('result')
+                      if not isinstance(r,dict) or r.get('strategy_id')!=strategy: continue
+                      u=(strategy,)+key
+                      if u in keys: continue
+                      keys.add(u); valid.append((f,strategy,u))
+              candidates.append((len(valid),str(root),valid))
+          candidates.sort(key=lambda x:(x[0],x[1]),reverse=True)
+          best=candidates[0] if candidates else (0,'',[])
+          if best[0]!=30:
+              payload={'state':'HOLD_SEED_NOT_30','compatible_unchanged_lane_count':best[0],'best_root':best[1],'candidate_root_count':len(candidates),'action':'hold'}
+              receipt.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n'); print(json.dumps(payload,sort_keys=True)); raise SystemExit(42)
+          lane_root=out/'lane_checkpoints'; lane_root.mkdir(parents=True,exist_ok=True)
+          for f,strategy,_ in best[2]:
+              dest=lane_root/strategy/f.name; dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,dest)
+          payload={'state':'PASS_SEED_30_UNCHANGED_LANES','reused_lane_count':30,'expected_pending_lane_count':30,'source_lane_root':best[1],'reused_strategies':sorted(wanted),'recomputed_strategies':['support_resistance','trend_rider'],'action':'hold'}
+          receipt.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n'); print(json.dumps(payload,sort_keys=True))
+          PY
+
+          cat > "$NEW/work/runner.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          OLD=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          NEW=/opt/zel/research-runtime/jobs/structural-premium-targeted-fix-v1
+          CAND="$NEW/work/source"
+          OUT="$NEW/work/replay"
+          PY=/home/z/z/.venv/bin/python
+          LOCK=/opt/zel/research-runtime/structural-premium-targeted-fix-v1.lock
+          STATUS="$NEW/status.json"
+          mkdir -p "$NEW/logs" "$NEW/result"
+          exec 9>"$LOCK"
+          if ! flock -n 9; then
+            printf '{"state":"HOLD_DUPLICATE_LOCK","action":"hold"}\n' > "$STATUS.tmp"; mv "$STATUS.tmp" "$STATUS"; exit 51
+          fi
+          status() {
+            local s="$1"
+            printf '{"state":"%s","pid":%s,"updated_at":"%s","execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}\n' "$s" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS.tmp"
+            mv "$STATUS.tmp" "$STATUS"
+          }
+          status RUNNING_LANES
+          if ! "$PY" "$OLD/work/engine/lane_checkpoint_v2.py" \
+            --engine-v1 "$OLD/work/engine/replay_v1.py" \
+            --engine-v2 "$OLD/work/engine/replay_v2.py" \
+            --source-root "$CAND" \
+            --data-root "$OLD/work/data" \
+            --interval 1m \
+            --output-dir "$OUT" \
+            --workers 4 2>&1 | tee "$NEW/logs/lanes.log"; then
+              status HOLD_LANES; exit 52
+          fi
+          status AGGREGATING
+          if ! "$PY" "$OLD/work/engine/replay_v2.py" \
+            --engine-v1 "$OLD/work/engine/replay_v1.py" \
+            --source-root "$CAND" \
+            --data-root "$OLD/work/data" \
+            --interval 1m \
+            --output-dir "$OUT" \
+            --workers 4 2>&1 | tee "$NEW/logs/aggregate.log"; then
+              status HOLD_AGGREGATE; exit 53
+          fi
+          status EVALUATING
+          if ! "$PY" "$OLD/work/evaluate.py" evaluate \
+            --report "$OUT/report.json" \
+            --ledger "$OUT/trades.jsonl.gz" \
+            --dataset-manifest "$OLD/work/data/manifest.json" \
+            --output "$NEW/result/coverage_revalidation.json" 2>&1 | tee "$NEW/logs/evaluate.log"; then
+              status HOLD_EVALUATE; exit 54
+          fi
+          status DONE_TARGETED_REPLAY_EVALUATED
+          RUNNER
+          chmod 700 "$NEW/work/runner.sh"
+
+          printf '{"state":"VALIDATED_CANDIDATE","reused_lane_count":30,"expected_pending_lane_count":30,"execution_authority":"NONE","order_authority":"BLOCKED","action":"hold"}\n' > "$NEW/status.json"
+          nohup "$NEW/work/runner.sh" > "$NEW/logs/runner.log" 2>&1 < /dev/null &
+          PID=$!
+          echo "$PID" > "$NEW/runner.pid"
+          sleep 18
+
+          echo '===TARGETED_FIX_STATUS==='
+          cat "$NEW/status.json"
+          echo '===LANE_START==='
+          grep -m1 'LANE_RESUME_START' "$NEW/logs/runner.log" || true
+          echo '===RUNNER_PID==='
+          echo "$PID"
+          ps -p "$PID" -o pid=,stat=,etime=,cmd= || true
+          echo '===CANONICAL_HASHES==='
+          echo "sr_before=$SR_SHA_BEFORE sr_after=$(sha256sum "$CANON/backend/strategies/sr_levels.py" | awk '{print $1}')"
+          echo "trend_before=$TREND_SHA_BEFORE trend_after=$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1}')"
+          test "$(sha256sum "$CANON/backend/strategies/sr_levels.py" | awk '{print $1}')" = "$SR_SHA_BEFORE"
+          test "$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1}')" = "$TREND_SHA_BEFORE"
+
+          # It may finish very quickly, otherwise the durable VPS PID must remain alive.
+          if ! kill -0 "$PID" 2>/dev/null; then
+            STATE=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$NEW/status.json")
+            case "$STATE" in
+              DONE_TARGETED_REPLAY_EVALUATED) : ;;
+              *) echo "RUNNER_DIED_EARLY:$STATE"; tail -120 "$NEW/logs/runner.log"; exit 55 ;;
+            esac
+          fi
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

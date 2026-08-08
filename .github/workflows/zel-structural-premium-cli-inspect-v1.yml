@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect linked AI integrations
+      - name: Inspect AI council readiness
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,19 +37,21 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          echo '===AI_FILES===' 
-          find /opt/zel /home/z/z -type f \
-            \( -iname '*gemini*' -o -iname '*openrouter*' -o -iname '*grok*' -o -iname '*zbot*' -o -iname '*zico*' -o -iname '*lico*' -o -iname '*zlice*' -o -iname '*council*' -o -iname '*advisor*' \) \
-            -not -path '*/.venv/*' -not -path '*/node_modules/*' -not -path '*/__pycache__/*' 2>/dev/null | sort | head -300 || true
-          echo '===AI_CODE_REFS===' 
-          grep -RIl --exclude='*.gz' --exclude='*.csv' --exclude='*.log' --exclude='*.bak*' \
-            --exclude-dir='.venv' --exclude-dir='node_modules' --exclude-dir='__pycache__' \
-            -E 'OPENROUTER|openrouter|GEMINI|gemini|GROK|grok|ZBot|zbot|Zico|zico|Lico|lico|Zlice|zlice|AI council|ai_council|model_router|llm' \
-            /opt/zel /home/z/z 2>/dev/null | sort | head -300 || true
-          echo '===SYSTEMD_AI_UNITS===' 
-          systemctl list-unit-files --type=service --no-pager 2>/dev/null | grep -Ei 'zel|zbot|zico|lico|zlice|gemini|openrouter|grok|ai' | head -200 || true
-          echo '===STRUCTURAL_TOOLS===' 
-          find /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work -maxdepth 3 -type f -printf '%p\n' 2>/dev/null | sort
+          echo '===COUNCIL_PACKAGE==='; cat /home/z/z/_ai_council/package.json 2>/dev/null || true
+          echo '===COUNCIL_SERVER_1_360==='; sed -n '1,360p' /home/z/z/_ai_council/server.js 2>/dev/null || true
+          echo '===AI_ROLE_REGISTRY==='; cat /home/z/z/data/ai_role_registry_latest.json 2>/dev/null || true
+          echo '===COUNCIL_PROCESSES==='; pgrep -af '_ai_council|server.js|openrouter|gemini|grok' || true
+          echo '===LISTEN_PORTS==='; ss -ltnp 2>/dev/null | grep -E 'node|python|:3000|:3001|:3002|:8080|:8787' | head -120 || true
+          echo '===COUNCIL_LOG_TAIL==='; tail -80 /home/z/z/_ai_council/logs/chat.jsonl 2>/dev/null || true
+          echo '===GEMINI_CONFIG_KEYS==='; python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/home/z/z/backend/config/gemini_oauth.json')
+if p.exists():
+    try:
+        d=json.loads(p.read_text()); print(sorted(d.keys()))
+    except Exception as e: print(type(e).__name__)
+PY
           REMOTE
       - name: Cleanup
         if: always()

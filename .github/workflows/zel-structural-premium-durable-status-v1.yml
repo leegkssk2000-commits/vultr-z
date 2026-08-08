@@ -46,6 +46,13 @@ jobs:
           pid="$(cat "$JOB/runner.pid" 2>/dev/null || true)"
           echo "pid=$pid"
           if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo 'runner_alive=true'; else echo 'runner_alive=false'; fi
+          if [ -n "$pid" ] && [ -r "/proc/$pid/status" ]; then
+            echo '===PROC_STATUS==='
+            grep -E '^(Name|State|Pid|PPid|Threads):' "/proc/$pid/status" || true
+            echo '===PROC_CMDLINE==='
+            tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
+            echo
+          fi
           echo '===STRATEGY_CHECKPOINTS==='
           find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -printf '%f\n' 2>/dev/null | sort || true
           echo '===LANE_COUNTS_BY_STRATEGY==='
@@ -55,12 +62,16 @@ jobs:
           done
           echo '===RESULT_FILES==='
           find "$JOB/result" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
-          echo '===LANE_LOG_TAIL==='
-          tail -n 60 "$JOB/lane.log" 2>/dev/null || true
-          echo '===AGG_LOG_TAIL==='
-          tail -n 30 "$JOB/aggregate.log" 2>/dev/null || true
-          echo '===EVAL_LOG_TAIL==='
-          tail -n 30 "$JOB/evaluate.log" 2>/dev/null || true
+          echo '===RUNNER_FIX_LOG_TAIL==='
+          tail -n 80 "$JOB/runner_fix_v1.log" 2>/dev/null || true
+          echo '===LANE_V2_LOG_TAIL==='
+          tail -n 80 "$JOB/lane_v2.log" 2>/dev/null || true
+          echo '===AGG_V2_LOG_TAIL==='
+          tail -n 40 "$JOB/aggregate_v2.log" 2>/dev/null || true
+          echo '===EVAL_V2_LOG_TAIL==='
+          tail -n 40 "$JOB/evaluate_v2.log" 2>/dev/null || true
+          echo '===OLD_LANE_LOG_TAIL==='
+          tail -n 20 "$JOB/lane.log" 2>/dev/null || true
           REMOTE
       - name: Cleanup
         if: always()

@@ -1,0 +1,225 @@
+name: ZEL Structural Premium Gate5 Lane Resume V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_gate5_lane_resume_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-gate5-lane-resume-v1
+  cancel-in-progress: false
+
+jobs:
+  lane-resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SOURCE_ARTIFACT_ID: '8916685107'
+      REMOTE_LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+      REMOTE_CHECKPOINT_ROOT: /opt/zel/research-runtime/checkpoints/structural-premium-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gate 5A local contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
+            backend/tools/zel_structural_premium_registry_restore_v2.py \
+            backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_structural_premium_registry_restore_v4.py \
+            backend/tools/zel_structural_premium_overlay_patch_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_historical_oos_lane_checkpoint_v1.py
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --self-test
+          python backend/tools/zel_structural_premium_overlay_patch_v1.py --self-test
+          python backend/tools/zel_historical_oos_lane_checkpoint_v1.py --self-test
+
+      - name: Gate 5B immutable dataset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-sp-lane /tmp/zel-sp-lane-bundle.tar
+          mkdir -p /tmp/zel-sp-lane/data /tmp/zel-sp-lane/result /tmp/zel-sp-lane/engine /tmp/zel-sp-lane/tools
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/zel-sp-lane/source.zip
+          python backend/tools/zel_structural_premium_coverage_revalidation_v1.py materialize \
+            --source-zip /tmp/zel-sp-lane/source.zip \
+            --output-root /tmp/zel-sp-lane/data
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-sp-lane/data/manifest.json').read_text())
+          assert r['state']=='PASS_HISTORICAL_OOS_DATA_READY',r
+          assert r['total_market_rows']==960150,r
+          assert len(r['files'])==15 and len(r['windows'])==3,r
+          assert r['duplicate_timestamp_count']==0 and r['missing_interval_count']==0,r
+          assert r['synthetic_rows_created']==0 and r['forward_overlap_count']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'state':r['state'],'rows':r['total_market_rows'],'dataset_sha256':r['dataset_sha256']})
+          PY
+
+      - name: Gate 5C build sealed bundle
+        run: |
+          set -euo pipefail
+          cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-sp-lane/engine/replay_v1.py
+          cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-lane/engine/replay_v2.py
+          cp backend/tools/zel_historical_oos_lane_checkpoint_v1.py /tmp/zel-sp-lane/engine/lane_checkpoint.py
+          cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-lane/engine/zel_structural_premium_registry_restore_v2.py
+          cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-sp-lane/engine/zel_structural_premium_registry_restore_v3.py
+          cp backend/tools/zel_structural_premium_registry_restore_v4.py /tmp/zel-sp-lane/engine/zel_structural_premium_registry_restore_v4.py
+          cp backend/tools/zel_structural_premium_overlay_patch_v1.py /tmp/zel-sp-lane/tools/overlay_patch.py
+          cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-lane/evaluate.py
+          cp backend/research/zel_structural_premium_incumbent_overlay_v1.json /tmp/zel-sp-lane/incumbent_overlay.json
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/zel-sp-lane/evaluate.py')
+          t=p.read_text()
+          old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "long_only_projection_explicit": True,')
+          old='        "five_strategies_completed": int(report_replay.get("strategy_count_completed") or -1) == 5,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "four_entry_owners_completed": int(report_replay.get("strategy_count_completed") or -1) == 4,')
+          old='            "filter_only": [f"{value}|enter_long" for value in FILTER_ONLY],'
+          assert t.count(old)==1
+          t=t.replace(old,'            "filter_only": [f"{value}|filter_only" for value in FILTER_ONLY],')
+          p.write_text(t)
+          PY
+          (
+            cd /tmp/zel-sp-lane
+            sha256sum engine/*.py tools/*.py evaluate.py incumbent_overlay.json > transport.sha256
+            sha256sum -c transport.sha256
+          )
+          tar -C /tmp/zel-sp-lane -cf /tmp/zel-sp-lane-bundle.tar data engine tools evaluate.py incumbent_overlay.json transport.sha256
+
+      - name: Gate 5D prepare VPS
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Gate 5E lane-sharded resumable replay
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-sp-lane-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "rm -rf '$remote'; mkdir -p '$remote' /opt/zel/research-runtime/locks '$REMOTE_CHECKPOINT_ROOT/output'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/zel-sp-lane-bundle.tar "$VPS_USER@$VPS_HOST:$remote/bundle.tar"
+          set +e
+          timeout 21400s ssh -i ~/.ssh/vps_key -o BatchMode=yes \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=90 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; cd '$remote'; \
+             tar -xf bundle.tar; mkdir -p aggregate '$REMOTE_CHECKPOINT_ROOT/output'; \
+             sha256sum -c transport.sha256; \
+             exec 9>'$REMOTE_LOCK'; flock -w 120 9 || { echo ONE_HEAVY_WAIT_TIMEOUT >&2; exit 75; }; \
+             /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+               --output aggregate/registry_restore.json; \
+             /home/z/z/.venv/bin/python tools/overlay_patch.py \
+               --engine-v1 engine/replay_v1.py --candidate-json incumbent_overlay.json \
+               --receipt aggregate/incumbent_overlay_patch.json; \
+             /home/z/z/.venv/bin/python -m py_compile engine/replay_v1.py engine/replay_v2.py engine/lane_checkpoint.py; \
+             GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/lane_checkpoint.py \
+               --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --data-root data --interval 1m --output-dir '$REMOTE_CHECKPOINT_ROOT/output' --workers 4; \
+             GITHUB_RUN_ID='$GITHUB_RUN_ID' /home/z/z/.venv/bin/python engine/replay_v2.py \
+               --engine-v1 engine/replay_v1.py \
+               --source-root /opt/zel/forward-expansion-v1/source \
+               --data-root data --interval 1m --output-dir '$REMOTE_CHECKPOINT_ROOT/output' --workers 4; \
+             test -s '$REMOTE_CHECKPOINT_ROOT/output/report.json'; test -s '$REMOTE_CHECKPOINT_ROOT/output/trades.jsonl.gz'; \
+             /home/z/z/.venv/bin/python evaluate.py evaluate \
+               --report '$REMOTE_CHECKPOINT_ROOT/output/report.json' --ledger '$REMOTE_CHECKPOINT_ROOT/output/trades.jsonl.gz' \
+               --dataset-manifest data/manifest.json --output aggregate/coverage_revalidation.json; \
+             cp '$REMOTE_CHECKPOINT_ROOT/output/summary.json' aggregate/exact_replay_summary.json; \
+             cp '$REMOTE_CHECKPOINT_ROOT/output/progress.json' aggregate/replay_progress.json; \
+             cp '$REMOTE_CHECKPOINT_ROOT/output/terminal_receipt.json' aggregate/replay_terminal_receipt.json; \
+             cp data/manifest.json aggregate/expanded_dataset_manifest.json; \
+             cp incumbent_overlay.json aggregate/incumbent_overlay.json"
+          remote_rc=$?
+          set -e
+          for name in registry_restore.json incumbent_overlay_patch.json coverage_revalidation.json exact_replay_summary.json replay_progress.json replay_terminal_receipt.json expanded_dataset_manifest.json incumbent_overlay.json; do
+            scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/aggregate/$name" "/tmp/zel-sp-lane/result/$name" || true
+          done
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$REMOTE_CHECKPOINT_ROOT/output/progress.json" /tmp/zel-sp-lane/result/replay_progress_partial.json || true
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" || true
+          exit "$remote_rc"
+
+      - name: Gate 6 terminal verification
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/zel-sp-lane/result')
+          progress=json.loads((root/'replay_progress.json').read_text())
+          terminal=json.loads((root/'replay_terminal_receipt.json').read_text())
+          restore=json.loads((root/'registry_restore.json').read_text())
+          row=json.loads((root/'coverage_revalidation.json').read_text())
+          assert progress['state']=='PASS',progress
+          assert int(progress['completed_units'])==int(progress['total_units']) and int(progress['error_count'])==0,progress
+          assert terminal['state']=='PASS' and terminal['strategy_count_completed']==4 and terminal['strategy_failure_count']==0,terminal
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED',restore
+          assert restore['restored_count']==4 and restore['market_structure_entry_owner'] is False,restore
+          expected=row['receipt_sha256']
+          actual=hashlib.sha256(json.dumps({k:v for k,v in row.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['integrity']['all_pass'] is True,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          print(json.dumps({
+            'state':row['state'],
+            'coverage_restored':row['coverage']['coverage_restored'],
+            'selected_configuration':row['selection']['selected_configuration'],
+            'W1':row['selected']['windows']['W1'],
+            'W2':row['selected']['windows']['W2'],
+            'W3':row['selected']['windows']['W3'],
+            'survivor':row['survivor'],
+            'blockers':row['blockers'],
+            'receipt_sha256':row['receipt_sha256'],
+          },sort_keys=True))
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key /tmp/zel-sp-lane-bundle.tar
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-premium-gate5-lane-resume-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-sp-lane/result
+          if-no-files-found: warn
+          retention-days: 90

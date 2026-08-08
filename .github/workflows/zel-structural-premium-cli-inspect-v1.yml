@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect CLIs
+      - name: Inspect CLIs and output roots
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -39,14 +39,16 @@ jobs:
           set -euo pipefail
           JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
           PY=/home/z/z/.venv/bin/python
+          echo '===REPLAY_HELP==='
+          "$PY" "$JOB/work/engine/replay_v2.py" --help
           echo '===LANE_HELP==='
           "$PY" "$JOB/work/engine/lane_checkpoint_v2.py" --help
           echo '===EVAL_HELP==='
-          "$PY" "$JOB/work/evaluate.py" --help
-          echo '===LANE_TAIL==='
-          tail -180 "$JOB/work/engine/lane_checkpoint_v2.py"
-          echo '===EVAL_TAIL==='
-          tail -180 "$JOB/work/evaluate.py"
+          "$PY" "$JOB/work/evaluate.py" evaluate --help
+          echo '===OUTPUT_DIRS==='
+          find "$JOB" -maxdepth 4 -type d \( -name lane_checkpoints -o -name checkpoints -o -name replay -o -name output -o -name result \) -printf '%p\n' | sort
+          echo '===REPLAY_FILES==='
+          find "$JOB" -maxdepth 5 -type f \( -name '*report*.json' -o -name '*ledger*.gz' -o -name '*score*.csv' -o -name '*progress*.json' \) -printf '%p %s\n' | sort | tail -100
           REMOTE
       - name: Cleanup
         if: always()

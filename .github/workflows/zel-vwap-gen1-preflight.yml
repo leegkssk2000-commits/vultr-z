@@ -27,7 +27,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect prerequisites
+      - name: Inspect live Gen1 progress
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -35,21 +35,24 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -u
-          paths=(
-            /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
-            /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v2.py
-            /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/lane_checkpoint_v2.py
-            /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/trades.jsonl.gz
-            /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source/backend/strategies/vwap_reversion.py
-            /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json
-            /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source/backend/config/q4r3_exact25_shadow_binding_v1.json
-            /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/data/manifest.json
-          )
-          for p in "${paths[@]}"; do if [ -s "$p" ]; then echo "OK $p"; else echo "MISSING $p"; fi; done
-          echo '===VWAP_FILES===' 
-          find /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source/backend/strategies -maxdepth 1 -type f -iname '*vwap*' -printf '%p\n' 2>/dev/null || true
-          echo '===DATA_ROOT===' 
-          find /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/data -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort | head -80 || true
+          G=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen1
+          echo '===ACTIVE_WORKERS==='
+          pgrep -af "$G/runs/.*/engine/lane_.*\.py" || true
+          for cid in B60 B75 C120; do
+            echo "===${cid}==="
+            for phase in w1 w2 w3; do
+              d="$G/runs/$cid/replay_${phase}/lane_checkpoints/vwap_revert"
+              printf '%s_COUNT=' "$phase"
+              find "$d" -type f -name '*.json.gz' 2>/dev/null | wc -l || true
+              s="$G/runs/$cid/result/${phase}_score.json"
+              if [ -s "$s" ]; then echo "${phase}_SCORE="; cat "$s"; fi
+            done
+            echo "CONTRACT="; cat "$G/runs/$cid/contract.sha256" 2>/dev/null || true
+          done
+          echo '===W1_SELECTION==='; cat "$G/result/w1_selection.json" 2>/dev/null || true
+          echo '===W12_SELECTION==='; cat "$G/result/w12_selection.json" 2>/dev/null || true
+          echo '===TERMINAL==='; cat "$G/result/terminal_receipt.json" 2>/dev/null || true
+          echo '===FILES==='; find "$G/result" -maxdepth 1 -type f -printf '%f %s\n' 2>/dev/null | sort || true
           REMOTE
       - name: Cleanup
         if: always()

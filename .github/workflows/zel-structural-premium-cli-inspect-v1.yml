@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Discover live Requesty model IDs
+      - name: Multi-AI design debate
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -38,10 +38,19 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           C=/home/z/z/_ai_council
-          set -a; . "$C/.env"; set +a
-          BASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
-          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$BASE/models" > /tmp/requesty_models.json
-          python3 -c 'import json,pathlib; d=json.loads(pathlib.Path("/tmp/requesty_models.json").read_text()); rows=d.get("data",d if isinstance(d,list) else []); ids=sorted(str(x.get("id","")) for x in rows if isinstance(x,dict)); print("OPENAI",[x for x in ids if "openai/" in x.lower()][:40]); print("GEMINI",[x for x in ids if "gemini" in x.lower()][:80]); print("GROK",[x for x in ids if "grok" in x.lower()][:80]); print("COUNT",len(ids))'
+          OUT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory
+          mkdir -p "$OUT"; cd "$C"
+          pkill -f '/home/z/z/_ai_council/server.js' 2>/dev/null || true
+          nohup env PORT=18787 MODEL_JUDGE=openai/gpt-5.6-sol MODEL_GEMINI=google/gemini-2.5-pro MODEL_GROK=xai/grok-4.3 MAX_TOKENS_AGENT=700 MAX_TOKENS_JUDGE=1000 node "$C/server.js" >/tmp/zel_ai_council_vwap.log 2>&1 & PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do curl -fsS -m 2 http://127.0.0.1:18787/health >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS -m 3 http://127.0.0.1:18787/health > "$OUT/health_gen0.json"
+          QUESTION='ZEL Structural Premium 연구용 closed-loop를 설계한다. trend_rider는 제외 유지. retained는 vwap_revert, support_resistance, liquidity_sweep. 현재 combined 910 trades WR 34.18% PF 0.628 net -281.96R maxDD 294.21R. vwap_revert가 885 trades net -273.27R PF 0.628로 주손실원인이다. 목표는 vwap_revert만 15 lane 재계산하고 나머지 30 lane은 안전하게 재사용하는 자동 후보생성-타깃리플레이-비교-다음세대 루프다. 연구복사본만 수정하고 canonical, paper, live, order, promotion은 금지. 허용 파라미터는 stop_mult 0.70~1.25, target_mult 0.80~1.50, min_confidence null~0.90, cooldown 0~120min, min_risk_distance 0~2%, max_hold 15~240min. W1/W2/W3 과적합 및 sample collapse를 막아야 한다. 첫 세대 후보 3개를 구체 수치로 제안하고 이유, 평가게이트, 캐시/체크포인트 설계, 실패가드를 제안하라. 최소 격리형 구현을 최우선으로 하라.'
+          BODY=$(python3 -c 'import json,sys; print(json.dumps({"question":sys.argv[1]},ensure_ascii=False))' "$QUESTION")
+          CODE=$(curl -sS -m 300 -o "$OUT/debate_gen0.json" -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:18787/debate || true)
+          echo HTTP_CODE=$CODE
+          python3 -c 'import json,pathlib; p=pathlib.Path("/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/debate_gen0.json"); d=json.loads(p.read_text()); print("MODE",d.get("mode")); print("LATENCY_MS",d.get("latency_ms")); print("ROLES",[(x.get("role"),x.get("model")) for x in d.get("round1",[])]); print("FINAL"); print(d.get("final",d.get("error","")))'
+          test "$CODE" = 200
           REMOTE
       - name: Cleanup
         if: always()

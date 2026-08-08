@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - ops/zel-structural-premium-vwap-closed-loop-gen1.sh
+      - ops/zel-vwap-gen1-runtime-fix.sh
       - .github/workflows/zel-vwap-gen1-run.yml
   workflow_dispatch:
 
@@ -29,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n ops/zel-structural-premium-vwap-closed-loop-gen1.sh
+          bash -n ops/zel-vwap-gen1-runtime-fix.sh
       - name: Prepare SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -39,7 +41,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Execute Gen1 research loop
+      - name: Execute guarded Gen1 research loop
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -47,9 +49,10 @@ jobs:
           set -euo pipefail
           scp -i ~/.ssh/vps_key -o BatchMode=yes \
             ops/zel-structural-premium-vwap-closed-loop-gen1.sh \
-            "$VPS_USER@$VPS_HOST:/tmp/zel-structural-premium-vwap-closed-loop-gen1.sh"
+            ops/zel-vwap-gen1-runtime-fix.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            'bash /tmp/zel-structural-premium-vwap-closed-loop-gen1.sh'
+            'bash /tmp/zel-vwap-gen1-runtime-fix.sh /tmp/zel-structural-premium-vwap-closed-loop-gen1.sh'
       - name: Cleanup
         if: always()
         run: rm -f ~/.ssh/vps_key

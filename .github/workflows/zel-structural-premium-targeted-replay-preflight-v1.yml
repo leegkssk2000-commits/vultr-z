@@ -1,0 +1,53 @@
+name: ZEL Structural Premium Targeted Replay Preflight V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-structural-premium-targeted-replay-preflight-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Inspect replay runtime without mutation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          echo '===FILES==='
+          find "$JOB" -maxdepth 3 -type f \( -name '*.py' -o -name '*.json' \) -printf '%p\n' | sort | head -200
+          echo '===PY_CANDIDATES==='
+          find "$JOB" -type f -name '*.py' -printf '%p\n' | sort
+          echo '===PROCESS==='
+          pgrep -af 'structural-premium|replay_v2|lane' || true
+          echo '===RESULT_FILES==='
+          find "$JOB/result" -maxdepth 2 -type f -printf '%f %s\n' 2>/dev/null | sort || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

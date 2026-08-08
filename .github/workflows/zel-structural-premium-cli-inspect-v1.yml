@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect vwap decomposition
+      - name: Inspect long regime cross table
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,8 +37,9 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          R=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/report.json
-          python3 -c "import json; r=json.load(open('$R')); c=next(x for x in r['scorecards'] if x['strategy_id']=='vwap_revert'); print('OVERALL',json.dumps(c['closed_metrics_ex_funding'],sort_keys=True)); print('BY_WINDOW',json.dumps(c['by_window'],sort_keys=True)); print('BY_SIDE',json.dumps(c['by_side'],sort_keys=True)); print('BY_REGIME',json.dumps(c['by_regime'],sort_keys=True)); print('COUNTERS',{k:c[k] for k in ('strategy_call_count','signal_count','valid_entry_count','open_count','close_count','error_count')})"
+          E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
+          T=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/trades.jsonl.gz
+          python3 -c "import gzip,json,importlib.util; spec=importlib.util.spec_from_file_location('e','$E'); e=importlib.util.module_from_spec(spec); spec.loader.exec_module(e); rows=[json.loads(x) for x in gzip.open('$T','rt')]; rows=[x for x in rows if x.get('strategy_id')=='vwap_revert' and x.get('side')=='long']; print('LONG_ALL',json.dumps(e.metrics(rows),sort_keys=True)); [print(w,r,json.dumps(e.metrics([x for x in rows if x.get('window_id')==w and x.get('regime')==r]),sort_keys=True)) for w in sorted(set(x.get('window_id') for x in rows)) for r in sorted(set(x.get('regime') for x in rows))]; print('REGIME_ALL',json.dumps(e.grouped_metrics(rows,'regime'),sort_keys=True))"
           REMOTE
       - name: Cleanup
         if: always()

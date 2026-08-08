@@ -1,0 +1,63 @@
+name: ZEL Structural Premium Zero Signal Doctor V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_zero_signal_doctor_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read zero-signal strategy contracts
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          SRC=/opt/zel/forward-expansion-v1/source
+          echo '===GATE6_RECEIPT==='
+          cat "$JOB/result/gate6_durable_receipt.json" 2>/dev/null || true
+          echo '===REGISTRY_RESTORE==='
+          cat "$JOB/result/registry_restore.json" 2>/dev/null || true
+          echo '===RESTORE_V4_REFERENCES==='
+          grep -nE 'trend_rider|support_resistance|sr_levels|adapter|enter_long|ENTRY' "$JOB/work/engine/zel_structural_premium_registry_restore_v4.py" 2>/dev/null || true
+          echo '===RESTORE_V4_BODY==='
+          sed -n '1,360p' "$JOB/work/engine/zel_structural_premium_registry_restore_v4.py" 2>/dev/null || true
+          echo '===SOURCE_MATCH_PATHS==='
+          grep -RIlE 'trend_rider|support_resistance|sr_levels' "$SRC" --include='*.py' --include='*.json' --include='*.yml' --include='*.yaml' 2>/dev/null | sort | head -n 100 || true
+          echo '===SOURCE_REFERENCES==='
+          grep -RInE 'trend_rider|support_resistance|sr_levels' "$SRC" --include='*.py' --include='*.json' --include='*.yml' --include='*.yaml' 2>/dev/null | head -n 500 || true
+          echo '===MATCHED_PY_BODIES==='
+          for f in $(grep -RIlE 'trend_rider|support_resistance|sr_levels' "$SRC" --include='*.py' 2>/dev/null | sort | head -n 20); do
+            echo "---FILE:$f---"
+            sed -n '1,420p' "$f" || true
+          done
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

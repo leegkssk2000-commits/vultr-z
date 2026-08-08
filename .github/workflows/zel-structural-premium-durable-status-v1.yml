@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
-          set -euo pipefail
+          set -u
           JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
           OUT=/opt/zel/research-runtime/checkpoints/structural-premium-v3/output
           echo '===STATUS_JSON==='
@@ -46,13 +46,8 @@ jobs:
           pid="$(cat "$JOB/runner.pid" 2>/dev/null || true)"
           echo "pid=$pid"
           if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo 'runner_alive=true'; else echo 'runner_alive=false'; fi
-          echo '===COUNTS==='
-          sc="$(find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
-          lc="$(find "$OUT/lane_checkpoints" -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
-          echo "strategy_checkpoints=$sc"
-          echo "lane_checkpoints=$lc"
-          echo "completed_units_estimate=$(( sc*15 + lc ))"
-          echo "remaining_units_estimate=$(( 60 - (sc*15 + lc) ))"
+          echo '===STRATEGY_CHECKPOINTS==='
+          find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -printf '%f\n' 2>/dev/null | sort || true
           echo '===LANE_COUNTS_BY_STRATEGY==='
           for s in liquidity_sweep support_resistance trend_rider vwap_revert; do
             c="$(find "$OUT/lane_checkpoints/$s" -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
@@ -61,11 +56,11 @@ jobs:
           echo '===RESULT_FILES==='
           find "$JOB/result" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
           echo '===LANE_LOG_TAIL==='
-          tail -n 40 "$JOB/lane.log" 2>/dev/null || true
+          tail -n 60 "$JOB/lane.log" 2>/dev/null || true
           echo '===AGG_LOG_TAIL==='
-          tail -n 20 "$JOB/aggregate.log" 2>/dev/null || true
+          tail -n 30 "$JOB/aggregate.log" 2>/dev/null || true
           echo '===EVAL_LOG_TAIL==='
-          tail -n 20 "$JOB/evaluate.log" 2>/dev/null || true
+          tail -n 30 "$JOB/evaluate.log" 2>/dev/null || true
           REMOTE
       - name: Cleanup
         if: always()

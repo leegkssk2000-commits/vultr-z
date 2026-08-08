@@ -1,0 +1,74 @@
+name: ZEL Structural Premium Status PATH Hotfix V2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_status_path_hotfix_trigger_v2.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JOB: /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+      OUT: /opt/zel/research-runtime/checkpoints/structural-premium-v3/output
+      LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Relaunch same durable script with venv PATH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "JOB='$JOB' OUT='$OUT' LOCK='$LOCK' LAUNCH_RUN_ID='$GITHUB_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          script="$JOB/resume_fingerprint_fix_v1.sh"
+          test -s "$script"
+          old_pid="$(cat "$JOB/runner.pid" 2>/dev/null || true)"
+          if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            cmd="$(tr '\0' ' ' < "/proc/$old_pid/cmdline" 2>/dev/null || true)"
+            case "$cmd" in
+              *"$JOB/resume_fingerprint_fix_v1.sh"*)
+                kill -TERM -- "-$old_pid" 2>/dev/null || kill -TERM "$old_pid" 2>/dev/null || true
+                for _ in $(seq 1 10); do kill -0 "$old_pid" 2>/dev/null || break; sleep 1; done
+                ;;
+              *) echo "REFUSE_UNKNOWN_PID pid=$old_pid cmd=$cmd" >&2; exit 81;;
+            esac
+          fi
+          rm -f "$JOB/status.json" "$JOB/runner.pid"
+          env PATH="/home/z/z/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            JOB="$JOB" OUT="$OUT" LOCK="$LOCK" LAUNCH_RUN_ID="$LAUNCH_RUN_ID" \
+            nohup setsid bash "$script" > "$JOB/runner_fix_v2.log" 2>&1 < /dev/null &
+          pid=$!
+          echo "$pid" > "$JOB/runner.pid"
+          sleep 5
+          kill -0 "$pid"
+          test -s "$JOB/status.json"
+          echo "STATUS_PATH_HOTFIX_PASS pid=$pid"
+          cat "$JOB/status.json"
+          echo '===LANE_V2_START==='
+          head -n 2 "$JOB/lane_v2.log" 2>/dev/null || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

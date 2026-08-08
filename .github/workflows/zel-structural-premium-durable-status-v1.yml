@@ -53,6 +53,8 @@ jobs:
             tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
             echo
           fi
+          echo '===REPLAY_WORKERS==='
+          ps -eo pid,ppid,stat,etime,pcpu,pmem,args --sort=-pcpu | grep -E 'lane_checkpoint_v2.py|replay_v1.py|replay_v2.py' | grep -v grep || true
           echo '===STRATEGY_CHECKPOINTS==='
           find "$OUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' -printf '%f\n' 2>/dev/null | sort || true
           echo '===LANE_COUNTS_BY_STRATEGY==='
@@ -60,12 +62,16 @@ jobs:
             c="$(find "$OUT/lane_checkpoints/$s" -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
             echo "$s=$c"
           done
+          echo '===LATEST_CHECKPOINTS==='
+          find "$OUT/checkpoints" "$OUT/lane_checkpoints" -type f -name '*.json.gz' -printf '%T@|%TY-%Tm-%TdT%TH:%TM:%TS|%p\n' 2>/dev/null | sort -nr | head -n 20 || true
           echo '===RESULT_FILES==='
           find "$JOB/result" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
           echo '===RUNNER_FIX_LOG_TAIL==='
           tail -n 80 "$JOB/runner_fix_v1.log" 2>/dev/null || true
+          echo '===RUNNER_FIX_V2_LOG_TAIL==='
+          tail -n 80 "$JOB/runner_fix_v2.log" 2>/dev/null || true
           echo '===LANE_V2_LOG_TAIL==='
-          tail -n 80 "$JOB/lane_v2.log" 2>/dev/null || true
+          tail -n 120 "$JOB/lane_v2.log" 2>/dev/null || true
           echo '===AGG_V2_LOG_TAIL==='
           tail -n 40 "$JOB/aggregate_v2.log" 2>/dev/null || true
           echo '===EVAL_V2_LOG_TAIL==='

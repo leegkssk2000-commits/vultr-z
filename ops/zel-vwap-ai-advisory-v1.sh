@@ -8,12 +8,13 @@ G="$ROOT/gen0"
 ADV="$ROOT/advisory"
 ENG=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
 BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/lane_checkpoints/vwap_revert
+GEMINI_MODEL=google/gemini-3.1-pro-preview
 mkdir -p "$ADV"
 
-"$PY" - "$ENG" "$BASE" "$G" "$ADV/partial_snapshot_latest.json" <<'PYSNAP'
+"$PY" - "$ENG" "$BASE" "$G" "$ADV/partial_snapshot_latest.json" "$GEMINI_MODEL" <<'PYSNAP'
 import gzip,importlib.util,json,sys
 from pathlib import Path
-engp,basep,g,out=map(Path,sys.argv[1:])
+engp,basep,g,out=map(Path,sys.argv[1:5]); gemini_model=sys.argv[5]
 spec=importlib.util.spec_from_file_location('advisory_engine',engp)
 e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e
 assert spec.loader is not None; spec.loader.exec_module(e)
@@ -24,10 +25,10 @@ base={}
 for p in basep.glob('*.json.gz'):
     d=load(p); base[key(d)]=d
 snapshot={
-  'schema_version':'zel.structural_premium.vwap_ai_advisory.snapshot.v2',
+  'schema_version':'zel.structural_premium.vwap_ai_advisory.snapshot.v3',
   'scope':'vwap_revert.long',
   'generation':0,
-  'advisors':['openai/gpt-5.6-sol','google/gemini-2.5-flash'],
+  'advisors':['openai/gpt-5.6-sol',gemini_model],
   'excluded_advisors':['xai/grok-*'],
   'candidates':{},
   'constraints':{
@@ -65,7 +66,7 @@ for cid in ('A','B','C'):
 sel=g/'result/w12_selection.json'
 if sel.exists(): snapshot['w12_selection']=json.loads(sel.read_text())
 out.write_text(json.dumps(snapshot,indent=2,sort_keys=True,allow_nan=False)+'\n')
-print(json.dumps({'state':'PASS_AI_SNAPSHOT_SOL_GEMINI_ONLY','counts':{k:v['completed_lanes'] for k,v in snapshot['candidates'].items()}},sort_keys=True))
+print(json.dumps({'state':'PASS_AI_SNAPSHOT_SOL_GEMINI_LATEST','gemini_model':gemini_model,'counts':{k:v['completed_lanes'] for k,v in snapshot['candidates'].items()}},sort_keys=True))
 PYSNAP
 
 set -a
@@ -74,10 +75,10 @@ set +a
 BASE_URL=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
 test -n "${REQUESTY_API_KEY:-}"
 
-"$PY" - "$ADV/partial_snapshot_latest.json" /tmp/zel_vwap_gemini_body.json <<'PYBODY'
+"$PY" - "$ADV/partial_snapshot_latest.json" /tmp/zel_vwap_gemini_body.json "$GEMINI_MODEL" <<'PYBODY'
 import json,sys
 from pathlib import Path
-snap=json.loads(Path(sys.argv[1]).read_text())
+snap=json.loads(Path(sys.argv[1]).read_text()); gemini_model=sys.argv[3]
 question=(
 "ZEL Structural Premium vwap_revert LONG closed-loop의 연구 전용 Context/Critic 역할이다. "
 "A는 사용자 지시로 제외했고 B/C만 동일 계약 평가 중이다. trend_rider 제외, canonical/paper/live/order/promotion 변경 금지, W3는 W12 승자 전까지 봉인. "
@@ -86,20 +87,20 @@ question=(
 "운영/실거래 변경은 제안하지 마라. SNAPSHOT="+json.dumps(snap,ensure_ascii=False,separators=(',',':'))
 )
 body={
-  'model':'google/gemini-2.5-flash',
+  'model':gemini_model,
   'messages':[{'role':'user','content':question}],
   'temperature':0.1,
-  'max_tokens':1000
+  'max_tokens':1200
 }
 Path(sys.argv[2]).write_text(json.dumps(body,ensure_ascii=False))
 PYBODY
 
-GCODE=$(curl -sS -m 180 -o "$ADV/gemini_context_latest.json" -w '%{http_code}' \
+GCODE=$(curl -sS -m 240 -o "$ADV/gemini_context_latest.json" -w '%{http_code}' \
   -H "Authorization: Bearer $REQUESTY_API_KEY" \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/zel_vwap_gemini_body.json \
   "$BASE_URL/chat/completions" || true)
-echo "GEMINI_HTTP_CODE=$GCODE"
+echo "GEMINI_MODEL=$GEMINI_MODEL GEMINI_HTTP_CODE=$GCODE"
 test "$GCODE" = 200
 
 "$PY" - "$ADV/partial_snapshot_latest.json" "$ADV/gemini_context_latest.json" /tmp/zel_vwap_sol_body.json <<'PYSOL'
@@ -132,17 +133,16 @@ SCODE=$(curl -sS -m 240 -o "$ADV/sol_judge_latest.json" -w '%{http_code}' \
 echo "SOL_HTTP_CODE=$SCODE"
 test "$SCODE" = 200
 
-"$PY" - "$ADV/gemini_context_latest.json" "$ADV/sol_judge_latest.json" "$ADV/partial_review_latest.json" <<'PYOUT'
+"$PY" - "$ADV/gemini_context_latest.json" "$ADV/sol_judge_latest.json" "$ADV/partial_review_latest.json" "$GEMINI_MODEL" <<'PYOUT'
 import json,sys
 from pathlib import Path
-g=json.loads(Path(sys.argv[1]).read_text())
-s=json.loads(Path(sys.argv[2]).read_text())
+g=json.loads(Path(sys.argv[1]).read_text()); s=json.loads(Path(sys.argv[2]).read_text()); gemini_model=sys.argv[4]
 gtext=((g.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
 stext=((s.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
 out={
-  'schema_version':'zel.structural_premium.vwap_ai_advisory.review.v2',
+  'schema_version':'zel.structural_premium.vwap_ai_advisory.review.v3',
   'models':{
-    'context':'google/gemini-2.5-flash',
+    'context':gemini_model,
     'judge':'openai/gpt-5.6-sol',
     'grok':None,
     'groq':None
@@ -155,7 +155,7 @@ out={
   'promotion_authority':False
 }
 Path(sys.argv[3]).write_text(json.dumps(out,indent=2,ensure_ascii=False,sort_keys=True)+'\n')
-print('MODE sol_gemini_only')
+print('MODE sol_gemini_latest')
 print('MODELS',out['models'])
 print('FINAL')
 print(stext)

@@ -25,6 +25,25 @@ for p in \
   test -s "$p"
 done
 
+# GitHub cancellation can orphan ProcessPool children on the VPS. Reap only this
+# isolated research job's lane workers before touching checkpoints.
+PIDS=$(pgrep -f "$ROOT/gen0/runs/.*/engine/lane_w(12|3)\.py" || true)
+if [ -n "$PIDS" ]; then
+  echo "REAP_ORPHAN_CANDIDATE_WORKERS term=$PIDS"
+  kill -TERM $PIDS 2>/dev/null || true
+  sleep 2
+fi
+PIDS=$(pgrep -f "$ROOT/gen0/runs/.*/engine/lane_w(12|3)\.py" || true)
+if [ -n "$PIDS" ]; then
+  echo "REAP_ORPHAN_CANDIDATE_WORKERS kill=$PIDS"
+  kill -KILL $PIDS 2>/dev/null || true
+  sleep 1
+fi
+if pgrep -f "$ROOT/gen0/runs/.*/engine/lane_w(12|3)\.py" >/dev/null; then
+  echo "ORPHAN_CANDIDATE_WORKERS_REMAIN" >&2
+  exit 96
+fi
+
 canonical_fingerprint() {
   {
     find "$CANON/backend/strategies" -type f \

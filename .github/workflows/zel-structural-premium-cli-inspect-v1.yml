@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Diagnose linked AI provider failure
+      - name: Discover live Requesty model IDs
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -38,16 +38,10 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           C=/home/z/z/_ai_council
-          cd "$C"
-          pkill -f '/home/z/z/_ai_council/server.js' 2>/dev/null || true
-          nohup env PORT=18787 node "$C/server.js" >/tmp/zel_ai_council_diag.log 2>&1 & PID=$!
-          trap 'kill "$PID" 2>/dev/null || true' EXIT
-          for i in $(seq 1 20); do curl -fsS -m 2 http://127.0.0.1:18787/health >/dev/null 2>&1 && break; sleep 1; done
-          echo '===HEALTH==='; curl -sS -m 3 http://127.0.0.1:18787/health || true
-          BODY='{"question":"연결 상태 테스트. 한 줄로 OK만 답해라."}'
-          echo; echo '===ASK_STATUS_BODY==='; curl -sS -m 60 -o /tmp/ask.body -w '%{http_code}\n' -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:18787/ask || true; cat /tmp/ask.body 2>/dev/null || true
-          echo; echo '===COUNCIL_STATUS_BODY==='; curl -sS -m 120 -o /tmp/council.body -w '%{http_code}\n' -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:18787/council || true; cat /tmp/council.body 2>/dev/null || true
-          echo; echo '===SERVER_LOG==='; tail -80 /tmp/zel_ai_council_diag.log 2>/dev/null || true
+          set -a; . "$C/.env"; set +a
+          BASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
+          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$BASE/models" > /tmp/requesty_models.json
+          python3 -c 'import json,pathlib; d=json.loads(pathlib.Path("/tmp/requesty_models.json").read_text()); rows=d.get("data",d if isinstance(d,list) else []); ids=sorted(str(x.get("id","")) for x in rows if isinstance(x,dict)); print("OPENAI",[x for x in ids if "openai/" in x.lower()][:40]); print("GEMINI",[x for x in ids if "gemini" in x.lower()][:80]); print("GROK",[x for x in ids if "grok" in x.lower()][:80]); print("COUNT",len(ids))'
           REMOTE
       - name: Cleanup
         if: always()

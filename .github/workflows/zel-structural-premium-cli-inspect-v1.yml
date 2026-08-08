@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect closed-loop progress
+      - name: Inspect replay capacity and progress
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -38,11 +38,11 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           G=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen0
-          echo '===PROCESSES==='; pgrep -af 'vwap-closed-loop|lane_w12.py|lane_checkpoint_v2.py|replay_v1_candidate|replay_v2_candidate' || true
-          echo '===CANDIDATE_FILES==='; find "$G/runs" -maxdepth 4 -type f \( -name '*.json.gz' -o -name '*score.json' -o -name 'progress.json' -o -name '*.log' \) -printf '%p %s\n' 2>/dev/null | sort | tail -160 || true
+          echo '===CAPACITY==='; echo NPROC=$(nproc); free -h; uptime; vmstat 1 2 | tail -1 || true
+          echo '===TOP_CPU==='; ps -eo pid,pcpu,pmem,etime,cmd --sort=-pcpu | head -18
           for cid in A B C; do
             echo "===${cid}_W12_COUNT==="; find "$G/runs/$cid/replay_w12/lane_checkpoints/vwap_revert" -type f -name '*.json.gz' 2>/dev/null | wc -l || true
-            echo "===${cid}_W12_LOG_TAIL==="; tail -30 "$G/runs/$cid/logs/w12.log" 2>/dev/null || true
+            echo "===${cid}_W12_LOG_TAIL==="; tail -12 "$G/runs/$cid/logs/w12.log" 2>/dev/null || true
             echo "===${cid}_W12_SCORE==="; cat "$G/runs/$cid/result/w12_score.json" 2>/dev/null || true
           done
           echo '===SELECTION==='; cat "$G/result/w12_selection.json" 2>/dev/null || true

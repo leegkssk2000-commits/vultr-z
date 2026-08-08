@@ -1,0 +1,224 @@
+name: ZEL Structural Premium Resume Fingerprint Fix V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_resume_fingerprint_fix_trigger_v1.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-resume-fingerprint-fix-v1
+  cancel-in-progress: false
+
+jobs:
+  repair-and-resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JOB: /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+      OUT: /opt/zel/research-runtime/checkpoints/structural-premium-v3/output
+      LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Local migration contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_historical_oos_lane_checkpoint_v2.py
+          python backend/tools/zel_historical_oos_lane_checkpoint_v2.py --self-test
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Install fix and safely replace flawed durable runner
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            backend/tools/zel_historical_oos_lane_checkpoint_v2.py \
+            "$VPS_USER@$VPS_HOST:/tmp/zel_lane_checkpoint_v2.py"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "JOB='$JOB' OUT='$OUT' LOCK='$LOCK' LAUNCH_RUN_ID='$GITHUB_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          WORK="$JOB/work"
+          RESULT="$JOB/result"
+          test -d "$WORK/engine" && test -d "$WORK/data"
+          test -s "$WORK/engine/replay_v1.py" && test -s "$WORK/engine/replay_v2.py"
+          test -s "$WORK/evaluate.py" && test -s "$RESULT/registry_restore.json" && test -s "$RESULT/incumbent_overlay_patch.json"
+          grep -q 'ZEL_STRUCTURAL_PREMIUM_OVERLAY_PATCH_V2_SIX_AXIS' "$WORK/engine/replay_v1.py"
+          grep -q 'EXPECTED_STRATEGY_COUNT = 4' "$WORK/engine/replay_v2.py"
+
+          old_pid="$(cat "$JOB/runner.pid" 2>/dev/null || true)"
+          if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            cmd="$(tr '\0' ' ' < "/proc/$old_pid/cmdline" 2>/dev/null || true)"
+            case "$cmd" in
+              *"$JOB/run.sh"*)
+                echo "SAFE_REPLACE old_pid=$old_pid"
+                kill -TERM -- "-$old_pid" 2>/dev/null || kill -TERM "$old_pid" 2>/dev/null || true
+                for _ in $(seq 1 30); do
+                  kill -0 "$old_pid" 2>/dev/null || break
+                  sleep 1
+                done
+                if kill -0 "$old_pid" 2>/dev/null; then
+                  kill -KILL -- "-$old_pid" 2>/dev/null || kill -KILL "$old_pid" 2>/dev/null || true
+                fi
+                ;;
+              *)
+                echo "REFUSE_UNKNOWN_PID pid=$old_pid cmd=$cmd" >&2
+                exit 81
+                ;;
+            esac
+          fi
+
+          mv /tmp/zel_lane_checkpoint_v2.py "$WORK/engine/lane_checkpoint_v2.py"
+          /home/z/z/.venv/bin/python -m py_compile "$WORK/engine/lane_checkpoint_v2.py"
+          /home/z/z/.venv/bin/python "$WORK/engine/lane_checkpoint_v2.py" --self-test
+
+          cat > "$JOB/resume_fingerprint_fix_v1.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          : "${JOB:?}" "${OUT:?}" "${LOCK:?}" "${LAUNCH_RUN_ID:?}"
+          WORK="$JOB/work"
+          RESULT="$JOB/result"
+          mkdir -p "$RESULT" "$OUT"
+
+          write_status() {
+            state="$1"; rc="${2:-0}"; note="${3:-}"
+            python - "$JOB/status.json" "$state" "$rc" "$note" "$LAUNCH_RUN_ID" "$$" "$OUT" <<'PY'
+          import json,os,sys,tempfile
+          from datetime import datetime,timezone
+          path,state,rc,note,run_id,pid,out=sys.argv[1:]
+          strategies=['liquidity_sweep','support_resistance','trend_rider','vwap_revert']
+          lane_counts={}
+          for s in strategies:
+              root=os.path.join(out,'lane_checkpoints',s)
+              try: lane_counts[s]=sum(1 for n in os.listdir(root) if n.endswith('.json.gz'))
+              except Exception: lane_counts[s]=0
+          cp=[]
+          root=os.path.join(out,'checkpoints')
+          try: cp=sorted(n[:-8] for n in os.listdir(root) if n.endswith('.json.gz'))
+          except Exception: pass
+          payload={
+            'schema_version':'zel.structural_premium.durable_lane.status.v3',
+            'state':state,'rc':int(rc),'note':note,'launch_run_id':run_id,'runner_pid':int(pid),
+            'strategy_checkpoint_ids':cp,'lane_counts':lane_counts,
+            'lane_files_total':sum(lane_counts.values()),'total_lane_capacity':60,
+            'heartbeat_at':datetime.now(timezone.utc).isoformat(),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          d=os.path.dirname(path); os.makedirs(d,exist_ok=True)
+          fd,tmp=tempfile.mkstemp(prefix='.status.',dir=d)
+          with os.fdopen(fd,'w') as f:
+              json.dump(payload,f,indent=2,sort_keys=True); f.write('\n'); f.flush(); os.fsync(f.fileno())
+          os.replace(tmp,path)
+          PY
+          }
+          fail() { rc="$1"; shift; write_status HOLD "$rc" "$*"; exit "$rc"; }
+
+          write_status WAITING_FOR_LOCK 0 "fingerprint-safe continuation queued"
+          exec 9>"$LOCK"
+          flock 9
+          write_status RUNNING_LANES 0 "source-sha migration active; only incompatible/missing lanes recompute"
+          cd "$WORK" || fail 90 "workdir missing"
+
+          GITHUB_RUN_ID="$LAUNCH_RUN_ID" /home/z/z/.venv/bin/python engine/lane_checkpoint_v2.py \
+            --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root data --interval 1m --output-dir "$OUT" --workers 4 \
+            > "$JOB/lane_v2.log" 2>&1 &
+          child=$!
+          while kill -0 "$child" 2>/dev/null; do
+            write_status RUNNING_LANES 0 "lane checkpoint v2 worker active"
+            sleep 60
+          done
+          wait "$child"; lane_rc=$?
+          [ "$lane_rc" -eq 0 ] || fail "$lane_rc" "lane checkpoint v2 returned nonzero"
+
+          write_status AGGREGATING 0 "4 entry-owner checkpoints complete"
+          GITHUB_RUN_ID="$LAUNCH_RUN_ID" /home/z/z/.venv/bin/python engine/replay_v2.py \
+            --engine-v1 engine/replay_v1.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root data --interval 1m --output-dir "$OUT" --workers 4 \
+            > "$JOB/aggregate_v2.log" 2>&1 || fail 95 "aggregate replay failed"
+          test -s "$OUT/report.json" && test -s "$OUT/trades.jsonl.gz" || fail 96 "terminal replay artifacts missing"
+
+          write_status EVALUATING 0 "W1/W2/W3 economic and coverage evaluation"
+          /home/z/z/.venv/bin/python evaluate.py evaluate \
+            --report "$OUT/report.json" --ledger "$OUT/trades.jsonl.gz" \
+            --dataset-manifest data/manifest.json --output "$RESULT/coverage_revalidation.json" \
+            > "$JOB/evaluate_v2.log" 2>&1 || fail 97 "coverage evaluation failed"
+          cp "$OUT/summary.json" "$RESULT/exact_replay_summary.json"
+          cp "$OUT/progress.json" "$RESULT/replay_progress.json"
+          cp "$OUT/terminal_receipt.json" "$RESULT/replay_terminal_receipt.json"
+          cp data/manifest.json "$RESULT/expanded_dataset_manifest.json"
+          cp incumbent_overlay.json "$RESULT/incumbent_overlay.json"
+
+          write_status VERIFYING_GATE6 0 "terminal integrity verification"
+          /home/z/z/.venv/bin/python - "$RESULT" <<'PY' || fail 98 "gate6 terminal verification failed"
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          progress=json.loads((root/'replay_progress.json').read_text())
+          terminal=json.loads((root/'replay_terminal_receipt.json').read_text())
+          restore=json.loads((root/'registry_restore.json').read_text())
+          row=json.loads((root/'coverage_revalidation.json').read_text())
+          assert progress['state']=='PASS',progress
+          assert int(progress['completed_units'])==int(progress['total_units']) and int(progress['error_count'])==0,progress
+          assert terminal['state']=='PASS' and terminal['strategy_count_completed']==4 and terminal['strategy_failure_count']==0,terminal
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED',restore
+          assert restore['restored_count']==4 and restore['market_structure_entry_owner'] is False,restore
+          expected=row['receipt_sha256']
+          actual=hashlib.sha256(json.dumps({k:v for k,v in row.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['integrity']['all_pass'] is True,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          (root/'gate6_durable_receipt.json').write_text(json.dumps({
+            'state':'PASS_GATE6_TERMINAL_VERIFICATION',
+            'economic_state':row.get('state'),
+            'coverage_restored':row.get('coverage',{}).get('coverage_restored'),
+            'selected_configuration':row.get('selection',{}).get('selected_configuration'),
+            'survivor':row.get('survivor'),
+            'blockers':row.get('blockers'),
+            'receipt_sha256':row.get('receipt_sha256'),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+          write_status PASS 0 "fingerprint-safe replay + Gate6 complete"
+          RUNNER
+          chmod 700 "$JOB/resume_fingerprint_fix_v1.sh"
+          rm -f "$JOB/status.json" "$JOB/runner.pid"
+          env JOB="$JOB" OUT="$OUT" LOCK="$LOCK" LAUNCH_RUN_ID="$LAUNCH_RUN_ID" \
+            nohup setsid bash "$JOB/resume_fingerprint_fix_v1.sh" > "$JOB/runner_fix_v1.log" 2>&1 < /dev/null &
+          pid=$!
+          echo "$pid" > "$JOB/runner.pid"
+          sleep 3
+          kill -0 "$pid"
+          echo "FIXED_DURABLE_LAUNCHED pid=$pid"
+          cat "$JOB/status.json" || true
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

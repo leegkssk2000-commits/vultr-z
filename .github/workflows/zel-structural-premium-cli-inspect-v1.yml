@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect baseline metrics
+      - name: Inspect replay metric helpers
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,31 +37,14 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          J=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay
-          python3 - <<'PY'
-import gzip,json,pathlib
-j=pathlib.Path('/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay')
-r=json.loads((j/'report.json').read_text())
-print('REPORT_KEYS',sorted(r.keys()))
-print('STATE',r.get('state'),'COUNT',r.get('strategy_count_completed'))
-for k in ('scorecards','strategy_scorecards','strategies'):
-    v=r.get(k)
-    if isinstance(v,list):
-        print('CARD_CONTAINER',k,len(v))
-        for c in v:
-            if c.get('strategy_id')=='vwap_revert':
-                print('VWAP_CARD',json.dumps(c,sort_keys=True)[:16000])
-                break
-rows=[]
-with gzip.open(j/'trades.jsonl.gz','rt',encoding='utf-8') as h:
-    for line in h:
-        d=json.loads(line)
-        if d.get('strategy_id')=='vwap_revert': rows.append(d)
-print('VWAP_ROWS',len(rows))
-print('TRADE_KEYS',sorted(rows[0].keys()) if rows else [])
-print('WINDOW_COUNTS', {w:sum(1 for x in rows if x.get('window_id')==w) for w in sorted(set(x.get('window_id') for x in rows))})
-print('TRADE_SAMPLE',json.dumps(rows[0],sort_keys=True)[:4000] if rows else '')
-PY
+          E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
+          R=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/report.json
+          T=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/trades.jsonl.gz
+          echo '===METRIC_FUNCS==='; grep -n '^def .*metric\|^def aggregate_strategy\|^def .*drawdown\|^def .*score' "$E" | head -120 || true
+          echo '===METRIC_BODY==='; sed -n '640,790p' "$E"
+          echo '===AGG_BODY==='; sed -n '790,920p' "$E"
+          echo '===REPORT_KEYS==='; python3 -c "import json; r=json.load(open('$R')); print(sorted(r)); print([(k,type(v).__name__,len(v) if hasattr(v,'__len__') else None) for k,v in r.items() if k in ('scorecards','strategies','results','ranking')])"
+          echo '===TRADE_SAMPLE==='; python3 -c "import gzip,json; h=gzip.open('$T','rt'); d=json.loads(next(h)); print(sorted(d)); print(json.dumps(d,sort_keys=True)[:5000])"
           REMOTE
       - name: Cleanup
         if: always()

@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Mapping
 
-VERSION = "ZEL_HISTORICAL_OOS_LANE_CHECKPOINT_V1"
+VERSION = "ZEL_HISTORICAL_OOS_LANE_CHECKPOINT_V1_REGISTRY_RESTORE_FIX"
 _WORKER_ENGINE: Any = None
 
 
@@ -95,6 +95,19 @@ def save_lane(path: Path, fingerprint: str, strategy_id: str, row: Mapping[str, 
     })
 
 
+def restored_registry(engine: Any, producer: Any, source_root: Path, expected_count: int) -> dict[str, Any]:
+    _, raw_registry = producer.load_registry(source_root)
+    restore = getattr(engine, "_restore_structural_premium_registry", None)
+    if not callable(restore):
+        raise RuntimeError("STRUCTURAL_REGISTRY_RESTORE_HELPER_MISSING")
+    registry = restore(source_root, raw_registry)
+    if not isinstance(registry, dict):
+        raise RuntimeError("STRUCTURAL_REGISTRY_RESTORE_NOT_DICT")
+    if len(registry) != int(expected_count):
+        raise RuntimeError(f"REGISTRY_COUNT:{len(registry)}!={expected_count}")
+    return registry
+
+
 def worker_init(engine_v1: str, source_root: str, data_root: str, interval: str) -> None:
     global _WORKER_ENGINE
     _WORKER_ENGINE = load_module(Path(engine_v1), "zel_lane_engine")
@@ -122,7 +135,22 @@ def self_test() -> None:
     assert safe("trend/rider") == "trend_rider"
     row = {"window_id": "W1", "symbol": "BTCUSDT", "interval": "1m"}
     assert lane_key("trend_rider", row) == "trend_rider__W1__BTCUSDT__1m"
-    print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
+
+    class FakeProducer:
+        @staticmethod
+        def load_registry(source_root: Path) -> tuple[None, dict[str, int]]:
+            del source_root
+            return None, {"raw_a": 1, "raw_b": 2}
+
+    class FakeEngine:
+        @staticmethod
+        def _restore_structural_premium_registry(source_root: Path, raw_registry: dict[str, int]) -> dict[str, int]:
+            del source_root
+            return {"logical_a": raw_registry["raw_a"]}
+
+    registry = restored_registry(FakeEngine(), FakeProducer(), Path("."), 1)
+    assert registry == {"logical_a": 1}
+    print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION, "restored_registry_contract": True}, sort_keys=True))
 
 
 def main() -> int:
@@ -155,9 +183,7 @@ def main() -> int:
     engine = base.load_engine(engine_v1)
     manifest, _ = engine.validate_data_manifest(data_root, args.interval)
     producer = engine.import_producer(source_root)
-    _, registry = producer.load_registry(source_root)
-    if len(registry) != int(base.EXPECTED_STRATEGY_COUNT):
-        raise RuntimeError(f"REGISTRY_COUNT:{len(registry)}!={base.EXPECTED_STRATEGY_COUNT}")
+    registry = restored_registry(engine, producer, source_root, int(base.EXPECTED_STRATEGY_COUNT))
     fingerprint, _ = base.input_fingerprint(engine, engine_v1, source_root, data_root, args.interval, registry)
 
     files = [

@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect council request contract safely
+      - name: Run linked AI debate for VWAP closed loop
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -38,13 +38,22 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           C=/home/z/z/_ai_council
-          S="$C/server.js"
-          echo '===ENV_KEYS_ONLY==='; test -f "$C/.env" && sed -E 's/[[:space:]]*=.*$//' "$C/.env" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | sort -u || true
-          echo '===NODE_MODULES==='; test -d "$C/node_modules" && echo PRESENT || echo ABSENT
-          echo '===SERVER_HEAD==='; sed -n '1,90p' "$S" 2>/dev/null || true
-          echo '===ASK_COUNCIL_CONTRACT==='; sed -n '90,220p' "$S" 2>/dev/null || true
-          echo '===DEBATE_CONTRACT==='; sed -n '220,330p' "$S" 2>/dev/null || true
-          echo '===SERVICES==='; systemctl list-unit-files --type=service --no-pager | grep -Ei 'council|requesty|openrouter|gemini|grok' || true
+          OUT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory
+          mkdir -p "$OUT"
+          cd "$C"
+          STARTED=0
+          if ! curl -fsS -m 2 http://127.0.0.1:18787/health >/dev/null 2>&1; then
+            nohup env PORT=18787 node server.js >/tmp/zel_ai_council_vwap.log 2>&1 &
+            PID=$!
+            STARTED=1
+            for i in $(seq 1 20); do curl -fsS -m 2 http://127.0.0.1:18787/health >/dev/null 2>&1 && break; sleep 1; done
+          fi
+          curl -fsS -m 3 http://127.0.0.1:18787/health > "$OUT/health_gen0.json"
+          QUESTION='ZEL Structural Premium 연구용 closed-loop를 설계한다. trend_rider는 제외 유지. retained는 vwap_revert, support_resistance, liquidity_sweep. 현재 combined 910 trades WR 34.18% PF 0.628 net -281.96R maxDD 294.21R. vwap_revert가 885 trades net -273.27R PF 0.628로 주손실원인이다. 목표는 vwap_revert만 15 lane 재계산하고 나머지 30 lane은 안전하게 재사용하는 자동 후보생성-타깃리플레이-비교-다음세대 루프다. 연구복사본만 수정하고 canonical, paper, live, order, promotion은 금지. 허용 파라미터는 stop_mult 0.70~1.25, target_mult 0.80~1.50, min_confidence null~0.90, cooldown 0~120min, min_risk_distance 0~2%, max_hold 15~240min. W1/W2/W3 과적합 방지와 sample collapse 방지 필요. 첫 세대 후보 3개와 각 이유, 평가게이트, 캐시/체크포인트 설계, 실패가드를 제안하라. 코드 변경은 최소 격리형으로 제안하라.'
+          BODY=$(python3 -c 'import json,sys; print(json.dumps({"question":sys.argv[1]},ensure_ascii=False))' "$QUESTION")
+          curl -fsS -m 240 -H 'Content-Type: application/json' -d "$BODY" http://127.0.0.1:18787/debate > "$OUT/debate_gen0.json"
+          python3 -c 'import json,pathlib; d=json.loads(pathlib.Path("/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/debate_gen0.json").read_text()); print("MODE",d.get("mode")); print("LATENCY_MS",d.get("latency_ms")); print("FINAL"); print(d.get("final","")); print("ROLES",[(x.get("role"),x.get("model")) for x in d.get("round1",[])])'
+          if [ "$STARTED" = 1 ]; then kill "$PID" 2>/dev/null || true; fi
           REMOTE
       - name: Cleanup
         if: always()

@@ -1,0 +1,53 @@
+name: ZEL Structural Premium CLI Inspect V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-structural-premium-cli-inspect-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Inspect CLIs
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          PY=/home/z/z/.venv/bin/python
+          echo '===LANE_HELP==='
+          "$PY" "$JOB/work/engine/lane_checkpoint_v2.py" --help
+          echo '===EVAL_HELP==='
+          "$PY" "$JOB/work/evaluate.py" --help
+          echo '===LANE_TAIL==='
+          tail -180 "$JOB/work/engine/lane_checkpoint_v2.py"
+          echo '===EVAL_TAIL==='
+          tail -180 "$JOB/work/evaluate.py"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect AI council readiness
+      - name: Compact AI council contract probe
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,12 +37,12 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          echo '===COUNCIL_PACKAGE==='; cat /home/z/z/_ai_council/package.json 2>/dev/null || true
-          echo '===COUNCIL_SERVER_1_360==='; sed -n '1,360p' /home/z/z/_ai_council/server.js 2>/dev/null || true
-          echo '===AI_ROLE_REGISTRY==='; cat /home/z/z/data/ai_role_registry_latest.json 2>/dev/null || true
-          echo '===COUNCIL_PROCESSES==='; pgrep -af '_ai_council|server.js|openrouter|gemini|grok' || true
-          echo '===LISTEN_PORTS==='; ss -ltnp 2>/dev/null | grep -E 'node|python|:3000|:3001|:3002|:8080|:8787' | head -120 || true
-          echo '===COUNCIL_LOG_TAIL==='; tail -80 /home/z/z/_ai_council/logs/chat.jsonl 2>/dev/null || true
+          S=/home/z/z/_ai_council/server.js
+          echo '===PACKAGE==='; cat /home/z/z/_ai_council/package.json 2>/dev/null || true
+          echo '===ROUTES_LISTEN_MODELS==='; grep -nE 'app\.(get|post|put|delete)|router\.|listen\(|PORT|openrouter|OPENROUTER|gemini|GEMINI|grok|GROK|model|provider|fetch\(' "$S" 2>/dev/null | head -180 || true
+          echo '===ROLE_REGISTRY_SUMMARY==='; python3 -c "import json,pathlib; p=pathlib.Path('/home/z/z/data/ai_role_registry_latest.json'); d=json.loads(p.read_text()) if p.exists() else {}; print(json.dumps(d,ensure_ascii=False)[:12000])" 2>/dev/null || true
+          echo '===PROCESS==='; pgrep -af '_ai_council|server.js|openrouter|gemini|grok' || true
+          echo '===PORTS==='; ss -ltnp 2>/dev/null | grep -E 'node|:3000|:3001|:3002|:8080|:8787' | head -80 || true
           echo '===GEMINI_CONFIG_KEYS==='; python3 -c "import json,pathlib; p=pathlib.Path('/home/z/z/backend/config/gemini_oauth.json'); print(sorted(json.loads(p.read_text()).keys()) if p.exists() else [])" 2>/dev/null || true
           REMOTE
       - name: Cleanup

@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect replay metric helpers
+      - name: Inspect vwap decomposition
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,14 +37,8 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
           R=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/report.json
-          T=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/trades.jsonl.gz
-          echo '===METRIC_FUNCS==='; grep -n '^def .*metric\|^def aggregate_strategy\|^def .*drawdown\|^def .*score' "$E" | head -120 || true
-          echo '===METRIC_BODY==='; sed -n '640,790p' "$E"
-          echo '===AGG_BODY==='; sed -n '790,920p' "$E"
-          echo '===REPORT_KEYS==='; python3 -c "import json; r=json.load(open('$R')); print(sorted(r)); print([(k,type(v).__name__,len(v) if hasattr(v,'__len__') else None) for k,v in r.items() if k in ('scorecards','strategies','results','ranking')])"
-          echo '===TRADE_SAMPLE==='; python3 -c "import gzip,json; h=gzip.open('$T','rt'); d=json.loads(next(h)); print(sorted(d)); print(json.dumps(d,sort_keys=True)[:5000])"
+          python3 -c "import json; r=json.load(open('$R')); c=next(x for x in r['scorecards'] if x['strategy_id']=='vwap_revert'); print('OVERALL',json.dumps(c['closed_metrics_ex_funding'],sort_keys=True)); print('BY_WINDOW',json.dumps(c['by_window'],sort_keys=True)); print('BY_SIDE',json.dumps(c['by_side'],sort_keys=True)); print('BY_REGIME',json.dumps(c['by_regime'],sort_keys=True)); print('COUNTERS',{k:c[k] for k in ('strategy_call_count','signal_count','valid_entry_count','open_count','close_count','error_count')})"
           REMOTE
       - name: Cleanup
         if: always()

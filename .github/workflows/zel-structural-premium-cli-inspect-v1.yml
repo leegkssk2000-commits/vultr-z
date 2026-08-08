@@ -13,7 +13,7 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,14 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Stage runner for advisory review
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/vps_key -o BatchMode=yes ops/zel-structural-premium-vwap-closed-loop-v1.sh "$VPS_USER@$VPS_HOST:/tmp/zel_vwap_closed_loop_review.sh"
-      - name: Sol Gemini Grok code review
+      - name: Inspect saved multi-AI review
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -44,19 +37,8 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          C=/home/z/z/_ai_council
-          OUT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory
-          PORTX=18789
-          mkdir -p "$OUT"
-          cd "$C"
-          nohup env PORT=$PORTX MODEL_JUDGE=openai/gpt-5.6-sol MODEL_GEMINI=google/gemini-2.5-flash MODEL_GROK=xai/grok-4.3 MAX_TOKENS_AGENT=900 MAX_TOKENS_JUDGE=1300 node "$C/server.js" >/tmp/zel_ai_review_18789.log 2>&1 & PID=$!
-          trap 'kill "$PID" 2>/dev/null || true' EXIT
-          for i in $(seq 1 20); do curl -fsS -m 2 http://127.0.0.1:$PORTX/health >/dev/null 2>&1 && break; sleep 1; done
-          python3 -c 'import json,pathlib; code=pathlib.Path("/tmp/zel_vwap_closed_loop_review.sh").read_text(); q="Review this ZEL research-only VWAP closed-loop shell runner for concrete correctness/safety bugs. Requirements: trend_rider excluded; only vwap_revert W1/W2 recomputed for A/B/C; W3 sealed until a W1/W2 winner; support_resistance/liquidity_sweep lanes reused byte-identically; no canonical/paper/live/order/promotion mutation; candidate engine is isolated. Focus on fingerprint/cache contamination, window leakage, registry cardinality, overlay patching, sample gates, resume behavior, shell/Python failures. Return CRITICAL, MAJOR, MINOR findings and exact minimal fixes. Do not propose live trading. CODE:\n"+code; pathlib.Path("/tmp/zel_ai_review_body.json").write_text(json.dumps({"question":q},ensure_ascii=False))'
-          CODE=$(curl -sS -m 300 -o "$OUT/code_review_gen0.json" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @/tmp/zel_ai_review_body.json http://127.0.0.1:$PORTX/debate || true)
-          echo HTTP_CODE=$CODE
-          python3 -c 'import json,pathlib; d=json.loads(pathlib.Path("/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/code_review_gen0.json").read_text()); print("MODE",d.get("mode")); print("ROLES",[(x.get("role"),x.get("model")) for x in d.get("round1",[])]); print("FINAL"); print(d.get("final",d.get("error","")))'
-          test "$CODE" = 200
+          P=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/code_review_gen0.json
+          python3 -c 'import json,pathlib; d=json.loads(pathlib.Path("/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/advisory/code_review_gen0.json").read_text()); print("KEYS",sorted(d)); print("ERROR",d.get("error")); print("FINAL_REPR",repr(d.get("final"))); [(print("ROLE",x.get("role"),"MODEL",x.get("model"),"CONTENT_START"),print(x.get("content",x.get("text",x.get("answer",x.get("response",""))))),print("CONTENT_END")) for x in d.get("round1",[])]; print("ROUND2",json.dumps(d.get("round2"),ensure_ascii=False)[:16000]); print("JUDGE",json.dumps(d.get("judge"),ensure_ascii=False)[:16000])'
           REMOTE
       - name: Cleanup
         if: always()

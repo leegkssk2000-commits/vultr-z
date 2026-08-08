@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect replay output contract
+      - name: Inspect owner manifest contract
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,13 +37,15 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          JOB=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
-          echo '===REPLAY_V2_TAIL==='
-          tail -260 "$JOB/work/engine/replay_v2.py"
-          echo '===ALL_LANE_ROOTS==='
-          find "$JOB" -type d -name lane_checkpoints -print
-          echo '===OUTPUT_FILE_CANDIDATES==='
-          find "$JOB" -type f \( -name '*.jsonl.gz' -o -name '*.json.gz' -o -name '*.json' -o -name '*.csv' \) -printf '%p %s\n' | grep -E 'replay|ledger|score|progress|checkpoint' | tail -160 || true
+          CANON=/opt/zel/forward-expansion-v1/source
+          echo '===OWNER_MANIFEST==='
+          cat "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json"
+          echo '===BINDING_CANDIDATES==='
+          find "$CANON/backend/config" -maxdepth 1 -type f -iname '*binding*.json' -print -exec sh -c 'echo ---$1; cat "$1"' _ {} \;
+          echo '===LOADER==='
+          sed -n '1,230p' "$CANON/backend/engine/q4r3_exact25_shadow_manifest_loader.py"
+          echo '===PRODUCER_LOAD_REGISTRY==='
+          sed -n '150,230p' "$CANON/tools/q4r3_exact25_dedicated_shadow_producer.py"
           REMOTE
       - name: Cleanup
         if: always()

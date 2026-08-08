@@ -7,29 +7,24 @@ ROOT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1
 GEN="$ROOT/gen1"
 PY=/home/z/z/.venv/bin/python
 CANON=/opt/zel/forward-expansion-v1/source
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 for p in \
   "$DUR/work/engine/replay_v1.py" \
   "$DUR/work/engine/replay_v2.py" \
   "$DUR/work/engine/lane_checkpoint_v2.py" \
-  "$BASE/work/engine/replay_v1_no_trend.py" \
-  "$BASE/work/engine/replay_v2_no_trend.py" \
-  "$BASE/work/engine/lane_checkpoint_v2.py" \
-  "$BASE/work/replay/trades.jsonl.gz"; do
+  "$BASE/work/replay/trades.jsonl.gz" \
+  "$BASE/work/source/backend/strategies/vwap_reversion.py" \
+  "$BASE/work/source/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" \
+  "$BASE/work/source/backend/config/q4r3_exact25_shadow_binding_v1.json"; do
   test -s "$p"
 done
-for s in vwap_revert support_resistance liquidity_sweep; do
-  test -d "$BASE/work/replay/lane_checkpoints/$s"
-done
 
-# Reap only orphan workers from this isolated Gen1 research lane.
 PIDS=$(pgrep -f "$ROOT/gen1/runs/.*/engine/lane_.*\.py" || true)
 if [ -n "$PIDS" ]; then kill -TERM $PIDS 2>/dev/null || true; sleep 2; fi
 PIDS=$(pgrep -f "$ROOT/gen1/runs/.*/engine/lane_.*\.py" || true)
 if [ -n "$PIDS" ]; then kill -KILL $PIDS 2>/dev/null || true; sleep 1; fi
-if pgrep -f "$ROOT/gen1/runs/.*/engine/lane_.*\.py" >/dev/null; then
-  echo FAIL_ORPHAN_GEN1_WORKERS >&2; exit 96
-fi
+if pgrep -f "$ROOT/gen1/runs/.*/engine/lane_.*\.py" >/dev/null; then echo FAIL_ORPHAN_GEN1_WORKERS >&2; exit 96; fi
 
 canonical_fingerprint() {
   {
@@ -41,39 +36,58 @@ CANON_BEFORE=$(canonical_fingerprint)
 verify_canonical_on_exit() {
   rc=$?; after=$(canonical_fingerprint)
   if [ "$after" != "$CANON_BEFORE" ]; then echo "CRITICAL_CANONICAL_MUTATION before=$CANON_BEFORE after=$after" >&2; exit 97; fi
-  echo "PASS_CANONICAL_TREE_UNCHANGED $after"
-  return "$rc"
+  echo "PASS_CANONICAL_TREE_UNCHANGED $after"; return "$rc"
 }
 trap verify_canonical_on_exit EXIT
 
 mkdir -p "$GEN/candidates" "$GEN/runs" "$GEN/result" "$GEN/advisory"
 
-# Gen0 empirical baseline. W3 is sealed until W1+W2 select a survivor.
-"$PY" - "$DUR/work/engine/replay_v1.py" "$BASE/work/replay/trades.jsonl.gz" "$GEN/result/baseline_long.json" <<'PYBASE'
+DATASET_ID=$("$PY" - "$DUR/work/data/manifest.json" <<'PYDATA'
+import json,hashlib,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+if not p.exists(): print('NO_MANIFEST'); raise SystemExit
+try: d=json.loads(p.read_text())
+except Exception: print(hashlib.sha256(p.read_bytes()).hexdigest()); raise SystemExit
+for k in ('dataset_sha256','source_sha256','data_sha256','payload_sha256'):
+    if d.get(k): print(str(d[k])); break
+else: print(hashlib.sha256(p.read_bytes()).hexdigest())
+PYDATA
+)
+BASE_CONTRACT=$(
+  {
+    printf '%s\n' 'VWAP_GEN1_CONTRACT_V2' "$DATASET_ID"
+    sha256sum "$SELF" "$DUR/work/engine/replay_v1.py" "$DUR/work/engine/replay_v2.py" "$DUR/work/engine/lane_checkpoint_v2.py" \
+      "$BASE/work/source/backend/strategies/vwap_reversion.py" \
+      "$BASE/work/source/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" \
+      "$BASE/work/source/backend/config/q4r3_exact25_shadow_binding_v1.json"
+  } | sha256sum | awk '{print $1}'
+)
+echo "GEN1_BASE_CONTRACT=$BASE_CONTRACT DATASET_ID=$DATASET_ID"
+
+"$PY" - "$DUR/work/engine/replay_v1.py" "$BASE/work/replay/trades.jsonl.gz" "$GEN/result/baseline_w12.json" <<'PYBASE'
 import gzip,importlib.util,json,sys
 from pathlib import Path
 engine_path,trades_path,out_path=map(Path,sys.argv[1:])
 spec=importlib.util.spec_from_file_location('gen1_base_engine',engine_path); e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e; spec.loader.exec_module(e)
-rows=[]
+rows={'1m_w1':[],'1m_w2':[]}
 with gzip.open(trades_path,'rt',encoding='utf-8') as h:
     for line in h:
-        r=json.loads(line)
-        if r.get('strategy_id')=='vwap_revert' and r.get('side')=='long': rows.append(r)
-by={w:e.metrics([r for r in rows if str(r.get('window_id'))==w]) for w in ('1m_w1','1m_w2','1m_w3')}
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_baseline.v1','scope':'vwap_revert.long','by_window':by,'overall':e.metrics(rows),'w3_sealed':True,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-out_path.write_text(json.dumps(p,indent=2,sort_keys=True,allow_nan=False)+'\n')
-print(json.dumps({'state':'PASS_GEN1_BASELINE','overall':p['overall']},sort_keys=True))
+        r=json.loads(line); w=str(r.get('window_id'))
+        if w in rows and r.get('strategy_id')=='vwap_revert' and r.get('side')=='long': rows[w].append(r)
+by={w:e.metrics(v) for w,v in rows.items()}
+p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_baseline_w12.v2','scope':'vwap_revert.long','by_window':by,'sealed_window':'1m_w3','w3_metrics_present':False,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+out_path.write_text(json.dumps(p,indent=2,sort_keys=True,allow_nan=False)+'\n'); print(json.dumps({'state':'PASS_GEN1_BASELINE_W12','by_window':by},sort_keys=True))
 PYBASE
 
-# Gen1 is deliberately low-dimensional: B-seed changes max_hold only; C-seed changes target only.
 "$PY" - "$GEN/candidates" <<'PYCANDS'
 import hashlib,json,sys
 from pathlib import Path
 root=Path(sys.argv[1]); root.mkdir(parents=True,exist_ok=True)
 rows={
- 'B60':dict(stop_distance_mult=0.95,target_distance_mult=1.35,min_confidence=0.65,cooldown_min=60.0,min_risk_distance_pct=0.40,max_hold_min=60.0,seed='GEN0_B',changed_axis='max_hold_min'),
- 'B75':dict(stop_distance_mult=0.95,target_distance_mult=1.35,min_confidence=0.65,cooldown_min=60.0,min_risk_distance_pct=0.40,max_hold_min=75.0,seed='GEN0_B',changed_axis='max_hold_min'),
- 'C120':dict(stop_distance_mult=1.10,target_distance_mult=1.20,min_confidence=0.75,cooldown_min=90.0,min_risk_distance_pct=0.60,max_hold_min=60.0,seed='GEN0_C',changed_axis='target_distance_mult'),
+ 'B60':dict(stop_distance_mult=.95,target_distance_mult=1.35,min_confidence=.65,cooldown_min=60.,min_risk_distance_pct=.40,max_hold_min=60.,seed='GEN0_B',changed_axis='max_hold_min'),
+ 'B75':dict(stop_distance_mult=.95,target_distance_mult=1.35,min_confidence=.65,cooldown_min=60.,min_risk_distance_pct=.40,max_hold_min=75.,seed='GEN0_B',changed_axis='max_hold_min'),
+ 'C120':dict(stop_distance_mult=1.10,target_distance_mult=1.20,min_confidence=.75,cooldown_min=90.,min_risk_distance_pct=.60,max_hold_min=60.,seed='GEN0_C',changed_axis='target_distance_mult'),
 }
 for cid,p in rows.items():
     params={k:v for k,v in p.items() if k not in ('seed','changed_axis')}; params['enabled_entry_owners']=['vwap_revert']
@@ -84,12 +98,16 @@ print(json.dumps({'state':'PASS_GEN1_CANDIDATES','candidate_ids':sorted(rows)},s
 PYCANDS
 
 prepare_candidate() {
-  cid="$1"; cjson="$GEN/candidates/$cid.json"; run="$GEN/runs/$cid"; csha=$(sha256sum "$cjson"|awk '{print $1}')
-  if [ -s "$run/candidate.sha256" ] && [ "$(cat "$run/candidate.sha256")" = "$csha" ]; then echo "RESUME_GEN1 $cid"; return; fi
+  cid="$1"; cjson="$GEN/candidates/$cid.json"; run="$GEN/runs/$cid"
+  contract=$( { printf '%s\n' "$BASE_CONTRACT"; sha256sum "$cjson"; } | sha256sum | awk '{print $1}')
+  valid=0
+  if [ -s "$run/contract.sha256" ] && [ "$(cat "$run/contract.sha256")" = "$contract" ] && [ -s "$run/engine/replay_v1_candidate.py" ] && [ -s "$run/engine/replay_v2_candidate.py" ]; then
+    if "$PY" -m py_compile "$run/engine/replay_v1_candidate.py" "$run/engine/replay_v2_candidate.py" >/dev/null 2>&1; then valid=1; fi
+  fi
+  if [ "$valid" = 1 ]; then echo "RESUME_GEN1_VALIDATED $cid $contract"; return; fi
   rm -rf "$run"; mkdir -p "$run/engine" "$run/result" "$run/logs"
   cp "$DUR/work/engine/replay_v1.py" "$run/engine/replay_v1_candidate.py"
   cp "$DUR/work/engine/replay_v2.py" "$run/engine/replay_v2_candidate.py"
-  printf '%s\n' "$csha" > "$run/candidate.sha256"
   "$PY" - "$run/engine/replay_v1_candidate.py" "$run/engine/replay_v2_candidate.py" "$cjson" <<'PYPATCH'
 import json,re,sys
 from pathlib import Path
@@ -112,12 +130,14 @@ anchor='if __name__ == "__main__":'
 override='''\n# ZEL_GEN1_VWAP_TARGET_ONLY\n_ZEL_BASE_RESTORE=_restore_structural_premium_registry\ndef _restore_structural_premium_registry(source_root,raw_registry):\n    restored=dict(_ZEL_BASE_RESTORE(source_root,raw_registry))\n    if "vwap_revert" not in restored: raise RuntimeError(f"VWAP_TARGET_OWNER_MISSING:{sorted(restored)}")\n    return {"vwap_revert":restored["vwap_revert"]}\n\n'''
 if t.count(anchor)!=1: raise SystemExit('MAIN_ANCHOR')
 p1.write_text(t.replace(anchor,override+anchor,1))
-t=p2.read_text();
+t=p2.read_text()
 if t.count('EXPECTED_STRATEGY_COUNT = 4')!=1: raise SystemExit('V2_COUNT_ANCHOR')
 p2.write_text(t.replace('EXPECTED_STRATEGY_COUNT = 4','EXPECTED_STRATEGY_COUNT = 1',1))
 print(json.dumps({'state':'PASS_GEN1_ENGINE_PATCH','candidate_id':c['candidate_id']},sort_keys=True))
 PYPATCH
   "$PY" -m py_compile "$run/engine/replay_v1_candidate.py" "$run/engine/replay_v2_candidate.py"
+  printf '%s\n' "$contract" > "$run/contract.sha256.tmp"; mv -f "$run/contract.sha256.tmp" "$run/contract.sha256"
+  echo "PASS_GEN1_PREPARED $cid $contract"
 }
 
 run_window() {
@@ -139,8 +159,9 @@ PYLANE
 }
 
 score_window() {
-  cid="$1"; phase="$2"; window="$3"; out="$GEN/runs/$cid/result/${phase}_score.json"; lane_root="$GEN/runs/$cid/replay_${phase}/lane_checkpoints"; engine="$GEN/runs/$cid/engine/replay_v1_candidate.py"
-  "$PY" - "$engine" "$lane_root" "$GEN/result/baseline_long.json" "$out" "$phase" "$window" "$cid" <<'PYSCORE'
+  cid="$1"; phase="$2"; window="$3"; run="$GEN/runs/$cid"; out="$run/result/${phase}_score.json"; lane_root="$run/replay_${phase}/lane_checkpoints"; engine="$run/engine/replay_v1_candidate.py"
+  basep="$GEN/result/baseline_w12.json"; [ "$phase" = w3 ] && basep="$GEN/result/baseline_w3.json"
+  "$PY" - "$engine" "$lane_root" "$basep" "$out" "$phase" "$window" "$cid" <<'PYSCORE'
 import gzip,importlib.util,json,math,sys
 from pathlib import Path
 engine,lane_root,basep,outp=map(Path,sys.argv[1:5]); phase,window,cid=sys.argv[5:8]
@@ -153,97 +174,78 @@ for p in files:
 base=json.loads(basep.read_text())['by_window'][window]; m=e.metrics(rows); min_samples=max(30,math.ceil(float(base['sample_count'])*.50))
 g={'sample_min':min_samples,'sample_ok':int(m['sample_count'])>=min_samples,'pf_improved':float(m.get('profit_factor') or 0)>float(base.get('profit_factor') or 0),'net_improved':float(m.get('net_R') or 0)>float(base.get('net_R') or 0),'dd_nonworse':float(m.get('max_drawdown_R') or 0)<=float(base.get('max_drawdown_R') or 0)}; g['pass']=all(v for k,v in g.items() if k not in ('sample_min','pass'))
 score=(float(m.get('net_R') or 0)-float(base.get('net_R') or 0))/max(abs(float(base.get('net_R') or 0)),1)+(float(m.get('profit_factor') or 0)-float(base.get('profit_factor') or 0))+(float(base.get('max_drawdown_R') or 0)-float(m.get('max_drawdown_R') or 0))/max(float(base.get('max_drawdown_R') or 0),1)
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_window_score.v1','candidate_id':cid,'phase':phase,'window':window,'metrics':m,'gate':g,'phase_pass':g['pass'],'diagnostic_score':score,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
+if not math.isfinite(score): raise SystemExit('NONFINITE_SCORE')
+p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_window_score.v2','candidate_id':cid,'phase':phase,'window':window,'metrics':m,'gate':g,'phase_pass':g['pass'],'diagnostic_score':score,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
 outp.write_text(json.dumps(p,indent=2,sort_keys=True,allow_nan=False)+'\n'); print(json.dumps({'state':'PASS_GEN1_WINDOW_SCORED','candidate_id':cid,'phase':phase,'phase_pass':g['pass'],'score':score,'metrics':m,'gate':g},sort_keys=True))
 PYSCORE
 }
 
-# Stage 1: W1 screening for all three candidates.
 for cid in B60 B75 C120; do prepare_candidate "$cid"; run_window "$cid" w1 1m_w1; score_window "$cid" w1 1m_w1; done
-
 SURVIVORS=$("$PY" - "$GEN" <<'PYSEL1'
 import json,sys
 from pathlib import Path
-g=Path(sys.argv[1]); rows=[]
-for cid in ('B60','B75','C120'):
- d=json.loads((g/'runs'/cid/'result/w1_score.json').read_text()); rows.append(d)
+g=Path(sys.argv[1]); rows=[json.loads((g/'runs'/cid/'result/w1_score.json').read_text()) for cid in ('B60','B75','C120')]
 s=[r['candidate_id'] for r in rows if r['phase_pass']]
-out={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_w1_selection.v1','survivors':s,'ranking':sorted([{'candidate_id':r['candidate_id'],'phase_pass':r['phase_pass'],'diagnostic_score':r['diagnostic_score']} for r in rows],key=lambda x:(-x['diagnostic_score'],x['candidate_id'])),'w2_accessed':False,'w3_accessed':False,'research_only':True,'action':'hold'}
+out={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_w1_selection.v2','survivors':s,'ranking':sorted([{'candidate_id':r['candidate_id'],'phase_pass':r['phase_pass'],'diagnostic_score':r['diagnostic_score']} for r in rows],key=lambda x:(-x['diagnostic_score'],x['candidate_id'])),'w2_accessed':False,'w3_accessed':False,'research_only':True,'action':'hold'}
 (g/'result/w1_selection.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n'); print(' '.join(s))
 PYSEL1
 )
 echo "GEN1_W1_SURVIVORS=$SURVIVORS"
-
 if [ -z "$SURVIVORS" ]; then
-  "$PY" - "$GEN/result/terminal_receipt.json" <<'PYTERM'
+  "$PY" - "$GEN/result/terminal_receipt.json" <<'PYT1'
 import json,sys
 from pathlib import Path
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_terminal.v1','state':'HOLD_GEN1_NO_W1_SURVIVOR','next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':False,'w3_accessed':False,'canonical_mutations':0,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
-PYTERM
+p={'state':'HOLD_GEN1_NO_W1_SURVIVOR','next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':False,'w3_accessed':False,'research_only':True,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}; Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
+PYT1
   exit 0
 fi
 
-# Stage 2: only W1 survivors pay for W2.
 for cid in $SURVIVORS; do run_window "$cid" w2 1m_w2; score_window "$cid" w2 1m_w2; done
-
 WINNER=$("$PY" - "$GEN" $SURVIVORS <<'PYSEL2'
 import json,sys
 from pathlib import Path
-g=Path(sys.argv[1]); ids=sys.argv[2:]; rows=[]
-for cid in ids:
+g=Path(sys.argv[1]); rows=[]
+for cid in sys.argv[2:]:
  w1=json.loads((g/'runs'/cid/'result/w1_score.json').read_text()); w2=json.loads((g/'runs'/cid/'result/w2_score.json').read_text()); rows.append((cid,w1,w2))
 passing=[r for r in rows if r[1]['phase_pass'] and r[2]['phase_pass']]
-rank=sorted(rows,key=lambda r:(-(float(r[1]['diagnostic_score'])+float(r[2]['diagnostic_score'])),r[0]))
-winner=sorted(passing,key=lambda r:(-(float(r[1]['diagnostic_score'])+float(r[2]['diagnostic_score'])),r[0]))[0][0] if passing else None
-out={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_w12_selection.v1','winner':winner,'ranking':[{'candidate_id':r[0],'w1_pass':r[1]['phase_pass'],'w2_pass':r[2]['phase_pass'],'diagnostic_score':float(r[1]['diagnostic_score'])+float(r[2]['diagnostic_score'])} for r in rank],'w3_accessed':False,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-(g/'result/w12_selection.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n'); print(winner or '')
+rank=sorted(rows,key=lambda r:(-(r[1]['diagnostic_score']+r[2]['diagnostic_score']),r[0])); winner=(sorted(passing,key=lambda r:(-(r[1]['diagnostic_score']+r[2]['diagnostic_score']),r[0])[0][0] if passing else None)
+out={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_w12_selection.v2','winner':winner,'ranking':[{'candidate_id':r[0],'w1_pass':r[1]['phase_pass'],'w2_pass':r[2]['phase_pass'],'diagnostic_score':r[1]['diagnostic_score']+r[2]['diagnostic_score']} for r in rank],'w3_accessed':False,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}; (g/'result/w12_selection.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n'); print(winner or '')
 PYSEL2
 )
 echo "GEN1_W12_WINNER=$WINNER"
-
 if [ -z "$WINNER" ]; then
-  "$PY" - "$GEN/result/terminal_receipt.json" <<'PYTERM2'
+  "$PY" - "$GEN/result/terminal_receipt.json" <<'PYT2'
 import json,sys
 from pathlib import Path
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_terminal.v1','state':'HOLD_GEN1_NO_W12_SURVIVOR','next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':True,'w3_accessed':False,'canonical_mutations':0,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
-PYTERM2
+p={'state':'HOLD_GEN1_NO_W12_SURVIVOR','next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':True,'w3_accessed':False,'research_only':True,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}; Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
+PYT2
   exit 0
 fi
 
-# Stage 3: sealed W3 opens for exactly one W12 winner.
+"$PY" - "$DUR/work/engine/replay_v1.py" "$BASE/work/replay/trades.jsonl.gz" "$GEN/result/baseline_w3.json" <<'PYW3BASE'
+import gzip,importlib.util,json,sys
+from pathlib import Path
+eng,trades,out=map(Path,sys.argv[1:]); spec=importlib.util.spec_from_file_location('w3base',eng); e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e; spec.loader.exec_module(e); rows=[]
+with gzip.open(trades,'rt',encoding='utf-8') as h:
+    for line in h:
+        r=json.loads(line)
+        if str(r.get('window_id'))=='1m_w3' and r.get('strategy_id')=='vwap_revert' and r.get('side')=='long': rows.append(r)
+p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_baseline_w3.v1','by_window':{'1m_w3':e.metrics(rows)},'created_after_w12_winner':True,'research_only':True,'action':'hold'}; out.write_text(json.dumps(p,indent=2,sort_keys=True,allow_nan=False)+'\n'); print(json.dumps({'state':'PASS_W3_BASELINE_OPENED_AFTER_SELECTION','metrics':p['by_window']['1m_w3']},sort_keys=True))
+PYW3BASE
 run_window "$WINNER" w3 1m_w3
 score_window "$WINNER" w3 1m_w3
 W3PASS=$("$PY" -c "import json; print('1' if json.load(open('$GEN/runs/$WINNER/result/w3_score.json'))['phase_pass'] else '0')")
 if [ "$W3PASS" != 1 ]; then
-  "$PY" - "$GEN/result/terminal_receipt.json" "$WINNER" <<'PYTERM3'
+  "$PY" - "$GEN/result/terminal_receipt.json" "$WINNER" <<'PYT3'
 import json,sys
 from pathlib import Path
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_terminal.v1','state':'HOLD_GEN1_W3_REJECT','winner_w12':sys.argv[2],'next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':True,'w3_accessed':True,'canonical_mutations':0,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
-PYTERM3
+p={'state':'HOLD_GEN1_W3_REJECT','winner_w12':sys.argv[2],'next':'SOL_GEMINI_REVIEW_AND_GEN2','w2_accessed':True,'w3_accessed':True,'research_only':True,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}; Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
+PYT3
   exit 0
 fi
 
-# Stage 4: W3 survivor gets one 45-lane no-trend aggregate. Stable SR/LS bytes are reused.
-MERGE="$GEN/merged_$WINNER"; rm -rf "$MERGE"; mkdir -p "$MERGE/replay/lane_checkpoints" "$MERGE/engine" "$MERGE/logs"
-cp "$BASE/work/engine/replay_v1_no_trend.py" "$MERGE/engine/replay_v1_no_trend.py"
-cp "$BASE/work/engine/replay_v2_no_trend.py" "$MERGE/engine/replay_v2_no_trend.py"
-cp "$BASE/work/engine/lane_checkpoint_v2.py" "$MERGE/engine/lane_checkpoint_v2.py"
-for s in support_resistance liquidity_sweep; do mkdir -p "$MERGE/replay/lane_checkpoints/$s"; cp "$BASE/work/replay/lane_checkpoints/$s"/*.json.gz "$MERGE/replay/lane_checkpoints/$s/"; done
-mkdir -p "$MERGE/replay/lane_checkpoints/vwap_revert"
-cp "$GEN/runs/$WINNER/replay_w1/lane_checkpoints/vwap_revert"/*.json.gz "$MERGE/replay/lane_checkpoints/vwap_revert/"
-cp "$GEN/runs/$WINNER/replay_w2/lane_checkpoints/vwap_revert"/*.json.gz "$MERGE/replay/lane_checkpoints/vwap_revert/"
-cp "$GEN/runs/$WINNER/replay_w3/lane_checkpoints/vwap_revert"/*.json.gz "$MERGE/replay/lane_checkpoints/vwap_revert/"
-test "$(find "$MERGE/replay/lane_checkpoints" -type f -name '*.json.gz' | wc -l)" -eq 45
-for s in support_resistance liquidity_sweep; do diff -q <(cd "$BASE/work/replay/lane_checkpoints/$s" && sha256sum *.json.gz|sort) <(cd "$MERGE/replay/lane_checkpoints/$s" && sha256sum *.json.gz|sort); done
-"$PY" "$MERGE/engine/lane_checkpoint_v2.py" --engine-v1 "$MERGE/engine/replay_v1_no_trend.py" --engine-v2 "$MERGE/engine/replay_v2_no_trend.py" --source-root "$BASE/work/source" --data-root "$DUR/work/data" --interval 1m --output-dir "$MERGE/replay" --workers 1 2>&1 | tee "$MERGE/logs/finalize.log"
-"$PY" "$MERGE/engine/replay_v2_no_trend.py" --engine-v1 "$MERGE/engine/replay_v1_no_trend.py" --source-root "$BASE/work/source" --data-root "$DUR/work/data" --interval 1m --output-dir "$MERGE/replay" --workers 1 2>&1 | tee "$MERGE/logs/aggregate.log"
-test -s "$MERGE/replay/report.json"
-"$PY" - "$GEN/result/terminal_receipt.json" "$WINNER" "$MERGE/replay/report.json" <<'PYDONE'
-import hashlib,json,sys
+"$PY" - "$GEN/result/terminal_receipt.json" "$WINNER" <<'PYDONE'
+import json,sys
 from pathlib import Path
-p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_terminal.v1','state':'PASS_GEN1_RESEARCH_INCUMBENT','winner':sys.argv[2],'aggregate_report_sha256':hashlib.sha256(Path(sys.argv[3]).read_bytes()).hexdigest(),'next':'COMPARE_GEN1_TO_BASELINE_THEN_GEN2_OR_GATE6','w2_accessed':True,'w3_accessed':True,'canonical_mutations':0,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}
-Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
+p={'schema_version':'zel.structural_premium.vwap_closed_loop.gen1_terminal.v2','state':'PASS_GEN1_W3_SURVIVOR','winner':sys.argv[2],'next':'FINGERPRINT_AWARE_45_LANE_AGGREGATE','w2_accessed':True,'w3_accessed':True,'canonical_mutations':0,'research_only':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'}; Path(sys.argv[1]).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
 PYDONE

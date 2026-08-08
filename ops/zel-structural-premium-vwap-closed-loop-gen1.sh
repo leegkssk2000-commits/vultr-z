@@ -14,7 +14,7 @@ for p in \
   "$DUR/work/engine/replay_v2.py" \
   "$DUR/work/engine/lane_checkpoint_v2.py" \
   "$BASE/work/replay/trades.jsonl.gz" \
-  "$BASE/work/source/backend/strategies/vwap_reversion.py" \
+  "$BASE/work/source/backend/strategies/vwap_revert.py" \
   "$BASE/work/source/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" \
   "$BASE/work/source/backend/config/q4r3_exact25_shadow_binding_v1.json"; do
   test -s "$p"
@@ -58,7 +58,7 @@ BASE_CONTRACT=$(
   {
     printf '%s\n' 'VWAP_GEN1_CONTRACT_V2' "$DATASET_ID"
     sha256sum "$SELF" "$DUR/work/engine/replay_v1.py" "$DUR/work/engine/replay_v2.py" "$DUR/work/engine/lane_checkpoint_v2.py" \
-      "$BASE/work/source/backend/strategies/vwap_reversion.py" \
+      "$BASE/work/source/backend/strategies/vwap_revert.py" \
       "$BASE/work/source/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" \
       "$BASE/work/source/backend/config/q4r3_exact25_shadow_binding_v1.json"
   } | sha256sum | awk '{print $1}'

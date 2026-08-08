@@ -1,0 +1,297 @@
+name: ZEL Structural Premium Durable Lane V2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_structural_premium_durable_lane_trigger_v2.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-durable-lane-v2-launch
+  cancel-in-progress: false
+
+jobs:
+  launch-durable-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_ARTIFACT_ID: '8916685107'
+      REMOTE_LOCK: /opt/zel/research-runtime/locks/one-heavy-vps-replay.lock
+      REMOTE_CHECKPOINT_ROOT: /opt/zel/research-runtime/checkpoints/structural-premium-v3
+      REMOTE_JOB_ROOT: /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Local contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_structural_premium_coverage_revalidation_v1.py \
+            backend/tools/zel_structural_premium_registry_restore_v2.py \
+            backend/tools/zel_structural_premium_registry_restore_v3.py \
+            backend/tools/zel_structural_premium_registry_restore_v4.py \
+            backend/tools/zel_structural_premium_overlay_patch_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v1.py \
+            backend/tools/zel_historical_oos_exact25_replay_v2.py \
+            backend/tools/zel_historical_oos_lane_checkpoint_v1.py
+          python backend/tools/zel_structural_premium_registry_restore_v4.py --self-test
+          python backend/tools/zel_structural_premium_overlay_patch_v1.py --self-test
+          python backend/tools/zel_historical_oos_lane_checkpoint_v1.py --self-test
+
+      - name: Materialize immutable dataset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel-sp-durable /tmp/zel-sp-durable-bundle.tar
+          mkdir -p /tmp/zel-sp-durable/data /tmp/zel-sp-durable/engine /tmp/zel-sp-durable/tools
+          curl --fail --location --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            -o /tmp/zel-sp-durable/source.zip
+          python backend/tools/zel_structural_premium_coverage_revalidation_v1.py materialize \
+            --source-zip /tmp/zel-sp-durable/source.zip \
+            --output-root /tmp/zel-sp-durable/data
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-sp-durable/data/manifest.json').read_text())
+          assert r['state']=='PASS_HISTORICAL_OOS_DATA_READY',r
+          assert r['total_market_rows']==960150,r
+          assert len(r['files'])==15 and len(r['windows'])==3,r
+          assert r['duplicate_timestamp_count']==0 and r['missing_interval_count']==0,r
+          assert r['synthetic_rows_created']==0 and r['forward_overlap_count']==0,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print({'state':r['state'],'rows':r['total_market_rows'],'dataset_sha256':r['dataset_sha256']})
+          PY
+
+      - name: Build sealed durable bundle
+        run: |
+          set -euo pipefail
+          cp backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/zel-sp-durable/engine/replay_v1.py
+          cp backend/tools/zel_historical_oos_exact25_replay_v2.py /tmp/zel-sp-durable/engine/replay_v2.py
+          cp backend/tools/zel_historical_oos_lane_checkpoint_v1.py /tmp/zel-sp-durable/engine/lane_checkpoint.py
+          cp backend/tools/zel_structural_premium_registry_restore_v2.py /tmp/zel-sp-durable/engine/zel_structural_premium_registry_restore_v2.py
+          cp backend/tools/zel_structural_premium_registry_restore_v3.py /tmp/zel-sp-durable/engine/zel_structural_premium_registry_restore_v3.py
+          cp backend/tools/zel_structural_premium_registry_restore_v4.py /tmp/zel-sp-durable/engine/zel_structural_premium_registry_restore_v4.py
+          cp backend/tools/zel_structural_premium_overlay_patch_v1.py /tmp/zel-sp-durable/tools/overlay_patch.py
+          cp backend/tools/zel_structural_premium_coverage_revalidation_v1.py /tmp/zel-sp-durable/evaluate.py
+          cp backend/research/zel_structural_premium_incumbent_overlay_v1.json /tmp/zel-sp-durable/incumbent_overlay.json
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/zel-sp-durable/evaluate.py')
+          t=p.read_text()
+          old='        "non_long_entry_owner_trades_zero": ledger_integrity["non_long_entry_owner_trade_count"] == 0,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "long_only_projection_explicit": True,')
+          old='        "five_strategies_completed": int(report_replay.get("strategy_count_completed") or -1) == 5,'
+          assert t.count(old)==1
+          t=t.replace(old,'        "four_entry_owners_completed": int(report_replay.get("strategy_count_completed") or -1) == 4,')
+          old='            "filter_only": [f"{value}|enter_long" for value in FILTER_ONLY],'
+          assert t.count(old)==1
+          t=t.replace(old,'            "filter_only": [f"{value}|filter_only" for value in FILTER_ONLY],')
+          p.write_text(t)
+          PY
+          (
+            cd /tmp/zel-sp-durable
+            sha256sum engine/*.py tools/*.py evaluate.py incumbent_overlay.json > transport.sha256
+            sha256sum -c transport.sha256
+          )
+          tar -C /tmp/zel-sp-durable -cf /tmp/zel-sp-durable-bundle.tar data engine tools evaluate.py incumbent_overlay.json transport.sha256
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Launch durable VPS continuation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          stage="/tmp/zel-sp-durable-${GITHUB_RUN_ID}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "rm -rf '$stage'; mkdir -p '$stage' '$REMOTE_JOB_ROOT' '$REMOTE_CHECKPOINT_ROOT/output' /opt/zel/research-runtime/locks"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/zel-sp-durable-bundle.tar "$VPS_USER@$VPS_HOST:$stage/bundle.tar"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "REMOTE_LOCK='$REMOTE_LOCK' REMOTE_CHECKPOINT_ROOT='$REMOTE_CHECKPOINT_ROOT' REMOTE_JOB_ROOT='$REMOTE_JOB_ROOT' STAGE='$stage' LAUNCH_RUN_ID='$GITHUB_RUN_ID' bash -s" <<'REMOTE'
+          set -euo pipefail
+          if [ -s "$REMOTE_JOB_ROOT/runner.pid" ]; then
+            old_pid="$(cat "$REMOTE_JOB_ROOT/runner.pid" 2>/dev/null || true)"
+            if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+              echo "DURABLE_ALREADY_RUNNING pid=$old_pid"
+              rm -rf "$STAGE"
+              exit 0
+            fi
+          fi
+          if [ -s "$REMOTE_JOB_ROOT/status.json" ]; then
+            old_state="$(python - "$REMOTE_JOB_ROOT/status.json" <<'PY'
+          import json,sys
+          try: print(json.load(open(sys.argv[1])).get('state',''))
+          except Exception: print('')
+          PY
+          )"
+            if [ "$old_state" = "PASS" ]; then
+              echo "DURABLE_ALREADY_PASS"
+              rm -rf "$STAGE"
+              exit 0
+            fi
+          fi
+          rm -rf "$REMOTE_JOB_ROOT/work.new"
+          mkdir -p "$REMOTE_JOB_ROOT/work.new" "$REMOTE_JOB_ROOT/result"
+          tar -xf "$STAGE/bundle.tar" -C "$REMOTE_JOB_ROOT/work.new"
+          rm -rf "$REMOTE_JOB_ROOT/work"
+          mv "$REMOTE_JOB_ROOT/work.new" "$REMOTE_JOB_ROOT/work"
+          rm -rf "$STAGE"
+
+          cat > "$REMOTE_JOB_ROOT/run.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          : "${REMOTE_LOCK:?}" "${REMOTE_CHECKPOINT_ROOT:?}" "${REMOTE_JOB_ROOT:?}" "${LAUNCH_RUN_ID:?}"
+          OUTPUT="$REMOTE_CHECKPOINT_ROOT/output"
+          WORK="$REMOTE_JOB_ROOT/work"
+          RESULT="$REMOTE_JOB_ROOT/result"
+          mkdir -p "$OUTPUT" "$RESULT"
+
+          write_status() {
+            state="$1"; rc="${2:-0}"; note="${3:-}"
+            strategy_cp="$(find "$OUTPUT/checkpoints" -maxdepth 1 -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
+            lane_cp="$(find "$OUTPUT/lane_checkpoints" -type f -name '*.json.gz' 2>/dev/null | wc -l | tr -d ' ')"
+            python - "$REMOTE_JOB_ROOT/status.json" "$state" "$rc" "$note" "$strategy_cp" "$lane_cp" "$LAUNCH_RUN_ID" "$$" <<'PY'
+          import json,os,sys,tempfile
+          from datetime import datetime,timezone
+          path,state,rc,note,strategy_cp,lane_cp,run_id,pid=sys.argv[1:]
+          sc=int(strategy_cp or 0); lc=int(lane_cp or 0)
+          completed=min(60,sc*15+lc)
+          payload={
+            'schema_version':'zel.structural_premium.durable_lane.status.v2',
+            'state':state,'rc':int(rc),'note':note,'launch_run_id':run_id,
+            'runner_pid':int(pid),'strategy_checkpoints':sc,'lane_checkpoints':lc,
+            'completed_units_estimate':completed,'total_units':60,
+            'progress_pct_estimate':round(completed/60*100.0,3),
+            'heartbeat_at':datetime.now(timezone.utc).isoformat(),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          d=os.path.dirname(path); os.makedirs(d,exist_ok=True)
+          fd,tmp=tempfile.mkstemp(prefix='.status.',dir=d)
+          with os.fdopen(fd,'w') as f:
+            json.dump(payload,f,indent=2,sort_keys=True); f.write('\n'); f.flush(); os.fsync(f.fileno())
+          os.replace(tmp,path)
+          PY
+          }
+
+          fail() { rc="$1"; shift; write_status HOLD "$rc" "$*"; exit "$rc"; }
+          write_status WAITING_FOR_LOCK 0 "durable continuation queued behind one-heavy lock"
+          exec 9>"$REMOTE_LOCK"
+          flock 9
+          write_status RUNNING_LANES 0 "lock acquired; resuming only missing lane checkpoints"
+          cd "$WORK" || fail 90 "workdir missing"
+          sha256sum -c transport.sha256 || fail 91 "transport hash mismatch"
+          /home/z/z/.venv/bin/python engine/zel_structural_premium_registry_restore_v4.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+            --output "$RESULT/registry_restore.json" || fail 92 "registry restore failed"
+          /home/z/z/.venv/bin/python tools/overlay_patch.py \
+            --engine-v1 engine/replay_v1.py --candidate-json incumbent_overlay.json \
+            --receipt "$RESULT/incumbent_overlay_patch.json" || fail 93 "overlay patch failed"
+          /home/z/z/.venv/bin/python -m py_compile engine/replay_v1.py engine/replay_v2.py engine/lane_checkpoint.py || fail 94 "compile failed"
+
+          GITHUB_RUN_ID="$LAUNCH_RUN_ID" /home/z/z/.venv/bin/python engine/lane_checkpoint.py \
+            --engine-v1 engine/replay_v1.py --engine-v2 engine/replay_v2.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root data --interval 1m --output-dir "$OUTPUT" --workers 4 \
+            > "$REMOTE_JOB_ROOT/lane.log" 2>&1 &
+          child=$!
+          while kill -0 "$child" 2>/dev/null; do
+            write_status RUNNING_LANES 0 "lane checkpoint worker active"
+            sleep 60
+          done
+          wait "$child"; lane_rc=$?
+          [ "$lane_rc" -eq 0 ] || fail "$lane_rc" "lane checkpoint returned nonzero"
+
+          write_status AGGREGATING 0 "all strategy/lane checkpoints complete"
+          GITHUB_RUN_ID="$LAUNCH_RUN_ID" /home/z/z/.venv/bin/python engine/replay_v2.py \
+            --engine-v1 engine/replay_v1.py \
+            --source-root /opt/zel/forward-expansion-v1/source \
+            --data-root data --interval 1m --output-dir "$OUTPUT" --workers 4 \
+            > "$REMOTE_JOB_ROOT/aggregate.log" 2>&1 || fail 95 "aggregate replay failed"
+          test -s "$OUTPUT/report.json" && test -s "$OUTPUT/trades.jsonl.gz" || fail 96 "terminal replay artifacts missing"
+
+          write_status EVALUATING 0 "economic/coverage evaluation"
+          /home/z/z/.venv/bin/python evaluate.py evaluate \
+            --report "$OUTPUT/report.json" --ledger "$OUTPUT/trades.jsonl.gz" \
+            --dataset-manifest data/manifest.json --output "$RESULT/coverage_revalidation.json" \
+            > "$REMOTE_JOB_ROOT/evaluate.log" 2>&1 || fail 97 "coverage evaluation failed"
+          cp "$OUTPUT/summary.json" "$RESULT/exact_replay_summary.json"
+          cp "$OUTPUT/progress.json" "$RESULT/replay_progress.json"
+          cp "$OUTPUT/terminal_receipt.json" "$RESULT/replay_terminal_receipt.json"
+          cp data/manifest.json "$RESULT/expanded_dataset_manifest.json"
+          cp incumbent_overlay.json "$RESULT/incumbent_overlay.json"
+
+          /home/z/z/.venv/bin/python - "$RESULT" <<'PY' || fail 98 "gate6 terminal verification failed"
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          progress=json.loads((root/'replay_progress.json').read_text())
+          terminal=json.loads((root/'replay_terminal_receipt.json').read_text())
+          restore=json.loads((root/'registry_restore.json').read_text())
+          row=json.loads((root/'coverage_revalidation.json').read_text())
+          assert progress['state']=='PASS',progress
+          assert int(progress['completed_units'])==int(progress['total_units']) and int(progress['error_count'])==0,progress
+          assert terminal['state']=='PASS' and terminal['strategy_count_completed']==4 and terminal['strategy_failure_count']==0,terminal
+          assert restore['state']=='PASS_STRUCTURAL_PREMIUM_ENTRY_OWNER_COVERAGE_RESTORED',restore
+          assert restore['restored_count']==4 and restore['market_structure_entry_owner'] is False,restore
+          expected=row['receipt_sha256']
+          actual=hashlib.sha256(json.dumps({k:v for k,v in row.items() if k!='receipt_sha256'},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert row['integrity']['all_pass'] is True,row
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          (root/'gate6_durable_receipt.json').write_text(json.dumps({
+            'state':'PASS_GATE6_TERMINAL_VERIFICATION',
+            'economic_state':row.get('state'),
+            'coverage_restored':row.get('coverage',{}).get('coverage_restored'),
+            'selected_configuration':row.get('selection',{}).get('selected_configuration'),
+            'survivor':row.get('survivor'),
+            'blockers':row.get('blockers'),
+            'receipt_sha256':row.get('receipt_sha256'),
+            'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          },indent=2,sort_keys=True)+'\n')
+          PY
+          write_status PASS 0 "durable replay + Gate6 terminal verification complete"
+          RUNNER
+          chmod 700 "$REMOTE_JOB_ROOT/run.sh"
+          rm -f "$REMOTE_JOB_ROOT/runner.pid"
+          env REMOTE_LOCK="$REMOTE_LOCK" REMOTE_CHECKPOINT_ROOT="$REMOTE_CHECKPOINT_ROOT" REMOTE_JOB_ROOT="$REMOTE_JOB_ROOT" LAUNCH_RUN_ID="$LAUNCH_RUN_ID" \
+            nohup setsid bash "$REMOTE_JOB_ROOT/run.sh" > "$REMOTE_JOB_ROOT/runner.log" 2>&1 < /dev/null &
+          pid=$!
+          echo "$pid" > "$REMOTE_JOB_ROOT/runner.pid"
+          sleep 2
+          kill -0 "$pid"
+          echo "DURABLE_LAUNCHED pid=$pid job_root=$REMOTE_JOB_ROOT"
+          REMOTE
+
+      - name: Cleanup local secrets
+        if: always()
+        run: |
+          rm -f ~/.ssh/vps_key /tmp/zel-sp-durable-bundle.tar

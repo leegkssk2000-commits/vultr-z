@@ -1,0 +1,59 @@
+name: ZEL Trend Rider Supertrend Inspect V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-trend-rider-supertrend-inspect-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Inspect canonical trend_rider helper only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          SRC=/opt/zel/forward-expansion-v1/source/backend/strategies/trend_rider.py
+          PY=/home/z/z/.venv/bin/python
+          test -s "$SRC"
+          sha256sum "$SRC"
+          "$PY" - "$SRC" <<'PY'
+          import importlib.util,inspect,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          spec=importlib.util.spec_from_file_location('z_tr_inspect',p)
+          m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; spec.loader.exec_module(m)
+          print('===SUPER_TREND_SOURCE===')
+          print(inspect.getsource(m._supertrend))
+          print('===CONFIG===')
+          print(m.TrendRiderConfig())
+          PY
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

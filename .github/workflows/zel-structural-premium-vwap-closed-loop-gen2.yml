@@ -1,0 +1,50 @@
+name: ZEL Structural Premium VWAP Closed Loop Gen2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ops/zel-structural-premium-vwap-closed-loop-gen2.sh
+      - .github/workflows/zel-structural-premium-vwap-closed-loop-gen2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-vwap-closed-loop-gen2
+  cancel-in-progress: true
+
+jobs:
+  gen2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Local syntax preflight
+        run: bash -n ops/zel-structural-premium-vwap-closed-loop-gen2.sh
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Execute AI-driven Gen2 research loop
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes ops/zel-structural-premium-vwap-closed-loop-gen2.sh "$VPS_USER@$VPS_HOST:/tmp/zel-structural-premium-vwap-closed-loop-gen2.sh"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash /tmp/zel-structural-premium-vwap-closed-loop-gen2.sh'
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

@@ -15,14 +15,13 @@ CANON_TR=$(sha256sum "$CANON/backend/strategies/trend_rider.py" | awk '{print $1
 CANON_MAN=$(sha256sum "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" | awk '{print $1}')
 CANON_BIND=$(sha256sum "$CANON/backend/config/q4r3_exact25_shadow_binding_v1.json" | awk '{print $1}')
 
-# Stop only targeted-fix-v2 runner/workers; preserve all completed checkpoints.
 if [ -s "$SRC/runner.pid" ]; then
   RP=$(cat "$SRC/runner.pid" || true)
   if [ -n "${RP:-}" ] && kill -0 "$RP" 2>/dev/null; then kill -TERM "$RP" || true; fi
 fi
 PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
 if [ -n "$PIDS" ]; then kill -TERM $PIDS || true; fi
-sleep 3
+sleep 2
 PIDS=$(pgrep -f 'lane_checkpoint_v2.py.*structural-premium-targeted-fix-v2|replay_v2.py.*structural-premium-targeted-fix-v2' || true)
 if [ -n "$PIDS" ]; then kill -KILL $PIDS || true; fi
 sleep 1
@@ -37,7 +36,6 @@ cp "$OLD/work/evaluate.py" "$NEW/work/evaluate.py"
 
 cat >> "$NEW/work/engine/replay_v1_no_trend.py" <<'PYOVR'
 
-# ZEL research-only no-trend override; canonical source is untouched.
 _z_original_restore_structural_premium_registry = _restore_structural_premium_registry
 def _restore_structural_premium_registry(source_root, registry):
     restored = dict(_z_original_restore_structural_premium_registry(source_root, registry))
@@ -47,6 +45,19 @@ def _restore_structural_premium_registry(source_root, registry):
         raise RuntimeError(f"NO_TREND_RESTORED_REGISTRY_MISMATCH:{sorted(restored)}")
     return restored
 PYOVR
+
+# replay_v2 has a structural-premium cardinality assertion fixed at four owners.
+# This is a research-copy-only contract adaptation; canonical engine is untouched.
+"$PY" - "$NEW/work/engine/replay_v2.py" <<'PYPATCH'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); t=p.read_text()
+old='if len(registry) != 4:'
+if t.count(old) != 1:
+    raise SystemExit(f'REGISTRY_CARDINALITY_ANCHOR_COUNT:{t.count(old)}')
+p.write_text(t.replace(old,'if len(registry) != 3:',1))
+print('PASS_REPLAY_V2_THREE_OWNER_CONTRACT')
+PYPATCH
 
 for s in liquidity_sweep vwap_revert support_resistance; do
   test -d "$SRC/work/replay/lane_checkpoints/$s"
@@ -77,7 +88,6 @@ print(json.dumps(payload,sort_keys=True))
 if errors: raise SystemExit(62)
 PYCHK
 
-# Aggregate from existing 45 checkpoints only. Patched engine exposes three entry owners.
 "$PY" "$NEW/work/engine/replay_v2.py" --engine-v1 "$NEW/work/engine/replay_v1_no_trend.py" --source-root "$NEW/work/source" --data-root "$OLD/work/data" --interval 1m --output-dir "$NEW/work/replay" --workers 4 2>&1 | tee "$NEW/logs/aggregate.log"
 test -s "$NEW/work/replay/report.json"
 test -s "$NEW/work/replay/trades.jsonl.gz"

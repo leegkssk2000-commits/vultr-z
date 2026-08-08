@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect owner manifest contract
+      - name: Inspect targeted replay v2 state
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,15 +37,16 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          CANON=/opt/zel/forward-expansion-v1/source
-          echo '===OWNER_MANIFEST==='
-          cat "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json"
-          echo '===BINDING_CANDIDATES==='
-          find "$CANON/backend/config" -maxdepth 1 -type f -iname '*binding*.json' -print -exec sh -c 'echo ---$1; cat "$1"' _ {} \;
-          echo '===LOADER==='
-          sed -n '1,230p' "$CANON/backend/engine/q4r3_exact25_shadow_manifest_loader.py"
-          echo '===PRODUCER_LOAD_REGISTRY==='
-          sed -n '150,230p' "$CANON/tools/q4r3_exact25_dedicated_shadow_producer.py"
+          NEW=/opt/zel/research-runtime/jobs/structural-premium-targeted-fix-v2
+          echo '===FILES==='; find "$NEW/result" -maxdepth 1 -type f -printf '%f %s\n' 2>/dev/null | sort || true
+          echo '===OVERLAY==='; cat "$NEW/result/candidate_overlay_receipt.json" 2>/dev/null || true
+          echo '===REGISTRY_PREFLIGHT==='; cat "$NEW/result/registry_preflight.json" 2>/dev/null || true
+          echo '===CENSUS==='; cat "$NEW/result/candidate_census.json" 2>/dev/null || true
+          echo '===SEED==='; cat "$NEW/result/seed_receipt.json" 2>/dev/null || true
+          echo '===STATUS==='; cat "$NEW/status.json" 2>/dev/null || true
+          echo '===RUNNER==='; cat "$NEW/runner.pid" 2>/dev/null || true; pgrep -af 'structural-premium-targeted-fix-v2|lane_checkpoint_v2.py|replay_v2.py' || true
+          echo '===LANE_LOG_HEAD==='; head -20 "$NEW/logs/runner.log" 2>/dev/null || true
+          echo '===LANE_LOG_TAIL==='; tail -40 "$NEW/logs/runner.log" 2>/dev/null || true
           REMOTE
       - name: Cleanup
         if: always()

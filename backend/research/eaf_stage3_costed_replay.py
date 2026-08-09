@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 from typing import Callable
 
@@ -94,6 +93,14 @@ def require_cost_model(d: dict) -> None:
         raise SystemExit("HOLD_EMPTY_SLIPPAGE_BUCKETS")
 
 
+def covered_symbols(cost: dict) -> set[str]:
+    out = set()
+    for e in cost.get("endpoints", []):
+        if isinstance(e, dict) and e.get("path") == "depth" and e.get("symbol"):
+            out.add(str(e["symbol"]).replace("-", ""))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True, type=Path)
@@ -107,8 +114,12 @@ def main() -> None:
     cost = json.loads(ns.cost_model.read_text())
     require_cost_model(cost)
     expected = {x["symbol"]: x for x in manifest["symbols"]}
+    cost_covered = covered_symbols(cost)
+    if not cost_covered:
+        raise SystemExit("HOLD_NO_SYMBOL_COST_COVERAGE")
     results = []
     integrity = {}
+    uncovered = []
 
     for symbol in sorted(expected):
         path = ns.data_dir / f"{symbol}.csv"
@@ -120,6 +131,9 @@ def main() -> None:
         if not (integ["state"] == "PASS" and integ["manifest_rows_match"] and integ["manifest_sha_match"] and integ["manifest_range_match"]):
             raise SystemExit(f"DATA_INTEGRITY_HOLD:{symbol}:{json.dumps(integ, sort_keys=True)}")
         integrity[symbol] = integ
+        if symbol not in cost_covered:
+            uncovered.append(symbol)
+            continue
 
         for strategy in base.STRATEGIES:
             gross = base.replay(rows, strategy)
@@ -187,6 +201,8 @@ def main() -> None:
         "baseline_engine_mutated": False,
         "base_semantics_mutated": False,
         "bucket_selection_performed": False,
+        "cost_symbol_coverage": sorted(cost_covered),
+        "uncovered_symbols": sorted(uncovered),
         "cost_source": {
             "source_tier": cost["source_tier"],
             "source_identifier": cost["source_identifier"],
@@ -201,11 +217,11 @@ def main() -> None:
         "integrity": integrity,
         "results": results,
         "survivor_selection_performed": False,
-        "next": "resolve minimum effective sample from SSOT; then apply the frozen gate without choosing a notional bucket or changing BASE rules",
+        "next": "resolve minimum effective sample from SSOT and acquire direct cost coverage for uncovered symbols; then apply the frozen gate without choosing a notional bucket or changing BASE rules",
     }
     ns.out.parent.mkdir(parents=True, exist_ok=True)
     ns.out.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"state": receipt["state"], "rows": len(results), "cost_receipt": receipt["cost_source"]["receipt_sha256"], "minimum_effective_sample": receipt["minimum_effective_sample"]}, sort_keys=True))
+    print(json.dumps({"state": receipt["state"], "rows": len(results), "cost_receipt": receipt["cost_source"]["receipt_sha256"], "minimum_effective_sample": receipt["minimum_effective_sample"], "uncovered_symbols": receipt["uncovered_symbols"]}, sort_keys=True))
 
 
 if __name__ == "__main__":

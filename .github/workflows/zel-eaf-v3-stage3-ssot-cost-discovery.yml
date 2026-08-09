@@ -1,0 +1,64 @@
+name: ZEL EAF V3 Stage3 SSOT Cost Discovery
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-eaf-v3-stage3-ssot-cost-discovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Repository read-only scan
+        run: |
+          set -euo pipefail
+          echo '=== REPO_COST_TERMS ==='
+          grep -RInE --exclude='*.lock' --exclude='.env' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv \
+            '(fee[_ -]?bps|slippage[_ -]?bps|all[-_ ]?in[_ -]?cost|taker[_ -]?fee|maker[_ -]?fee|minimum[_ -]?effective[_ -]?sample|MIN_EFFECTIVE_SAMPLE|funding[_ -]?cost|cost[_ -]?buffer)' . 2>/dev/null | head -n 200 || true
+          echo '=== REPO_POLICY_FILES ==='
+          find . -type f \( -iname '*ssot*' -o -iname '*policy*' -o -iname '*cost*' \) -not -path './.git/*' | head -n 200 || true
+
+      - name: SSH setup
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: VPS read-only SSOT scan
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo '=== VPS_POLICY_FILENAMES ==='
+          find /home/z/z /opt/zel -type f \( -iname '*ssot*' -o -iname '*z_policy*' -o -iname '*policy*' -o -iname '*cost*' \) \
+            -not -path '*/.git/*' -not -path '*/.venv/*' -not -path '*/node_modules/*' -not -name '.env' 2>/dev/null | head -n 250 || true
+          echo '=== VPS_COST_TERMS ==='
+          grep -RInE --exclude='.env' --exclude='*.key' --exclude='*.pem' --exclude='*.lock' \
+            --exclude-dir=.git --exclude-dir=.venv --exclude-dir=node_modules \
+            '(fee[_ -]?bps|slippage[_ -]?bps|all[-_ ]?in[_ -]?cost|taker[_ -]?fee|maker[_ -]?fee|minimum[_ -]?effective[_ -]?sample|MIN_EFFECTIVE_SAMPLE|funding[_ -]?cost|cost[_ -]?buffer)' \
+            /home/z/z /opt/zel 2>/dev/null | head -n 300 || true
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

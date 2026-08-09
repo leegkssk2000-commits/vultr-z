@@ -1,0 +1,72 @@
+name: ZEL Structural Premium V2 Baseline
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ops/zel-structural-premium-v2-baseline.sh
+      - .github/workflows/zel-structural-premium-v2-baseline.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-v2-baseline-launch
+  cancel-in-progress: true
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Launch durable 45-lane V2 baseline
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes \
+            ops/zel-structural-premium-v2-baseline.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/zel-structural-premium-v2-baseline.sh"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          ROOT=/opt/zel/research-runtime/jobs/structural-premium-v2
+          OUT=$ROOT/baseline_next_open_v1
+          mkdir -p "$OUT"
+          # Do not launch a duplicate driver. Lane checkpoints are resumable if a prior driver died.
+          if pgrep -af '/tmp/zel-structural-premium-v2-baseline.sh' | grep -v "$$" >/dev/null 2>&1; then
+            echo 'BASELINE_DRIVER_ALREADY_RUNNING'
+            pgrep -af '/tmp/zel-structural-premium-v2-baseline.sh' || true
+            exit 0
+          fi
+          setsid nohup bash /tmp/zel-structural-premium-v2-baseline.sh > "$OUT/driver.log" 2>&1 < /dev/null &
+          PID=$!
+          echo "$PID" > "$OUT/driver.pid"
+          sleep 5
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo 'BASELINE_DRIVER_DIED_ON_LAUNCH' >&2
+            cat "$OUT/driver.log" >&2 || true
+            exit 20
+          fi
+          echo "PASS_V2_BASELINE_DURABLE_LAUNCHED pid=$PID"
+          tail -30 "$OUT/driver.log" || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

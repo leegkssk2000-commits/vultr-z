@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT=/opt/zel/research-runtime/jobs/structural-premium-v2
 ADV=$ROOT/advisory
-SMOKE=$ROOT/smoke_next_open_v2
+SMOKE=$ROOT/smoke_next_open_v3
 
 echo '===GEMINI_REVIEW==='
 cat "$ADV/gemini_replay_contract_review.txt" 2>/dev/null || true
@@ -25,6 +25,6 @@ find "$SMOKE/lane_checkpoints" -type f -name '*.json.gz' -printf '%p %s\n' 2>/de
 echo 'COUNT='
 find "$SMOKE/lane_checkpoints" -type f -name '*.json.gz' 2>/dev/null | wc -l || true
 echo '===ACTIVE_PROCESSES==='
-pgrep -af 'replay_v1_v2|lane_smoke_v2|smoke_next_open_v2' || true
+pgrep -af 'replay_v1_v2|lane_smoke_v2|smoke_next_open_v3' || true
 echo '===SMOKE_LOG_TAIL==='
-tail -60 "$ROOT/engine/smoke.log" 2>/dev/null || true
+tail -80 "$ROOT/engine/smoke.log" 2>/dev/null || true

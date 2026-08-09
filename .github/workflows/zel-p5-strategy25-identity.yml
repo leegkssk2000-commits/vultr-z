@@ -1,0 +1,115 @@
+name: ZEL P5 Strategy25 Identity Census
+
+on:
+  push:
+    branches: [zel/g0-install-certification-20260809]
+    paths:
+      - backend/research/p5_strategy25_identity_census.py
+      - research/legacy_strategy25_inventory_v1.json
+      - research/evidence/g0_installation_l0_l1_receipt_20260809.json
+      - .github/workflows/zel-p5-strategy25-identity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p5-strategy25-identity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p5-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate static census tool
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p5_strategy25_identity_census.py
+          python - <<'PY'
+          import json
+          inv=json.load(open('research/legacy_strategy25_inventory_v1.json'))
+          g0=json.load(open('research/evidence/g0_installation_l0_l1_receipt_20260809.json'))
+          assert len(inv['historical_implementation_inventory_25']) == 25
+          assert g0['g0a_runtime_census']['legacy25_present'] == '25/25'
+          assert g0['g0b_l0_l1']['strategy25_registry_binding'] == '25/25'
+          assert g0['safety']['execution_authority'] == 'NONE'
+          assert g0['safety']['order_authority'] == 'BLOCKED'
+          PY
+          mkdir -p ~/.ssh out
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run read-only VPS identity and AST smoke
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/p5-strategy25-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p5_strategy25_identity_census.py "$VPS_USER@$VPS_HOST:$remote/"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes research/legacy_strategy25_inventory_v1.json "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z nice -n 19 ionice -c3 /usr/bin/python3 '$remote/p5_strategy25_identity_census.py' --inventory '$remote/legacy_strategy25_inventory_v1.json'" \
+            > out/p5_strategy25_identity_census.json
+          python -m json.tool out/p5_strategy25_identity_census.json >/dev/null
+      - name: Verify fail-closed identity receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/p5_strategy25_identity_census.json'))
+          assert r['schema_version']=='zel.p5.strategy25.identity_census.v1'
+          assert r['inventory_count']==25
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['strategy_import_executed'] is False
+          assert r['signal_execution_performed'] is False
+          assert r['replay_performed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'present_count':r['present_count'],
+            'ast_ok_count':r['ast_ok_count'],
+            'missing':r['missing'],
+            'ast_fail':r['ast_fail'],
+            'duplicate_path_names':r['duplicate_path_names'],
+            'identical_source_hash_groups':r['identical_source_hash_groups'],
+            'blockers':r['blockers'],
+            'action':r['action']
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p5-strategy25-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/p5_strategy25_identity_census.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup remote probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

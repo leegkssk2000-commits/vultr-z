@@ -13,7 +13,10 @@ from typing import Any
 ROOT = Path(os.environ.get("G0_ROOT", "/home/z/z")).resolve()
 SCAN_ROOTS = [ROOT / x for x in ("backend", "config", "policies", "research", "runtime", "scripts", "tools")]
 TEXT_SUFFIXES = {".py", ".json", ".jsonl", ".yml", ".yaml", ".toml", ".ini", ".md", ".txt", ".csv", ".sh"}
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "archive", "artifacts", "cache", ".cache"}
 MAX_FILE_BYTES = 3_000_000
+MAX_READ_BYTES = 512_000
+MAX_SCAN_FILES = 6000
 ENDPOINT_RE = re.compile(r"/openApi/[A-Za-z0-9_./-]+")
 URL_RE = re.compile(r"https://(?:open-api\.bingx\.(?:com|pro)|api\.bingx\.com)[^\s'\"<>]+")
 
@@ -36,22 +39,25 @@ def sha256_file(path: Path) -> str:
 
 
 def iter_files():
-    seen: set[Path] = set()
+    emitted = 0
     for root in SCAN_ROOTS:
         if not root.exists():
             continue
-        for p in root.rglob("*"):
-            if not p.is_file() or p in seen:
-                continue
-            seen.add(p)
-            if p.suffix.lower() not in TEXT_SUFFIXES:
-                continue
-            try:
-                if p.stat().st_size > MAX_FILE_BYTES:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            for name in filenames:
+                p = Path(dirpath) / name
+                if p.suffix.lower() not in TEXT_SUFFIXES:
                     continue
-            except OSError:
-                continue
-            yield p
+                try:
+                    if p.stat().st_size > MAX_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                yield p
+                emitted += 1
+                if emitted >= MAX_SCAN_FILES:
+                    return
 
 
 def safe_rel(path: Path) -> str:
@@ -63,7 +69,9 @@ def safe_rel(path: Path) -> str:
 
 def read_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8", errors="ignore")
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_READ_BYTES)
+        return raw.decode("utf-8", errors="ignore")
     except OSError:
         return ""
 
@@ -96,9 +104,7 @@ def classify_file(path: Path, text: str) -> dict[str, Any] | None:
     if path.suffix.lower() == ".csv":
         first = text.splitlines()[0] if text.splitlines() else ""
         row["csv_header"] = first[:1000]
-        row["line_count_estimate"] = len(text.splitlines())
-    elif path.suffix.lower() in {".json", ".jsonl"}:
-        # expose only top-level/schema key names, never values
+    elif path.suffix.lower() in {".json", ".jsonl"} and path.stat().st_size <= MAX_READ_BYTES:
         try:
             obj = json.loads(text)
             if isinstance(obj, dict):
@@ -159,7 +165,7 @@ def probe_funding_history() -> dict[str, Any]:
     candidates = mod.credential_candidates()
     key = sec = source = ""
     errors: list[str] = []
-    for k, s, src in candidates:
+    for k, s, src in candidates[:8]:
         try:
             mod.get(k, s, "/openApi/swap/v2/quote/fundingRate", {"symbol": "BTC-USDT", "startTime": target_start_ms, "endTime": now_ms, "limit": 1000})
         except Exception as exc:
@@ -193,11 +199,15 @@ def probe_funding_history() -> dict[str, Any]:
 
 
 def main() -> int:
+    # Probe the one already-known official source first; then do bounded local discovery.
+    funding_probe = probe_funding_history()
     file_rows: list[dict[str, Any]] = []
     category_paths: dict[str, set[str]] = {k: set() for k in CATEGORY_PATTERNS}
     endpoints: set[str] = set()
     urls: set[str] = set()
+    scanned = 0
     for path in iter_files():
+        scanned += 1
         text = read_text(path)
         if not text:
             continue
@@ -210,16 +220,7 @@ def main() -> int:
         endpoints.update(row["endpoint_literals"])
         urls.update(row["url_literals"])
 
-    funding_probe = probe_funding_history()
-    source_summary = {
-        category: {
-            "file_count": len(paths),
-            "paths": sorted(paths)[:100],
-        }
-        for category, paths in category_paths.items()
-    }
-
-    # Fail closed: funding may be API-bindable, but basis and OI/flow require explicit historical source evidence.
+    source_summary = {category: {"file_count": len(paths), "paths": sorted(paths)[:100]} for category, paths in category_paths.items()}
     funding_bound = funding_probe.get("state") == "PASS_FUNDING_HISTORY_PROBED" and all(
         int(v.get("row_count", 0)) > 0 and v.get("min_timestamp_ms") is not None
         for v in funding_probe.get("symbols", {}).values()
@@ -227,7 +228,6 @@ def main() -> int:
     basis_discovered = source_summary["basis"]["file_count"] > 0
     oi_discovered = source_summary["open_interest"]["file_count"] > 0
     flow_discovered = source_summary["flow"]["file_count"] > 0
-
     blockers: list[str] = []
     if not funding_bound:
         blockers.append("FUNDING_HISTORY_NOT_BOUND")
@@ -235,14 +235,15 @@ def main() -> int:
         blockers.append("HISTORICAL_BASIS_SOURCE_NOT_DISCOVERED")
     if not (oi_discovered or flow_discovered):
         blockers.append("HISTORICAL_OI_OR_FLOW_SOURCE_NOT_DISCOVERED")
-
     state = "PASS_P3_SOURCE_DISCOVERY_READY_FOR_BINDING_AUDIT" if not blockers else "HOLD_P3_SOURCE_BINDING_GAPS"
     receipt = {
         "schema_version": "zel.p3.carry_flow.source_census.v1",
         "state": state,
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "runtime_root": str(ROOT),
+        "scan_file_count_total_bounded": scanned,
         "scan_file_count_relevant": len(file_rows),
+        "scan_cap": MAX_SCAN_FILES,
         "source_summary": source_summary,
         "bingx_endpoint_literals": sorted(endpoints),
         "bingx_url_literals": sorted(urls),

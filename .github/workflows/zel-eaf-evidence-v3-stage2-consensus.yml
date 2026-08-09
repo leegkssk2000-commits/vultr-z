@@ -1,0 +1,110 @@
+name: ZEL EAF Evidence V3 Stage2 Consensus
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - research/evidence/evidence_alpha_v3_hardened_49.json
+      - backend/research/evidence_alpha_v3_consensus.py
+      - .github/workflows/zel-eaf-evidence-v3-stage2-consensus.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  consensus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Build deterministic consensus matrix
+        run: |
+          set -euo pipefail
+          python backend/research/evidence_alpha_v3_consensus.py \
+            --evidence research/evidence/evidence_alpha_v3_hardened_49.json \
+            --out /tmp/eaf_v3_consensus.json | tee /tmp/eaf_v3_consensus.log
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/eaf_v3_consensus.json'))
+          assert d['state']=='PASS_STAGE2_CONSENSUS_READY'
+          assert d['evidence_records']==49
+          assert d['stage3_unlocked'] is False
+          for f in d['families']:
+              print('FAMILY',f['family'],'state='+f['state'],'direct='+str(f['direct_count']),'impl='+str(f['implementation_count']),'support='+str(f['all_support_count']))
+          for x in d['cross_cutting_mechanisms']:
+              print('CROSS',x['mechanism'],'support='+str(x['support_count']))
+          print('READY',','.join(d['ready_families']))
+          PY
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Dual AI review of consensus
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/eaf_v3_consensus.json "$VPS_USER@$VPS_HOST:/tmp/eaf_v3_consensus.json"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          C=/home/z/z/_ai_council
+          set -a; . "$C/.env"; set +a
+          RBASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
+          ROOT=/opt/zel/research-runtime/jobs/evidence-alpha-v3-stage2
+          mkdir -p "$ROOT"; cp /tmp/eaf_v3_consensus.json "$ROOT/consensus.json"
+          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$RBASE/models" > /tmp/models.json
+          call_model() {
+            model="$1" max="$2" prompt="$3" out="$4"
+            "$PY" - "$model" "$max" "$prompt" "$ROOT/consensus.json" /tmp/body.json <<'PYBODY'
+          import json,sys
+          model,max_t,prompt,data,out=sys.argv[1:]
+          payload={'model':model,'messages':[{'role':'user','content':prompt+'\nCONSENSUS='+open(data).read()}],'max_tokens':int(max_t),'temperature':0}
+          json.dump(payload,open(out,'w'))
+          PYBODY
+            code=$(curl -sS -m 300 -o /tmp/resp.json -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/body.json "$RBASE/chat/completions" || true)
+            [ "$code" = 200 ] || return 2
+            "$PY" - /tmp/resp.json "$out" <<'PYOUT'
+          import json,sys
+          d=json.load(open(sys.argv[1])); s=(((d.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+          if not s: raise SystemExit(3)
+          s=' '.join(s.split()); open(sys.argv[2],'w').write(s+'\n'); print('AI',s[:800])
+          PYOUT
+          }
+          G=''
+          for m in google/gemini-3.6-flash google/gemini-3.1-pro-preview google/gemini-3-flash-preview google/gemini-2.5-pro; do
+            if grep -q '"id":"'"$m"'"' /tmp/models.json && call_model "$m" 10000 'Review supplied deterministic family-support matrix only. Check whether each READY family has >=3 direct crypto lineages and whether the selected families are economically distinct enough for executable-spec design. Community/negative controls cannot create alpha. Return exactly PASS_STAGE2|keep_family1,keep_family2,...|hold_family1,hold_family2,...|one_short_reason OR HOLD_STAGE2 with same format.' "$ROOT/gemini.txt"; then G="$m"; break; fi
+          done
+          test -n "$G"
+          O=''
+          for m in openai/gpt-5.6-sol openai/gpt-5.4; do
+            if grep -q '"id":"'"$m"'"' /tmp/models.json && call_model "$m" 8000 'Red-team supplied consensus matrix only. Stage3 is still blocked. Decide if it is safe to write executable research specs from the evidence without claiming profitability. Return exactly PASS_STAGE2|one_short_reason or HOLD_STAGE2|one_short_reason.' "$ROOT/openai.txt"; then O="$m"; break; fi
+          done
+          test -n "$O"
+          "$PY" - "$ROOT" "$G" "$O" <<'PYR'
+          import json,re,sys
+          from pathlib import Path
+          r=Path(sys.argv[1]); g=(r/'gemini.txt').read_text().strip(); o=(r/'openai.txt').read_text().strip()
+          gm=re.search(r'(PASS_STAGE2|HOLD_STAGE2)\|([^|]*)\|([^|]*)\|(.+)',g)
+          om=re.search(r'(PASS_STAGE2|HOLD_STAGE2)\|(.+)',o)
+          if not gm: raise SystemExit('BAD_GEMINI:'+g[:500])
+          if not om: raise SystemExit('BAD_OPENAI:'+o[:500])
+          p={'schema_version':'zel.eaf.v3.stage2.dual_review.v1','gemini_model':sys.argv[2],'openai_model':sys.argv[3],'gemini_verdict':gm.group(1),'keep':gm.group(2),'hold':gm.group(3),'gemini_reason':gm.group(4),'openai_verdict':om.group(1),'openai_reason':om.group(2),'stage3_unlocked':False,'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'selection_authority':False}
+          p['state']='PASS_STAGE2_DUAL_REVIEW' if p['gemini_verdict']=='PASS_STAGE2' and p['openai_verdict']=='PASS_STAGE2' else 'HOLD_STAGE2'
+          (r/'review.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
+          PYR
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

@@ -22,7 +22,6 @@ done
 import gzip
 import importlib.util
 import json
-import math
 import re
 import sys
 from collections import defaultdict
@@ -88,7 +87,7 @@ scalar_score_primary = "score = (" in ctrl and "0.010 * mean_win" in ctrl
 legacy_axes = {
     "FREQUENCY": all(token in ctrl for token in ("min_confidence", "cooldown_min")),
     "COST_EXECUTION": all(token in ctrl for token in ("min_risk_distance_pct", "target_distance_mult")),
-    "RISK_EXPOSURE": all(token in ctrl for token in ("stop_distance_mult", "max_hold_min")),
+    "RISK_SIZING": all(token in ctrl for token in ("stop_distance_mult", "max_hold_min")),
     "INTERACTION": "G{next_gen:02d}_INTERACTION" in ctrl,
     "PORTFOLIO": "enabled_entry_owners" in ctrl,
     "ROBUSTNESS": "G{next_gen:02d}_ROBUSTNESS" in ctrl,

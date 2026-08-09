@@ -38,12 +38,15 @@ def read_env(path: Path) -> dict[str, str]:
     return out
 
 
-def credentials() -> tuple[str, str, str]:
+def credential_candidates() -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
     key = os.getenv("BINGX_API_KEY", "").strip()
     sec = next((os.getenv(k, "").strip() for k in ("BINGX_SECRET_KEY", "BINGX_API_SECRET", "BINGX_SECRET") if os.getenv(k, "").strip()), "")
     if key and sec:
-        return key, sec, "process_env"
+        rows.append((key, sec, "process_env"))
     candidates = [Path(p) for p in (
+        "/etc/z-alimi/bingx.env",
+        "/home/z/z/config/bingx_openapi.env",
         "/home/z/z/z1355_real_bingx_api_bind.sh",
         "/home/z/z/.env", "/home/z/z/backend/.env", "/home/z/z/.env.production",
         "/opt/zel/.env", "/opt/zel/config/.env", "/etc/zel/.env", "/etc/zel/zel.env",
@@ -61,8 +64,18 @@ def credentials() -> tuple[str, str, str]:
         key = env.get("BINGX_API_KEY", "")
         sec = next((env.get(k, "") for k in ("BINGX_SECRET_KEY", "BINGX_API_SECRET", "BINGX_SECRET") if env.get(k, "")), "")
         if key and sec:
-            return key, sec, "file_sha256:" + hashlib.sha256(str(p).encode()).hexdigest()
-    raise RuntimeError("BINGX_READ_ONLY_CREDENTIALS_NOT_FOUND")
+            rows.append((key, sec, "file_sha256:" + hashlib.sha256(str(p).encode()).hexdigest()))
+    dedup: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for key, sec, source in rows:
+        fp = hashlib.sha256((key + "\0" + sec).encode()).hexdigest()
+        if fp in seen:
+            continue
+        seen.add(fp)
+        dedup.append((key, sec, source))
+    if not dedup:
+        raise RuntimeError("BINGX_READ_ONLY_CREDENTIALS_NOT_FOUND")
+    return dedup
 
 
 def get(key: str, sec: str, path: str, params: Mapping[str, Any]) -> tuple[Any, float, str]:
@@ -148,11 +161,25 @@ def slip(levels: list[tuple[float, float]], notional: float, ref: float) -> floa
 
 def collect() -> dict[str, Any]:
     observed = datetime.now(timezone.utc).isoformat()
-    key, sec, cred_source = credentials()
     lats: list[float] = []
     endpoints: list[dict[str, Any]] = []
+    credential_errors: list[str] = []
+    raw = None
+    key = sec = cred_source = base = ""
+    ms = 0.0
+    candidates = credential_candidates()
+    for candidate_key, candidate_sec, candidate_source in candidates:
+        try:
+            candidate_raw, candidate_ms, candidate_base = get(candidate_key, candidate_sec, "/openApi/swap/v2/user/commissionRate", {})
+        except RuntimeError as e:
+            credential_errors.append(f"{candidate_source}:{str(e)[:220]}")
+            continue
+        key, sec, cred_source = candidate_key, candidate_sec, candidate_source
+        raw, ms, base = candidate_raw, candidate_ms, candidate_base
+        break
+    if raw is None:
+        raise RuntimeError("NO_VALID_BINGX_READ_ONLY_CREDENTIAL:" + " | ".join(credential_errors[:8]))
 
-    raw, ms, base = get(key, sec, "/openApi/swap/v2/user/commissionRate", {})
     lats.append(ms); endpoints.append({"path": "commissionRate", "base": base, "latency_ms": ms})
     c = raw.get("commission", raw) if isinstance(raw, dict) else None
     if not isinstance(c, dict):
@@ -169,6 +196,7 @@ def collect() -> dict[str, Any]:
         "taker_fee_pct": taker,
         "payload_sha256": sha(raw),
         "credential_source_id": cred_source,
+        "credential_candidate_count": len(candidates),
         "observed_at": observed,
         "write_endpoint_called": False,
         "order_authority": "BLOCKED",

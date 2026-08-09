@@ -6,12 +6,14 @@ on:
     paths:
       - scripts/ci/g0b_l0_l1_certify.py
       - scripts/ci/g0b_l1_owner_graph.py
+      - scripts/ci/g0b_stage_adjudicate.py
       - scripts/ci/g0_runtime_probe.py
       - backend/research/zel_composite_live_source_pin_v1.json
       - research/legacy_strategy25_inventory_v1.json
       - config/zel_alpha_engine_vnext.json
       - policies/zel/g0_installation_certification_v1.json
       - policies/zel/g0_source_persistence_gate_v1.json
+      - policies/zel/g0_stage_aware_binding_v1.json
       - .github/workflows/zel-g0b-l0-l1-certification.yml
   workflow_dispatch:
 
@@ -36,10 +38,11 @@ jobs:
       - name: Validate G0-B scripts and contracts
         run: |
           set -euo pipefail
-          python -m py_compile scripts/ci/g0b_l0_l1_certify.py scripts/ci/g0b_l1_owner_graph.py scripts/ci/g0_runtime_probe.py
+          python -m py_compile scripts/ci/g0b_l0_l1_certify.py scripts/ci/g0b_l1_owner_graph.py scripts/ci/g0b_stage_adjudicate.py scripts/ci/g0_runtime_probe.py
           python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
           python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
           python -m json.tool config/zel_alpha_engine_vnext.json >/dev/null
+          python -m json.tool policies/zel/g0_stage_aware_binding_v1.json >/dev/null
 
       - name: Prepare SSH
         env:
@@ -72,7 +75,7 @@ jobs:
             > out/g0_runtime_census_for_g0b.json
           python -m json.tool out/g0_runtime_census_for_g0b.json >/dev/null
 
-      - name: Certify component L0 PRESENT and L1 BOUND read-only
+      - name: Certify raw component L0 PRESENT and active-binding L1 diagnostic
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -91,7 +94,7 @@ jobs:
             > out/g0b_l0_l1_certification.json
           python -m json.tool out/g0b_l0_l1_certification.json >/dev/null
 
-      - name: Diagnose unresolved L1 owner graph read-only
+      - name: Diagnose unresolved active-owner graph read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -108,6 +111,15 @@ jobs:
             > out/g0b_l1_owner_graph.json
           python -m json.tool out/g0b_l1_owner_graph.json >/dev/null
 
+      - name: Adjudicate G0 installation binding by roadmap stage
+        run: |
+          set -euo pipefail
+          python scripts/ci/g0b_stage_adjudicate.py \
+            --raw out/g0b_l0_l1_certification.json \
+            --policy policies/zel/g0_stage_aware_binding_v1.json \
+            --out out/g0b_stage_aware_adjudication.json
+          python -m json.tool out/g0b_stage_aware_adjudication.json >/dev/null
+
       - name: Verify fail-closed G0-B receipts
         run: |
           set -euo pipefail
@@ -116,28 +128,32 @@ jobs:
           from pathlib import Path
           r=json.loads(Path('out/g0b_l0_l1_certification.json').read_text())
           o=json.loads(Path('out/g0b_l1_owner_graph.json').read_text())
+          a=json.loads(Path('out/g0b_stage_aware_adjudication.json').read_text())
           assert r['schema_version']=='zel.g0b.l0_l1.certification.v1'
           assert o['schema_version']=='zel.g0b.l1.owner_graph.v1'
-          for x in (r,o):
+          assert a['schema_version']=='zel.g0b.stage_aware_adjudication.v1'
+          for x in (r,o,a):
               assert x['runtime_mutated'] is False
               assert x['service_state_mutated'] is False
               assert x['destructive_cleanup_authority'] is False
               assert x['execution_authority']=='NONE'
               assert x['order_authority']=='BLOCKED'
+          assert r['l0_pass_total']==r['l0_total']==40
           assert len(r['strategy25_rows'])==25
           assert len(r['alpha_family_rows'])==3
           assert len(r['module_rows'])==12
           assert len(o['module_rows'])==12
+          assert a['state']=='PASS_G0B_STAGE_AWARE_L0_L1'
+          assert a['stage_aware_l1_pass_count']==a['stage_aware_l1_total']==40
           print(json.dumps({
-              'state': r['state'],
+              'stage_aware_state': a['state'],
               'L0': f"{r['l0_pass_total']}/{r['l0_total']}",
-              'L1': f"{r['l1_pass_total']}/{r['l1_total']}",
-              'strategy25_L0': r['strategy25_l0_pass'],
-              'strategy25_L1': r['strategy25_l1_pass'],
+              'raw_active_L1': f"{r['l1_pass_total']}/{r['l1_total']}",
+              'stage_aware_L1': f"{a['stage_aware_l1_pass_count']}/{a['stage_aware_l1_total']}",
+              'strategy25_registry': r['strategy25_l1_pass'],
               'skill_registry_detected_count': r['skill_registry_detected_count'],
-              'owner_graph_state': o['state'],
-              'owner_graph_module_pass': sum(x['L1_OWNER_GRAPH']=='PASS' for x in o['module_rows']),
-              'action': r['action'],
+              'owner_graph_active_module_pass': sum(x['L1_OWNER_GRAPH']=='PASS' for x in o['module_rows']),
+              'action': a['action'],
           }, sort_keys=True))
           PY
 
@@ -153,5 +169,6 @@ jobs:
             out/g0_runtime_census_for_g0b.json
             out/g0b_l0_l1_certification.json
             out/g0b_l1_owner_graph.json
+            out/g0b_stage_aware_adjudication.json
           if-no-files-found: error
           retention-days: 30

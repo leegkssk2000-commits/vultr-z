@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 VERSION = "ZEL_BINGX_REAL_CALIBRATION_V1"
 BASES = ("https://open-api.bingx.com", "https://open-api.bingx.pro")
-SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT")
+SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT")
 BUCKETS = (100.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0)
 
 

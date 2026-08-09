@@ -5,7 +5,6 @@ import base64
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,6 +106,7 @@ def main() -> int:
         "escrow_root": str(ESCROW),
         "source_path_count": len(source_paths(pin)),
         "copied_source_count": len(copied),
+        "copied_source_rows": copied,
         "missing_source_count": len(missing),
         "missing_source_paths": missing,
         "governor_recovery_candidate_written": candidate_written,

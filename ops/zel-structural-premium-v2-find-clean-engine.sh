@@ -13,3 +13,8 @@ find "$ROOT" -type f \( -name 'replay_v1.py' -o -name 'replay_v1_*.py' -o -name 
   sha=$(sha256sum "$p" | awk '{print $1}')
   printf '%s|legacy=%s|entry=%s|causal=%s|expected=%s|size=%s|sha=%s\n' "$p" "$legacy" "$entry" "$causal" "${count:-?}" "$size" "$sha"
 done
+P=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/engine/replay_v1_no_trend.py
+echo '===NO_TREND_MARKERS==='
+grep -nE 'ZEL_STRUCTURAL_PREMIUM_OVERLAY|_ZEL_OVERLAY|NO_TREND|EXPECTED_STRATEGY_COUNT|def _restore_structural_premium_registry|if __name__' "$P" | tail -80 || true
+echo '===NO_TREND_TAIL_930_1250==='
+sed -n '930,1250p' "$P"

@@ -1,0 +1,201 @@
+name: ZEL EAF V3 Stage3 Micro Replay
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/eaf_stage3_micro_replay.py
+      - backend/research/eaf_stage3_pairs_replay.py
+      - research/evidence/evidence_alpha_v3_stage3_contract.json
+      - .github/workflows/zel-eaf-v3-stage3-micro-replay.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-eaf-v3-stage3-micro-replay
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Static isolation contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/eaf_stage3_micro_replay.py backend/research/eaf_stage3_pairs_replay.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/evidence/evidence_alpha_v3_stage3_contract.json'))
+          assert c['research_only'] is True
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['stage3_unlocked'] is False and c['baseline_engine_mutation_allowed'] is False
+          assert c['indicator_additions_allowed'] is False and c['parameter_selection_allowed'] is False
+          assert c['cost_contract']['costs_required_for_economic_verdict'] is True
+          print('PASS_STAGE3_STATIC_ISOLATION')
+          PY
+
+      - name: Materialize canonical 15m data snapshot
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin strategy11-data-stream-v1
+          mkdir -p /tmp/eaf3_data
+          git show FETCH_HEAD:strategy11_stream_v1/manifest.json > /tmp/eaf3_manifest.json
+          for s in BTCUSDT ETHUSDT SOLUSDT XRPUSDT LINKUSDT; do
+            git show FETCH_HEAD:strategy11_stream_v1/market/${s}.csv > /tmp/eaf3_data/${s}.csv
+          done
+          python - <<'PY'
+          import json
+          m=json.load(open('/tmp/eaf3_manifest.json'))
+          assert m['state']=='PASS' and m['order_authority']=='BLOCKED' and m['execution_allowed'] is False
+          assert m['available_non_overlap_bars'] >= 1275
+          assert {x['symbol'] for x in m['symbols']} == {'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT'}
+          print('PASS_DATA_MATERIALIZED bars=%s end=%s' % (m['available_non_overlap_bars'],m['latest_closed_end']))
+          PY
+
+      - name: Validate separate two-leg adapter first
+        run: |
+          set -euo pipefail
+          python backend/research/eaf_stage3_pairs_replay.py \
+            --left /tmp/eaf3_data/BTCUSDT.csv \
+            --right /tmp/eaf3_data/ETHUSDT.csv \
+            --out /tmp/eaf3_pair_contract.json
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/eaf3_pair_contract.json'))
+          assert d['state']=='PASS_TWO_LEG_ADAPTER_CONTRACT'
+          assert d['signal_generation_enabled'] is False
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED'
+          print('PASS_PAIR_ADAPTER aligned=%d gaps=%d' % (d['aligned_rows'],d['gap_count']))
+          PY
+
+      - name: Run BASE structural micro replay
+        run: |
+          set -euo pipefail
+          python backend/research/eaf_stage3_micro_replay.py \
+            --data-dir /tmp/eaf3_data \
+            --manifest /tmp/eaf3_manifest.json \
+            --out /tmp/eaf3_receipt.json > /tmp/eaf3_full.log
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/eaf3_receipt.json'))
+          assert d['state']=='PASS_STAGE3_ADAPTER_STRUCTURAL_SMOKE_HOLD_ECONOMICS'
+          assert d['baseline_engine_mutated'] is False
+          assert d['fill_contract']['same_bar_fill'] is False
+          assert d['cost_model']['state']=='HOLD_MISSING_SSOT_COST_MODEL'
+          assert d['survivor_selection_performed'] is False
+          assert len(d['results'])==15
+          assert all(x['economic_metrics_valid'] is False for x in d['results'])
+          assert all(v['state']=='PASS' and v['manifest_sha_match'] for v in d['integrity'].values())
+          print('PASS_STAGE3_STRUCTURAL_REPLAY results=%d' % len(d['results']))
+          for x in d['results']:
+              print('RESULT %s %s trades=%s wr=%s gross=%+.6f exp=%s pf=%s dd=%.6f exposure=%.6f' % (
+                  x['symbol'],x['strategy'],x['closed_trades'],
+                  'NA' if x['gross_win_rate'] is None else '%.4f'%x['gross_win_rate'],
+                  x['gross_compound_return'],
+                  'NA' if x['gross_expectancy_per_trade'] is None else '%.6f'%x['gross_expectancy_per_trade'],
+                  x['gross_profit_factor'],x['realized_max_drawdown'],x['exposure_fraction']))
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Gemini and OpenAI Stage3 adapter audit
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/eaf3_receipt.json /tmp/eaf3_pair_contract.json "$VPS_USER@$VPS_HOST:/tmp/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          set -a; . /home/z/z/_ai_council/.env; set +a
+          test -n "${REQUESTY_API_KEY:-}"
+          RBASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
+          ROOT=/opt/zel/research-runtime/jobs/eaf-stage3-micro-replay
+          mkdir -p "$ROOT"
+          cp /tmp/eaf3_receipt.json "$ROOT/receipt.json"
+          cp /tmp/eaf3_pair_contract.json "$ROOT/pair_contract.json"
+          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$RBASE/models" > /tmp/eaf3_models.json
+
+          "$PY" - "$ROOT/receipt.json" "$ROOT/pair_contract.json" /tmp/eaf3_compact.json <<'PYDATA'
+          import json,sys
+          d=json.load(open(sys.argv[1])); p=json.load(open(sys.argv[2]))
+          compact={
+            'state':d['state'],'authority':{k:d[k] for k in ['research_only','execution_authority','order_authority','selection_authority','promotion_authority','stage3_unlocked']},
+            'fill_contract':d['fill_contract'],'base_contract':d['base_contract'],'cost_model':d['cost_model'],
+            'dataset':d['dataset'],'pair_adapter':{k:p[k] for k in ['state','signal_generation_enabled','aligned_rows','gap_count']},
+            'integrity':{s:{k:v[k] for k in ['rows','duplicate_timestamps','gap_count','manifest_sha_match']} for s,v in d['integrity'].items()},
+            'results':[{k:x[k] for k in ['symbol','strategy','closed_trades','gross_win_rate','gross_compound_return','gross_expectancy_per_trade','gross_profit_factor','realized_max_drawdown','exposure_fraction','economic_metrics_valid']} for x in d['results']],
+            'survivor_selection_performed':d['survivor_selection_performed']}
+          json.dump(compact,open(sys.argv[3],'w'),separators=(',',':'))
+          PYDATA
+
+          call_model() {
+            model="$1" max="$2" prompt="$3" out="$4"
+            "$PY" - "$model" "$max" "$prompt" /tmp/eaf3_compact.json /tmp/eaf3_body.json <<'PYBODY'
+          import json,sys
+          m,max_t,q,data,out=sys.argv[1:]
+          json.dump({'model':m,'messages':[{'role':'user','content':q+'\nDATA='+open(data).read()}],'max_tokens':int(max_t),'temperature':0},open(out,'w'))
+          PYBODY
+            code=$(curl -sS -m 300 -o /tmp/eaf3_resp.json -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/eaf3_body.json "$RBASE/chat/completions" || true)
+            [ "$code" = 200 ] || return 2
+            "$PY" - /tmp/eaf3_resp.json "$out" <<'PYOUT'
+          import json,sys
+          d=json.load(open(sys.argv[1])); s=(((d.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+          if not s: raise SystemExit(3)
+          s=' '.join(s.split()); open(sys.argv[2],'w').write(s+'\n'); print('AI_OUTPUT',s[:1200])
+          PYOUT
+          }
+
+          G=''
+          GP='Audit only supplied Stage3 receipt. Verify: isolated research-only adapter, canonical hashes/integrity, closed-bar then next-open/no same-bar fill, BASE-only/no indicator or parameter selection, pairs separate, session overlay absent, cost model explicitly missing so NO net/profitability/survivor claim is allowed, all execution/order/selection/promotion authority blocked. Structural smoke may pass while economics stays HOLD. Return exactly PASS_STAGE3_ADAPTER|short_reason or HOLD_STAGE3_ADAPTER|short_reason.'
+          for m in google/gemini-3.6-flash google/gemini-3.1-pro-preview google/gemini-3-flash-preview google/gemini-2.5-pro; do
+            if grep -q '"id":"'"$m"'"' /tmp/eaf3_models.json && call_model "$m" 10000 "$GP" "$ROOT/gemini.txt"; then G="$m"; break; fi
+          done
+          test -n "$G"
+
+          O=''
+          OP='Red-team only supplied Stage3 receipt for lookahead, hidden indicator stacking, unsupported numeric thresholds, baseline mutation, pair-lane confusion, and false profitability claims. Missing sourced costs MUST keep economic/survivor verdict blocked; that is not an adapter failure. Return exactly PASS_STAGE3_ADAPTER|short_reason or HOLD_STAGE3_ADAPTER|short_reason.'
+          for m in openai/gpt-5.6-sol openai/gpt-5.4; do
+            if grep -q '"id":"'"$m"'"' /tmp/eaf3_models.json && call_model "$m" 8000 "$OP" "$ROOT/openai.txt"; then O="$m"; break; fi
+          done
+          test -n "$O"
+
+          "$PY" - "$ROOT" "$G" "$O" <<'PYREPORT'
+          import json,re,sys
+          from pathlib import Path
+          r=Path(sys.argv[1]); g=(r/'gemini.txt').read_text().strip(); o=(r/'openai.txt').read_text().strip()
+          gm=re.search(r'(PASS_STAGE3_ADAPTER|HOLD_STAGE3_ADAPTER)\|(.+)',g)
+          om=re.search(r'(PASS_STAGE3_ADAPTER|HOLD_STAGE3_ADAPTER)\|(.+)',o)
+          if not gm or not om: raise SystemExit('BAD_AI_FORMAT:'+g[:300]+' / '+o[:300])
+          p={'schema_version':'zel.eaf.stage3.adapter_review.v1','gemini_model':sys.argv[2],'gemini_verdict':gm.group(1),'gemini_reason':gm.group(2),'openai_model':sys.argv[3],'openai_verdict':om.group(1),'openai_reason':om.group(2),'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','selection_authority':False,'promotion_authority':False,'stage3_unlocked':False,'economic_verdict':'HOLD_MISSING_SSOT_COST_MODEL'}
+          p['state']='PASS_STAGE3_ADAPTER_DUAL_REVIEW_HOLD_ECONOMICS' if gm.group(1)=='PASS_STAGE3_ADAPTER' and om.group(1)=='PASS_STAGE3_ADAPTER' else 'HOLD_STAGE3_ADAPTER'
+          (r/'review.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(p,sort_keys=True))
+          if p['state']=='HOLD_STAGE3_ADAPTER': raise SystemExit(4)
+          PYREPORT
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

@@ -1,0 +1,41 @@
+name: ZEL Alpha First Lock
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  alpha-first-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Resolve diff refs
+        id: refs
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Enforce ALPHA_FIRST_LOCK + G0 ordering
+        run: >-
+          python scripts/ci/alpha_first_lock.py
+          --base "${{ steps.refs.outputs.base }}"
+          --head "${{ steps.refs.outputs.head }}"
+      - name: Regression tests
+        run: |
+          python -m unittest tests.test_alpha_first_lock -v
+          python -m unittest tests.test_g0_installation_census -v

@@ -1,0 +1,110 @@
+name: ZEL P1 Cleanup Probe
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/ci/p1_cleanup_probe.py
+      - policies/zel/g0_installation_certification_v1.json
+      - research/evidence/zel_cleanup_inventory_p1_20260809.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p1-cleanup-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p1-cleanup-probe:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate cleanup probe and G0 gate
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/p1_cleanup_probe.py
+          python -m json.tool policies/zel/g0_installation_certification_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('policies/zel/g0_installation_certification_v1.json').read_text())
+          assert p['state']=='PASS_G0_INSTALLATION_BASELINE_L0_L1_L2'
+          assert p['proven_safe_cleanup_gate_open'] is True
+          assert p['destructive_cleanup_authority'] is False
+          PY
+          mkdir -p out
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run read-only cleanup and workflow-sprawl probe on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "$VPS_USER@$VPS_HOST" "G0_ROOT=/home/z/z python3 -" \
+              < scripts/ci/p1_cleanup_probe.py > out/p1_cleanup_probe.json; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then exit 1; fi
+            sleep $((attempt*4))
+          done
+          python -m json.tool out/p1_cleanup_probe.json >/dev/null
+
+      - name: Verify read-only cleanup receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/p1_cleanup_probe.json').read_text())
+          assert r['state']=='PASS_P1_READ_ONLY_CLEANUP_PROBE'
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['destructive_cleanup_performed'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          print(json.dumps({
+            'delete_ready_count':r['delete_ready_count'],
+            'workflow_count':r['workflow_census']['workflow_count'],
+            'broad_pull_request_count':r['workflow_census']['broad_pull_request_count'],
+            'scheduled_count':r['workflow_census']['scheduled_count'],
+            'candidates':[{x['path']:x['decision']} for x in r['candidate_rows']],
+            'action':r['action']
+          },sort_keys=True))
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p1-cleanup-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/p1_cleanup_probe.json
+          if-no-files-found: error
+          retention-days: 30

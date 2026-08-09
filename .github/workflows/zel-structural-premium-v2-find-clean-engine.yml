@@ -1,0 +1,44 @@
+name: ZEL Structural Premium V2 Find Clean Engine
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ops/zel-structural-premium-v2-find-clean-engine.sh
+      - .github/workflows/zel-structural-premium-v2-find-clean-engine.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Find clean replay engine
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes ops/zel-structural-premium-v2-find-clean-engine.sh "$VPS_USER@$VPS_HOST:/tmp/zel-spv2-find-clean-engine.sh"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash /tmp/zel-spv2-find-clean-engine.sh'
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

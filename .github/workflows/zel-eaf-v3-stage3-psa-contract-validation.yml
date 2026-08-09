@@ -1,0 +1,150 @@
+name: ZEL EAF V3 Stage3 PSA Contract Validation
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - research/evidence/evidence_alpha_v3_psa_contract_v1.json
+      - backend/research/eaf_stage3_pairs_replay.py
+      - backend/research/eaf_stage3_psa_contract_validate.py
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - .github/workflows/zel-eaf-v3-stage3-psa-contract-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-eaf-v3-stage3-psa-contract-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Static research isolation
+        run: |
+          set -euo pipefail
+          mkdir -p out /tmp/eaf3_psa_data
+          python -m py_compile backend/research/eaf_stage3_pairs_replay.py backend/research/eaf_stage3_psa_contract_validate.py backend/tools/zel_bingx_real_calibration_v1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/evidence/evidence_alpha_v3_psa_contract_v1.json'))
+          assert c['research_only'] is True
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['signal_generation_enabled'] is False and c['parameter_selection_allowed'] is False
+          assert c['universe']['pair_selection_performed'] is False
+          assert c['two_leg_cost_contract']['notional_bucket_selection_performed'] is False
+          assert len(c['universe']['unordered_pairs'])==10
+          print('PASS_PSA_STATIC_ISOLATION pairs=10 signals=disabled')
+          PY
+
+      - name: Materialize canonical 15m pair universe
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin strategy11-data-stream-v1
+          git show FETCH_HEAD:strategy11_stream_v1/manifest.json > /tmp/eaf3_psa_manifest.json
+          for s in BTCUSDT ETHUSDT SOLUSDT XRPUSDT LINKUSDT; do
+            git show FETCH_HEAD:strategy11_stream_v1/market/${s}.csv > /tmp/eaf3_psa_data/${s}.csv
+          done
+          python - <<'PY'
+          import json
+          m=json.load(open('/tmp/eaf3_psa_manifest.json'))
+          assert m['state']=='PASS' and m['order_authority']=='BLOCKED' and m['execution_allowed'] is False
+          assert {x['symbol'] for x in m['symbols']} == {'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT'}
+          print('PASS_PSA_DATA bars=%s end=%s' % (m['available_non_overlap_bars'],m['latest_closed_end']))
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh pair-specific BingX cost observation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/eaf3-psa-cost-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          rc=$?
+          set -e
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          test "$rc" = 0
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==r['receipt_sha256']
+          syms={'BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT'}
+          assert set(r['funding_p95_abs_pct_8h_by_symbol'])==syms
+          assert set(r['slippage_floor_bps_by_symbol_and_notional'])==syms
+          assert all(len(r['slippage_floor_bps_by_symbol_and_notional'][s])==6 for s in syms)
+          print('PASS_PSA_COST receipt=%s maker=%.8f%% taker=%.8f%% aggregate_funding_p95=%.8f%%/8h' % (r['receipt_sha256'],r['maker_fee_pct'],r['taker_fee_pct'],r['funding_p95_abs_pct_8h']))
+          print('FUNDING_BY_SYMBOL',json.dumps(r['funding_p95_abs_pct_8h_by_symbol'],sort_keys=True))
+          for s in sorted(syms):
+              print('SLIPPAGE_BY_SYMBOL',s,json.dumps(r['slippage_floor_bps_by_symbol_and_notional'][s],sort_keys=True))
+          PY
+
+      - name: Validate all 10 adapters and all pair cost envelopes
+        run: |
+          set -euo pipefail
+          PYTHONPATH=backend/research python backend/research/eaf_stage3_psa_contract_validate.py \
+            --data-dir /tmp/eaf3_psa_data \
+            --contract research/evidence/evidence_alpha_v3_psa_contract_v1.json \
+            --cost-model out/bingx_real_observation.json \
+            --out out/eaf3_psa_contract_validation.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/eaf3_psa_contract_validation.json'))
+          assert d['state']=='PASS_PSA_ALL_PAIRS_ALIGNED_AND_COST_BOUND_HOLD_SIGNAL_CALIBRATION'
+          assert d['pair_count']==10 and d['notional_bucket_count']==6
+          assert d['signal_generation_enabled'] is False
+          assert d['selection_authority'] is False and d['promotion_authority'] is False
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED'
+          assert all(x['state']=='PASS_TWO_LEG_ADAPTER_CONTRACT' and x['gap_count']==0 for x in d['adapters'])
+          print('PASS_PSA_CONTRACT pair_count=10 buckets=6 cost_rows=60 signals=disabled')
+          for p in d['pair_cost_envelopes']:
+              x=next(z for z in p['cost_envelopes'] if z['notional_bucket_usdt_per_leg']==1000.0)
+              print('PAIR1000 %s/%s fee+slip=%.8f%% funding_p95=%.8f%%/8h' % (p['pair'][0],p['pair'][1],x['round_trip_fee_plus_slippage_pct_ex_funding'],x['pair_abs_p95_funding_pct_per_8h']))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-eaf-v3-stage3-psa-contract-validation-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

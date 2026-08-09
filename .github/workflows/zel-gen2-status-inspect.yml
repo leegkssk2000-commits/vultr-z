@@ -1,4 +1,4 @@
-name: ZEL Gen3 Entry Path Inspect
+name: ZEL Gen3 Regime Source Inspect
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Inspect entry path
+      - name: Inspect regime feature source
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -38,9 +38,10 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
-          echo '===RUN_STRATEGY_430_570==='; sed -n '430,570p' "$E"
-          echo '===OVERLAY_990_1170==='; sed -n '990,1170p' "$E"
-          echo '===REGIME_FUNCS==='; grep -nE '^def .*regime|regime =' "$E" | head -80 || true
+          echo '===FEATURE_SNAPSHOT_REFS==='; grep -n 'feature_snapshot' "$E" || true
+          echo '===PRODUCER_IMPORTS_TOP==='; sed -n '1,180p' "$E"
+          echo '===FEATURE_DEFS_ALL_SOURCE==='; grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' 'def feature_snapshot' /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source 2>/dev/null | head -40 || true
+          for f in $(grep -RIl --exclude='*.pyc' --exclude-dir='__pycache__' 'def feature_snapshot' /opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work /opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source 2>/dev/null | head -5); do echo "===FILE:$f==="; grep -n -A80 -B10 'def feature_snapshot' "$f" | head -120; done
           REMOTE
       - name: Cleanup
         if: always()

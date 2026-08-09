@@ -31,10 +31,17 @@ class AlphaFirstLockTests(unittest.TestCase):
                 "backend/research/eaf_stage3_costed_replay.py",
                 "research/evidence/example.json",
                 "strategies/alpha_engine/registry.py",
+                ".github/workflows/zel-alpha-first-lock.yml",
             ],
             self.policy,
         )
         self.assertEqual([], violations)
+
+    def test_dotfile_path_is_not_stripped(self):
+        self.assertEqual(
+            ".github/workflows/zel-alpha-first-lock.yml",
+            MODULE._normalize_repo_path("./.github/workflows/zel-alpha-first-lock.yml"),
+        )
 
     def test_zero_survivor_blocks_unrelated_expansion(self):
         violations = MODULE.path_violations(

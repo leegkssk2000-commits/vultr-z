@@ -90,7 +90,7 @@ def workflow_triggers(text: str) -> list[str]:
     lines = text.splitlines()
     triggers: list[str] = []
     on_indent: int | None = None
-    for i, raw in enumerate(lines):
+    for raw in lines:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -100,7 +100,7 @@ def workflow_triggers(text: str) -> list[str]:
                 on_indent = indent
                 continue
             if stripped.startswith("on: [") and stripped.endswith("]"):
-                inner = stripped[4:-1]
+                inner = stripped[len("on: ["):-1]
                 return sorted(x.strip() for x in inner.split(",") if x.strip())
             if stripped.startswith("on: ") and not stripped.endswith(":"):
                 return [stripped[4:].strip()]
@@ -161,7 +161,7 @@ def reference_graph(files: list[Path]) -> tuple[list[dict[str, Any]], list[dict[
         source = path.relative_to(ROOT).as_posix()
         for match in LOCAL_REF_RE.finditer(text):
             raw = match.group("path").lstrip("./")
-            target = (ROOT / raw)
+            target = ROOT / raw
             if target.exists():
                 refs[raw].add(source)
             else:

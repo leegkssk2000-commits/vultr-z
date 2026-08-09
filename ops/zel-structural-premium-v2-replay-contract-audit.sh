@@ -21,7 +21,7 @@ src = Path(sys.argv[2])
 out = Path(sys.argv[3])
 text = eng.read_text()
 
-# Locate the feature_snapshot implementation referenced by the replay engine.
+# Locate producer implementation(s) and statically inspect feature causality.
 feature_files = []
 for p in src.rglob('*.py'):
     try:
@@ -32,6 +32,7 @@ for p in src.rglob('*.py'):
         feature_files.append(p)
 
 feature_reports = []
+producer_contracts = []
 for p in feature_files:
     t = p.read_text()
     negative_shift = bool(re.search(r'\.shift\(\s*-', t))
@@ -46,8 +47,18 @@ for p in feature_files:
         'future_slice_pattern': future_slice,
         'static_causality_red_flag': negative_shift or centered_rolling or future_iloc,
     })
+    try:
+        tree = ast.parse(t)
+        linesp = t.splitlines()
+        funcs={}
+        for node in tree.body:
+            if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in {'feature_snapshot','valid_entry','make_position','apply_add','close_position','bar_exit'}:
+                start=node.lineno-1; end=getattr(node,'end_lineno',node.lineno)
+                funcs[node.name]='\n'.join(f'{i+1}: {linesp[i]}' for i in range(start,min(end,len(linesp))))
+        producer_contracts.append({'path':str(p),'functions':funcs})
+    except Exception as exc:
+        producer_contracts.append({'path':str(p),'parse_error':type(exc).__name__})
 
-# Extract snippets around strategy invocation/open/close paths to avoid inventing action semantics.
 lines = text.splitlines()
 def snippets(patterns, radius=4):
     hits=[]
@@ -62,44 +73,39 @@ open_paths = snippets([r'open_position', r'valid_entry', r'entry_price', r'posit
 close_paths = snippets([r'close_position', r'exit_reason', r'MAX_HOLD_MIN'])
 feature_calls = snippets([r'feature_snapshot'])
 
-# Static action literals in engine and strategy source, for actual schema discovery.
-action_literals=set()
-for p in [eng, *list(src.rglob('*.py'))]:
-    try:t=p.read_text()
-    except Exception:continue
-    for m in re.finditer(r'["\'](?:action|signal|side|direction)["\']\s*:\s*["\']([^"\']+)["\']', t):
-        action_literals.add(m.group(1).strip().lower())
-
-# Replay frame causality: verify current frame ends at index + 1 and starts in the past.
 causal_slice = bool(re.search(r'frame\.iloc\[max\(0,\s*index\s*-\s*FRAME_LIMIT\s*\+\s*1\)\s*:\s*index\s*\+\s*1\]', text))
 uses_same_bar_close = 'current_price = float(last["close"])' in text or "current_price = float(last['close'])" in text
+engine_has_position_state = 'strategy_state = None' in text and 'position_side' in text
 
-# Entry/management contract must be explicit in the engine before V2 structural overlays are allowed.
-engine_has_entry_predicate = bool(re.search(r'def\s+.*entry.*action', text, re.I))
-engine_has_position_state = 'state' in text and ('position' in text or 'open_position' in text)
+# Actual entry contract in this replay is producer.valid_entry(...) followed by producer.make_position(...).
+valid_entry_open_contract = 'producer.valid_entry(result, current_price)' in text and 'producer.make_position(' in text
+management_actions_locked = all(token in text for token in ('action in {"add", "scale_in", "dca"}', 'action in {"exit", "close", "stop"}'))
 
 blockers=[]
 if not causal_slice:
     blockers.append('REPLAY_FRAME_CAUSAL_SLICE_UNPROVEN')
 if any(x['static_causality_red_flag'] for x in feature_reports):
     blockers.append('FEATURE_SNAPSHOT_STATIC_CAUSALITY_RED_FLAG')
-if not engine_has_entry_predicate:
-    blockers.append('EXPLICIT_ENTRY_ACTION_CONTRACT_MISSING')
+if not valid_entry_open_contract:
+    blockers.append('VALID_ENTRY_OPEN_CONTRACT_MISSING')
+if not management_actions_locked:
+    blockers.append('MANAGEMENT_ACTION_SET_UNPROVEN')
 if uses_same_bar_close:
     blockers.append('SAME_BAR_SIGNAL_AND_EXECUTION_SEMANTICS_REQUIRE_LOCK')
 if not feature_reports:
     blockers.append('FEATURE_SNAPSHOT_IMPLEMENTATION_NOT_FOUND')
 
 report={
-    'schema_version':'zel.structural_premium.v2.replay_contract.audit.v1',
+    'schema_version':'zel.structural_premium.v2.replay_contract.audit.v2',
     'state':'HARD_PAUSE_V2_AXIS_PATCHING' if blockers else 'PASS_REPLAY_CONTRACT_READY',
     'engine_path':str(eng),
     'frame_causal_slice_detected':causal_slice,
     'same_bar_close_execution_detected':uses_same_bar_close,
-    'engine_explicit_entry_predicate_detected':engine_has_entry_predicate,
+    'valid_entry_open_contract_detected':valid_entry_open_contract,
+    'management_action_set_detected':management_actions_locked,
     'engine_position_state_detected':engine_has_position_state,
-    'action_literals':sorted(action_literals),
     'feature_snapshot_files':feature_reports,
+    'producer_contracts':producer_contracts,
     'snippets':{
         'strategy_calls':strategy_calls,
         'open_paths':open_paths,
@@ -108,10 +114,10 @@ report={
     },
     'blockers':blockers,
     'next':[
-        'DEFINE_ENTRY_ACTION_FROM_ENGINE_OPEN_PATH',
-        'DEFINE_MANAGEMENT_EXIT_PASSTHROUGH',
+        'USE_PRODUCER_VALID_ENTRY_AS_ONLY_ENTRY_PREDICATE',
+        'PASS_THROUGH_ALL_STATEFUL_MANAGEMENT_AND_EXIT_RESULTS',
         'LOCK_FEATURE_SNAPSHOT_CAUSALITY',
-        'LOCK_SIGNAL_BAR_VS_EXECUTION_BAR_SEMANTICS',
+        'MOVE_NEW_ENTRY_EXECUTION_TO_NEXT_BAR_OPEN_OR_EXPLICITLY_PROVE_SAME_CLOSE_FILL',
         'ONLY_THEN_ENABLE_V2_FREQUENCY_AND_PORTFOLIO_AXES',
     ],
     'research_only':True,
@@ -122,20 +128,22 @@ report={
 }
 out.write_text(json.dumps(report,indent=2,sort_keys=True,allow_nan=False)+'\n')
 print('STATE',report['state'])
-print('ACTION_LITERALS',sorted(action_literals))
 print('CAUSAL_SLICE',causal_slice)
 print('SAME_BAR_CLOSE',uses_same_bar_close)
-print('ENTRY_PREDICATE',engine_has_entry_predicate)
+print('VALID_ENTRY_OPEN_CONTRACT',valid_entry_open_contract)
+print('MANAGEMENT_ACTION_SET',management_actions_locked)
 print('FEATURE_FILES',len(feature_reports))
 print('BLOCKERS',json.dumps(blockers))
 for node in feature_reports:
     print('FEATURE',json.dumps(node,sort_keys=True))
-print('===STRATEGY_CALL_SNIPPETS===')
-for s in strategy_calls[:8]: print(s['text'])
+print('===PRODUCER_CONTRACTS===')
+for node in producer_contracts:
+    print('PRODUCER_PATH',node.get('path'))
+    for name,body in (node.get('functions') or {}).items():
+        print(f'---{name}---')
+        print(body)
 print('===OPEN_SNIPPETS===')
 for s in open_paths[:12]: print(s['text'])
-print('===FEATURE_SNIPPETS===')
-for s in feature_calls[:8]: print(s['text'])
 PY
 
 cat "$OUT/report.json"

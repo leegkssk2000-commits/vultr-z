@@ -25,7 +25,7 @@ def pct(values: list[float], q: float) -> float:
 
 
 def read_env(path: Path) -> dict[str, str]:
-    out = {}
+    out: dict[str, str] = {}
     for raw in path.read_text(errors="ignore").splitlines():
         line = raw.strip()
         if line.startswith("export "):
@@ -33,8 +33,9 @@ def read_env(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        if k.strip() in {"BINGX_API_KEY", "BINGX_SECRET_KEY", "BINGX_API_SECRET", "BINGX_SECRET"}:
-            out[k.strip()] = v.strip().strip("'\"")
+        k = k.strip()
+        if k in {"BINGX_API_KEY", "BINGX_SECRET_KEY", "BINGX_API_SECRET", "BINGX_SECRET"}:
+            out[k] = v.strip().strip("'\"")
     return out
 
 
@@ -69,10 +70,9 @@ def credential_candidates() -> list[tuple[str, str, str]]:
     seen: set[str] = set()
     for key, sec, source in rows:
         fp = hashlib.sha256((key + "\0" + sec).encode()).hexdigest()
-        if fp in seen:
-            continue
-        seen.add(fp)
-        dedup.append((key, sec, source))
+        if fp not in seen:
+            seen.add(fp)
+            dedup.append((key, sec, source))
     if not dedup:
         raise RuntimeError("BINGX_READ_ONLY_CREDENTIALS_NOT_FOUND")
     return dedup
@@ -126,7 +126,7 @@ def f(v: Any) -> float:
 
 def funding_values(data: Any) -> list[float]:
     rows = data if isinstance(data, list) else next((data[k] for k in ("fundingRates", "data", "list") if isinstance(data, dict) and isinstance(data.get(k), list)), [data])
-    out = []
+    out: list[float] = []
     for r in rows:
         if isinstance(r, dict):
             value = r.get("fundingRate", r.get("lastFundingRate"))
@@ -180,7 +180,8 @@ def collect() -> dict[str, Any]:
     if raw is None:
         raise RuntimeError("NO_VALID_BINGX_READ_ONLY_CREDENTIAL:" + " | ".join(credential_errors[:8]))
 
-    lats.append(ms); endpoints.append({"path": "commissionRate", "base": base, "latency_ms": ms})
+    lats.append(ms)
+    endpoints.append({"path": "commissionRate", "base": base, "latency_ms": ms})
     c = raw.get("commission", raw) if isinstance(raw, dict) else None
     if not isinstance(c, dict):
         raise RuntimeError("COMMISSION_INVALID")
@@ -205,29 +206,66 @@ def collect() -> dict[str, Any]:
 
     now_ms = int(time.time() * 1000)
     funds: list[float] = []
+    funding_by_symbol: dict[str, dict[str, Any]] = {}
     for symbol in SYMBOLS:
-        raw, ms, base = get(key, sec, "/openApi/swap/v2/quote/fundingRate", {"symbol": symbol, "startTime": now_ms - 30*86400000, "endTime": now_ms, "limit": 1000})
-        lats.append(ms); endpoints.append({"path": "fundingRate", "symbol": symbol, "base": base, "latency_ms": ms})
-        funds += funding_values(raw)
+        raw, ms, base = get(key, sec, "/openApi/swap/v2/quote/fundingRate", {"symbol": symbol, "startTime": now_ms - 30 * 86400000, "endTime": now_ms, "limit": 1000})
+        lats.append(ms)
+        vals = funding_values(raw)
+        endpoints.append({"path": "fundingRate", "symbol": symbol, "base": base, "latency_ms": ms, "rows": len(vals)})
+        if not vals:
+            raise RuntimeError(f"FUNDING_HISTORY_EMPTY:{symbol}")
+        funding_by_symbol[symbol] = {
+            "funding_p95_abs_pct_8h": round(pct(vals, .95), 8),
+            "sample_count": len(vals),
+        }
+        funds.extend(vals)
     if not funds:
         raise RuntimeError("FUNDING_HISTORY_EMPTY")
 
-    samples = {b: [] for b in BUCKETS}
+    samples: dict[float, list[float]] = {b: [] for b in BUCKETS}
+    samples_by_symbol: dict[str, dict[float, list[float]]] = {
+        symbol: {b: [] for b in BUCKETS} for symbol in SYMBOLS
+    }
     snapshots = 0
     for n in range(5):
         for symbol in SYMBOLS:
             raw, ms, base = get(key, sec, "/openApi/swap/v2/quote/depth", {"symbol": symbol, "limit": 100})
-            lats.append(ms); endpoints.append({"path": "depth", "symbol": symbol, "base": base, "latency_ms": ms})
-            bids, asks = depth(raw); mid = (bids[0][0] + asks[0][0]) / 2.0
+            lats.append(ms)
+            endpoints.append({"path": "depth", "symbol": symbol, "base": base, "latency_ms": ms})
+            bids, asks = depth(raw)
+            mid = (bids[0][0] + asks[0][0]) / 2.0
             for b in BUCKETS:
                 for x in (slip(asks, b, mid), slip(bids, b, mid)):
-                    if x is not None: samples[b].append(x)
+                    if x is not None:
+                        samples[b].append(x)
+                        samples_by_symbol[symbol][b].append(x)
             snapshots += 1
-        if n < 4: time.sleep(1)
-    floors = []
+        if n < 4:
+            time.sleep(1)
+
+    floors: list[dict[str, Any]] = []
     for b in BUCKETS:
-        if not samples[b]: raise RuntimeError(f"SLIPPAGE_EMPTY:{b}")
-        floors.append({"max_notional_usdt": b, "slippage_bps_one_way": round(pct(samples[b], .95), 8), "sample_count": len(samples[b])})
+        if not samples[b]:
+            raise RuntimeError(f"SLIPPAGE_EMPTY:{b}")
+        floors.append({
+            "max_notional_usdt": b,
+            "slippage_bps_one_way": round(pct(samples[b], .95), 8),
+            "sample_count": len(samples[b]),
+        })
+
+    floors_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for symbol in SYMBOLS:
+        rows: list[dict[str, Any]] = []
+        for b in BUCKETS:
+            vals = samples_by_symbol[symbol][b]
+            if not vals:
+                raise RuntimeError(f"SLIPPAGE_EMPTY:{symbol}:{b}")
+            rows.append({
+                "max_notional_usdt": b,
+                "slippage_bps_one_way": round(pct(vals, .95), 8),
+                "sample_count": len(vals),
+            })
+        floors_by_symbol[symbol] = rows
 
     r = {
         "schema_version": "zel.bingx.real_calibration_observation.v1",
@@ -242,9 +280,11 @@ def collect() -> dict[str, Any]:
         "account_fee_tier": tier,
         "maker_fee_pct": maker,
         "taker_fee_pct": taker,
-        "funding_p95_abs_pct_8h": pct(funds, .95),
+        "funding_p95_abs_pct_8h": round(pct(funds, .95), 8),
         "funding_sample_count": len(funds),
+        "funding_p95_abs_pct_8h_by_symbol": funding_by_symbol,
         "slippage_floor_bps_by_notional": floors,
+        "slippage_floor_bps_by_symbol_and_notional": floors_by_symbol,
         "depth_snapshot_count": snapshots,
         "latency_ms_p50": pct(lats, .50),
         "latency_ms_p95": pct(lats, .95),
@@ -264,7 +304,9 @@ def collect() -> dict[str, Any]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
     try:
         r = collect()
     except Exception as e:
@@ -282,8 +324,10 @@ def main() -> int:
             "action": "hold",
         }
         r["receipt_sha256"] = sha(r)
-    p = Path(a.out); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(json.dumps(r, indent=2, sort_keys=True)+"\n")
-    print(json.dumps({k:r.get(k) for k in ("state","blocker","receipt_sha256")}, sort_keys=True))
+    p = Path(a.out)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(r, indent=2, sort_keys=True) + "\n")
+    print(json.dumps({k: r.get(k) for k in ("state", "blocker", "receipt_sha256")}, sort_keys=True))
     return 0 if r["state"].startswith("PASS_") else 2
 
 

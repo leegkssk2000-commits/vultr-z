@@ -1,4 +1,4 @@
-name: ZEL Gen3 Structural Diagnosis
+name: ZEL Gen3 Entry Path Inspect
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Diagnose W2 loss structure
+      - name: Inspect entry path
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -37,69 +37,10 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          PY=/home/z/z/.venv/bin/python
-          ROOT=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1
-          BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
-          G2=$ROOT/gen2
-          G3=$ROOT/gen3
-          ENG=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
-          mkdir -p "$G3/advisory"
-          "$PY" - "$ENG" "$BASE/work/replay/trades.jsonl.gz" "$G2" "$G3/advisory/structure_diagnosis.json" <<'PY'
-          import gzip,importlib.util,json,math,sys
-          from collections import defaultdict
-          from pathlib import Path
-          engp,tradesp,g2,out=map(Path,sys.argv[1:])
-          spec=importlib.util.spec_from_file_location('g3diag',engp); e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e; spec.loader.exec_module(e)
-          def finite(v):
-              try:return math.isfinite(float(v))
-              except:return False
-          def pick(r,names):
-              for n in names:
-                  if r.get(n) is not None:return r.get(n)
-              return None
-          def quant(vals,p):
-              xs=sorted(float(x) for x in vals if finite(x))
-              if not xs:return None
-              k=(len(xs)-1)*p; a=int(k); b=min(a+1,len(xs)-1); f=k-a
-              return xs[a]*(1-f)+xs[b]*f
-          def cohort(rows):
-              return {'n':len(rows),'mfe_med':quant([pick(r,['mfe_R','MFE_R','mfe_r','max_favorable_excursion_R']) for r in rows],.5),'mae_med':quant([pick(r,['mae_R','MAE_R','mae_r','max_adverse_excursion_R']) for r in rows],.5),'hold_med':quant([pick(r,['exposure_min','hold_min','duration_min','holding_min']) for r in rows],.5),'pnl_med':quant([pick(r,['pnl_R','pnl_r','R','net_R']) for r in rows],.5)}
-          def describe(rows):
-              pnl=lambda r: float(pick(r,['pnl_R','pnl_r','R','net_R']) or 0)
-              wins=[r for r in rows if pnl(r)>0]; losses=[r for r in rows if pnl(r)<=0]
-              dims={}
-              for name,keys in {'symbol':['symbol'],'regime':['regime','market_regime'],'exit_reason':['exit_reason','close_reason','reason']}.items():
-                  b=defaultdict(list)
-                  for r in rows:
-                      v=pick(r,keys)
-                      if v is not None:b[str(v)].append(r)
-                  if b:dims[name]={k:e.metrics(v) for k,v in sorted(b.items())}
-              return {'metrics':e.metrics(rows),'winner':cohort(wins),'loser':cohort(losses),'dimensions':dims,'sample_keys':sorted(rows[0].keys()) if rows else []}
-          def load_base():
-              rows=[]
-              with gzip.open(tradesp,'rt',encoding='utf-8') as h:
-                  for line in h:
-                      r=json.loads(line)
-                      if r.get('strategy_id')=='vwap_revert' and r.get('side')=='long' and str(r.get('window_id'))=='1m_w2':rows.append(r)
-              return rows
-          def load_candidate(cid):
-              rows=[]; root=g2/'runs'/cid/'replay_w2/lane_checkpoints/vwap_revert'
-              for p in sorted(root.glob('*.json.gz')):
-                  with gzip.open(p,'rt',encoding='utf-8') as h:d=json.load(h)
-                  rows += [r for r in (d.get('result') or {}).get('closed_rows') or [] if r.get('side')=='long']
-              return rows
-          base=load_base(); b75=load_candidate('B75_TIGHTTARGETFASTEXIT'); c120=load_candidate('C120_FASTSALVAGE')
-          if [len(base),len(b75),len(c120)] != [48,48,48]:raise SystemExit(f'ROW_COUNT:{len(base)}:{len(b75)}:{len(c120)}')
-          report={'schema_version':'zel.structural_premium.vwap.gen3.structure_diagnosis.v1','objective_order':['net_R','win_rate_pct','profit_factor_secondary','max_drawdown_guard_only'],'baseline':describe(base),'b75':describe(b75),'c120':describe(c120),'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
-          out.write_text(json.dumps(report,indent=2,sort_keys=True,allow_nan=False)+'\n')
-          print('STATE=PASS_GEN3_STRUCTURE_DIAGNOSIS')
-          print('TRADE_KEYS',report['baseline']['sample_keys'])
-          for n in ('baseline','b75','c120'):
-              print(n.upper(),json.dumps({'metrics':report[n]['metrics'],'winner':report[n]['winner'],'loser':report[n]['loser'],'dimensions':report[n]['dimensions']},sort_keys=True))
-          PY
-          echo '===ENGINE_FILTER_CONTEXT==='
-          grep -nE 'regime|confidence|cooldown|min_risk|open_trade|valid_entry|signal|entry_reason' "$ENG" | head -220 || true
-          echo '===DIAGNOSIS_JSON==='; cat "$G3/advisory/structure_diagnosis.json"
+          E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
+          echo '===RUN_STRATEGY_430_570==='; sed -n '430,570p' "$E"
+          echo '===OVERLAY_990_1170==='; sed -n '990,1170p' "$E"
+          echo '===REGIME_FUNCS==='; grep -nE '^def .*regime|regime =' "$E" | head -80 || true
           REMOTE
       - name: Cleanup
         if: always()

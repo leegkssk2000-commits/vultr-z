@@ -247,7 +247,7 @@ def main() -> None:
     require_cost(cost)
     if contract.get("state") != "FROZEN_BEFORE_REPLAY":
         raise SystemExit("HOLD_CONTRACT_NOT_FROZEN")
-    if manifest.get("state") != "PASS" or int(manifest.get("forward_overlap_count", -1)) != 0:
+    if not str(manifest.get("state", "")).startswith("PASS_") or int(manifest.get("forward_overlap_count", -1)) != 0:
         raise SystemExit("HOLD_HISTORICAL_MANIFEST")
     lookback = int(contract["signal"]["lookback_bars"])
     if lookback != 16 or contract["timeframe"] != "15m" or contract["signal"]["same_bar_fill"] is not False:

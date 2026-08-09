@@ -1,0 +1,117 @@
+name: ZEL G0-B L2 Contract Certification
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/ci/g0b_l2_contract_certify.py
+      - policies/zel/g0_component_contract_map_v1.json
+      - research/evidence/g0_offhost_backup_receipt_20260809.json
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - research/legacy_strategy25_inventory_v1.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-g0b-l2-contract-certification.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  g0b-l2-contract:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate L2 policy and probe
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/g0b_l2_contract_certify.py
+          python -m json.tool policies/zel/g0_component_contract_map_v1.json >/dev/null
+          python -m json.tool research/evidence/g0_offhost_backup_receipt_20260809.json >/dev/null
+          python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
+          python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
+          python -m json.tool config/zel_alpha_engine_vnext.json >/dev/null
+          mkdir -p out
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Certify L2 contracts against private canonical source set
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          CONTRACTS_B64=$(base64 -w0 policies/zel/g0_component_contract_map_v1.json)
+          LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
+          ALPHA_B64=$(base64 -w0 config/zel_alpha_engine_vnext.json)
+          OFFHOST_B64=$(base64 -w0 research/evidence/g0_offhost_backup_receipt_20260809.json)
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z G0_ESCROW_ROOT=/home/z/.zel-g0-source-escrow EXPECTED_PIN_B64='$PIN_B64' CONTRACTS_B64='$CONTRACTS_B64' LEGACY25_B64='$LEGACY25_B64' ALPHA_B64='$ALPHA_B64' OFFHOST_B64='$OFFHOST_B64' python3 -" \
+            < scripts/ci/g0b_l2_contract_certify.py \
+            > out/g0b_l2_contract_certification.json
+          python -m json.tool out/g0b_l2_contract_certification.json >/dev/null
+
+      - name: Verify fail-closed L2 receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/g0b_l2_contract_certification.json').read_text())
+          assert r['schema_version']=='zel.g0b.l2.contract_certification.v1'
+          assert r['state']=='PASS_G0B_L2_CONTRACT_CERTIFICATION'
+          assert r['l2_pass_count']==r['l2_total']==16
+          assert len(r['module_rows'])==12
+          assert len(r['alpha_family_rows'])==3
+          assert r['strategy25_library']['L2_CONTRACT']=='PASS'
+          assert r['offhost_rollback_anchor_verified'] is True
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['destructive_cleanup_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'L2':f"{r['l2_pass_count']}/{r['l2_total']}",
+            'strategy25':r['strategy25_library']['L2_CONTRACT'],
+            'rollback_anchor':r['offhost_rollback_anchor_verified'],
+            'action':r['action']
+          },sort_keys=True))
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-g0b-l2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g0b_l2_contract_certification.json
+          if-no-files-found: error
+          retention-days: 30

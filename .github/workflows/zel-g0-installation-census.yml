@@ -1,0 +1,60 @@
+name: ZEL G0 Installation Census
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  G0_RECEIPT: out/g0_installation_census_static.json
+
+jobs:
+  static-census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: G0 policy syntax
+        run: |
+          set -euo pipefail
+          python -m json.tool policies/zel/g0_installation_certification_v1.json >/dev/null
+          python -m json.tool config/zel_alpha_engine_vnext.json >/dev/null
+      - name: Census self-test
+        run: |
+          set -euo pipefail
+          python scripts/ci/g0_installation_census.py --self-test
+          python -m unittest tests.test_g0_installation_census -v
+      - name: Generate static ownership receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python scripts/ci/g0_installation_census.py --out "$G0_RECEIPT"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('out/g0_installation_census_static.json')
+          r=json.loads(p.read_text())
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['destructive_cleanup_authority'] is False
+          assert r['workflow_count'] > 0
+          assert r['scan_file_count'] > 0
+          assert 'RUNTIME_CENSUS_REQUIRED' in r['runtime_blockers']
+          print('PASS_G0A_STATIC_CENSUS_RUNTIME_STILL_REQUIRED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-g0-static-census-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g0_installation_census_static.json
+          if-no-files-found: error
+          retention-days: 30

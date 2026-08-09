@@ -1,0 +1,91 @@
+name: ZEL P3 Native Binding Persist
+
+on:
+  push:
+    branches: [zel/g0-install-certification-20260809]
+    paths:
+      - .github/workflows/zel-p3-native-binding-persist.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe-and-persist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate probe
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_native_endpoint_probe.py
+          mkdir -p ~/.ssh out research/evidence
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Probe discovered native endpoints read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/p3-native-binding-persist-${GITHUB_RUN_ID}.py"
+          echo "$remote" > out/remote_path.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p3_native_endpoint_probe.py "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote'" \
+            > out/p3_native_endpoint_probe.json
+          python -m json.tool out/p3_native_endpoint_probe.json >/dev/null
+          cp out/p3_native_endpoint_probe.json research/evidence/p3_native_endpoint_probe_20260809.json
+      - name: Verify safe receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('research/evidence/p3_native_endpoint_probe_20260809.json'))
+          assert r['schema_version']=='zel.p3.native_endpoint_probe.v1'
+          assert r['endpoints_are_previously_discovered_runtime_literals'] is True
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          raw=json.dumps(r,sort_keys=True).lower()
+          for forbidden in ('api_key','secret_key','private_key','authorization','signature'):
+              assert forbidden not in raw
+          print(json.dumps({'state':r['state'],'historical_binding':r['historical_binding'],'blockers':r['blockers']},sort_keys=True))
+          PY
+      - name: Persist safe source-binding receipt to branch
+        run: |
+          set -euo pipefail
+          git config user.name 'ZEL P3 Source Binder'
+          git config user.email 'p3-source-binder@localhost'
+          git add research/evidence/p3_native_endpoint_probe_20260809.json
+          if git diff --cached --quiet; then
+            echo NO_RECEIPT_CHANGE
+          else
+            git commit -m '[skip ci] ZEL P3: persist native endpoint history binding receipt'
+            git push origin HEAD:zel/g0-install-certification-20260809
+          fi
+      - name: Cleanup remote probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

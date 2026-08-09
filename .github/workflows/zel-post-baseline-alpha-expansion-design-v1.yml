@@ -1,0 +1,67 @@
+name: ZEL Post-Baseline Alpha Expansion Design V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/zel_post_baseline_alpha_expansion_v1.json
+      - backend/tools/zel_post_baseline_alpha_expansion_v1.py
+      - .github/workflows/zel-post-baseline-alpha-expansion-design-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_post_baseline_alpha_expansion_v1.json
+      - backend/tools/zel_post_baseline_alpha_expansion_v1.py
+      - .github/workflows/zel-post-baseline-alpha-expansion-design-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-post-baseline-alpha-expansion-design-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-design-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_post_baseline_alpha_expansion_v1.py
+          python -m json.tool backend/research/zel_post_baseline_alpha_expansion_v1.json >/dev/null
+      - name: Validate design contract without starting replay
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/tools/zel_post_baseline_alpha_expansion_v1.py \
+            --design backend/research/zel_post_baseline_alpha_expansion_v1.json \
+            --out out/zel_post_baseline_alpha_expansion_design_receipt_v1.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/zel_post_baseline_alpha_expansion_design_receipt_v1.json').read_text())
+          assert r['state']=='HOLD_WAITING_FOR_V2_45_LANE_BASELINE',r
+          assert r['errors']==[],r
+          assert r['stage_count']==8,r
+          assert r['archetype_count']>=4,r
+          assert r['heavy_replay_started'] is False,r
+          assert r['execution_authority']=='NONE',r
+          assert r['order_authority']=='BLOCKED',r
+          assert r['action']=='hold',r
+          print({'state':'PASS_POST_BASELINE_ALPHA_EXPANSION_DESIGN_CI','heavy_replay_started':False,'protected_runtime_mutations':0})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-post-baseline-alpha-expansion-design-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

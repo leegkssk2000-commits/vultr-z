@@ -1,0 +1,164 @@
+{
+  "schema_version": "zel.g0.component_contract_map.v1",
+  "state": "ENFORCED",
+  "global_contract": {
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "selection_authority": "DETERMINISTIC_GATE_ONLY",
+    "promotion_authority": "DETERMINISTIC_GATE_ONLY",
+    "fail_closed_default": "HOLD",
+    "source_rollback_anchor": "PRIVATE_CANONICAL_SOURCE_PIN_PLUS_OFFHOST_GIT_BUNDLE",
+    "canonical_source_pin_sha256": "06f2ee0ec3ee5076807ee4ec5f8991ee9aae0ab589e8337a889ac397dabded1c"
+  },
+  "components": {
+    "LBOT": {
+      "role": "lead_advisor",
+      "inputs": ["candidate_state", "market_context", "risk_context"],
+      "outputs": ["lead_posture", "lead_rationale"],
+      "authority_boundary": "ADVISORY_ONLY_NO_ORDER_NO_PROMOTION",
+      "fail_closed": "missing_or_invalid_required_input=>HOLD",
+      "idempotency": "same_decision_key_same_inputs=>same_advisory_semantics",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "MBOT": {
+      "role": "method_advisor",
+      "inputs": ["candidate_state", "method_context", "risk_context"],
+      "outputs": ["method_confirmation", "reduce_or_hold_advisory"],
+      "authority_boundary": "ADVISORY_ONLY_NO_ORDER_NO_PROMOTION",
+      "fail_closed": "missing_method_context=>HOLD",
+      "idempotency": "same_decision_key_same_inputs=>same_advisory_semantics",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "OBOT": {
+      "role": "observer",
+      "inputs": ["candidate_state", "market_context", "breakout_or_anomaly_context"],
+      "outputs": ["observation", "severity", "confidence"],
+      "authority_boundary": "OBSERVE_ONLY_NO_ROUTE_MUTATION_NO_ORDER",
+      "fail_closed": "insufficient_context=>NO_ESCALATION",
+      "idempotency": "same_event_id=>deduplicated_observation",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "SBOT": {
+      "role": "safety_advisor",
+      "inputs": ["risk_context", "candidate_state", "execution_context"],
+      "outputs": ["safety_posture", "block_or_hold_advisory"],
+      "authority_boundary": "ADVISORY_GUARD_NO_DIRECT_ORDER",
+      "fail_closed": "unknown_risk_state=>HOLD_OR_BLOCK_ADVISORY",
+      "idempotency": "same_risk_snapshot=>same_guard_semantics",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "LICO": {
+      "role": "market_execution_safety_context",
+      "inputs": ["market_stream", "venue_health", "fee_funding_liquidation_context"],
+      "outputs": ["market_safety_context", "cost_context", "venue_health_context"],
+      "authority_boundary": "CONTEXT_ONLY_NO_ORDER_NO_SELECTION",
+      "fail_closed": "stale_or_missing_market_safety_input=>UNSAFE_OR_HOLD_CONTEXT",
+      "idempotency": "same_source_timestamp_and_payload=>same_context",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "PORTFOLIO_GOVERNOR": {
+      "role": "survivor_allocation_policy",
+      "inputs": ["validated_survivor_set", "correlation_context", "risk_budget"],
+      "outputs": ["bounded_allocation_plan", "hold_if_constraints_fail"],
+      "authority_boundary": "POLICY_ONLY_NO_DIRECT_ORDER",
+      "fail_closed": "independent_survivor_count_lt_2_or_invalid_risk=>HOLD",
+      "idempotency": "same_survivor_snapshot_and_risk_budget=>same_policy_result",
+      "stage": "P7_PORTFOLIO_ENSEMBLE"
+    },
+    "SKILL_PROFILE": {
+      "role": "strategy_modifier_registry",
+      "inputs": ["strategy_candidate", "skill_registry", "market_context"],
+      "outputs": ["skill_eligibility", "bounded_modifier"],
+      "authority_boundary": "TRANSFORM_ONLY_NO_DIRECT_ORDER_NO_PROMOTION",
+      "fail_closed": "unknown_skill_or_contract_mismatch=>NO_MODIFIER",
+      "idempotency": "same_candidate_skill_version_context=>same_modifier_semantics",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "STRATEGY_SIGNAL": {
+      "role": "legacy_hypothesis_signal_library",
+      "inputs": ["causal_market_data", "strategy_config"],
+      "outputs": ["signal_intent_or_no_signal"],
+      "authority_boundary": "SIGNAL_ONLY_NO_FILL_NO_ORDER_NO_PROMOTION",
+      "fail_closed": "invalid_data_or_config=>NO_SIGNAL",
+      "idempotency": "same_closed_bar_input_and_strategy_version=>same_signal_semantics",
+      "stage": "P5_STRATEGY25_MIGRATION"
+    },
+    "TRADE_METHOD": {
+      "role": "trade_plan_transform",
+      "inputs": ["validated_signal", "risk_context", "method_profile"],
+      "outputs": ["bounded_trade_plan_or_hold"],
+      "authority_boundary": "PLAN_ONLY_NO_DIRECT_ORDER",
+      "fail_closed": "invalid_profile_or_risk_input=>HOLD",
+      "idempotency": "same_signal_profile_risk_snapshot=>same_plan_semantics",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "ZBOT": {
+      "role": "ai_advisor",
+      "inputs": ["bounded_evidence_packet", "candidate_context"],
+      "outputs": ["proposal", "review", "red_team_dissent"],
+      "authority_boundary": "AI_ADVISORY_ONLY_NO_SELECTION_NO_PROMOTION_NO_ORDER",
+      "fail_closed": "provider_failure_or_invalid_output=>NO_ADVISORY_EFFECT",
+      "idempotency": "prompt_version_plus_evidence_hash_identifies_request",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "ZICO": {
+      "role": "canonical_advisory_adapter",
+      "inputs": ["bounded_advisory_request"],
+      "outputs": ["advisory_response_or_noop"],
+      "authority_boundary": "ADVISORY_ONLY_NO_EXECUTION_NO_ORDER",
+      "fail_closed": "invalid_or_unavailable_provider=>NOOP_OR_HOLD",
+      "idempotency": "request_identity_and_payload_hash_bound",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    },
+    "ZLICE": {
+      "role": "projection_trace_delivery",
+      "inputs": ["formal_state", "advisory_and_outcome_trace"],
+      "outputs": ["projection", "viewer_trace", "delivery_payload"],
+      "authority_boundary": "READ_PROJECTION_ONLY_NO_LEDGER_AUTHORITY_NO_ORDER",
+      "fail_closed": "missing_formal_state=>NO_PROJECTION_MUTATION",
+      "idempotency": "event_or_trace_identity_deduplicates_delivery",
+      "stage": "P8_PRE_SHADOW_INTEGRATION"
+    }
+  },
+  "libraries": {
+    "STRATEGY25": {
+      "count": 25,
+      "role": "FROZEN_HYPOTHESIS_COMPONENT_LIBRARY",
+      "inputs": ["causal_market_data", "fixed_strategy_config"],
+      "outputs": ["signal_intent_or_no_signal"],
+      "authority_boundary": "NO_DIRECT_RUNTIME_ROUTE_TO_SHADOW_PAPER_LIVE",
+      "fail_closed": "source_or_registry_or_replay_lineage_mismatch=>QUARANTINE",
+      "idempotency": "exact_source_hash_plus_fixed_input_replay",
+      "future_disposition": ["VARIANT", "ABSORB", "OVERLAY", "QUARANTINE", "KILL"]
+    }
+  },
+  "alpha_families": {
+    "trend_momentum": {
+      "inputs": ["native_closed_15m_BTC_ETH", "causal_features"],
+      "outputs": ["alpha_signal_or_no_signal"],
+      "authority_boundary": "RESEARCH_SIGNAL_ONLY",
+      "fail_closed": "integrity_or_source_or_cost_contract_failure=>HOLD",
+      "idempotency": "fixed_source_hash_plus_closed_bar_input_plus_config_version",
+      "next_stage": "P2_TREND_MOMENTUM_BASE"
+    },
+    "carry_flow": {
+      "inputs": ["native_funding_basis_flow", "causal_market_context"],
+      "outputs": ["alpha_signal_or_no_signal"],
+      "authority_boundary": "RESEARCH_SIGNAL_ONLY",
+      "fail_closed": "native_source_binding_missing=>HOLD",
+      "idempotency": "fixed_source_timestamp_payload_and_config_version",
+      "next_stage": "P3_CARRY_FLOW_BASE"
+    },
+    "relative_value_psa": {
+      "inputs": ["source_bound_pair_legs", "causal_spread_state"],
+      "outputs": ["pair_signal_or_no_signal"],
+      "authority_boundary": "RESEARCH_SIGNAL_ONLY",
+      "fail_closed": "pair_source_or_adapter_binding_missing=>HOLD",
+      "idempotency": "fixed_pair_data_hash_and_config_version",
+      "next_stage": "P4_RELATIVE_VALUE_PSA_BASE"
+    }
+  },
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "action": "hold"
+}

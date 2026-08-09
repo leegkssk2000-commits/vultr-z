@@ -76,56 +76,46 @@ jobs:
           import json,sys
           from pathlib import Path
           d=json.loads(Path(sys.argv[1]).read_text())
-          example={
+          shape={
             "verdict":"HOLD_MORE_EVIDENCE",
-            "record_count":0,
-            "effective_independent_lineages":0,
-            "direct_crypto_strategy_count":0,
-            "reproducible_implementation_count":0,
-            "community_count":0,
+            "effective_lineages":0,
+            "direct_crypto":0,
+            "reproducible_impl":0,
             "youtube_counted":0,
-            "strong_mechanisms":[{"mechanism":"example","support":"example","confidence":"LOW"}],
-            "contradictions":["example"],
-            "weak_or_duplicate_ids":["example"],
-            "families_ready_for_spec":["example"],
-            "families_not_ready":[{"family":"example","missing":"example"}],
-            "missing_evidence_categories":["example"],
-            "next_action":"example"
+            "ready_families":[],
+            "not_ready_families":[],
+            "top_contradictions":[],
+            "missing_categories":[],
+            "next_action":""
           }
-          q='''You are the independent evidence-audit model for a research-only cryptocurrency systematic-trading project. Audit ONLY the supplied evidence records. Do NOT browse from memory, invent URLs, invent view counts, invent backtest numbers, or upgrade anecdotes into proof. Decide whether Stage1R evidence is sufficiently broad and direct to design executable alpha families before replay.\n\nHard rules:\n1) music.youtube.com and help.youtube.com are noise and must never count.\n2) YouTube can count only if the supplied record contains a direct youtube.com/watch URL and an independently verified visible view count; otherwise discovery-only.\n3) A family needs >=3 DIRECT independent sources. Cross-asset mechanism papers may support risk/cost mechanics but cannot by themselves prove crypto alpha.\n4) Community success claims are anecdotal unless independently verified.\n5) Treat a paper and a research-platform mirror of the same paper as one lineage.\n6) Identify contradictions: trend vs mean-reversion, intraday vs daily, long-only vs long/short, cost sensitivity, regime dependence.\n7) Recommend exact missing evidence CATEGORIES and mechanisms, not fabricated links.\n8) Return ONE syntactically valid JSON object and nothing else. All keys shown in the example are mandatory. Do not use comments, ellipses, markdown, Python types, or trailing commas.\n\nVALID SHAPE EXAMPLE:\n'''+json.dumps(example,ensure_ascii=False)+'\n\nEVIDENCE:\n'+json.dumps(d,ensure_ascii=False)
+          q='''Audit ONLY the supplied evidence for a research-only crypto systematic-trading project. No browsing from memory. No invented URLs, view counts, performance, or claims. music.youtube.com/help.youtube.com never count. YouTube counts only with supplied direct youtube.com/watch URL plus verified view count. Paper + mirror = one lineage. Community claims are anecdotes. A family needs >=3 direct independent crypto sources. Cross-asset sources support mechanics only. Return ONE compact valid JSON object, no markdown, no comments. Each list max 6 short strings. Use exactly these keys and no others:\n'''+json.dumps(shape)+'\nEVIDENCE:\n'+json.dumps(d,ensure_ascii=False)
           Path(sys.argv[2]).write_text(q)
           PYPROMPT
 
           "$PY" - "$GEMINI" /tmp/eaf_v2_prompt.txt /tmp/eaf_v2_body.json <<'PYBODY'
           import json,sys
-          model=sys.argv[1]; q=open(sys.argv[2]).read()
-          json.dump({'model':model,'messages':[{'role':'user','content':q}],'max_tokens':3000,'temperature':0,'response_format':{'type':'json_object'}},open(sys.argv[3],'w'))
+          json.dump({'model':sys.argv[1],'messages':[{'role':'user','content':open(sys.argv[2]).read()}],'max_tokens':1400,'temperature':0,'response_format':{'type':'json_object'}},open(sys.argv[3],'w'))
           PYBODY
           code=$(curl -sS -m 300 -o /tmp/eaf_v2_resp.json -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/eaf_v2_body.json "$RBASE/chat/completions" || true)
           echo "GEMINI_HTTP=$code"
           test "$code" = 200
           "$PY" - /tmp/eaf_v2_resp.json "$ROOT/gemini_evidence_v2_audit.json" <<'PYRESP'
           import json,sys,re
-          d=json.load(open(sys.argv[1])); content=((d.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-          if not content.strip(): raise SystemExit('EMPTY_GEMINI_AUDIT')
-          text=content.strip()
+          d=json.load(open(sys.argv[1])); text=(((d.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+          if not text: raise SystemExit('EMPTY_GEMINI_AUDIT')
           text=re.sub(r'^```(?:json)?\s*','',text); text=re.sub(r'\s*```$','',text)
-          try:
-              obj=json.loads(text)
-          except Exception:
-              start=text.find('{')
-              if start < 0: raise SystemExit('NO_JSON_OBJECT_IN_GEMINI_AUDIT')
-              obj,_=json.JSONDecoder().raw_decode(text[start:])
-          required={'verdict','record_count','effective_independent_lineages','direct_crypto_strategy_count','reproducible_implementation_count','community_count','youtube_counted','strong_mechanisms','contradictions','weak_or_duplicate_ids','families_ready_for_spec','families_not_ready','missing_evidence_categories','next_action'}
-          missing=sorted(required-set(obj))
-          if missing: raise SystemExit('MISSING_AUDIT_KEYS:'+','.join(missing))
-          if obj.get('verdict') not in {'PASS_STAGE1R','HOLD_MORE_EVIDENCE'}: raise SystemExit('BAD_VERDICT')
-          obj['research_only']=True; obj['execution_authority']='NONE'; obj['order_authority']='BLOCKED'; obj['promotion_authority']=False; obj['selection_authority']=False
+          try: obj=json.loads(text)
+          except Exception as exc:
+              print('RAW_GEMINI_PREFIX',repr(text[:800])); raise
+          req={'verdict','effective_lineages','direct_crypto','reproducible_impl','youtube_counted','ready_families','not_ready_families','top_contradictions','missing_categories','next_action'}
+          miss=sorted(req-set(obj))
+          if miss: raise SystemExit('MISSING_AUDIT_KEYS:'+','.join(miss))
+          if obj['verdict'] not in {'PASS_STAGE1R','HOLD_MORE_EVIDENCE'}: raise SystemExit('BAD_VERDICT')
+          obj.update({'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'selection_authority':False})
           open(sys.argv[2],'w').write(json.dumps(obj,indent=2,sort_keys=True,ensure_ascii=False)+'\n')
           print(json.dumps(obj,sort_keys=True,ensure_ascii=False))
           PYRESP
           echo 'PASS_GEMINI_EVIDENCE_V2_AUDIT_WRITTEN'
-          cat "$ROOT/gemini_evidence_v2_audit.json"
           REMOTE
       - name: Cleanup
         if: always()

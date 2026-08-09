@@ -1,0 +1,129 @@
+name: ZEL EAF V3 Stage3 Sample SSOT Deep Scan
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-eaf-v3-stage3-sample-ssot-deep-scan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  scan:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Repository semantic threshold scan
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY' > out/repo_sample_scan.json
+          import json,pathlib,re
+          root=pathlib.Path('.')
+          terms=re.compile(r'(minimum_effective_sample|min_effective_sample|minimum[_ -]?sample|sample[_ -]?min|minimum[_ -]?trades?|min[_ -]?trades?|trade_count_min|minimum_trade_count|minimum_closed|min_closed|positive_windows_min|archive_trade_count_min)',re.I)
+          skip_parts={'.git','.venv','node_modules','dist','build','__pycache__'}
+          hits=[]; scanned=0
+          for p in root.rglob('*'):
+              if not p.is_file() or any(x in skip_parts for x in p.parts): continue
+              if p.suffix.lower() not in {'.json','.py','.yml','.yaml','.txt','.md','.sh'}: continue
+              if p.name.startswith('.env') or p.name.endswith(('.key','.pem')): continue
+              try:
+                  if p.stat().st_size>2_000_000: continue
+                  text=p.read_text(errors='ignore')
+              except Exception: continue
+              scanned+=1
+              for n,line in enumerate(text.splitlines(),1):
+                  if terms.search(line):
+                      hits.append({'path':str(p),'line':n,'text':line.strip()[:500]})
+                      if len(hits)>=300: break
+              if len(hits)>=300: break
+          print(json.dumps({'state':'PASS_REPO_SAMPLE_SCAN','files_scanned':scanned,'hits':hits},sort_keys=True))
+          PY
+          python -m json.tool out/repo_sample_scan.json
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: VPS active-source threshold scan read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/vps_sample_scan.json <<'PY'
+          import json,pathlib,re
+          roots=[pathlib.Path('/home/z/z'),pathlib.Path('/opt/zel')]
+          terms=re.compile(r'(minimum_effective_sample|min_effective_sample|minimum[_ -]?sample|sample[_ -]?min|minimum[_ -]?trades?|min[_ -]?trades?|trade_count_min|minimum_trade_count|minimum_closed|min_closed|positive_windows_min|archive_trade_count_min)',re.I)
+          skip_tokens=('/.git/','/.venv/','/node_modules/','/.patch_backups/','/backup_','/_archive/','/archive/','/__pycache__/')
+          allowed={'.json','.py','.yml','.yaml','.txt','.md','.sh'}
+          hits=[]; scanned=0
+          for root in roots:
+              if not root.exists(): continue
+              for p in root.rglob('*'):
+                  s=str(p)
+                  if not p.is_file() or any(t in s for t in skip_tokens): continue
+                  if p.suffix.lower() not in allowed: continue
+                  if p.name.startswith('.env') or p.name.endswith(('.key','.pem')): continue
+                  try:
+                      if p.stat().st_size>2_000_000: continue
+                      text=p.read_text(errors='ignore')
+                  except Exception: continue
+                  scanned+=1
+                  for n,line in enumerate(text.splitlines(),1):
+                      if terms.search(line):
+                          hits.append({'path':s,'line':n,'text':line.strip()[:500]})
+                          if len(hits)>=300: break
+                  if len(hits)>=300 or scanned>=6000: break
+              if len(hits)>=300 or scanned>=6000: break
+          print(json.dumps({'state':'PASS_VPS_SAMPLE_SCAN','files_scanned':scanned,'hits':hits,'secret_values_exposed':False,'execution_authority':'NONE','order_authority':'BLOCKED'},sort_keys=True))
+          PY
+          python -m json.tool out/vps_sample_scan.json
+
+      - name: Classify Stage3-specific candidates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,re
+          repo=json.load(open('out/repo_sample_scan.json'))['hits']
+          vps=json.load(open('out/vps_sample_scan.json'))['hits']
+          allhits=repo+vps
+          stage3=[h for h in allhits if re.search(r'(eaf|stage3|evidence_alpha|economic_hardening|strategy11_v3_policy)',h['path'],re.I)]
+          exact=[h for h in allhits if re.search(r'(minimum_effective_sample|min_effective_sample)',h['text'],re.I)]
+          numeric=[]
+          for h in stage3:
+              nums=re.findall(r'(?<![A-Za-z])\d+(?:\.\d+)?',h['text'])
+              if nums: numeric.append(dict(h,numbers=nums))
+          out={'state':'PASS_SAMPLE_SSOT_CLASSIFICATION','exact_effective_sample_hits':exact,'stage3_related_hits':stage3,'stage3_numeric_candidates':numeric,'resolved':False,'resolution_reason':'requires one explicit authoritative Stage3 minimum-effective-sample numeric binding; do not alias unrelated thresholds automatically'}
+          open('out/classification.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-eaf-v3-stage3-sample-ssot-deep-scan-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

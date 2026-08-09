@@ -1,0 +1,225 @@
+name: ZEL G0 Governor Source Restore
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - policies/zel/g0_governor_restore_contract_v1.json
+      - scripts/ci/g0_active_canonical_parity.py
+      - scripts/ci/g0_runtime_probe.py
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - research/legacy_strategy25_inventory_v1.json
+      - .github/workflows/zel-g0-governor-source-restore.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-missing-governor-source:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate restore contract and probes
+        run: |
+          set -euo pipefail
+          python -m json.tool policies/zel/g0_governor_restore_contract_v1.json >/dev/null
+          python -m py_compile scripts/ci/g0_active_canonical_parity.py scripts/ci/g0_runtime_probe.py
+          mkdir -p out
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Preflight runtime census and canonical parity
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" \
+            < scripts/ci/g0_runtime_probe.py > out/pre_runtime_census.json
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z G0_ESCROW_ROOT=/home/z/.zel-g0-source-escrow python3 -" \
+            < scripts/ci/g0_active_canonical_parity.py > out/pre_parity.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('policies/zel/g0_governor_restore_contract_v1.json').read_text())
+          r=json.loads(Path('out/pre_runtime_census.json').read_text())
+          p=json.loads(Path('out/pre_parity.json').read_text())
+          assert c['state']=='AUTHORIZED_MINIMAL_SOURCE_RESTORE_ONLY'
+          assert r['duplicate_active_owner_count']==0
+          assert r['unresolved_active_reference_count']==0
+          assert p['state']=='HOLD_ONLY_PORTFOLIO_GOVERNOR_MISSING'
+          assert p['source_match_count']==83 and p['source_path_total']==84
+          assert p['source_hash_mismatch_count']==0
+          assert p['missing_source_paths']==['backend/research/strategy11_portfolio_governor_v1.py']
+          print('PASS_GOVERNOR_RESTORE_PREFLIGHT')
+          PY
+
+      - name: Restore exact missing source atomically without activation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          CONTRACT_B64=$(base64 -w0 policies/zel/g0_governor_restore_contract_v1.json)
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "RESTORE_CONTRACT_B64='$CONTRACT_B64' python3 -" > out/restore_receipt.json <<'PY'
+          import base64, hashlib, json, os, tempfile
+          from pathlib import Path
+          c=json.loads(base64.b64decode(os.environ['RESTORE_CONTRACT_B64']).decode())
+          t=c['target']
+          src=Path(t['private_canonical_path'])
+          dst=Path(t['runtime_path'])
+          expected=t['expected_sha256']
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          assert src.is_file(), 'canonical source missing'
+          assert sha(src)==expected, 'canonical hash mismatch'
+          dst.parent.mkdir(parents=True, exist_ok=True)
+          created=False
+          before_sha=sha(dst) if dst.is_file() else None
+          if dst.is_file():
+              assert before_sha==expected, 'runtime target exists with unexpected hash'
+          else:
+              fd,tmp=tempfile.mkstemp(prefix='.g0-governor-',dir=str(dst.parent))
+              try:
+                  with os.fdopen(fd,'wb') as fh:
+                      raw=src.read_bytes(); fh.write(raw); fh.flush(); os.fsync(fh.fileno())
+                  os.chmod(tmp,0o644)
+                  assert hashlib.sha256(Path(tmp).read_bytes()).hexdigest()==expected
+                  os.replace(tmp,dst)
+                  created=True
+              finally:
+                  if os.path.exists(tmp): os.unlink(tmp)
+          after_sha=sha(dst) if dst.is_file() else None
+          assert after_sha==expected
+          print(json.dumps({
+            'schema_version':'zel.g0.governor_restore_receipt.v1',
+            'state':'PASS_SOURCE_RESTORED' if created else 'PASS_SOURCE_ALREADY_EXACT',
+            'created_by_this_run':created,
+            'before_sha256':before_sha,
+            'after_sha256':after_sha,
+            'expected_sha256':expected,
+            'runtime_path':str(dst),
+            'service_restart_performed':False,
+            'registry_mutated':False,
+            'strategy_files_mutated':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          },indent=2,sort_keys=True))
+          PY
+          python -m json.tool out/restore_receipt.json >/dev/null
+
+      - name: Post-restore parity and service-owner verification
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z G0_ESCROW_ROOT=/home/z/.zel-g0-source-escrow python3 -" \
+            < scripts/ci/g0_active_canonical_parity.py > out/post_parity.json
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" \
+            < scripts/ci/g0_runtime_probe.py > out/post_runtime_census.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          pre=json.loads(Path('out/pre_runtime_census.json').read_text())
+          post=json.loads(Path('out/post_runtime_census.json').read_text())
+          p=json.loads(Path('out/post_parity.json').read_text())
+          rr=json.loads(Path('out/restore_receipt.json').read_text())
+          ok=(
+            p['state']=='PASS_ACTIVE_RUNTIME_CANONICAL_PARITY'
+            and p['source_match_count']==84
+            and p['source_missing_count']==0
+            and p['source_hash_mismatch_count']==0
+            and p['module_parity_pass_count']==12
+            and post['duplicate_active_owner_count']==0
+            and post['unresolved_active_reference_count']==0
+            and pre.get('active_relevant_services')==post.get('active_relevant_services')
+          )
+          Path('out/post_verdict.json').write_text(json.dumps({
+            'schema_version':'zel.g0.governor_restore_post_verdict.v1',
+            'pass':ok,
+            'post_parity_state':p['state'],
+            'source_match_count':p['source_match_count'],
+            'module_parity_pass_count':p['module_parity_pass_count'],
+            'duplicate_active_owner_count':post['duplicate_active_owner_count'],
+            'unresolved_active_reference_count':post['unresolved_active_reference_count'],
+            'service_snapshot_unchanged':pre.get('active_relevant_services')==post.get('active_relevant_services'),
+            'created_by_this_run':rr['created_by_this_run']
+          },indent=2,sort_keys=True)+'\n')
+          if not ok:
+              raise SystemExit(9)
+          print('PASS_GOVERNOR_SOURCE_RESTORE_POSTCHECK')
+          PY
+
+      - name: Roll back restored file on postcheck failure
+        if: failure()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          if [[ -f out/restore_receipt.json ]] && python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/restore_receipt.json').read_text())
+          raise SystemExit(0 if r.get('created_by_this_run') else 1)
+          PY
+          then
+            ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "$VPS_USER@$VPS_HOST" \
+              "rm -f /home/z/z/backend/research/strategy11_portfolio_governor_v1.py"
+          fi
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-g0-governor-restore-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/pre_runtime_census.json
+            out/pre_parity.json
+            out/restore_receipt.json
+            out/post_parity.json
+            out/post_runtime_census.json
+            out/post_verdict.json
+          if-no-files-found: ignore
+          retention-days: 30

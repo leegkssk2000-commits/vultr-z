@@ -7,23 +7,38 @@ BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
 DUR=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
 ENG=$ROOT/engine/replay_v1_v2.py
 READINESS=$ROOT/advisory/v2_replay_readiness.json
+BUILD=$ROOT/engine/build_receipt.json
+MACHINE=$ROOT/advisory/deterministic_contract_gate.json
+SMOKE=$ROOT/advisory/smoke_receipt.json
 OUT=$ROOT/baseline_next_open_v1
 LANE=$ROOT/engine/lane_baseline_v2.py
 REPORT=$OUT/strategy_edge_report.json
 CANON=/opt/zel/forward-expansion-v1/source
 
-for p in "$ENG" "$READINESS" "$BASE/work/engine/lane_checkpoint_v2.py" "$DUR/work/data"; do
+for p in "$ENG" "$READINESS" "$BUILD" "$MACHINE" "$SMOKE" "$BASE/work/engine/lane_checkpoint_v2.py" "$DUR/work/data"; do
   test -e "$p"
 done
 
-"$PY" - "$READINESS" <<'PYREADY'
-import json,sys
+"$PY" - "$ENG" "$READINESS" "$BUILD" "$MACHINE" "$SMOKE" <<'PYREADY'
+import hashlib,json,os,sys
 from pathlib import Path
-p=json.loads(Path(sys.argv[1]).read_text())
-if p.get('state')!='PASS_V2_REPLAY_ENGINE_READY_FOR_AXIS_WORK': raise SystemExit('V2_REPLAY_NOT_READY')
-if p.get('machine_gate')!='PASS' or p.get('smoke')!='PASS': raise SystemExit('V2_REPLAY_GATES_NOT_PASS')
-if p.get('research_only') is not True or p.get('execution_authority')!='NONE' or p.get('order_authority')!='BLOCKED': raise SystemExit('V2_RESEARCH_AUTHORITY_MISMATCH')
-print('PASS_V2_READINESS_PRECONDITION')
+eng,readyp,buildp,machinep,smokep=map(Path,sys.argv[1:])
+ready=json.loads(readyp.read_text()); build=json.loads(buildp.read_text()); machine=json.loads(machinep.read_text()); smoke=json.loads(smokep.read_text())
+sha=hashlib.sha256(eng.read_bytes()).hexdigest()
+if build.get('state')!='PASS_V2_NEXT_OPEN_ENGINE_BUILT': raise SystemExit('V2_BUILD_NOT_PASS')
+if build.get('output_sha256')!=sha: raise SystemExit('V2_ENGINE_SHA_NOT_BOUND_TO_BUILD')
+if machine.get('state')!='PASS_V2_REPLAY_CONTRACT_MACHINE_GATE': raise SystemExit('V2_MACHINE_GATE_NOT_PASS')
+if smoke.get('state')!='PASS_V2_NEXT_OPEN_SMOKE': raise SystemExit('V2_SMOKE_NOT_PASS')
+if smoke.get('execution_model')!='NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE': raise SystemExit('V2_SMOKE_EXECUTION_MODEL_MISMATCH')
+if int(smoke.get('lane_files') or 0)!=3 or int(smoke.get('error_count') or 0)!=0 or int(smoke.get('closed_rows_checked') or 0)<1: raise SystemExit('V2_SMOKE_INTEGRITY')
+# Smoke and readiness must have been produced after this exact build receipt, not left over from an older engine.
+if smokep.stat().st_mtime < buildp.stat().st_mtime: raise SystemExit('STALE_SMOKE_RECEIPT')
+if machinep.stat().st_mtime < buildp.stat().st_mtime: raise SystemExit('STALE_MACHINE_GATE')
+if readyp.stat().st_mtime < smokep.stat().st_mtime: raise SystemExit('STALE_READINESS_RECEIPT')
+if ready.get('state')!='PASS_V2_REPLAY_ENGINE_READY_FOR_AXIS_WORK' or ready.get('machine_gate')!='PASS' or ready.get('smoke')!='PASS': raise SystemExit('V2_REPLAY_NOT_READY')
+for p in (ready,build,machine,smoke):
+    if p.get('research_only') is not True or p.get('execution_authority')!='NONE' or p.get('order_authority')!='BLOCKED' or p.get('promotion_authority') is not False: raise SystemExit('V2_RESEARCH_AUTHORITY_MISMATCH')
+print('PASS_V2_READINESS_BOUND_TO_CURRENT_ENGINE',sha)
 PYREADY
 
 canon_hash() {
@@ -61,7 +76,7 @@ COUNT=$(find "$OUT/lane_checkpoints" -type f -name '*.json.gz' | wc -l)
 test "$COUNT" -eq 45 || { echo "BASELINE_LANE_COUNT:$COUNT" >&2; exit 10; }
 
 "$PY" - "$ENG" "$OUT/lane_checkpoints" "$REPORT" <<'PYREPORT'
-import gzip,importlib.util,json,sys
+import gzip,hashlib,importlib.util,json,sys
 from collections import defaultdict
 from pathlib import Path
 engp,root,out=map(Path,sys.argv[1:])
@@ -97,6 +112,7 @@ rank=sorted(strategies,key=lambda s:(-float(strategy_report[s]['overall'].get('n
 payload={
  'schema_version':'zel.structural_premium.v2.next_open.baseline.v1',
  'state':'PASS_V2_NEXT_OPEN_BASELINE_45_OF_45',
+ 'engine_sha256':hashlib.sha256(engp.read_bytes()).hexdigest(),
  'execution_model':'NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE',
  'lane_files_total':45,
  'selection_windows_consumed':['1m_w1','1m_w2','1m_w3'],
@@ -108,6 +124,7 @@ payload={
 }
 out.write_text(json.dumps(payload,indent=2,sort_keys=True,allow_nan=False)+'\n')
 print('STATE',payload['state'])
+print('ENGINE_SHA',payload['engine_sha256'])
 print('COMBINED',json.dumps(combined,sort_keys=True))
 for s in strategies: print('STRATEGY',s,json.dumps(strategy_report[s]['overall'],sort_keys=True))
 print('RANK',rank)

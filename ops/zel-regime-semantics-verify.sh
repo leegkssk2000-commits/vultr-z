@@ -1,29 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
+PY=/home/z/z/.venv/bin/python
 P=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/source/tools/q4r3_exact25_dedicated_shadow_producer.py
 E=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2/work/engine/replay_v1.py
 T=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1/work/replay/trades.jsonl.gz
+C=/opt/zel/research-runtime/jobs/structural-premium-vwap-closed-loop-v1/gen2/runs/C120_FASTSALVAGE/replay_w2/lane_checkpoints/vwap_revert
 
-echo '===CLOSE_POSITION_DEF==='
-grep -n -A140 -B20 '^def close_position' "$P" | head -190
+echo '===REGIME_SEMANTICS==='
+grep -n -A70 '^def close_position' "$P" | grep -E 'def close_position|exit_features|"regime"|entry_features|exit_features' || true
 
-echo '===MAKE_POSITION_DEF==='
-grep -n -A130 -B20 '^def make_position' "$P" | head -180
-
-echo '===REGIME_ASSIGNMENTS==='
-grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E '"regime"|regime=' "$P" "$E" | head -120 || true
-
-echo '===TRADE_REGIME_SAMPLE==='
-/home/z/z/.venv/bin/python - "$T" <<'PY'
-import gzip,json,sys
-p=sys.argv[1]
-n=0
-with gzip.open(p,'rt',encoding='utf-8') as h:
+echo '===ENTRY_BIAS_COHORTS==='
+"$PY" - "$E" "$T" "$C" <<'PY'
+import gzip,importlib.util,json,sys
+from collections import defaultdict
+from pathlib import Path
+engp,tradesp,croot=Path(sys.argv[1]),Path(sys.argv[2]),Path(sys.argv[3])
+spec=importlib.util.spec_from_file_location('entrybias',engp)
+e=importlib.util.module_from_spec(spec); sys.modules[spec.name]=e
+assert spec.loader is not None; spec.loader.exec_module(e)
+def entry_bias(r):
+    ef=r.get('entry_features') or {}
+    return str(ef.get('htf_bias') or 'unknown') if isinstance(ef,dict) else 'unknown'
+def group(rows,label):
+    buckets=defaultdict(list)
+    for r in rows:buckets[entry_bias(r)].append(r)
+    print(label,'OVERALL',json.dumps(e.metrics(rows),sort_keys=True))
+    for k in sorted(buckets):
+        print(label,'ENTRY_BIAS',k,json.dumps(e.metrics(buckets[k]),sort_keys=True))
+    exits=defaultdict(list)
+    for r in rows:exits[str(r.get('regime') or 'unknown')].append(r)
+    for k in sorted(exits):
+        print(label,'EXIT_BIAS',k,json.dumps(e.metrics(exits[k]),sort_keys=True))
+base=[]
+with gzip.open(tradesp,'rt',encoding='utf-8') as h:
     for line in h:
         r=json.loads(line)
-        if r.get('strategy_id')=='vwap_revert' and r.get('side')=='long' and r.get('window_id')=='1m_w2':
-            print(json.dumps({k:r.get(k) for k in ('entry_ts','exit_ts','opened_at','closed_at','regime','entry_regime','htf_bias','entry_features','exit_features','captured_at') if k in r},sort_keys=True))
-            n+=1
-            if n>=5:
-                break
+        if r.get('strategy_id')=='vwap_revert' and r.get('side')=='long' and str(r.get('window_id'))=='1m_w2':base.append(r)
+cand=[]
+for p in sorted(croot.glob('*.json.gz')):
+    with gzip.open(p,'rt',encoding='utf-8') as h:d=json.load(h)
+    cand += [r for r in (d.get('result') or {}).get('closed_rows') or [] if r.get('side')=='long']
+if len(base)!=48 or len(cand)!=48: raise SystemExit(f'ROW_COUNT:{len(base)}:{len(cand)}')
+group(base,'BASE')
+group(cand,'C120')
 PY

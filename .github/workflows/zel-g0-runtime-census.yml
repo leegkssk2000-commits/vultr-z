@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/ci/g0_runtime_probe.py
       - scripts/ci/g0_runtime_drift_reconcile.py
+      - scripts/ci/g0_runtime_git_persistence_probe.py
       - scripts/ci/g0_installation_census.py
       - policies/zel/g0_installation_certification_v1.json
       - config/zel_alpha_engine_vnext.json
@@ -27,21 +28,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Validate local G0 scripts
         run: |
           set -euo pipefail
-          python -m py_compile \
-            scripts/ci/g0_runtime_probe.py \
-            scripts/ci/g0_runtime_drift_reconcile.py \
-            scripts/ci/g0_installation_census.py
+          python -m py_compile scripts/ci/g0_runtime_probe.py scripts/ci/g0_runtime_drift_reconcile.py scripts/ci/g0_runtime_git_persistence_probe.py scripts/ci/g0_installation_census.py
           python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
           python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
-
       - name: Prepare SSH
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -49,14 +44,11 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          test -n "$VPS_SSH_KEY"
-          test -n "$VPS_HOST"
-          test -n "$VPS_USER"
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
           mkdir -p ~/.ssh out
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
       - name: Run read-only VPS owner/source census
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -65,73 +57,37 @@ jobs:
           set -euo pipefail
           PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
           LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
-          ssh -i ~/.ssh/vps_key \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=15 \
-            "$VPS_USER@$VPS_HOST" \
-            "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" \
-            < scripts/ci/g0_runtime_probe.py \
-            > out/g0_runtime_census.json
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" < scripts/ci/g0_runtime_probe.py > out/g0_runtime_census.json
           python -m json.tool out/g0_runtime_census.json >/dev/null
-
+      - name: Run read-only runtime Git persistence census
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" < scripts/ci/g0_runtime_git_persistence_probe.py > out/g0_runtime_git_persistence.json
+          python -m json.tool out/g0_runtime_git_persistence.json >/dev/null
       - name: Diagnose repo-vs-runtime source drift
         run: |
           set -euo pipefail
-          python scripts/ci/g0_runtime_drift_reconcile.py \
-            --pin backend/research/zel_composite_live_source_pin_v1.json \
-            --runtime out/g0_runtime_census.json \
-            --out out/g0_runtime_drift_diagnosis.json
+          python scripts/ci/g0_runtime_drift_reconcile.py --pin backend/research/zel_composite_live_source_pin_v1.json --runtime out/g0_runtime_census.json --out out/g0_runtime_drift_diagnosis.json
           python -m json.tool out/g0_runtime_drift_diagnosis.json >/dev/null
-
       - name: Reconcile static and runtime census fail-closed
         run: |
           set -euo pipefail
-          python scripts/ci/g0_installation_census.py \
-            --runtime-manifest out/g0_runtime_census.json \
-            --out out/g0_reconciled_census.json \
-            --require-runtime-pass
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          runtime=json.loads(Path('out/g0_runtime_census.json').read_text())
-          drift=json.loads(Path('out/g0_runtime_drift_diagnosis.json').read_text())
-          reconciled=json.loads(Path('out/g0_reconciled_census.json').read_text())
-          assert runtime['runtime_mutated'] is False
-          assert runtime['execution_authority']=='NONE'
-          assert runtime['order_authority']=='BLOCKED'
-          assert runtime['destructive_cleanup_authority'] is False
-          assert drift['runtime_mutated'] is False
-          assert drift['execution_authority']=='NONE'
-          assert drift['order_authority']=='BLOCKED'
-          assert drift['destructive_cleanup_authority'] is False
-          assert reconciled['execution_authority']=='NONE'
-          assert reconciled['order_authority']=='BLOCKED'
-          assert reconciled['destructive_cleanup_authority'] is False
-          print(json.dumps({
-              'state': runtime['state'],
-              'module_match': runtime['module_source_match_count'],
-              'module_expected': runtime['expected_module_count'],
-              'legacy25_present': runtime['legacy25_present_count'],
-              'legacy25_expected': runtime['legacy25_expected_count'],
-              'duplicate_active_owner_count': runtime['duplicate_active_owner_count'],
-              'unresolved_active_reference_count': runtime['unresolved_active_reference_count'],
-              'runtime_drift_module_count': drift['runtime_drift_module_count'],
-              'pin_stale_module_count': drift['pin_stale_module_count'],
-              'reconciled_state': reconciled['state'],
-          }, sort_keys=True))
-          PY
-
+          python scripts/ci/g0_installation_census.py --runtime-manifest out/g0_runtime_census.json --out out/g0_reconciled_census.json --require-runtime-pass
       - name: Remove SSH key
         if: always()
         run: rm -f ~/.ssh/vps_key
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: zel-g0-runtime-census-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             out/g0_runtime_census.json
+            out/g0_runtime_git_persistence.json
             out/g0_runtime_drift_diagnosis.json
             out/g0_reconciled_census.json
           if-no-files-found: ignore

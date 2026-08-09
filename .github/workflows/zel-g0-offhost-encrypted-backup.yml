@@ -1,0 +1,179 @@
+name: ZEL G0 Encrypted Offhost Backup
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - policies/zel/g0_offhost_backup_public.pem
+      - policies/zel/g0_source_persistence_gate_v1.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-g0-offhost-encrypted-backup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  encrypted-offhost-backup:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate public backup key
+        run: |
+          set -euo pipefail
+          openssl pkey -pubin -in policies/zel/g0_offhost_backup_public.pem -noout
+          FP=$(openssl pkey -pubin -in policies/zel/g0_offhost_backup_public.pem -outform DER | sha256sum | awk '{print $1}')
+          test "$FP" = "20a69590fcd4ec40b0522426222a52d169037304bccae1d3a33d81e4d3ee18de"
+          mkdir -p out
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Create encrypted canonical Git bundle outside active runtime
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PUB_B64=$(base64 -w0 policies/zel/g0_offhost_backup_public.pem)
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "PUB_B64='$PUB_B64' bash -s" > out/g0_offhost_encrypted_backup.tar.gz <<'REMOTE'
+          set -euo pipefail
+          ESCROW=/home/z/.zel-g0-source-escrow
+          test -d "$ESCROW/.git"
+          test -f "$ESCROW/canonical_source_pin_candidate.json"
+          TMP=$(mktemp -d /home/z/.zel-g0-offhost-backup.XXXXXX)
+          trap 'rm -rf "$TMP"' EXIT
+          chmod 700 "$TMP"
+
+          git -C "$ESCROW" fsck --no-progress >/dev/null
+          git -C "$ESCROW" bundle create "$TMP/canonical.bundle" --all
+          git -C "$ESCROW" bundle verify "$TMP/canonical.bundle" >/dev/null
+
+          printf '%s' "$PUB_B64" | base64 -d > "$TMP/public.pem"
+          chmod 600 "$TMP/public.pem"
+          PUB_FP=$(openssl pkey -pubin -in "$TMP/public.pem" -outform DER | sha256sum | awk '{print $1}')
+          test "$PUB_FP" = "20a69590fcd4ec40b0522426222a52d169037304bccae1d3a33d81e4d3ee18de"
+
+          openssl rand -base64 48 > "$TMP/passphrase.txt"
+          chmod 600 "$TMP/passphrase.txt"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$TMP/canonical.bundle" \
+            -out "$TMP/canonical.bundle.enc" \
+            -pass file:"$TMP/passphrase.txt"
+          openssl pkeyutl -encrypt -pubin -inkey "$TMP/public.pem" \
+            -in "$TMP/passphrase.txt" \
+            -out "$TMP/passphrase.enc" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+
+          BUNDLE_SHA=$(sha256sum "$TMP/canonical.bundle" | awk '{print $1}')
+          ENC_SHA=$(sha256sum "$TMP/canonical.bundle.enc" | awk '{print $1}')
+          ESCROW_HEAD=$(git -C "$ESCROW" rev-parse HEAD)
+          PIN_SHA=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/home/z/.zel-g0-source-escrow/canonical_source_pin_candidate.json').read_text())
+          print(d.get('source_pin_sha256',''))
+          PY
+          )
+          SOURCE_COUNT=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/home/z/.zel-g0-source-escrow/canonical_source_pin_candidate.json').read_text())
+          print(d.get('source_path_count',0))
+          PY
+          )
+          MODULE_COUNT=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/home/z/.zel-g0-source-escrow/canonical_source_pin_candidate.json').read_text())
+          print(d.get('module_count',0))
+          PY
+          )
+
+          python3 - <<PY > "$TMP/manifest.json"
+          import json
+          print(json.dumps({
+            'schema_version':'zel.g0.offhost.encrypted_backup.v1',
+            'escrow_git_head':'$ESCROW_HEAD',
+            'canonical_source_pin_sha256':'$PIN_SHA',
+            'source_path_count':int('$SOURCE_COUNT'),
+            'module_count':int('$MODULE_COUNT'),
+            'plaintext_bundle_sha256':'$BUNDLE_SHA',
+            'encrypted_bundle_sha256':'$ENC_SHA',
+            'public_key_fingerprint_sha256':'$PUB_FP',
+            'encryption':'AES-256-CBC-PBKDF2(iter=200000)+RSA-3072-OAEP-SHA256',
+            'plaintext_source_in_artifact':False,
+            'runtime_mutated':False,
+            'active_runtime_tree_mutated':False,
+            'service_state_mutated':False,
+            'destructive_cleanup_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold'
+          }, indent=2, sort_keys=True))
+          PY
+
+          rm -f "$TMP/canonical.bundle" "$TMP/passphrase.txt" "$TMP/public.pem"
+          tar -C "$TMP" -czf - canonical.bundle.enc passphrase.enc manifest.json
+          REMOTE
+          test -s out/g0_offhost_encrypted_backup.tar.gz
+
+      - name: Verify ciphertext-only artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out/check
+          tar -C out/check -xzf out/g0_offhost_encrypted_backup.tar.gz
+          test -f out/check/canonical.bundle.enc
+          test -f out/check/passphrase.enc
+          test -f out/check/manifest.json
+          test ! -e out/check/canonical.bundle
+          test ! -e out/check/passphrase.txt
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          m=json.loads(Path('out/check/manifest.json').read_text())
+          enc=Path('out/check/canonical.bundle.enc').read_bytes()
+          assert hashlib.sha256(enc).hexdigest()==m['encrypted_bundle_sha256']
+          assert m['source_path_count']==84
+          assert m['module_count']==12
+          assert m['public_key_fingerprint_sha256']=='20a69590fcd4ec40b0522426222a52d169037304bccae1d3a33d81e4d3ee18de'
+          assert m['plaintext_source_in_artifact'] is False
+          assert m['runtime_mutated'] is False
+          assert m['execution_authority']=='NONE'
+          assert m['order_authority']=='BLOCKED'
+          print(json.dumps(m, sort_keys=True))
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-g0-offhost-encrypted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g0_offhost_encrypted_backup.tar.gz
+          if-no-files-found: error
+          retention-days: 1

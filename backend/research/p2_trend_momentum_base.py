@@ -197,6 +197,10 @@ def manifest_row(manifest: dict[str, Any], window: str, symbol: str) -> dict[str
 def evaluate_window(data_root: Path, manifest: dict[str, Any], window: str, symbol: str, lookback: int, c: dict[str, float], dd_limit_pct: float | None) -> dict[str, Any]:
     m = manifest_row(manifest, window, symbol)
     path = data_root / m["path"]
+    if not path.is_file():
+        candidate = data_root / "zel_historical_oos_v1" / m["path"]
+        if candidate.is_file():
+            path = candidate
     rows, integ = load_csv(path)
     integ.update({
         "manifest_rows_match": len(rows) == int(m["rows"]),

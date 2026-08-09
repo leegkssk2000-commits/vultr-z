@@ -1,0 +1,101 @@
+name: ZEL EAF V3 Stage3 TLS Diagnostic
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-eaf-v3-stage3-tls-diagnostic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only TLS trust diagnosis
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -u
+          echo '=== CA_FILE ==='
+          test -r /etc/ssl/certs/ca-certificates.crt && echo 'system_ca=readable' || echo 'system_ca=missing'
+          sha256sum /etc/ssl/certs/ca-certificates.crt 2>/dev/null | awk '{print "system_ca_sha256=" $1}' || true
+          grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt 2>/dev/null | awk '{print "system_ca_cert_count=" $1}' || true
+
+          echo '=== ENV_PRESENCE ==='
+          for k in HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE; do
+            if printenv "$k" >/dev/null 2>&1; then
+              case "$k" in
+                SSL_CERT_FILE|SSL_CERT_DIR|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)
+                  v=$(printenv "$k"); printf '%s=set path=%s exists=' "$k" "$v"; test -e "$v" && echo yes || echo no ;;
+                *) echo "$k=set" ;;
+              esac
+            else
+              echo "$k=unset"
+            fi
+          done
+
+          echo '=== SYSTEM_PYTHON_SSL ==='
+          /usr/bin/python3 - <<'PY'
+          import ssl,sys,urllib.request
+          print('python=',sys.version.split()[0])
+          print('openssl=',ssl.OPENSSL_VERSION)
+          print('verify_paths=',ssl.get_default_verify_paths())
+          try:
+              with urllib.request.urlopen('https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=BTC-USDT',timeout=15) as r:
+                  print('urllib_public=http',r.status)
+          except Exception as e:
+              print('urllib_public=FAIL',type(e).__name__,str(e)[:240])
+          PY
+
+          echo '=== VENV_PYTHON_SSL ==='
+          /home/z/z/.venv/bin/python - <<'PY'
+          import ssl,sys,urllib.request
+          print('python=',sys.version.split()[0])
+          print('openssl=',ssl.OPENSSL_VERSION)
+          print('verify_paths=',ssl.get_default_verify_paths())
+          try:
+              with urllib.request.urlopen('https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=BTC-USDT',timeout=15) as r:
+                  print('urllib_public=http',r.status)
+          except Exception as e:
+              print('urllib_public=FAIL',type(e).__name__,str(e)[:240])
+          PY
+
+          echo '=== CURL_PUBLIC ==='
+          curl --version | head -n 2 || true
+          curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w 'curl_public=http_%{http_code} ssl_verify=%{ssl_verify_result}\n' 'https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=BTC-USDT' || echo 'curl_public=FAIL'
+
+          echo '=== OPENSSL_CHAIN ==='
+          timeout 20 openssl s_client -connect open-api.bingx.com:443 -servername open-api.bingx.com -verify_return_error -CAfile /etc/ssl/certs/ca-certificates.crt </dev/null 2>&1 \
+            | grep -E '^(subject=|issuer=|Verify return code:|verify error:|Verification error:|depth=)' | head -n 40 || true
+
+          echo '=== CA_CANDIDATES ==='
+          for p in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem /usr/local/share/ca-certificates/*.crt /home/z/z/*ca*.pem /home/z/z/*ca*.crt /home/z/z/config/*ca*.pem /home/z/z/config/*ca*.crt; do
+            test -f "$p" || continue
+            printf 'ca_candidate=%s sha256=' "$p"; sha256sum "$p" | awk '{print $1}'
+          done
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

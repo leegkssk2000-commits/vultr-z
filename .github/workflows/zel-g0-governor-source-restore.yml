@@ -5,10 +5,6 @@ on:
     branches: [master]
     paths:
       - policies/zel/g0_governor_restore_contract_v1.json
-      - scripts/ci/g0_active_canonical_parity.py
-      - scripts/ci/g0_runtime_probe.py
-      - backend/research/zel_composite_live_source_pin_v1.json
-      - research/legacy_strategy25_inventory_v1.json
       - .github/workflows/zel-g0-governor-source-restore.yml
   workflow_dispatch:
 
@@ -75,11 +71,17 @@ jobs:
           assert c['state']=='AUTHORIZED_MINIMAL_SOURCE_RESTORE_ONLY'
           assert r['duplicate_active_owner_count']==0
           assert r['unresolved_active_reference_count']==0
-          assert p['state']=='HOLD_ONLY_PORTFOLIO_GOVERNOR_MISSING'
-          assert p['source_match_count']==83 and p['source_path_total']==84
           assert p['source_hash_mismatch_count']==0
-          assert p['missing_source_paths']==['backend/research/strategy11_portfolio_governor_v1.py']
-          print('PASS_GOVERNOR_RESTORE_PREFLIGHT')
+          if p['state']=='HOLD_ONLY_PORTFOLIO_GOVERNOR_MISSING':
+              assert p['source_match_count']==83 and p['source_path_total']==84
+              assert p['missing_source_paths']==['backend/research/strategy11_portfolio_governor_v1.py']
+          elif p['state']=='PASS_ACTIVE_RUNTIME_CANONICAL_PARITY':
+              assert p['source_match_count']==84 and p['source_path_total']==84
+              assert p['missing_source_paths']==[]
+              assert p['module_parity_pass_count']==12
+          else:
+              raise AssertionError(f"unexpected parity state: {p['state']}")
+          print('PASS_GOVERNOR_RESTORE_PREFLIGHT_IDEMPOTENT')
           PY
 
       - name: Restore exact missing source atomically without activation

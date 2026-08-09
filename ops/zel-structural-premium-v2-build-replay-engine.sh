@@ -110,7 +110,7 @@ if '_ZEL_OVERLAY' in text or 'ZEL_STRUCTURAL_PREMIUM_OVERLAY_PATCH' in text:
     raise SystemExit('LEGACY_OVERLAY_REMAINS')
 if text.count('V2_ENTRY_EXECUTION_MODEL') < 2: raise SystemExit('V2_EXECUTION_MARKER_MISSING')
 if text.count('pending_entry = {') != 1: raise SystemExit('PENDING_QUEUE_COUNT')
-if text.count('queued_entry = pending_entry') != 1 or text.count('pending_entry = None') < 2: raise SystemExit('PENDING_SINGLE_USE_CONTRACT')
+if text.count('queued_entry = pending_entry') != 1 or text.count('pending_entry = None') != 1: raise SystemExit('PENDING_SINGLE_USE_CONTRACT')
 if text.count('execution_price = float(last["open"])') != 1: raise SystemExit('NEXT_OPEN_EXECUTION_COUNT')
 if text.count('producer.valid_entry(result, current_price)') != 1: raise SystemExit('ENTRY_PREDICATE_COUNT')
 if text.count('def _v2_shift_geometry') != 1: raise SystemExit('SHIFT_GEOMETRY_HELPER_COUNT')

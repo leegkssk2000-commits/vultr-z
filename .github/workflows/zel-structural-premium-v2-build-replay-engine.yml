@@ -1,0 +1,181 @@
+name: ZEL Structural Premium V2 Build Replay Engine
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ops/zel-structural-premium-v2-build-replay-engine.sh
+      - .github/workflows/zel-structural-premium-v2-build-replay-engine.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-structural-premium-v2-build-replay-engine
+  cancel-in-progress: true
+
+jobs:
+  build_review_smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Stage V2 builder
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key -o BatchMode=yes ops/zel-structural-premium-v2-build-replay-engine.sh "$VPS_USER@$VPS_HOST:/tmp/zel-spv2-build-replay-engine.sh"
+      - name: Build, dual-AI review, smoke
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          ROOT=/opt/zel/research-runtime/jobs/structural-premium-v2
+          CANON=/opt/zel/forward-expansion-v1/source
+          BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
+          DUR=/opt/zel/research-runtime/jobs/structural-premium-durable-lane-v2
+          ENG=$ROOT/engine/replay_v1_v2.py
+          ADV=$ROOT/advisory
+          mkdir -p "$ADV"
+          canon_hash() {
+            { find "$CANON/backend/strategies" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0 | sort -z | xargs -0 sha256sum; sha256sum "$CANON/backend/config/q4r3_canonical_strategy_owner_manifest_v1.json" "$CANON/backend/config/q4r3_exact25_shadow_binding_v1.json"; } | sha256sum | awk '{print $1}'
+          }
+          BEFORE=$(canon_hash)
+
+          bash /tmp/zel-spv2-build-replay-engine.sh
+          test -s "$ENG"
+          ! grep -qE '_ZEL_OVERLAY|ZEL_STRUCTURAL_PREMIUM_OVERLAY_PATCH' "$ENG"
+
+          C=/home/z/z/_ai_council
+          set -a; . "$C/.env"; set +a
+          test -n "${REQUESTY_API_KEY:-}"
+          RBASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
+          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$RBASE/models" > /tmp/spv2_models.json
+          GEMINI=$("$PY" - <<'PYMODEL'
+          import json
+          d=json.load(open('/tmp/spv2_models.json')); rows=d.get('data',[]) if isinstance(d,dict) else d
+          ids={str(x.get('id')) for x in rows if isinstance(x,dict)}
+          prefs=['google/gemini-3.6-flash','google/gemini-3.1-pro-preview','google/gemini-3-flash-preview','google/gemini-2.5-pro']
+          print(next((x for x in prefs if x in ids),''))
+          PYMODEL
+          )
+          test -n "$GEMINI"
+          echo "GEMINI_SELECTED=$GEMINI"
+
+          "$PY" - "$ENG" /tmp/spv2_review_prompt.txt <<'PYPROMPT'
+          import sys
+          from pathlib import Path
+          code=Path(sys.argv[1]).read_text()
+          start=code.find('V2_REPLAY_CONTRACT_VERSION')
+          loop=code.find('    position: MutableMapping[str, Any] | None = None')
+          excerpt=code[start:start+7000]+'\n\n===REPLAY LOOP===\n'+code[loop:loop+12500]
+          q='''Review this research-only trading replay engine contract. Return first line exactly PASS or FAIL. PASS only if ALL are true: (1) legacy structural overlay is removed; (2) new entries use producer.valid_entry as the sole entry predicate; (3) signal on bar t is queued and executed only on bar t+1 OPEN; (4) SL/TP are shifted by the entry gap preserving absolute stop/target distances; (5) signal-bar entry_features are preserved; (6) a newly opened position is exposed to the execution bar high/low stop/TP logic; (7) when a position already exists, strategy management/exit outputs are not modified by any V2 filter; (8) trend_rider is removed but the other 3 strategy owners remain; (9) canonical/paper/live/order are not mutated. Ignore naming/style issues and focus on causal/economic correctness and concrete bugs. If FAIL, list exact minimal fixes. CODE:\n'''+excerpt
+          Path(sys.argv[2]).write_text(q)
+          PYPROMPT
+
+          review_model() {
+            model="$1" out="$2"
+            "$PY" - "$model" /tmp/spv2_review_prompt.txt /tmp/spv2_body.json <<'PYBODY'
+          import json,sys
+          q=open(sys.argv[2]).read(); model=sys.argv[1]
+          json.dump({'model':model,'messages':[{'role':'user','content':q}],'max_tokens':1800,'temperature':0},open(sys.argv[3],'w'))
+          PYBODY
+            code=$(curl -sS -m 240 -o /tmp/spv2_resp.json -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/spv2_body.json "$RBASE/chat/completions" || true)
+            "$PY" - "$model" "$code" /tmp/spv2_resp.json "$out" <<'PYRESP'
+          import json,sys
+          model,code,p,out=sys.argv[1:]
+          try:d=json.load(open(p))
+          except Exception:d={}
+          content=((d.get('choices') or [{}])[0].get('message') or {}).get('content') or ''
+          open(out,'w').write(content)
+          print('AI_REVIEW',model,'HTTP',code,'CONTENT_START',repr(content[:300]))
+          if code!='200' or not content.strip(): raise SystemExit(4)
+          PYRESP
+          }
+
+          review_model "$GEMINI" "$ADV/gemini_replay_contract_review.txt"
+          GVER=$(head -1 "$ADV/gemini_replay_contract_review.txt" | tr -d '\r' | awk '{print $1}')
+          test "$GVER" = PASS
+
+          OPENAI_USED=''
+          for MODEL in openai/gpt-5.6-sol openai/gpt-5.4; do
+            if review_model "$MODEL" "$ADV/openai_replay_contract_review.txt"; then
+              VER=$(head -1 "$ADV/openai_replay_contract_review.txt" | tr -d '\r' | awk '{print $1}')
+              if [ "$VER" = PASS ]; then OPENAI_USED="$MODEL"; break; fi
+              echo "OPENAI_REVIEW_FAIL_MODEL=$MODEL"
+              cat "$ADV/openai_replay_contract_review.txt"
+              exit 5
+            fi
+          done
+          test -n "$OPENAI_USED"
+          echo "OPENAI_SELECTED=$OPENAI_USED"
+
+          # One-window/one-symbol smoke: all 3 retained strategies, no trend_rider.
+          LANE=$ROOT/engine/lane_smoke_v2.py
+          cp "$BASE/work/engine/lane_checkpoint_v2.py" "$LANE"
+          "$PY" - "$LANE" <<'PYLANE'
+          from pathlib import Path
+          p=Path(__import__('sys').argv[1]); t=p.read_text()
+          a='files = sorted(files, key=lambda row: (str(row["window_id"]), str(row["symbol"])))'
+          if t.count(a)!=1: raise SystemExit('LANE_SORT_ANCHOR')
+          filt='files = [row for row in files if str(row["window_id"]) == "1m_w2" and str(row["symbol"]) == "BTCUSDT"]'
+          p.write_text(t.replace(a,a+'\n    '+filt,1))
+          PYLANE
+          "$PY" -m py_compile "$LANE"
+          SMOKE=$ROOT/smoke_next_open_v1
+          rm -rf "$SMOKE"
+          "$PY" "$LANE" --engine-v1 "$ENG" --engine-v2 "$BASE/work/engine/replay_v2_no_trend.py" --source-root "$BASE/work/source" --data-root "$DUR/work/data" --interval 1m --output-dir "$SMOKE" --workers 3 2>&1 | tee "$ROOT/engine/smoke.log"
+          test "$(find "$SMOKE/lane_checkpoints" -type f -name '*.json.gz' | wc -l)" -eq 3
+
+          "$PY" - "$SMOKE/lane_checkpoints" "$ADV/smoke_receipt.json" <<'PYSMOKE'
+          import gzip,json,sys
+          from datetime import datetime
+          from pathlib import Path
+          root,out=map(Path,sys.argv[1:]); rows=[]; opens=0; errors=0
+          for p in sorted(root.rglob('*.json.gz')):
+              with gzip.open(p,'rt',encoding='utf-8') as h:d=json.load(h)
+              r=d.get('result') or {}; opens+=int(r.get('open_count') or 0); errors+=int(r.get('error_count') or 0); rows += list(r.get('closed_rows') or [])
+          if errors: raise SystemExit(f'SMOKE_ERRORS:{errors}')
+          if opens < 1: raise SystemExit('SMOKE_NO_OPENS')
+          if not rows: raise SystemExit('SMOKE_NO_CLOSED_ROWS')
+          checked=0
+          for r in rows:
+              if r.get('entry_execution_model')!='NEXT_BAR_OPEN_SHIFTED_GEOMETRY': raise SystemExit('EXECUTION_MODEL_MISSING')
+              if abs(float(r['entry_price'])-float(r['entry_execution_price']))>1e-9: raise SystemExit('EXEC_PRICE_MISMATCH')
+              s=datetime.fromisoformat(str(r['entry_signal_ts']).replace('Z','+00:00')); e=datetime.fromisoformat(str(r['entry_ts']).replace('Z','+00:00'))
+              if not e>s: raise SystemExit('ENTRY_NOT_AFTER_SIGNAL')
+              checked+=1
+          rec={'schema_version':'zel.structural_premium.v2.next_open.smoke.v1','state':'PASS_V2_NEXT_OPEN_SMOKE','lane_files':len(list(root.rglob('*.json.gz'))),'open_count':opens,'closed_rows_checked':checked,'error_count':errors,'execution_model':'NEXT_BAR_OPEN_SHIFTED_GEOMETRY','research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
+          out.write_text(json.dumps(rec,indent=2,sort_keys=True)+'\n'); print(json.dumps(rec,sort_keys=True))
+          PYSMOKE
+
+          AFTER=$(canon_hash)
+          test "$AFTER" = "$BEFORE" || { echo "CRITICAL_CANONICAL_MUTATION before=$BEFORE after=$AFTER" >&2; exit 97; }
+          echo "PASS_CANONICAL_UNCHANGED $AFTER"
+          cat "$ROOT/engine/build_receipt.json"
+          cat "$ADV/smoke_receipt.json"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

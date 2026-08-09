@@ -1,0 +1,54 @@
+name: ZEL EAF Stage3 Adapter Inspect V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-eaf-stage3-adapter-inspect-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Inspect V2 replay adapter contract
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          ROOT=/opt/zel/research-runtime/jobs/structural-premium-v2
+          BASE=/opt/zel/research-runtime/jobs/structural-premium-no-trend-v1
+          ENG=$ROOT/engine/replay_v1_v2.py
+          LANE=$ROOT/engine/lane_baseline_v2.py
+          echo '=== FILES ==='
+          ls -l "$ENG" "$LANE" "$BASE/work/engine/replay_v2_no_trend.py"
+          echo '=== ENGINE API ==='
+          grep -nE '^(def |class )|expected =|restored\.|producer\.|run_|replay|strategy_id|window_id|interval' "$ENG" | head -220 || true
+          echo '=== LANE API ==='
+          grep -nE '^(def |class )|argparse|add_argument|strateg|window|symbol|engine|source-root|data-root|interval|ProcessPool|workers|run_|importlib' "$LANE" | head -280 || true
+          echo '=== LANE HEAD ==='
+          sed -n '1,260p' "$LANE"
+          echo '=== ENGINE SIGNAL/LOOP ==='
+          grep -nE 'restore|expected =|valid_entry|pending_entry|make_position|bar_exit|strategy_id' "$ENG" | head -260 || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

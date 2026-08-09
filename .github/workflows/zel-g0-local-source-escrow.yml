@@ -69,6 +69,70 @@ jobs:
             > out/g0_local_source_escrow_receipt.json
           python -m json.tool out/g0_local_source_escrow_receipt.json >/dev/null
 
+      - name: Compare escrow hashes with current PR branch
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          receipt=json.loads(Path('out/g0_local_source_escrow_receipt.json').read_text())
+          rows=[]
+          match=0
+          mismatch=0
+          missing=0
+          external=0
+          for item in receipt.get('copied_source_rows', []):
+              source_path=str(item['source_path'])
+              runtime_sha=str(item['sha256'])
+              if source_path.startswith('external:'):
+                  external += 1
+                  rows.append({'source_path': source_path, 'status': 'EXTERNAL_RUNTIME_ONLY', 'runtime_sha256': runtime_sha, 'branch_sha256': None})
+                  continue
+              p=Path(source_path)
+              if not p.is_file():
+                  missing += 1
+                  rows.append({'source_path': source_path, 'status': 'BRANCH_MISSING', 'runtime_sha256': runtime_sha, 'branch_sha256': None})
+                  continue
+              branch_sha=hashlib.sha256(p.read_bytes()).hexdigest()
+              if branch_sha == runtime_sha:
+                  match += 1
+                  status='MATCH'
+              else:
+                  mismatch += 1
+                  status='HASH_MISMATCH'
+              rows.append({'source_path': source_path, 'status': status, 'runtime_sha256': runtime_sha, 'branch_sha256': branch_sha})
+
+          gov=Path('backend/research/strategy11_portfolio_governor_v1.py')
+          gov_branch_sha=hashlib.sha256(gov.read_bytes()).hexdigest() if gov.is_file() else None
+          gov_candidate_sha=receipt.get('governor_recovery_candidate_sha256')
+          gov_match=bool(gov_branch_sha and gov_candidate_sha and gov_branch_sha == gov_candidate_sha)
+          state='PASS_ESCROW_PR_BRANCH_PARITY' if mismatch == 0 and missing == 0 and gov_match else 'HOLD_ESCROW_PR_BRANCH_PARITY'
+          result={
+              'schema_version':'zel.g0.escrow_pr_branch_parity.v1',
+              'state':state,
+              'runtime_copied_source_count':receipt.get('copied_source_count'),
+              'branch_match_count':match,
+              'branch_hash_mismatch_count':mismatch,
+              'branch_missing_count':missing,
+              'external_runtime_only_count':external,
+              'governor_candidate_matches_branch':gov_match,
+              'governor_candidate_sha256':gov_candidate_sha,
+              'governor_branch_sha256':gov_branch_sha,
+              'rows':rows,
+              'runtime_mutated':False,
+              'active_runtime_tree_mutated':False,
+              'public_repository_publish_authority':False,
+              'destructive_cleanup_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'action':'hold',
+          }
+          Path('out/g0_escrow_pr_branch_parity.json').write_text(json.dumps(result, indent=2, sort_keys=True)+'\n')
+          print(json.dumps({k:result[k] for k in ['state','branch_match_count','branch_hash_mismatch_count','branch_missing_count','external_runtime_only_count','governor_candidate_matches_branch']}, sort_keys=True))
+          PY
+          python -m json.tool out/g0_escrow_pr_branch_parity.json >/dev/null
+
       - name: Verify fail-closed preservation contract
         run: |
           set -euo pipefail
@@ -76,6 +140,7 @@ jobs:
           import json
           from pathlib import Path
           r=json.loads(Path('out/g0_local_source_escrow_receipt.json').read_text())
+          p=json.loads(Path('out/g0_escrow_pr_branch_parity.json').read_text())
           assert r['state'] in {'PASS_LOCAL_PRIVATE_ESCROW','PASS_LOCAL_ESCROW_WITH_RECOVERY_CANDIDATE'}
           assert r['runtime_mutated'] is False
           assert r['active_runtime_tree_mutated'] is False
@@ -85,13 +150,23 @@ jobs:
           assert r['execution_authority']=='NONE'
           assert r['order_authority']=='BLOCKED'
           assert r['escrow_git_head']
+          assert p['runtime_mutated'] is False
+          assert p['active_runtime_tree_mutated'] is False
+          assert p['public_repository_publish_authority'] is False
+          assert p['destructive_cleanup_authority'] is False
+          assert p['execution_authority']=='NONE'
+          assert p['order_authority']=='BLOCKED'
           print(json.dumps({
-              'state': r['state'],
+              'escrow_state': r['state'],
               'source_path_count': r['source_path_count'],
               'copied_source_count': r['copied_source_count'],
               'missing_source_count': r['missing_source_count'],
               'governor_candidate': r['governor_recovery_candidate_written'],
               'escrow_git_head': r['escrow_git_head'],
+              'parity_state': p['state'],
+              'branch_match_count': p['branch_match_count'],
+              'branch_hash_mismatch_count': p['branch_hash_mismatch_count'],
+              'branch_missing_count': p['branch_missing_count'],
               'action': r['action'],
           }, sort_keys=True))
           PY
@@ -104,6 +179,8 @@ jobs:
         if: always()
         with:
           name: zel-g0-local-source-escrow-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/g0_local_source_escrow_receipt.json
+          path: |
+            out/g0_local_source_escrow_receipt.json
+            out/g0_escrow_pr_branch_parity.json
           if-no-files-found: error
           retention-days: 30

@@ -46,9 +46,8 @@ def validate_policy(policy: Mapping[str, object]) -> list[str]:
     alpha_engine = policy.get("alpha_engine")
     if not isinstance(alpha_engine, Mapping):
         errors.append("alpha_engine section missing")
-    else:
-        if alpha_engine.get("allowlist") != EXPECTED_ALPHA_FAMILIES:
-            errors.append("alpha allowlist must contain exactly the three canonical families")
+    elif alpha_engine.get("allowlist") != EXPECTED_ALPHA_FAMILIES:
+        errors.append("alpha allowlist must contain exactly the three canonical families")
 
     objective = policy.get("objective")
     if not isinstance(objective, Mapping):
@@ -66,9 +65,22 @@ def validate_policy(policy: Mapping[str, object]) -> list[str]:
     return errors
 
 
+def _normalize_repo_path(path: str) -> str:
+    if path.startswith("./"):
+        path = path[2:]
+    return path.lstrip("/")
+
+
 def _is_allowed(path: str, allowed_prefixes: Sequence[str]) -> bool:
-    normalized = path.lstrip("./")
-    return any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in allowed_prefixes)
+    normalized = _normalize_repo_path(path)
+    for prefix in allowed_prefixes:
+        normalized_prefix = _normalize_repo_path(prefix)
+        if normalized_prefix.endswith("/"):
+            if normalized.startswith(normalized_prefix):
+                return True
+        elif normalized == normalized_prefix:
+            return True
+    return False
 
 
 def path_violations(changed_files: Iterable[str], policy: Mapping[str, object]) -> list[str]:
@@ -104,7 +116,7 @@ def objective_verdict(metrics: Mapping[str, object]) -> tuple[bool, list[str]]:
     if metrics.get("dd_within_ssot") is not True:
         failures.append("dd_within_ssot")
 
-    # win_rate is intentionally not a PASS gate. It may be used downstream for ranking only.
+    # Win rate is intentionally not a PASS gate. It may be used for ranking only.
     return (not failures, failures)
 
 

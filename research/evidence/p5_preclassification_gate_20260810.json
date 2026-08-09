@@ -1,0 +1,46 @@
+{
+  "stage": "P5_PRECLASSIFICATION_GATE",
+  "status": "HOLD_PENDING_SOURCE_EVIDENCE_BINDING",
+  "base_branch": "zel/g0-install-certification-20260809",
+  "base_head": "d4b183664e465a4feac708e2cb8452658ff91612",
+  "purpose": "Bind each current Strategy25 source_sha256 to immutable Exact25 evidence before assigning the next diagnostic lane.",
+  "inputs": {
+    "identity_census": "research/evidence/p5_strategy25_identity_census_20260809.json",
+    "required_strategy_count": 25
+  },
+  "lane_contract": {
+    "ZERO_SIGNAL_FUNNEL_REQUIRED": "Use only when current source is proven identical to immutable evidence whose trade count is zero; diagnose raw_condition -> setup -> qualified -> order_intent -> closed_trade without tuning.",
+    "TRADE_BEARING_EXACT_SOURCE_PARITY_REQUIRED": "Use only when current source is proven identical to immutable evidence with one or more trades; rerun parity before any optimization or promotion.",
+    "EVIDENCE_UNRESOLVED": "Default when exact source/evidence binding is absent, ambiguous, stale, or mismatched. No replay classification, tuning, promotion, paper, live, registry, ledger, or order mutation is allowed."
+  },
+  "decision_rule": [
+    "For each of 25 strategies, read current source_sha256 from the P5 identity census.",
+    "Locate immutable Exact25 evidence carrying the same source identity or a reproducible source manifest that resolves to the same SHA256.",
+    "If no exact binding exists, classify EVIDENCE_UNRESOLVED.",
+    "If exact binding exists and immutable trade_count == 0, classify ZERO_SIGNAL_FUNNEL_REQUIRED.",
+    "If exact binding exists and immutable trade_count > 0, classify TRADE_BEARING_EXACT_SOURCE_PARITY_REQUIRED.",
+    "Do not infer the current 13/12 split from historical aggregate counts alone."
+  ],
+  "safety": {
+    "read_only": true,
+    "tuning_allowed": false,
+    "promotion_allowed": false,
+    "paper_allowed": false,
+    "live_allowed": false,
+    "order_authority": "blocked",
+    "ledger_mutation_allowed": false,
+    "registry_mutation_allowed": false
+  },
+  "completion_criteria": {
+    "all_25_have_current_source_sha256": true,
+    "all_25_have_exact_immutable_evidence_binding": true,
+    "all_25_have_lane_assignment": true,
+    "unresolved_count": 0
+  },
+  "next_if_pass": [
+    "Run zero-signal causal funnel only for ZERO_SIGNAL_FUNNEL_REQUIRED.",
+    "Run exact-source parity replay only for TRADE_BEARING_EXACT_SOURCE_PARITY_REQUIRED.",
+    "Then run component ablation and disposition: VARIANT / ABSORB / OVERLAY / QUARANTINE / KILL."
+  ],
+  "next_if_hold": "Resolve source/evidence binding only; do not optimize strategies."
+}

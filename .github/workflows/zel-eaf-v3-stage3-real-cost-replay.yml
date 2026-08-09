@@ -1,0 +1,184 @@
+name: ZEL EAF V3 Stage3 Real Cost Replay
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - backend/research/eaf_stage3_costed_replay.py
+      - .github/workflows/zel-eaf-v3-stage3-real-cost-replay.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-eaf-v3-stage3-real-cost-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Static isolation contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/eaf_stage3_micro_replay.py backend/research/eaf_stage3_costed_replay.py backend/tools/zel_bingx_real_calibration_v1.py
+          grep -q 'selection_authority.*False' backend/research/eaf_stage3_costed_replay.py
+          grep -q 'promotion_authority.*False' backend/research/eaf_stage3_costed_replay.py
+          grep -q 'execution_authority.*NONE' backend/research/eaf_stage3_costed_replay.py
+          grep -q 'order_authority.*BLOCKED' backend/research/eaf_stage3_costed_replay.py
+
+      - name: Materialize canonical 15m data snapshot
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin strategy11-data-stream-v1
+          mkdir -p /tmp/eaf3_data out
+          git show FETCH_HEAD:strategy11_stream_v1/manifest.json > /tmp/eaf3_manifest.json
+          for s in BTCUSDT ETHUSDT SOLUSDT XRPUSDT LINKUSDT; do
+            git show FETCH_HEAD:strategy11_stream_v1/market/${s}.csv > /tmp/eaf3_data/${s}.csv
+          done
+          python - <<'PY'
+          import json
+          m=json.load(open('/tmp/eaf3_manifest.json'))
+          assert m['state']=='PASS' and m['order_authority']=='BLOCKED' and m['execution_allowed'] is False
+          assert m['available_non_overlap_bars'] >= 1275
+          assert {x['symbol'] for x in m['symbols']} == {'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','LINKUSDT'}
+          print('PASS_DATA_MATERIALIZED',m['available_non_overlap_bars'],m['latest_closed_end'])
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh BingX read-only cost observation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/eaf3-real-cost-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          set +e
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /home/z/z/.venv/bin/python '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          rc=$?
+          set -e
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          test "$rc" = 0
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state']=='PASS_BINGX_REAL_OBSERVATION_COLLECTED_STRESS_PENDING'
+          assert r['protected_mutations']==0
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_REAL_COST', {k:r.get(k) for k in ('maker_fee_pct','taker_fee_pct','funding_p95_abs_pct_8h','depth_snapshot_count','latency_ms_p95')})
+          print('SLIPPAGE',r['slippage_floor_bps_by_notional'])
+          PY
+
+      - name: Resolve minimum effective sample from VPS SSOT read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/min_sample_scan.json <<'PY'
+          import json, pathlib, re
+          roots=[pathlib.Path('/home/z/z/runtime'),pathlib.Path('/home/z/z/config')]
+          key_re=re.compile(r'(^|_)(minimum|min)(_|$).*(effective_)?sample|(^|_)(minimum|min)_(trades|closed|count)$',re.I)
+          hits=[]
+          seen=0
+          def walk(v,path,src):
+              if isinstance(v,dict):
+                  for k,x in v.items():
+                      p=path+[str(k)]
+                      if key_re.search(str(k)) and isinstance(x,(int,float)) and not isinstance(x,bool):
+                          hits.append({'source':src,'key_path':'.'.join(p),'value':x})
+                      walk(x,p,src)
+              elif isinstance(v,list):
+                  for i,x in enumerate(v[:200]): walk(x,path+[str(i)],src)
+          for root in roots:
+              if not root.exists(): continue
+              for p in root.glob('*.json'):
+                  name=p.name.lower()
+                  if not any(t in name for t in ('ssot','threshold','policy','gate','sample')): continue
+                  try:
+                      if p.stat().st_size>2_000_000: continue
+                      d=json.loads(p.read_text(errors='ignore'))
+                  except Exception:
+                      continue
+                  seen+=1; walk(d,[],str(p))
+                  if seen>=500: break
+          vals=sorted({int(h['value']) for h in hits if float(h['value']).is_integer() and int(h['value'])>0})
+          resolved=vals[0] if len(vals)==1 else 0
+          print(json.dumps({'files_scanned':seen,'hits':hits[:100],'candidate_values':vals,'resolved_minimum_effective_sample':resolved},sort_keys=True))
+          PY
+          python - <<'PY'
+          import json
+          d=json.load(open('out/min_sample_scan.json'))
+          print('MIN_SAMPLE_SCAN',d)
+          open('out/min_sample.txt','w').write(str(d['resolved_minimum_effective_sample'])+'\n')
+          PY
+
+      - name: Run sourced-cost BASE replay without selection
+        run: |
+          set -euo pipefail
+          MIN=$(cat out/min_sample.txt)
+          python backend/research/eaf_stage3_costed_replay.py \
+            --data-dir /tmp/eaf3_data \
+            --manifest /tmp/eaf3_manifest.json \
+            --cost-model out/bingx_real_observation.json \
+            --minimum-effective-sample "$MIN" \
+            --out out/eaf3_costed_receipt.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/eaf3_costed_receipt.json'))
+          assert d['state']=='PASS_STAGE3_NET_METRICS_HOLD_SURVIVOR_SELECTION'
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED'
+          assert d['selection_authority'] is False and d['promotion_authority'] is False
+          assert d['baseline_engine_mutated'] is False and d['base_semantics_mutated'] is False
+          assert d['bucket_selection_performed'] is False and d['survivor_selection_performed'] is False
+          print('PASS_COSTED_REPLAY rows=%d covered=%s uncovered=%s min_sample=%s' % (len(d['results']),d['cost_symbol_coverage'],d['uncovered_symbols'],d['minimum_effective_sample']))
+          for x in d['results']:
+              if x['notional_bucket_usdt']==1000.0:
+                  print('NET1000 %s %s trades=%d gross=%+.6f net=%+.6f exp=%+.6f pf=%s dd=%.6f' % (
+                    x['symbol'],x['strategy'],x['net']['trade_count'],x['gross']['compound_return'],x['net']['compound_return'],x['net']['expectancy_per_trade'],x['net']['profit_factor'],x['net']['max_drawdown']))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-eaf-v3-stage3-real-cost-replay-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

@@ -1,0 +1,90 @@
+name: ZEL P3 Archive Coverage Persist
+
+on:
+  push:
+    branches: [zel/g0-install-certification-20260809]
+    paths:
+      - .github/workflows/zel-p3-archive-coverage-persist.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe-and-persist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate probe
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_carry_flow_archive_coverage.py
+          mkdir -p ~/.ssh out research/evidence
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Probe historical native-feature archives read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/p3-archive-coverage-${GITHUB_RUN_ID}.py"
+          echo "$remote" > out/remote_path.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p3_carry_flow_archive_coverage.py "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z nice -n 19 ionice -c3 /usr/bin/python3 '$remote'" \
+            > out/p3_archive_coverage.json
+          python -m json.tool out/p3_archive_coverage.json >/dev/null
+          cp out/p3_archive_coverage.json research/evidence/p3_carry_flow_archive_coverage_20260809.json
+      - name: Verify safe receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('research/evidence/p3_carry_flow_archive_coverage_20260809.json'))
+          assert r['schema_version']=='zel.p3.carry_flow.archive_coverage.v1'
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'relevant_file_count':r['relevant_file_count'],
+            'basis_W1_W2':r['basis_W1_W2_candidates'],
+            'oi_W1_W2':r['open_interest_W1_W2_candidates'],
+            'flow_W1_W2':r['flow_W1_W2_candidates']
+          },sort_keys=True))
+          PY
+      - name: Persist safe archive-coverage receipt
+        run: |
+          set -euo pipefail
+          git config user.name 'ZEL P3 Source Binder'
+          git config user.email 'p3-source-binder@localhost'
+          git add research/evidence/p3_carry_flow_archive_coverage_20260809.json
+          if ! git diff --cached --quiet; then
+            git commit -m '[skip ci] ZEL P3: persist native archive coverage receipt'
+            git push origin HEAD:zel/g0-install-certification-20260809
+          fi
+      - name: Cleanup remote probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

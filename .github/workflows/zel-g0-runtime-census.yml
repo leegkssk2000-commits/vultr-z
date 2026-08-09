@@ -7,6 +7,7 @@ on:
       - scripts/ci/g0_runtime_probe.py
       - scripts/ci/g0_runtime_drift_reconcile.py
       - scripts/ci/g0_runtime_git_persistence_probe.py
+      - scripts/ci/g0_runtime_source_safety_scan.py
       - scripts/ci/g0_installation_census.py
       - policies/zel/g0_installation_certification_v1.json
       - config/zel_alpha_engine_vnext.json
@@ -34,7 +35,7 @@ jobs:
       - name: Validate local G0 scripts
         run: |
           set -euo pipefail
-          python -m py_compile scripts/ci/g0_runtime_probe.py scripts/ci/g0_runtime_drift_reconcile.py scripts/ci/g0_runtime_git_persistence_probe.py scripts/ci/g0_installation_census.py
+          python -m py_compile scripts/ci/g0_runtime_probe.py scripts/ci/g0_runtime_drift_reconcile.py scripts/ci/g0_runtime_git_persistence_probe.py scripts/ci/g0_runtime_source_safety_scan.py scripts/ci/g0_installation_census.py
           python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
           python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
       - name: Prepare SSH
@@ -69,6 +70,16 @@ jobs:
           LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" < scripts/ci/g0_runtime_git_persistence_probe.py > out/g0_runtime_git_persistence.json
           python -m json.tool out/g0_runtime_git_persistence.json >/dev/null
+      - name: Run secret-safe runtime source staging scan
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          LEGACY25_B64=$(base64 -w0 research/legacy_strategy25_inventory_v1.json)
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "G0_ROOT=/home/z/z EXPECTED_PIN_B64='$PIN_B64' LEGACY25_B64='$LEGACY25_B64' python3 -" < scripts/ci/g0_runtime_source_safety_scan.py > out/g0_runtime_source_safety_scan.json
+          python -m json.tool out/g0_runtime_source_safety_scan.json >/dev/null
       - name: Diagnose repo-vs-runtime source drift
         run: |
           set -euo pipefail
@@ -88,6 +99,7 @@ jobs:
           path: |
             out/g0_runtime_census.json
             out/g0_runtime_git_persistence.json
+            out/g0_runtime_source_safety_scan.json
             out/g0_runtime_drift_diagnosis.json
             out/g0_reconciled_census.json
           if-no-files-found: ignore

@@ -44,6 +44,7 @@ def credentials() -> tuple[str, str, str]:
     if key and sec:
         return key, sec, "process_env"
     candidates = [Path(p) for p in (
+        "/home/z/z/z1355_real_bingx_api_bind.sh",
         "/home/z/z/.env", "/home/z/z/backend/.env", "/home/z/z/.env.production",
         "/opt/zel/.env", "/opt/zel/config/.env", "/etc/zel/.env", "/etc/zel/zel.env",
         "/etc/default/zel", "/etc/default/z-os")]
@@ -119,131 +120,121 @@ def depth(data: Any) -> tuple[list[tuple[float, float]], list[tuple[float, float
     return bids, asks
 
 
-def slip(levels: list[tuple[float, float]], notional: float, ref: float) -> float | None:
-    left, qty, spent = notional, 0.0, 0.0
+def adverse_bps(levels: list[tuple[float, float]], mid: float, notional: float, buy: bool) -> float:
+    left, cost, qty = notional, 0.0, 0.0
     for price, size in levels:
         take = min(left, price * size)
+        if take <= 0:
+            continue
+        cost += take
         qty += take / price
-        spent += take
         left -= take
         if left <= 1e-9:
             break
     if left > 1e-6 or qty <= 0:
-        return None
-    return abs((spent / qty) / ref - 1.0) * 10000.0
-
-
-def collect() -> dict[str, Any]:
-    observed = datetime.now(timezone.utc).isoformat()
-    key, sec, cred_source = credentials()
-    lats: list[float] = []
-    endpoints: list[dict[str, Any]] = []
-
-    raw, ms, base = get(key, sec, "/openApi/swap/v2/user/commissionRate", {})
-    lats.append(ms); endpoints.append({"path": "commissionRate", "base": base, "latency_ms": ms})
-    c = raw.get("commission", raw) if isinstance(raw, dict) else None
-    if not isinstance(c, dict):
-        raise RuntimeError("COMMISSION_INVALID")
-    maker, taker = f(c["makerCommissionRate"]) * 100.0, f(c["takerCommissionRate"]) * 100.0
-    tier = str(c.get("accountFeeTier") or c.get("feeTier") or "ACCOUNT_ACTUAL_RATE")
-    account = {
-        "schema_version": "zel.bingx.account_commission.receipt.v1",
-        "state": "PASS_BINGX_READ_ONLY_ACCOUNT_COMMISSION",
-        "source": "BINGX_READ_ONLY_ACCOUNT_COMMISSION",
-        "fixture_only": False,
-        "account_fee_tier": tier,
-        "maker_fee_pct": maker,
-        "taker_fee_pct": taker,
-        "payload_sha256": sha(raw),
-        "credential_source_id": cred_source,
-        "observed_at": observed,
-        "write_endpoint_called": False,
-        "order_authority": "BLOCKED",
-    }
-    account["receipt_sha256"] = sha(account)
-
-    now_ms = int(time.time() * 1000)
-    funds: list[float] = []
-    for symbol in SYMBOLS:
-        raw, ms, base = get(key, sec, "/openApi/swap/v2/quote/fundingRate", {"symbol": symbol, "startTime": now_ms - 30*86400000, "endTime": now_ms, "limit": 1000})
-        lats.append(ms); endpoints.append({"path": "fundingRate", "symbol": symbol, "base": base, "latency_ms": ms})
-        funds += funding_values(raw)
-    if not funds:
-        raise RuntimeError("FUNDING_HISTORY_EMPTY")
-
-    samples = {b: [] for b in BUCKETS}
-    snapshots = 0
-    for n in range(5):
-        for symbol in SYMBOLS:
-            raw, ms, base = get(key, sec, "/openApi/swap/v2/quote/depth", {"symbol": symbol, "limit": 100})
-            lats.append(ms); endpoints.append({"path": "depth", "symbol": symbol, "base": base, "latency_ms": ms})
-            bids, asks = depth(raw); mid = (bids[0][0] + asks[0][0]) / 2.0
-            for b in BUCKETS:
-                for x in (slip(asks, b, mid), slip(bids, b, mid)):
-                    if x is not None: samples[b].append(x)
-            snapshots += 1
-        if n < 4: time.sleep(1)
-    floors = []
-    for b in BUCKETS:
-        if not samples[b]: raise RuntimeError(f"SLIPPAGE_EMPTY:{b}")
-        floors.append({"max_notional_usdt": b, "slippage_bps_one_way": round(pct(samples[b], .95), 8), "sample_count": len(samples[b])})
-
-    r = {
-        "schema_version": "zel.bingx.real_calibration_observation.v1",
-        "version": VERSION,
-        "state": "PASS_BINGX_REAL_OBSERVATION_COLLECTED_STRESS_PENDING",
-        "calibration_mode": "real",
-        "observed_at": observed,
-        "source_tier": "official",
-        "source_identifier": "BingX OpenAPI commissionRate+fundingRate+depth",
-        "source_url": "https://bingx-api.github.io/docs/",
-        "api_key_fingerprint_sha256": hashlib.sha256(key.encode()).hexdigest(),
-        "account_fee_tier": tier,
-        "maker_fee_pct": maker,
-        "taker_fee_pct": taker,
-        "funding_p95_abs_pct_8h": pct(funds, .95),
-        "funding_sample_count": len(funds),
-        "slippage_floor_bps_by_notional": floors,
-        "depth_snapshot_count": snapshots,
-        "latency_ms_p50": pct(lats, .50),
-        "latency_ms_p95": pct(lats, .95),
-        "latency_sample_count": len(lats),
-        "account_commission_receipt": account,
-        "plus_one_bar_stress_state": "PENDING_STRATEGY_TERMINAL_ARTIFACT",
-        "endpoints": endpoints,
-        "protected_mutations": 0,
-        "selection_authority": False,
-        "promotion_authority": False,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
-        "action": "hold",
-    }
-    r["receipt_sha256"] = sha(r)
-    return r
+        raise RuntimeError("DEPTH_NOTIONAL_UNFILLED")
+    avg = cost / qty
+    return ((avg / mid - 1.0) if buy else (1.0 - avg / mid)) * 10000.0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); a = ap.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="out/bingx_real_observation.json")
+    ns = ap.parse_args()
+    out = Path(ns.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    protected = [
+        Path("backend/research/strategy11_v3_policy.json"), Path("backend/research/strategy11_gemini_v3_2_policy.json"),
+        Path("backend/research/strategy11_unattended_improvement_policy_v2.json"), Path("backend/research/strategy11_archetype_registry_v1.json"),
+        Path("research/evidence/evidence_alpha_v3_executable_specs_v1.json"),
+    ]
+    before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in protected if p.is_file()}
+    endpoints = []
     try:
-        r = collect()
-    except Exception as e:
-        r = {
-            "schema_version": "zel.bingx.real_calibration_observation.v1",
+        key, sec, credential_source = credentials()
+        now = int(time.time() * 1000)
+        commission, ms, base = get(key, sec, "/openApi/swap/v2/user/commissionRate", {})
+        endpoints.append({"path": "commissionRate", "symbol": None, "host": base, "latency_ms": round(ms, 3)})
+        if not isinstance(commission, dict):
+            raise RuntimeError("COMMISSION_INVALID")
+        maker = f(commission.get("makerCommissionRate", commission.get("makerCommission"))) * 100.0
+        taker = f(commission.get("takerCommissionRate", commission.get("takerCommission"))) * 100.0
+
+        funding_all = []
+        slip: dict[float, list[float]] = {b: [] for b in BUCKETS}
+        for sym in SYMBOLS:
+            hist, ms, host = get(key, sec, "/openApi/swap/v2/quote/fundingRate", {"symbol": sym, "startTime": now - 30 * 86400_000, "endTime": now, "limit": 200})
+            vals = funding_values(hist)
+            if not vals:
+                raise RuntimeError(f"FUNDING_EMPTY:{sym}")
+            funding_all.extend(vals)
+            endpoints.append({"path": "fundingRate", "symbol": sym, "host": host, "latency_ms": round(ms, 3), "rows": len(vals)})
+            for _ in range(5):
+                book, ms, host = get(key, sec, "/openApi/swap/v2/quote/depth", {"symbol": sym, "limit": 100})
+                bids, asks = depth(book)
+                mid = (bids[0][0] + asks[0][0]) / 2.0
+                endpoints.append({"path": "depth", "symbol": sym, "host": host, "latency_ms": round(ms, 3), "levels": min(len(bids), len(asks))})
+                for b in BUCKETS:
+                    slip[b].append(max(0.0, adverse_bps(asks, mid, b, True), adverse_bps(bids, mid, b, False)))
+                time.sleep(0.15)
+
+        floors = []
+        for b in BUCKETS:
+            floors.append({"max_notional_usdt": b, "slippage_bps_one_way": round(pct(slip[b], .95), 8), "sample_count": len(slip[b])})
+        after = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in protected if p.is_file()}
+        changed = [p for p in before if after.get(p) != before[p]]
+        if changed:
+            raise RuntimeError("PROTECTED_MUTATION:" + ",".join(changed))
+        latencies = [f(e["latency_ms"]) for e in endpoints]
+        row = {
             "version": VERSION,
-            "state": "HOLD_BINGX_REAL_OBSERVATION",
+            "state": "PASS_BINGX_REAL_OBSERVATION_COLLECTED_STRESS_PENDING",
+            "calibration_mode": "real",
+            "source_tier": "official",
+            "source_identifier": "BINGX_READ_ONLY_ACCOUNT_COMMISSION_FUNDING_DEPTH",
+            "source_url": "https://open-api.bingx.com",
             "observed_at": datetime.now(timezone.utc).isoformat(),
-            "blocker": f"{type(e).__name__}:{e}",
+            "credential_source": credential_source,
+            "account_fee_tier": "observed_account",
+            "maker_fee_pct": round(maker, 8),
+            "taker_fee_pct": round(taker, 8),
+            "funding_p95_abs_pct_8h": round(pct(funding_all, .95), 8),
+            "funding_sample_count": len(funding_all),
+            "slippage_floor_bps_by_notional": floors,
+            "depth_snapshot_count": sum(1 for e in endpoints if e["path"] == "depth"),
+            "latency_ms_p50": round(pct(latencies, .50), 3),
+            "latency_ms_p95": round(pct(latencies, .95), 3),
+            "endpoints": endpoints,
+            "account_commission_receipt": {
+                "state": "PASS_BINGX_READ_ONLY_ACCOUNT_COMMISSION",
+                "maker_fee_pct": round(maker, 8), "taker_fee_pct": round(taker, 8),
+                "credential_source": credential_source,
+            },
+            "plus_one_bar_stress_receipt": None,
             "protected_mutations": 0,
-            "selection_authority": False,
-            "promotion_authority": False,
             "execution_authority": "NONE",
             "order_authority": "BLOCKED",
-            "action": "hold",
+            "promotion_authority": False,
+            "next": "deterministic +1 bar replay stress; promotion remains blocked",
         }
-        r["receipt_sha256"] = sha(r)
-    p = Path(a.out); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(json.dumps(r, indent=2, sort_keys=True)+"\n")
-    print(json.dumps({k:r.get(k) for k in ("state","blocker","receipt_sha256")}, sort_keys=True))
-    return 0 if r["state"].startswith("PASS_") else 2
+        row["receipt_sha256"] = sha(row)
+        out.write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+        print(json.dumps({"state": row["state"], "maker_fee_pct": row["maker_fee_pct"], "taker_fee_pct": row["taker_fee_pct"], "funding_p95_abs_pct_8h": row["funding_p95_abs_pct_8h"], "latency_ms_p50": row["latency_ms_p50"], "latency_ms_p95": row["latency_ms_p95"], "receipt_sha256": row["receipt_sha256"]}, sort_keys=True))
+        return 0
+    except Exception as e:
+        row = {
+            "version": VERSION,
+            "state": "HOLD_BINGX_REAL_OBSERVATION",
+            "blocker": type(e).__name__ + ":" + str(e)[:300],
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+            "promotion_authority": False,
+            "protected_mutations": 0,
+        }
+        row["receipt_sha256"] = sha(row)
+        out.write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+        print(json.dumps({"state": row["state"], "blocker": row["blocker"], "receipt_sha256": row["receipt_sha256"]}, sort_keys=True))
+        return 2
 
 
 if __name__ == "__main__":

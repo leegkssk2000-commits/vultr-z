@@ -1,0 +1,137 @@
+{
+  "schema_version": "zel.eaf.v3.executable_specs.v1",
+  "state": "STAGE2_EXECUTABLE_SPECS_READY_FOR_REVIEW",
+  "research_only": true,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "promotion_authority": false,
+  "selection_authority": false,
+  "stage3_unlocked": false,
+  "design_rules": {
+    "source_to_rule_trace_required": true,
+    "no_unsourced_fixed_thresholds": true,
+    "base_before_indicator_additions": true,
+    "one_axis_ablation": true,
+    "pnl_and_wr_primary": true,
+    "expectancy_and_pf_quality_checks": true,
+    "dd_is_risk_guard": true,
+    "costs_included_from_first_micro_test": true,
+    "next_bar_open_fill_model": true,
+    "no_trade_is_valid_output": true,
+    "short_requires_independent_edge": true
+  },
+  "alpha_families": [
+    {
+      "id": "EAF_TM_V1",
+      "family": "trend_momentum",
+      "role": "standalone_alpha",
+      "evidence_ids": ["A01","A02","A03","A04","A10","A11","A12","A13"],
+      "implementation_priors": ["O02","O03"],
+      "base_timeframes": ["15m","1h"],
+      "base_logic": {
+        "regime": "higher-timeframe directional persistence must be positive for long; conflicting/flat state returns NO_TRADE",
+        "setup": "entry timeframe experiences a controlled counter-trend retracement without invalidating higher-timeframe direction",
+        "trigger": "closed-bar resumption in higher-timeframe direction; order is queued and filled only at next-bar open",
+        "invalidation": "structure or volatility-normalized invalidation beyond the retracement thesis",
+        "exit": "base exit uses source-consistent trend failure or volatility-normalized stop; target/trailing variants are not combined in BASE",
+        "cost_gate": "projected conservative continuation must exceed all-in fee/slippage/funding hurdle"
+      },
+      "calibration_axes": ["trend_lookback","retracement_depth","volatility_normalizer","cost_buffer"],
+      "incremental_ablation_order": ["BASE","+adx_strength","+volume_confirmation","+session_clock","+vwap_context"],
+      "forbidden_in_base": ["rsi","macd","obv","vwap","adx","volume_filter","partial_exit","trailing_runner"]
+    },
+    {
+      "id": "EAF_VB_V1",
+      "family": "volatility_breakout",
+      "role": "standalone_alpha",
+      "evidence_ids": ["A02","A06","A08"],
+      "implementation_priors": ["O01","O02","O03","O04","O05","O06"],
+      "base_timeframes": ["15m","1h"],
+      "base_logic": {
+        "regime": "compression/range or emerging directional state; exhausted extension returns NO_TRADE",
+        "setup": "closed bar challenges a prior rolling channel/range boundary",
+        "trigger": "closed-bar boundary break with volatility expansion; fill only next-bar open",
+        "invalidation": "opposite breakout structure or volatility-normalized stop",
+        "exit": "base uses channel failure or time/volatility exit; fixed-target and trailing are later separate ablations",
+        "cost_gate": "expected continuation distance must exceed all-in cost hurdle"
+      },
+      "calibration_axes": ["channel_lookback","expansion_measure","atr_risk","time_stop","cost_buffer"],
+      "incremental_ablation_order": ["BASE","+htf_alignment","+volume_confirmation","+adx_strength","+retest_requirement","+session_clock"],
+      "forbidden_in_base": ["rsi","vwap","obv","fixed_tp","trailing_runner","partial_exit"]
+    },
+    {
+      "id": "EAF_RMR_V1",
+      "family": "regime_mean_reversion",
+      "role": "standalone_alpha_conditional",
+      "evidence_ids": ["A06","A07","A10","A13"],
+      "implementation_priors": [],
+      "base_timeframes": ["5m","15m"],
+      "base_logic": {
+        "regime": "only non-trending/range regime; persistent directional decline or expansion returns NO_TRADE",
+        "setup": "price reaches a statistically/structurally defined range or volume boundary rather than fading mid-range",
+        "trigger": "closed-bar reclaim/rejection of boundary; next-bar-open fill",
+        "invalidation": "beyond boundary excursion with volatility-normalized risk",
+        "exit": "return toward conservative range reference; stalled reclaim can time-stop",
+        "cost_gate": "distance to conservative mean/range objective must exceed all-in cost hurdle"
+      },
+      "calibration_axes": ["range_definition","boundary_distance","reclaim_strength","atr_risk","time_stop","cost_buffer"],
+      "incremental_ablation_order": ["BASE","+volume_profile_context","+momentum_confirmation","+session_clock","+vwap_context","+rsi_exhaustion"],
+      "forbidden_in_base": ["trend_chasing","mid_range_entry","indicator_stack","trailing_runner","scale_in"]
+    },
+    {
+      "id": "EAF_PSA_V1",
+      "family": "pairs_stat_arb",
+      "role": "standalone_relative_value_alpha",
+      "evidence_ids": ["A22","A23","A24","A25"],
+      "implementation_priors": [],
+      "base_timeframes": ["15m","1h"],
+      "base_logic": {
+        "universe": "liquid crypto pairs only; pair formation and trading windows are separated",
+        "relationship": "cointegration or equivalent stationary-spread evidence must pass before signal generation",
+        "setup": "spread deviation is normalized by its own formation-window distribution",
+        "trigger": "deviation enters calibrated extreme and expected mean-reversion horizon is economically tradable",
+        "invalidation": "relationship breakdown, spread stop, or horizon timeout",
+        "exit": "spread re-enters neutral region or relationship invalidates",
+        "cost_gate": "expected spread convergence after both legs' fees/slippage/funding must remain positive"
+      },
+      "calibration_axes": ["formation_window","cointegration_gate","spread_normalizer","entry_extreme","exit_neutral","half_life_limit","cost_buffer"],
+      "incremental_ablation_order": ["BASE","+ou_half_life","+dynamic_cointegration","+copula_mispricing","+liquidity_filter"],
+      "adapter_requirement": "multi_asset_two_leg_replay; do not route through single-position legacy lane"
+    }
+  ],
+  "routing_overlays": [
+    {
+      "id": "EAF_SC_V1",
+      "family": "session_clock",
+      "role": "routing_overlay_not_standalone_alpha",
+      "evidence_ids": ["A13","A14","A16"],
+      "base_logic": "time-of-day or quarter-hour state may permit/block an already valid alpha signal; it must never create a trade by itself",
+      "incremental_use": "tested only after a standalone BASE family has positive micro viability"
+    }
+  ],
+  "held_families": [
+    {
+      "family": "microstructure_ofi",
+      "state": "HOLD_MORE_DIRECT_EVIDENCE_AND_DATA",
+      "reason": "consensus matrix has only 2 direct alpha lineages and existing OHLCV replay lacks required order-book/trade-state inputs",
+      "existing_support": ["A17","A18","A19","A20","A28"]
+    }
+  ],
+  "cross_cutting_guards": [
+    "cost_turnover_hurdle",
+    "volatility_risk_normalization",
+    "regime_no_trade",
+    "liquidity_selection",
+    "fresh_oos_integrity"
+  ],
+  "stage3_entry_contract": {
+    "first_candidates": ["EAF_TM_V1::15m::BASE","EAF_VB_V1::15m::BASE","EAF_RMR_V1::15m::BASE"],
+    "pairs_adapter_built_before_test": true,
+    "microstructure_held": true,
+    "base_must_be_tested_before_any_addition": true,
+    "only_one_incremental_axis_per_child": true,
+    "micro_smoke_is_not_survivor_proof": true,
+    "survivor_requires": ["net_R>0","WR>control_WR","expectancy_R>0","PF>1","costs_included","DD<=guard","minimum_effective_sample_from_SSOT"],
+    "failure_action": "kill_or_redefine_family_before_parameter_spam"
+  }
+}

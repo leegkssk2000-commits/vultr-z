@@ -1,0 +1,107 @@
+name: ZEL EAF V3 Stage3 Archetype SSOT Locator
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-eaf-v3-stage3-archetype-ssot-locator.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  locate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Focused read-only SSOT locator
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/archetype_ssot_locator.json <<'PY'
+          import json, os, pathlib, re
+          roots=[pathlib.Path('/home/z/z'),pathlib.Path('/opt/zel'),pathlib.Path('/etc/zel'),pathlib.Path('/etc/z-alimi')]
+          tokens=(
+            'MIN_TRADES_BY_ARCHETYPE',
+            'MIN_SAMPLE_RETENTION_BY_ARCHETYPE',
+            'MAX_FAILED_GENERATIONS_PER_FAMILY',
+            'min_trades_by_archetype',
+            'min_sample_retention_by_archetype',
+            'max_failed_generations_per_family',
+          )
+          allowed={'.json','.py','.yml','.yaml','.txt','.md','.sh','.env','.conf'}
+          skip=('/.git/','/.venv/','/node_modules/','/.patch_backups/','/__pycache__/')
+          hits=[]; scanned=0
+          for root in roots:
+              if not root.exists(): continue
+              for p in root.rglob('*'):
+                  s=str(p)
+                  if not p.is_file() or any(x in s for x in skip): continue
+                  if p.suffix.lower() not in allowed and p.name not in {'.env'}: continue
+                  try:
+                      if p.stat().st_size>4_000_000: continue
+                      text=p.read_text(errors='ignore')
+                  except Exception: continue
+                  scanned+=1
+                  lines=text.splitlines()
+                  for i,line in enumerate(lines):
+                      if not any(t.lower() in line.lower() for t in tokens): continue
+                      # Return only threshold-related context, never arbitrary env/secret material.
+                      ctx=[]
+                      for j in range(max(0,i-4), min(len(lines),i+5)):
+                          x=lines[j].strip()
+                          if any(t.lower() in x.lower() for t in tokens) or re.search(r'(?i)(archetype|trend|breakout|reversion|momentum|liquidity|structure|pairs|sample|trade|generation|retention)',x):
+                              x=re.sub(r'(?i)(api[_-]?key|secret|token|password)\s*[:=].*',r'\1=<REDACTED>',x)
+                              ctx.append({'line':j+1,'text':x[:700]})
+                      hits.append({'path':s,'match_line':i+1,'context':ctx})
+                      if len(hits)>=200: break
+                  if len(hits)>=200: break
+              if len(hits)>=200: break
+          # Inspect process environment only for exact key names; output numeric/non-secret values only.
+          env={}
+          for k,v in os.environ.items():
+              if any(t.lower() in k.lower() for t in tokens):
+                  env[k]=v if re.fullmatch(r'[0-9.,:{}\[\] _A-Za-z-]{1,500}',v or '') else '<NON_NUMERIC_REDACTED>'
+          print(json.dumps({
+            'state':'PASS_ARCHETYPE_SSOT_LOCATOR',
+            'files_scanned':scanned,
+            'hits':hits,
+            'environment_matches':env,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'secret_values_exposed':False,
+          },sort_keys=True))
+          PY
+          python -m json.tool out/archetype_ssot_locator.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-eaf-v3-stage3-archetype-ssot-locator-${{ github.run_id }}
+          path: out/archetype_ssot_locator.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

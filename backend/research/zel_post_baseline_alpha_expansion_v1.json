@@ -1,0 +1,290 @@
+{
+  "schema_version": "zel.post_baseline.alpha_expansion.v1",
+  "state": "DESIGN_READY_HOLD_UNTIL_V2_BASELINE_TERMINAL",
+  "purpose": "Turn Structural Premium V2 from a correct measurement foundation into an alpha-discovery and regime-routing research program without touching the active 45-lane baseline.",
+  "active_baseline_dependency": {
+    "report_path": "/opt/zel/research-runtime/jobs/structural-premium-v2/baseline_next_open_v1/strategy_edge_report.json",
+    "required_state": "PASS_V2_NEXT_OPEN_BASELINE_45_OF_45",
+    "required_lane_files_total": 45,
+    "strategy_universe": [
+      "vwap_revert",
+      "support_resistance",
+      "liquidity_sweep"
+    ],
+    "must_not_modify_running_baseline": true,
+    "checkpoint_reuse_across_engine_fingerprint": false
+  },
+  "objective": {
+    "primary_hard_gates": [
+      "net_R_improves",
+      "win_rate_pct_improves"
+    ],
+    "secondary_quality": [
+      "profit_factor",
+      "expectancy_R",
+      "payoff_ratio"
+    ],
+    "risk_guard_only": [
+      "max_drawdown_R",
+      "joint_drawdown_R",
+      "exposure"
+    ],
+    "final_fresh_oos": [
+      "positive_net_R_after_costs",
+      "profit_factor_gt_1",
+      "win_rate_non_regression_vs_selected_family_baseline",
+      "no_sample_collapse"
+    ],
+    "scalar_score_for_primary_selection": false
+  },
+  "research_principles": {
+    "strategy_family_kill_allowed": true,
+    "mandatory_strategy_owner": false,
+    "no_trade_is_valid_output": true,
+    "same_evidence_retune_forbidden": true,
+    "entry_time_features_only": true,
+    "exit_time_regime_for_entry_selection_forbidden": true,
+    "one_primary_cause_per_child": true,
+    "incumbent_advances_only_after_reproducible_pass": true,
+    "failed_family_generation_limit_source": "SSOT.RESEARCH.MAX_FAILED_GENERATIONS_PER_FAMILY",
+    "min_samples_source": "SSOT.RESEARCH.MIN_TRADES_BY_ARCHETYPE",
+    "sample_retention_source": "SSOT.RESEARCH.MIN_SAMPLE_RETENTION_BY_ARCHETYPE"
+  },
+  "stage_order": [
+    "A_BASELINE_DECOMPOSITION_AND_KILL_KEEP",
+    "B_TIMEFRAME_ECONOMIC_BASELINES",
+    "C_NEW_ARCHETYPE_INTAKE",
+    "D_STRATEGY_REGIME_ROUTER",
+    "E_REAL_EXECUTION_AND_FUNDING_CALIBRATION",
+    "F_BASE_EDGE_ONLY_METHOD_SKILL_BOT_ABLATION",
+    "G_FRESH_OOS_W4_W5",
+    "H_PORTFOLIO_INTERACTION_AND_JOINT_RISK"
+  ],
+  "stages": {
+    "A_BASELINE_DECOMPOSITION_AND_KILL_KEEP": {
+      "inputs": [
+        "V2_45_LANE_BASELINE"
+      ],
+      "decompose_by": [
+        "strategy",
+        "window",
+        "symbol",
+        "side",
+        "entry_regime",
+        "session",
+        "holding_time_bucket",
+        "MFE_MAE"
+      ],
+      "decision": "KEEP_RESEARCH | CONDITIONAL_KEEP | KILL_FAMILY",
+      "kill_rule": "Do not preserve a family merely because infrastructure exists; repeated failure under distinct evidence axes triggers family kill per SSOT.",
+      "output": "family_economic_map"
+    },
+    "B_TIMEFRAME_ECONOMIC_BASELINES": {
+      "timeframes": [
+        "1m",
+        "5m",
+        "15m"
+      ],
+      "purpose": "Detect whether 1m turnover and execution drag are destroying otherwise usable edge.",
+      "requirements": [
+        "same_causal_next_open_execution_contract",
+        "same_cost_model_version",
+        "independent_metrics_per_timeframe",
+        "no_cross_timeframe_checkpoint_reuse"
+      ],
+      "output": "strategy_x_timeframe_economic_map"
+    },
+    "C_NEW_ARCHETYPE_INTAKE": {
+      "policy": "New families must represent distinct economic mechanisms, not parameter variants of rejected families.",
+      "candidate_archetypes": [
+        {
+          "archetype_id": "LOW_TURNOVER_VOLATILITY_BREAKOUT_V1",
+          "family": "volatility_breakout",
+          "timeframes": [
+            "5m",
+            "15m"
+          ],
+          "regimes": [
+            "compression_expansion",
+            "trend_initiation"
+          ],
+          "hypothesis": "Post-compression expansion can survive costs when turnover is constrained and failed breaks are cut quickly."
+        },
+        {
+          "archetype_id": "TREND_PULLBACK_CONTINUATION_V1",
+          "family": "trend_continuation",
+          "timeframes": [
+            "5m",
+            "15m"
+          ],
+          "regimes": [
+            "trend",
+            "impulse_pullback"
+          ],
+          "hypothesis": "Trend-aligned pullback/reclaim entries can avoid the adverse long mean-reversion exposure seen in down-regime cohorts."
+        },
+        {
+          "archetype_id": "LIQUIDITY_RECLAIM_REVERSAL_V1",
+          "family": "liquidity_reclaim",
+          "timeframes": [
+            "1m",
+            "5m",
+            "15m"
+          ],
+          "regimes": [
+            "sweep_reversal",
+            "failed_breakout"
+          ],
+          "hypothesis": "A confirmed reclaim after a liquidity sweep can create asymmetric reversal entries with explicit invalidation."
+        },
+        {
+          "archetype_id": "HTF_STRUCTURE_LTF_EXECUTION_V1",
+          "family": "higher_timeframe_structure",
+          "timeframes": [
+            "15m",
+            "1h"
+          ],
+          "regimes": [
+            "multi_session_trend",
+            "major_reversal"
+          ],
+          "hypothesis": "Higher-timeframe structure with lower-timeframe execution can reduce noise and transaction-cost density."
+        }
+      ],
+      "intake_requirements": [
+        "economic_mechanism",
+        "entry_time_features",
+        "invalidation",
+        "cost_gate",
+        "falsification_rule",
+        "structural_signature",
+        "not_parameter_variant_of_rejected_family"
+      ],
+      "output": "archetype_registry_candidates"
+    },
+    "D_STRATEGY_REGIME_ROUTER": {
+      "default": "NO_TRADE",
+      "entry_time_only": true,
+      "router_matrix": {
+        "range_or_exhaustion": [
+          "selective_mean_reversion"
+        ],
+        "trend_or_impulse_pullback": [
+          "trend_continuation"
+        ],
+        "compression_expansion_or_trend_initiation": [
+          "volatility_breakout"
+        ],
+        "sweep_reversal_or_failed_breakout": [
+          "liquidity_reclaim"
+        ],
+        "multi_session_trend_or_major_reversal": [
+          "higher_timeframe_structure"
+        ],
+        "unknown_transition_conflict": [
+          "NO_TRADE"
+        ]
+      },
+      "conflict_policy": "If multiple families fire, test conflict resolution as a separate interaction experiment; never silently merge signals.",
+      "output": "strategy_regime_router_candidate"
+    },
+    "E_REAL_EXECUTION_AND_FUNDING_CALIBRATION": {
+      "exchange": "BingX_USDT_M_FUTURES",
+      "required_inputs": [
+        "maker_fee",
+        "taker_fee",
+        "spread",
+        "slippage_by_notional",
+        "latency",
+        "partial_fill_rate",
+        "rejection_rate",
+        "funding_8h"
+      ],
+      "preferred_private_evidence": "30_90_day_BingX_fill_export_when_available",
+      "api_key_storage_forbidden": true,
+      "output": "user_specific_execution_cost_model"
+    },
+    "F_BASE_EDGE_ONLY_METHOD_SKILL_BOT_ABLATION": {
+      "prerequisite": "Base strategy/archetype must first demonstrate positive or clearly improving economic edge under the selection contract.",
+      "components": [
+        "TRADE_METHOD",
+        "SKILL",
+        "TEAM_BOT",
+        "ZBOT",
+        "LICO",
+        "ZICO",
+        "ZLICE"
+      ],
+      "design": [
+        "BASE",
+        "SINGLE_MAIN_EFFECT",
+        "SELECTED_PAIR_INTERACTION",
+        "TOP_BUNDLE"
+      ],
+      "counterfactual_required": true,
+      "output": "component_delta_R_and_delta_WR"
+    },
+    "G_FRESH_OOS_W4_W5": {
+      "labels": [
+        "W4",
+        "W5"
+      ],
+      "must_be_unseen_during_selection": true,
+      "selection_reuse_forbidden": true,
+      "final_gate": "positive_after_costs_and_quality_guard",
+      "output": "fresh_oos_receipt"
+    },
+    "H_PORTFOLIO_INTERACTION_AND_JOINT_RISK": {
+      "prerequisite": "Only independently viable families enter portfolio work.",
+      "required_tests": [
+        "drop_any_strategy",
+        "strategy_weighting",
+        "signal_conflict",
+        "duplicate_exposure",
+        "correlation",
+        "joint_drawdown",
+        "margin_conflict",
+        "leave_one_family_out"
+      ],
+      "mandatory_owner": false,
+      "output": "portfolio_candidate"
+    }
+  },
+  "ai_council": {
+    "role": "advisory_only",
+    "required_roles": {
+      "gemini": "hypothesis_generation_and_failure_cluster_review",
+      "openai": "causal_contract_review_red_team_and_candidate_judging"
+    },
+    "optional_roles": {
+      "groq_or_other": "non_blocking_secondary_red_team_when_available"
+    },
+    "rules": [
+      "AI cannot promote a candidate",
+      "AI cannot override deterministic replay gates",
+      "AI suggestions must name the causal mechanism and falsification rule",
+      "parameter-only suggestions are rejected when family-level failure is indicated"
+    ]
+  },
+  "automation_after_baseline": {
+    "auto_start_allowed": false,
+    "reason": "Current task is pre-design only; baseline result must be read and decomposed before any heavy follow-on replay.",
+    "first_action_after_terminal_baseline": "A_BASELINE_DECOMPOSITION_AND_KILL_KEEP",
+    "heavy_replay_before_stage_A_complete": false
+  },
+  "safety": {
+    "research_only": true,
+    "canonical_mutation": false,
+    "runtime_binding": false,
+    "shadow_mutation": false,
+    "paper_mutation": false,
+    "live_mutation": false,
+    "registry_mutation": false,
+    "formal_ledger_mutation": false,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "action": "hold"
+  }
+}

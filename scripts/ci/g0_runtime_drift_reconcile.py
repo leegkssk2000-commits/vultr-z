@@ -25,21 +25,24 @@ def stable_sha(value: Any) -> str:
     return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
 
 
-def local_bundle(source_paths: list[str]) -> tuple[str | None, dict[str, str | None]]:
+def local_bundle(source_paths: list[str]) -> tuple[str | None, dict[str, str | None], list[str]]:
     rows: list[dict[str, str]] = []
     hashes: dict[str, str | None] = {}
+    missing: list[str] = []
+    internal = [x for x in source_paths if not x.startswith("external:")]
     for source_path in sorted(source_paths):
         if source_path.startswith("external:"):
             hashes[source_path] = None
             continue
         digest = file_sha(ROOT / source_path)
         hashes[source_path] = digest
-        if digest is not None:
+        if digest is None:
+            missing.append(source_path)
+        else:
             rows.append({"path": source_path, "sha256": digest})
-    internal = [x for x in source_paths if not x.startswith("external:")]
-    if not internal or len(rows) != len(source_paths):
-        return None, hashes
-    return stable_sha(rows), hashes
+    if not internal or missing or len(rows) != len(internal):
+        return None, hashes, missing
+    return stable_sha(rows), hashes, missing
 
 
 def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
@@ -47,18 +50,21 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     modules: list[dict[str, Any]] = []
     runtime_drift_modules = 0
     pin_stale_modules = 0
+    repo_missing_modules = 0
     file_drift_count = 0
     runtime_missing_count = 0
+    repo_missing_count = 0
 
     for module in pin.get("modules", []):
         module_id = str(module.get("module_id"))
         expected = str(module.get("source_bundle_sha256") or "") or None
         source_paths = [str(x) for x in module.get("source_paths", [])]
-        repo_bundle, repo_hashes = local_bundle(source_paths)
+        repo_bundle, repo_hashes, repo_missing = local_bundle(source_paths)
         remote = runtime_modules.get(module_id, {})
         runtime_bundle = remote.get("computed_source_bundle_sha256")
         runtime_match = bool(remote.get("source_bundle_match"))
         repo_match = (repo_bundle == expected) if repo_bundle is not None and expected else None
+        repo_missing_count += len(repo_missing)
 
         drift_paths: list[dict[str, Any]] = []
         remote_file_map = {str(x.get("source_path")): x for x in remote.get("files", [])}
@@ -72,12 +78,17 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
             if not runtime_exists and repo_sha is not None:
                 runtime_missing_count += 1
                 drift_paths.append({"path": source_path, "kind": "RUNTIME_MISSING_REPO_PRESENT", "repo_sha256": repo_sha, "runtime_sha256": None})
+            elif repo_sha is None and runtime_exists:
+                drift_paths.append({"path": source_path, "kind": "REPO_MISSING_RUNTIME_PRESENT", "repo_sha256": None, "runtime_sha256": runtime_sha})
             elif repo_sha is not None and runtime_sha is not None and repo_sha != runtime_sha:
                 file_drift_count += 1
                 drift_paths.append({"path": source_path, "kind": "RUNTIME_HASH_DIFFERS_FROM_REPO", "repo_sha256": repo_sha, "runtime_sha256": runtime_sha})
 
         if runtime_match:
             diagnosis = "MATCH_PIN"
+        elif repo_missing:
+            diagnosis = "PIN_REFERENCES_PATH_MISSING_FROM_CURRENT_REPO"
+            repo_missing_modules += 1
         elif repo_match is True:
             diagnosis = "RUNTIME_DRIFT_FROM_CURRENT_REPO"
             runtime_drift_modules += 1
@@ -85,7 +96,7 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
             diagnosis = "PIN_STALE_VS_CURRENT_REPO"
             pin_stale_modules += 1
         elif source_paths and all(x.startswith("external:") for x in source_paths):
-            diagnosis = "EXTERNAL_RUNTIME_PIN_MISMATCH" if not runtime_match else "MATCH_PIN"
+            diagnosis = "EXTERNAL_RUNTIME_PIN_MISMATCH"
         else:
             diagnosis = "UNCLASSIFIED_PIN_OR_RUNTIME_MISMATCH"
 
@@ -95,6 +106,7 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
             "expected_pin_bundle_sha256": expected,
             "repo_bundle_sha256": repo_bundle,
             "repo_matches_pin": repo_match,
+            "repo_missing_source_paths": repo_missing,
             "runtime_bundle_sha256": runtime_bundle,
             "runtime_matches_pin": runtime_match,
             "drift_paths": drift_paths,
@@ -110,9 +122,15 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
         if repo_sha is not None and runtime_sha is not None and repo_sha != runtime_sha:
             legacy_drift.append({"strategy": name, "path": rel, "repo_sha256": repo_sha, "runtime_sha256": runtime_sha})
 
-    state = "PASS_RUNTIME_SOURCE_RECONCILIATION" if runtime.get("state") == "PASS_G0_RUNTIME_CENSUS" and not runtime_drift_modules and not pin_stale_modules else "HOLD_RUNTIME_SOURCE_RECONCILIATION"
+    blockers = {
+        "runtime_probe_hold": runtime.get("state") != "PASS_G0_RUNTIME_CENSUS",
+        "runtime_drift_modules": runtime_drift_modules,
+        "pin_stale_modules": pin_stale_modules,
+        "repo_missing_modules": repo_missing_modules,
+    }
+    state = "PASS_RUNTIME_SOURCE_RECONCILIATION" if not blockers["runtime_probe_hold"] and not runtime_drift_modules and not pin_stale_modules and not repo_missing_modules else "HOLD_RUNTIME_SOURCE_RECONCILIATION"
     return {
-        "schema_version": "zel.g0.runtime_source_reconciliation.v1",
+        "schema_version": "zel.g0.runtime_source_reconciliation.v2",
         "state": state,
         "runtime_state": runtime.get("state"),
         "runtime_git_head": runtime.get("runtime_git_head"),
@@ -120,6 +138,8 @@ def reconcile(pin: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
         "runtime_tracked_dirty_line_count": runtime.get("tracked_dirty_line_count"),
         "runtime_drift_module_count": runtime_drift_modules,
         "pin_stale_module_count": pin_stale_modules,
+        "repo_missing_module_count": repo_missing_modules,
+        "repo_missing_source_path_count": repo_missing_count,
         "runtime_file_hash_drift_count": file_drift_count,
         "runtime_missing_repo_present_count": runtime_missing_count,
         "legacy25_hash_drift_count": len(legacy_drift),
@@ -153,6 +173,8 @@ def main() -> int:
         "state": result["state"],
         "runtime_drift_module_count": result["runtime_drift_module_count"],
         "pin_stale_module_count": result["pin_stale_module_count"],
+        "repo_missing_module_count": result["repo_missing_module_count"],
+        "repo_missing_source_path_count": result["repo_missing_source_path_count"],
         "runtime_file_hash_drift_count": result["runtime_file_hash_drift_count"],
         "runtime_missing_repo_present_count": result["runtime_missing_repo_present_count"],
         "legacy25_hash_drift_count": result["legacy25_hash_drift_count"],

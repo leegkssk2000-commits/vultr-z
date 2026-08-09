@@ -1,0 +1,71 @@
+name: ZEL Structural Premium V2 Status
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-structural-premium-v2-status.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read current V2 baseline status
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          OUT=/opt/zel/research-runtime/jobs/structural-premium-v2/baseline_next_open_v1
+          ROOT="$OUT/lane_checkpoints"
+          REPORT="$OUT/strategy_edge_report.json"
+          LOG="$OUT/driver.log"
+          PIDFILE="$OUT/driver.pid"
+          echo "=== DRIVER ==="
+          if [ -s "$PIDFILE" ]; then
+            PID=$(cat "$PIDFILE")
+            if kill -0 "$PID" 2>/dev/null; then echo "DRIVER_ALIVE pid=$PID"; else echo "DRIVER_NOT_ALIVE pid=$PID"; fi
+          else
+            echo "DRIVER_PID_MISSING"
+          fi
+          echo "=== CHECKPOINTS ==="
+          if [ -d "$ROOT" ]; then
+            TOTAL=$(find "$ROOT" -type f -name '*.json.gz' | wc -l)
+            echo "LANE_CHECKPOINTS=$TOTAL/45"
+            for s in vwap_revert support_resistance liquidity_sweep; do
+              if [ -d "$ROOT/$s" ]; then C=$(find "$ROOT/$s" -type f -name '*.json.gz' | wc -l); else C=0; fi
+              echo "$s=$C/15"
+            done
+          else
+            echo "LANE_CHECKPOINTS=0/45"
+          fi
+          echo "=== REPORT ==="
+          if [ -s "$REPORT" ]; then
+            cat "$REPORT"
+          else
+            echo "REPORT_NOT_READY"
+          fi
+          echo "=== LOG_TAIL ==="
+          tail -80 "$LOG" 2>/dev/null || true
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

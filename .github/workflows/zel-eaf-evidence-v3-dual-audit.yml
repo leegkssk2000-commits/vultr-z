@@ -1,0 +1,159 @@
+name: ZEL EAF Evidence V3 Dual Audit
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - research/evidence/evidence_alpha_v3_hardened_49.json
+      - .github/workflows/zel-eaf-evidence-v3-dual-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-eaf-evidence-v3-dual-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Deterministic evidence contract
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter
+          p='research/evidence/evidence_alpha_v3_hardened_49.json'
+          d=json.load(open(p))
+          rows=d['records']
+          assert len(rows)==49, len(rows)
+          assert d['policy']['record_count']==49
+          assert d['policy']['record_target_min']<=len(rows)
+          ids=[x['id'] for x in rows]; assert len(ids)==len(set(ids))
+          urls=[x['url'] for x in rows]; assert len(urls)==len(set(urls))
+          assert d['youtube']['counted_records']==0
+          assert all('music.youtube.com' not in u and 'help.youtube.com' not in u for u in urls)
+          direct=sum(1 for x in rows if x['role'] in {'direct_crypto_alpha','direct_crypto_futures_alpha','direct_crypto_futures_signal','direct_crypto_microstructure','direct_bitcoin_alpha','direct_crypto_portfolio_alpha'})
+          impl=sum(1 for x in rows if x['role'] in {'reproducible_implementation','implementation_case_study'})
+          neg=sum(1 for x in rows if x['role']=='negative_control')
+          typ=Counter(x['type'] for x in rows)
+          print('PASS_V3_EVIDENCE_CONTRACT records=49 direct=%d impl=%d negative=%d types=%s' % (direct,impl,neg,dict(typ)))
+          PY
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Stage Evidence V3
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          scp -i ~/.ssh/vps_key -o BatchMode=yes research/evidence/evidence_alpha_v3_hardened_49.json "$VPS_USER@$VPS_HOST:/tmp/evidence_alpha_v3_hardened_49.json"
+      - name: Gemini plus OpenAI evidence audit
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          PY=/home/z/z/.venv/bin/python
+          C=/home/z/z/_ai_council
+          set -a; . "$C/.env"; set +a
+          test -n "${REQUESTY_API_KEY:-}"
+          RBASE=${REQUESTY_BASE_URL:-https://router.requesty.ai/v1}
+          ROOT=/opt/zel/research-runtime/jobs/evidence-alpha-v3
+          mkdir -p "$ROOT"
+          cp /tmp/evidence_alpha_v3_hardened_49.json "$ROOT/evidence.json"
+          curl -fsS -m 30 -H "Authorization: Bearer $REQUESTY_API_KEY" "$RBASE/models" > /tmp/eaf3_models.json
+          GEMINI=$("$PY" - <<'PYMODEL'
+          import json
+          rows=json.load(open('/tmp/eaf3_models.json')).get('data',[]); ids={str(x.get('id')) for x in rows}
+          prefs=['google/gemini-3.6-flash','google/gemini-3.1-pro-preview','google/gemini-3-flash-preview','google/gemini-2.5-pro']
+          print(next((x for x in prefs if x in ids),''))
+          PYMODEL
+          )
+          test -n "$GEMINI"
+          OPENAI=''
+          for m in openai/gpt-5.6-sol openai/gpt-5.4; do
+            if "$PY" - "$m" /tmp/eaf3_models.json <<'PYCHK'
+          import json,sys
+          ids={str(x.get('id')) for x in json.load(open(sys.argv[2])).get('data',[])}
+          raise SystemExit(0 if sys.argv[1] in ids else 1)
+          PYCHK
+            then OPENAI="$m"; break; fi
+          done
+          test -n "$OPENAI"
+          echo "GEMINI_SELECTED=$GEMINI OPENAI_SELECTED=$OPENAI"
+
+          "$PY" - "$ROOT/evidence.json" /tmp/eaf3_evidence_compact.txt <<'PYDATA'
+          import json,sys
+          d=json.load(open(sys.argv[1])); rows=d['records']
+          compact={'count':len(rows),'policy':d['policy'],'lineage_rules':d['lineage_rules'],'rows':[{'id':x['id'],'type':x['type'],'tier':x['tier'],'role':x['role'],'claim':x['claim'],'components':x['components']} for x in rows]}
+          open(sys.argv[2],'w').write(json.dumps(compact,ensure_ascii=False,separators=(',',':')))
+          PYDATA
+
+          ask() {
+            model="$1" label="$2" prompt="$3" max="$4"
+            "$PY" - "$model" "$prompt" /tmp/eaf3_evidence_compact.txt /tmp/eaf3_body.json "$max" <<'PYBODY'
+          import json,sys
+          model,prompt,data,out,max_t=sys.argv[1:]
+          q=prompt+'\nEVIDENCE='+open(data).read()
+          json.dump({'model':model,'messages':[{'role':'user','content':q}],'max_tokens':int(max_t),'temperature':0},open(out,'w'))
+          PYBODY
+            code=$(curl -sS -m 300 -o /tmp/eaf3_resp.json -w '%{http_code}' -H "Authorization: Bearer $REQUESTY_API_KEY" -H 'Content-Type: application/json' --data-binary @/tmp/eaf3_body.json "$RBASE/chat/completions" || true)
+            test "$code" = 200
+            "$PY" - /tmp/eaf3_resp.json "$ROOT/${label}.txt" <<'PYOUT'
+          import json,sys
+          d=json.load(open(sys.argv[1])); s=(((d.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip().replace('\n',' ')
+          if not s: raise SystemExit('EMPTY_AI_OUTPUT')
+          open(sys.argv[2],'w').write(s+'\n'); print(s)
+          PYOUT
+          }
+
+          BASE='Audit only supplied records. Do not invent evidence. Paper mirrors count once; community is anecdotal; cross-asset mechanics do not prove crypto alpha; YouTube count must remain zero. Research only.'
+          ask "$GEMINI" gemini_counts "$BASE Return exactly: VERDICT|effective_lineages|direct_crypto_lineages|reproducible_impl_lineages where VERDICT is PASS_STAGE1R or HOLD_MORE_EVIDENCE. Max 60 chars." 80
+          ask "$GEMINI" gemini_dna "$BASE Return only comma-separated top common mechanisms, max 7 short tokens; no prose." 100
+          ask "$GEMINI" gemini_families "$BASE Return exactly READY:<comma list or NONE>|HOLD:<comma list or NONE>. Families may include trend,breakout,mean_reversion,pairs,microstructure,cost_aware,session. Max 120 chars." 120
+          ask "$GEMINI" gemini_missing "$BASE Return only comma-separated missing evidence categories, max 5 short items; no prose." 100
+          ask "$OPENAI" openai_verdict "$BASE Red-team the corpus. Return exactly PASS_STAGE1R or HOLD_MORE_EVIDENCE, then | and one short reason under 80 chars." 100
+          ask "$OPENAI" openai_dna "$BASE Return only comma-separated top common mechanisms you consider causally defensible, max 7 tokens." 100
+
+          "$PY" - "$ROOT" <<'PYREPORT'
+          import json,sys,re
+          from pathlib import Path
+          r=Path(sys.argv[1])
+          gc=(r/'gemini_counts.txt').read_text().strip(); gv=(r/'gemini_families.txt').read_text().strip()
+          ov=(r/'openai_verdict.txt').read_text().strip()
+          if not re.match(r'^(PASS_STAGE1R|HOLD_MORE_EVIDENCE)\|\d+\|\d+\|\d+$',gc): raise SystemExit('BAD_GEMINI_COUNTS:'+gc)
+          if not re.match(r'^(PASS_STAGE1R|HOLD_MORE_EVIDENCE)\|',ov): raise SystemExit('BAD_OPENAI_VERDICT:'+ov)
+          parts=gc.split('|')
+          payload={
+            'schema_version':'zel.evidence_alpha.v3.dual_audit.v1',
+            'gemini_verdict':parts[0], 'effective_lineages':int(parts[1]), 'direct_crypto_lineages':int(parts[2]), 'reproducible_impl_lineages':int(parts[3]),
+            'gemini_dna':(r/'gemini_dna.txt').read_text().strip(), 'gemini_families':gv, 'gemini_missing':(r/'gemini_missing.txt').read_text().strip(),
+            'openai_verdict':ov.split('|',1)[0], 'openai_reason':ov.split('|',1)[1] if '|' in ov else '', 'openai_dna':(r/'openai_dna.txt').read_text().strip(),
+            'stage3_unlocked': False, 'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'selection_authority':False
+          }
+          payload['state']='PASS_DUAL_EVIDENCE_AUDIT' if payload['gemini_verdict']=='PASS_STAGE1R' and payload['openai_verdict']=='PASS_STAGE1R' else 'HOLD_EVIDENCE_HARDENING'
+          (r/'dual_audit.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(payload,sort_keys=True))
+          PYREPORT
+          cat "$ROOT/dual_audit.json"
+          REMOTE
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/vps_key

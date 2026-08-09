@@ -1,0 +1,80 @@
+name: ZEL Evidence Alpha Factory V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "backend/research/evidence_alpha_factory_v1.py"
+      - "strategies/evidence_alpha_v1.py"
+      - "backend/strategies/evidence_alpha_v1.py"
+      - "research/evidence/evidence_alpha_seed_v1.json"
+      - "research/evidence/consensus_alpha_base_v1.json"
+      - ".github/workflows/zel-evidence-alpha-factory-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-evidence-alpha-factory-v1
+  cancel-in-progress: false
+
+jobs:
+  stage1-stage2-stage3-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile research modules
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/evidence_alpha_factory_v1.py \
+            strategies/evidence_alpha_v1.py \
+            backend/strategies/evidence_alpha_v1.py
+
+      - name: Validate evidence and build five-stage manifests
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/zel_eaf_v1
+          python backend/research/evidence_alpha_factory_v1.py \
+            --evidence research/evidence/evidence_alpha_seed_v1.json \
+            --specs research/evidence/consensus_alpha_base_v1.json \
+            --out /tmp/zel_eaf_v1
+
+      - name: Fail closed on authority or stage leakage
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("/tmp/zel_eaf_v1")
+          s1=json.loads((root/"stage1_manifest.json").read_text())
+          s2=json.loads((root/"stage2_manifest.json").read_text())
+          s3=json.loads((root/"stage3_manifest.json").read_text())
+          s4=json.loads((root/"stage4_manifest.json").read_text())
+          s5=json.loads((root/"stage5_manifest.json").read_text())
+          assert s1["state"]=="PASS_EVIDENCE_HARVEST"
+          assert s2["state"]=="PASS_CONSENSUS_BASE"
+          assert s3["state"]=="READY_FOR_REPLAY_ADAPTER"
+          assert len(s3["rows"]) >= 20
+          assert s4["state"].startswith("LOCKED_")
+          assert s5["state"].startswith("LOCKED_")
+          assert s1["execution_authority"]=="NONE"
+          assert s1["order_authority"]=="BLOCKED"
+          assert s1["promotion_authority"] is False
+          assert s1["selection_authority"] is False
+          print("PASS_STAGE_CONTRACT")
+          print(f"STAGE3_MICRO_PLAN_ROWS={len(s3['rows'])}")
+          print("STAGE4_LOCKED=true")
+          print("STAGE5_LOCKED=true")
+          print("EXECUTION_AUTHORITY=NONE ORDER_AUTHORITY=BLOCKED PROMOTION=false")
+          PY
+
+      - name: Upload deterministic manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-evidence-alpha-factory-v1-manifests
+          path: /tmp/zel_eaf_v1/*.json
+          retention-days: 14

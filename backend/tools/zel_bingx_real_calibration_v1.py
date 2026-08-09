@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import argparse, hashlib, hmac, json, math, os, re, time, urllib.request
+import argparse, hashlib, hmac, json, math, os, re, time, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -73,7 +73,8 @@ def get(key: str, sec: str, path: str, params: Mapping[str, Any]) -> tuple[Any, 
             raise RuntimeError(f"BAD_PARAM:{k}")
     qs = "&".join(f"{k}={p[k]}" for k in sorted(p))
     sig = hmac.new(sec.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    for i, base in enumerate(BASES):
+    transport_errors: list[str] = []
+    for base in BASES:
         req = urllib.request.Request(
             f"{base}{path}?{qs}&signature={sig}",
             headers={"X-BX-APIKEY": key, "X-SOURCE-KEY": "BX-AI-SKILL", "User-Agent": VERSION},
@@ -83,13 +84,24 @@ def get(key: str, sec: str, path: str, params: Mapping[str, Any]) -> tuple[Any, 
             with urllib.request.urlopen(req, timeout=12) as r:
                 payload = json.loads(r.read())
             ms = (time.perf_counter() - t0) * 1000
-            if int(payload.get("code", -1)) != 0:
-                raise RuntimeError(f"BINGX_ERROR:{payload.get('code')}:{payload.get('msg')}")
-            return payload.get("data"), ms, base
-        except Exception:
-            if i == len(BASES) - 1:
-                raise
-    raise RuntimeError("BINGX_REQUEST_FAILED")
+        except urllib.error.HTTPError as e:
+            body = e.read(4096)
+            try:
+                payload = json.loads(body)
+            except Exception:
+                raise RuntimeError(f"BINGX_HTTP_ERROR:{base}:{e.code}") from e
+            code = payload.get("code") if isinstance(payload, dict) else None
+            msg = payload.get("msg") if isinstance(payload, dict) else None
+            raise RuntimeError(f"BINGX_API_HTTP_ERROR:{base}:{e.code}:{code}:{str(msg)[:160]}") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            transport_errors.append(f"{base}:{type(e).__name__}:{str(e)[:180]}")
+            continue
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"BINGX_INVALID_PAYLOAD:{base}:{type(payload).__name__}")
+        if int(payload.get("code", -1)) != 0:
+            raise RuntimeError(f"BINGX_API_ERROR:{base}:{payload.get('code')}:{str(payload.get('msg'))[:160]}")
+        return payload.get("data"), ms, base
+    raise RuntimeError("BINGX_TRANSPORT_FAILED:" + " | ".join(transport_errors))
 
 
 def f(v: Any) -> float:

@@ -14,13 +14,18 @@ OUT=$ROOT/baseline_next_open_v1
 LANE=$ROOT/engine/lane_baseline_v2.py
 REPORT=$OUT/strategy_edge_report.json
 CANON=/opt/zel/forward-expansion-v1/source
+LOCK_DIR=$ROOT/locks
+LOCK_FILE=$LOCK_DIR/baseline_next_open_v1.lock
+mkdir -p "$LOCK_DIR"
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo "BASELINE_ALREADY_RUNNING"; exit 23; }
 
 for p in "$ENG" "$READINESS" "$BUILD" "$MACHINE" "$SMOKE" "$BASE/work/engine/lane_checkpoint_v2.py" "$DUR/work/data"; do
   test -e "$p"
 done
 
 "$PY" - "$ENG" "$READINESS" "$BUILD" "$MACHINE" "$SMOKE" <<'PYREADY'
-import hashlib,json,os,sys
+import hashlib,json,sys
 from pathlib import Path
 eng,readyp,buildp,machinep,smokep=map(Path,sys.argv[1:])
 ready=json.loads(readyp.read_text()); build=json.loads(buildp.read_text()); machine=json.loads(machinep.read_text()); smoke=json.loads(smokep.read_text())
@@ -31,7 +36,6 @@ if machine.get('state')!='PASS_V2_REPLAY_CONTRACT_MACHINE_GATE': raise SystemExi
 if smoke.get('state')!='PASS_V2_NEXT_OPEN_SMOKE': raise SystemExit('V2_SMOKE_NOT_PASS')
 if smoke.get('execution_model')!='NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE': raise SystemExit('V2_SMOKE_EXECUTION_MODEL_MISMATCH')
 if int(smoke.get('lane_files') or 0)!=3 or int(smoke.get('error_count') or 0)!=0 or int(smoke.get('closed_rows_checked') or 0)<1: raise SystemExit('V2_SMOKE_INTEGRITY')
-# Smoke and readiness must have been produced after this exact build receipt, not left over from an older engine.
 if smokep.stat().st_mtime < buildp.stat().st_mtime: raise SystemExit('STALE_SMOKE_RECEIPT')
 if machinep.stat().st_mtime < buildp.stat().st_mtime: raise SystemExit('STALE_MACHINE_GATE')
 if readyp.stat().st_mtime < smokep.stat().st_mtime: raise SystemExit('STALE_READINESS_RECEIPT')

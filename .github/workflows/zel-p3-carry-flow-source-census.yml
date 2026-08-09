@@ -1,0 +1,101 @@
+name: ZEL P3 Carry Flow Source Census
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/p3_carry_flow_source_census.py
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p3-carry-flow-source-census.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p3-carry-flow-source-census-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3-source-census:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate source census
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_carry_flow_source_census.py backend/tools/zel_bingx_real_calibration_v1.py
+          mkdir -p ~/.ssh out
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run read-only VPS carry-flow source census
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/p3-carry-flow-source-census-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/backend/research' '$remote/backend/tools'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p3_carry_flow_source_census.py "$VPS_USER@$VPS_HOST:$remote/backend/research/"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/backend/tools/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/backend/research/p3_carry_flow_source_census.py'" \
+            > out/p3_carry_flow_source_census.json
+          python -m json.tool out/p3_carry_flow_source_census.json >/dev/null
+      - name: Verify fail-closed source census
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/p3_carry_flow_source_census.json'))
+          assert r['schema_version']=='zel.p3.carry_flow.source_census.v1'
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'flags':r['discovery_flags'],
+            'blockers':r['blockers'],
+            'funding_probe':r['funding_history_probe'].get('state'),
+            'relevant_files':r['scan_file_count_relevant'],
+            'endpoints':r['bingx_endpoint_literals'],
+            'action':r['action']
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p3-carry-flow-source-census-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/p3_carry_flow_source_census.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup remote probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

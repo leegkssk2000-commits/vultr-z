@@ -1,0 +1,109 @@
+name: ZEL G0 Local Source Escrow
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/ci/g0_local_source_escrow.py
+      - backend/research/zel_composite_live_source_pin_v1.json
+      - backend/research/strategy11_portfolio_governor_v1.py
+      - config/zel_alpha_engine_vnext.json
+      - policies/zel/g0_source_persistence_gate_v1.json
+      - .github/workflows/zel-g0-local-source-escrow.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-private-source-escrow:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate escrow script
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/g0_local_source_escrow.py
+          python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Preserve exact runtime source set outside active tree
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          GOV_B64=$(base64 -w0 backend/research/strategy11_portfolio_governor_v1.py)
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z G0_ESCROW_ROOT=/home/z/.zel-g0-source-escrow EXPECTED_PIN_B64='$PIN_B64' GOVERNOR_CANDIDATE_B64='$GOV_B64' python3 -" \
+            < scripts/ci/g0_local_source_escrow.py \
+            > out/g0_local_source_escrow_receipt.json
+          python -m json.tool out/g0_local_source_escrow_receipt.json >/dev/null
+
+      - name: Verify fail-closed preservation contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/g0_local_source_escrow_receipt.json').read_text())
+          assert r['state'] in {'PASS_LOCAL_PRIVATE_ESCROW','PASS_LOCAL_ESCROW_WITH_RECOVERY_CANDIDATE'}
+          assert r['runtime_mutated'] is False
+          assert r['active_runtime_tree_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['public_repository_publish_authority'] is False
+          assert r['destructive_cleanup_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['escrow_git_head']
+          print(json.dumps({
+              'state': r['state'],
+              'source_path_count': r['source_path_count'],
+              'copied_source_count': r['copied_source_count'],
+              'missing_source_count': r['missing_source_count'],
+              'governor_candidate': r['governor_recovery_candidate_written'],
+              'escrow_git_head': r['escrow_git_head'],
+              'action': r['action'],
+          }, sort_keys=True))
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-g0-local-source-escrow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g0_local_source_escrow_receipt.json
+          if-no-files-found: error
+          retention-days: 30

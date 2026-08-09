@@ -101,7 +101,7 @@ jobs:
           start=code.find('V2_REPLAY_CONTRACT_VERSION')
           loop=code.find('    position: MutableMapping[str, Any] | None = None')
           excerpt=code[start:start+8500]+'\n\n===REPLAY LOOP===\n'+code[loop:loop+13500]
-          q='''Audit ONLY these nine invariants in this research-only replay engine. First line PASS if all nine are satisfied; otherwise FAIL and identify the violated numbered invariant. Do not invent requirements outside this list. (1) legacy structural overlay removed; (2) producer.valid_entry is the sole new-entry predicate; (3) a signal on bar t is queued and executed at bar t+1 OPEN, never bar t close; (4) next-open repricing preserves the signal's absolute stop-distance and target-distance separately for both LONG and SHORT; (5) signal-bar entry_features are preserved after make_position; (6) a position opened at bar t+1 OPEN is then subjected to that same execution bar's high/low bar_exit logic; (7) existing-position management/exit strategy results are not modified by a V2 entry filter; (8) trend_rider is removed while vwap_revert/support_resistance/liquidity_sweep remain; (9) no canonical/paper/live/order mutation is introduced. Note: result = dict(original_result) preserves every unrelated field; changing only entry/sl/tp is allowed and is NOT a violation of invariant 9. Focus on concrete causal/economic bugs only. CODE:\n'''+excerpt
+          q='''Audit ONLY these nine invariants in this research-only replay engine. First line PASS if all nine are satisfied; otherwise FAIL and identify the violated numbered invariant. Do not invent requirements outside this list. (1) legacy structural overlay removed; (2) producer.valid_entry is the sole new-entry predicate; (3) a signal on bar t is queued, consumed exactly once, and executed at bar t+1 OPEN, never retried at t+2; (4) next-open repricing preserves the signal's absolute stop-distance and target-distance separately for both LONG and SHORT; (5) signal-bar entry_features are preserved after make_position; (6) a position opened at bar t+1 OPEN is then subjected to that same execution bar's high/low bar_exit logic, which is intentionally required for bar-based simulation; (7) existing-position management/exit strategy results are not modified by a V2 entry filter; (8) trend_rider is removed while vwap_revert/support_resistance/liquidity_sweep remain; (9) no canonical/paper/live/order mutation is introduced. Note: result = dict(original_result) preserves every unrelated field; changing only entry/sl/tp is allowed and is NOT a violation of invariant 9. Focus on concrete causal/economic bugs only. CODE:\n'''+excerpt
           Path(sys.argv[2]).write_text(q)
           PYPROMPT
 
@@ -125,7 +125,6 @@ jobs:
           PYRESP
           }
 
-          # AI is actively used as an independent reviewer, but machine-verifiable invariants are the hard gate.
           review_model "$GEMINI" "$ADV/gemini_replay_contract_review.txt"
           GEMINI_VERDICT=$(head -1 "$ADV/gemini_replay_contract_review.txt" | tr -d '\r' | awk '{print $1}')
           echo "GEMINI_VERDICT=$GEMINI_VERDICT"
@@ -143,7 +142,6 @@ jobs:
           echo "OPENAI_SELECTED=$OPENAI_USED"
           echo "OPENAI_VERDICT=$OPENAI_VERDICT"
 
-          # Deterministic contract gate: this, not a free-form model opinion, decides execution safety.
           "$PY" - "$ENG" "$ROOT/engine/build_receipt.json" "$ADV/deterministic_contract_gate.json" <<'PYGATE'
           import json,sys
           from pathlib import Path
@@ -153,18 +151,18 @@ jobs:
             'three_retained_owners': 'restored.pop("trend_rider", None)' in t and 'expected = {"vwap_revert", "support_resistance", "liquidity_sweep"}' in t,
             'sole_new_entry_predicate': t.count('validated_entry = producer.valid_entry(result, current_price)')==1,
             'next_bar_open_execution': t.count('execution_price = float(last["open"])')==1 and t.count('pending_entry = {')==1,
+            'pending_entry_single_use': bool(rec.get('pending_entry_single_use')) and t.count('queued_entry = pending_entry')==1 and t.count('pending_entry = None')==1,
             'side_explicit_geometry': 'if side == "long":' in t and 'if side == "short":' in t and bool(rec.get('geometry_self_test_long')) and bool(rec.get('geometry_self_test_short')),
-            'signal_features_preserved': 'new_position["entry_features"] = dict(pending_entry.get("signal_features") or {})' in t,
+            'signal_features_preserved': 'new_position["entry_features"] = dict(queued_entry.get("signal_features") or {})' in t,
             'execution_bar_exit_after_open': t.find('position = new_position') < t.find('price_exit = producer.bar_exit(position, candle, now_epoch, MAX_HOLD_MIN)') and t.find('position = new_position')>0,
             'no_v2_generic_management_filter': '_ZEL_OVERLAY' not in t and '_zel_is_long' not in t,
             'research_only_receipt': rec.get('research_only') is True and rec.get('execution_authority')=='NONE' and rec.get('order_authority')=='BLOCKED' and rec.get('promotion_authority') is False,
           }
-          payload={'schema_version':'zel.structural_premium.v2.replay_contract.machine_gate.v1','state':'PASS_V2_REPLAY_CONTRACT_MACHINE_GATE' if all(checks.values()) else 'FAIL_V2_REPLAY_CONTRACT_MACHINE_GATE','checks':checks,'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
+          payload={'schema_version':'zel.structural_premium.v2.replay_contract.machine_gate.v2','state':'PASS_V2_REPLAY_CONTRACT_MACHINE_GATE' if all(checks.values()) else 'FAIL_V2_REPLAY_CONTRACT_MACHINE_GATE','checks':checks,'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
           out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n'); print(json.dumps(payload,sort_keys=True))
           if not all(checks.values()): raise SystemExit(6)
           PYGATE
 
-          # One-window/one-symbol smoke: all 3 retained strategies, no trend_rider.
           LANE=$ROOT/engine/lane_smoke_v2.py
           cp "$BASE/work/engine/lane_checkpoint_v2.py" "$LANE"
           "$PY" - "$LANE" <<'PYLANE'
@@ -176,7 +174,7 @@ jobs:
           p.write_text(t.replace(a,a+'\n    '+filt,1))
           PYLANE
           "$PY" -m py_compile "$LANE"
-          SMOKE=$ROOT/smoke_next_open_v2
+          SMOKE=$ROOT/smoke_next_open_v3
           rm -rf "$SMOKE"
           "$PY" "$LANE" --engine-v1 "$ENG" --engine-v2 "$BASE/work/engine/replay_v2_no_trend.py" --source-root "$BASE/work/source" --data-root "$DUR/work/data" --interval 1m --output-dir "$SMOKE" --workers 3 2>&1 | tee "$ROOT/engine/smoke.log"
           test "$(find "$SMOKE/lane_checkpoints" -type f -name '*.json.gz' | wc -l)" -eq 3
@@ -199,14 +197,14 @@ jobs:
               s=datetime.fromisoformat(str(r['entry_signal_ts']).replace('Z','+00:00')); e=datetime.fromisoformat(str(r['entry_ts']).replace('Z','+00:00'))
               if not e>s: raise SystemExit('ENTRY_NOT_AFTER_SIGNAL')
               checked+=1
-          rec={'schema_version':'zel.structural_premium.v2.next_open.smoke.v2','state':'PASS_V2_NEXT_OPEN_SMOKE','lane_files':len(list(root.rglob('*.json.gz'))),'open_count':opens,'closed_rows_checked':checked,'error_count':errors,'execution_model':'NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE','research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
+          rec={'schema_version':'zel.structural_premium.v2.next_open.smoke.v3','state':'PASS_V2_NEXT_OPEN_SMOKE','lane_files':len(list(root.rglob('*.json.gz'))),'open_count':opens,'closed_rows_checked':checked,'error_count':errors,'execution_model':'NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE','research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
           out.write_text(json.dumps(rec,indent=2,sort_keys=True)+'\n'); print(json.dumps(rec,sort_keys=True))
           PYSMOKE
 
           "$PY" - "$GEMINI" "$GEMINI_VERDICT" "$OPENAI_USED" "$OPENAI_VERDICT" "$ADV/v2_replay_readiness.json" <<'PYREADY'
           import json,sys
           gemini,gver,openai,over,out=sys.argv[1:]
-          p={'schema_version':'zel.structural_premium.v2.replay_readiness.v1','state':'PASS_V2_REPLAY_ENGINE_READY_FOR_AXIS_WORK','gemini_model':gemini,'gemini_verdict':gver,'openai_model':openai,'openai_verdict':over,'machine_gate':'PASS','smoke':'PASS','research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
+          p={'schema_version':'zel.structural_premium.v2.replay_readiness.v2','state':'PASS_V2_REPLAY_ENGINE_READY_FOR_AXIS_WORK','gemini_model':gemini,'gemini_verdict':gver,'openai_model':openai,'openai_verdict':over,'machine_gate':'PASS','smoke':'PASS','research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'}
           open(out,'w').write(json.dumps(p,indent=2,sort_keys=True)+'\n'); print(json.dumps(p,sort_keys=True))
           PYREADY
 

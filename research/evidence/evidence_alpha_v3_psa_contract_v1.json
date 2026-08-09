@@ -1,0 +1,154 @@
+{
+  "schema_version": "zel.eaf.v3.psa_contract.v1",
+  "state": "PASS_PSA_PARAMETER_FREE_CONTRACT_HOLD_CALIBRATION",
+  "research_only": true,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "selection_authority": false,
+  "promotion_authority": false,
+  "signal_generation_enabled": false,
+  "parameter_selection_allowed": false,
+  "baseline_engine_mutation_allowed": false,
+  "strategy_id": "EAF_PSA_V1",
+  "family": "pairs_stat_arb",
+  "role": "standalone_relative_value_alpha",
+  "evidence_ids": ["A22", "A23", "A24", "A25"],
+  "evidence_mechanism": {
+    "A22": "cointegration-based cryptocurrency portfolios support explicit statistical-arbitrage testing",
+    "A23": "cointegration pair selection is a stronger prior than distance-only selection and turnover is cost-sensitive",
+    "A24": "dynamic cointegration and OU half-life are valid research dimensions with explicit execution constraints",
+    "A25": "copula-based mispricing on cointegrated crypto pairs is a distinct later ablation, not BASE"
+  },
+  "universe": {
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "LINKUSDT"],
+    "unordered_pairs": [
+      ["BTCUSDT", "ETHUSDT"],
+      ["BTCUSDT", "SOLUSDT"],
+      ["BTCUSDT", "XRPUSDT"],
+      ["BTCUSDT", "LINKUSDT"],
+      ["ETHUSDT", "SOLUSDT"],
+      ["ETHUSDT", "XRPUSDT"],
+      ["ETHUSDT", "LINKUSDT"],
+      ["SOLUSDT", "XRPUSDT"],
+      ["SOLUSDT", "LINKUSDT"],
+      ["XRPUSDT", "LINKUSDT"]
+    ],
+    "pair_selection_performed": false,
+    "pair_selection_rule": "evaluate every eligible pair under the same formation/trading protocol before any survivor choice"
+  },
+  "data_contract": {
+    "timeframe": "15m",
+    "required_columns": ["timestamp_ms", "open", "high", "low", "close", "volume"],
+    "two_leg_adapter": "backend/research/eaf_stage3_pairs_replay.py",
+    "required_adapter_state": "PASS_TWO_LEG_ADAPTER_CONTRACT",
+    "alignment_required": true,
+    "gap_count_required": 0,
+    "same_timestamp_pairing_required": true,
+    "formation_precedes_trading": true,
+    "formation_trading_overlap_forbidden": true,
+    "future_data_in_formation_forbidden": true,
+    "trading_data_in_parameter_estimation_forbidden": true
+  },
+  "base_relationship_contract": {
+    "relationship_family": "cointegration_or_equivalent_stationary_spread_evidence",
+    "relationship_estimation_scope": "formation_only",
+    "hedge_ratio_estimation_scope": "formation_only",
+    "spread_normalization_scope": "formation_only",
+    "relationship_pass_required_before_signal_generation": true,
+    "cointegration_test_definition": "SOURCE_BOUND_UNRESOLVED",
+    "cointegration_significance_threshold": "SSOT_OR_SOURCE_BOUND_UNRESOLVED",
+    "formation_window": "SOURCE_BOUND_UNRESOLVED",
+    "trading_window": "SOURCE_BOUND_UNRESOLVED",
+    "spread_normalizer": "SOURCE_BOUND_UNRESOLVED",
+    "entry_extreme": "SOURCE_BOUND_UNRESOLVED",
+    "exit_neutral": "SOURCE_BOUND_UNRESOLVED",
+    "spread_stop": "SOURCE_BOUND_UNRESOLVED",
+    "half_life_limit": "SOURCE_BOUND_UNRESOLVED",
+    "numeric_defaults_forbidden": true
+  },
+  "execution_semantics": {
+    "signal_clock": "closed_15m_bar",
+    "fill_clock": "next_bar_open",
+    "same_bar_fill": false,
+    "both_legs_required": true,
+    "single_leg_fallback_forbidden": true,
+    "leg_fill_failure_result": "PAIR_FILL_INVALID_NO_POSITION",
+    "partial_pair_exposure_simulation_forbidden_in_base": true,
+    "pair_close_required_for_both_legs": true,
+    "lookahead_forbidden": true
+  },
+  "two_leg_cost_contract": {
+    "source": "fresh BingX read-only real calibration observation",
+    "required_state": "PASS_BINGX_REAL_OBSERVATION_COLLECTED_STRESS_PENDING",
+    "account_fee_field": "taker_fee_pct",
+    "funding_field_by_symbol": "funding_p95_abs_pct_8h_by_symbol.<BINGX_SYMBOL>.funding_p95_abs_pct_8h",
+    "slippage_field_by_symbol_and_notional": "slippage_floor_bps_by_symbol_and_notional.<BINGX_SYMBOL>[]",
+    "symbol_mapping": {
+      "BTCUSDT": "BTC-USDT",
+      "ETHUSDT": "ETH-USDT",
+      "SOLUSDT": "SOL-USDT",
+      "XRPUSDT": "XRP-USDT",
+      "LINKUSDT": "LINK-USDT"
+    },
+    "entry_fee": "sum(taker_fee_each_leg)",
+    "exit_fee": "sum(taker_fee_each_leg)",
+    "entry_slippage": "sum(pair_specific_p95_one_way_slippage_each_leg)",
+    "exit_slippage": "sum(pair_specific_p95_one_way_slippage_each_leg)",
+    "funding": "sum(abs_p95_8h_funding_each_leg_prorated_by_hold_duration)",
+    "round_trip_cost": "entry_fee + exit_fee + entry_slippage + exit_slippage + funding",
+    "notional_bucket_selection_performed": false,
+    "all_observed_notional_buckets_required": true,
+    "aggregate_cross_symbol_slippage_for_pair_verdict_forbidden": true,
+    "aggregate_cross_symbol_funding_for_pair_verdict_forbidden": true
+  },
+  "base_signal_contract": {
+    "setup": "formation-only relationship evidence passes and trading-window spread deviates from its formation-only normalized distribution",
+    "trigger": "closed-bar spread deviation enters a source-bound extreme and expected convergence remains positive after two-leg costs",
+    "exit": "spread re-enters a source-bound neutral region or relationship invalidates or a source-bound horizon expires",
+    "invalidation": "relationship breakdown, source-bound spread stop, or source-bound horizon timeout",
+    "cost_gate": "expected spread convergence after both legs fees/slippage/funding must remain positive",
+    "no_trade_is_valid_output": true
+  },
+  "base_forbidden": [
+    "copula_mispricing",
+    "dynamic_cointegration",
+    "ou_half_life_overlay",
+    "liquidity_filter",
+    "session_clock",
+    "indicator_stack",
+    "parameter_sweep",
+    "same_sample_retune",
+    "single_leg_rescue"
+  ],
+  "later_ablation_order": [
+    "BASE",
+    "+ou_half_life",
+    "+dynamic_cointegration",
+    "+copula_mispricing",
+    "+liquidity_filter"
+  ],
+  "survivor_gate": {
+    "required": [
+      "net_R>0",
+      "WR>control_WR",
+      "expectancy_R>0",
+      "PF>1",
+      "costs_included",
+      "DD<=guard",
+      "minimum_effective_sample_from_SSOT"
+    ],
+    "minimum_effective_sample_from_SSOT": "UNRESOLVED_DANGLING_REFERENCE",
+    "survivor_selection_performed": false,
+    "formal_kill_performed": false
+  },
+  "current_blockers": [
+    "cointegration_test_definition_source_binding",
+    "cointegration_significance_threshold_source_or_SSOT_binding",
+    "formation_window_source_binding",
+    "trading_window_source_binding",
+    "spread_normalizer_source_binding",
+    "entry_exit_stop_horizon_source_binding",
+    "minimum_effective_sample_from_SSOT"
+  ],
+  "next": "validate this parameter-free contract against all 10 aligned pair adapters and the fresh per-symbol BingX cost observation; no pair signals or numerical calibration until blockers are source-bound"
+}

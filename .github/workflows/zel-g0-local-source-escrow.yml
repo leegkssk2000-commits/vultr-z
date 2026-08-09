@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - scripts/ci/g0_local_source_escrow.py
+      - scripts/ci/g0_local_canonicalize_escrow.py
       - backend/research/zel_composite_live_source_pin_v1.json
       - backend/research/strategy11_portfolio_governor_v1.py
       - config/zel_alpha_engine_vnext.json
@@ -30,10 +31,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Validate escrow script
+      - name: Validate escrow scripts
         run: |
           set -euo pipefail
-          python -m py_compile scripts/ci/g0_local_source_escrow.py
+          python -m py_compile scripts/ci/g0_local_source_escrow.py scripts/ci/g0_local_canonicalize_escrow.py
           python -m json.tool backend/research/zel_composite_live_source_pin_v1.json >/dev/null
 
       - name: Prepare SSH
@@ -133,6 +134,23 @@ jobs:
           PY
           python -m json.tool out/g0_escrow_pr_branch_parity.json >/dev/null
 
+      - name: Build complete local canonical source set inside escrow
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PIN_B64=$(base64 -w0 backend/research/zel_composite_live_source_pin_v1.json)
+          ssh -i ~/.ssh/vps_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "G0_ESCROW_ROOT=/home/z/.zel-g0-source-escrow EXPECTED_PIN_B64='$PIN_B64' python3 -" \
+            < scripts/ci/g0_local_canonicalize_escrow.py \
+            > out/g0_local_canonical_source_receipt.json
+          python -m json.tool out/g0_local_canonical_source_receipt.json >/dev/null
+
       - name: Verify fail-closed preservation contract
         run: |
           set -euo pipefail
@@ -141,33 +159,33 @@ jobs:
           from pathlib import Path
           r=json.loads(Path('out/g0_local_source_escrow_receipt.json').read_text())
           p=json.loads(Path('out/g0_escrow_pr_branch_parity.json').read_text())
+          c=json.loads(Path('out/g0_local_canonical_source_receipt.json').read_text())
           assert r['state'] in {'PASS_LOCAL_PRIVATE_ESCROW','PASS_LOCAL_ESCROW_WITH_RECOVERY_CANDIDATE'}
-          assert r['runtime_mutated'] is False
-          assert r['active_runtime_tree_mutated'] is False
+          assert c['state']=='PASS_LOCAL_CANONICAL_SOURCE_SET'
+          for x in (r,p,c):
+              assert x['runtime_mutated'] is False
+              assert x['active_runtime_tree_mutated'] is False
+              assert x['public_repository_publish_authority'] is False
+              assert x['destructive_cleanup_authority'] is False
+              assert x['execution_authority']=='NONE'
+              assert x['order_authority']=='BLOCKED'
           assert r['service_state_mutated'] is False
-          assert r['public_repository_publish_authority'] is False
-          assert r['destructive_cleanup_authority'] is False
-          assert r['execution_authority']=='NONE'
-          assert r['order_authority']=='BLOCKED'
+          assert c['service_state_mutated'] is False
           assert r['escrow_git_head']
-          assert p['runtime_mutated'] is False
-          assert p['active_runtime_tree_mutated'] is False
-          assert p['public_repository_publish_authority'] is False
-          assert p['destructive_cleanup_authority'] is False
-          assert p['execution_authority']=='NONE'
-          assert p['order_authority']=='BLOCKED'
+          assert c['escrow_git_head']
           print(json.dumps({
               'escrow_state': r['state'],
-              'source_path_count': r['source_path_count'],
-              'copied_source_count': r['copied_source_count'],
-              'missing_source_count': r['missing_source_count'],
-              'governor_candidate': r['governor_recovery_candidate_written'],
-              'escrow_git_head': r['escrow_git_head'],
               'parity_state': p['state'],
               'branch_match_count': p['branch_match_count'],
               'branch_hash_mismatch_count': p['branch_hash_mismatch_count'],
               'branch_missing_count': p['branch_missing_count'],
-              'action': r['action'],
+              'canonical_state': c['state'],
+              'canonical_source_present_count': c['canonical_source_present_count'],
+              'canonical_source_missing_count': c['canonical_source_missing_count'],
+              'previous_pin_match_count': c['previous_pin_match_count'],
+              'canonical_source_pin_sha256': c['canonical_source_pin_sha256'],
+              'escrow_git_head': c['escrow_git_head'],
+              'action': c['action'],
           }, sort_keys=True))
           PY
 
@@ -182,5 +200,6 @@ jobs:
           path: |
             out/g0_local_source_escrow_receipt.json
             out/g0_escrow_pr_branch_parity.json
+            out/g0_local_canonical_source_receipt.json
           if-no-files-found: error
           retention-days: 30

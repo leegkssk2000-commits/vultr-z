@@ -10,12 +10,12 @@ mkdir -p "$ROOT/engine"
 test -s "$SRC"
 cp "$SRC" "$OUT.tmp"
 
-"$PY" - "$OUT.tmp" "$OUT" "$RECEIPT" <<'PY'
+"$PY" - "$OUT.tmp" "$OUT" "$RECEIPT" "$SRC" <<'PY'
 from __future__ import annotations
 import hashlib,json,py_compile,sys
 from pathlib import Path
 
-src,out,receipt=map(Path,sys.argv[1:])
+src,out,receipt,original_src=map(Path,sys.argv[1:])
 text=src.read_text()
 before_sha=hashlib.sha256(text.encode()).hexdigest()
 marker='# ZEL_STRUCTURAL_PREMIUM_OVERLAY_PATCH_V2_SIX_AXIS'
@@ -28,8 +28,8 @@ if '_ZEL_OVERLAY' in prefix: raise SystemExit('LEGACY_OVERLAY_LEAK_PREFIX')
 if 'EXPECTED_STRATEGY_COUNT = 3' not in prefix: raise SystemExit('EXPECTED_THREE_STRATEGIES_REQUIRED')
 
 v2_helpers=r'''
-V2_REPLAY_CONTRACT_VERSION = "ZEL_STRUCTURAL_PREMIUM_V2_NEXT_OPEN_1"
-V2_ENTRY_EXECUTION_MODEL = "NEXT_BAR_OPEN_SHIFTED_GEOMETRY"
+V2_REPLAY_CONTRACT_VERSION = "ZEL_STRUCTURAL_PREMIUM_V2_NEXT_OPEN_2"
+V2_ENTRY_EXECUTION_MODEL = "NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE"
 _V2_BASE_RESTORE = _restore_structural_premium_registry
 
 def _restore_structural_premium_registry(source_root, raw_registry):
@@ -40,26 +40,45 @@ def _restore_structural_premium_registry(source_root, raw_registry):
         raise RuntimeError(f"V2_RESTORED_REGISTRY_MISMATCH:{sorted(restored)}")
     return restored
 
-def _v2_reprice_pending_entry(producer, pending, execution_price):
-    validated = pending.get("validated")
-    if not isinstance(validated, (tuple, list)) or len(validated) != 4:
-        return None
-    side, signal_entry, stop, target = validated
+def _v2_shift_geometry(side, signal_entry, stop, target, execution_price):
+    side = str(side).lower()
     signal_entry = float(signal_entry)
     stop = float(stop)
     target = float(target)
     execution_price = float(execution_price)
     if min(signal_entry, stop, target, execution_price) <= 0:
         return None
-    delta = execution_price - signal_entry
+    if side == "long":
+        stop_distance = signal_entry - stop
+        target_distance = target - signal_entry
+        if stop_distance <= 0 or target_distance <= 0:
+            return None
+        return execution_price - stop_distance, execution_price + target_distance
+    if side == "short":
+        stop_distance = stop - signal_entry
+        target_distance = signal_entry - target
+        if stop_distance <= 0 or target_distance <= 0:
+            return None
+        return execution_price + stop_distance, execution_price - target_distance
+    return None
+
+def _v2_reprice_pending_entry(producer, pending, execution_price):
+    validated = pending.get("validated")
+    if not isinstance(validated, (tuple, list)) or len(validated) != 4:
+        return None
+    side, signal_entry, stop, target = validated
+    shifted = _v2_shift_geometry(side, signal_entry, stop, target, execution_price)
+    if shifted is None:
+        return None
+    shifted_stop, shifted_target = shifted
     result = dict(pending.get("result") or {})
-    result["entry"] = execution_price
-    result["sl"] = stop + delta
-    result["tp"] = target + delta
-    check = producer.valid_entry(result, execution_price)
+    result["entry"] = float(execution_price)
+    result["sl"] = shifted_stop
+    result["tp"] = shifted_target
+    check = producer.valid_entry(result, float(execution_price))
     if check is None:
         return None
-    if str(check[0]) != str(side):
+    if str(check[0]).lower() != str(side).lower():
         return None
     return result
 '''
@@ -101,18 +120,33 @@ if text.count('execution_price = float(last["open"])') != 1:
     raise SystemExit('NEXT_OPEN_EXECUTION_COUNT')
 if text.count('producer.valid_entry(result, current_price)') != 1:
     raise SystemExit('ENTRY_PREDICATE_COUNT')
+if text.count('def _v2_shift_geometry') != 1:
+    raise SystemExit('SHIFT_GEOMETRY_HELPER_COUNT')
+
+# Build-time side-explicit geometry self-test. These examples preserve absolute distances exactly.
+def shift(side, signal_entry, stop, target, execution):
+    if side == 'long':
+        sd=signal_entry-stop; td=target-signal_entry
+        return execution-sd, execution+td
+    sd=stop-signal_entry; td=signal_entry-target
+    return execution+sd, execution-td
+ls,lt=shift('long',100.0,95.0,110.0,102.0)
+ss,st=shift('short',100.0,105.0,90.0,102.0)
+assert (ls,lt)==(97.0,112.0) and abs(102-ls)==5 and abs(lt-102)==10
+assert (ss,st)==(107.0,92.0) and abs(ss-102)==5 and abs(102-st)==10
 
 out.write_text(text)
 py_compile.compile(str(out),doraise=True)
 after_sha=hashlib.sha256(out.read_bytes()).hexdigest()
 rec={
- 'schema_version':'zel.structural_premium.v2.replay_engine.build.v1',
+ 'schema_version':'zel.structural_premium.v2.replay_engine.build.v2',
  'state':'PASS_V2_NEXT_OPEN_ENGINE_BUILT',
- 'source_path':str(src),'output_path':str(out),
+ 'source_path':str(original_src),'output_path':str(out),
  'source_sha256':before_sha,'output_sha256':after_sha,
  'legacy_overlay_removed':True,'expected_strategy_count':3,
  'entry_predicate':'producer.valid_entry(result,current_price)',
- 'execution_model':'NEXT_BAR_OPEN_SHIFTED_GEOMETRY',
+ 'execution_model':'NEXT_BAR_OPEN_PRESERVE_ABS_RISK_REWARD_DISTANCE',
+ 'geometry_self_test_long':True,'geometry_self_test_short':True,
  'signal_features_preserved':True,'stateful_management_modified':False,
  'research_only':True,'execution_authority':'NONE','order_authority':'BLOCKED','promotion_authority':False,'action':'hold'
 }
@@ -126,4 +160,4 @@ mv -f "$OUT.tmp" "$OUT.source_snapshot"
 echo '===V2_BUILD_RECEIPT==='
 cat "$RECEIPT"
 echo '===V2_CONTRACT_MARKERS==='
-grep -nE 'V2_REPLAY_CONTRACT|pending_entry|execution_price = float\(last\["open"\]\)|validated_entry = producer.valid_entry|entry_execution_model' "$OUT" | head -80
+grep -nE 'V2_REPLAY_CONTRACT|_v2_shift_geometry|pending_entry|execution_price = float\(last\["open"\]\)|validated_entry = producer.valid_entry|entry_execution_model' "$OUT" | head -100

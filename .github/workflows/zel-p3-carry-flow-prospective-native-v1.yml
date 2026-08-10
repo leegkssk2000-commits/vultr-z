@@ -1,0 +1,97 @@
+name: ZEL P3 Carry Flow Prospective Native V1
+
+on:
+  pull_request:
+    branches: [zel-p3-native-source-binding-v1]
+    paths:
+      - backend/research/p3_prospective_native_feature_collector.py
+      - backend/research/contracts/p3_carry_flow_prospective_native_v1.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p3-carry-flow-prospective-native-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p3-carry-flow-prospective-native-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prospective-seed:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate frozen source-acquisition contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_prospective_native_feature_collector.py scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/p3_carry_flow_prospective_native_v1.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/p3_prospective_native_feature_collector.py \
+            backend/research/contracts/p3_carry_flow_prospective_native_v1.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-p3-carry-flow-prospective-native-v1.yml
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/p3_carry_flow_prospective_native_v1.json'))
+          assert c['state']=='FROZEN_PROSPECTIVE_SOURCE_ACQUISITION'
+          assert c['family']=='carry_flow'
+          assert c['native_sources']['funding']['status']=='HISTORICAL_W1_W2_BOUND'
+          assert c['native_sources']['premium_index']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
+          assert c['native_sources']['open_interest']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
+          assert c['native_sources']['flow']['status']=='SOURCE_NOT_BOUND'
+          assert c['native_sources']['premium_index']['derived_basis_before_contract']=='FORBIDDEN'
+          assert c['capture_policy']['replay_before_alignment_and_coverage_gate']=='FORBIDDEN'
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_P3_PROSPECTIVE_CONTRACT_FROZEN')
+          PY
+          mkdir -p out
+      - name: Collect one official prospective basis-state and OI seed snapshot
+        run: |
+          set -euo pipefail
+          python backend/research/p3_prospective_native_feature_collector.py --out out/p3_prospective_native_snapshot.json
+      - name: Verify fail-closed snapshot and no invented flow/basis history
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/p3_prospective_native_snapshot.json'))
+          assert r['state']=='PASS_P3_PROSPECTIVE_NATIVE_BASIS_OI_SNAPSHOT'
+          assert r['record_count']==4
+          assert r['features']==['premium_index','open_interest']
+          assert r['flow_source_bound'] is False
+          assert r['prospective_only'] is True and r['historical_coverage_claim'] is False
+          assert r['replay_allowed'] is False and r['signal_generation_enabled'] is False
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          expected={(f,s) for f in ('premium_index','open_interest') for s in ('BTC-USDT','ETH-USDT')}
+          actual={(x['feature'],x['symbol']) for x in r['records']}
+          assert actual==expected
+          for x in r['records']:
+              assert x['source_timestamp_ms']>0 and x['collected_at_ms']>0
+              assert x['historical_coverage_claim'] is False
+              assert x['derived_basis_value_emitted'] is False
+              if x['feature']=='premium_index':
+                  assert all(k in x['values'] for k in ('markPrice','indexPrice','updateTime'))
+              else:
+                  assert all(k in x['values'] for k in ('openInterest','time'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual_sha=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual_sha==r['receipt_sha256']
+          print('PASS_P3_PROSPECTIVE_SEED_SNAPSHOT',r['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-p3-carry-flow-prospective-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/p3_prospective_native_snapshot.json
+          if-no-files-found: error
+          retention-days: 90

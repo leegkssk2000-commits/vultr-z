@@ -1,0 +1,98 @@
+name: ZEL Edge Factory V2 XSec Momentum LS Fresh2026 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_xsec_momentum_ls_fresh2026.py'
+      - 'research/policies/edge_factory_v2_xsec_momentum_ls_fresh2026_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-xsec-momentum-ls-fresh2026-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  market-neutral-fresh2026:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Assert single-use market-neutral contract before source access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_xsec_momentum_ls_fresh2026.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_xsec_momentum_ls_fresh2026_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_FRESH2026_SCORE'
+          assert c['candidate_id']=='XSEC_MOMENTUM_LS_24H_TOP4_BOTTOM4_V1'
+          assert c['source']['run_id']==31435447148 and c['source']['artifact_id']==9080824711
+          assert c['source']['dataset_sha256']=='41e8029e41e4605c5d21830fd9b6ebcd49f22aadeeefa8768b4531dc0db3e7e3'
+          assert c['signal']['lookback_hours']==24 and c['signal']['decision_grid_hours']==4 and c['signal']['holding_hours']==4
+          assert c['signal']['long_selection']=='TOP_4_CAUSAL_24H_RETURNS' and c['signal']['short_selection']=='BOTTOM_4_CAUSAL_24H_RETURNS'
+          assert c['signal']['direction_search']==0 and c['signal']['lookback_search']==0 and c['signal']['selection_count_search']==0 and c['signal']['holding_period_search']==0
+          assert c['signal']['regime_filter']=='NONE' and c['signal']['volatility_filter']=='NONE' and c['signal']['tp_sl_trailing']=='NONE'
+          assert c['portfolio']['construction']=='DOLLAR_NEUTRAL_EQUAL_GROSS'
+          assert c['portfolio']['long_gross_weight']==0.5 and c['portfolio']['short_gross_weight']==0.5 and c['portfolio']['gross_exposure']==1.0 and c['portfolio']['net_market_exposure_at_entry']==0.0
+          assert c['cost_contract']['normal_roundtrip_bps_on_gross_exposure']==8.0 and c['cost_contract']['stress_roundtrip_bps_on_gross_exposure']==16.0
+          assert c['cost_contract']['funding_included'] is False
+          assert c['single_use_gate']['minimum_portfolio_batches']==1000
+          assert c['single_use_gate']['normal_daily_cluster_bootstrap_confidence']==0.99 and c['single_use_gate']['stress_daily_cluster_bootstrap_confidence']==0.95
+          assert c['fresh2026_reuse_allowed_after_result'] is False
+          assert c['ai_used_before_score'] is False and c['survivor_declared'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_XSEC_MOMENTUM_LS_CONTRACT_FROZEN')
+          PY
+      - name: Install deterministic runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+      - name: Download immutable fresh2026 source
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-fresh2026-source-31435447148-1
+          path: /tmp/xsec-ls-fresh2026
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31435447148'
+      - name: Run the single pre-registered market-neutral test
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_xsec_momentum_ls_fresh2026.py \
+            --dataset-root /tmp/xsec-ls-fresh2026 \
+            --out out/xsec_momentum_ls_fresh2026.json
+      - name: Assert terminal single-use receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/xsec_momentum_ls_fresh2026.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_FRESH2026_MARKET_NEUTRAL_PRICE_EDGE_CANDIDATE_NOT_SURVIVOR','REJECT_FRESH2026_MARKET_NEUTRAL_NO_SEARCH_NO_REUSE'}
+          assert r['candidate_id']=='XSEC_MOMENTUM_LS_24H_TOP4_BOTTOM4_V1'
+          assert r['contract']['direction_search']==0 and r['contract']['lookback_search']==0 and r['contract']['selection_count_search']==0 and r['contract']['holding_period_search']==0
+          assert r['contract']['funding_included'] is False
+          assert r['fresh2026_reuse_allowed_after_result'] is False
+          assert r['ai_used_before_score'] is False and r['survivor_declared'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('XSEC_LS_STATE',r['state'])
+          print('XSEC_LS_PORTFOLIO',json.dumps(r['portfolio'],sort_keys=True))
+          print('XSEC_LS_NORMAL',json.dumps(r['normal'],sort_keys=True))
+          print('XSEC_LS_STRESS',json.dumps(r['stress'],sort_keys=True))
+          print('XSEC_LS_GATE',json.dumps(r['gate'],sort_keys=True))
+          print('XSEC_LS_RECEIPT',r['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-xsec-momentum-ls-fresh2026-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/xsec_momentum_ls_fresh2026.json
+          if-no-files-found: error
+          retention-days: 90

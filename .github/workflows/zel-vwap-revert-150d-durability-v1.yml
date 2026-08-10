@@ -104,19 +104,28 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Verify canonical owner and funding roots exist without mutation
+      - name: Verify canonical inputs and discover existing pandas Python read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
+          remote_py=$(ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
             set -euo pipefail
             test -f /home/z/z/tools/q4r3_exact25_dedicated_shadow_producer.py
             test -d /opt/zel/historical-oos-v1
-            /usr/bin/python3 -c "import pandas"
-            echo PASS_VWAP150_VPS_READONLY_INPUTS_PRESENT
-          '
+            for py in $(find /home/z/z /opt/zel -maxdepth 6 -type f \( -name python -o -name python3 \) -perm -u+x 2>/dev/null | sort -u) /usr/local/bin/python3 /usr/bin/python3; do
+              test -x "$py" || continue
+              if "$py" -c "import pandas" >/dev/null 2>&1; then
+                printf "%s\n" "$py"
+                exit 0
+              fi
+            done
+            exit 1
+          ')
+          test -n "$remote_py"
+          printf '%s\n' "$remote_py" > out/remote_python.txt
+          echo "PASS_VWAP150_EXISTING_PANDAS_PYTHON=$remote_py"
 
       - name: Run original canonical vwap_revert semantics on 150d expanded data
         env:
@@ -125,6 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           remote="/tmp/zel-vwap150-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_py=$(cat out/remote_python.txt)
           echo "$remote" > out/remote_path.txt
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data'"
           scp -i ~/.ssh/vps_key -o BatchMode=yes \
@@ -136,7 +146,7 @@ jobs:
             /tmp/vwap150/data/*_1771027200000_1782549000000.csv.gz \
             "$VPS_USER@$VPS_HOST:$remote/data/"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=450 "$VPS_USER@$VPS_HOST" \
-            "nice -n 10 /usr/bin/python3 '$remote/vwap_revert_150d_durability.py' \
+            "nice -n 10 '$remote_py' '$remote/vwap_revert_150d_durability.py' \
               --engine '$remote/zel_historical_oos_exact25_replay_v1.py' \
               --source-root /home/z/z \
               --market-root '$remote' \

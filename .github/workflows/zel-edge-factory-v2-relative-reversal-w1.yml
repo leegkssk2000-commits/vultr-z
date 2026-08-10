@@ -1,0 +1,124 @@
+name: ZEL Edge Factory V2 Relative Reversal W1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_relative_reversal_w1.py'
+      - 'research/policies/edge_factory_v2_relative_reversal_w1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-relative-reversal-w1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-relative-reversal-w1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  relative-reversal-w1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Freeze W1 contract and authority
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_relative_reversal_w1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_relative_reversal_w1_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_RELATIVE_REVERSAL_W1'
+          assert c['dataset_run_id']==30971232337
+          assert c['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
+          assert c['w1_start_ms']==1771027200000 and c['w1_end_exclusive_ms']==1774828800000
+          assert c['timeframe']=='1h' and c['lookback_hours']==24
+          assert c['decision_grid_hours']==4 and c['holding_hours']==4
+          assert len(c['families'])==2 and c['candidate_budget']==1
+          assert c['ai_used_for_w1_discovery'] is False
+          assert c['w2_w3_metrics_inspected'] is False
+          assert c['tp_sl_trailing_skill_bot_used'] is False
+          assert c['survivor_declared'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_RELATIVE_REVERSAL_W1_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download immutable 150d BingX market dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
+          path: /tmp/relative-edge-v2
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '30971232337'
+
+      - name: Verify immutable dataset
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/relative-edge-v2')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['state']=='PASS_BINGX_1M_GAP_EXCLUDED_DATASET_STAGED'
+          assert m['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
+          rows=[x for x in m['results'] if x.get('segment_id')=='POST_GAP']
+          assert len(rows)==5
+          for row in rows:
+              p=root/'data'/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              assert row['row_count']==192030
+              assert row['missing_interval_count']==0 and row['duplicate_timestamp_count']==0
+          print('PASS_RELATIVE_REVERSAL_DATASET_IMMUTABLE')
+          PY
+
+      - name: Run W1 relative reversal effect map
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_relative_reversal_w1.py \
+            --dataset-root /tmp/relative-edge-v2 \
+            --out out/edge_factory_v2_relative_reversal_w1.json
+
+      - name: Assert fail-closed receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/edge_factory_v2_relative_reversal_w1.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_RELATIVE_REVERSAL_W1_WITH_CANDIDATE','HOLD_RELATIVE_REVERSAL_W1_NO_CANDIDATE'}
+          assert r['ai_used_for_discovery'] is False and r['w2_w3_metrics_inspected'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['w2_candidate_count']<=1
+          print('RELATIVE_REVERSAL_W1_STATE',r['state'])
+          for family,row in r['results'].items():
+              print('RELATIVE_REVERSAL_EFFECT',family,row['state'],'events=',row['event_count'],'net_bps=',row['mean_net_bps_after_cost_floor'],'ci=',row['daily_block_bootstrap95_net_bps'],'positive_symbols=',row['positive_symbol_count'])
+          print('RELATIVE_REVERSAL_W2_CANDIDATES',json.dumps(r['w2_candidates'],sort_keys=True))
+          print('RELATIVE_REVERSAL_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-relative-reversal-w1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_relative_reversal_w1.json
+          if-no-files-found: error
+          retention-days: 90

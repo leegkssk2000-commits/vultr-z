@@ -1,0 +1,103 @@
+name: ZEL Edge Factory V2 W2 Validate
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_w1_effect_map.py'
+      - 'backend/research/edge_factory_v2_w2_validate.py'
+      - 'research/policies/edge_factory_v2_w1_contract.json'
+      - 'research/policies/edge_factory_v2_w2_candidate_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-w2-validate.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-w2-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  w2-validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Freeze W2 candidate contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_w1_effect_map.py backend/research/edge_factory_v2_w2_validate.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_w2_candidate_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_W2_REPLAY'
+          assert c['parent_w1_receipt_sha256']=='aab36b521c5ac9e2002d4dc04d34dfdac855653986f01efb761fe4cd43968fcf'
+          assert c['dataset_run_id']==30971232337
+          assert c['w2_start_ms']==1774828800000 and c['w2_end_exclusive_ms']==1778630400000
+          assert c['timeframe']=='1h' and len(c['candidates'])==2
+          assert c['parameter_changes_after_w1']==0 and c['feature_changes_after_w1']==0 and c['ai_changes_before_w2']==0
+          assert c['w3_metrics_inspected'] is False and c['survivor_declared'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_EDGE_FACTORY_V2_W2_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download accepted 150d BingX 1m dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
+          path: /tmp/edge-v2
+          github-token: ${{ github.token }}
+          run-id: 30971232337
+          repository: ${{ github.repository }}
+
+      - name: Run frozen candidates on W2 only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_w2_validate.py \
+            --dataset-root /tmp/edge-v2 \
+            --contract research/policies/edge_factory_v2_w2_candidate_contract.json \
+            --out out/edge_factory_v2_w2_validate.json
+
+      - name: Assert W1 semantic parity and W3 blindness
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/edge_factory_v2_w2_validate.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_W2_EFFECT_WITH_CANDIDATE','FAIL_W2_NO_EFFECT_SURVIVOR'}
+          assert set(r['w1_semantic_parity'].values())=={'PASS'}
+          assert r['w3_metrics_inspected'] is False
+          assert r['ai_used_before_w2'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('EDGE_V2_W2_STATE',r['state'])
+          for family,row in r['results'].items():
+              print('EDGE_V2_W2',family,row['state'],'events=',row['event_count'],'net_bps=',row.get('mean_net_bps_after_cost_floor'),'ci=',row.get('daily_block_bootstrap95_net_bps'),'positive_symbols=',row.get('positive_symbol_count'))
+          print('EDGE_V2_W2_PASS_FAMILIES',r['w2_pass_families'])
+          print('EDGE_V2_W2_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-w2-validate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_w2_validate.json
+          if-no-files-found: error
+          retention-days: 90

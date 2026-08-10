@@ -1,0 +1,231 @@
+name: ZEL P4 Relative Value PSA BASE V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/p4_relative_value_psa_base.py
+      - backend/research/contracts/p4_relative_value_psa_base_v1.json
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p4-relative-value-psa-base-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-p4-relative-value-psa-base-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p4-base:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate frozen pair BASE and Alpha-first authority
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p4_relative_value_psa_base.py backend/tools/zel_bingx_real_calibration_v1.py scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/p4_relative_value_psa_base_v1.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/p4_relative_value_psa_base.py \
+            backend/research/contracts/p4_relative_value_psa_base_v1.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-p4-relative-value-psa-base-v1.yml
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/p4_relative_value_psa_base_v1.json'))
+          assert c['state']=='FROZEN_BEFORE_REPLAY'
+          assert c['family']=='relative_value_psa'
+          assert c['candidate_id']=='RV_PSA_BASE_BTC_ETH_LOGRATIO_7D_Z2_V1'
+          assert c['pair']==['BTCUSDT','ETHUSDT'] and c['timeframe']=='15m'
+          assert c['adapter']['rolling_window_bars']==672
+          assert c['adapter']['zscore_reference']=='prior_672_closed_bars_excluding_current_bar'
+          assert c['adapter']['fill']=='both_legs_next_bar_open' and c['adapter']['same_bar_fill'] is False
+          assert c['signal']['entry_abs_z']==2.0
+          assert c['signal']['stop_loss'] is None and c['signal']['take_profit'] is None
+          assert c['signal']['max_holding_bars'] is None and c['signal']['trailing_overlay'] is None
+          assert c['signal']['parameter_selection_performed'] is False and c['signal']['exit_optimization_performed'] is False
+          assert c['variants']['created_now']==0 and c['variants']['maximum_later_if_base_fails']==2
+          assert c['data']['w1_first'] is True and c['data']['w2_access_only_after_w1_gross_pass'] is True
+          assert c['data']['w3_access_forbidden'] is True
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_P4_BASE_FROZEN_PAIR_CAUSAL')
+          PY
+          mkdir -p /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w1 out ~/.ssh
+
+      - name: Materialize pair W1 only; W2 and W3 remain untouched
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          git show FETCH_HEAD:zel_historical_oos_v1/manifest.json > /tmp/p4_history/zel_historical_oos_v1/manifest.json
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w1/$s.csv > /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w1/$s.csv
+          done
+          test ! -e /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w2
+          test ! -e /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w3
+          echo PASS_P4_W1_PAIR_LEGS_MATERIALIZED_ONLY
+
+      - name: Run W1 gross pair edge before any cost or W2 access
+        run: |
+          set -euo pipefail
+          python backend/research/p4_relative_value_psa_base.py \
+            --mode w1_gross \
+            --data-root /tmp/p4_history \
+            --manifest /tmp/p4_history/zel_historical_oos_v1/manifest.json \
+            --contract backend/research/contracts/p4_relative_value_psa_base_v1.json \
+            --out out/p4_relative_value_psa_w1_gross_receipt.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('out/p4_relative_value_psa_w1_gross_receipt.json'))
+          assert r['mode']=='w1_gross'
+          assert r['pair_source_parity']['row_parity'] is True and r['pair_source_parity']['timestamp_parity'] is True
+          assert r['cost_model_accessed'] is False
+          assert r['W3_untouched'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('P4_W1_STATE',r['state'])
+          print('P4_W1_GROSS',json.dumps(r['aggregate_gross'],sort_keys=True))
+          print('P4_W1_DIRECTIONS',json.dumps(r['direction_counts'],sort_keys=True))
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('P4_W1_PASS=' + ('1' if r['state']=='PASS_P4_W1_GROSS_PAIR_EDGE' else '0') + '\n')
+          PY
+
+      - name: Materialize pair W2 only after W1 gross PASS; W3 stays untouched
+        if: env.P4_W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w2
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w2/$s.csv > /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w2/$s.csv
+          done
+          test ! -e /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w3
+          echo PASS_P4_W2_PAIR_LEGS_AUTHORIZED_W3_UNTOUCHED
+
+      - name: Prepare SSH for one fresh read-only two-leg BingX cost observation
+        if: env.P4_W1_PASS == '1'
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh official BingX per-symbol cost envelope after W1 PASS
+        if: env.P4_W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-p4-pair-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          for s in ('BTC-USDT','ETH-USDT'):
+              assert s in r['funding_p95_abs_pct_8h_by_symbol']
+              assert s in r['slippage_floor_bps_by_symbol_and_notional']
+              assert r['slippage_floor_bps_by_symbol_and_notional'][s]
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_P4_FRESH_TWO_LEG_COST',json.dumps({
+            'taker_fee_pct':r['taker_fee_pct'],
+            'funding_by_symbol':r['funding_p95_abs_pct_8h_by_symbol'],
+            'receipt_sha256':r['receipt_sha256']
+          },sort_keys=True))
+          PY
+
+      - name: Run W2 cost-adjusted pair OOS only after W1 PASS
+        if: env.P4_W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/p4_relative_value_psa_base.py \
+            --mode w2_cost \
+            --data-root /tmp/p4_history \
+            --manifest /tmp/p4_history/zel_historical_oos_v1/manifest.json \
+            --contract backend/research/contracts/p4_relative_value_psa_base_v1.json \
+            --w1-receipt out/p4_relative_value_psa_w1_gross_receipt.json \
+            --cost-model out/bingx_real_observation.json \
+            --out out/p4_relative_value_psa_w2_cost_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/p4_relative_value_psa_w2_cost_receipt.json'))
+          assert r['mode']=='w2_cost'
+          assert r['pair_source_parity']['row_parity'] is True and r['pair_source_parity']['timestamp_parity'] is True
+          assert r['W3_untouched'] is True and r['DD_gate_resolved'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('P4_W2_STATE',r['state'])
+          print('P4_W2_GROSS',json.dumps(r['aggregate_gross'],sort_keys=True))
+          print('P4_W2_NET',json.dumps(r['aggregate_net'],sort_keys=True))
+          print('P4_W2_COST',json.dumps(r['cost_source']['applied'],sort_keys=True))
+          PY
+
+      - name: Seal route and prove W3 untouched
+        if: always()
+        run: |
+          set -euo pipefail
+          test ! -e /tmp/p4_history/zel_historical_oos_v1/market/15m/15m_w3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          w1=json.load(open('out/p4_relative_value_psa_w1_gross_receipt.json'))
+          p=Path('out/p4_relative_value_psa_w2_cost_receipt.json')
+          out={
+            'W1':w1['state'],
+            'W2':json.loads(p.read_text())['state'] if p.exists() else 'NOT_ACCESSED_W1_FAIL',
+            'W3_untouched':True,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED'
+          }
+          Path('out/p4_relative_value_psa_route_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p4-relative-value-psa-base-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/p4_relative_value_psa_w1_gross_receipt.json
+            out/p4_relative_value_psa_w2_cost_receipt.json
+            out/p4_relative_value_psa_route_receipt.json
+            out/bingx_real_observation.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup remote cost probe
+        if: always() && env.P4_W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

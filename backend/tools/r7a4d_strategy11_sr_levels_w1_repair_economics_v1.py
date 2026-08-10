@@ -131,7 +131,7 @@ def main() -> int:
     source_config = baseline["candidate"]
     gate = helper.exact._gate_from(source_config)
     exit_spec = helper.exact._exit_from(source_config)
-    surgery = sr_repair.repair.surgery_from(baseline.get("surgery"))
+    surgery = sr_repair.p.surgery_from(baseline.get("surgery"))
     symbols = tuple(str(value) for value in baseline.get("symbols", []))
     if not symbols:
         raise RuntimeError("SYMBOLS_MISSING")

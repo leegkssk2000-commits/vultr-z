@@ -1,0 +1,83 @@
+{
+  "schema_version": "zel.p4.relative_value_psa_base.v1",
+  "state": "FROZEN_BEFORE_REPLAY",
+  "family": "relative_value_psa",
+  "candidate_id": "RV_PSA_BASE_BTC_ETH_LOGRATIO_7D_Z2_V1",
+  "research_only": true,
+  "pair": ["BTCUSDT", "ETHUSDT"],
+  "timeframe": "15m",
+  "adapter": {
+    "pair_leg_source": "zel-historical-oos-data-v1",
+    "timestamp_parity_required": true,
+    "row_parity_required": true,
+    "manifest_hash_match_required": true,
+    "spread": "log(BTC_close)-log(ETH_close)",
+    "rolling_window_bars": 672,
+    "rolling_window_clock_days": 7,
+    "zscore_reference": "prior_672_closed_bars_excluding_current_bar",
+    "fill": "both_legs_next_bar_open",
+    "same_bar_fill": false,
+    "one_pair_position": true,
+    "equal_notional_legs": true,
+    "pyramiding": false
+  },
+  "signal": {
+    "entry_abs_z": 2.0,
+    "entry_high": "z>=2 => SHORT_BTC_LONG_ETH",
+    "entry_low": "z<=-2 => LONG_BTC_SHORT_ETH",
+    "exit_high_entry": "z<=0",
+    "exit_low_entry": "z>=0",
+    "stop_loss": null,
+    "take_profit": null,
+    "max_holding_bars": null,
+    "trailing_overlay": null,
+    "parameter_selection_performed": false,
+    "exit_optimization_performed": false,
+    "rationale": "Canonical source-ready two-leg mean-reversion BASE: a fixed 7-day prior-only log-ratio state with standard +/-2 sigma entry and zero-cross exit. No threshold search is performed before replay."
+  },
+  "data": {
+    "manifest": "zel_historical_oos_v1/manifest.json",
+    "development_window": "15m_w1",
+    "oos_window": "15m_w2",
+    "untouched_window": "15m_w3",
+    "w1_first": true,
+    "w2_access_only_after_w1_gross_pass": true,
+    "w3_access_forbidden": true,
+    "forward_overlap_required": 0
+  },
+  "w1_gross_gate": {
+    "minimum_closed_pair_trades": 5,
+    "compound_return_positive": true,
+    "expectancy_positive": true,
+    "cost_model_accessed": false
+  },
+  "w2_cost_gate": {
+    "minimum_closed_pair_trades": 5,
+    "net_compound_return_positive": true,
+    "net_expectancy_positive": true,
+    "cost_source": "fresh_BingX_read_only_observation",
+    "fee": "two_equal_notional_legs_round_trip",
+    "slippage": "per_symbol_worst_observed_available_notional_bucket_round_trip_equal_weighted",
+    "funding": "per_symbol_absolute_p95_8h_prorated_by_holding_time_equal_weighted"
+  },
+  "ordered_route": [
+    "pair_leg_integrity_and_timestamp_parity",
+    "W1_gross_pair_edge",
+    "W2_pair_leg_integrity_if_W1_pass",
+    "fresh_two_leg_cost_observation_if_W1_pass",
+    "W2_net_pair_edge_if_W1_pass",
+    "DD_within_Z_POLICY_v3_SSOT_only_if_W2_pass",
+    "durability_later_only_after_DD_gate"
+  ],
+  "win_rate": "REPORT_ONLY",
+  "variants": {
+    "created_now": 0,
+    "maximum_later_if_base_fails": 2,
+    "predeclare_before_replay_required": true
+  },
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "action": "hold"
+}

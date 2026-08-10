@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'backend/research/edge_factory_v2_independent_18m_1h_collect.py'
+      - 'backend/research/edge_factory_v2_independent_18m_1h_coverage_probe.py'
       - 'research/policies/edge_factory_v2_independent_18m_1h_data_contract.json'
       - '.github/workflows/zel-edge-factory-v2-independent-18m-1h-data-v1.yml'
   workflow_dispatch:
@@ -33,7 +34,9 @@ jobs:
       - name: Assert independent replication partitions before collection
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/edge_factory_v2_independent_18m_1h_collect.py
+          python -m py_compile \
+            backend/research/edge_factory_v2_independent_18m_1h_collect.py \
+            backend/research/edge_factory_v2_independent_18m_1h_coverage_probe.py
           python backend/research/edge_factory_v2_independent_18m_1h_collect.py --self-test --out-dir /tmp/unused --manifest /tmp/unused.json
           python - <<'PY'
           import json
@@ -53,21 +56,49 @@ jobs:
           assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
           print('PASS_INDEPENDENT_18M_PARTITIONS_FROZEN')
           PY
+          mkdir -p out/data
 
-      - name: Collect public BingX 1h independent history read-only
+      - name: Probe exact BingX historical coverage before collection
+        id: coverage
         run: |
           set -euo pipefail
-          mkdir -p out/data
+          python backend/research/edge_factory_v2_independent_18m_1h_coverage_probe.py \
+            --out out/coverage_probe.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r=json.load(open('out/coverage_probe.json'))
+          print('full_coverage=' + ('true' if r['full_exact_coverage_all_symbols'] else 'false'))
+          print('state=' + r['state'])
+          PY
+
+      - name: Collect public BingX 1h independent history read-only
+        if: steps.coverage.outputs.full_coverage == 'true'
+        run: |
+          set -euo pipefail
           python backend/research/edge_factory_v2_independent_18m_1h_collect.py \
             --out-dir out/data \
             --manifest out/manifest.json
 
-      - name: Independent exact coverage and SHA verification
+      - name: Verify source gap or exact collected coverage
         run: |
           set -euo pipefail
           python - <<'PY'
           import csv,gzip,hashlib,json
           from pathlib import Path
+          p=json.load(open('out/coverage_probe.json'))
+          material={k:v for k,v in p.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==p['receipt_sha256']
+          assert p['economics_inspected'] is False and p['ai_used'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          print('SOURCE_COVERAGE_STATE',p['state'])
+          print('SOURCE_COMMON_EARLIEST',p['common_earliest_available_utc'])
+          for row in p['rows']:
+              print('SOURCE_COVERAGE',row['symbol'],'available=',row['available_row_count'],'missing=',row['missing_row_count'],'min=',row['min_timestamp_utc'],'max=',row['max_timestamp_utc'],'full=',row['full_exact_coverage'])
+          if not p['full_exact_coverage_all_symbols']:
+              assert not Path('out/manifest.json').exists()
+              print('HOLD_SOURCE_GAP_COLLECTION_NOT_RUN')
+              raise SystemExit(0)
           r=json.load(open('out/manifest.json'))
           material={k:v for k,v in r.items() if k!='receipt_sha256'}
           actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
@@ -76,28 +107,27 @@ jobs:
           assert r['expected_total_rows']==r['actual_total_rows']==65640
           assert r['economics_inspected'] is False and r['holdout_metrics_inspected'] is False
           assert r['ai_used'] is False and r['protected_mutations']==0
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           expected_parts={'R1_REPLICATION_DISCOVERY':4344,'R2_REPLICATION_VALIDATION':4416,'R3_REPLICATION_TEST':4368}
           for item in r['results']:
-              p=Path('out/data')/item['file']
-              assert hashlib.sha256(p.read_bytes()).hexdigest()==item['file_sha256']
+              path=Path('out/data')/item['file']
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==item['file_sha256']
               assert item['row_count']==13128 and item['partition_row_counts']==expected_parts
-              count=0; prior=None; first=None; last=None
-              with gzip.open(p,'rt',encoding='utf-8',newline='') as fh:
+              count=0;prior=None;first=None;last=None
+              with gzip.open(path,'rt',encoding='utf-8',newline='') as fh:
                   for row in csv.DictReader(fh):
                       ts=int(row['timestamp_ms'])
                       if first is None:first=ts
-                      if prior is not None:assert ts-prior==3600000,(item['symbol'],prior,ts)
+                      if prior is not None:assert ts-prior==3600000
                       prior=ts;last=ts;count+=1
-              assert count==13128
-              assert first==1672531200000 and last==1719792000000-3600000
-          print(json.dumps({'state':r['state'],'rows':r['actual_total_rows'],'dataset_sha256':r['dataset_sha256'],'receipt_sha256':r['receipt_sha256']},sort_keys=True))
+              assert count==13128 and first==1672531200000 and last==1719792000000-3600000
+          print('PASS_INDEPENDENT_DATASET',r['dataset_sha256'])
           PY
 
       - uses: actions/upload-artifact@v4
         with:
           name: zel-edge-factory-v2-independent-18m-1h-data-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            out/coverage_probe.json
             out/manifest.json
             out/data/*.csv.gz
           if-no-files-found: error

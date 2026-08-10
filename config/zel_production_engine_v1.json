@@ -1,0 +1,88 @@
+{
+  "schema_version": "zel.production_engine.v1",
+  "state": "PRODUCTION_COMPLETION_SPINE",
+  "goal": "COMPLETE_AUTONOMOUS_TRADING_PROGRAM",
+  "engine_completion_independent_of_alpha_survivor": true,
+  "no_validated_alpha_behavior": "HOLD_NO_ORDER",
+  "single_exchange": "BINGX_USDT_M_FUTURES",
+  "engine_order": [
+    "market_data",
+    "alpha_adapter",
+    "risk_gate",
+    "position_state",
+    "order_plan",
+    "execution_adapter",
+    "formal_ledger",
+    "pnl_accounting",
+    "alimi_telegram"
+  ],
+  "modes": {
+    "SHADOW": {
+      "enabled": true,
+      "exchange_order_submission": false,
+      "ledger_required": true
+    },
+    "PAPER": {
+      "enabled": true,
+      "exchange_order_submission": false,
+      "ledger_required": true
+    },
+    "LIVE": {
+      "enabled": false,
+      "exchange_order_submission": false,
+      "activation_gate": "EXPLICIT_LIVE_READINESS_APPROVAL_REQUIRED"
+    }
+  },
+  "alpha_contract": {
+    "accepted_states": ["SURVIVOR_ACTIVE"],
+    "non_survivor_states": ["NONE", "CANDIDATE", "HOLD", "REJECT", "SOURCE_HOLD"],
+    "non_survivor_result": "HOLD_NO_ORDER",
+    "signal_actions": ["LONG", "SHORT", "EXIT", "FLAT"]
+  },
+  "risk_contract": {
+    "fail_closed": true,
+    "required_before_order_plan": true,
+    "reject_result": "BLOCK_NO_ORDER",
+    "emergency_result": "STOP_NO_ORDER",
+    "position_and_leverage_presets_remain_external_ssot": true
+  },
+  "position_contract": {
+    "single_writer": true,
+    "duplicate_open_forbidden": true,
+    "duplicate_close_forbidden": true,
+    "close_before_reopen_same_symbol": true,
+    "position_id_required": true
+  },
+  "order_contract": {
+    "intent_types": ["NONE", "OPEN_LONG", "OPEN_SHORT", "CLOSE", "REDUCE"],
+    "shadow_and_paper_must_never_submit_exchange_order": true,
+    "live_requires_explicit_activation": true,
+    "order_idempotency_key_required": true
+  },
+  "ledger_contract": {
+    "append_only": true,
+    "open_close_pairing_required": true,
+    "strategy_lineage_required": true,
+    "alpha_lineage_required": true,
+    "risk_decision_required": true,
+    "cost_lineage_required": true,
+    "pnl_recomputed_from_ledger": true
+  },
+  "telemetry_contract": {
+    "formal_ledger_is_truth": true,
+    "view_pnl_pos_must_share_same_snapshot": true,
+    "alimi_is_read_only_control_surface_until_explicit_action": true
+  },
+  "authority": {
+    "shadow_execution": "SIMULATED_ONLY",
+    "paper_execution": "SIMULATED_ONLY",
+    "live_execution": "BLOCKED",
+    "order_authority": "BLOCKED_FOR_EXCHANGE",
+    "runtime_completion_authority": "ALLOWED"
+  },
+  "research_lane": {
+    "status": "BACKGROUND_ONLY",
+    "may_block_engine_completion": false,
+    "may_activate_orders": false
+  }
+}

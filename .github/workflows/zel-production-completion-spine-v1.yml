@@ -1,0 +1,56 @@
+name: ZEL Production Completion Spine V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'config/zel_production_engine_v1.json'
+      - 'backend/production/zel_production_spine_v1.py'
+      - 'tests/test_zel_production_spine_v1.py'
+      - '.github/workflows/zel-production-completion-spine-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-spine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile production spine
+        run: |
+          python -m py_compile backend/production/zel_production_spine_v1.py
+          python -m json.tool config/zel_production_engine_v1.json >/dev/null
+      - name: Install test runtime
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Run production invariants
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_zel_production_spine_v1.py
+      - name: Assert engine-completion route
+        run: |
+          python - <<'PY'
+          import json
+          c=json.load(open('config/zel_production_engine_v1.json'))
+          assert c['goal']=='COMPLETE_AUTONOMOUS_TRADING_PROGRAM'
+          assert c['engine_completion_independent_of_alpha_survivor'] is True
+          assert c['no_validated_alpha_behavior']=='HOLD_NO_ORDER'
+          assert c['modes']['SHADOW']['enabled'] is True
+          assert c['modes']['PAPER']['enabled'] is True
+          assert c['modes']['LIVE']['enabled'] is False
+          assert c['authority']['live_execution']=='BLOCKED'
+          assert c['research_lane']['status']=='BACKGROUND_ONLY'
+          assert c['research_lane']['may_block_engine_completion'] is False
+          assert c['engine_order']==[
+              'market_data','alpha_adapter','risk_gate','position_state','order_plan',
+              'execution_adapter','formal_ledger','pnl_accounting','alimi_telegram'
+          ]
+          print('PASS_PRODUCTION_COMPLETION_SPINE')
+          PY

@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -18,7 +19,7 @@ env:
 jobs:
   exact-native-probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,6 +37,8 @@ jobs:
           d=json.load(open(p))
           assert d['state']=='FROZEN_BEFORE_EXACT_NATIVE_PROBE'
           assert d['parent_pr']==627
+          assert d['parent_run_id']==31436542580
+          assert d['parent_artifact_id']==9081286605
           assert d['candidate_rule_changes']==0
           assert d['expected_missing_baseline_total']==88
           assert d['probe_half_window_minutes']==60
@@ -44,12 +47,29 @@ jobs:
           assert d['survivor_declared'] is False
           print('PASS_EXACT_PROBE_CONTRACT')
           PY
-      - name: Recollect source-only parent window
+      - name: Download immutable parent funding artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p out/source/data
-          python backend/research/edge_factory_v2_xsec_ls_funding2026_source.py \
-            --out-dir out/source/data \
-            --manifest out/source/manifest.json
+          mkdir -p out/source
+          gh run download 31436542580 \
+            -R leegkssk2000-commits/vultr-z \
+            -n zel-edge-factory-v2-xsec-ls-funding2026-source-31436542580-1 \
+            -D out/source
+          test -f out/source/manifest.json
+          test -d out/source/data
+      - name: Verify immutable parent source receipt
+        run: |
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_xsec_ls_funding2026_exact_probe_contract.json'))
+          m=json.load(open('out/source/manifest.json'))
+          assert m['receipt_sha256']=='65403a067c11030923fce93dadfba5443d831db0eeed9ec391d9171512f5f599'
+          assert m['funding_dataset_sha256']==c['parent_funding_dataset_sha256']
+          assert m['economics_inspected'] is False
+          assert m['candidate_entries_replayed'] is False
+          print('PASS_PARENT_ARTIFACT_AUTHORITY')
+          PY
       - name: Exact-probe every missing expected settlement
         env:
           PYTHONPATH: backend/research
@@ -73,7 +93,8 @@ jobs:
           assert m['survivor_declared'] is False
           assert m['execution_authority']=='NONE'
           assert m['order_authority']=='BLOCKED'
-          assert m['total_exact_probe_requests']==m['total_missing_before']
+          assert m['total_missing_before']==88
+          assert m['total_exact_probe_requests']==88
           print(m['state'], 'missing_before=',m['total_missing_before'], 'recovered=',m['total_recovered_exact'], 'missing_after=',m['total_missing_after'])
           PY
       - name: Upload exact-probe receipt
@@ -81,7 +102,6 @@ jobs:
         with:
           name: zel-edge-factory-v2-xsec-ls-funding2026-exact-probe-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/source/manifest.json
             out/exact/manifest.json
             out/exact/data/*.csv.gz
           if-no-files-found: error

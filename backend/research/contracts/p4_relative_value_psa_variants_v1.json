@@ -1,0 +1,99 @@
+{
+  "schema_version": "zel.p4.relative_value_psa_variants.v1",
+  "state": "FROZEN_BEFORE_VARIANT_REPLAY",
+  "family": "relative_value_psa",
+  "research_only": true,
+  "parent_candidate_id": "RV_PSA_BASE_BTC_ETH_LOGRATIO_7D_Z2_V1",
+  "parent_terminal_evidence": "research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json",
+  "predeclared_before_any_variant_replay": true,
+  "shared": {
+    "pair": ["BTCUSDT", "ETHUSDT"],
+    "timeframe": "15m",
+    "spread": "log(BTC_close)-log(ETH_close)",
+    "rolling_window_bars": 672,
+    "rolling_window_clock_days": 7,
+    "zscore_reference": "prior_672_closed_bars_excluding_current_bar",
+    "entry_abs_z": 2.0,
+    "entry_high": "z>=2 => SHORT_BTC_LONG_ETH",
+    "entry_low": "z<=-2 => LONG_BTC_SHORT_ETH",
+    "fill": "both_legs_next_bar_open",
+    "same_bar_fill": false,
+    "equal_notional_legs": true,
+    "one_pair_position": true,
+    "pyramiding": false,
+    "stop_loss": null,
+    "take_profit": null,
+    "trailing_overlay": null,
+    "entry_parameter_selection_performed": false
+  },
+  "variants": [
+    {
+      "candidate_id": "RV_PSA_V1_EXIT_Z1_CARRY_CUT_V1",
+      "single_change_from_base": "exit at the one-sigma reversion zone instead of zero-cross",
+      "exit_high_entry": "for SHORT_BTC_LONG_ETH exit when z<=1.0",
+      "exit_low_entry": "for LONG_BTC_SHORT_ETH exit when z>=-1.0",
+      "max_holding_bars": null,
+      "reason": "A fixed one-sigma normalization level is a natural statistical state, not a searched threshold. It tests whether harvesting partial convergence reduces funding-time drag while preserving the BASE entry and spread construction."
+    },
+    {
+      "candidate_id": "RV_PSA_V2_MAX24H_CARRY_CAP_V1",
+      "single_change_from_base": "retain zero-cross exit but add a fixed 24h maximum holding horizon",
+      "exit_high_entry": "for SHORT_BTC_LONG_ETH exit when z<=0.0",
+      "exit_low_entry": "for LONG_BTC_SHORT_ETH exit when z>=0.0",
+      "max_holding_bars": 96,
+      "max_holding_clock_hours": 24,
+      "reason": "Twenty-four hours is exactly three 8h funding intervals and directly tests the diagnosed carry-duration cost without changing entry or spread parameters."
+    }
+  ],
+  "methodology": {
+    "W1_and_W2_are_development_after_parent_W2_was_observed": true,
+    "development_windows": ["15m_w1", "15m_w2"],
+    "development_uses_fresh_shared_cost_envelope": true,
+    "variant_development_pass_requires_each_window_independently": {
+      "minimum_closed_pair_trades": 5,
+      "net_compound_return_positive": true,
+      "net_expectancy_positive": true
+    },
+    "zero_development_pass": "TERMINAL_FAIL_VARIANT_GENERATION_AND_KEEP_W3_UNTOUCHED",
+    "one_development_pass": "ADMIT_THAT_VARIANT_TO_W3",
+    "multiple_development_pass": {
+      "select_exactly_one_before_W3": true,
+      "rank_primary": "maximize minimum(W1_net_expectancy,W2_net_expectancy)",
+      "rank_tiebreak_1": "minimize maximum(W1_net_drawdown,W2_net_drawdown)",
+      "rank_tiebreak_2": "minimize mean_pair_funding_cost_pct_across_W1_W2",
+      "rank_tiebreak_3": "lexicographic_candidate_id"
+    },
+    "W3_final_OOS_access": "ONLY_SELECTED_DEVELOPMENT_PASSING_VARIANT",
+    "W3_final_gate": {
+      "minimum_closed_pair_trades": 5,
+      "net_compound_return_positive": true,
+      "net_expectancy_positive": true
+    },
+    "DD_SSOT_gate_after_W3_net_pass_only": true
+  },
+  "data": {
+    "source_branch": "zel-historical-oos-data-v1",
+    "manifest": "zel_historical_oos_v1/manifest.json",
+    "W1": "15m_w1",
+    "W2": "15m_w2",
+    "W3": "15m_w3",
+    "pair_leg_manifest_hash_match_required": true,
+    "pair_row_parity_required": true,
+    "pair_timestamp_parity_required": true,
+    "forward_overlap_required": 0
+  },
+  "cost": {
+    "source": "fresh_BingX_read_only_observation",
+    "fee": "two_equal_notional_legs_round_trip",
+    "slippage": "per_symbol_worst_observed_available_notional_bucket_round_trip_equal_weighted",
+    "funding": "per_symbol_absolute_p95_8h_prorated_by_holding_time_equal_weighted",
+    "new_observation_required_for_development_run": true,
+    "new_observation_required_for_W3_run": true
+  },
+  "maximum_variants_per_family_respected": true,
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "action": "hold"
+}

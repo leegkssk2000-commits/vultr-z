@@ -1,0 +1,150 @@
+name: R7A4D Strategy11 FVG W1 Repair Economics V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/tools/r7a4d_strategy11_fvg_w1_repair_economics_v1.py'
+      - '.github/workflows/r7a4d-strategy11-fvg-w1-repair-economics-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: r7a4d-strategy11-fvg-w1-repair-economics-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  COMPUTE_REF: r7a4d-strategy11-cause-aware-rotation-l090-v6
+  COMPUTE_SHA: 1dadb1f6a28662823058a58fdeaa978fcd104b7b
+  SOURCE_RUN_ID: '30252022416'
+  NATIVE_RUN_ID: '30692822412'
+  NATIVE_ARTIFACT: s11-w1-native-completion-20260801t083000z-v1
+
+jobs:
+  w1-fvg-repair-economics:
+    name: Exact W1 fvg_revert three-candle repair economics
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMPUTE_REF }}
+          path: compute
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify pinned compute authority
+        run: |
+          test "$(git -C compute rev-parse HEAD)" = "$COMPUTE_SHA"
+          python -m py_compile backend/tools/r7a4d_strategy11_fvg_w1_repair_economics_v1.py
+          python -m py_compile compute/backend/tools/r7a4d_strategy11_fvg_definition_repair_v1.py
+          python -m py_compile compute/backend/tools/r7a4d_strategy11_fvg_definition_repair_v1_1.py
+
+      - name: Install replay runtime
+        run: python -m pip install --disable-pip-version-check pandas numpy
+
+      - name: Download exact native W1 completion authority
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.NATIVE_ARTIFACT }}
+          path: input/native
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.NATIVE_RUN_ID }}
+
+      - name: Download immutable F1 F2 F3 fresh authority
+        uses: actions/download-artifact@v4
+        with:
+          name: s11-fresh-data-v1-30252022416-attempt-1
+          path: input/fresh-authority
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Download source-bound Strategy11 evidence batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p input/evidence
+          for batch in 1 2 3 4 5; do
+            gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "s11-evidence-batch-${batch}-${SOURCE_RUN_ID}-attempt-1" \
+              --dir "input/evidence/batch-${batch}"
+          done
+
+      - name: Replay canonical control and three-candle FVG repair on exact W1
+        env:
+          PYTHONPATH: compute
+        run: |
+          python backend/tools/r7a4d_strategy11_fvg_w1_repair_economics_v1.py \
+            --compute-root compute \
+            --native-root input/native \
+            --baseline-fresh-manifest input/fresh-authority/manifest.json \
+            --evidence-root input/evidence \
+            --expected-w1-end 2026-08-01T08:30:00Z \
+            --out out
+
+      - name: Assert fail-closed W1 contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/status.json').read_text())
+          assert row['state'] in {
+              'HOLD_W1_LOW_SAMPLE',
+              'REJECT_W1_FVG_REPAIR',
+              'PASS_W1_FVG_REPAIR_CONFIRMATION',
+          }, row
+          assert row['source_w1_run_id']=='30692822412', row
+          assert row['source_w1_manifest_sha256']=='ac04cb255f5e1a911f73d78348d348a677a6acf11e2f0e9c676b34f7817ff654', row
+          assert row['non_overlap']['evaluation_non_overlapping'] is True
+          assert row['a_b_parity']=='PASS'
+          assert row['control']['duplicate_trade_count']==0
+          assert row['candidate']['duplicate_trade_count']==0
+          assert row['stress']['duplicate_trade_count']==0
+          assert row['repair']['semantic_change']=='ADJACENT_GAP_TO_THREE_CANDLE_FVG'
+          assert row['repair']['semantic_change_count']==1
+          assert row['repair']['loader_fix']=='REGISTER_MODULE_BEFORE_DATACLASS_EXEC'
+          assert row['after_trace']['no_gap_count'] < row['before_trace']['no_gap_count']
+          for key,value in {
+              'research_only':True,
+              'promotion_authority':False,
+              'canonical_mutated':False,
+              'registry_mutated':False,
+              'protected_mutations':0,
+              'execution_allowed':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'runtime_bound':False,
+              'native_w1_chain_modified':False,
+          }.items():
+              assert row[key]==value,(key,row.get(key),value)
+          print(json.dumps({
+              'state':row['state'],
+              'before_trace':row['before_trace'],
+              'after_trace':row['after_trace'],
+              'control':row['control']['metrics'],
+              'candidate':row['candidate']['metrics'],
+              'stress':row['stress']['metrics'],
+              'blockers':row['blockers'],
+              'next':row['next'],
+          },sort_keys=True))
+          PY
+
+      - name: Upload exact W1 FVG repair economics evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: s11-fvg-w1-repair-economics-v1-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,71 @@
+name: ZEL P3 Carry Flow Prospective Persistence V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/p3_prospective_native_feature_collector.py'
+      - 'backend/research/p3_prospective_native_append.py'
+      - '.github/workflows/zel-p3-carry-flow-prospective-persistence-v1.yml'
+  workflow_dispatch:
+    inputs:
+      persist:
+        description: 'Persist append-only snapshot to dedicated research-data branch'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: '7 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  collect-and-append:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static compile
+        run: python -m py_compile backend/research/p3_prospective_native_feature_collector.py backend/research/p3_prospective_native_append.py
+      - name: Collect one raw native snapshot
+        run: python backend/research/p3_prospective_native_feature_collector.py --out /tmp/p3_snapshot.json
+      - name: Pull existing dedicated history only for real persistence runs
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.persist == 'true')
+        shell: bash
+        run: |
+          git fetch origin zel-p3-prospective-data:refs/remotes/origin/zel-p3-prospective-data || true
+          mkdir -p /tmp/p3_history
+          if git show-ref --verify --quiet refs/remotes/origin/zel-p3-prospective-data; then
+            git archive origin/zel-p3-prospective-data research/data/p3_prospective 2>/dev/null | tar -x -C /tmp || true
+            if [ -d /tmp/research/data/p3_prospective ]; then cp -a /tmp/research/data/p3_prospective/. /tmp/p3_history/; fi
+          fi
+      - name: Append and validate history
+        run: python backend/research/p3_prospective_native_append.py --snapshot /tmp/p3_snapshot.json --history-dir /tmp/p3_history --receipt /tmp/p3_append_receipt.json
+      - name: Upload smoke/persistence receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-p3-prospective-persistence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/p3_snapshot.json
+            /tmp/p3_append_receipt.json
+            /tmp/p3_history/*.ndjson
+      - name: Persist to dedicated data branch
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.persist == 'true')
+        shell: bash
+        run: |
+          rm -rf /tmp/p3_data_repo && mkdir /tmp/p3_data_repo && cd /tmp/p3_data_repo
+          git init
+          git config user.name 'zel-p3-source-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch origin zel-p3-prospective-data || true
+          if git show-ref --verify --quiet refs/remotes/origin/zel-p3-prospective-data; then git checkout -B zel-p3-prospective-data origin/zel-p3-prospective-data; else git checkout --orphan zel-p3-prospective-data; fi
+          mkdir -p research/data/p3_prospective
+          cp /tmp/p3_history/*.ndjson research/data/p3_prospective/
+          cp /tmp/p3_append_receipt.json research/data/p3_prospective/latest_receipt.json
+          git add research/data/p3_prospective
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "data(p3): append prospective native basis/OI snapshot ${{ github.run_id }}"
+          git push origin zel-p3-prospective-data

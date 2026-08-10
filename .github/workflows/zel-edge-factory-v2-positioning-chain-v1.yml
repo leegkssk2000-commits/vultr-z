@@ -1,0 +1,109 @@
+name: ZEL Edge Factory V2 Positioning Chain V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/edge_factory_v2_positioning_burst_collector.py'
+      - 'backend/research/edge_factory_v2_positioning_chain_append.py'
+      - 'research/policies/edge_factory_v2_positioning_chain_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-positioning-chain-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  positioning-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert frozen append contract
+        run: |
+          python -m py_compile backend/research/edge_factory_v2_positioning_burst_collector.py
+          python -m py_compile backend/research/edge_factory_v2_positioning_chain_append.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_positioning_chain_contract.json'))
+          assert c['state']=='FROZEN_APPEND_ONLY_POSITIONING_CHAIN'
+          assert c['seed']['run_id']==31439267652
+          assert c['seed']['artifact_id']==9082259375
+          assert c['seed']['receipt_sha256']=='70b8f6eaf46ba92a76278722721dad680852e4397de0b2c38e5fc661018f23c2'
+          assert c['seed']['snapshot_count']==5 and c['seed']['record_count']==50
+          assert c['records_per_snapshot']==10
+          assert c['append_invariants']['duplicate_record_key_allowed'] is False
+          assert c['append_invariants']['source_timestamp_may_decrease'] is False
+          assert c['economics_inspected'] is False and c['derived_basis_allowed'] is False
+          assert c['signal_generation_enabled'] is False and c['replay_allowed'] is False
+          assert c['survivor_declared'] is False
+          print('PASS_POSITIONING_CHAIN_CONTRACT')
+          PY
+      - name: Resolve latest immutable parent chain or seed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/positioning-parent
+          latest=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.expired==false and (.name|startswith("zel-edge-factory-v2-positioning-chain-")))] | sort_by(.created_at) | last | .id // empty' | tail -n1)
+          if [ -n "$latest" ]; then
+            echo "PARENT_MODE=chain" >> "$GITHUB_ENV"
+            echo "PARENT_ARTIFACT_ID=$latest" >> "$GITHUB_ENV"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${latest}/zip" > /tmp/parent.zip
+            unzip -q /tmp/parent.zip -d /tmp/positioning-parent
+            test -f /tmp/positioning-parent/records.jsonl
+            test -f /tmp/positioning-parent/chain_manifest.json
+          else
+            echo "PARENT_MODE=seed_burst" >> "$GITHUB_ENV"
+            echo "PARENT_ARTIFACT_ID=9082259375" >> "$GITHUB_ENV"
+            gh run download 31439267652 -R "$GITHUB_REPOSITORY" \
+              -n zel-edge-factory-v2-positioning-burst-31439267652-1 \
+              -D /tmp/positioning-parent
+            test -f /tmp/positioning-parent/manifest.json
+            test -f /tmp/positioning-parent/snapshot_00.json
+          fi
+      - name: Append one native positioning snapshot
+        env:
+          PYTHONPATH: backend/research
+        run: |
+          mkdir -p out/chain
+          python backend/research/edge_factory_v2_positioning_chain_append.py \
+            --parent-dir /tmp/positioning-parent \
+            --out-dir out/chain
+      - name: Verify append-only authority and prefix preservation
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          m=json.load(open('out/chain/chain_manifest.json'))
+          assert m['state']=='PASS_POSITIONING_CHAIN_APPEND'
+          assert m['new_record_count']==10
+          assert m['total_record_count']==m['parent_record_count']+10
+          assert m['parent_prefix_preserved'] is True
+          assert m['append_only'] is True
+          assert m['economics_inspected'] is False and m['derived_basis_emitted'] is False
+          assert m['signal_generation_enabled'] is False and m['replay_allowed'] is False
+          assert m['selection_authority'] is False and m['promotion_authority'] is False
+          assert m['survivor_declared'] is False
+          assert m['execution_authority']=='NONE' and m['order_authority']=='BLOCKED'
+          raw=open('out/chain/records.jsonl','rb').read()
+          assert hashlib.sha256(raw).hexdigest()==m['records_sha256']
+          print('POSITIONING_CHAIN_STATE',m['state'])
+          print('POSITIONING_CHAIN_GENERATION',m['generation'])
+          print('POSITIONING_CHAIN_PARENT_MODE',m['parent_mode'])
+          print('POSITIONING_CHAIN_RECORDS',m['parent_record_count'],'+',m['new_record_count'],'=',m['total_record_count'])
+          print('POSITIONING_CHAIN_SNAPSHOTS',m['snapshot_count'])
+          print('POSITIONING_CHAIN_RECORDS_SHA',m['records_sha256'])
+          print('POSITIONING_CHAIN_RECEIPT',m['receipt_sha256'])
+          PY
+      - name: Upload full append-only chain
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-positioning-chain-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/chain
+          if-no-files-found: error
+          retention-days: 90

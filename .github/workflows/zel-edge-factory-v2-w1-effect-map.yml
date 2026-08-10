@@ -1,0 +1,133 @@
+name: ZEL Edge Factory V2 W1 Effect Map
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_w1_effect_map.py'
+      - 'research/policies/edge_factory_v2_w1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-w1-effect-map.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-w1-effect-map-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  w1-effect-map:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Freeze contract and fail-closed authority
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_w1_effect_map.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/policies/edge_factory_v2_w1_contract.json')
+          c=json.loads(p.read_text())
+          assert c['state']=='FROZEN_BEFORE_W1_REPLAY'
+          assert c['dataset_run_id']==30971232337
+          assert c['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
+          assert c['w1_start_ms']==1771027200000 and c['w1_end_exclusive_ms']==1774828800000
+          assert c['timeframes']==['15m','1h']
+          assert len(c['families'])==3
+          assert c['candidate_budget']==2
+          assert c['w2_w3_metrics_inspected'] is False
+          assert c['ai_used_for_w1_discovery'] is False
+          assert c['tp_sl_trailing_skill_bot_used'] is False
+          assert c['survivor_declared'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_EDGE_FACTORY_V2_W1_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download accepted 150d BingX 1m dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
+          path: /tmp/edge-v2
+          github-token: ${{ github.token }}
+          run-id: 30971232337
+          repository: ${{ github.repository }}
+
+      - name: Verify immutable dataset before W1 slice
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/edge-v2')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['state']=='PASS_BINGX_1M_GAP_EXCLUDED_DATASET_STAGED'
+          assert m['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
+          rows=[x for x in m['results'] if x.get('segment_id')=='POST_GAP']
+          assert len(rows)==5
+          for row in rows:
+              p=root/'data'/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              assert row['row_count']==192030
+              assert row['missing_interval_count']==0
+              assert row['duplicate_timestamp_count']==0
+          print('PASS_EDGE_FACTORY_V2_DATASET_IMMUTABLE')
+          PY
+
+      - name: Build W1-only data-first effect map
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_w1_effect_map.py \
+            --dataset-root /tmp/edge-v2 \
+            --out out/edge_factory_v2_w1_effect_map.json
+
+      - name: Assert no holdout or authority leakage
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          p=Path('out/edge_factory_v2_w1_effect_map.json')
+          r=json.loads(p.read_text())
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_W1_EFFECT_MAP_WITH_CANDIDATE','HOLD_W1_NO_POSITIVE_EFFECT'}
+          assert r['dataset']['w1_end_exclusive_ms']==1774828800000
+          assert r['w2_metrics_inspected'] is False and r['w3_metrics_inspected'] is False
+          assert r['ai_used_for_discovery'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['w2_candidate_count']<=2
+          print('EDGE_V2_STATE',r['state'])
+          print('EDGE_V2_STRONG_TESTS',r['strong_effect_test_count'])
+          print('EDGE_V2_W2_CANDIDATES',json.dumps(r['w2_candidates'],sort_keys=True))
+          for tf in ('15m','1h'):
+              for family,row in r['results'][tf].items():
+                  print('EDGE_V2_EFFECT',tf,family,row['state'],'events=',row['event_count'],'net_bps=',row.get('mean_net_bps_after_cost_floor'),'ci=',row.get('daily_block_bootstrap95_net_bps'),'positive_symbols=',row.get('positive_symbol_count'))
+          print('EDGE_V2_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-w1-effect-map-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_w1_effect_map.json
+          if-no-files-found: error
+          retention-days: 90

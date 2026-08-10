@@ -1,0 +1,221 @@
+name: ZEL Alpha Gen2 Trend Momentum Variants V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/alpha_gen2_trend_momentum_base.py
+      - backend/research/alpha_gen2_trend_momentum_variants.py
+      - backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-alpha-gen2-trend-momentum-variants-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-alpha-gen2-trend-momentum-variants-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gen2-variants:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate predeclared bounded variants and Alpha-first lock
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/alpha_gen2_trend_momentum_base.py backend/research/alpha_gen2_trend_momentum_variants.py backend/tools/zel_bingx_real_calibration_v1.py scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json >/dev/null
+          python -m json.tool research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/alpha_gen2_trend_momentum_variants.py \
+            backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json \
+            research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-alpha-gen2-trend-momentum-variants-v1.yml
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json').read_text())
+          t=json.loads(Path('research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json').read_text())
+          assert p['state']=='FROZEN_BEFORE_VARIANT_REPLAY'
+          assert p['predeclared_before_any_variant_replay'] is True
+          assert [x['candidate_id'] for x in p['variants']]==[
+            'TM_GEN2_V1_PRIOR_HIGH_CONFIRM_LONG_V1',
+            'TM_GEN2_V2_TWO_CLOSE_PERSISTENCE_LONG_V1'
+          ]
+          assert len(p['variants'])==2 and p['maximum_variants_per_family_respected'] is True
+          assert t['state']=='FAIL_GEN2_W1_GROSS_EDGE' and t['W2_accessed'] is False and t['W3_untouched'] is True
+          assert p['shared']['exit_optimization_performed'] is False
+          assert p['shared']['stop_loss'] is None and p['shared']['take_profit'] is None and p['shared']['trailing_overlay'] is None
+          assert p['variant_selection_on_W1'].startswith('FORBIDDEN')
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          print('PASS_GEN2_VARIANTS_PREDECLARED_BOUNDED')
+          PY
+          mkdir -p /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w1 out ~/.ssh
+
+      - name: Materialize W1 only; W2 and W3 untouched
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          git show FETCH_HEAD:zel_historical_oos_v1/manifest.json > /tmp/gen2v_history/zel_historical_oos_v1/manifest.json
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w1/$s.csv > /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w1/$s.csv
+          done
+          test ! -e /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w2
+          test ! -e /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w3
+
+      - name: Run both predeclared variants on W1 gross only
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_gen2_trend_momentum_variants.py \
+            --mode w1_gross \
+            --data-root /tmp/gen2v_history \
+            --manifest /tmp/gen2v_history/zel_historical_oos_v1/manifest.json \
+            --plan backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json \
+            --parent-terminal research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json \
+            --out out/alpha_gen2_tm_variants_w1_receipt.json
+          python - <<'PY'
+          import json, os
+          r=json.load(open('out/alpha_gen2_tm_variants_w1_receipt.json'))
+          assert r['mode']=='w1_gross' and r['W3_untouched'] is True
+          assert r['variants_predeclared_before_replay'] is True
+          assert r['variant_selection_on_W1_performed'] is False
+          print('GEN2_VARIANTS_W1_STATE',r['state'])
+          for x in r['candidate_rows']:
+              g=x['aggregate_gross']
+              print('GEN2V_W1',x['candidate_id'],'trades=',g['trade_count'],'wr=',g['win_rate'],'gross=',g['compound_return'],'exp=',g['expectancy_per_trade'],'pf=',g['profit_factor'],'dd=',g['max_drawdown'],'pass=',x['gate_pass'])
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('VARIANT_W1_PASS=' + ('1' if r['W1_passing_candidates'] else '0') + '\n')
+          PY
+
+      - name: Materialize W2 only if at least one W1 variant passes
+        if: env.VARIANT_W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w2
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w2/$s.csv > /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w2/$s.csv
+          done
+          test ! -e /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w3
+
+      - name: Prepare SSH only after variant W1 admission
+        if: env.VARIANT_W1_PASS == '1'
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect one shared fresh official BingX cost envelope
+        if: env.VARIANT_W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-gen2-tm-variants-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_GEN2_VARIANT_SHARED_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run every W1-passing variant independently on W2 cost-adjusted OOS
+        if: env.VARIANT_W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_gen2_trend_momentum_variants.py \
+            --mode w2_cost \
+            --data-root /tmp/gen2v_history \
+            --manifest /tmp/gen2v_history/zel_historical_oos_v1/manifest.json \
+            --plan backend/research/contracts/alpha_gen2_trend_momentum_variants_v1.json \
+            --parent-terminal research/evidence/alpha_gen2_tm_base_w1_terminal_20260810.json \
+            --w1-receipt out/alpha_gen2_tm_variants_w1_receipt.json \
+            --cost-model out/bingx_real_observation.json \
+            --out out/alpha_gen2_tm_variants_w2_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/alpha_gen2_tm_variants_w2_receipt.json'))
+          assert r['mode']=='w2_cost' and r['W3_untouched'] is True
+          print('GEN2_VARIANTS_W2_STATE',r['state'])
+          for x in r['candidate_rows']:
+              n=x['aggregate_net']; g=x['aggregate_gross']
+              print('GEN2V_W2',x['candidate_id'],'trades=',n['trade_count'],'wr=',n['win_rate'],'gross=',g['compound_return'],'net=',n['compound_return'],'exp=',n['expectancy_per_trade'],'pf=',n['profit_factor'],'dd=',n['max_drawdown'],'pass=',x['gate_pass'])
+          PY
+
+      - name: Seal route and prove W3 untouched
+        if: always()
+        run: |
+          set -euo pipefail
+          test ! -e /tmp/gen2v_history/zel_historical_oos_v1/market/15m/15m_w3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          w1=json.load(open('out/alpha_gen2_tm_variants_w1_receipt.json'))
+          p=Path('out/alpha_gen2_tm_variants_w2_receipt.json')
+          out={
+            'W1':w1['state'],
+            'W1_passing_candidates':w1['W1_passing_candidates'],
+            'W2':json.loads(p.read_text())['state'] if p.exists() else 'NOT_ACCESSED_NO_W1_PASS',
+            'W3_untouched':True,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED'
+          }
+          Path('out/alpha_gen2_tm_variants_route_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-gen2-trend-momentum-variants-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/alpha_gen2_tm_variants_w1_receipt.json
+            out/alpha_gen2_tm_variants_w2_receipt.json
+            out/alpha_gen2_tm_variants_route_receipt.json
+            out/bingx_real_observation.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup remote cost probe
+        if: always() && env.VARIANT_W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

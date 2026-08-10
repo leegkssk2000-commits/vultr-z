@@ -1,0 +1,58 @@
+name: ZEL Production Owner Binding V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'config/zel_production_owner_binding_v1.json'
+      - 'backend/production/zel_production_owner_binding_v1.py'
+      - 'tests/test_zel_production_owner_binding_v1.py'
+      - '.github/workflows/zel-production-owner-binding-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and validate owner map
+        run: |
+          python -m py_compile backend/production/zel_production_owner_binding_v1.py
+          python -m json.tool config/zel_production_owner_binding_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          c=json.load(open('config/zel_production_owner_binding_v1.json'))
+          assert c['goal']=='COMPLETE_AUTONOMOUS_TRADING_PROGRAM'
+          assert c['binding_rules']['single_canonical_trade_event_ledger'] is True
+          assert c['binding_rules']['position_derived_from_ledger'] is True
+          assert c['binding_rules']['pnl_recomputed_from_ledger'] is True
+          assert c['binding_rules']['alimi_telegram_same_snapshot_sha'] is True
+          assert c['binding_rules']['no_validated_alpha_behavior']=='HOLD_NO_ORDER'
+          assert c['authority']['live']=='BLOCKED'
+          assert c['authority']['exchange_order']=='BLOCKED'
+          print('PASS_PRODUCTION_OWNER_MAP')
+          PY
+      - name: Install test runtime
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Run owner-bound lifecycle tests
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_zel_production_owner_binding_v1.py
+      - name: Assert no exchange submission path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('backend/production/zel_production_owner_binding_v1.py').read_text()
+          assert 'exchange_order_submitted' in text
+          assert 'Z_LIVE_TRADING_ENABLED' not in text
+          print('PASS_NO_EXCHANGE_SUBMISSION_PATH')
+          PY

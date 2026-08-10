@@ -1,0 +1,136 @@
+name: ZEL Edge Factory V2 V1 Exact Replication V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_v1_exact_replication.py'
+      - 'research/policies/edge_factory_v2_v1_exact_replication_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-v1-exact-replication-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-v1-exact-replication-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  v1-exact-replication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assert exact replication contract before V1 access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_v1_exact_replication.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_v1_exact_replication_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_V1_REPLICATION_SCORE'
+          assert c['protocol_change_reason'].startswith('OLDER_2023_INDEPENDENT_BINGX_1H_HISTORY_UNAVAILABLE')
+          assert c['parent_d1_run_id']==31430543071
+          assert c['parent_d1_receipt_sha256']=='2e5914daf8f4fbd020b05173d9482da6e60fa474cc3ad66d12660ef0c6e41bfe'
+          assert c['parent_d1_state']=='HOLD_D1_NO_CANDIDATE'
+          assert c['source_run_id']==31429880433 and c['source_artifact_id']==9078686271
+          assert c['dataset_sha256']=='87ff0595f7ab90728af265eaf1b5aa79571317de61c6f68ce890526f3eff3c28'
+          assert c['v1_start_ms']==1735689600000 and c['v1_end_exclusive_ms']==1751328000000
+          assert c['v1_rows_per_symbol']==4344 and c['causal_history_before_v1_hours']==720
+          assert c['timeframe']=='1h' and c['decision_grid_hours']==4 and c['holding_hours']==4
+          assert c['roundtrip_cost_floor_bps']==8.0 and c['trailing_distribution_hours']==720
+          assert len(c['families'])==5
+          assert all(row['parameter_search']==0 for row in c['families'].values())
+          assert c['replication_pass_rule']['minimum_events']==60
+          assert c['replication_pass_rule']['daily_cluster_bootstrap_confidence']==0.99
+          assert c['replication_pass_rule']['bootstrap_reps']==6000
+          assert c['replication_pass_rule']['require_same_family_d1_mean_net_positive'] is True
+          assert c['candidate_budget']==2
+          assert c['candidate_ranking']==['DAILY_CLUSTER_BOOTSTRAP99_LOWER_BOUND_DESC','MEAN_NET_BPS_DESC','FAMILY_ID_ASC']
+          assert c['t1_metrics_inspected'] is False and c['t1_rows_read']==0
+          assert c['ai_used_before_v1_replication'] is False
+          assert c['tp_sl_trailing_skill_bot_used'] is False
+          assert c['survivor_declared'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_V1_EXACT_REPLICATION_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download immutable fresh 18m dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-fresh-18m-1h-data-31429880433-1
+          path: /tmp/edge-v2-v1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31429880433'
+
+      - name: Verify source manifest without T1 scoring
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/edge-v2-v1')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['state']=='PASS_FRESH_18M_1H_DATA_STAGED'
+          assert m['dataset_sha256']=='87ff0595f7ab90728af265eaf1b5aa79571317de61c6f68ce890526f3eff3c28'
+          assert m['partitions']['D1_DISCOVERY']['rows_per_symbol']==4416
+          assert m['partitions']['V1_VALIDATION']['rows_per_symbol']==4344
+          assert m['partitions']['T1_TEST']['rows_per_symbol']==4416
+          for row in m['results']:
+              p=root/'data'/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+          print('PASS_V1_SOURCE_FILE_SHA')
+          PY
+
+      - name: Replicate exact five primitives on V1 only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_v1_exact_replication.py \
+            --dataset-root /tmp/edge-v2-v1 \
+            --out out/edge_factory_v2_v1_exact_replication.json
+
+      - name: Assert T1 remains unread and result is fail-closed
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/edge_factory_v2_v1_exact_replication.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_V1_WITH_T1_CANDIDATE','HOLD_V1_NO_EXACT_REPLICATION_CANDIDATE'}
+          assert r['parent_d1_receipt_sha256']=='2e5914daf8f4fbd020b05173d9482da6e60fa474cc3ad66d12660ef0c6e41bfe'
+          assert r['source']['d1_rows_read']==4416 and r['source']['v1_rows_read']==4344 and r['source']['t1_rows_read']==0
+          assert r['t1_metrics_inspected'] is False
+          assert r['ai_used_before_v1_replication'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['t1_candidate_count']<=2
+          print('V1_STATE',r['state'])
+          for family,row in r['results'].items():
+              print('V1_EFFECT',family,row['state'],'events=',row['event_count'],'net_bps=',row['mean_net_bps_after_cost_floor'],'ci99=',row['daily_cluster_bootstrap99_net_bps'],'positive_symbols=',row['positive_symbol_count'],'d1_net=',row['d1_mean_net_bps'])
+          print('T1_CANDIDATES',json.dumps(r['t1_candidates'],sort_keys=True))
+          print('V1_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-v1-exact-replication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_v1_exact_replication.json
+          if-no-files-found: error
+          retention-days: 90

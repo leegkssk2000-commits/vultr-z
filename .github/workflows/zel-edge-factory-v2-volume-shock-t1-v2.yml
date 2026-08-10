@@ -1,0 +1,179 @@
+name: ZEL Edge Factory V2 Volume Shock T1 V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_volume_shock_t1.py'
+      - 'research/evidence/edge_factory_v2_volume_shock_ai_input.json'
+      - 'research/policies/edge_factory_v2_volume_shock_t1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-volume-shock-t1-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  structural-ai-gate-then-single-t1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assert V2 process correction changes zero candidate or T1 rules
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_volume_shock_t1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_volume_shock_t1_contract.json'))
+          assert c['schema_version']=='zel.edge_factory_v2.volume_shock_t1_contract.v2'
+          assert c['state']=='FROZEN_AFTER_V1_AI_REVIEW_BEFORE_T1_ACCESS'
+          assert c['candidate_id']=='VOLUME_SHOCK_EQW_PORTFOLIO_LONG_V1'
+          assert c['candidate_rule_changes_from_v1']==0
+          assert c['candidate_threshold_changes_from_v1']==0
+          assert c['cost_changes_from_v1']==0
+          assert c['t1_gate_changes_from_v1']==0
+          assert c['signal']['parameter_search']==0
+          assert c['signal']['symbol_filter']=='NONE' and c['signal']['regime_filter']=='NONE'
+          assert c['portfolio_aggregation']['axis']=='PORTFOLIO_AGGREGATION_ONLY'
+          assert c['portfolio_aggregation']['weighting']=='EQUAL_WEIGHT_ACROSS_ELIGIBLE_LEGS'
+          assert c['cost_contract']['normal_roundtrip_bps_per_leg']==8.0
+          assert c['cost_contract']['stress_roundtrip_bps_per_leg']==16.0
+          assert c['bound_ai_review']['source_run_id']==31432202944
+          assert c['bound_ai_review']['source_artifact_id']==9079558755
+          assert c['bound_ai_review']['ai_input_sha256']=='3880c2f0ebee0b22dbf8f0918032ac8ae24829b0df384ae8022f717a0fb9f897'
+          assert c['ai_authority_v2']['artifacts_reused_not_rerolled'] is True
+          assert c['ai_authority_v2']['final_authority']=='DETERMINISTIC_REPLAY_STATISTICS_HARD_GATES'
+          assert c['ai_authority_v2']['ai_rule_change_authority'] is False
+          assert c['t1_final_gate']['minimum_portfolio_batches']==60
+          assert c['t1_final_gate']['normal_daily_cluster_bootstrap_confidence']==0.99
+          assert c['t1_final_gate']['stress_daily_cluster_bootstrap_confidence']==0.95
+          assert c['source']['t1_metrics_inspected_before_v2_freeze'] is False
+          assert c['t1_reuse_allowed_after_result'] is False
+          print('PASS_V2_ZERO_STRATEGY_OR_T1_GATE_CHANGE')
+          PY
+          test ! -d /tmp/edge-v2-volume-t1
+
+      - name: Download bound V1 AI artifacts without reroll
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-volume-shock-t1-31432202944-1
+          path: /tmp/volume-ai-bound
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31432202944'
+
+      - name: Apply structural-only AI veto classifier
+        id: ai_gate
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/volume-ai-bound')
+          g=json.load(open(root/'ai/gemini.json'))
+          q=json.load(open(root/'ai/groq.json'))
+          w=json.load(open(root/'ai/workers.json'))
+          expected='3880c2f0ebee0b22dbf8f0918032ac8ae24829b0df384ae8022f717a0fb9f897'
+          assert g['input_sha']==expected and q['input_sha']==expected and w['input_sha']==expected
+          gr=g['review']; qr=q['review']; wr=w['review']
+          structural={
+            'gemini_no_fatal_blocker':g['status']=='PASS_GEMINI_MECHANISM_REVIEW_CONNECTION' and gr['decision']!='REJECT' and gr['mechanism_plausible'] is True and gr['aggregation_is_single_axis'] is True and gr['fatal_blockers']==[],
+            'groq_no_structural_reject':q['status']=='PASS_GROQ_REDTEAM_CONNECTION' and q['GROQ_USED'] is True and qr['decision']!='REJECT',
+            'workers_lineage_single_axis_pass':w['status']=='PASS_WORKERS_AI_CONNECTION' and wr['decision']=='PASS_TO_REPLAY' and wr['lineage_complete'] is True and wr['single_axis'] is True,
+          }
+          approved=all(structural.values())
+          receipt={
+            'schema_version':'zel.edge_factory_v2.volume_shock_ai_structural_gate.v2',
+            'state':'PASS_AI_STRUCTURAL_GATE_TO_SINGLE_T1' if approved else 'HOLD_AI_STRUCTURAL_DEFECT_NO_T1_ACCESS',
+            'approved_for_single_t1':approved,
+            'source_run_id':31432202944,'source_artifact_id':9079558755,'input_sha':expected,
+            'structural_checks':structural,
+            'gemini':{'model':g['actual_model'],'decision':gr['decision'],'overfit_risk':gr['overfit_risk'],'confounders':gr['confounders'],'fatal_blockers':gr['fatal_blockers']},
+            'groq':{'model':q['actual_model'],'decision':qr['decision'],'overfit_risk':qr['overfit_risk'],'blocker_codes':qr['blocker_codes'],'advisory_low_confidence_preserved':qr['decision']=='HOLD'},
+            'workers_ai':{'model':w['model'],'decision':wr['decision'],'overfit_risk':wr['overfit_risk'],'blocker_codes':wr['blocker_codes']},
+            'ai_rule_changes_applied':0,'ai_threshold_changes_applied':0,'t1_metrics_inspected':False,
+            'final_authority':'DETERMINISTIC_REPLAY_STATISTICS_HARD_GATES',
+            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'
+          }
+          raw=json.dumps(receipt,sort_keys=True,separators=(',',':'),allow_nan=False).encode();receipt['receipt_sha256']=hashlib.sha256(raw).hexdigest()
+          Path('out/ai_structural_gate.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          Path('/tmp/t1_ok').write_text('true' if approved else 'false')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          echo "approved=$(cat /tmp/t1_ok)" >> "$GITHUB_OUTPUT"
+          if [ "$(cat /tmp/t1_ok)" != true ]; then test ! -d /tmp/edge-v2-volume-t1; fi
+
+      - name: Install deterministic T1 runtime
+        if: steps.ai_gate.outputs.approved == 'true'
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download immutable dataset only after structural AI gate
+        if: steps.ai_gate.outputs.approved == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-fresh-18m-1h-data-31429880433-1
+          path: /tmp/edge-v2-volume-t1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31429880433'
+
+      - name: Run single-use untouched T1
+        if: steps.ai_gate.outputs.approved == 'true'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/edge-v2-volume-t1');m=json.load(open(root/'manifest.json'))
+          assert m['state']=='PASS_FRESH_18M_1H_DATA_STAGED'
+          assert m['dataset_sha256']=='87ff0595f7ab90728af265eaf1b5aa79571317de61c6f68ce890526f3eff3c28'
+          assert m['partitions']['T1_TEST']['start_ms']==1751328000000
+          assert m['partitions']['T1_TEST']['end_exclusive_ms']==1767225600000
+          assert m['partitions']['T1_TEST']['rows_per_symbol']==4416
+          for row in m['results']:
+              p=root/'data'/row['file'];assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+          print('PASS_T1_SOURCE_IMMUTABLE')
+          PY
+          python backend/research/edge_factory_v2_volume_shock_t1.py --dataset-root /tmp/edge-v2-volume-t1 --out out/t1.json
+
+      - name: Seal V2 terminal result
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          a=json.load(open('out/ai_structural_gate.json'));p=Path('out/t1.json')
+          if not a['approved_for_single_t1']:
+              assert not p.exists();terminal={'schema_version':'zel.edge_factory_v2.volume_shock_terminal.v2','state':'HOLD_AI_STRUCTURAL_DEFECT_NO_T1_ACCESS','t1_performed':False}
+          else:
+              r=json.load(open(p));material={k:v for k,v in r.items() if k!='receipt_sha256'}
+              assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()==r['receipt_sha256']
+              assert r['state'] in {'PASS_T1_VOLUME_SHOCK_SURVIVOR_CANDIDATE_NOT_FINAL_SURVIVOR','REJECT_T1_VOLUME_SHOCK_NO_RESCUE_NO_TUNING'}
+              assert r['t1_reuse_allowed_after_result'] is False
+              terminal={'schema_version':'zel.edge_factory_v2.volume_shock_terminal.v2','state':r['state'],'t1_performed':True,'t1_receipt_sha256':r['receipt_sha256'],'portfolio':r['portfolio'],'normal':r['normal'],'stress':r['stress'],'gate':r['gate'],'next':r['next']}
+          terminal.update({'ai_structural_gate_receipt_sha256':a['receipt_sha256'],'candidate_rule_changes_from_v1':0,'t1_gate_changes_from_v1':0,'t1_reuse_allowed':False,'survivor_declared':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','action':'hold'})
+          raw=json.dumps(terminal,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode();terminal['receipt_sha256']=hashlib.sha256(raw).hexdigest()
+          Path('out/terminal_v2.json').write_text(json.dumps(terminal,indent=2,sort_keys=True)+'\n');print(json.dumps(terminal,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-edge-factory-v2-volume-shock-t1-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/ai_structural_gate.json
+            out/t1.json
+            out/terminal_v2.json
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,113 @@
+name: ZEL Edge Factory V2 Funding18M Source V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_funding18m_source_v2.py'
+      - 'research/policies/edge_factory_v2_funding18m_source_v2_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-funding18m-source-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bind-funding18m-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert V2 continuity contract before network access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_funding18m_source_v2.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_funding18m_source_v2_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_FUNDING_V2_COLLECTION'
+          assert c['funding_source']['primary_chunk_days']==7
+          assert c['funding_source']['gap_repair_chunk_days']==1
+          assert c['hard_integrity_gate']['maximum_internal_interarrival_hours']==24
+          assert c['hard_integrity_gate']['partition_boundary_max_hours']==24
+          assert c['hard_integrity_gate']['minimum_distinct_observation_days_per_partition']==150
+          assert c['hard_integrity_gate']['interpolation'] is False
+          assert c['hard_integrity_gate']['synthetic_funding'] is False
+          assert c['hard_integrity_gate']['forward_fill'] is False
+          assert c['v1_result_authority'] is False
+          assert c['funding_signal_hypotheses_defined'] is False
+          assert c['economics_inspected_during_collection'] is False
+          assert c['d1_funding_metrics_inspected'] is False and c['v1_funding_metrics_inspected'] is False and c['t1_funding_metrics_inspected'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_FUNDING18M_V2_CONTRACT_FROZEN')
+          PY
+          mkdir -p out/data
+
+      - name: Collect 7-day native funding and repair gaps with 1-day native queries
+        run: |
+          set -euo pipefail
+          python backend/research/edge_factory_v2_funding18m_source_v2.py \
+            --out-dir out/data \
+            --manifest out/manifest.json
+
+      - name: Verify hard continuity or preserve source HOLD
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          r=json.load(open('out/manifest.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_FUNDING18M_V2_SOURCE_BOUND','HOLD_FUNDING18M_V2_SOURCE_GAPS'}
+          assert r['funding_signal_hypotheses_defined'] is False and r['economics_inspected'] is False
+          assert r['d1_funding_metrics_inspected'] is False and r['v1_funding_metrics_inspected'] is False and r['t1_funding_metrics_inspected'] is False
+          assert r['raw_funding_values_logged'] is False
+          assert r['interpolation_used'] is False and r['synthetic_funding_used'] is False and r['forward_fill_used'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          for row in r['results']:
+              p=Path('out/data')/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              prior=None;count=0;max_gap=0
+              with gzip.open(p,'rt',encoding='utf-8',newline='') as fh:
+                  for x in csv.DictReader(fh):
+                      ts=int(x['fundingTime'])
+                      if prior is not None:
+                          assert ts>prior
+                          max_gap=max(max_gap,ts-prior)
+                      prior=ts;count+=1
+              assert count==row['row_count']
+              if row['state']=='PASS_NATIVE_FUNDING_CONTINUITY':
+                  assert row['remaining_gap_count_after_repair']==0
+                  assert row['duplicate_timestamp_count']==0
+                  assert row['maximum_internal_interarrival_hours']<=24
+                  assert all(v['pass'] for v in row['partition_integrity'].values())
+                  assert max_gap<=24*3600*1000
+              print('FUNDING_V2',row['symbol'],row['state'],'rows=',row['row_count'],'gaps_before=',row['detected_gap_count_before_repair'],'gaps_after=',row['remaining_gap_count_after_repair'],'max_gap_h=',row['maximum_internal_interarrival_hours'],'primary=',row['primary_request_count'],'repair=',row['repair_request_count'],'parts=',json.dumps(row['partition_integrity'],sort_keys=True))
+          if r['state']=='PASS_FUNDING18M_V2_SOURCE_BOUND':
+              assert r['hard_integrity']['all_symbols_pass'] is True
+          else:
+              assert r['hard_integrity']['all_symbols_pass'] is False
+          print('FUNDING_V2_STATE',r['state'])
+          print('FUNDING_V2_DATASET_SHA',r['funding_dataset_sha256'])
+          print('FUNDING_V2_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-edge-factory-v2-funding18m-source-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/manifest.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

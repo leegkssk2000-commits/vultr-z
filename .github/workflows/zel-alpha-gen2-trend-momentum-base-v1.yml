@@ -1,0 +1,233 @@
+name: ZEL Alpha Gen2 Trend Momentum BASE V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/alpha_gen2_trend_momentum_base.py
+      - backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-alpha-gen2-trend-momentum-base-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-alpha-gen2-trend-momentum-base-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gen2-base:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate frozen Gen2 BASE and Alpha-first authority
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/alpha_gen2_trend_momentum_base.py backend/tools/zel_bingx_real_calibration_v1.py scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json >/dev/null
+          python -m json.tool config/zel_alpha_engine_vnext.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/alpha_gen2_trend_momentum_base.py \
+            backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-alpha-gen2-trend-momentum-base-v1.yml
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json').read_text())
+          assert c['state']=='FROZEN_BEFORE_REPLAY'
+          assert c['family']=='trend_momentum'
+          assert c['candidate_id']=='TM_GEN2_BASE_4H_24H_PULLBACK_RESUME_LONG_V1'
+          assert c['symbols']==['BTCUSDT','ETHUSDT'] and c['timeframe']=='15m'
+          assert c['signal']['fast_ema_bars']==16 and c['signal']['slow_ema_bars']==96
+          assert c['signal']['slow_slope_lag_bars']==16
+          assert c['signal']['fill']=='next_bar_open' and c['signal']['same_bar_fill'] is False
+          assert c['signal']['stop_loss'] is None and c['signal']['take_profit'] is None
+          assert c['signal']['trailing_overlay'] is None and c['signal']['volume_filter'] is None
+          assert c['signal']['parameter_selection_performed'] is False
+          assert c['signal']['exit_optimization_performed'] is False
+          assert 'donchian' not in json.dumps(c['signal']).lower()
+          assert c['variants']['created_now']==0 and c['variants']['maximum_later_if_base_fails']==2
+          assert c['data']['w1_first'] is True and c['data']['w2_access_only_after_w1_gross_pass'] is True
+          assert c['data']['w3_access_forbidden'] is True
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_GEN2_BASE_FROZEN_NO_DONCHIAN')
+          PY
+          mkdir -p /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w1 out ~/.ssh
+
+      - name: Materialize W1 only; W2 and W3 remain untouched
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          git show FETCH_HEAD:zel_historical_oos_v1/manifest.json > /tmp/gen2_history/zel_historical_oos_v1/manifest.json
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w1/$s.csv > /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w1/$s.csv
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('/tmp/gen2_history/zel_historical_oos_v1')
+          m=json.loads((root/'manifest.json').read_text())
+          assert str(m['state']).startswith('PASS_') and m['forward_overlap_count']==0
+          for s in ('BTCUSDT','ETHUSDT'):
+              p=root/'market/15m/15m_w1'/f'{s}.csv'
+              assert p.is_file() and p.stat().st_size>0
+          assert not (root/'market/15m/15m_w2').exists()
+          assert not (root/'market/15m/15m_w3').exists()
+          print('PASS_GEN2_W1_ONLY_MATERIALIZED')
+          PY
+
+      - name: Run W1 gross-edge gate before any cost or W2 access
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_gen2_trend_momentum_base.py \
+            --mode w1_gross \
+            --data-root /tmp/gen2_history \
+            --manifest /tmp/gen2_history/zel_historical_oos_v1/manifest.json \
+            --contract backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json \
+            --out out/alpha_gen2_tm_w1_gross_receipt.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r=json.loads(Path('out/alpha_gen2_tm_w1_gross_receipt.json').read_text())
+          assert r['mode']=='w1_gross'
+          assert r['cost_model_accessed'] is False
+          assert r['W3_untouched'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('GEN2_W1_STATE',r['state'])
+          print('GEN2_W1_GROSS',json.dumps(r['aggregate_gross'],sort_keys=True))
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('W1_PASS=' + ('1' if r['state']=='PASS_GEN2_W1_GROSS_EDGE' else '0') + '\n')
+          PY
+
+      - name: Materialize W2 only after W1 gross PASS; W3 remains untouched
+        if: env.W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w2
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w2/$s.csv > /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w2/$s.csv
+          done
+          test ! -e /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w3
+          echo PASS_GEN2_W2_AUTHORIZED_W3_UNTOUCHED
+
+      - name: Prepare SSH for one fresh read-only BingX cost observation
+        if: env.W1_PASS == '1'
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh official BingX cost envelope only after W1 PASS
+        if: env.W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-alpha-gen2-tm-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/bingx_real_observation.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/bingx_real_observation.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_GEN2_FRESH_COST',json.dumps({
+            'taker_fee_pct':r['taker_fee_pct'],
+            'funding_p95_abs_pct_8h':r['funding_p95_abs_pct_8h'],
+            'worst_slippage_bps':max(x['slippage_bps_one_way'] for x in r['slippage_floor_bps_by_notional']),
+            'receipt_sha256':r['receipt_sha256']
+          },sort_keys=True))
+          PY
+
+      - name: Run W2 cost-adjusted OOS gate only after W1 PASS
+        if: env.W1_PASS == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_gen2_trend_momentum_base.py \
+            --mode w2_cost \
+            --data-root /tmp/gen2_history \
+            --manifest /tmp/gen2_history/zel_historical_oos_v1/manifest.json \
+            --contract backend/research/contracts/alpha_gen2_trend_momentum_base_v1.json \
+            --w1-receipt out/alpha_gen2_tm_w1_gross_receipt.json \
+            --cost-model out/bingx_real_observation.json \
+            --out out/alpha_gen2_tm_w2_cost_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/alpha_gen2_tm_w2_cost_receipt.json'))
+          assert r['mode']=='w2_cost'
+          assert r['W3_untouched'] is True
+          assert r['DD_gate_resolved'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('GEN2_W2_STATE',r['state'])
+          print('GEN2_W2_NET',json.dumps(r['aggregate_net'],sort_keys=True))
+          PY
+
+      - name: Seal route and prove W3 remained untouched
+        if: always()
+        run: |
+          set -euo pipefail
+          test ! -e /tmp/gen2_history/zel_historical_oos_v1/market/15m/15m_w3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          w1=json.loads(Path('out/alpha_gen2_tm_w1_gross_receipt.json').read_text())
+          out={'W1':w1['state'],'W3_untouched':True,'execution_authority':'NONE','order_authority':'BLOCKED'}
+          p=Path('out/alpha_gen2_tm_w2_cost_receipt.json')
+          out['W2']=json.loads(p.read_text())['state'] if p.exists() else 'NOT_ACCESSED_W1_FAIL'
+          Path('out/alpha_gen2_tm_route_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-gen2-trend-momentum-base-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/alpha_gen2_tm_w1_gross_receipt.json
+            out/alpha_gen2_tm_w2_cost_receipt.json
+            out/alpha_gen2_tm_route_receipt.json
+            out/bingx_real_observation.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup remote cost probe
+        if: always() && env.W1_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

@@ -1,0 +1,98 @@
+name: ZEL Edge Factory V2 Funding Carry16 D1 V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/edge_factory_v2_funding_carry16_d1.py'
+      - 'research/policies/edge_factory_v2_funding_carry16_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-funding-carry16-d1-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  funding-carry16-d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Freeze-contract assertion before data access
+        run: |
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_funding_carry16_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_D1_FUNDING_CARRY_SCORE'
+          assert c['candidate_id']=='XSEC_FUNDING_CARRY_L4_S4_24H_V1'
+          assert c['family_budget']==1
+          assert len(c['universe']['symbols'])==16
+          assert c['universe']['excluded_source_gap_symbols']==['LTC-USDT','DOT-USDT','TRX-USDT','NEAR-USDT']
+          assert c['universe']['selection_basis']=='SOURCE_CONTINUITY_ONLY_BEFORE_ECONOMICS'
+          assert c['signal']['trailing_completed_funding_observations']==3
+          assert c['signal']['long_selection']=='BOTTOM_4_LOWEST_FUNDING_SCORE'
+          assert c['signal']['short_selection']=='TOP_4_HIGHEST_FUNDING_SCORE'
+          assert c['signal']['holding_hours']==24
+          assert c['signal']['threshold_search']==0 and c['signal']['lookback_search']==0 and c['signal']['selection_count_search']==0 and c['signal']['holding_period_search']==0
+          assert c['execution_cost']['normal_roundtrip_bps_on_gross']==12.30757224
+          assert c['execution_cost']['stress_roundtrip_bps_on_gross']==14.61514448
+          assert c['T1_access_before_V1_pass'] is False
+          assert c['AI_before_D1'] is False
+          assert c['survivor_declared'] is False
+          print('PASS_FUNDING_CARRY16_CONTRACT_FROZEN')
+          PY
+      - name: Install deterministic runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+      - name: Download immutable fresh2026 price source
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-fresh2026-source-31435447148-1
+          path: /tmp/funding-carry-price
+          github-token: ${{ github.token }}
+          repository: leegkssk2000-commits/vultr-z
+          run-id: 31435447148
+      - name: Download immutable exact-probe funding source
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-xsec-ls-funding2026-exact-probe-31437940806-1
+          path: /tmp/funding-carry-funding
+          github-token: ${{ github.token }}
+          repository: leegkssk2000-commits/vultr-z
+          run-id: 31437940806
+      - name: Run D1 only
+        run: |
+          mkdir -p out
+          python backend/research/edge_factory_v2_funding_carry16_d1.py \
+            --price-root /tmp/funding-carry-price \
+            --funding-root /tmp/funding-carry-funding \
+            --out out/funding_carry16_d1.json
+      - name: Assert D1-only authority boundary
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/funding_carry16_d1.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()==r['receipt_sha256']
+          assert r['source']['V1_rows_read']==0 and r['source']['T1_rows_read']==0
+          assert r['contract']['rule_search_count']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['survivor_declared'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('FUNDING_CARRY16_D1_STATE',r['state'])
+          print('FUNDING_CARRY16_D1_NORMAL',json.dumps(r['normal_total'],sort_keys=True))
+          print('FUNDING_CARRY16_D1_STRESS',json.dumps(r['stress_total'],sort_keys=True))
+          print('FUNDING_CARRY16_D1_FUNDING',json.dumps(r['funding_component'],sort_keys=True))
+          print('FUNDING_CARRY16_D1_PRICE',json.dumps(r['price_component'],sort_keys=True))
+          print('FUNDING_CARRY16_D1_GATE',json.dumps(r['gate'],sort_keys=True))
+          print('FUNDING_CARRY16_D1_RECEIPT',r['receipt_sha256'])
+          PY
+      - name: Upload D1 receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-funding-carry16-d1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/funding_carry16_d1.json
+          if-no-files-found: error
+          retention-days: 90

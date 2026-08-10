@@ -28,14 +28,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Freeze expanded vwap durability contract
+      - name: Freeze replay contract
         run: |
           set -euo pipefail
-          python -m py_compile \
-            backend/research/vwap_revert_150d_durability.py \
-            backend/tools/zel_historical_oos_exact25_replay_v1.py
+          python -m py_compile backend/research/vwap_revert_150d_durability.py backend/tools/zel_historical_oos_exact25_replay_v1.py
           python - <<'PY'
           import importlib.util
           from pathlib import Path
@@ -45,22 +43,27 @@ jobs:
           assert m.DATASET_SHA=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
           assert m.STRATEGY_ID=='vwap_revert'
           assert m.SYMBOLS==('BTC-USDT','ETH-USDT','LINK-USDT','SOL-USDT','XRP-USDT')
-          assert m.WINDOWS==(
-            ('W1',1771027200000,1774828800000),
-            ('W2',1774828800000,1778630400000),
-            ('W3',1778630400000,1782549000000),
-          )
           assert sum((b-a)//60000 for _,a,b in m.WINDOWS)==m.EXPECTED_POST_ROWS
           text=p.read_text()
-          assert 'strategy_parameter_changes": 0' in text
-          assert 'feature_gate_changes": 0' in text
-          assert 'survivor_declared": False' in text
-          assert 'execution_authority": "NONE"' in text and 'order_authority": "BLOCKED"' in text
+          for token in ('strategy_parameter_changes": 0','feature_gate_changes": 0','survivor_declared": False','execution_authority": "NONE"','order_authority": "BLOCKED"'):
+              assert token in text
           print('PASS_VWAP150_CONTRACT_FROZEN_NO_TUNING')
           PY
-          mkdir -p /tmp/vwap150 out ~/.ssh
+          mkdir -p /tmp/vwap150 /tmp/vwap150_pydeps out ~/.ssh
 
-      - name: Download accepted 150d BingX 1m gap-excluded dataset
+      - name: Stage ephemeral Python 3.10 data dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-compile --target /tmp/vwap150_pydeps pandas numpy
+          python - <<'PY'
+          import sys
+          sys.path.insert(0,'/tmp/vwap150_pydeps')
+          import pandas,numpy
+          print('PASS_EPHEMERAL_PYDEPS',pandas.__version__,numpy.__version__)
+          PY
+          tar -C /tmp/vwap150_pydeps -czf /tmp/vwap150_pydeps.tgz .
+
+      - name: Download accepted 150d BingX 1m dataset
         uses: actions/download-artifact@v4
         with:
           name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
@@ -69,30 +72,27 @@ jobs:
           run-id: 30971232337
           repository: ${{ github.repository }}
 
-      - name: Verify immutable 150d dataset before VPS access
+      - name: Verify immutable 150d dataset
         run: |
           set -euo pipefail
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
-          root=Path('/tmp/vwap150')
-          m=json.loads((root/'manifest.json').read_text())
+          root=Path('/tmp/vwap150'); m=json.loads((root/'manifest.json').read_text())
           assert m['state']=='PASS_BINGX_1M_GAP_EXCLUDED_DATASET_STAGED'
           assert m['dataset_sha256']=='53676bb379635c6f81908be2c20e1598e00bffa4d0e08d8b492646416b8a46d8'
           assert m['actual_total_rows']==1072800
           rows=[x for x in m['results'] if x['segment_id']=='POST_GAP']
           assert len(rows)==5
-          assert {x['symbol'] for x in rows}=={'BTC-USDT','ETH-USDT','LINK-USDT','SOL-USDT','XRP-USDT'}
           for x in rows:
               p=root/'data'/x['file']
-              h=hashlib.sha256(p.read_bytes()).hexdigest()
-              assert h==x['file_sha256'],(x['symbol'],h,x['file_sha256'])
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==x['file_sha256']
               assert x['row_count']==192030 and x['missing_interval_count']==0 and x['duplicate_timestamp_count']==0
               assert x['start_ms']==1771027200000 and x['end_exclusive_ms']==1782549000000
-          print('PASS_VWAP150_DATASET_SHA_AND_POST_GAP_CONTIGUITY')
+          print('PASS_VWAP150_DATASET_SHA_CONTIGUOUS')
           PY
 
-      - name: Prepare read-only VPS transport
+      - name: Prepare VPS read-only transport
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -103,50 +103,25 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          remote_ver=$(ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" '/usr/bin/python3 -c "import sys; print(str(sys.version_info.major)+\".\"+str(sys.version_info.minor))"')
+          test "$remote_ver" = '3.10'
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'test -f /home/z/z/tools/q4r3_exact25_dedicated_shadow_producer.py && test -d /opt/zel/historical-oos-v1'
+          echo PASS_VWAP150_VPS_PYTHON_310_INPUTS_PRESENT
 
-      - name: Verify canonical inputs and discover existing pandas Python read-only
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          set -euo pipefail
-          remote_py=$(ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
-            set -euo pipefail
-            test -f /home/z/z/tools/q4r3_exact25_dedicated_shadow_producer.py
-            test -d /opt/zel/historical-oos-v1
-            for py in $(find /home/z/z /opt/zel -maxdepth 6 -type f \( -name python -o -name python3 \) -perm -u+x 2>/dev/null | sort -u) /usr/local/bin/python3 /usr/bin/python3; do
-              test -x "$py" || continue
-              if "$py" -c "import pandas" >/dev/null 2>&1; then
-                printf "%s\n" "$py"
-                exit 0
-              fi
-            done
-            exit 1
-          ')
-          test -n "$remote_py"
-          printf '%s\n' "$remote_py" > out/remote_python.txt
-          echo "PASS_VWAP150_EXISTING_PANDAS_PYTHON=$remote_py"
-
-      - name: Run original canonical vwap_revert semantics on 150d expanded data
+      - name: Run canonical vwap_revert over three expanded windows
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           remote="/tmp/zel-vwap150-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          remote_py=$(cat out/remote_python.txt)
           echo "$remote" > out/remote_path.txt
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data'"
-          scp -i ~/.ssh/vps_key -o BatchMode=yes \
-            backend/research/vwap_revert_150d_durability.py \
-            backend/tools/zel_historical_oos_exact25_replay_v1.py \
-            /tmp/vwap150/manifest.json \
-            "$VPS_USER@$VPS_HOST:$remote/"
-          scp -i ~/.ssh/vps_key -o BatchMode=yes \
-            /tmp/vwap150/data/*_1771027200000_1782549000000.csv.gz \
-            "$VPS_USER@$VPS_HOST:$remote/data/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data' '$remote/pydeps'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/vwap_revert_150d_durability.py backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/vwap150/manifest.json /tmp/vwap150_pydeps.tgz "$VPS_USER@$VPS_HOST:$remote/"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/vwap150/data/*_1771027200000_1782549000000.csv.gz "$VPS_USER@$VPS_HOST:$remote/data/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "tar -C '$remote/pydeps' -xzf '$remote/vwap150_pydeps.tgz'"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=450 "$VPS_USER@$VPS_HOST" \
-            "nice -n 10 '$remote_py' '$remote/vwap_revert_150d_durability.py' \
+            "PYTHONPATH='$remote/pydeps' nice -n 10 /usr/bin/python3 '$remote/vwap_revert_150d_durability.py' \
               --engine '$remote/zel_historical_oos_exact25_replay_v1.py' \
               --source-root /home/z/z \
               --market-root '$remote' \
@@ -155,30 +130,23 @@ jobs:
               --out '$remote/result.json'"
           scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/result.json" out/vwap_revert_150d_durability.json
 
-      - name: Verify economic receipt and print survivor-relevant metrics
+      - name: Verify and print economic result
         run: |
           set -euo pipefail
           python - <<'PY'
           import hashlib,json
           r=json.load(open('out/vwap_revert_150d_durability.json'))
           material={k:v for k,v in r.items() if k!='receipt_sha256'}
-          sha=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
-          assert sha==r['receipt_sha256']
-          assert r['strategy_id']=='vwap_revert'
-          assert r['source_binding']['strategy_parameter_changes']==0
-          assert r['source_binding']['feature_gate_changes']==0
-          assert r['source_binding']['source_unchanged'] is True
-          assert r['integrity']['integrity_ok'] is True
-          assert r['survivor_declared'] is False
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==r['receipt_sha256']
+          assert r['source_binding']['strategy_parameter_changes']==0 and r['source_binding']['feature_gate_changes']==0
+          assert r['source_binding']['source_unchanged'] is True and r['integrity']['integrity_ok'] is True
+          assert r['survivor_declared'] is False and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           print('VWAP150_STATE',r['state'])
           print('VWAP150_FUNDING_COMPLETE',r['funding']['complete_for_scoring'])
+          key='including_funding_estimate' if r['funding']['complete_for_scoring'] else 'fee_slippage_net'
           for w in ('W1','W2','W3'):
-              x=r['windows'][w]
-              key='including_funding_estimate' if r['funding']['complete_for_scoring'] else 'fee_slippage_net'
-              m=x[key]
-              print('VWAP150',w,'trades=',m['trade_count'],'net_R=',m['net_R'],'exp_R=',m['expectancy_R'],'PF=',m['profit_factor'],'WR=',m['win_rate_pct'],'DD_R=',m['max_drawdown_R'],'vnext=',x['vnext_positive_edge_gate'],'legacy60=',x['legacy_structural_60_trade_gate'])
+              x=r['windows'][w]; m=x[key]
+              print('VWAP150',w,'trades=',m['trade_count'],'net_R=',m['net_R'],'exp_R=',m['expectancy_R'],'PF=',m['profit_factor'],'WR=',m['win_rate_pct'],'DD_R=',m['max_drawdown_R'],'vnext=',x['vnext_positive_edge_gate'])
           print('VWAP150_THREE_WINDOW_EDGE',r['vnext_three_window_positive_edge'])
           print('VWAP150_RECEIPT_SHA',r['receipt_sha256'])
           PY

@@ -1,0 +1,403 @@
+name: ZEL Alpha Trend Final Gen3 V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/alpha_trend_final_gen3.py
+      - backend/research/contracts/alpha_trend_final_gen3_v1.json
+      - research/evidence/alpha_trend_momentum_generation_history_20260810.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-alpha-trend-final-gen3-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-alpha-trend-final-gen3-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  final-gen3:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install frozen collector dependency
+        run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Validate final-generation budget contract and Alpha-first lock
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/alpha_trend_final_gen3.py \
+            backend/tools/r7a4d_strategy11_continuous_data_collector_v1.py \
+            backend/tools/zel_bingx_real_calibration_v1.py \
+            scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/alpha_trend_final_gen3_v1.json >/dev/null
+          python -m json.tool research/evidence/alpha_trend_momentum_generation_history_20260810.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/alpha_trend_final_gen3.py \
+            backend/research/contracts/alpha_trend_final_gen3_v1.json \
+            research/evidence/alpha_trend_momentum_generation_history_20260810.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-alpha-trend-final-gen3-v1.yml
+          python - <<'PY'
+          import json
+          from backend.tools import r7a4d_strategy11_continuous_data_collector_v1 as collector
+          c=json.load(open('backend/research/contracts/alpha_trend_final_gen3_v1.json'))
+          h=json.load(open('research/evidence/alpha_trend_momentum_generation_history_20260810.json'))
+          assert c['state']=='FROZEN_BEFORE_FINAL_GENERATION_REPLAY'
+          assert c['generation']==3 and h['completed_generations']==2 and h['remaining_generations']==1
+          assert c['candidate_id']=='TM_GEN3_FINAL_RISK_ADJ_24H_MOM_7D_REGIME_LONG_V1'
+          assert c['signal']['regime_lookback_bars']==672
+          assert c['signal']['momentum_lookback_bars']==96
+          assert c['signal']['volatility_reference_bars']==96
+          assert c['signal']['entry_threshold_sigma']==1.0
+          assert c['signal']['same_bar_fill'] is False and c['signal']['fill']=='next_bar_open'
+          assert c['signal']['stop_loss'] is None and c['signal']['take_profit'] is None
+          assert c['signal']['max_holding_bars'] is None and c['signal']['trailing_overlay'] is None
+          assert c['variants']['allowed_after_this_contract']==0
+          assert h['global_holdout_status']['W3_may_be_used_as_final_OOS'] is False
+          w4=c['W4_final_forward']
+          assert w4['fresh_fetch_start_ms']==1784536200000
+          assert w4['window_start_ms']==1785141900000
+          assert w4['window_end_ms']==1786350600000
+          assert w4['warmup_bars']==673 and w4['window_bars']==1344 and w4['fresh_fetch_total_rows_per_symbol']==2017
+          assert w4['window_end_ms']-w4['window_start_ms']==(w4['window_bars']-1)*900000
+          assert w4['window_start_ms']-w4['fresh_fetch_start_ms']==w4['warmup_bars']*900000
+          assert collector.AUTHORITY_END_MS==w4['collector_authority_end_ms']
+          assert collector.FIRST_EVALUATION_MS==w4['collector_first_evaluation_ms']
+          assert list(collector.KLINE_ENDPOINTS)==w4['official_kline_preference']
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_TM_GEN3_FINAL_CONTRACT_FROZEN_BEFORE_ANY_REPLAY')
+          PY
+          mkdir -p \
+            /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w1 \
+            /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w2 \
+            out ~/.ssh
+
+      - name: Materialize exposed W1 plus W2 development only; W3 and W4 absent
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          git show FETCH_HEAD:zel_historical_oos_v1/manifest.json > /tmp/tm3_history/zel_historical_oos_v1/manifest.json
+          for w in 15m_w1 15m_w2; do
+            for s in BTCUSDT ETHUSDT; do
+              git show FETCH_HEAD:zel_historical_oos_v1/market/15m/$w/$s.csv > /tmp/tm3_history/zel_historical_oos_v1/market/15m/$w/$s.csv
+            done
+          done
+          test ! -e /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w3
+          test ! -e /tmp/tm3_w4
+          test ! -e out/tm_gen3_w4_source_receipt.json
+          echo PASS_TM_GEN3_W1_W2_ONLY_W3_W4_NOT_ACCESSED
+
+      - name: Prepare SSH for fresh read-only cost observations
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh development cost envelope
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-tm-gen3-dev-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/dev_remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/tm_gen3_dev_cost.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/tm_gen3_dev_cost.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_TM_GEN3_DEV_FRESH_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run final-generation W1 plus W2 development net gate
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_trend_final_gen3.py \
+            --mode development \
+            --contract backend/research/contracts/alpha_trend_final_gen3_v1.json \
+            --history research/evidence/alpha_trend_momentum_generation_history_20260810.json \
+            --cost-model out/tm_gen3_dev_cost.json \
+            --historical-root /tmp/tm3_history \
+            --manifest /tmp/tm3_history/zel_historical_oos_v1/manifest.json \
+            --out out/tm_gen3_development_receipt.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('out/tm_gen3_development_receipt.json'))
+          assert r['mode']=='development'
+          assert r['W1_role']=='DEVELOPMENT' and r['W2_role']=='DEVELOPMENT'
+          assert r['W4_market_outcome_accessed'] is False
+          assert r['variants_allowed_after_result']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('TM_GEN3_DEV_STATE',r['state'])
+          for key in ('W1','W2'):
+              a=r[key]['aggregate']
+              print('TM_GEN3_DEV',key,'trades=',a['net']['trade_count'],'symbols=',a['symbols_with_closed_trade'],'gross=',a['gross']['compound_return'],'net=',a['net']['compound_return'],'exp=',a['net']['expectancy_per_trade'],'pf=',a['net']['profit_factor'],'wr=',a['net']['win_rate'],'dd=',a['net']['max_drawdown'],'pass=',r[f'{key}_gate_pass'])
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('TM3_DEV_PASS=' + ('1' if r['development_gate_pass'] else '0') + '\n')
+          PY
+          test ! -e /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w3
+          test ! -e /tmp/tm3_w4
+
+      - name: Materialize W3 only after development PASS; W4 remains inaccessible
+        if: env.TM3_DEV_PASS == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w3
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w3/$s.csv > /tmp/tm3_history/zel_historical_oos_v1/market/15m/15m_w3/$s.csv
+          done
+          test ! -e /tmp/tm3_w4
+          test ! -e out/tm_gen3_w4_source_receipt.json
+          echo PASS_TM_GEN3_W3_AUTHORIZED_W4_STILL_NOT_ACCESSED
+
+      - name: Collect independent fresh W3 validation cost envelope
+        if: env.TM3_DEV_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-tm-gen3-w3-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/w3_remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/tm_gen3_w3_cost.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/tm_gen3_w3_cost.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_TM_GEN3_W3_FRESH_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run W3 regime-exposed validation only after development PASS
+        if: env.TM3_DEV_PASS == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_trend_final_gen3.py \
+            --mode w3_validation \
+            --contract backend/research/contracts/alpha_trend_final_gen3_v1.json \
+            --history research/evidence/alpha_trend_momentum_generation_history_20260810.json \
+            --cost-model out/tm_gen3_w3_cost.json \
+            --historical-root /tmp/tm3_history \
+            --manifest /tmp/tm3_history/zel_historical_oos_v1/manifest.json \
+            --development-receipt out/tm_gen3_development_receipt.json \
+            --out out/tm_gen3_w3_validation_receipt.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('out/tm_gen3_w3_validation_receipt.json'))
+          assert r['mode']=='w3_validation'
+          assert r['W3_role']=='REGIME_EXPOSED_VALIDATION_NOT_FINAL_OOS'
+          assert r['W4_market_outcome_accessed'] is False
+          assert r['variants_allowed_after_result']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          a=r['W3']['aggregate']
+          print('TM_GEN3_W3_STATE',r['state'])
+          print('TM_GEN3_W3','trades=',a['net']['trade_count'],'symbols=',a['symbols_with_closed_trade'],'gross=',a['gross']['compound_return'],'net=',a['net']['compound_return'],'exp=',a['net']['expectancy_per_trade'],'pf=',a['net']['profit_factor'],'wr=',a['net']['win_rate'],'dd=',a['net']['max_drawdown'],'pass=',r['W3_gate_pass'])
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('TM3_W3_PASS=' + ('1' if r['W3_gate_pass'] else '0') + '\n')
+          PY
+          test ! -e /tmp/tm3_w4
+          test ! -e out/tm_gen3_w4_source_receipt.json
+
+      - name: Fetch exact new W4 plus contiguous warmup from frozen official BingX collector only after W3 PASS
+        if: env.TM3_W3_PASS == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tm3_w4
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from backend.tools import r7a4d_strategy11_continuous_data_collector_v1 as collector
+          c=json.load(open('backend/research/contracts/alpha_trend_final_gen3_v1.json'))
+          w4=c['W4_final_forward']
+          out={
+            'schema_version':'zel.alpha.trend_momentum.final_gen3.w4_source.v1',
+            'state':'PASS_TM_GEN3_W4_FRESH_OFFICIAL_FETCH',
+            'fetched_at':datetime.now(timezone.utc).isoformat(),
+            'source_mode':w4['source_mode'],
+            'fetch_start_ms':w4['fresh_fetch_start_ms'],
+            'evaluation_start_ms':w4['window_start_ms'],
+            'evaluation_end_ms':w4['window_end_ms'],
+            'warmup_bars':w4['warmup_bars'],
+            'evaluation_bars':w4['window_bars'],
+            'market_outcome_accessed_after_W3_pass':True,
+            'symbols':{},
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED'
+          }
+          ref_ts=None
+          for symbol in c['symbols']:
+              frame, endpoint, request_count=collector.fetch_klines(symbol,w4['fresh_fetch_start_ms'],w4['window_end_ms'])
+              assert len(frame)==w4['fresh_fetch_total_rows_per_symbol']
+              ts=[int(x) for x in frame['timestamp_ms'].tolist()]
+              assert ts[0]==w4['fresh_fetch_start_ms'] and ts[-1]==w4['window_end_ms']
+              assert all(b-a==900000 for a,b in zip(ts,ts[1:]))
+              if ref_ts is None: ref_ts=ts
+              else: assert ts==ref_ts
+              path=Path('/tmp/tm3_w4')/f'{symbol}.csv'
+              frame.to_csv(path,index=False)
+              sha=hashlib.sha256(path.read_bytes()).hexdigest()
+              out['symbols'][symbol]={
+                'rows':len(frame),
+                'first_timestamp_ms':ts[0],
+                'last_timestamp_ms':ts[-1],
+                'endpoint':endpoint,
+                'request_count':request_count,
+                'sha256':sha
+              }
+          material=dict(out)
+          out['receipt_sha256']=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          Path('out/tm_gen3_w4_source_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print('PASS_TM_GEN3_W4_FRESH_OFFICIAL_FETCH',out['receipt_sha256'])
+          for symbol,row in out['symbols'].items():
+              print('TM_GEN3_W4_SOURCE',symbol,row['rows'],row['first_timestamp_ms'],row['last_timestamp_ms'],row['endpoint'],row['request_count'],row['sha256'])
+          PY
+
+      - name: Collect independent fresh W4 final-forward cost envelope
+        if: env.TM3_W3_PASS == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-tm-gen3-w4-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/w4_remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/tm_gen3_w4_cost.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/tm_gen3_w4_cost.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_TM_GEN3_W4_FRESH_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run one-shot exact 14d W4 final forward gate
+        if: env.TM3_W3_PASS == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/alpha_trend_final_gen3.py \
+            --mode w4_final \
+            --contract backend/research/contracts/alpha_trend_final_gen3_v1.json \
+            --history research/evidence/alpha_trend_momentum_generation_history_20260810.json \
+            --cost-model out/tm_gen3_w4_cost.json \
+            --w3-receipt out/tm_gen3_w3_validation_receipt.json \
+            --w4-root /tmp/tm3_w4 \
+            --w4-source-receipt out/tm_gen3_w4_source_receipt.json \
+            --out out/tm_gen3_w4_final_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/tm_gen3_w4_final_receipt.json'))
+          assert r['mode']=='w4_final' and r['W4_role']=='NEW_FINAL_FORWARD'
+          assert r['W4_market_outcome_accessed'] is True
+          assert r['variants_allowed_after_result']==0
+          assert r['survivor_declared'] is False and r['DD_gate_resolved'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          a=r['W4']['aggregate']
+          print('TM_GEN3_W4_STATE',r['state'])
+          print('TM_GEN3_W4','trades=',a['net']['trade_count'],'symbols=',a['symbols_with_closed_trade'],'gross=',a['gross']['compound_return'],'net=',a['net']['compound_return'],'exp=',a['net']['expectancy_per_trade'],'pf=',a['net']['profit_factor'],'wr=',a['net']['win_rate'],'dd=',a['net']['max_drawdown'],'pass=',r['W4_gate_pass'])
+          PY
+
+      - name: Seal final-generation route
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def state(path, fallback):
+              p=Path(path)
+              return json.loads(p.read_text())['state'] if p.exists() else fallback
+          out={
+            'development':state('out/tm_gen3_development_receipt.json','NOT_RUN'),
+            'W3_validation':state('out/tm_gen3_w3_validation_receipt.json','NOT_ACCESSED_DEVELOPMENT_FAIL'),
+            'W4_final_forward':state('out/tm_gen3_w4_final_receipt.json','NOT_ACCESSED_W3_FAIL'),
+            'W4_source_accessed':Path('out/tm_gen3_w4_source_receipt.json').exists(),
+            'variants_after_result':0,
+            'survivor_declared':False,
+            'DD_gate_resolved':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED'
+          }
+          Path('out/tm_gen3_route_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-alpha-trend-final-gen3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/tm_gen3_dev_cost.json
+            out/tm_gen3_development_receipt.json
+            out/tm_gen3_w3_cost.json
+            out/tm_gen3_w3_validation_receipt.json
+            out/tm_gen3_w4_source_receipt.json
+            out/tm_gen3_w4_cost.json
+            out/tm_gen3_w4_final_receipt.json
+            out/tm_gen3_route_receipt.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup remote cost probes
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          for f in out/dev_remote_path.txt out/w3_remote_path.txt out/w4_remote_path.txt; do
+            remote=$(cat "$f" 2>/dev/null || true)
+            test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          done
+          rm -f ~/.ssh/vps_key

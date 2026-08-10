@@ -1,0 +1,121 @@
+name: ZEL Edge Factory V2 Broad20 D1 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_broad20_d1.py'
+      - 'research/policies/edge_factory_v2_broad20_d1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-broad20-d1-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  broad20-d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assert broad20 D1 contract frozen before source access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_broad20_d1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_broad20_d1_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_D1_SCORE'
+          assert c['source_run_id']==31433969475 and c['source_artifact_id']==9080341361
+          assert c['dataset_sha256']=='5738d5b092f090a22f8680b76cb359f9db44c06bbdc92b318b13e28c8fc42878'
+          assert len(c['symbols'])==20
+          assert c['d1_raw_start_ms']==1719792000000 and c['d1_score_start_ms']==1722384000000 and c['d1_score_mid_ms']==1729036800000 and c['d1_end_exclusive_ms']==1735689600000
+          assert c['causal_warmup_hours']==720
+          assert c['timeframe']=='1h' and c['decision_grid_hours']==4 and c['holding_hours']==4
+          assert c['portfolio_aggregation']=='ONE_EQUAL_WEIGHT_BATCH_PER_DECISION_TIMESTAMP'
+          assert c['maximum_legs_per_batch']==4
+          assert c['cost_contract']['normal_roundtrip_bps_per_leg']==8.0 and c['cost_contract']['stress_roundtrip_bps_per_leg']==16.0
+          assert len(c['families'])==4 and c['family_count']==4
+          assert all(row['parameter_search']==0 for row in c['families'].values())
+          assert c['d1_gate']['minimum_portfolio_batches']==100
+          assert c['d1_gate']['minimum_distinct_symbols_participating']==12
+          assert c['d1_gate']['normal_daily_cluster_bootstrap_confidence']==0.99
+          assert c['d1_gate']['stress_mean_net_bps_gt']==0.0
+          assert c['d1_gate']['first_half_normal_mean_net_bps_gt']==0.0 and c['d1_gate']['second_half_normal_mean_net_bps_gt']==0.0
+          assert c['candidate_budget']==2
+          assert c['v1_metrics_inspected'] is False and c['t1_metrics_inspected'] is False
+          assert c['ai_used_for_d1_discovery'] is False and c['tp_sl_trailing_skill_bot_used'] is False
+          assert c['survivor_declared'] is False and c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_BROAD20_D1_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download immutable broad20 18m source
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-18m-data-31433969475-1
+          path: /tmp/broad20-d1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31433969475'
+
+      - name: Verify source manifest without V1 or T1 metrics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/broad20-d1');m=json.load(open(root/'manifest.json'))
+          assert m['state']=='PASS_BROAD20_SOURCE_UNIVERSE' and m['accepted_count']==20
+          assert m['dataset_sha256']=='5738d5b092f090a22f8680b76cb359f9db44c06bbdc92b318b13e28c8fc42878'
+          for row in m['results']:
+              assert row['state']=='PASS_EXACT_18M_SOURCE'
+              p=root/'data'/row['file'];assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+          print('PASS_BROAD20_SOURCE_SHA')
+          PY
+
+      - name: Score D1 only with pre-frozen portfolio primitives
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_broad20_d1.py \
+            --dataset-root /tmp/broad20-d1 \
+            --out out/broad20_d1.json
+
+      - name: Assert fail-closed D1 receipt and no holdout read
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/broad20_d1.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_BROAD20_D1_WITH_V1_CANDIDATE','HOLD_BROAD20_D1_NO_CANDIDATE'}
+          assert r['source']['d1_rows_per_symbol_read']==4416 and r['source']['v1_rows_read']==0 and r['source']['t1_rows_read']==0
+          assert r['v1_metrics_inspected'] is False and r['t1_metrics_inspected'] is False
+          assert r['ai_used_for_discovery'] is False and r['survivor_declared'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['v1_candidate_count']<=2
+          print('BROAD20_D1_STATE',r['state'])
+          for f,row in r['results'].items():
+              print('BROAD20_D1_EFFECT',f,row['state'],'batches=',row['batch_count'],'normal=',row['mean_normal_bps'],'stress=',row['mean_stress_bps'],'ci99=',row['daily_cluster_bootstrap99_normal_bps'],'breadth=',row['distinct_symbols_participating'],'first=',row['first_half_mean_normal_bps'],'second=',row['second_half_mean_normal_bps'])
+          print('BROAD20_V1_CANDIDATES',json.dumps(r['v1_candidates'],sort_keys=True))
+          print('BROAD20_D1_RECEIPT',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-d1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/broad20_d1.json
+          if-no-files-found: error
+          retention-days: 90

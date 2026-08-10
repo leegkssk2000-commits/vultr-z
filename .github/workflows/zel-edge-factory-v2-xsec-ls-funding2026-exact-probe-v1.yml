@@ -1,0 +1,88 @@
+name: ZEL Edge Factory V2 XSec LS Funding2026 Exact Probe V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/edge_factory_v2_xsec_ls_funding2026_source.py'
+      - 'backend/research/edge_factory_v2_xsec_ls_funding2026_exact_probe.py'
+      - 'research/policies/edge_factory_v2_xsec_ls_funding2026_exact_probe_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-xsec-ls-funding2026-exact-probe-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  exact-native-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static compile
+        run: |
+          python -m py_compile backend/research/edge_factory_v2_xsec_ls_funding2026_source.py
+          python -m py_compile backend/research/edge_factory_v2_xsec_ls_funding2026_exact_probe.py
+      - name: Validate frozen contract
+        run: |
+          python - <<'PY'
+          import json
+          p='research/policies/edge_factory_v2_xsec_ls_funding2026_exact_probe_contract.json'
+          d=json.load(open(p))
+          assert d['state']=='FROZEN_BEFORE_EXACT_NATIVE_PROBE'
+          assert d['parent_pr']==627
+          assert d['candidate_rule_changes']==0
+          assert d['expected_missing_baseline_total']==88
+          assert d['probe_half_window_minutes']==60
+          assert d['funding_schedule_hours']==8
+          assert d['economics_inspected_before_probe'] is False
+          assert d['survivor_declared'] is False
+          print('PASS_EXACT_PROBE_CONTRACT')
+          PY
+      - name: Recollect source-only parent window
+        run: |
+          mkdir -p out/source/data
+          python backend/research/edge_factory_v2_xsec_ls_funding2026_source.py \
+            --out-dir out/source/data \
+            --manifest out/source/manifest.json
+      - name: Exact-probe every missing expected settlement
+        env:
+          PYTHONPATH: backend/research
+        run: |
+          mkdir -p out/exact/data
+          python backend/research/edge_factory_v2_xsec_ls_funding2026_exact_probe.py \
+            --source-dir out/source/data \
+            --source-manifest out/source/manifest.json \
+            --out-dir out/exact/data \
+            --manifest out/exact/manifest.json
+      - name: Verify authority boundary
+        run: |
+          python - <<'PY'
+          import json
+          m=json.load(open('out/exact/manifest.json'))
+          assert m['economics_inspected'] is False
+          assert m['candidate_entries_replayed'] is False
+          assert m['signal_rule_changes']==0
+          assert m['selection_authority'] is False
+          assert m['promotion_authority'] is False
+          assert m['survivor_declared'] is False
+          assert m['execution_authority']=='NONE'
+          assert m['order_authority']=='BLOCKED'
+          assert m['total_exact_probe_requests']==m['total_missing_before']
+          print(m['state'], 'missing_before=',m['total_missing_before'], 'recovered=',m['total_recovered_exact'], 'missing_after=',m['total_missing_after'])
+          PY
+      - name: Upload exact-probe receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-xsec-ls-funding2026-exact-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/source/manifest.json
+            out/exact/manifest.json
+            out/exact/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,105 @@
+name: ZEL Edge Factory V2 Independent 18M 1H Data V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_independent_18m_1h_collect.py'
+      - 'research/policies/edge_factory_v2_independent_18m_1h_data_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-independent-18m-1h-data-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-independent-18m-1h-data-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect-independent-18m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert independent replication partitions before collection
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_independent_18m_1h_collect.py
+          python backend/research/edge_factory_v2_independent_18m_1h_collect.py --self-test --out-dir /tmp/unused --manifest /tmp/unused.json
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_independent_18m_1h_data_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_COLLECTION'
+          assert c['source']['endpoint']=='/openApi/swap/v3/quote/klines' and c['source']['interval']=='1h'
+          assert c['symbols']==['BTC-USDT','ETH-USDT','LINK-USDT','SOL-USDT','XRP-USDT']
+          assert c['start_ms']==1672531200000 and c['end_exclusive_ms']==1719792000000
+          assert c['expected_rows_per_symbol']==13128 and c['expected_total_rows']==65640
+          assert c['partitions']['R1_REPLICATION_DISCOVERY']['expected_rows_per_symbol']==4344
+          assert c['partitions']['R2_REPLICATION_VALIDATION']['expected_rows_per_symbol']==4416
+          assert c['partitions']['R3_REPLICATION_TEST']['expected_rows_per_symbol']==4368
+          assert c['overlap_with_factory_v2_2024h2_2026_samples'] is False
+          assert c['replication_rule']=='EXACT_SAME_FIVE_D1_PRIMITIVES_TRAILING_720H_4H_GRID_4H_HOLD_8BPS_99PCT_BOOTSTRAP_NO_TUNING'
+          assert c['economics_inspected_during_collection'] is False and c['ai_used_during_collection'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_INDEPENDENT_18M_PARTITIONS_FROZEN')
+          PY
+
+      - name: Collect public BingX 1h independent history read-only
+        run: |
+          set -euo pipefail
+          mkdir -p out/data
+          python backend/research/edge_factory_v2_independent_18m_1h_collect.py \
+            --out-dir out/data \
+            --manifest out/manifest.json
+
+      - name: Independent exact coverage and SHA verification
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          r=json.load(open('out/manifest.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state']=='PASS_INDEPENDENT_18M_1H_DATA_STAGED'
+          assert r['expected_total_rows']==r['actual_total_rows']==65640
+          assert r['economics_inspected'] is False and r['holdout_metrics_inspected'] is False
+          assert r['ai_used'] is False and r['protected_mutations']==0
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          expected_parts={'R1_REPLICATION_DISCOVERY':4344,'R2_REPLICATION_VALIDATION':4416,'R3_REPLICATION_TEST':4368}
+          for item in r['results']:
+              p=Path('out/data')/item['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==item['file_sha256']
+              assert item['row_count']==13128 and item['partition_row_counts']==expected_parts
+              count=0; prior=None; first=None; last=None
+              with gzip.open(p,'rt',encoding='utf-8',newline='') as fh:
+                  for row in csv.DictReader(fh):
+                      ts=int(row['timestamp_ms'])
+                      if first is None:first=ts
+                      if prior is not None:assert ts-prior==3600000,(item['symbol'],prior,ts)
+                      prior=ts;last=ts;count+=1
+              assert count==13128
+              assert first==1672531200000 and last==1719792000000-3600000
+          print(json.dumps({'state':r['state'],'rows':r['actual_total_rows'],'dataset_sha256':r['dataset_sha256'],'receipt_sha256':r['receipt_sha256']},sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-independent-18m-1h-data-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/manifest.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

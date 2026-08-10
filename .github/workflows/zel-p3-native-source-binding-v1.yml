@@ -1,0 +1,102 @@
+name: ZEL P3 Native Source Binding V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/p3_native_endpoint_probe.py
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p3-native-source-binding-v1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p3-native-source-binding-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3-native-binding:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate frozen endpoint universe and Alpha-first lock
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_native_endpoint_probe.py scripts/ci/alpha_first_lock.py
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/p3_native_endpoint_probe.py \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-p3-native-source-binding-v1.yml
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          src=Path('backend/research/p3_native_endpoint_probe.py').read_text()
+          tree=ast.parse(src)
+          values={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
+                  if node.targets[0].id in {'W1_START_MS','W2_END_MS','ENDPOINTS','SYMBOLS'}:
+                      values[node.targets[0].id]=ast.literal_eval(node.value)
+          assert values['W1_START_MS']==1782549000000
+          assert values['W2_END_MS']==1784276940000
+          assert values['SYMBOLS']==('BTC-USDT','ETH-USDT')
+          assert values['ENDPOINTS']=={
+            'funding':'/openApi/swap/v2/quote/fundingRate',
+            'premium_index':'/openApi/swap/v2/quote/premiumIndex',
+            'open_interest':'/openApi/swap/v2/quote/openInterest',
+            'ticker':'/openApi/swap/v2/quote/ticker',
+          }
+          assert 'synthetic' in src.lower()
+          print('PASS_P3_ENDPOINT_UNIVERSE_FROZEN')
+          PY
+          mkdir -p out
+
+      - name: Probe only previously discovered official BingX read-only endpoints
+        run: |
+          set -euo pipefail
+          python backend/research/p3_native_endpoint_probe.py > out/p3_native_endpoint_probe.json
+          python -m json.tool out/p3_native_endpoint_probe.json >/dev/null
+
+      - name: Verify causal historical-binding receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/p3_native_endpoint_probe.json'))
+          assert r['schema_version']=='zel.p3.native_endpoint_probe.v1'
+          assert r['endpoints_are_previously_discovered_runtime_literals'] is True
+          assert r['target_W1_start_ms']==1782549000000
+          assert r['target_W2_end_ms']==1784276940000
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          print('P3_NATIVE_STATE',r['state'])
+          print('P3_HISTORICAL_BINDING',json.dumps(r['historical_binding'],sort_keys=True))
+          print('P3_CURRENT_READABILITY',json.dumps(r['current_endpoint_readability'],sort_keys=True))
+          print('P3_BLOCKERS',json.dumps(r['blockers'],sort_keys=True))
+          for p in r['probes']:
+              h=p.get('historical_window',{})
+              print('P3_PROBE',p['name'],p['symbol'],h.get('state'),h.get('row_count'),h.get('min_timestamp_ms'),h.get('max_timestamp_ms'),h.get('coverage_days'),h.get('historical_coverage_for_W1_W2'))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p3-native-source-binding-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/p3_native_endpoint_probe.json
+          if-no-files-found: error
+          retention-days: 90

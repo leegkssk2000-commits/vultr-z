@@ -1,0 +1,145 @@
+name: ZEL Edge Factory V2 D1 Primitives V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_d1_primitives.py'
+      - 'research/policies/edge_factory_v2_d1_primitives_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-d1-primitives-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-d1-primitives-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  d1-primitives:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assert pre-frozen D1 contract before data access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_d1_primitives.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_d1_primitives_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_D1_SCORE'
+          assert c['source_run_id']==31429880433
+          assert c['source_artifact_id']==9078686271
+          assert c['dataset_sha256']=='87ff0595f7ab90728af265eaf1b5aa79571317de61c6f68ce890526f3eff3c28'
+          assert c['d1_start_ms']==1719792000000
+          assert c['d1_score_start_ms']==1722384000000
+          assert c['d1_end_exclusive_ms']==1735689600000
+          assert c['causal_warmup_hours']==720
+          assert c['timeframe']=='1h'
+          assert c['decision_grid_hours']==4 and c['holding_hours']==4
+          assert c['roundtrip_cost_floor_bps']==8.0
+          assert c['trailing_distribution_hours']==720
+          assert len(c['families'])==5 and c['family_count']==5
+          assert c['discovery_pass_rule']['minimum_events']==60
+          assert c['discovery_pass_rule']['daily_cluster_bootstrap_confidence']==0.99
+          assert c['discovery_pass_rule']['bootstrap_reps']==6000
+          assert c['candidate_budget']==2
+          assert c['candidate_ranking']==[
+              'DAILY_CLUSTER_BOOTSTRAP99_LOWER_BOUND_DESC',
+              'MEAN_NET_BPS_DESC',
+              'FAMILY_ID_ASC',
+          ]
+          assert c['v1_metrics_inspected'] is False and c['t1_metrics_inspected'] is False
+          assert c['ai_used_for_d1_discovery'] is False
+          assert c['tp_sl_trailing_skill_bot_used'] is False
+          assert c['survivor_declared'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_D1_PRIMITIVES_CONTRACT_FROZEN_BEFORE_SCORE')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download immutable fresh 18m dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-fresh-18m-1h-data-31429880433-1
+          path: /tmp/edge-v2-d1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31429880433'
+
+      - name: Verify immutable dataset authority without holdout scoring
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('/tmp/edge-v2-d1')
+          m=json.loads((root/'manifest.json').read_text())
+          assert m['state']=='PASS_FRESH_18M_1H_DATA_STAGED'
+          assert m['dataset_sha256']=='87ff0595f7ab90728af265eaf1b5aa79571317de61c6f68ce890526f3eff3c28'
+          assert m['actual_total_rows']==65880
+          assert m['partitions']['D1_DISCOVERY']['rows_per_symbol']==4416
+          assert m['partitions']['V1_VALIDATION']['rows_per_symbol']==4344
+          assert m['partitions']['T1_TEST']['rows_per_symbol']==4416
+          assert m['economics_inspected'] is False and m['holdout_metrics_inspected'] is False
+          assert m['ai_used'] is False
+          for row in m['results']:
+              p=root/'data'/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              assert row['partition_row_counts']=={'D1_DISCOVERY':4416,'V1_VALIDATION':4344,'T1_TEST':4416}
+          print('PASS_D1_DATA_AUTHORITY_FILE_SHA_ONLY')
+          PY
+
+      - name: Score D1 only with frozen primitives
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_d1_primitives.py \
+            --dataset-root /tmp/edge-v2-d1 \
+            --out out/edge_factory_v2_d1_primitives.json
+
+      - name: Assert D1-only fail-closed receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/edge_factory_v2_d1_primitives.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_D1_WITH_FROZEN_V1_CANDIDATE','HOLD_D1_NO_CANDIDATE'}
+          assert r['source']['d1_rows_per_symbol_read']==4416
+          assert r['source']['v1_rows_read']==0 and r['source']['t1_rows_read']==0
+          assert r['v1_metrics_inspected'] is False and r['t1_metrics_inspected'] is False
+          assert r['ai_used_for_d1_discovery'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['v1_candidate_count']<=2
+          print('D1_STATE',r['state'])
+          for family,row in r['results'].items():
+              print('D1_EFFECT',family,row['state'],'events=',row['event_count'],'net_bps=',row['mean_net_bps_after_cost_floor'],'ci99=',row['daily_cluster_bootstrap99_net_bps'],'positive_symbols=',row['positive_symbol_count'])
+          print('D1_V1_CANDIDATES',json.dumps(r['v1_candidates'],sort_keys=True))
+          print('D1_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-d1-primitives-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_d1_primitives.json
+          if-no-files-found: error
+          retention-days: 90

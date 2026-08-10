@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - backend/research/vwap_revert_150d_durability.py
+      - backend/research/vwap_revert_150d_durability_v2.py
       - .github/workflows/zel-vwap-revert-150d-durability-v1.yml
 
 permissions:
@@ -30,10 +31,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Freeze replay contract
+      - name: Freeze replay contract and bugfix scope
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/vwap_revert_150d_durability.py backend/tools/zel_historical_oos_exact25_replay_v1.py
+          python -m py_compile backend/research/vwap_revert_150d_durability.py backend/research/vwap_revert_150d_durability_v2.py backend/tools/zel_historical_oos_exact25_replay_v1.py
           python - <<'PY'
           import importlib.util
           from pathlib import Path
@@ -47,7 +48,14 @@ jobs:
           text=p.read_text()
           for token in ('strategy_parameter_changes": 0','feature_gate_changes": 0','survivor_declared": False','execution_authority": "NONE"','order_authority": "BLOCKED"'):
               assert token in text
-          print('PASS_VWAP150_CONTRACT_FROZEN_NO_TUNING')
+          q=Path('backend/research/vwap_revert_150d_durability_v2.py')
+          qs=q.read_text()
+          assert 'VWAP150_ZERO_SENTINEL_MANIFEST_ADAPTER_ONLY' in qs
+          assert 'STRATEGY_PARAMETER_CHANGES = 0' in qs
+          assert 'FEATURE_GATE_CHANGES = 0' in qs
+          assert 'MARKET_DATA_CHANGES = 0' in qs
+          assert 'WINDOW_CHANGES = 0' in qs
+          print('PASS_VWAP150_CONTRACT_FROZEN_BUGFIX_ONLY')
           PY
           mkdir -p /tmp/vwap150 /tmp/vwap150_pydeps out ~/.ssh
 
@@ -117,11 +125,11 @@ jobs:
           remote="/tmp/zel-vwap150-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "$remote" > out/remote_path.txt
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote/data' '$remote/pydeps'"
-          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/vwap_revert_150d_durability.py backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/vwap150/manifest.json /tmp/vwap150_pydeps.tgz "$VPS_USER@$VPS_HOST:$remote/"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/vwap_revert_150d_durability.py backend/research/vwap_revert_150d_durability_v2.py backend/tools/zel_historical_oos_exact25_replay_v1.py /tmp/vwap150/manifest.json /tmp/vwap150_pydeps.tgz "$VPS_USER@$VPS_HOST:$remote/"
           scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/vwap150/data/*_1771027200000_1782549000000.csv.gz "$VPS_USER@$VPS_HOST:$remote/data/"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "tar -C '$remote/pydeps' -xzf '$remote/vwap150_pydeps.tgz'"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=450 "$VPS_USER@$VPS_HOST" \
-            "PYTHONPATH='$remote/pydeps' nice -n 10 /usr/bin/python3 '$remote/vwap_revert_150d_durability.py' \
+            "PYTHONPATH='$remote/pydeps' nice -n 10 /usr/bin/python3 '$remote/vwap_revert_150d_durability_v2.py' \
               --engine '$remote/zel_historical_oos_exact25_replay_v1.py' \
               --source-root /home/z/z \
               --market-root '$remote' \

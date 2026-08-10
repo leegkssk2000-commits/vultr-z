@@ -13,6 +13,7 @@ from typing import Any
 BASES = ("https://open-api.bingx.com", "https://open-api.bingx.pro")
 W1_START_MS = 1782549000000  # 2026-06-27T08:30:00Z
 W2_END_MS = 1784276940000    # 2026-07-17T08:29:00Z
+HISTORY_PRE_ROLL_MS = 24 * 60 * 60 * 1000
 ENDPOINTS = {
     "funding": "/openApi/swap/v2/quote/fundingRate",
     "premium_index": "/openApi/swap/v2/quote/premiumIndex",
@@ -33,7 +34,7 @@ def get_json(path: str, params: dict[str, Any]) -> tuple[Any, str, float]:
     for base in BASES:
         try:
             url = base + path + "?" + urllib.parse.urlencode(params)
-            req = urllib.request.Request(url, headers={"User-Agent": "ZEL-P3-readonly/1.1"})
+            req = urllib.request.Request(url, headers={"User-Agent": "ZEL-P3-readonly/1.2"})
             t0 = time.perf_counter()
             with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
                 raw = resp.read().decode("utf-8")
@@ -91,9 +92,10 @@ def safe_schema(rs: list[dict[str, Any]]) -> dict[str, Any]:
 
 def probe_endpoint(name: str, path: str, symbol: str, now_ms: int) -> dict[str, Any]:
     result: dict[str, Any] = {"name": name, "endpoint": path, "symbol": symbol, "write_endpoint_called": False}
+    historical_start = W1_START_MS - HISTORY_PRE_ROLL_MS
     variants = {
         "current": {"symbol": symbol},
-        "historical_window": {"symbol": symbol, "startTime": W1_START_MS, "endTime": now_ms, "limit": 1000},
+        "historical_window": {"symbol": symbol, "startTime": historical_start, "endTime": now_ms, "limit": 1000},
     }
     for label, params in variants.items():
         try:
@@ -105,6 +107,7 @@ def probe_endpoint(name: str, path: str, symbol: str, now_ms: int) -> dict[str, 
                 "base": base,
                 "latency_ms": latency_ms,
                 **safe_schema(rs),
+                "requested_start_ms": historical_start if label == "historical_window" else None,
                 "timestamp_keys_used": keys_used,
                 "min_timestamp_ms": ts[0] if ts else None,
                 "max_timestamp_ms": ts[-1] if ts else None,
@@ -151,6 +154,7 @@ def main() -> int:
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "target_W1_start_ms": W1_START_MS,
         "target_W2_end_ms": W2_END_MS,
+        "history_pre_roll_ms": HISTORY_PRE_ROLL_MS,
         "symbols": list(SYMBOLS),
         "endpoint_contract": ENDPOINTS,
         "endpoints_are_previously_discovered_runtime_literals": True,
@@ -162,7 +166,7 @@ def main() -> int:
         },
         "current_endpoint_readability": current_flags,
         "blockers": blockers,
-        "interpretation": "Passing current endpoint reads do not substitute for historical aligned coverage. No unobserved endpoint path, synthetic history, interpolation, or threshold is invented.",
+        "interpretation": "Historical probes include a fixed 24h pre-roll so the last causal observation before W1 start can be present. Passing current endpoint reads do not substitute for historical aligned coverage. No unobserved endpoint path, synthetic history, interpolation, or threshold is invented.",
         "selection_authority": False,
         "promotion_authority": False,
         "runtime_mutated": False,

@@ -1,0 +1,107 @@
+name: ZEL Edge Factory V2 Funding W1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_funding_w1.py'
+      - 'research/policies/edge_factory_v2_funding_w1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-funding-w1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-edge-factory-v2-funding-w1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  funding-w1:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Freeze funding W1 contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_funding_w1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_funding_w1_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_FUNDING_W1_REPLAY'
+          assert c['funding_endpoint']=='/openApi/swap/v2/quote/fundingRate'
+          assert c['symbols']==['BTC-USDT','ETH-USDT']
+          assert c['warmup_start_ms']==1770422400000 and c['warmup_days']==7
+          assert c['w1_start_ms']==1771027200000 and c['w1_end_exclusive_ms']==1774828800000
+          assert len(c['families'])==2 and c['candidate_budget']==1
+          assert c['same_settlement_funding_income_counted'] is False
+          assert c['ai_used_for_w1_discovery'] is False and c['w2_w3_metrics_inspected'] is False
+          assert c['survivor_declared'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_EDGE_FACTORY_V2_FUNDING_W1_CONTRACT_FROZEN')
+          PY
+
+      - name: Install deterministic research runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2
+
+      - name: Download accepted 150d BingX 1m market dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-bingx-1m-gap-exclusion-seal-v1-30971232337
+          path: /tmp/funding-edge-v2
+          github-token: ${{ github.token }}
+          run-id: 30971232337
+          repository: ${{ github.repository }}
+
+      - name: Run native funding W1 effect study
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_funding_w1.py \
+            --dataset-root /tmp/funding-edge-v2 \
+            --out out/edge_factory_v2_funding_w1.json
+
+      - name: Verify fail-closed receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/edge_factory_v2_funding_w1.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          raw=json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()
+          assert hashlib.sha256(raw).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'HOLD_FUNDING_W1_SOURCE_GAP','PASS_FUNDING_W1_WITH_CANDIDATE','HOLD_FUNDING_W1_NO_CANDIDATE'}
+          assert r['ai_used_for_discovery'] is False
+          assert r['w2_w3_metrics_inspected'] is False
+          assert r['survivor_declared'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          if r['state']!='HOLD_FUNDING_W1_SOURCE_GAP':
+              assert r['economic_replay_performed'] is True
+              assert r['w2_candidate_count']<=1
+          print('FUNDING_W1_STATE',r['state'])
+          print('FUNDING_W1_BLOCKERS',json.dumps(r.get('blockers',[]),sort_keys=True))
+          for symbol,row in r['funding_source'].items():
+              print('FUNDING_SOURCE',symbol,row['state'],'rows=',row['row_count'],'coverage_days=',row.get('coverage_days'),'min=',row.get('min_timestamp_ms'),'max=',row.get('max_timestamp_ms'))
+          for family,row in r.get('results',{}).items():
+              print('FUNDING_EFFECT',family,row['state'],'events=',row['event_count'],'net_bps=',row.get('mean_net_bps_after_cost_floor'),'ci=',row.get('daily_block_bootstrap95_net_bps'),'positive_symbols=',row.get('positive_symbol_count'))
+          print('FUNDING_W2_CANDIDATES',r.get('w2_candidates',[]))
+          print('FUNDING_W1_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-funding-w1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/edge_factory_v2_funding_w1.json
+          if-no-files-found: error
+          retention-days: 90

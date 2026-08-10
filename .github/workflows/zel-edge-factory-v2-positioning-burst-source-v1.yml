@@ -1,0 +1,62 @@
+name: ZEL Edge Factory V2 Positioning Burst Source V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/edge_factory_v2_positioning_burst_collector.py'
+      - 'research/policies/edge_factory_v2_positioning_burst_source_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-positioning-burst-source-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  positioning-burst:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert source-only contract
+        run: |
+          python -m py_compile backend/research/edge_factory_v2_positioning_burst_collector.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_positioning_burst_source_contract.json'))
+          assert c['state']=='FROZEN_SOURCE_ONLY_BEFORE_BURST'
+          assert c['sample_count']==5 and c['interval_seconds']==30 and c['expected_records']==50
+          assert c['derived_basis_allowed'] is False and c['economics_inspected'] is False
+          assert c['signal_generation_enabled'] is False and c['replay_allowed'] is False
+          assert c['survivor_declared'] is False
+          print('PASS_POSITIONING_SOURCE_CONTRACT')
+          PY
+      - name: Collect five native snapshots
+        run: |
+          mkdir -p out/positioning
+          python backend/research/edge_factory_v2_positioning_burst_collector.py \
+            --out-dir out/positioning --samples 5 --interval-seconds 30
+      - name: Assert source-only receipt
+        run: |
+          python - <<'PY'
+          import json
+          m=json.load(open('out/positioning/manifest.json'))
+          assert m['state']=='PASS_POSITIONING_BURST_SOURCE'
+          assert m['sample_count']==5 and m['record_count']==50
+          assert m['economics_inspected'] is False and m['derived_basis_emitted'] is False
+          assert m['signal_generation_enabled'] is False and m['replay_allowed'] is False
+          assert m['selection_authority'] is False and m['promotion_authority'] is False
+          assert m['survivor_declared'] is False and m['execution_authority']=='NONE' and m['order_authority']=='BLOCKED'
+          print('POSITIONING_BURST_STATE',m['state'])
+          print('POSITIONING_BURST_PAIRS',json.dumps(m['pair_summary'],sort_keys=True))
+          print('POSITIONING_BURST_RECEIPT',m['receipt_sha256'])
+          PY
+      - name: Upload source burst
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-positioning-burst-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/positioning
+          if-no-files-found: error
+          retention-days: 90

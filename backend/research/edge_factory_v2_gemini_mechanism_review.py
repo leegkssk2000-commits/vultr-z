@@ -4,8 +4,13 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT=Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0,str(REPO_ROOT))
 
 from backend.tools.zel_manual_multiaxis_gemini_v2 import call_generate, parse_json
 

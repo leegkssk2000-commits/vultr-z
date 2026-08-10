@@ -41,26 +41,24 @@ jobs:
             config/zel_alpha_engine_vnext.json \
             .github/workflows/zel-p3-native-source-binding-v1.yml
           python - <<'PY'
-          import ast
+          import importlib.util
           from pathlib import Path
-          src=Path('backend/research/p3_native_endpoint_probe.py').read_text()
-          tree=ast.parse(src)
-          values={}
-          for node in tree.body:
-              if isinstance(node, ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
-                  if node.targets[0].id in {'W1_START_MS','W2_END_MS','HISTORY_PRE_ROLL_MS','ENDPOINTS','SYMBOLS'}:
-                      values[node.targets[0].id]=ast.literal_eval(node.value)
-          assert values['W1_START_MS']==1782549000000
-          assert values['W2_END_MS']==1784276940000
-          assert values['HISTORY_PRE_ROLL_MS']==86400000
-          assert values['SYMBOLS']==('BTC-USDT','ETH-USDT')
-          assert values['ENDPOINTS']=={
+          path=Path('backend/research/p3_native_endpoint_probe.py')
+          spec=importlib.util.spec_from_file_location('p3probe',path)
+          assert spec is not None and spec.loader is not None
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          assert mod.W1_START_MS==1782549000000
+          assert mod.W2_END_MS==1784276940000
+          assert mod.HISTORY_PRE_ROLL_MS==86400000
+          assert mod.SYMBOLS==('BTC-USDT','ETH-USDT')
+          assert mod.ENDPOINTS=={
             'funding':'/openApi/swap/v2/quote/fundingRate',
             'premium_index':'/openApi/swap/v2/quote/premiumIndex',
             'open_interest':'/openApi/swap/v2/quote/openInterest',
             'ticker':'/openApi/swap/v2/quote/ticker',
           }
-          assert 'synthetic' in src.lower()
+          assert 'synthetic' in path.read_text().lower()
           print('PASS_P3_ENDPOINT_UNIVERSE_FROZEN_WITH_PREROLL')
           PY
           mkdir -p out ~/.ssh

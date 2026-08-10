@@ -5,6 +5,7 @@ on:
     branches: [zel/alpha-first-vnext-20260809]
     paths:
       - backend/research/p3_native_endpoint_probe.py
+      - backend/research/p3_runtime_historical_source_inventory.py
       - config/zel_alpha_engine_vnext.json
       - .github/workflows/zel-p3-native-source-binding-v1.yml
 
@@ -19,7 +20,7 @@ jobs:
   p3-native-binding:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,9 +34,10 @@ jobs:
       - name: Validate frozen endpoint universe and Alpha-first lock
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/p3_native_endpoint_probe.py scripts/ci/alpha_first_lock.py
+          python -m py_compile backend/research/p3_native_endpoint_probe.py backend/research/p3_runtime_historical_source_inventory.py scripts/ci/alpha_first_lock.py
           python scripts/ci/alpha_first_lock.py --files \
             backend/research/p3_native_endpoint_probe.py \
+            backend/research/p3_runtime_historical_source_inventory.py \
             config/zel_alpha_engine_vnext.json \
             .github/workflows/zel-p3-native-source-binding-v1.yml
           python - <<'PY'
@@ -46,10 +48,11 @@ jobs:
           values={}
           for node in tree.body:
               if isinstance(node, ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
-                  if node.targets[0].id in {'W1_START_MS','W2_END_MS','ENDPOINTS','SYMBOLS'}:
+                  if node.targets[0].id in {'W1_START_MS','W2_END_MS','HISTORY_PRE_ROLL_MS','ENDPOINTS','SYMBOLS'}:
                       values[node.targets[0].id]=ast.literal_eval(node.value)
           assert values['W1_START_MS']==1782549000000
           assert values['W2_END_MS']==1784276940000
+          assert values['HISTORY_PRE_ROLL_MS']==86400000
           assert values['SYMBOLS']==('BTC-USDT','ETH-USDT')
           assert values['ENDPOINTS']=={
             'funding':'/openApi/swap/v2/quote/fundingRate',
@@ -58,9 +61,9 @@ jobs:
             'ticker':'/openApi/swap/v2/quote/ticker',
           }
           assert 'synthetic' in src.lower()
-          print('PASS_P3_ENDPOINT_UNIVERSE_FROZEN')
+          print('PASS_P3_ENDPOINT_UNIVERSE_FROZEN_WITH_PREROLL')
           PY
-          mkdir -p out
+          mkdir -p out ~/.ssh
 
       - name: Probe only previously discovered official BingX read-only endpoints
         run: |
@@ -68,7 +71,7 @@ jobs:
           python backend/research/p3_native_endpoint_probe.py > out/p3_native_endpoint_probe.json
           python -m json.tool out/p3_native_endpoint_probe.json >/dev/null
 
-      - name: Verify causal historical-binding receipt
+      - name: Verify causal native historical-binding receipt
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -78,6 +81,7 @@ jobs:
           assert r['endpoints_are_previously_discovered_runtime_literals'] is True
           assert r['target_W1_start_ms']==1782549000000
           assert r['target_W2_end_ms']==1784276940000
+          assert r['history_pre_roll_ms']==86400000
           assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
@@ -93,10 +97,68 @@ jobs:
               print('P3_PROBE',p['name'],p['symbol'],h.get('state'),h.get('row_count'),h.get('min_timestamp_ms'),h.get('max_timestamp_ms'),h.get('coverage_days'),h.get('historical_coverage_for_W1_W2'))
           PY
 
+      - name: Prepare SSH for bounded read-only runtime source inventory
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Inventory existing runtime historical basis OI flow sources read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-p3-runtime-source-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          echo "$remote" > out/remote_path.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p3_runtime_historical_source_inventory.py "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z nice -n 19 ionice -c3 /usr/bin/python3 '$remote'" \
+            > out/p3_runtime_historical_source_inventory.json
+          python -m json.tool out/p3_runtime_historical_source_inventory.json >/dev/null
+
+      - name: Verify runtime source inventory is discovery-only
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/p3_runtime_historical_source_inventory.json'))
+          assert r['schema_version']=='zel.p3.runtime_historical_source_inventory.v1'
+          assert r['state']=='PASS_P3_RUNTIME_SOURCE_INVENTORY_READ_ONLY'
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          assert r['raw_market_values_emitted'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('P3_RUNTIME_FLAGS',json.dumps(r['historical_candidate_flags'],sort_keys=True))
+          print('P3_RUNTIME_COUNTS',json.dumps(r['category_path_counts'],sort_keys=True))
+          print('P3_RUNTIME_ENDPOINTS',json.dumps(r['unique_relevant_endpoint_literals'],sort_keys=True))
+          print('P3_RUNTIME_STRONG',json.dumps(r['strong_W1_W2_by_category'],sort_keys=True))
+          print('P3_RUNTIME_TIMESTAMPED_COUNT',len(r['timestamped_data_candidates']))
+          print('P3_RUNTIME_NAMED_COUNT',len(r['name_candidate_files']))
+          PY
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: zel-p3-native-source-binding-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/p3_native_endpoint_probe.json
+          path: |
+            out/p3_native_endpoint_probe.json
+            out/p3_runtime_historical_source_inventory.json
           if-no-files-found: error
           retention-days: 90
+
+      - name: Cleanup remote inventory probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

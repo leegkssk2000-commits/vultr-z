@@ -1,0 +1,86 @@
+name: ZEL Edge Factory V2 Broad20 Fresh2026 Source V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_broad20_fresh2026_collect.py'
+      - 'research/policies/edge_factory_v2_broad20_fresh2026_source_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-broad20-fresh2026-source-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  collect-fresh2026:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert source-only contract before collection
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_broad20_fresh2026_collect.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_broad20_fresh2026_source_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_COLLECTION'
+          assert len(c['symbols'])==20 and c['all_20_required'] is True
+          assert c['start_ms']==1767225600000 and c['end_exclusive_ms']==1785542400000
+          assert c['expected_rows_per_symbol']==5088 and c['expected_total_rows']==101760
+          assert c['acceptance']['missing_interval_tolerance']==0 and c['acceptance']['duplicate_timestamp_tolerance']==0
+          assert c['acceptance']['interpolation'] is False and c['acceptance']['forward_fill'] is False and c['acceptance']['synthetic_candles'] is False
+          assert c['economics_inspected_during_collection'] is False
+          assert c['market_neutral_rule_defined_during_collection'] is False and c['ai_used_during_collection'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_FRESH2026_SOURCE_CONTRACT_FROZEN')
+          PY
+          mkdir -p out/data
+      - name: Collect exact broad20 fresh2026 source
+        run: |
+          set -euo pipefail
+          python backend/research/edge_factory_v2_broad20_fresh2026_collect.py --out-dir out/data --manifest out/manifest.json
+      - name: Verify exact continuity and source receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          r=json.load(open('out/manifest.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state']=='PASS_BROAD20_FRESH2026_SOURCE'
+          assert r['rows_per_symbol']==5088 and r['total_rows']==101760 and len(r['results'])==20
+          assert r['economics_inspected'] is False and r['market_neutral_rule_defined'] is False and r['ai_used'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          for row in r['results']:
+              p=Path('out/data')/row['file'];assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              assert row['row_count']==5088 and row['missing_interval_count']==0 and row['duplicate_timestamp_count']==0
+              assert row['first_timestamp_ms']==1767225600000 and row['last_timestamp_ms']==1785538800000
+              prior=None;count=0
+              with gzip.open(p,'rt',encoding='utf-8',newline='') as fh:
+                  for x in csv.DictReader(fh):
+                      ts=int(x['timestamp_ms'])
+                      if prior is not None:assert ts-prior==3600000
+                      prior=ts;count+=1
+              assert count==5088
+          print('FRESH2026_DATASET_SHA',r['dataset_sha256'])
+          print('FRESH2026_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-fresh2026-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/manifest.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

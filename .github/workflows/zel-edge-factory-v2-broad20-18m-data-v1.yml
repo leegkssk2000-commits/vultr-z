@@ -1,0 +1,107 @@
+name: ZEL Edge Factory V2 Broad20 18M Data V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_broad20_18m_collect.py'
+      - 'research/policies/edge_factory_v2_broad20_18m_data_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-broad20-18m-data-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  collect-broad20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert universe frozen before data access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_broad20_18m_collect.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_broad20_18m_data_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_COLLECTION'
+          assert len(c['candidate_symbols_frozen_before_data'])==20
+          assert c['minimum_accepted_symbols']==12
+          assert c['core_symbols_required']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT']
+          assert c['start_ms']==1719792000000 and c['end_exclusive_ms']==1767225600000
+          assert c['expected_rows_per_accepted_symbol']==13176
+          assert c['failed_symbol_handling']=='SOURCE_EXCLUDE_ONLY; NO_REPLACEMENT_SYMBOL_AFTER_COLLECTION'
+          assert c['economics_inspected_during_collection'] is False
+          assert c['d1_metrics_inspected'] is False and c['v1_metrics_inspected'] is False and c['t1_metrics_inspected'] is False
+          assert c['strategy_hypotheses_defined'] is False and c['ai_used_during_collection'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_BROAD20_UNIVERSE_FROZEN')
+          PY
+          mkdir -p out/data
+
+      - name: Collect exact 18m history for predeclared symbols
+        run: |
+          set -euo pipefail
+          python backend/research/edge_factory_v2_broad20_18m_collect.py \
+            --out-dir out/data \
+            --manifest out/manifest.json
+
+      - name: Verify source-only accepted universe
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv,gzip,hashlib,json
+          from pathlib import Path
+          r=json.load(open('out/manifest.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_BROAD20_SOURCE_UNIVERSE','HOLD_BROAD20_SOURCE_UNIVERSE'}
+          assert r['economics_inspected'] is False and r['d1_metrics_inspected'] is False and r['v1_metrics_inspected'] is False and r['t1_metrics_inspected'] is False
+          assert r['ai_used'] is False and r['strategy_hypotheses_defined'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert len(r['candidate_symbols'])==20
+          for row in r['results']:
+              if row['state']!='PASS_EXACT_18M_SOURCE':
+                  print('BROAD20_FAIL',row['symbol'],row['error'])
+                  continue
+              p=Path('out/data')/row['file']
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==row['file_sha256']
+              assert row['row_count']==13176 and row['missing_interval_count']==0 and row['duplicate_timestamp_count']==0
+              assert row['first_timestamp_ms']==1719792000000 and row['last_timestamp_ms']==1767222000000
+              assert row['partition_row_counts']=={'D1_DISCOVERY':4416,'V1_VALIDATION':4344,'T1_TEST':4416}
+              prior=None;count=0
+              with gzip.open(p,'rt',encoding='utf-8',newline='') as fh:
+                  for x in csv.DictReader(fh):
+                      ts=int(x['timestamp_ms'])
+                      if prior is not None: assert ts-prior==3600000
+                      prior=ts;count+=1
+              assert count==13176
+          if r['state']=='PASS_BROAD20_SOURCE_UNIVERSE':
+              assert r['accepted_count']>=12 and r['core_symbols_pass'] is True
+          print('BROAD20_STATE',r['state'])
+          print('BROAD20_ACCEPTED_COUNT',r['accepted_count'])
+          print('BROAD20_ACCEPTED',json.dumps(r['accepted_symbols']))
+          print('BROAD20_FAILED',json.dumps(r['failed_symbols']))
+          print('BROAD20_DATASET_SHA',r['dataset_sha256'])
+          print('BROAD20_RECEIPT_SHA',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-edge-factory-v2-broad20-18m-data-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/manifest.json
+            out/data/*.csv.gz
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

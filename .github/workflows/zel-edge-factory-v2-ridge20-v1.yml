@@ -1,0 +1,108 @@
+name: ZEL Edge Factory V2 Ridge20 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/edge_factory_v2_ridge20_v1.py'
+      - 'research/policies/edge_factory_v2_ridge20_v1_contract.json'
+      - '.github/workflows/zel-edge-factory-v2-ridge20-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ridge20-v1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assert single-model contract before fit or V1 access
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/edge_factory_v2_ridge20_v1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('research/policies/edge_factory_v2_ridge20_v1_contract.json'))
+          assert c['state']=='FROZEN_BEFORE_D1_TRAIN_AND_V1_SCORE'
+          assert c['source_run_id']==31433969475 and c['source_artifact_id']==9080341361
+          assert c['dataset_sha256']=='5738d5b092f090a22f8680b76cb359f9db44c06bbdc92b318b13e28c8fc42878'
+          assert len(c['symbols'])==20
+          assert c['train']['D1_score_start_ms']==1722384000000 and c['train']['D1_end_exclusive_ms']==1735689600000
+          assert c['validation']['V1_start_ms']==1735689600000 and c['validation']['V1_end_exclusive_ms']==1751328000000
+          assert c['validation']['T1_rows_read']==0 and c['validation']['model_retrain_on_V1'] is False
+          assert c['features']==['RET_4H','RET_24H','RET_72H','RET_168H','REALIZED_VOL_24H','REALIZED_VOL_168H','VOLUME_4H_TO_TRAILING168H_MEDIAN_RATIO','DISTANCE_TO_PRIOR_24H_HIGH','DISTANCE_TO_PRIOR_24H_LOW']
+          assert c['feature_processing']['cross_sectional_standardization_per_timestamp']=='ZSCORE_DDOF0'
+          assert c['feature_processing']['feature_selection'] is False
+          assert c['model']=={'class':'sklearn.linear_model.Ridge','alpha':100.0,'fit_intercept':False,'solver':'svd','hyperparameter_search':0,'model_count':1,'random_state_used':False}
+          assert c['portfolio']['selection']=='TOP_4_MODEL_PREDICTIONS'
+          assert c['portfolio']['weighting']=='EQUAL_WEIGHT_LONG_ONLY'
+          assert c['portfolio']['normal_roundtrip_bps_per_leg']==8.0 and c['portfolio']['stress_roundtrip_bps_per_leg']==16.0
+          assert c['V1_gate']['minimum_portfolio_batches']==900
+          assert c['V1_gate']['normal_daily_cluster_bootstrap_confidence']==0.95
+          assert c['V1_gate']['selection_alpha_daily_cluster_bootstrap_confidence']==0.95
+          assert c['ai_used_before_V1'] is False and c['T1_metrics_inspected'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_RIDGE20_CONTRACT_FROZEN')
+          PY
+
+      - name: Install fixed model runtime
+        run: python -m pip install --disable-pip-version-check pandas==2.3.3 numpy==2.3.2 scikit-learn==1.8.0
+
+      - name: Download immutable broad20 source
+        uses: actions/download-artifact@v4
+        with:
+          name: zel-edge-factory-v2-broad20-18m-data-31433969475-1
+          path: /tmp/ridge20
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: '31433969475'
+
+      - name: Train once on D1 and evaluate V1 without T1 read
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/edge_factory_v2_ridge20_v1.py \
+            --dataset-root /tmp/ridge20 \
+            --out out/ridge20_v1.json
+
+      - name: Assert one model no search and fail-closed V1
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/ridge20_v1.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          assert hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()==r['receipt_sha256']
+          assert r['state'] in {'PASS_RIDGE20_V1_TO_T1_CANDIDATE','REJECT_RIDGE20_V1_NO_SEARCH_NO_REUSE'}
+          assert r['source']['d1_rows_per_symbol_read']==4416 and r['source']['v1_rows_per_symbol_read']==4344 and r['source']['t1_rows_read']==0
+          assert r['training']['feature_count']==9 and r['training']['model']=='Ridge'
+          assert r['training']['alpha']==100.0 and r['training']['fit_intercept'] is False and r['training']['solver']=='svd'
+          assert r['training']['hyperparameter_search']==0
+          assert len(r['training']['coefficient_vector'])==9 and len(r['training']['coefficient_sha256'])==64
+          assert r['V1_model_retrained'] is False and r['T1_metrics_inspected'] is False
+          assert r['ai_used_before_V1'] is False and r['survivor_declared'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('RIDGE20_STATE',r['state'])
+          print('RIDGE20_COEF_SHA',r['training']['coefficient_sha256'])
+          print('RIDGE20_TRAIN_SAMPLES',r['training']['sample_count'])
+          print('RIDGE20_V1',json.dumps(r['V1'],sort_keys=True))
+          print('RIDGE20_GATE',json.dumps(r['gate'],sort_keys=True))
+          print('RIDGE20_RECEIPT',r['receipt_sha256'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-edge-factory-v2-ridge20-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ridge20_v1.json
+          if-no-files-found: error
+          retention-days: 90

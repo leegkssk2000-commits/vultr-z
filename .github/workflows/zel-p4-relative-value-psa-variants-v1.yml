@@ -1,0 +1,279 @@
+name: ZEL P4 Relative Value PSA Variants V1
+
+on:
+  pull_request:
+    branches: [zel/alpha-first-vnext-20260809]
+    paths:
+      - backend/research/p4_relative_value_psa_base.py
+      - backend/research/p4_relative_value_psa_variants.py
+      - backend/research/contracts/p4_relative_value_psa_variants_v1.json
+      - backend/tools/zel_bingx_real_calibration_v1.py
+      - research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json
+      - config/zel_alpha_engine_vnext.json
+      - .github/workflows/zel-p4-relative-value-psa-variants-v1.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-p4-relative-value-psa-variants-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p4-variants:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate predeclared variants and untouched-W3 methodology
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/p4_relative_value_psa_base.py \
+            backend/research/p4_relative_value_psa_variants.py \
+            backend/tools/zel_bingx_real_calibration_v1.py \
+            scripts/ci/alpha_first_lock.py
+          python -m json.tool backend/research/contracts/p4_relative_value_psa_variants_v1.json >/dev/null
+          python -m json.tool research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json >/dev/null
+          python scripts/ci/alpha_first_lock.py --files \
+            backend/research/p4_relative_value_psa_variants.py \
+            backend/research/contracts/p4_relative_value_psa_variants_v1.json \
+            research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json \
+            config/zel_alpha_engine_vnext.json \
+            .github/workflows/zel-p4-relative-value-psa-variants-v1.yml
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/contracts/p4_relative_value_psa_variants_v1.json'))
+          t=json.load(open('research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json'))
+          assert p['state']=='FROZEN_BEFORE_VARIANT_REPLAY'
+          assert p['predeclared_before_any_variant_replay'] is True
+          assert [x['candidate_id'] for x in p['variants']]==[
+            'RV_PSA_V1_EXIT_Z1_CARRY_CUT_V1',
+            'RV_PSA_V2_MAX24H_CARRY_CAP_V1'
+          ]
+          assert len(p['variants'])==2 and p['maximum_variants_per_family_respected'] is True
+          assert p['shared']['entry_abs_z']==2.0 and p['shared']['rolling_window_bars']==672
+          assert p['variants'][0]['max_holding_bars'] is None
+          assert p['variants'][1]['max_holding_bars']==96 and p['variants'][1]['max_holding_clock_hours']==24
+          assert t['state']=='FAIL_P4_W2_NET_PAIR_EDGE_WITH_POSITIVE_FORWARD_GROSS'
+          assert t['W2']['gross_compound_return']>0 and t['W2']['gross_expectancy_per_trade']>0
+          assert t['W2']['net_compound_return']<0 and t['W2']['net_expectancy_per_trade']<0
+          assert t['methodology_change']['W1_and_W2_become_variant_development_windows'] is True
+          assert t['W3_untouched'] is True
+          assert p['methodology']['W3_final_OOS_access']=='ONLY_SELECTED_DEVELOPMENT_PASSING_VARIANT'
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          print('PASS_P4_VARIANTS_PREDECLARED_W3_UNTOUCHED')
+          PY
+          mkdir -p \
+            /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w1 \
+            /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w2 \
+            out ~/.ssh
+
+      - name: Materialize W1 plus W2 as development; W3 remains absent
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          git show FETCH_HEAD:zel_historical_oos_v1/manifest.json > /tmp/p4v_history/zel_historical_oos_v1/manifest.json
+          for w in 15m_w1 15m_w2; do
+            for s in BTCUSDT ETHUSDT; do
+              git show FETCH_HEAD:zel_historical_oos_v1/market/15m/$w/$s.csv > /tmp/p4v_history/zel_historical_oos_v1/market/15m/$w/$s.csv
+            done
+          done
+          test ! -e /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w3
+          echo PASS_P4_VARIANT_DEVELOPMENT_DATA_W3_UNTOUCHED
+
+      - name: Prepare SSH for fresh development cost observation
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect fresh official BingX development cost envelope
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-p4-variant-dev-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/dev_remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/p4_variant_dev_cost.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/p4_variant_dev_cost.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          for s in ('BTC-USDT','ETH-USDT'):
+              assert s in r['funding_p95_abs_pct_8h_by_symbol']
+              assert s in r['slippage_floor_bps_by_symbol_and_notional']
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_P4_VARIANT_DEV_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run both predeclared variants on cost-adjusted W1 plus W2 development
+        run: |
+          set -euo pipefail
+          python backend/research/p4_relative_value_psa_variants.py \
+            --mode development \
+            --data-root /tmp/p4v_history \
+            --manifest /tmp/p4v_history/zel_historical_oos_v1/manifest.json \
+            --plan backend/research/contracts/p4_relative_value_psa_variants_v1.json \
+            --parent-terminal research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json \
+            --cost-model out/p4_variant_dev_cost.json \
+            --out out/p4_relative_value_psa_variant_development_receipt.json
+          python - <<'PY'
+          import json,os
+          r=json.load(open('out/p4_relative_value_psa_variant_development_receipt.json'))
+          assert r['mode']=='development'
+          assert r['W1_and_W2_are_development'] is True
+          assert r['W3_untouched'] is True
+          assert r['variants_predeclared_before_replay'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('P4_VARIANT_DEV_STATE',r['state'])
+          print('P4_VARIANT_DEV_PASSING',json.dumps(r['development_passing_candidates'],sort_keys=True))
+          print('P4_VARIANT_SELECTED_W3',r['selected_for_W3'])
+          for x in r['candidate_rows']:
+              print('P4_VARIANT',x['candidate_id'],'dev_pass=',x['development_pass'],'selection=',json.dumps(x['selection_metrics'],sort_keys=True))
+              for w in x['development_windows']:
+                  print('P4_VARIANT_WINDOW',x['candidate_id'],w['window'],'trades=',w['aggregate_net']['trade_count'],'gross=',w['aggregate_gross']['compound_return'],'net=',w['aggregate_net']['compound_return'],'exp=',w['aggregate_net']['expectancy_per_trade'],'pf=',w['aggregate_net']['profit_factor'],'wr=',w['aggregate_net']['win_rate'],'dd=',w['aggregate_net']['max_drawdown'],'fund=',w['cost_applied']['mean_funding_pair_cost_pct'],'pass=',w['window_net_gate_pass'])
+          with open(os.environ['GITHUB_ENV'],'a') as fh:
+              fh.write('P4_W3_AUTH=' + ('1' if r['W3_access_authorized'] else '0') + '\n')
+          PY
+          test ! -e /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w3
+
+      - name: Materialize W3 only for the single selected development-passing variant
+        if: env.P4_W3_AUTH == '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w3
+          git fetch --depth=1 origin zel-historical-oos-data-v1
+          for s in BTCUSDT ETHUSDT; do
+            git show FETCH_HEAD:zel_historical_oos_v1/market/15m/15m_w3/$s.csv > /tmp/p4v_history/zel_historical_oos_v1/market/15m/15m_w3/$s.csv
+          done
+          echo PASS_P4_W3_MATERIALIZED_AFTER_SELECTION_ONLY
+
+      - name: Collect independent fresh official BingX W3 cost envelope
+        if: env.P4_W3_AUTH == '1'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-p4-variant-w3-cost-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "$remote" > out/w3_remote_path.txt
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/tools/zel_bingx_real_calibration_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt nice -n 19 ionice -c3 /usr/bin/python3 '$remote/zel_bingx_real_calibration_v1.py' --out '$remote/observation.json'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST:$remote/observation.json" out/p4_variant_w3_cost.json
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/p4_variant_w3_cost.json'))
+          material={k:v for k,v in r.items() if k!='receipt_sha256'}
+          actual=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+          assert actual==r['receipt_sha256']
+          assert r['state'].startswith('PASS_BINGX_REAL_OBSERVATION_COLLECTED')
+          assert r['source_tier']=='official' and r['calibration_mode']=='real'
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_P4_VARIANT_W3_FRESH_COST',r['receipt_sha256'])
+          PY
+
+      - name: Run exactly one selected variant on final untouched W3
+        if: env.P4_W3_AUTH == '1'
+        run: |
+          set -euo pipefail
+          python backend/research/p4_relative_value_psa_variants.py \
+            --mode w3_final \
+            --data-root /tmp/p4v_history \
+            --manifest /tmp/p4v_history/zel_historical_oos_v1/manifest.json \
+            --plan backend/research/contracts/p4_relative_value_psa_variants_v1.json \
+            --parent-terminal research/evidence/p4_relative_value_psa_base_w2_terminal_20260810.json \
+            --cost-model out/p4_variant_w3_cost.json \
+            --development-receipt out/p4_relative_value_psa_variant_development_receipt.json \
+            --out out/p4_relative_value_psa_variant_w3_final_receipt.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/p4_relative_value_psa_variant_w3_final_receipt.json'))
+          assert r['mode']=='w3_final'
+          assert r['selection_was_completed_before_W3'] is True
+          assert r['W3_evaluated_once_for_selected_variant'] is True
+          assert r['DD_gate_resolved'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          f=r['W3_final']
+          print('P4_W3_FINAL_STATE',r['state'])
+          print('P4_W3_SELECTED',r['selected_candidate_id'])
+          print('P4_W3_NET',json.dumps(f['aggregate_net'],sort_keys=True))
+          print('P4_W3_GROSS',json.dumps(f['aggregate_gross'],sort_keys=True))
+          print('P4_W3_EXIT_REASONS',json.dumps(f['exit_reason_counts'],sort_keys=True))
+          print('P4_W3_COST',json.dumps(f['cost_applied'],sort_keys=True))
+          PY
+
+      - name: Seal variant route
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          dev=json.load(open('out/p4_relative_value_psa_variant_development_receipt.json'))
+          p=Path('out/p4_relative_value_psa_variant_w3_final_receipt.json')
+          out={
+            'development':dev['state'],
+            'development_passing_candidates':dev['development_passing_candidates'],
+            'selected_for_W3':dev['selected_for_W3'],
+            'W3':json.loads(p.read_text())['state'] if p.exists() else 'NOT_ACCESSED_NO_DEVELOPMENT_PASS',
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED'
+          }
+          Path('out/p4_relative_value_psa_variant_route_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p4-relative-value-psa-variants-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/p4_relative_value_psa_variant_development_receipt.json
+            out/p4_relative_value_psa_variant_w3_final_receipt.json
+            out/p4_relative_value_psa_variant_route_receipt.json
+            out/p4_variant_dev_cost.json
+            out/p4_variant_w3_cost.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup remote cost probes
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          for f in out/dev_remote_path.txt out/w3_remote_path.txt; do
+            remote=$(cat "$f" 2>/dev/null || true)
+            test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          done
+          rm -f ~/.ssh/vps_key

@@ -1,0 +1,165 @@
+name: ZEL P3 Carry Flow Prospective Activation V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/p3_prospective_native_feature_collector.py'
+      - 'backend/research/p3_prospective_native_append.py'
+      - 'backend/research/contracts/p3_carry_flow_prospective_native_v1.json'
+      - '.github/workflows/zel-p3-carry-flow-prospective-activation-v1.yml'
+  workflow_dispatch:
+    inputs:
+      persist:
+        description: 'Persist append-only snapshot; allowed only when dispatched from master'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: '7 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-p3-carry-flow-prospective-activation-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_BRANCH: zel-p3-prospective-data
+
+jobs:
+  collect-and-append:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate source-only contract and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/p3_prospective_native_feature_collector.py \
+            backend/research/p3_prospective_native_append.py
+          python -m json.tool backend/research/contracts/p3_carry_flow_prospective_native_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/p3_carry_flow_prospective_native_v1.json'))
+          assert c['state']=='FROZEN_PROSPECTIVE_SOURCE_ACQUISITION'
+          assert c['family']=='carry_flow'
+          assert c['research_only'] is True
+          assert c['native_sources']['funding']['status']=='HISTORICAL_W1_W2_BOUND'
+          assert c['native_sources']['premium_index']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
+          assert c['native_sources']['open_interest']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
+          assert c['native_sources']['flow']['status']=='SOURCE_NOT_BOUND'
+          assert c['capture_policy']['prospective_only'] is True
+          assert c['capture_policy']['raw_native_values_only'] is True
+          assert c['capture_policy']['replay_before_alignment_and_coverage_gate']=='FORBIDDEN'
+          assert c['selection_authority'] is False
+          assert c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE'
+          assert c['order_authority']=='BLOCKED'
+          print('PASS_P3_SOURCE_ONLY_CONTRACT')
+          PY
+
+      - name: Collect one raw native snapshot
+        run: python backend/research/p3_prospective_native_feature_collector.py --out /tmp/p3_snapshot.json
+
+      - name: Pull existing dedicated history only on authorized master persistence runs
+        if: >-
+          (github.event_name == 'schedule' && github.ref == 'refs/heads/master') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.persist == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            "${DATA_BRANCH}:refs/remotes/origin/${DATA_BRANCH}" || true
+          mkdir -p /tmp/p3_history
+          if git show-ref --verify --quiet "refs/remotes/origin/${DATA_BRANCH}"; then
+            mkdir -p /tmp/p3_old
+            git archive "origin/${DATA_BRANCH}" research/data/p3_prospective 2>/dev/null | tar -x -C /tmp/p3_old || true
+            if [ -d /tmp/p3_old/research/data/p3_prospective ]; then
+              cp -a /tmp/p3_old/research/data/p3_prospective/. /tmp/p3_history/
+              rm -f /tmp/p3_history/latest_receipt.json
+            fi
+          fi
+
+      - name: Append and validate history
+        run: |
+          mkdir -p /tmp/p3_history
+          python backend/research/p3_prospective_native_append.py \
+            --snapshot /tmp/p3_snapshot.json \
+            --history-dir /tmp/p3_history \
+            --receipt /tmp/p3_append_receipt.json
+
+      - name: Verify fail-closed receipts
+        run: |
+          python - <<'PY'
+          import json
+          s=json.load(open('/tmp/p3_snapshot.json'))
+          r=json.load(open('/tmp/p3_append_receipt.json'))
+          assert s['state']=='PASS_P3_PROSPECTIVE_NATIVE_BASIS_OI_SNAPSHOT'
+          assert s['record_count']==4
+          assert s['flow_source_bound'] is False
+          assert s['historical_coverage_claim'] is False
+          assert s['replay_allowed'] is False
+          assert s['signal_generation_enabled'] is False
+          assert s['execution_authority']=='NONE' and s['order_authority']=='BLOCKED'
+          assert r['state']=='PASS_P3_PROSPECTIVE_NATIVE_APPEND'
+          assert len(r['results'])==4
+          assert r['replay_allowed'] is False
+          assert r['signal_generation_enabled'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_P3_PROSPECTIVE_ACTIVATION_SMOKE',r['total_added_records'],r['receipt_sha256'])
+          PY
+
+      - name: Upload smoke or persistence evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-p3-prospective-activation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/p3_snapshot.json
+            /tmp/p3_append_receipt.json
+            /tmp/p3_history/*.ndjson
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist to dedicated data branch only from master
+        if: >-
+          (github.event_name == 'schedule' && github.ref == 'refs/heads/master') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.persist == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/p3_data_repo
+          mkdir /tmp/p3_data_repo
+          cd /tmp/p3_data_repo
+          git init
+          git config user.name 'zel-p3-source-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch origin "${DATA_BRANCH}" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/${DATA_BRANCH}"; then
+            git checkout -B "${DATA_BRANCH}" "origin/${DATA_BRANCH}"
+          else
+            git checkout --orphan "${DATA_BRANCH}"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p research/data/p3_prospective
+          cp /tmp/p3_history/*.ndjson research/data/p3_prospective/
+          cp /tmp/p3_append_receipt.json research/data/p3_prospective/latest_receipt.json
+          git add research/data/p3_prospective
+          if git diff --cached --quiet; then
+            echo 'NO_NEW_NATIVE_RECORDS'
+            exit 0
+          fi
+          git commit -m "data(p3): append prospective native basis/OI snapshot ${{ github.run_id }}"
+          git push origin "${DATA_BRANCH}"

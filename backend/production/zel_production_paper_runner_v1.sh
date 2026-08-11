@@ -6,11 +6,13 @@ INTERVAL_S="${ZEL_PRODUCTION_PAPER_INTERVAL_S:-5}"
 MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 
 while true; do
-  # Refresh the canonical producer-owned input first. Missing/non-executable
-  # alpha emits a stable NO_VALIDATED_ALPHA payload with no price or qty.
-  # An executable alpha without bound market/risk/sizing authority fails here.
+  # 1) Refresh authoritative PAPER input. Missing/non-executable alpha emits
+  # NO_VALIDATED_ALPHA without touching BingX or inventing price/qty.
+  # Active alpha uses strict BingX-native freshness + canonical Risk/Sizing.
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 
+  # 2) Execute exactly one bounded PAPER cycle under the existing single-flight,
+  # idempotence, retry-budget and circuit-breaker supervisor.
   set +e
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_loop_v1 \
     --once \
@@ -27,6 +29,12 @@ while true; do
   if [[ "${rc}" -ne 0 ]]; then
     exit "${rc}"
   fi
+
+  # 3) Advance cumulative improvement after the cycle receipt is durable.
+  # With no incumbent/evidence this is an O(1) HOLD. With valid evidence it may
+  # atomically seed/promote/rollback CONFIG_ONLY PAPER authority. It never edits
+  # source code and never submits an exchange order.
+  "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
 
   sleep "${INTERVAL_S}"
 done

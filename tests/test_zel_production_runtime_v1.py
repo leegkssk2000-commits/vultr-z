@@ -27,6 +27,7 @@ def payload(**updates):
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ZEL_PRODUCTION_LEDGER_PATH", str(tmp_path / "events.sqlite"))
     monkeypatch.setenv("ZEL_PRODUCTION_SNAPSHOT_PATH", str(tmp_path / "snapshot.json"))
+    monkeypatch.setenv("ZEL_PRODUCTION_SUPERVISOR_PATH", str(tmp_path / "supervisor.sqlite"))
     return TestClient(create_app())
 
 
@@ -39,7 +40,12 @@ def test_no_alpha_hold_runtime_and_snapshot(tmp_path, monkeypatch):
     assert body["fill"] is None
     assert body["snapshot"]["ledger_event_count"] == 0
     assert body["exchange_order_submitted"] is False
-    assert c.get("/api/production/health").json()["ledger_event_count"] == 0
+    health = c.get("/api/production/health").json()
+    assert health["ledger_event_count"] == 0
+    assert health["auto_cycle_supervisor"] == "READY"
+    assert health["exchange_order_submission"] is False
+    assert health["strategy_mutation_applied"] is False
+    assert health["self_modification_applied"] is False
 
 
 def test_paper_open_close_snapshot_parity(tmp_path, monkeypatch):
@@ -73,6 +79,37 @@ def test_live_blocked_runtime(tmp_path, monkeypatch):
     assert r.json()["decision"]["reason"] == "LIVE_NOT_ACTIVATED"
     assert r.json()["snapshot"]["ledger_event_count"] == 0
     assert r.json()["exchange_order_submitted"] is False
+
+
+def test_auto_cycle_runtime_is_idempotent_and_persists_snapshot(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    row = payload(alpha_state="SURVIVOR_ACTIVE", alpha_id="alpha.fixture", cycle_id="cycle-1")
+    first = c.post("/api/production/auto-cycle", json=row)
+    second = c.post("/api/production/auto-cycle", json=row)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["state"] == "COMPLETED"
+    assert first.json()["result"]["fill"]["event_type"] == "OPEN_LONG"
+    assert second.json()["replayed"] is True
+    assert first.json()["receipt_sha256"] == second.json()["receipt_sha256"]
+    assert c.get("/api/production/snapshot").json()["snapshot"]["position"]["state"] == "LONG"
+    assert c.get("/api/production/health").json()["ledger_event_count"] == 1
+
+
+def test_auto_cycle_live_stays_blocked(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    r = c.post(
+        "/api/production/auto-cycle",
+        json=payload(mode="LIVE", alpha_state="SURVIVOR_ACTIVE", alpha_id="alpha.fixture", cycle_id="live-1"),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "HOLD"
+    assert body["reason"] == "LIVE_NOT_ACTIVATED"
+    assert body["result"]["fill"] is None
+    assert body["exchange_order_submitted"] is False
+    assert body["strategy_mutation_applied"] is False
+    assert body["self_modification_applied"] is False
 
 
 def test_existing_alimi_router_is_mounted(tmp_path, monkeypatch):

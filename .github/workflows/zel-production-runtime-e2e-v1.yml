@@ -5,7 +5,10 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_runtime_v1.py'
+      - 'backend/production/zel_production_auto_cycle_supervisor_v1.py'
+      - 'backend/production/zel_production_owner_binding_v1.py'
       - 'tests/test_zel_production_runtime_v1.py'
+      - 'tests/test_zel_production_auto_cycle_supervisor_v1.py'
       - '.github/workflows/zel-production-runtime-e2e-v1.yml'
   workflow_dispatch:
 
@@ -23,22 +26,45 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile runtime
-        run: python -m py_compile backend/production/zel_production_runtime_v1.py
+      - name: Compile production runtime modules
+        run: |
+          python -m py_compile \
+            backend/production/zel_production_runtime_v1.py \
+            backend/production/zel_production_auto_cycle_supervisor_v1.py \
+            backend/production/zel_production_owner_binding_v1.py
       - name: Install runtime dependencies
         run: python -m pip install --disable-pip-version-check fastapi httpx pytest
-      - name: Run runtime E2E tests
+      - name: Run production runtime and supervisor E2E tests
         env:
           PYTHONPATH: .
-        run: pytest -q tests/test_zel_production_runtime_v1.py
+        run: |
+          pytest -q \
+            tests/test_zel_production_runtime_v1.py \
+            tests/test_zel_production_auto_cycle_supervisor_v1.py
       - name: Assert canonical server contract
         run: |
           python - <<'PY'
           from pathlib import Path
-          t=Path('backend/production/zel_production_runtime_v1.py').read_text()
-          for route in ('/api/production/cycle','/api/production/snapshot','/api/production/health','/api/alimi/production'):
-              assert route in t, route
-          assert 'exchange_order_submitted' in t
-          assert 'app.include_router(alimi_router)' in t
-          print('PASS_PRODUCTION_RUNTIME_E2E_CONTRACT')
+          runtime = Path('backend/production/zel_production_runtime_v1.py').read_text()
+          supervisor = Path('backend/production/zel_production_auto_cycle_supervisor_v1.py').read_text()
+          for route in (
+              '/api/production/cycle',
+              '/api/production/auto-cycle',
+              '/api/production/snapshot',
+              '/api/production/health',
+              '/api/alimi/production',
+          ):
+              assert route in runtime, route
+          for invariant in (
+              'exchange_order_submitted',
+              'strategy_mutation_applied',
+              'self_modification_applied',
+          ):
+              assert invariant in runtime, invariant
+              assert invariant in supervisor, invariant
+          assert 'app.include_router(alimi_router)' in runtime
+          assert 'SINGLE_FLIGHT_ACTIVE' in supervisor
+          assert 'ROLLBACK_REQUIRED' in supervisor
+          assert 'promotion_allowed' in supervisor
+          print('PASS_PRODUCTION_RUNTIME_AUTO_CYCLE_E2E_CONTRACT')
           PY

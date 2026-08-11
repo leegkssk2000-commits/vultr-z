@@ -1,1 +1,228 @@
-x
+name: ZEL Production Safe Idle Activate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-safe-idle-activate-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-safe-idle-activate-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-safe-idle-activate-v1
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Assert safe-idle activation contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/zel-production-safe-idle-activate-v1.yml').read_text()
+          for token in (
+              'production_alpha_authority_v1.json',
+              'production_improvement_evidence_v1.json',
+              'NO_VALIDATED_ALPHA',
+              'exchange_order_submitted',
+              'COUNT(*) FROM trade_events',
+              'systemctl stop zel-production-paper-loop-v1.service',
+              "live_trade_authority':'BLOCKED'",
+          ):
+              assert token in p, token
+          print('PASS_SAFE_IDLE_ACTIVATION_CONTRACT')
+          PY
+
+  activate-safe-idle:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: static-contract
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Verify and activate safe-idle PAPER daemon
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          CURRENT=/home/z/zel-production-current
+          LEDGER=/home/z/z/ledger
+          AUTHORITY="$LEDGER/production_alpha_authority_v1.json"
+          EVIDENCE="$LEDGER/production_improvement_evidence_v1.json"
+          INPUT="$LEDGER/production_paper_input_v1.json"
+          EVENTS="$LEDGER/production_events_v1.sqlite"
+          RECEIPT=/tmp/zel-production-safe-idle-receipt.json
+          [ -d "$CURRENT" ]
+
+          if [ "$(id -u)" = "0" ]; then
+            SYSTEMCTL='systemctl'
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            SYSTEMCTL='sudo systemctl'
+          else
+            echo 'REFUSE_START:NO_SYSTEMD_PRIVILEGE' >&2
+            exit 3
+          fi
+
+          ENV_READY=false
+          if [ -f /etc/zel/production-paper-loop.env ]; then
+            python3 - <<'PYENV' && ENV_READY=true || ENV_READY=false
+          from pathlib import Path
+          required={
+            'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
+            'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
+            'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
+            'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET'
+          }
+          values={}
+          for raw in Path('/etc/zel/production-paper-loop.env').read_text().splitlines():
+              line=raw.strip()
+              if line and not line.startswith('#') and '=' in line:
+                  k,v=line.split('=',1); values[k.strip()]=v.strip()
+          assert all(values.get(k) for k in required)
+          PYENV
+          fi
+
+          SAFE_IDLE=$(PYTHONPATH="$CURRENT" python3 - <<PY
+          import json
+          from pathlib import Path
+          from backend.production.zel_production_active_alpha_adapter_v1 import authority_is_executable
+          authority=Path('$AUTHORITY')
+          evidence=Path('$EVIDENCE')
+          executable=False
+          if authority.exists():
+              row=json.loads(authority.read_text())
+              executable=isinstance(row,dict) and authority_is_executable(row)
+          print('true' if (not executable and not evidence.exists()) else 'false')
+          PY
+          )
+
+          if [ "$ENV_READY" != true ] && [ "$SAFE_IDLE" != true ]; then
+            echo 'REFUSE_START:SSOT_MISSING_WITH_ACTIVE_AUTHORITY_OR_EVIDENCE' >&2
+            exit 2
+          fi
+
+          count_events() {
+            python3 - "$EVENTS" <<'PY'
+          import sqlite3,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          if not p.exists():
+              print(0); raise SystemExit
+          db=sqlite3.connect(p)
+          try:
+              found=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_events'").fetchone()
+              print(db.execute('SELECT COUNT(*) FROM trade_events').fetchone()[0] if found else 0)
+          finally:
+              db.close()
+          PY
+          }
+
+          BEFORE=$(count_events)
+          WAS_ACTIVE=false
+          if $SYSTEMCTL is-active --quiet zel-production-paper-loop-v1.service; then WAS_ACTIVE=true; fi
+          STARTED_BY_WORKFLOW=false
+          VERIFIED=false
+          cleanup() {
+            rc=$?
+            if [ "$VERIFIED" != true ] && [ "$STARTED_BY_WORKFLOW" = true ]; then
+              $SYSTEMCTL stop zel-production-paper-loop-v1.service || true
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+
+          $SYSTEMCTL enable --now zel-production-paper-loop-v1.service
+          if [ "$WAS_ACTIVE" != true ]; then STARTED_BY_WORKFLOW=true; fi
+          sleep 8
+
+          ACTIVE=$($SYSTEMCTL is-active zel-production-paper-loop-v1.service || true)
+          ENABLED=$($SYSTEMCTL is-enabled zel-production-paper-loop-v1.service || true)
+          [ "$ACTIVE" = active ]
+          [ "$ENABLED" = enabled ]
+          AFTER=$(count_events)
+
+          python3 - <<PY
+          import json
+          from pathlib import Path
+          input_path=Path('$INPUT')
+          assert input_path.exists()
+          inp=json.loads(input_path.read_text())
+          safe_idle='$SAFE_IDLE'.lower()=='true'
+          env_ready='$ENV_READY'.lower()=='true'
+          before=int('$BEFORE'); after=int('$AFTER')
+          if safe_idle and not env_ready:
+              assert inp['source_state']=='NO_VALIDATED_ALPHA'
+              assert inp['signal']=='FLAT'
+              assert inp['risk_state']=='HOLD'
+              assert 'price' not in inp and 'qty' not in inp
+              assert after==before
+          receipt={
+            'schema_version':'zel.production_safe_idle_activation.v1',
+            'state':'PASS_PRODUCTION_SAFE_IDLE_ACTIVE' if safe_idle and not env_ready else 'PASS_PRODUCTION_PAPER_SERVICE_ACTIVE',
+            'safe_idle':safe_idle,
+            'env_ssot_ready':env_ready,
+            'service_active':True,
+            'service_enabled':True,
+            'ledger_event_count_before':before,
+            'ledger_event_count_after':after,
+            'ledger_event_delta':after-before,
+            'source_state':inp.get('source_state'),
+            'exchange_order_submitted':False,
+            'live_trade_authority':'BLOCKED',
+            'legacy_checkout_mutated':False,
+          }
+          Path('$RECEIPT').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          VERIFIED=true
+          trap - EXIT
+          REMOTE
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-safe-idle-receipt.json" \
+            /tmp/zel-production-safe-idle-receipt.json
+      - name: Assert no-order safe idle
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-safe-idle-receipt.json').read_text())
+          assert r['service_active'] is True
+          assert r['service_enabled'] is True
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['legacy_checkout_mutated'] is False
+          if r['safe_idle'] and not r['env_ssot_ready']:
+              assert r['state']=='PASS_PRODUCTION_SAFE_IDLE_ACTIVE'
+              assert r['ledger_event_delta']==0
+              assert r['source_state']=='NO_VALIDATED_ALPHA'
+          print('STATE='+r['state'])
+          print('LEDGER_DELTA='+str(r['ledger_event_delta']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-safe-idle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-production-safe-idle-receipt.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,152 @@
+name: ZEL Production Performance Bootstrap V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/legacy_strategy25_inventory_v1.json'
+      - 'config/zel_production_performance_bootstrap_v1.json'
+      - 'backend/research/zel_strategy25_economic_recovery_v1.py'
+      - 'backend/production/zel_production_performance_bootstrap_v1.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'tests/test_zel_production_performance_bootstrap_v1.py'
+      - '.github/workflows/zel-production-performance-bootstrap-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'config/zel_production_performance_bootstrap_v1.json'
+      - 'backend/research/zel_strategy25_economic_recovery_v1.py'
+      - 'backend/production/zel_production_performance_bootstrap_v1.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - '.github/workflows/zel-production-performance-bootstrap-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-performance-bootstrap-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recover-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current production code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout immutable Exact25 evidence branch
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: exact25-source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/zel_strategy25_economic_recovery_v1.py \
+            backend/production/zel_production_performance_bootstrap_v1.py
+          python -m json.tool config/zel_production_performance_bootstrap_v1.json >/dev/null
+          bash -n backend/production/zel_production_paper_runner_v1.sh
+          mkdir -p out
+      - name: Recover economic disposition without replay
+        run: |
+          set -euo pipefail
+          exact='exact25-source/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json'
+          test -s "$exact"
+          python backend/research/zel_strategy25_economic_recovery_v1.py \
+            --exact25 "$exact" \
+            --inventory research/legacy_strategy25_inventory_v1.json \
+            --policy config/zel_production_performance_bootstrap_v1.json \
+            --out out/production_performance_bootstrap_queue_v1.json
+      - name: Enforce recovered zero-survivor queue
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/production_performance_bootstrap_queue_v1.json'))
+          assert r['schema_version']=='zel.strategy25.economic_recovery.v1'
+          assert r['strategy_count']==25
+          assert r['economic_survivor_count']==0
+          assert sum(r['state_counts'].values())==25
+          assert r['replay_performed_by_recovery'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['admission_candidate_count_total']==1, r['admission_candidate_count_total']
+          assert len(r['admission_queue'])==1
+          assert r['admission_queue'][0]['strategy_id']=='squeeze_break'
+          assert r['admission_queue'][0]['route']=='LOW_SAMPLE_EXTENSION_SAME_RULE'
+          print('PASS_ZERO_SURVIVOR_QUEUE',r['state_counts'],r['receipt_sha256'])
+          PY
+      - name: Bootstrap and production regression tests
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest -q \
+            tests/test_zel_production_performance_bootstrap_v1.py \
+            tests/test_zel_production_improvement_controller_v1.py \
+            tests/test_zel_production_active_alpha_adapter_v1.py \
+            tests/test_zel_production_alpha_signal_runner_v1.py \
+            tests/test_zel_production_paper_loop_v1.py \
+            tests/test_zel_production_paper_source_adapter_v1.py
+      - name: Enforce runtime ordering and blocked authorities
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          order=[
+            'zel_production_performance_bootstrap_v1 --tick',
+            'zel_production_alpha_signal_runner_v1',
+            'zel_production_paper_source_adapter_v1',
+            'zel_production_paper_loop_v1',
+            'zel_production_improvement_controller_v1 --tick',
+          ]
+          positions=[runner.index(x) for x in order]
+          assert positions==sorted(positions), positions
+          cfg=Path('config/zel_production_performance_bootstrap_v1.json').read_text()
+          assert '"order_authority": "BLOCKED"' in cfg
+          assert '"live_trade_authority": "BLOCKED"' in cfg
+          assert '"source_code_mutation_allowed": false' in cfg
+          print('PASS_BOOTSTRAP_RUNTIME_ORDER')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-performance-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/production_performance_bootstrap_queue_v1.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Prepare SSH for master queue sync
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Sync recovered queue to VPS ledger atomically
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote_tmp="/tmp/production-performance-bootstrap-${GITHUB_RUN_ID}.json"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes out/production_performance_bootstrap_queue_v1.json "$VPS_USER@$VPS_HOST:$remote_tmp"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "set -euo pipefail; mkdir -p /home/z/z/ledger; python3 -m json.tool '$remote_tmp' >/dev/null; install -m 0640 '$remote_tmp' /home/z/z/ledger/production_performance_bootstrap_queue_v1.json; rm -f '$remote_tmp'"
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

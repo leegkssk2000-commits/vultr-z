@@ -59,8 +59,6 @@ def audit(root: Path) -> dict[str, Any]:
     service = text(root, "deploy/systemd/zel-production-paper-loop-v1.service")
     env_example = text(root, "deploy/systemd/zel-production-paper-loop-v1.env.example")
 
-    # Prove the no-alpha fast path inside build_payload itself, not by global
-    # string positions (imports/class methods may mention the network function).
     payload_start = source.index("def build_payload(")
     payload_end = source.index("class CanonicalPaperSourceAdapter", payload_start)
     payload_body = source[payload_start:payload_end]
@@ -119,7 +117,7 @@ def audit(root: Path) -> dict[str, Any]:
     checks.update({
         "env_ssot_contract_complete": all(f"{name}=" in env_example for name in required_env),
         "service_reads_env_contract": "EnvironmentFile=-/etc/zel/production-paper-loop.env" in service,
-        "systemd_write_scope_ledger_only": "ReadWritePaths=/home/zel/apps/zel/ledger" in service,
+        "systemd_write_scope_ledger_only": "ReadWritePaths=/home/z/z/ledger" in service,
         "systemd_circuit_no_restart": "RestartPreventExitStatus=2" in service,
         "systemd_no_new_privileges": "NoNewPrivileges=true" in service,
         "no_live_submit_in_new_modules": all(token in source + freshness + improvement for token in ("exchange_order_submitted", "BLOCKED")),

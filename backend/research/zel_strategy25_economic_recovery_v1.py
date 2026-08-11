@@ -77,7 +77,7 @@ def main() -> int:
     names = list(inventory.get("historical_implementation_inventory_25") or [])
     if len(names) != 25 or len(set(names)) != 25:
         raise RuntimeError("INVENTORY_CARDINALITY_INVALID")
-    cards = replay.get("scorecards") or []
+    cards = exact.get("scorecards") or []
     by_id = {str(row.get("strategy_id")): row for row in cards if isinstance(row, Mapping) and row.get("strategy_id")}
     if set(by_id) != set(names):
         missing = sorted(set(names) - set(by_id))

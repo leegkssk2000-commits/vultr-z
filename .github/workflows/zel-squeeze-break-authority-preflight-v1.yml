@@ -1,0 +1,77 @@
+name: ZEL Squeeze Break Authority Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/squeeze_break_authority_preflight_v1.py
+      - .github/workflows/zel-squeeze-break-authority-preflight-v1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile sanitized preflight
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/squeeze_break_authority_preflight_v1.py
+          mkdir -p out ~/.ssh
+      - name: Prepare VPS read-only transport
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Scan JSON authority candidates without mutation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-squeeze-authority-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          echo "$remote" > out/remote_path.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/squeeze_break_authority_preflight_v1.py "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "/usr/bin/python3 '$remote' --legacy-root /home/z/z --production-root /home/z/zel-production-current --out /tmp/zel-squeeze-authority.json >/dev/null && cat /tmp/zel-squeeze-authority.json && rm -f /tmp/zel-squeeze-authority.json '$remote'" \
+            > out/authority_preflight.json
+          python -m json.tool out/authority_preflight.json >/dev/null
+      - name: Verify fail-closed receipt
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/authority_preflight.json'))
+          assert r['schema_version']=='zel.squeeze_break.authority_preflight.v1'
+          assert r['strategy_id']=='squeeze_break'
+          assert r['authority_adopted'] is False
+          assert r['promotion_authority'] is False and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['runtime_mutated'] is False and r['service_mutated'] is False
+          print('AUTHORITY_PREFLIGHT_STATE',r['state'])
+          print('AUTHORITY_PREFLIGHT_EXPLICIT_RISK',r['explicit_complete_risk_candidate_count'])
+          print('AUTHORITY_PREFLIGHT_DD_RETENTION_HITS',len(r['dd_retention_policy_hits']))
+          print('AUTHORITY_PREFLIGHT_RECEIPT',r['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-squeeze-break-authority-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/authority_preflight.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

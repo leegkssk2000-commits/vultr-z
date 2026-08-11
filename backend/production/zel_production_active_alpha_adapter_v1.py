@@ -12,6 +12,7 @@ SCHEMA = "zel.production_active_alpha_adapter.v1"
 POLICY_SCHEMA = "zel.production_active_alpha_policy.v1"
 SIGNAL_SCHEMA = "zel.production_alpha_signal.v1"
 DEFAULT_POLICY = Path("config/zel_production_active_alpha_v1.json")
+TERMINAL_REJECTED_STRATEGY_IDS = frozenset({"trend_momentum_v1", "relative_value_psa_v1"})
 
 
 def stable_sha(value: Any) -> str:
@@ -54,8 +55,11 @@ def _policy_stale_ms(policy: Mapping[str, Any]) -> float:
 
 
 def authority_is_executable(authority: Mapping[str, Any]) -> bool:
+    strategy_id = str(authority.get("strategy_id") or "").strip()
     return (
-        str(authority.get("alpha_state") or "").upper() == "SURVIVOR_ACTIVE"
+        bool(strategy_id)
+        and strategy_id not in TERMINAL_REJECTED_STRATEGY_IDS
+        and str(authority.get("alpha_state") or "").upper() == "SURVIVOR_ACTIVE"
         and authority.get("research_only") is False
         and authority.get("promotion_authority") is True
         and authority.get("execution_allowed") is True

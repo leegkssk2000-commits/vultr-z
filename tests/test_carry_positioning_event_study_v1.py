@@ -60,15 +60,12 @@ def record(feature: str, symbol: str, collected: int, event: int, *, mark: float
 
 
 def write_history(root: Path, profitable: bool) -> None:
-    # Four native funding groups per symbol. Funding+basis are positive and OI
-    # increases every group, so the fixed contrarian side is SHORT. Within each
-    # group the mark falls when profitable=True and rises otherwise.
     for symbol in ("BTC-USDT", "ETH-USDT"):
         premium = []
         oi_rows = []
         base = 100.0 if symbol.startswith("BTC") else 200.0
         for i in range(4):
-            event = 10_000_000 + i * 28_800_000
+            event = 100_000_000 + i * 28_800_000
             first = event - 25_000_000
             last = event - 1_000_000
             entry = base + i * 2.0

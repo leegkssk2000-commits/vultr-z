@@ -11,6 +11,7 @@ while true; do
   "${PYTHON_BIN}" -m backend.production.zel_production_ai_proposal_layer_v1 --tick
   "${PYTHON_BIN}" -m backend.production.zel_production_source_acquisition_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
+  "${PYTHON_BIN}" -m backend.production.zel_production_ai_admission_materializer_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 

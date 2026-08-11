@@ -136,9 +136,12 @@ def route(rows: list[dict[str, Any]], budget: int) -> tuple[str, list[str]]:
     reserves = ranked("RESERVE_CANDIDATE")
     if reserves:
         return "EXPAND_DURABILITY_FOR_RESERVE", [r["strategy_id"] for r in reserves[:budget]]
-    low = ranked("LOW_SAMPLE_REPAIR")
-    if low:
-        return "EXPAND_SAMPLE_FOR_LOW_SAMPLE", [r["strategy_id"] for r in low[:budget]]
+    positive_low = [
+        r for r in ranked("LOW_SAMPLE_REPAIR")
+        if r["checks"].get("net_R") is not None and float(r["checks"]["net_R"]) > 0.0
+    ]
+    if positive_low:
+        return "EXPAND_SAMPLE_FOR_LOW_SAMPLE", [r["strategy_id"] for r in positive_low[:budget]]
     return "NEW_ECONOMIC_EDGE_ACQUISITION", []
 
 

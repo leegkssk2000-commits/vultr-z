@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from backend.production.zel_production_active_alpha_adapter_v1 import TERMINAL_REJECTED_STRATEGY_IDS
 from backend.production.zel_production_auto_cycle_supervisor_v1 import SupervisorPolicy, evaluate_improvement
 
 SCHEMA = "zel.production_improvement_controller.v1"
@@ -77,6 +78,33 @@ def _int(value: Any, name: str) -> int:
     if not out.is_integer():
         raise RuntimeError(f"IMPROVEMENT_INTEGER_INVALID:{name}")
     return int(out)
+
+
+def _terminal_strategy_id(candidate: Mapping[str, Any]) -> str | None:
+    strategy_id = str(candidate.get("strategy_id") or "").strip()
+    return strategy_id if strategy_id in TERMINAL_REJECTED_STRATEGY_IDS else None
+
+
+def _require_strategy_allowed(candidate: Mapping[str, Any]) -> str:
+    strategy_id = str(candidate.get("strategy_id") or "").strip()
+    if not strategy_id:
+        raise RuntimeError("IMPROVEMENT_AUTHORITY_STRATEGY_ID_INVALID")
+    if strategy_id in TERMINAL_REJECTED_STRATEGY_IDS:
+        raise RuntimeError(f"IMPROVEMENT_TERMINAL_STRATEGY_FORBIDDEN:{strategy_id}")
+    return strategy_id
+
+
+def _terminal_hold(state: str, strategy_id: str, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA,
+        "state": state,
+        "action": "hold",
+        "reason": reason,
+        "strategy_id": strategy_id,
+        "exchange_order_submitted": False,
+        "source_code_mutation_applied": False,
+        "self_modification_applied": False,
+    }
 
 
 def validate_policy_shape(policy: Mapping[str, Any]) -> dict[str, Any]:
@@ -188,6 +216,7 @@ def validate_authority_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]
     for key in required:
         if key not in candidate:
             raise RuntimeError(f"IMPROVEMENT_AUTHORITY_FIELD_MISSING:{key}")
+    strategy_id = _require_strategy_allowed(candidate)
     symbol = str(candidate.get("symbol") or "").replace("-", "").upper()
     if symbol not in {"BTCUSDT", "ETHUSDT"}:
         raise RuntimeError("IMPROVEMENT_AUTHORITY_SYMBOL_INVALID")
@@ -211,6 +240,7 @@ def validate_authority_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]
     if any(not isinstance(values.get(str(axis)), list) or not values.get(str(axis)) for axis in tunable):
         raise RuntimeError("IMPROVEMENT_CANDIDATE_VALUES_EMPTY")
     result = dict(candidate)
+    result["strategy_id"] = strategy_id
     result["symbol"] = symbol
     result["knobs"] = dict(knobs)
     result["tunable_axes"] = [str(v) for v in tunable]
@@ -350,6 +380,14 @@ def controller_tick(policy: Mapping[str, Any], *, now_ms: int | None = None) -> 
     if registry is not None and registry.get("schema_version") != REGISTRY_SCHEMA:
         raise RuntimeError("IMPROVEMENT_REGISTRY_SCHEMA_INVALID")
     current = dict(registry.get("current_authority") or {}) if isinstance(registry, Mapping) else {}
+    if current:
+        terminal_current = _terminal_strategy_id(current)
+        if terminal_current:
+            return _terminal_hold(
+                "HOLD_TERMINAL_INCUMBENT",
+                terminal_current,
+                "TERMINAL_STRATEGY_REGISTRY_QUARANTINED_NO_REPAIR_OR_CANDIDATES",
+            )
 
     if evidence is None:
         if not current:
@@ -380,6 +418,7 @@ def controller_tick(policy: Mapping[str, Any], *, now_ms: int | None = None) -> 
     if registry is not None and registry.get("last_evidence_receipt_sha256") == evidence_sha:
         if current:
             # Repair an authority file that may lag a durable registry after a crash.
+            # Terminal incumbents are returned above before this mutation path.
             existing_authority = read_json(paths["authority_path"])
             if existing_authority is None or existing_authority.get("receipt_sha256") != current.get("receipt_sha256"):
                 atomic_json_write(paths["authority_path"], current)
@@ -403,6 +442,13 @@ def controller_tick(policy: Mapping[str, Any], *, now_ms: int | None = None) -> 
         candidate = evidence.get("authority_candidate")
         if not isinstance(metrics, Mapping) or not isinstance(candidate, Mapping):
             raise RuntimeError("IMPROVEMENT_SEED_FIELDS_MISSING")
+        terminal_seed = _terminal_strategy_id(candidate)
+        if terminal_seed:
+            return _terminal_hold(
+                "HOLD_TERMINAL_STRATEGY_FORBIDDEN",
+                terminal_seed,
+                "TERMINAL_STRATEGY_CANNOT_BE_RESEEDED",
+            )
         passed, reason, parsed = hard_gate_result(metrics, thresholds, errors)
         if not passed or parsed is None:
             return {"schema_version": SCHEMA, "state": "HOLD", "action": "hold", "reason": reason, "exchange_order_submitted": False, "source_code_mutation_applied": False, "self_modification_applied": False}
@@ -494,7 +540,15 @@ def controller_tick(policy: Mapping[str, Any], *, now_ms: int | None = None) -> 
         previous_metrics = previous.get("metrics")
         if not isinstance(previous_authority, Mapping) or not isinstance(previous_metrics, Mapping):
             raise RuntimeError("IMPROVEMENT_ROLLBACK_HISTORY_INVALID")
+        terminal_rollback = _terminal_strategy_id(previous_authority)
+        if terminal_rollback:
+            return _terminal_hold(
+                "HOLD_ROLLBACK_TERMINAL_FORBIDDEN",
+                terminal_rollback,
+                "ROLLBACK_TARGET_IS_TERMINAL_REJECTED_STRATEGY",
+            )
         rollback_authority = dict(previous_authority)
+        _require_strategy_allowed(rollback_authority)
         rollback_authority["rollback_from_alpha_id"] = current.get("alpha_id")
         rollback_authority["rollback_evidence_sha256"] = evidence_sha
         rollback_authority["receipt_sha256"] = stable_sha({k: v for k, v in rollback_authority.items() if k != "receipt_sha256"})

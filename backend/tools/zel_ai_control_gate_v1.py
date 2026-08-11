@@ -30,6 +30,11 @@ EXEMPT_FILENAMES = {
     "zel-holdout-vault-seal-v1.yml",
     "zel-p0-runtime-e2e-closure-v1.yml",
     "zel-pre-shadow-full-hardening-v1.yml",
+    # Production runtime CI verifies deterministic PAPER signal plumbing and has
+    # no research candidate-selection authority. Do not route it through the
+    # research AI proposal lineage gate merely because its PASS token contains
+    # the word ALPHA.
+    "zel-production-alpha-producer-v1.yml",
 }
 CONTROL_PLANE_ORCHESTRATORS = {
     "zel-ai-stage-authorization-broker-v1.yml",
@@ -245,11 +250,13 @@ def self_test() -> None:
             encoding="utf-8",
         )
         (root / "zel-ai-stage-authorization-broker-v1.yml").write_text("W2_FORWARD", encoding="utf-8")
+        (root / "zel-production-alpha-producer-v1.yml").write_text("PASS_ALPHA_PRODUCER_PIPELINE_AUDIT", encoding="utf-8")
         audit = audit_workflows(root)
         assert audit["state"].startswith("PASS"), audit
         assert audit["reusable_gate_is_wired"] is True, audit
         assert "zel-w2-forward-v1.yml" in audit["delegated_workflows"], audit
         assert "zel-ai-stage-authorization-broker-v1.yml" not in audit["protected_workflows"], audit
+        assert "zel-production-alpha-producer-v1.yml" not in audit["protected_workflows"], audit
     print(json.dumps({"state": "PASS_SELF_TEST", "version": VERSION}, sort_keys=True))
 
 

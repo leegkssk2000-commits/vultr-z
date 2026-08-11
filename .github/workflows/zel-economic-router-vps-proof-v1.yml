@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Read service exit reason only
+      - name: Read service stop timestamp only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -39,31 +39,19 @@ jobs:
           import json, pathlib, subprocess
           ledger=pathlib.Path("/home/z/z/ledger")
           router=json.load(open(ledger/"production_economic_edge_acquisition_v1.json"))
-          bootstrap=json.load(open(ledger/"production_performance_bootstrap_state_v1.json"))
           show=subprocess.run([
             "systemctl","show","zel-production-paper-loop.service",
-            "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts"
+            "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts,ActiveEnterTimestamp,ActiveExitTimestamp,InactiveEnterTimestamp"
           ],capture_output=True,text=True)
           props={}
           for line in show.stdout.splitlines():
               if "=" in line:
                   k,v=line.split("=",1); props[k]=v
           journal=subprocess.run([
-            "journalctl","-u","zel-production-paper-loop.service","-n","80","--no-pager","-o","cat"
+            "journalctl","-u","zel-production-paper-loop.service","-n","30","--no-pager","-o","short-iso"
           ],capture_output=True,text=True)
-          safe=[]
-          for raw in journal.stdout.splitlines():
-              line=raw.strip()
-              if not line: continue
-              if any(tok in line for tok in ("RuntimeError","Traceback","UNBOUND","HOLD_","ERROR","Error","exit-code","Failed","Exception","zel_production_")):
-                  safe.append(line[:500])
-          out={
-            "router_state":router.get("state"),
-            "bootstrap_state":bootstrap.get("state"),
-            "systemd":props,
-            "diagnostic_lines":safe[-20:],
-          }
-          print(json.dumps(out,sort_keys=True))
+          lines=[line[:700] for line in journal.stdout.splitlines()[-30:]]
+          print(json.dumps({"router_state":router.get("state"),"systemd":props,"journal_tail":lines},sort_keys=True))
           PY' | tee out/vps_router_proof.json
       - uses: actions/upload-artifact@v4
         with:

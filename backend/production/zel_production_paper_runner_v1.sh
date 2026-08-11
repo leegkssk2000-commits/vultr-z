@@ -6,10 +6,18 @@ INTERVAL_S="${ZEL_PRODUCTION_PAPER_INTERVAL_S:-5}"
 MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 
 while true; do
+  # 0) Resolve zero-survivor bootstrap before signal production. This is O(1)
+  # and network-free: it only reads the recovered economic admission queue and
+  # optional admission evidence. With no evidence it HOLDs. Only a complete
+  # W1/W2/W3 seed-survivor receipt carrying explicit risk/source authority may
+  # atomically register the first PAPER incumbent. No source-code mutation or
+  # exchange order is possible here.
+  "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
+
   # 1) Refresh the active-alpha signal before building PAPER input.
   # Missing/non-executable authority is an O(1) HOLD: no BingX call and no
-  # signal-file mutation. Only an already executable Trend/Momentum authority
-  # is allowed to reach the strict BingX producer in v1.
+  # signal-file mutation. Only an already executable nonterminal authority is
+  # allowed to reach a strict production signal producer.
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
 
   # 2) Refresh authoritative PAPER input. Missing/non-executable alpha emits
@@ -38,7 +46,7 @@ while true; do
 
   # 4) Advance cumulative improvement after the cycle receipt is durable.
   # With no incumbent/evidence this is an O(1) HOLD. With valid evidence it may
-  # atomically seed/promote/rollback CONFIG_ONLY PAPER authority. It never edits
+  # atomically promote/rollback CONFIG_ONLY PAPER authority. It never edits
   # source code and never submits an exchange order.
   "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
 

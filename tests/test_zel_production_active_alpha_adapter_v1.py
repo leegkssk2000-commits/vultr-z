@@ -1,6 +1,9 @@
 import pytest
 
-from backend.production.zel_production_active_alpha_adapter_v1 import bind_active_alpha
+from backend.production.zel_production_active_alpha_adapter_v1 import (
+    authority_is_executable,
+    bind_active_alpha,
+)
 
 
 def policy():
@@ -72,3 +75,20 @@ def test_stale_signal_and_identity_mismatch_fail_closed():
 def test_research_only_authority_is_rejected():
     with pytest.raises(RuntimeError, match="AUTHORITY_NOT_EXECUTABLE"):
         bind_active_alpha(authority(research_only=True), signal(), policy(), now_ms=10_000)
+
+
+def test_terminal_rejected_trend_and_relative_value_authorities_are_never_executable():
+    for strategy_id in ("trend_momentum_v1", "relative_value_psa_v1"):
+        stale = authority(strategy_id=strategy_id)
+        assert authority_is_executable(stale) is False
+        with pytest.raises(RuntimeError, match="AUTHORITY_NOT_EXECUTABLE"):
+            bind_active_alpha(
+                stale,
+                signal(strategy_id=strategy_id),
+                policy(),
+                now_ms=10_000,
+            )
+
+
+def test_missing_strategy_identity_is_not_executable():
+    assert authority_is_executable(authority(strategy_id="")) is False

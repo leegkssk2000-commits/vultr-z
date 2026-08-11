@@ -1,0 +1,126 @@
+name: ZEL Strategy25 Identity Census V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/legacy_strategy25_inventory_v1.json'
+      - 'backend/research/legacy_strategy25_identity_census_v1.py'
+      - '.github/workflows/zel-strategy25-identity-census-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-strategy25-identity-census-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  identity-census:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate frozen 25 inventory and compile
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/legacy_strategy25_identity_census_v1.py
+          python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          r=json.load(open('research/legacy_strategy25_inventory_v1.json'))
+          names=r['historical_implementation_inventory_25']
+          assert r['schema_version']=='zel.legacy_strategy25.inventory.v1'
+          assert len(names)==25 and len(set(names))==25
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['pre_replay_route'][0]=='identity_and_baseline_smoke_25_of_25'
+          print('PASS_FROZEN_STRATEGY25_INVENTORY')
+          PY
+          mkdir -p out ~/.ssh
+      - name: Run current checkout identity census
+        run: |
+          python backend/research/legacy_strategy25_identity_census_v1.py --root . --out out/master_identity.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/master_identity.json'))
+          assert r['schema_version']=='zel.legacy_strategy25.identity_census.v1'
+          assert r['historical_inventory_count']==25
+          assert r['raw_market_values_emitted'] is False and r['replay_performed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          print('MASTER_IDENTITY',r['state'],r['unique_source_identity_count'],r['missing_source_identity_count'],r['ambiguous_source_identity_count'])
+          PY
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run bounded VPS identity census read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote_py="/tmp/zel-strategy25-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          remote_inv="/tmp/zel-strategy25-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          echo "$remote_py" > out/remote_py.txt
+          echo "$remote_inv" > out/remote_inv.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/legacy_strategy25_identity_census_v1.py "$VPS_USER@$VPS_HOST:$remote_py"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes research/legacy_strategy25_inventory_v1.json "$VPS_USER@$VPS_HOST:$remote_inv"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /usr/bin/python3 '$remote_py' --root /home/z/z --inventory '$remote_inv' --out /tmp/strategy25-identity.json >/dev/null && cat /tmp/strategy25-identity.json && rm -f /tmp/strategy25-identity.json" \
+            > out/vps_identity.json
+          python -m json.tool out/vps_identity.json >/dev/null
+      - name: Verify VPS discovery-only receipt and print identity gaps
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/vps_identity.json'))
+          assert r['schema_version']=='zel.legacy_strategy25.identity_census.v1'
+          assert r['historical_inventory_count']==25
+          assert r['raw_market_values_emitted'] is False and r['replay_performed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          print('VPS_IDENTITY',r['state'],r['unique_source_identity_count'],r['missing_source_identity_count'],r['ambiguous_source_identity_count'])
+          for row in r['rows']:
+              print('STRATEGY25',row['legacy_name'],row['state'],row['direct_source_candidate_count'],row['reference_only_count'])
+              for src in row['direct_source_candidates']:
+                  print('SOURCE',row['legacy_name'],src['path'],src['sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-strategy25-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/master_identity.json
+            out/vps_identity.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup remote probes
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote_py=$(cat out/remote_py.txt 2>/dev/null || true)
+          remote_inv=$(cat out/remote_inv.txt 2>/dev/null || true)
+          if test -n "$remote_py" || test -n "$remote_inv"; then
+            ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote_py' '$remote_inv' /tmp/strategy25-identity.json" 2>/dev/null || true
+          fi
+          rm -f ~/.ssh/vps_key

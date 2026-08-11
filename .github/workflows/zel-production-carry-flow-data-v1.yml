@@ -1,0 +1,58 @@
+name: ZEL Production Carry Flow Data V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_carry_flow_data_v1.py'
+      - 'config/zel_production_alpha_factory_v1.json'
+      - 'tests/test_zel_production_carry_flow_data_v1.py'
+      - '.github/workflows/zel-production-carry-flow-data-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  carry-positioning-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and validate factory contract
+        run: |
+          python -m py_compile backend/production/zel_production_carry_flow_data_v1.py
+          python -m json.tool config/zel_production_alpha_factory_v1.json >/dev/null
+      - name: Run deterministic fail-closed tests
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          PYTHONPATH=. pytest -q tests/test_zel_production_carry_flow_data_v1.py
+      - name: Run one BingX native read-only source smoke
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m backend.production.zel_production_carry_flow_data_v1 --out /tmp/carry-flow.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/carry-flow.json').read_text())
+          assert r['state']=='PASS_CARRY_POSITIONING_RAW_DATA'
+          assert r['record_count']==4
+          assert r['funding_source_bound'] is True
+          assert r['basis_source_bound'] is True
+          assert r['open_interest_source_bound'] is True
+          assert r['flow_source_bound'] is False
+          assert r['economic_signal_generated'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          assert len(r['receipt_sha256'])==64
+          print('PASS_PRODUCTION_CARRY_POSITIONING_DATA')
+          PY

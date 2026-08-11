@@ -11,6 +11,7 @@ REQUIRED_FILES = (
     "backend/production/zel_production_risk_sizing_v1.py",
     "backend/production/zel_production_bingx_freshness_v1.py",
     "backend/production/zel_production_trend_momentum_v1.py",
+    "backend/production/zel_production_carry_flow_data_v1.py",
     "backend/production/zel_production_alpha_signal_runner_v1.py",
     "backend/production/zel_production_active_alpha_adapter_v1.py",
     "backend/production/zel_production_paper_account_state_v1.py",
@@ -55,6 +56,7 @@ def audit(root: Path) -> dict[str, Any]:
 
     producer_runner = text(root, "backend/production/zel_production_alpha_signal_runner_v1.py")
     trend = text(root, "backend/production/zel_production_trend_momentum_v1.py")
+    carry_data = text(root, "backend/production/zel_production_carry_flow_data_v1.py")
     source = text(root, "backend/production/zel_production_paper_source_adapter_v1.py")
     freshness = text(root, "backend/production/zel_production_bingx_freshness_v1.py")
     runner = text(root, "backend/production/zel_production_paper_runner_v1.sh")
@@ -103,6 +105,14 @@ def audit(root: Path) -> dict[str, Any]:
             and 'signal"] != "SHORT"' not in trend
             and "short_enabled" in trend
         ),
+        "carry_native_data_owner_strict": (
+            '"premium_index": "/openApi/swap/v2/quote/premiumIndex"' in carry_data
+            and '"open_interest": "/openApi/swap/v2/quote/openInterest"' in carry_data
+            and '"economic_signal_generated": False' in carry_data
+            and '"promotion_authority": False' in carry_data
+            and '"execution_authority": "NONE"' in carry_data
+            and '"order_authority": "BLOCKED"' in carry_data
+        ),
         "runner_pipeline_order": producer_i < source_i < cycle_i < improve_i,
         "runner_single_invocation_each": (
             runner.count("zel_production_alpha_signal_runner_v1") == 1
@@ -147,7 +157,17 @@ def audit(root: Path) -> dict[str, Any]:
             and trend_cfg.get("ema_fast") == 50
             and trend_cfg.get("ema_slow") == 200
         ),
-        "carry_flow_not_fake_bound": carry_cfg.get("status") == "PENDING_PRODUCTION_DATA_BINDING" and carry_cfg.get("execution_authority") == "NONE",
+        "carry_flow_data_bound_signal_still_blocked": (
+            carry_cfg.get("status") == "IMPLEMENTED_CARRY_POSITIONING_DATA_PLANE"
+            and carry_cfg.get("production_data_owner") == "backend/production/zel_production_carry_flow_data_v1.py"
+            and carry_cfg.get("funding_source_bound") is True
+            and carry_cfg.get("basis_source_bound") is True
+            and carry_cfg.get("open_interest_source_bound") is True
+            and carry_cfg.get("flow_source_bound") is False
+            and carry_cfg.get("economic_signal_enabled") is False
+            and carry_cfg.get("promotion_authority") is False
+            and carry_cfg.get("execution_authority") == "NONE"
+        ),
         "relative_value_not_fake_bound": rv_cfg.get("status") == "PENDING_PRODUCTION_DATA_BINDING" and rv_cfg.get("execution_authority") == "NONE",
         "legacy_strategies_material_only": (
             material.get("role") == "MATERIAL_ONLY"
@@ -180,7 +200,7 @@ def audit(root: Path) -> dict[str, Any]:
         "systemd_circuit_no_restart": "RestartPreventExitStatus=2" in service,
         "systemd_no_new_privileges": "NoNewPrivileges=true" in service,
         "no_live_submit_in_new_modules": all(
-            token in producer_runner + trend + source + freshness + improvement
+            token in producer_runner + trend + carry_data + source + freshness + improvement
             for token in ("exchange_order_submitted", "BLOCKED")
         ),
     })
@@ -197,7 +217,7 @@ def audit(root: Path) -> dict[str, Any]:
             "no_alpha_network_work": "SKIPPED_AT_PRODUCER_AND_SOURCE",
             "runner_stage_order": "ALPHA_PRODUCER_THEN_SOURCE_THEN_PAPER_THEN_IMPROVEMENT",
             "primary_alpha_family": "trend_momentum",
-            "carry_flow": "PENDING_PRODUCTION_DATA_BINDING",
+            "carry_flow": "CARRY_POSITIONING_DATA_BOUND_FLOW_AND_SIGNAL_BLOCKED",
             "relative_value_psa": "PENDING_PRODUCTION_DATA_BINDING",
             "legacy_strategy_role": "MATERIAL_ONLY",
             "candidate_budget": 2,

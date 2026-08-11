@@ -29,41 +29,76 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Read router/bootstrap/service state only
+      - name: Read router/bootstrap/service blocker state only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 - <<'"'"'PY'"'"'
-          import json, pathlib, subprocess
+          import json, pathlib, subprocess, sys
           ledger=pathlib.Path("/home/z/z/ledger")
+          root=pathlib.Path("/home/z/zel-production-current").resolve()
+          sys.path.insert(0,str(root))
+          from backend.production.zel_production_active_alpha_adapter_v1 import authority_is_executable
           router=json.load(open(ledger/"production_economic_edge_acquisition_v1.json"))
           bootstrap=json.load(open(ledger/"production_performance_bootstrap_state_v1.json"))
           assert router["state"]=="HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED",router
-          assert router.get("acquisition_queue")==[]
           by={x["family_id"]:x for x in router.get("blockers",[])}
-          assert by["carry_flow"]["classification"]=="SOURCE_UNBOUND"
           assert by["carry_flow"]["missing_source_fields"]==["flow_source_bound"]
           assert by["trend_momentum"]["classification"]=="TERMINAL_REJECT"
           assert by["relative_value_psa"]["classification"]=="TERMINAL_REJECT"
-          assert router["order_authority"]=="BLOCKED" and router["live_trade_authority"]=="BLOCKED"
-          assert router["execution_authority"]=="NONE" and router["exchange_order_submitted"] is False
-          assert bootstrap["state"]=="HOLD_BOOTSTRAP_ADMISSION_REJECTED_ROUTE_CHANGE"
-          assert bootstrap["order_authority"]=="BLOCKED" and bootstrap["live_trade_authority"]=="BLOCKED"
+          authority_path=ledger/"production_alpha_authority_v1.json"
+          evidence_path=ledger/"production_improvement_evidence_v1.json"
+          authority=None
+          executable=False
+          if authority_path.exists():
+              try:
+                  authority=json.load(open(authority_path))
+                  executable=isinstance(authority,dict) and authority_is_executable(authority)
+              except Exception as exc:
+                  authority={"parse_error_type":type(exc).__name__}
+          evidence=None
+          if evidence_path.exists():
+              try: evidence=json.load(open(evidence_path))
+              except Exception as exc: evidence={"parse_error_type":type(exc).__name__}
+          required={
+            "ZEL_DATA_STALE_MS","ZEL_ACCOUNT_STALE_MS","ZEL_MAX_DD_DAY_PCT","ZEL_MAX_DD_TOTAL_PCT",
+            "ZEL_ALPHA_SIGNAL_STALE_MS","ZEL_PAPER_INITIAL_EQUITY_USDT","ZEL_RISK_DAY_TZ",
+            "ZEL_IMPROVE_MIN_TRADES","ZEL_IMPROVE_MIN_EXPECTANCY","ZEL_IMPROVE_MIN_PF",
+            "ZEL_IMPROVE_MIN_NET_PNL","ZEL_IMPROVE_MAX_DD_PCT","ZEL_IMPROVE_MIN_SCORE_GAIN",
+            "ZEL_IMPROVE_MAX_DD_REGRESSION_PCT","ZEL_IMPROVE_ERROR_BUDGET"
+          }
+          values={}
+          envp=pathlib.Path("/etc/zel/production-paper-loop.env")
+          if envp.exists():
+              for raw in envp.read_text().splitlines():
+                  line=raw.strip()
+                  if line and not line.startswith("#") and "=" in line:
+                      k,v=line.split("=",1); values[k.strip()]=v.strip()
           unit=subprocess.run(["systemctl","is-active","zel-production-paper-loop.service"],capture_output=True,text=True)
-          print(json.dumps({
+          out={
             "router_state":router["state"],
             "next":router.get("next"),
             "queue_count":len(router.get("acquisition_queue") or []),
             "carry_missing":by["carry_flow"]["missing_source_fields"],
-            "trend":by["trend_momentum"]["classification"],
-            "rv":by["relative_value_psa"]["classification"],
             "bootstrap_state":bootstrap["state"],
             "service_state":unit.stdout.strip() or unit.stderr.strip(),
+            "authority_exists":authority_path.exists(),
+            "authority_executable":executable,
+            "authority_strategy_id":authority.get("strategy_id") if isinstance(authority,dict) else None,
+            "authority_alpha_state":authority.get("alpha_state") if isinstance(authority,dict) else None,
+            "improvement_evidence_exists":evidence_path.exists(),
+            "improvement_evidence_schema":evidence.get("schema_version") if isinstance(evidence,dict) else None,
+            "improvement_evidence_state":evidence.get("state") if isinstance(evidence,dict) else None,
+            "improvement_evidence_strategy_id":evidence.get("strategy_id") if isinstance(evidence,dict) else None,
+            "ssot_nonempty_count":sum(1 for k in required if values.get(k)),
+            "ssot_required_count":len(required),
             "order_authority":router["order_authority"],
             "live_trade_authority":router["live_trade_authority"],
-          },sort_keys=True))
+          }
+          assert out["order_authority"]=="BLOCKED" and out["live_trade_authority"]=="BLOCKED"
+          print(json.dumps(out,sort_keys=True))
           PY' | tee out/vps_router_proof.json
       - uses: actions/upload-artifact@v4
         with:

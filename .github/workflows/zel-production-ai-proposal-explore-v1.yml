@@ -1,0 +1,88 @@
+name: ZEL Production AI Proposal Explore V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_proposal_layer_v1.py'
+      - 'config/zel_production_ai_proposal_layer_v1.json'
+      - 'backend/production/zel_production_economic_edge_router_v1.py'
+      - 'config/zel_production_economic_edge_router_v1.json'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'tests/test_zel_production_ai_proposal_layer_v1.py'
+      - 'tests/test_zel_production_economic_edge_router_v1.py'
+      - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test AI Explore proposal layer
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile \
+            backend/production/zel_production_ai_proposal_layer_v1.py \
+            backend/production/zel_production_economic_edge_router_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_economic_edge_router_v1.py \
+            tests/test_zel_production_economic_edge_dynamic_v1.py
+      - name: Verify proposal-only AI authority boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['candidate_budget']<=2
+          assert p['numeric_threshold_proposals_allowed'] is False
+          for k in ('raw_trades_sent','private_code_sent','account_data_sent','credentials_sent'):
+              assert p[k] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE'
+          assert p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          assert p['source_code_mutation_allowed'] is False and p['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_ai_proposal_layer_v1.py').read_text()
+          assert 'generativelanguage.googleapis.com' in src
+          assert 'BingX' not in src and 'submit_order' not in src
+          print('PASS_AI_PROPOSAL_ONLY_AUTHORITY_BOUNDARY')
+          PY
+      - name: Verify same-cycle Explore ordering
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          bootstrap=r.index('zel_production_performance_bootstrap_v1')
+          first_router=r.index('zel_production_economic_edge_router_v1')
+          proposal=r.index('zel_production_ai_proposal_layer_v1')
+          second_router=r.index('zel_production_economic_edge_router_v1', first_router+1)
+          alpha=r.index('zel_production_alpha_signal_runner_v1')
+          paper=r.index('zel_production_paper_loop_v1')
+          improve=r.index('zel_production_improvement_controller_v1')
+          pool=r.index('zel_production_survivor_pool_v1')
+          assert bootstrap < first_router < proposal < second_router < alpha < paper < improve < pool
+          assert r.count('zel_production_ai_proposal_layer_v1') == 1
+          print('PASS_EXPLORE_AI_SAME_CYCLE_HANDOFF')
+          PY
+      - name: Verify router cannot treat AI as authority
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('backend/production/zel_production_economic_edge_router_v1.py').read_text()
+          assert 'PASS_EDGE_ACQUISITION_AI_PROPOSAL_QUEUE' in src
+          assert 'AI_PROPOSAL_PASSED_SOURCE_AVAILABILITY_ONLY' in src
+          assert 'FREEZE_AI_PROPOSAL_AND_BUILD_DETERMINISTIC_ADMISSION' in src
+          assert 'selection_authority' in src and 'promotion_authority' in src
+          assert 'submit_order' not in src and 'https://' not in src
+          print('PASS_AI_PROPOSAL_DETERMINISTIC_ROUTER_BOUNDARY')
+          PY

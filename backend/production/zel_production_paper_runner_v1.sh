@@ -14,25 +14,37 @@ while true; do
   # exchange order is possible here.
   "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
 
-  # 1) If bootstrap has exhausted/rejected its bounded admission candidate,
-  # route to the next already source-ready economic family. This controller is
-  # O(1), network-free and authority-free: it only reads the frozen factory and
-  # bootstrap state and writes an acquisition receipt. Terminal families and
-  # source-unbound families cannot enter the queue.
+  # 1) Resolve the current deterministic Explore state first. Existing verified
+  # families always have priority; terminal/source-unbound families cannot be
+  # queued and no AI proposal is allowed to override them.
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
 
-  # 2) Refresh the active-alpha signal before building PAPER input.
+  # 2) Only when the deterministic catalog is exhausted, ask the proposal-only
+  # AI layer for at most two causal economic hypotheses. The AI receives no raw
+  # trades/private code/account data/credentials and has zero selection,
+  # promotion, execution, LIVE, order or source-code-mutation authority.
+  # Identical Explore contexts reuse the durable proposal receipt; failed API
+  # calls are cooldown-HOLD and do not stop the PAPER daemon.
+  "${PYTHON_BIN}" -m backend.production.zel_production_ai_proposal_layer_v1 --tick
+
+  # 3) Re-run the O(1) deterministic router in the same cycle so a newly written
+  # AI proposal is source-gated immediately instead of waiting for the next
+  # daemon interval. Only source-ready proposals may enter a bounded admission
+  # queue; source-unbound proposals remain HOLD.
+  "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
+
+  # 4) Refresh the active-alpha signal before building PAPER input.
   # Missing/non-executable authority is an O(1) HOLD: no BingX call and no
   # signal-file mutation. Only an already executable nonterminal authority is
   # allowed to reach a strict production signal producer.
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
 
-  # 3) Refresh authoritative PAPER input. Missing/non-executable alpha emits
+  # 5) Refresh authoritative PAPER input. Missing/non-executable alpha emits
   # NO_VALIDATED_ALPHA without touching BingX or inventing price/qty.
   # Active alpha uses strict BingX-native freshness + canonical Risk/Sizing.
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 
-  # 4) Execute exactly one bounded PAPER cycle under the existing single-flight,
+  # 6) Execute exactly one bounded PAPER cycle under the existing single-flight,
   # idempotence, retry-budget and circuit-breaker supervisor.
   set +e
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_loop_v1 \
@@ -51,13 +63,13 @@ while true; do
     exit "${rc}"
   fi
 
-  # 5) Advance cumulative improvement after the cycle receipt is durable.
+  # 7) Advance cumulative Exploit improvement after the cycle receipt is durable.
   # With no incumbent/evidence this is an O(1) HOLD. With valid evidence it may
   # atomically promote/rollback CONFIG_ONLY PAPER authority. It never edits
   # source code and never submits an exchange order.
   "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
 
-  # 6) Rebuild the distinct-family survivor portfolio after any improvement
+  # 8) Rebuild the distinct-family survivor portfolio after any improvement
   # state transition. The pool never creates a survivor and never grants trade
   # authority: it only ranks already verified family survivors into Top3 ACTIVE
   # + Top2 RESERVE and writes a change receipt for notification/rotation logic.

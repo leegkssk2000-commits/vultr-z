@@ -10,6 +10,8 @@ SCHEMA = "zel.production_pipeline_audit.v2"
 REQUIRED_FILES = (
     "backend/production/zel_production_risk_sizing_v1.py",
     "backend/production/zel_production_bingx_freshness_v1.py",
+    "backend/production/zel_production_trend_momentum_v1.py",
+    "backend/production/zel_production_alpha_signal_runner_v1.py",
     "backend/production/zel_production_active_alpha_adapter_v1.py",
     "backend/production/zel_production_paper_account_state_v1.py",
     "backend/production/zel_production_paper_source_adapter_v1.py",
@@ -19,6 +21,7 @@ REQUIRED_FILES = (
     "backend/production/zel_production_paper_runner_v1.sh",
     "deploy/systemd/zel-production-paper-loop-v1.service",
     "deploy/systemd/zel-production-paper-loop-v1.env.example",
+    "config/zel_production_alpha_factory_v1.json",
     "config/zel_production_risk_sizing_v1.json",
     "config/zel_production_paper_account_v1.json",
     "config/zel_production_active_alpha_v1.json",
@@ -50,6 +53,8 @@ def audit(root: Path) -> dict[str, Any]:
     missing = [rel for rel in REQUIRED_FILES if not (root / rel).exists()]
     require(not missing, f"AUDIT_REQUIRED_FILES_MISSING:{missing}")
 
+    producer_runner = text(root, "backend/production/zel_production_alpha_signal_runner_v1.py")
+    trend = text(root, "backend/production/zel_production_trend_momentum_v1.py")
     source = text(root, "backend/production/zel_production_paper_source_adapter_v1.py")
     freshness = text(root, "backend/production/zel_production_bingx_freshness_v1.py")
     runner = text(root, "backend/production/zel_production_paper_runner_v1.sh")
@@ -66,6 +71,18 @@ def audit(root: Path) -> dict[str, Any]:
     inactive_guard = payload_body.index("if not authority_is_executable(authority):")
     network_call = payload_body.index("market_receipt = fetch_fresh_bingx_quote")
 
+    producer_tick_start = producer_runner.index("def run_once(")
+    producer_tick_end = producer_runner.index("def main(", producer_tick_start)
+    producer_tick = producer_runner[producer_tick_start:producer_tick_end]
+    producer_missing_guard = producer_tick.index("if not authority_path.exists():")
+    producer_exec_guard = producer_tick.index("if not authority_is_executable(authority):")
+    producer_network_call = producer_tick.index("signal_generator(authority")
+
+    producer_i = runner.index("zel_production_alpha_signal_runner_v1")
+    source_i = runner.index("zel_production_paper_source_adapter_v1")
+    cycle_i = runner.index("zel_production_paper_loop_v1")
+    improve_i = runner.index("zel_production_improvement_controller_v1")
+
     checks: dict[str, bool] = {
         "strict_bingx_native_path": (
             "fetch_fresh_bingx_quote" in source
@@ -73,14 +90,23 @@ def audit(root: Path) -> dict[str, Any]:
             and "DummyTickerAdapter" not in freshness
             and "MarketDataService(" not in source
         ),
-        "no_alpha_fast_path_before_network": null_guard < inactive_guard < network_call,
-        "runner_pipeline_order": (
-            runner.index("zel_production_paper_source_adapter_v1")
-            < runner.index("zel_production_paper_loop_v1")
-            < runner.index("zel_production_improvement_controller_v1")
+        "paper_no_alpha_fast_path_before_network": null_guard < inactive_guard < network_call,
+        "producer_no_alpha_fast_path_before_network": producer_missing_guard < producer_exec_guard < producer_network_call,
+        "trend_producer_strict_bingx": (
+            "BingXPublicAdapter" in trend
+            and "fetch_fresh_bingx_quote" in trend
+            and "DummyTickerAdapter" not in trend
+            and "PAPER_SIGNAL_ONLY" in trend
         ),
+        "trend_long_only_contract": (
+            'signal = "LONG" if bullish else "EXIT"' in trend
+            and 'signal"] != "SHORT"' not in trend
+            and "short_enabled" in trend
+        ),
+        "runner_pipeline_order": producer_i < source_i < cycle_i < improve_i,
         "runner_single_invocation_each": (
-            runner.count("zel_production_paper_source_adapter_v1") == 1
+            runner.count("zel_production_alpha_signal_runner_v1") == 1
+            and runner.count("zel_production_paper_source_adapter_v1") == 1
             and runner.count("zel_production_paper_loop_v1") == 1
             and runner.count("zel_production_improvement_controller_v1") == 1
         ),
@@ -90,11 +116,44 @@ def audit(root: Path) -> dict[str, Any]:
         "improvement_candidate_budget_2": "generate_candidates" in improvement and "candidate_budget" in improvement,
     }
 
+    alpha_factory = obj(root, "config/zel_production_alpha_factory_v1.json")
     risk = obj(root, "config/zel_production_risk_sizing_v1.json")
     account = obj(root, "config/zel_production_paper_account_v1.json")
     active = obj(root, "config/zel_production_active_alpha_v1.json")
     imp = obj(root, "config/zel_production_improvement_v1.json")
+
+    families = alpha_factory.get("families") or {}
+    trend_cfg = families.get("trend_momentum") or {}
+    carry_cfg = families.get("carry_flow") or {}
+    rv_cfg = families.get("relative_value_psa") or {}
+    material = alpha_factory.get("legacy_strategy_material") or {}
     checks.update({
+        "alpha_factory_paper_only": (
+            alpha_factory.get("mode") == "PAPER"
+            and alpha_factory.get("order_authority") == "BLOCKED"
+            and alpha_factory.get("live_trade_authority") == "BLOCKED"
+            and alpha_factory.get("exchange_order_submitted") is False
+        ),
+        "trend_primary_seed_bound": (
+            trend_cfg.get("strategy_id") == "trend_momentum_v1"
+            and trend_cfg.get("status") == "IMPLEMENTED_PRIMARY_SEED"
+            and trend_cfg.get("execution_authority") == "PAPER_SIGNAL_ONLY"
+            and trend_cfg.get("promotion_authority") is False
+            and trend_cfg.get("short_enabled") is False
+        ),
+        "trend_parameter_lineage_bound": (
+            (trend_cfg.get("parameter_lineage") or {}).get("source_sha256")
+            == "a060529401c9a218cfa04be0511d5f7ab0cdecff"
+            and trend_cfg.get("ema_fast") == 50
+            and trend_cfg.get("ema_slow") == 200
+        ),
+        "carry_flow_not_fake_bound": carry_cfg.get("status") == "PENDING_PRODUCTION_DATA_BINDING" and carry_cfg.get("execution_authority") == "NONE",
+        "relative_value_not_fake_bound": rv_cfg.get("status") == "PENDING_PRODUCTION_DATA_BINDING" and rv_cfg.get("execution_authority") == "NONE",
+        "legacy_strategies_material_only": (
+            material.get("role") == "MATERIAL_ONLY"
+            and material.get("direct_execution_authority") is False
+            and material.get("direct_promotion_authority") is False
+        ),
         "risk_presets_exact": risk.get("allowed_leverage_x") == [10, 15, 20] and risk.get("allowed_position_pct") == [5, 10, 15, 20],
         "conditional_25x_blocked": risk.get("conditional_25x_enabled") is False and 25 not in (risk.get("allowed_leverage_x") or []),
         "risk_thresholds_not_invented": all(risk.get(k) is None for k in ("market_data_stale_ms", "account_state_stale_ms", "max_dd_day_pct", "max_dd_total_pct")),
@@ -102,8 +161,8 @@ def audit(root: Path) -> dict[str, Any]:
         "active_signal_stale_not_invented": active.get("signal_stale_ms") is None,
         "improvement_thresholds_not_invented": all(v is None for v in (imp.get("thresholds") or {}).values()),
         "improvement_budget_exact": imp.get("candidate_budget") == 2 and imp.get("mutation_class") == "CONFIG_ONLY",
-        "all_config_live_blocked": all(row.get("order_authority") == "BLOCKED" and row.get("live_trade_authority") == "BLOCKED" for row in (risk, account, active, imp)),
-        "all_config_no_exchange_submit": all(row.get("exchange_order_submitted") is False for row in (risk, account, active, imp)),
+        "all_config_live_blocked": all(row.get("order_authority") == "BLOCKED" and row.get("live_trade_authority") == "BLOCKED" for row in (alpha_factory, risk, account, active, imp)),
+        "all_config_no_exchange_submit": all(row.get("exchange_order_submitted") is False for row in (alpha_factory, risk, account, active, imp)),
         "improvement_self_mod_blocked": imp.get("source_code_mutation_allowed") is False and imp.get("self_modification_allowed") is False,
     })
 
@@ -120,7 +179,10 @@ def audit(root: Path) -> dict[str, Any]:
         "systemd_write_scope_ledger_only": "ReadWritePaths=/home/z/z/ledger" in service,
         "systemd_circuit_no_restart": "RestartPreventExitStatus=2" in service,
         "systemd_no_new_privileges": "NoNewPrivileges=true" in service,
-        "no_live_submit_in_new_modules": all(token in source + freshness + improvement for token in ("exchange_order_submitted", "BLOCKED")),
+        "no_live_submit_in_new_modules": all(
+            token in producer_runner + trend + source + freshness + improvement
+            for token in ("exchange_order_submitted", "BLOCKED")
+        ),
     })
 
     failed = sorted(k for k, passed in checks.items() if not passed)
@@ -132,8 +194,12 @@ def audit(root: Path) -> dict[str, Any]:
         "checks": checks,
         "bottleneck_findings": {
             "active_dummy_market_fallback": "REMOVED_FROM_ACTIVE_PATH",
-            "no_alpha_network_work": "SKIPPED",
-            "runner_stage_order": "SOURCE_THEN_PAPER_THEN_IMPROVEMENT",
+            "no_alpha_network_work": "SKIPPED_AT_PRODUCER_AND_SOURCE",
+            "runner_stage_order": "ALPHA_PRODUCER_THEN_SOURCE_THEN_PAPER_THEN_IMPROVEMENT",
+            "primary_alpha_family": "trend_momentum",
+            "carry_flow": "PENDING_PRODUCTION_DATA_BINDING",
+            "relative_value_psa": "PENDING_PRODUCTION_DATA_BINDING",
+            "legacy_strategy_role": "MATERIAL_ONLY",
             "candidate_budget": 2,
             "source_code_self_modification": False,
             "live_exchange_submission": False,

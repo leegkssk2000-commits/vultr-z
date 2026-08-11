@@ -6,11 +6,17 @@ INTERVAL_S="${ZEL_PRODUCTION_PAPER_INTERVAL_S:-5}"
 MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 
 while true; do
+  # Performance/bootstrap and deterministic Explore routing stay O(1) and
+  # network-free inside the 5-second PAPER loop.
   "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
-  "${PYTHON_BIN}" -m backend.production.zel_production_ai_proposal_layer_v1 --tick
+
+  # Consume only durable proposal receipts produced asynchronously outside this
+  # daemon. Source acquisition is deterministic and may release a previously
+  # blocked proposal once its verified native source becomes available.
   "${PYTHON_BIN}" -m backend.production.zel_production_source_acquisition_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
+
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 

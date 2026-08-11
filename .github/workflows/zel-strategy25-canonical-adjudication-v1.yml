@@ -1,0 +1,118 @@
+name: ZEL Strategy25 Canonical Adjudication V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/legacy_strategy25_inventory_v1.json'
+      - 'backend/research/legacy_strategy25_canonical_adjudication_v1.py'
+      - '.github/workflows/zel-strategy25-canonical-adjudication-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-strategy25-canonical-adjudication-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canonical-adjudication:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static contract validation
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/legacy_strategy25_canonical_adjudication_v1.py
+          python -m json.tool research/legacy_strategy25_inventory_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          r=json.load(open('research/legacy_strategy25_inventory_v1.json'))
+          names=r['historical_implementation_inventory_25']
+          assert len(names)==25 and len(set(names))==25
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_STATIC_CANONICAL_ADJUDICATION_CONTRACT')
+          PY
+          mkdir -p out ~/.ssh
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run canonical source adjudication on VPS read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote_py="/tmp/zel-strategy25-canonical-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          remote_inv="/tmp/zel-strategy25-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          echo "$remote_py" > out/remote_py.txt
+          echo "$remote_inv" > out/remote_inv.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/legacy_strategy25_canonical_adjudication_v1.py "$VPS_USER@$VPS_HOST:$remote_py"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes research/legacy_strategy25_inventory_v1.json "$VPS_USER@$VPS_HOST:$remote_inv"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /usr/bin/python3 '$remote_py' --root /home/z/z --inventory '$remote_inv' --out /tmp/strategy25-canonical.json >/dev/null && cat /tmp/strategy25-canonical.json && rm -f /tmp/strategy25-canonical.json" \
+            > out/vps_canonical_adjudication.json
+          python -m json.tool out/vps_canonical_adjudication.json >/dev/null
+      - name: Enforce 25 of 25 canonical source identity
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/vps_canonical_adjudication.json'))
+          assert r['schema_version']=='zel.legacy_strategy25.canonical_adjudication.v1'
+          assert r['state']=='PASS_CANONICAL_SOURCE_IDENTITY_25_OF_25', r['state']
+          assert r['historical_inventory_count']==25
+          assert r['canonical_pass_count']==25
+          assert r['missing_canonical_count']==0
+          assert r['syntax_fail_count']==0
+          assert r['source_ready_for_baseline_smoke'] is True
+          assert r['economic_replay_performed'] is False
+          assert r['economic_replay_authority'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          for row in r['rows']:
+              assert row['state']=='PASS_CANONICAL_SOURCE_IDENTITY'
+              assert row['canonical_path'].endswith('/backend/strategies/'+row['legacy_name']+'.py')
+              assert row['canonical_sha256'] and row['syntax_ok'] is True
+              for copy in row['provenance_copies']:
+                  assert copy['role']=='PROVENANCE_COPY_NOT_EXECUTABLE_AUTHORITY'
+          print('PASS_CANONICAL_SOURCE_IDENTITY_25_OF_25',r['receipt_sha256'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-strategy25-canonical-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/vps_canonical_adjudication.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup remote probes
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote_py=$(cat out/remote_py.txt 2>/dev/null || true)
+          remote_inv=$(cat out/remote_inv.txt 2>/dev/null || true)
+          if test -n "$remote_py" || test -n "$remote_inv"; then
+            ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote_py' '$remote_inv' /tmp/strategy25-canonical.json" 2>/dev/null || true
+          fi
+          rm -f ~/.ssh/vps_key

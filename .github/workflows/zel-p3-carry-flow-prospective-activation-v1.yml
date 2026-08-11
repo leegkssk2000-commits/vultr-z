@@ -6,7 +6,9 @@ on:
     paths:
       - 'backend/research/p3_prospective_native_feature_collector.py'
       - 'backend/research/p3_prospective_native_append.py'
+      - 'backend/research/p3_prospective_native_coverage_gate.py'
       - 'backend/research/contracts/p3_carry_flow_prospective_native_v1.json'
+      - 'tests/test_p3_prospective_native_coverage_gate.py'
       - '.github/workflows/zel-p3-carry-flow-prospective-activation-v1.yml'
   workflow_dispatch:
     inputs:
@@ -46,7 +48,8 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/research/p3_prospective_native_feature_collector.py \
-            backend/research/p3_prospective_native_append.py
+            backend/research/p3_prospective_native_append.py \
+            backend/research/p3_prospective_native_coverage_gate.py
           python -m json.tool backend/research/contracts/p3_carry_flow_prospective_native_v1.json >/dev/null
           python - <<'PY'
           import json
@@ -54,6 +57,15 @@ jobs:
           assert c['state']=='FROZEN_PROSPECTIVE_SOURCE_ACQUISITION'
           assert c['family']=='carry_flow'
           assert c['research_only'] is True
+          f=c['frozen_window_contract']
+          assert f['source_pull_request']==605
+          assert f['w1_start_ms']==1782549000000
+          assert f['w2_end_ms']==1784276940000
+          assert f['history_pre_roll_ms']==86400000
+          assert f['required_capture_span_ms']==1814340000
+          assert f['coverage_clock']=='collected_at_ms'
+          assert f['cadence_minimum_record_count']=='NOT_GUESSED'
+          assert f['maximum_gap_ms']=='NOT_GUESSED'
           assert c['native_sources']['funding']['status']=='HISTORICAL_W1_W2_BOUND'
           assert c['native_sources']['premium_index']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
           assert c['native_sources']['open_interest']['status']=='PROSPECTIVE_CAPTURE_ALLOWED'
@@ -61,12 +73,19 @@ jobs:
           assert c['capture_policy']['prospective_only'] is True
           assert c['capture_policy']['raw_native_values_only'] is True
           assert c['capture_policy']['replay_before_alignment_and_coverage_gate']=='FORBIDDEN'
+          assert c['coverage_gate']['flow_required_for_replay'] is True
+          assert c['coverage_gate']['replay_on_basis_oi_duration_only'] is False
           assert c['selection_authority'] is False
           assert c['promotion_authority'] is False
           assert c['execution_authority']=='NONE'
           assert c['order_authority']=='BLOCKED'
-          print('PASS_P3_SOURCE_ONLY_CONTRACT')
+          print('PASS_P3_SOURCE_ONLY_FROZEN_COVERAGE_CONTRACT')
           PY
+
+      - name: Run deterministic coverage-gate tests
+        env:
+          PYTHONPATH: .
+        run: python tests/test_p3_prospective_native_coverage_gate.py -q
 
       - name: Collect one raw native snapshot
         run: python backend/research/p3_prospective_native_feature_collector.py --out /tmp/p3_snapshot.json
@@ -86,7 +105,7 @@ jobs:
             git archive "origin/${DATA_BRANCH}" research/data/p3_prospective 2>/dev/null | tar -x -C /tmp/p3_old || true
             if [ -d /tmp/p3_old/research/data/p3_prospective ]; then
               cp -a /tmp/p3_old/research/data/p3_prospective/. /tmp/p3_history/
-              rm -f /tmp/p3_history/latest_receipt.json
+              rm -f /tmp/p3_history/latest_receipt.json /tmp/p3_history/latest_coverage.json
             fi
           fi
 
@@ -98,12 +117,20 @@ jobs:
             --history-dir /tmp/p3_history \
             --receipt /tmp/p3_append_receipt.json
 
+      - name: Evaluate frozen-window coverage gate
+        run: |
+          python backend/research/p3_prospective_native_coverage_gate.py \
+            --history-dir /tmp/p3_history \
+            --contract backend/research/contracts/p3_carry_flow_prospective_native_v1.json \
+            --out /tmp/p3_coverage_receipt.json
+
       - name: Verify fail-closed receipts
         run: |
           python - <<'PY'
           import json
           s=json.load(open('/tmp/p3_snapshot.json'))
           r=json.load(open('/tmp/p3_append_receipt.json'))
+          g=json.load(open('/tmp/p3_coverage_receipt.json'))
           assert s['state']=='PASS_P3_PROSPECTIVE_NATIVE_BASIS_OI_SNAPSHOT'
           assert s['record_count']==4
           assert s['flow_source_bound'] is False
@@ -118,7 +145,20 @@ jobs:
           assert r['selection_authority'] is False
           assert r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
-          print('PASS_P3_PROSPECTIVE_ACTIVATION_SMOKE',r['total_added_records'],r['receipt_sha256'])
+          assert g['state'] in {
+              'HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING',
+              'PASS_P3_BASIS_OI_COVERAGE_READY_FLOW_BLOCKED',
+          }
+          assert g['required_capture_span_ms']==1814340000
+          assert 0.0 <= g['minimum_coverage_progress_ratio'] <= 1.0
+          assert g['flow_source_bound'] is False
+          assert g['historical_coverage_claim'] is False
+          assert g['replay_allowed'] is False
+          assert g['signal_generation_enabled'] is False
+          assert g['selection_authority'] is False
+          assert g['promotion_authority'] is False
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED'
+          print('PASS_P3_PROSPECTIVE_COVERAGE_GATE',g['state'],g['minimum_coverage_progress_ratio'])
           PY
 
       - name: Upload smoke or persistence evidence
@@ -128,6 +168,7 @@ jobs:
           path: |
             /tmp/p3_snapshot.json
             /tmp/p3_append_receipt.json
+            /tmp/p3_coverage_receipt.json
             /tmp/p3_history/*.ndjson
           if-no-files-found: error
           retention-days: 90
@@ -156,10 +197,11 @@ jobs:
           mkdir -p research/data/p3_prospective
           cp /tmp/p3_history/*.ndjson research/data/p3_prospective/
           cp /tmp/p3_append_receipt.json research/data/p3_prospective/latest_receipt.json
+          cp /tmp/p3_coverage_receipt.json research/data/p3_prospective/latest_coverage.json
           git add research/data/p3_prospective
           if git diff --cached --quiet; then
-            echo 'NO_NEW_NATIVE_RECORDS'
+            echo 'NO_NEW_NATIVE_RECORDS_OR_COVERAGE_CHANGE'
             exit 0
           fi
-          git commit -m "data(p3): append prospective native basis/OI snapshot ${{ github.run_id }}"
+          git commit -m "data(p3): append native basis/OI and coverage ${{ github.run_id }}"
           git push origin "${DATA_BRANCH}"

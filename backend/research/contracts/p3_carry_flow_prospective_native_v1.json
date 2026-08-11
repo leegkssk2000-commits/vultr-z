@@ -6,6 +6,19 @@
   "parent_terminal_evidence": "research/evidence/p3_carry_flow_source_binding_terminal_20260810.json",
   "parent_state": "HOLD_P3_CARRY_FLOW_HISTORICAL_SOURCE_GAPS",
   "symbols": ["BTC-USDT", "ETH-USDT"],
+  "frozen_window_contract": {
+    "source_pull_request": 605,
+    "source_head_sha": "b33c3593607427ef7fa78a34f058eb0b89b1bf19",
+    "w1_start_ms": 1782549000000,
+    "w2_end_ms": 1784276940000,
+    "history_pre_roll_ms": 86400000,
+    "required_capture_span_ms": 1814340000,
+    "required_capture_span_days": 20.999305555555555,
+    "coverage_clock": "collected_at_ms",
+    "source_timestamp_still_required": true,
+    "cadence_minimum_record_count": "NOT_GUESSED",
+    "maximum_gap_ms": "NOT_GUESSED"
+  },
   "native_sources": {
     "funding": {"status": "HISTORICAL_W1_W2_BOUND", "endpoint": "/openApi/swap/v2/quote/fundingRate"},
     "premium_index": {"status": "PROSPECTIVE_CAPTURE_ALLOWED", "endpoint": "/openApi/swap/v2/quote/premiumIndex", "required_raw_fields": ["markPrice", "indexPrice", "updateTime"], "derived_basis_before_contract": "FORBIDDEN"},
@@ -22,8 +35,20 @@
     "historical_coverage_claim_before_accumulation": false,
     "replay_before_alignment_and_coverage_gate": "FORBIDDEN"
   },
-  "activation": {"one_shot_PR_snapshot": "ALLOWED", "recurring_persistence": "REQUIRES_DEFAULT_BRANCH_OR_SEPARATELY_AUTHORIZED_SCHEDULER", "minimum_history_duration": "NOT_GUESSED_USE_FROZEN_WINDOW_CONTRACT_WHEN_BOUND"},
-  "blockers_after_one_shot": ["BASIS_HISTORY_ACCUMULATION_NOT_YET_ESTABLISHED", "OPEN_INTEREST_HISTORY_ACCUMULATION_NOT_YET_ESTABLISHED", "FLOW_NATIVE_SOURCE_NOT_BOUND"],
+  "activation": {
+    "one_shot_PR_snapshot": "ALLOWED",
+    "recurring_persistence": "ACTIVE_ON_DEFAULT_BRANCH_SCHEDULE",
+    "schedule": "7 * * * *",
+    "data_branch": "zel-p3-prospective-data",
+    "minimum_history_duration": "FROZEN_WINDOW_CONTRACT"
+  },
+  "coverage_gate": {
+    "module": "backend/research/p3_prospective_native_coverage_gate.py",
+    "basis_oi_duration_ready_requires": "capture_span_ms >= required_capture_span_ms for all four feature-symbol streams",
+    "flow_required_for_replay": true,
+    "replay_on_basis_oi_duration_only": false
+  },
+  "blockers": ["BASIS_OI_CAPTURE_SPAN_BELOW_FROZEN_WINDOW_UNTIL_GATE_PASSES", "FLOW_NATIVE_SOURCE_NOT_BOUND"],
   "selection_authority": false,
   "promotion_authority": false,
   "execution_authority": "NONE",

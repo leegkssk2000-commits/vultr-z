@@ -1,0 +1,89 @@
+name: ZEL Production Source Acquisition V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_source_acquisition_v1.py'
+      - 'config/zel_production_source_acquisition_v1.json'
+      - 'config/zel_production_source_capability_registry_v1.json'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'tests/test_zel_production_source_acquisition_v1.py'
+      - '.github/workflows/zel-production-source-acquisition-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test deterministic source acquisition
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_source_acquisition_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_source_acquisition_v1.py \
+            tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_economic_edge_router_v1.py \
+            tests/test_zel_production_economic_edge_dynamic_v1.py
+      - name: Verify canonical source registry owners
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('config/zel_production_source_capability_registry_v1.json').read_text())
+          assert r['schema_version']=='zel.production_source_capability_registry.v1'
+          sources=r['sources']
+          carry=Path('backend/production/zel_production_carry_flow_data_v1.py').read_text()
+          md=Path('backend/engine/market_data_service.py').read_text()
+          for sid in ('funding','basis'):
+              x=sources[sid]; assert x['proposal_available'] is True and x['native_read_bound'] is True
+              assert x['owner_path']=='backend/production/zel_production_carry_flow_data_v1.py'
+              assert x['native_endpoint'] in carry
+          x=sources['open_interest']; assert x['proposal_available'] is True and x['native_endpoint'] in carry
+          for sid in ('ohlcv','volume'):
+              x=sources[sid]; assert x['proposal_available'] is True and x['native_read_bound'] is True
+              assert x['owner_path']=='backend/engine/market_data_service.py'
+              assert x['native_endpoint'] in md
+          for sid in ('flow','liquidation','trade_sequence','l2_order_book'):
+              x=sources[sid]
+              assert x['proposal_available'] is False and x['native_read_bound'] is False
+              assert x['native_endpoint'] is None and x['owner_path'] is None
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('PASS_CANONICAL_SOURCE_CAPABILITY_REGISTRY')
+          PY
+      - name: Verify same-cycle source resolution ordering
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          first_router=r.index('zel_production_economic_edge_router_v1')
+          proposal=r.index('zel_production_ai_proposal_layer_v1')
+          resolver=r.index('zel_production_source_acquisition_v1')
+          second_router=r.index('zel_production_economic_edge_router_v1', first_router+1)
+          alpha=r.index('zel_production_alpha_signal_runner_v1')
+          assert first_router < proposal < resolver < second_router < alpha
+          assert r.count('zel_production_source_acquisition_v1')==1
+          print('PASS_AI_PROPOSAL_SOURCE_RESOLUTION_SAME_CYCLE')
+          PY
+      - name: Verify resolver cannot invent a source or authority
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('backend/production/zel_production_source_acquisition_v1.py').read_text()
+          assert 'REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER' in src
+          assert 'synthetic_source_allowed' in src
+          assert 'endpoint_discovery_allowed' in src
+          assert 'urllib' not in src and 'https://' not in src and 'submit_order' not in src
+          print('PASS_SOURCE_ACQUISITION_FAIL_CLOSED_BOUNDARY')
+          PY

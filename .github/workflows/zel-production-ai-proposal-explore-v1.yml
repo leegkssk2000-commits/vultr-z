@@ -12,12 +12,20 @@ on:
       - 'tests/test_zel_production_ai_proposal_layer_v1.py'
       - 'tests/test_zel_production_economic_edge_router_v1.py'
       - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: zel-production-ai-proposal-explore-v1
+  cancel-in-progress: false
+
 jobs:
   verify:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -33,6 +41,7 @@ jobs:
           python -m py_compile \
             backend/production/zel_production_ai_proposal_layer_v1.py \
             backend/production/zel_production_economic_edge_router_v1.py
+          bash -n backend/production/zel_production_paper_runner_v1.sh
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_proposal_layer_v1.py \
             tests/test_zel_production_economic_edge_router_v1.py \
@@ -57,22 +66,22 @@ jobs:
           assert 'BingX' not in src and 'submit_order' not in src
           print('PASS_AI_PROPOSAL_ONLY_AUTHORITY_BOUNDARY')
           PY
-      - name: Verify same-cycle Explore ordering
+      - name: Verify PAPER runner stays network-free from AI
         run: |
           python - <<'PY'
           from pathlib import Path
           r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
           bootstrap=r.index('zel_production_performance_bootstrap_v1')
-          first_router=r.index('zel_production_economic_edge_router_v1')
-          proposal=r.index('zel_production_ai_proposal_layer_v1')
-          second_router=r.index('zel_production_economic_edge_router_v1', first_router+1)
+          router=r.index('zel_production_economic_edge_router_v1')
           alpha=r.index('zel_production_alpha_signal_runner_v1')
           paper=r.index('zel_production_paper_loop_v1')
           improve=r.index('zel_production_improvement_controller_v1')
           pool=r.index('zel_production_survivor_pool_v1')
-          assert bootstrap < first_router < proposal < second_router < alpha < paper < improve < pool
-          assert r.count('zel_production_ai_proposal_layer_v1') == 1
-          print('PASS_EXPLORE_AI_SAME_CYCLE_HANDOFF')
+          assert bootstrap < router < alpha < paper < improve < pool
+          assert 'zel_production_ai_proposal_layer_v1' not in r
+          assert 'GEMINI_API_KEY' not in r
+          assert 'generativelanguage.googleapis.com' not in r
+          print('PASS_PAPER_LOOP_AI_NETWORK_ISOLATION')
           PY
       - name: Verify router cannot treat AI as authority
         run: |
@@ -86,3 +95,73 @@ jobs:
           assert 'submit_order' not in src and 'https://' not in src
           print('PASS_AI_PROPOSAL_DETERMINISTIC_ROUTER_BOUNDARY')
           PY
+
+  propose-on-vps:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded Explore proposal tick outside PAPER daemon
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          LEDGER=/home/z/z/ledger
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json
+          python3 -m backend.production.zel_production_ai_proposal_layer_v1 --tick >/tmp/zel-ai-explore-proposal.json
+          python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-after.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          proposal=json.loads(Path('/tmp/zel-ai-explore-proposal.json').read_text())
+          allowed={
+            'HOLD_AI_PROPOSAL_NOT_REQUIRED',
+            'HOLD_AI_PROPOSAL_FACTORY_MISSING',
+            'HOLD_AI_PROPOSAL_CALLER_UNAVAILABLE',
+            'HOLD_AI_PROPOSAL_CALL_FAILED',
+            'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED',
+            'HOLD_AI_PROPOSAL_NO_CANDIDATE',
+            'PASS_AI_PROPOSAL_SOURCE_READY',
+          }
+          assert proposal['state'] in allowed
+          # Active predefined acquisition (for example carry_positioning) must
+          # terminate before the provider can be called.
+          if proposal['state']=='HOLD_AI_PROPOSAL_NOT_REQUIRED':
+              assert proposal.get('written') is False
+          receipt=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
+          if receipt.exists():
+              row=json.loads(receipt.read_text())
+              assert row.get('selection_authority') is False
+              assert row.get('promotion_authority') is False
+              assert row.get('execution_authority')=='NONE'
+              assert row.get('order_authority')=='BLOCKED'
+              assert row.get('live_trade_authority')=='BLOCKED'
+              assert row.get('exchange_order_submitted') is False
+              assert row.get('source_code_mutation_applied') is False
+              assert row.get('self_modification_applied') is False
+          print(json.dumps(proposal,sort_keys=True))
+          PY
+          REMOTE

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.production_ssot_source_recovery.v1"
+SCHEMA = "zel.production_ssot_source_recovery.v2"
 
 TARGETS = {
     "ZEL_DATA_STALE_MS": ("ZEL_DATA_STALE_MS", "DATA_STALE_MS", "market_data_stale_ms", "data_stale_ms"),
@@ -37,7 +37,8 @@ NON_AUTHORITY_PARTS = {
     "tests", "test", "research", ".github", "fixtures", "fixture", "examples", "example",
     "archive", "archives", "backup", "backups", "tmp", "temp",
 }
-AUTHORITY_HINTS = ("z_policy", "ssot", "policy", "config", "governance", "risk")
+EXPLICIT_AUTHORITY_MARKERS = ("z_policy", "z-policy", "z policy", "ssot")
+CURRENT_POLICY_HINTS = ("policy", "config", "ssot", "z_policy", "z-policy")
 
 NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 TZ_RE = re.compile(r"^(?:UTC|Etc/[A-Za-z0-9_+\-]+|[A-Za-z_]+/[A-Za-z0-9_+\-]+)$")
@@ -72,15 +73,30 @@ def clean_value(value: Any) -> str | None:
     return None
 
 
-def classify(path: Path) -> tuple[bool, str]:
-    lowered_parts = {part.lower() for part in path.parts}
+def classify(root: Path, path: Path, text: str) -> tuple[bool, str]:
+    rel = path.relative_to(root)
+    lowered_parts = {part.lower() for part in rel.parts}
     name = path.name.lower()
     if lowered_parts & NON_AUTHORITY_PARTS or name.endswith(".example") or ".env" in name:
         return False, "NON_AUTHORITY_PATH"
-    full = str(path).lower()
-    if any(hint in full for hint in AUTHORITY_HINTS):
-        return True, "AUTHORITY_PATH_HINT"
-    return False, "NO_AUTHORITY_PATH_HINT"
+
+    full = str(rel).lower()
+    sample = text[:250_000].lower()
+    explicit = any(marker in full or marker in sample for marker in EXPLICIT_AUTHORITY_MARKERS)
+    if explicit:
+        return True, "EXPLICIT_Z_POLICY_OR_SSOT_MARKER"
+
+    # Only the immutable current production release may use a generic policy/config
+    # path as authority. The dirty legacy checkout is evidence-only unless it
+    # explicitly declares Z_POLICY/SSOT. This prevents local risk/runtime snapshots
+    # from silently becoming production policy.
+    current_release = root.name == "zel-production-current"
+    if current_release and any(hint in full for hint in CURRENT_POLICY_HINTS):
+        return True, "CURRENT_PRODUCTION_RELEASE_POLICY_CONFIG"
+
+    if current_release:
+        return False, "CURRENT_RELEASE_NON_POLICY_PATH"
+    return False, "LEGACY_REQUIRES_EXPLICIT_Z_POLICY_SSOT"
 
 
 def target_for_key(key: str) -> str | None:
@@ -91,12 +107,21 @@ def target_for_key(key: str) -> str | None:
     return ALIAS_TO_TARGET.get(tail)
 
 
-def add_hit(hits: list[dict[str, Any]], *, root: Path, path: Path, key: str, value: Any, line: int | None) -> None:
+def add_hit(
+    hits: list[dict[str, Any]],
+    *,
+    root: Path,
+    path: Path,
+    key: str,
+    value: Any,
+    line: int | None,
+    authority: bool,
+    authority_reason: str,
+) -> None:
     target = target_for_key(key)
     cleaned = clean_value(value)
     if target is None or cleaned is None:
         return
-    authority, reason = classify(path)
     try:
         rel = str(path.relative_to(root))
     except ValueError:
@@ -109,20 +134,41 @@ def add_hit(hits: list[dict[str, Any]], *, root: Path, path: Path, key: str, val
         "line": line,
         "source_sha256": sha256_file(path),
         "authority_candidate": authority,
-        "authority_reason": reason,
+        "authority_reason": authority_reason,
     })
 
 
-def walk_json(obj: Any, *, root: Path, path: Path, hits: list[dict[str, Any]], prefix: str = "") -> None:
+def walk_json(
+    obj: Any,
+    *,
+    root: Path,
+    path: Path,
+    hits: list[dict[str, Any]],
+    authority: bool,
+    authority_reason: str,
+    prefix: str = "",
+) -> None:
     if isinstance(obj, dict):
         for key, value in obj.items():
             dotted = f"{prefix}.{key}" if prefix else str(key)
-            add_hit(hits, root=root, path=path, key=str(key), value=value, line=None)
-            add_hit(hits, root=root, path=path, key=dotted, value=value, line=None)
-            walk_json(value, root=root, path=path, hits=hits, prefix=dotted)
+            add_hit(
+                hits, root=root, path=path, key=str(key), value=value, line=None,
+                authority=authority, authority_reason=authority_reason,
+            )
+            add_hit(
+                hits, root=root, path=path, key=dotted, value=value, line=None,
+                authority=authority, authority_reason=authority_reason,
+            )
+            walk_json(
+                value, root=root, path=path, hits=hits, authority=authority,
+                authority_reason=authority_reason, prefix=dotted,
+            )
     elif isinstance(obj, list):
         for value in obj:
-            walk_json(value, root=root, path=path, hits=hits, prefix=prefix)
+            walk_json(
+                value, root=root, path=path, hits=hits, authority=authority,
+                authority_reason=authority_reason, prefix=prefix,
+            )
 
 
 def scan_file(root: Path, path: Path, hits: list[dict[str, Any]]) -> None:
@@ -137,9 +183,13 @@ def scan_file(root: Path, path: Path, hits: list[dict[str, Any]]) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return
+    authority, authority_reason = classify(root, path, text)
     if path.suffix.lower() == ".json":
         try:
-            walk_json(json.loads(text), root=root, path=path, hits=hits)
+            walk_json(
+                json.loads(text), root=root, path=path, hits=hits,
+                authority=authority, authority_reason=authority_reason,
+            )
         except Exception:
             pass
     alias_tokens = tuple(ALIAS_TO_TARGET)
@@ -155,6 +205,8 @@ def scan_file(root: Path, path: Path, hits: list[dict[str, Any]]) -> None:
                 key=match.group("key"),
                 value=match.group("value").strip(),
                 line=line_no,
+                authority=authority,
+                authority_reason=authority_reason,
             )
 
 
@@ -174,7 +226,10 @@ def scan_root(root: Path) -> list[dict[str, Any]]:
         scan_file(root, path, hits)
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
     for hit in hits:
-        key = (hit["target"], hit["value"], hit["source"], hit["line"], hit["authority_candidate"])
+        key = (
+            hit["target"], hit["value"], hit["source"], hit["line"],
+            hit["authority_candidate"], hit["authority_reason"],
+        )
         unique[key] = hit
     return sorted(unique.values(), key=lambda h: (h["target"], h["source"], h["line"] or 0, h["value"]))
 
@@ -219,6 +274,7 @@ def build_receipt(roots: list[Path]) -> dict[str, Any]:
         "unresolved_count": len(TARGETS) - resolved_count,
         "roots": root_summaries,
         "targets": targets,
+        "legacy_generic_policy_is_authority": False,
         "env_mutated": False,
         "service_mutated": False,
         "exchange_order_submitted": False,

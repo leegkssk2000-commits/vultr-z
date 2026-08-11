@@ -1,0 +1,166 @@
+name: ZEL Squeeze Admission Auto Handoff V1
+
+on:
+  workflow_run:
+    workflows: ["ZEL Squeeze Break 150D Admission V1"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zel-squeeze-admission-auto-handoff-v1
+  cancel-in-progress: false
+
+jobs:
+  handoff:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == '800544aeaa0ec2add5c223e1fa05f46702ed25cb'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download exact completed admission artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zel-squeeze-break-150d-admission-*
+          path: /tmp/squeeze-handoff
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          repository: ${{ github.repository }}
+
+      - name: Build fail-closed bridge output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/squeeze-handoff/squeeze_break_150d_admission.json
+          mkdir -p /tmp/squeeze-bridge
+          python -m backend.production.zel_production_admission_result_bridge_v1 \
+            --source /tmp/squeeze-handoff/squeeze_break_150d_admission.json \
+            --out /tmp/squeeze-bridge/bridge.json \
+            --evidence-out /tmp/squeeze-bridge/evidence.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          b=json.loads(Path('/tmp/squeeze-bridge/bridge.json').read_text())
+          assert b['execution_authority']=='NONE'
+          assert b['order_authority']=='BLOCKED'
+          assert b['selection_authority'] is False
+          assert b['promotion_authority'] is False
+          assert b['state'] in {
+              'PASS_TERMINAL_REJECT_EVIDENCE_READY',
+              'HOLD_ECONOMIC_PASS_AUTHORITY_BINDING_REQUIRED',
+              'HOLD_SOURCE_NOT_TERMINAL_FOR_BRIDGE',
+          }
+          if b['write_admission_evidence']:
+              e=json.loads(Path('/tmp/squeeze-bridge/evidence.json').read_text())
+              assert e['state']=='REJECT_BOOTSTRAP_ADMISSION_EVIDENCE'
+              assert e['execution_authority']=='NONE' and e['order_authority']=='BLOCKED'
+          else:
+              assert not Path('/tmp/squeeze-bridge/evidence.json').exists()
+          print('PASS_SQUEEZE_AUTO_HANDOFF_BRIDGE_FAIL_CLOSED', b['state'])
+          PY
+
+      - name: Prepare VPS transport
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            'test -d /home/z/z/ledger && test -L /home/z/zel-production-current'
+
+      - name: Atomically publish bridge and terminal reject evidence only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-squeeze-handoff-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/squeeze-bridge/bridge.json "$VPS_USER@$VPS_HOST:$remote/bridge.json"
+          if test -f /tmp/squeeze-bridge/evidence.json; then
+            scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/squeeze-bridge/evidence.json "$VPS_USER@$VPS_HOST:$remote/evidence.json"
+          fi
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "REMOTE='$remote' python3 - <<'PY'
+          import json, os, pathlib, tempfile
+          remote=pathlib.Path(os.environ['REMOTE'])
+          ledger=pathlib.Path('/home/z/z/ledger')
+          bridge=json.loads((remote/'bridge.json').read_text())
+          def atomic(path, obj):
+              path.parent.mkdir(parents=True, exist_ok=True)
+              fd,tmp=tempfile.mkstemp(prefix=path.name+'.', dir=str(path.parent))
+              try:
+                  with os.fdopen(fd,'w') as f:
+                      json.dump(obj,f,indent=2,sort_keys=True,allow_nan=False); f.write('\n'); f.flush(); os.fsync(f.fileno())
+                  os.replace(tmp,path)
+              finally:
+                  if os.path.exists(tmp): os.unlink(tmp)
+          atomic(ledger/'production_admission_result_bridge_v1.json', bridge)
+          if bridge.get('write_admission_evidence'):
+              evidence=json.loads((remote/'evidence.json').read_text())
+              assert evidence['state']=='REJECT_BOOTSTRAP_ADMISSION_EVIDENCE'
+              atomic(ledger/'production_bootstrap_admission_evidence_v1.json', evidence)
+          print('PASS_VPS_ADMISSION_HANDOFF', bridge['state'], bridge['write_admission_evidence'])
+          PY"
+
+      - name: Advance bootstrap once and verify no order authority
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
+            set -euo pipefail
+            root=$(readlink -f /home/z/zel-production-current)
+            cd "$root"
+            PYTHONPATH="$root" /usr/bin/python3 -m backend.production.zel_production_performance_bootstrap_v1 --tick >/tmp/zel-bootstrap-handoff.out
+            python3 - <<'PY'
+          import json
+          p="/home/z/z/ledger/production_performance_bootstrap_state_v1.json"
+          r=json.load(open(p))
+          assert r["order_authority"]=="BLOCKED"
+          assert r["live_trade_authority"]=="BLOCKED"
+          assert r["exchange_order_submitted"] is False
+          print("PASS_BOOTSTRAP_HANDOFF_STATE",r["state"],r.get("next"))
+          PY
+          '
+
+      - name: Upload handoff receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-squeeze-admission-auto-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/squeeze-bridge/bridge.json
+          retention-days: 90
+
+      - name: Cleanup transport key and VPS temp
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        shell: bash
+        run: |
+          remote="/tmp/zel-squeeze-handoff-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test -f ~/.ssh/vps_key && ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

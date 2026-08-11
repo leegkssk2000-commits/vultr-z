@@ -1,0 +1,59 @@
+name: ZEL Production Survivor Catalog V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_survivor_catalog_v1.py'
+      - 'backend/production/zel_production_survivor_pool_v1.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'config/zel_production_survivor_catalog_v1.json'
+      - 'config/zel_production_survivor_pool_v1.json'
+      - 'tests/test_zel_production_survivor_catalog_v1.py'
+      - 'tests/test_zel_production_survivor_pool_v1.py'
+      - '.github/workflows/zel-production-survivor-catalog-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test catalog plus 3+2 pool
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile \
+            backend/production/zel_production_survivor_catalog_v1.py \
+            backend/production/zel_production_survivor_pool_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_survivor_catalog_v1.py \
+            tests/test_zel_production_survivor_pool_v1.py
+      - name: Verify runner ordering and authority boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          improve=runner.index('zel_production_improvement_controller_v1 --tick')
+          catalog=runner.index('zel_production_survivor_catalog_v1')
+          pool=runner.index('zel_production_survivor_pool_v1')
+          assert improve < catalog < pool
+          cfg=json.loads(Path('config/zel_production_survivor_catalog_v1.json').read_text())
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['source_code_mutation_allowed'] is False
+          assert cfg['self_modification_allowed'] is False
+          print('PASS_SURVIVOR_CATALOG_TO_POOL_ORDER_AND_AUTHORITY')
+          PY

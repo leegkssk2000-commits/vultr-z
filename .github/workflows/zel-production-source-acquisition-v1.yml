@@ -8,7 +8,6 @@ on:
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_paper_runner_v1.sh'
-      - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
       - 'tests/test_zel_production_source_acquisition_v1.py'
       - '.github/workflows/zel-production-source-acquisition-v1.yml'
 
@@ -63,21 +62,19 @@ jobs:
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           print('PASS_CANONICAL_SOURCE_CAPABILITY_REGISTRY')
           PY
-      - name: Verify source resolution moved outside PAPER daemon
+      - name: Verify same-cycle source resolution ordering
         run: |
           python - <<'PY'
           from pathlib import Path
-          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
-          explore=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
-          assert 'zel_production_ai_proposal_layer_v1' not in runner
-          assert 'zel_production_source_acquisition_v1' not in runner
-          assert runner.count('zel_production_economic_edge_router_v1')==1
-          before=explore.index('python3 -m backend.production.zel_production_economic_edge_router_v1 --tick')
-          proposal=explore.index('python3 -m backend.production.zel_production_ai_proposal_layer_v1 --tick')
-          resolver=explore.index('python3 -m backend.production.zel_production_source_acquisition_v1')
-          after=explore.index('python3 -m backend.production.zel_production_economic_edge_router_v1 --tick', before+1)
-          assert before < proposal < resolver < after
-          print('PASS_AI_PROPOSAL_SOURCE_RESOLUTION_ASYNC_ISOLATED')
+          r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          first_router=r.index('zel_production_economic_edge_router_v1')
+          proposal=r.index('zel_production_ai_proposal_layer_v1')
+          resolver=r.index('zel_production_source_acquisition_v1')
+          second_router=r.index('zel_production_economic_edge_router_v1', first_router+1)
+          alpha=r.index('zel_production_alpha_signal_runner_v1')
+          assert first_router < proposal < resolver < second_router < alpha
+          assert r.count('zel_production_source_acquisition_v1')==1
+          print('PASS_AI_PROPOSAL_SOURCE_RESOLUTION_SAME_CYCLE')
           PY
       - name: Verify resolver cannot invent a source or authority
         run: |

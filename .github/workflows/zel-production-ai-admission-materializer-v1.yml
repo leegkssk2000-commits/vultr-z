@@ -1,0 +1,72 @@
+name: ZEL Production AI Admission Materializer V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_admission_materializer_v1.py'
+      - 'config/zel_production_ai_admission_materializer_v1.json'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
+      - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
+      - 'tests/test_zel_production_ai_admission_materializer_v1.py'
+      - '.github/workflows/zel-production-ai-admission-materializer-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test declarative admission materializer
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_ai_admission_materializer_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_ai_admission_materializer_v1.py \
+            tests/test_zel_production_source_acquisition_v1.py \
+            tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_economic_edge_router_v1.py
+      - name: Verify frozen template safety contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('config/zel_production_ai_admission_template_registry_v1.json').read_text())
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['source_code_mutation_allowed'] is False and r['self_modification_allowed'] is False
+          for tid,t in r['templates'].items():
+              assert t['numeric_signal_thresholds']==[]
+              assert t['parameter_search'] is False
+              assert t['outcome_source']=='ohlcv'
+              assert t['negative_controls']==['DIRECTION_REVERSAL','PLUS_ONE_EVENT_DELAY','NO_SIGNAL_PLACEBO']
+          src=Path('backend/production/zel_production_ai_admission_materializer_v1.py').read_text()
+          assert 'urllib' not in src and 'https://' not in src and 'submit_order' not in src
+          print('PASS_DECLARATIVE_ADMISSION_AUTHORITY_BOUNDARY')
+          PY
+      - name: Verify hourly Explore-to-admission ordering and PAPER isolation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          wf=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
+          first_router=wf.index('zel_production_economic_edge_router_v1 --tick')
+          proposal=wf.index('zel_production_ai_proposal_layer_v1 --tick')
+          resolver=wf.index('zel_production_source_acquisition_v1')
+          second_router=wf.index('zel_production_economic_edge_router_v1 --tick',first_router+1)
+          admission=wf.index('zel_production_ai_admission_materializer_v1')
+          assert first_router < proposal < resolver < second_router < admission
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          assert 'zel_production_ai_admission_materializer_v1' not in runner
+          assert 'zel_production_ai_proposal_layer_v1' not in runner
+          assert 'zel_production_source_acquisition_v1' not in runner
+          print('PASS_ASYNC_EXPLORE_TO_FROZEN_ADMISSION_AND_PAPER_ISOLATION')
+          PY

@@ -9,10 +9,14 @@ on:
       - 'backend/production/zel_production_source_acquisition_v1.py'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
+      - 'backend/production/zel_production_ai_admission_materializer_v1.py'
+      - 'config/zel_production_ai_admission_materializer_v1.json'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'backend/production/zel_production_economic_edge_router_v1.py'
       - 'config/zel_production_economic_edge_router_v1.json'
       - 'backend/production/zel_production_paper_runner_v1.sh'
       - 'tests/test_zel_production_ai_proposal_layer_v1.py'
+      - 'tests/test_zel_production_ai_admission_materializer_v1.py'
       - 'tests/test_zel_production_economic_edge_router_v1.py'
       - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
   schedule:
@@ -44,10 +48,12 @@ jobs:
           python -m py_compile \
             backend/production/zel_production_ai_proposal_layer_v1.py \
             backend/production/zel_production_source_acquisition_v1.py \
+            backend/production/zel_production_ai_admission_materializer_v1.py \
             backend/production/zel_production_economic_edge_router_v1.py
           bash -n backend/production/zel_production_paper_runner_v1.sh
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_ai_admission_materializer_v1.py \
             tests/test_zel_production_economic_edge_router_v1.py \
             tests/test_zel_production_economic_edge_dynamic_v1.py
       - name: Verify proposal-only AI authority boundary
@@ -85,6 +91,7 @@ jobs:
           for forbidden in (
               'zel_production_ai_proposal_layer_v1',
               'zel_production_source_acquisition_v1',
+              'zel_production_ai_admission_materializer_v1',
               'GEMINI_API_KEY',
               'generativelanguage.googleapis.com',
           ):
@@ -124,7 +131,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded Explore proposal and source-resolution tick outside PAPER daemon
+      - name: Run one bounded Explore proposal, source-resolution and admission-materialization tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -142,29 +149,31 @@ jobs:
           python3 -m backend.production.zel_production_ai_proposal_layer_v1 --tick >/tmp/zel-ai-explore-proposal.json
           python3 -m backend.production.zel_production_source_acquisition_v1 >/tmp/zel-ai-explore-source-acquisition.json
           python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-after.json
+          python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-explore-admission.json
           python3 - <<'PY'
           import json
           from pathlib import Path
           proposal=json.loads(Path('/tmp/zel-ai-explore-proposal.json').read_text())
           acquisition=json.loads(Path('/tmp/zel-ai-explore-source-acquisition.json').read_text())
+          admission=json.loads(Path('/tmp/zel-ai-explore-admission.json').read_text())
           allowed={
-            'HOLD_AI_PROPOSAL_NOT_REQUIRED',
-            'HOLD_AI_PROPOSAL_FACTORY_MISSING',
-            'HOLD_AI_PROPOSAL_CALLER_UNAVAILABLE',
-            'HOLD_AI_PROPOSAL_CALL_FAILED',
-            'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED',
-            'HOLD_AI_PROPOSAL_NO_CANDIDATE',
+            'HOLD_AI_PROPOSAL_NOT_REQUIRED','HOLD_AI_PROPOSAL_FACTORY_MISSING',
+            'HOLD_AI_PROPOSAL_CALLER_UNAVAILABLE','HOLD_AI_PROPOSAL_CALL_FAILED',
+            'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED','HOLD_AI_PROPOSAL_NO_CANDIDATE',
             'PASS_AI_PROPOSAL_SOURCE_READY',
           }
           assert proposal['state'] in allowed
           if proposal['state']=='HOLD_AI_PROPOSAL_NOT_REQUIRED':
               assert proposal.get('written') is False
           assert acquisition['state'] in {
-              'HOLD_SOURCE_ACQUISITION_NO_AI_PROPOSAL',
-              'HOLD_SOURCE_ACQUISITION_REGISTRY_MISSING',
-              'HOLD_SOURCE_ACQUISITION_NO_CANDIDATES',
-              'HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED',
+              'HOLD_SOURCE_ACQUISITION_NO_AI_PROPOSAL','HOLD_SOURCE_ACQUISITION_REGISTRY_MISSING',
+              'HOLD_SOURCE_ACQUISITION_NO_CANDIDATES','HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED',
               'PASS_SOURCE_ACQUISITION_PROPOSALS_SOURCE_READY',
+          }
+          assert admission['state'] in {
+              'HOLD_AI_ADMISSION_NO_SOURCE_READY_PROPOSAL','HOLD_AI_ADMISSION_REGISTRY_MISSING',
+              'HOLD_AI_ADMISSION_TEMPLATE_REQUIRED','HOLD_AI_ADMISSION_SOURCE_BINDING_REQUIRED',
+              'PASS_AI_ADMISSION_CONTRACTS_FROZEN',
           }
           receipt=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
           if receipt.exists():
@@ -177,6 +186,6 @@ jobs:
               assert row.get('exchange_order_submitted') is False
               assert row.get('source_code_mutation_applied') is False
               assert row.get('self_modification_applied') is False
-          print(json.dumps({'proposal':proposal,'acquisition':acquisition},sort_keys=True))
+          print(json.dumps({'proposal':proposal,'acquisition':acquisition,'admission':admission},sort_keys=True))
           PY
           REMOTE

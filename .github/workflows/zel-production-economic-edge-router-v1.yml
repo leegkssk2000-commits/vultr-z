@@ -1,0 +1,82 @@
+name: ZEL Production Economic Edge Router V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_economic_edge_router_v1.py'
+      - 'config/zel_production_economic_edge_router_v1.json'
+      - 'tests/test_zel_production_economic_edge_router_v1.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - '.github/workflows/zel-squeeze-admission-auto-handoff-v1.yml'
+      - '.github/workflows/zel-production-economic-edge-router-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and unit test router
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_economic_edge_router_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_economic_edge_router_v1.py
+      - name: Prove current factory exhausts source-ready catalog fail-closed
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          import json
+          from pathlib import Path
+          from backend.production.zel_production_economic_edge_router_v1 import route_tick
+          policy=json.loads(Path('config/zel_production_economic_edge_router_v1.json').read_text())
+          factory=json.loads(Path('config/zel_production_alpha_factory_v1.json').read_text())
+          bootstrap={
+              'schema_version':'zel.production_performance_bootstrap.v1',
+              'state':'HOLD_BOOTSTRAP_ADMISSION_REJECTED_ROUTE_CHANGE',
+              'action':'hold',
+              'exchange_order_submitted':False,
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+          }
+          r=route_tick(policy,factory=factory,bootstrap=bootstrap,now_ms=1)
+          assert r['state']=='HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED',r
+          assert r['acquisition_queue']==[]
+          by={x['family_id']:x for x in r['blockers']}
+          assert by['carry_flow']['classification']=='SOURCE_UNBOUND'
+          assert by['carry_flow']['missing_source_fields']==['flow_source_bound']
+          assert by['trend_momentum']['classification']=='TERMINAL_REJECT'
+          assert by['relative_value_psa']['classification']=='TERMINAL_REJECT'
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          print('PASS_CURRENT_FACTORY_CATALOG_EXHAUSTED_FAIL_CLOSED')
+          PY
+      - name: Prove runner ordering and no network or order path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          router=Path('backend/production/zel_production_economic_edge_router_v1.py').read_text()
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          handoff=Path('.github/workflows/zel-squeeze-admission-auto-handoff-v1.yml').read_text()
+          assert 'requests' not in router and 'urllib' not in router and 'http://' not in router and 'https://' not in router
+          assert 'submit_order' not in router and 'exchange_order_submitted' in router
+          a=runner.index('zel_production_performance_bootstrap_v1')
+          b=runner.index('zel_production_economic_edge_router_v1')
+          c=runner.index('zel_production_alpha_signal_runner_v1')
+          d=runner.index('zel_production_paper_source_adapter_v1')
+          e=runner.index('zel_production_paper_loop_v1')
+          f=runner.index('zel_production_improvement_controller_v1')
+          assert a < b < c < d < e < f
+          assert '\n  push:' not in handoff
+          assert 'workflow_run:' in handoff
+          assert "800544aeaa0ec2add5c223e1fa05f46702ed25cb" in handoff
+          print('PASS_EDGE_ROUTER_ORDER_AND_HANDOFF_CLEANUP')
+          PY

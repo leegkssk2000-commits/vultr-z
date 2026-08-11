@@ -10,10 +10,12 @@ from typing import Any, Dict
 from fastapi import Body, FastAPI, HTTPException
 
 from backend.api.alimi import router as alimi_router
+from backend.production.zel_production_auto_cycle_supervisor_v1 import ProductionAutoCycleSupervisor
 from backend.production.zel_production_owner_binding_v1 import ProductionEventLedger, run_cycle
 
 DEFAULT_LEDGER = "/home/zel/apps/zel/ledger/production_events_v1.sqlite"
 DEFAULT_SNAPSHOT = "/home/zel/apps/zel/ledger/production_snapshot_v1.json"
+DEFAULT_SUPERVISOR_STATE = "/home/zel/apps/zel/ledger/production_auto_cycle_supervisor_v1.sqlite"
 
 
 def ledger_path() -> Path:
@@ -22,6 +24,10 @@ def ledger_path() -> Path:
 
 def snapshot_path() -> Path:
     return Path(os.environ.get("ZEL_PRODUCTION_SNAPSHOT_PATH", DEFAULT_SNAPSHOT))
+
+
+def supervisor_path() -> Path:
+    return Path(os.environ.get("ZEL_PRODUCTION_SUPERVISOR_PATH", DEFAULT_SUPERVISOR_STATE))
 
 
 def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
@@ -66,12 +72,13 @@ def _read_snapshot() -> Dict[str, Any]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ZEL Production Runtime", version="1.0.0")
+    app = FastAPI(title="ZEL Production Runtime", version="1.1.0")
     app.include_router(alimi_router)
 
     @app.get("/api/production/health", include_in_schema=False)
     def production_health() -> Dict[str, Any]:
         ledger = ProductionEventLedger(ledger_path())
+        supervisor = ProductionAutoCycleSupervisor(supervisor_path())
         snap = _read_snapshot()
         return {
             "ok": True,
@@ -79,8 +86,12 @@ def create_app() -> FastAPI:
             "goal": "COMPLETE_AUTONOMOUS_TRADING_PROGRAM",
             "ledger_event_count": ledger.count(),
             "snapshot_state": snap["state"],
+            "auto_cycle_supervisor": "READY",
+            "supervisor_reason_counts": supervisor.store.reason_counts(),
             "live_execution": "BLOCKED",
             "exchange_order_submission": False,
+            "strategy_mutation_applied": False,
+            "self_modification_applied": False,
             "no_validated_alpha_behavior": "HOLD_NO_ORDER",
             "ts": time.time(),
         }
@@ -105,6 +116,19 @@ def create_app() -> FastAPI:
             "receipt_sha256": result["receipt_sha256"],
             "exchange_order_submitted": False,
         }
+
+    @app.post("/api/production/auto-cycle", include_in_schema=False)
+    def production_auto_cycle(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        ledger = ProductionEventLedger(ledger_path())
+        supervisor = ProductionAutoCycleSupervisor(supervisor_path())
+        receipt = supervisor.supervise(payload, ledger)
+        result = receipt.get("result")
+        if isinstance(result, dict):
+            snapshot = result.get("snapshot")
+            canonical = snapshot.get("canonical") if isinstance(snapshot, dict) else None
+            if isinstance(canonical, dict):
+                _atomic_json_write(snapshot_path(), canonical)
+        return receipt
 
     @app.get("/api/production/snapshot", include_in_schema=False)
     def production_snapshot() -> Dict[str, Any]:

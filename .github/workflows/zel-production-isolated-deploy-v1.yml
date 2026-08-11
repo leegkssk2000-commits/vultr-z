@@ -44,16 +44,21 @@ jobs:
       - name: Validate deployment contract
         run: |
           python -m py_compile ops/zel_production_vps_preflight_v1.py
+          python -m py_compile \
+            backend/production/zel_production_trend_momentum_v1.py \
+            backend/production/zel_production_alpha_signal_runner_v1.py
           bash -n backend/production/zel_production_paper_runner_v1.sh
           python - <<'PY'
           from pathlib import Path
           unit=Path('deploy/systemd/zel-production-paper-loop-v1.service').read_text()
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
           assert 'WorkingDirectory=/home/z/zel-production-current' in unit
           assert 'PYTHONPATH=/home/z/zel-production-current' in unit
           assert 'ExecStart=/bin/bash /home/z/zel-production-current/backend/production/zel_production_paper_runner_v1.sh' in unit
           assert 'ReadWritePaths=/home/z/z/ledger' in unit
           assert 'EnvironmentFile=-/etc/zel/production-paper-loop.env' in unit
           assert 'RestartPreventExitStatus=2' in unit
+          assert runner.index('zel_production_alpha_signal_runner_v1') < runner.index('zel_production_paper_source_adapter_v1')
           print('PASS_ISOLATED_DEPLOY_CONTRACT')
           PY
 
@@ -78,6 +83,8 @@ jobs:
           files=[
             'backend/production/zel_production_risk_sizing_v1.py',
             'backend/production/zel_production_bingx_freshness_v1.py',
+            'backend/production/zel_production_trend_momentum_v1.py',
+            'backend/production/zel_production_alpha_signal_runner_v1.py',
             'backend/production/zel_production_paper_account_state_v1.py',
             'backend/production/zel_production_active_alpha_adapter_v1.py',
             'backend/production/zel_production_paper_source_adapter_v1.py',
@@ -85,6 +92,7 @@ jobs:
             'backend/production/zel_production_paper_loop_v1.py',
             'backend/production/zel_production_improvement_controller_v1.py',
             'backend/production/zel_production_paper_runner_v1.sh',
+            'config/zel_production_alpha_factory_v1.json',
             'config/zel_production_risk_sizing_v1.json',
             'config/zel_production_paper_account_v1.json',
             'config/zel_production_active_alpha_v1.json',
@@ -113,7 +121,7 @@ jobs:
             /tmp/zel-production-release.tgz \
             /tmp/zel-production-expected.json \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
-      - name: Install isolated release and run no-alpha smoke
+      - name: Install isolated release and verify active mode
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
@@ -122,6 +130,11 @@ jobs:
           RELEASE="$RELEASE_BASE/${{ github.sha }}"
           CURRENT=/home/z/zel-production-current
           LEDGER=/home/z/z/ledger
+          AUTHORITY="$LEDGER/production_alpha_authority_v1.json"
+          EVIDENCE="$LEDGER/production_improvement_evidence_v1.json"
+          INPUT="$LEDGER/production_paper_input_v1.json"
+          EVENTS="$LEDGER/production_events_v1.sqlite"
+          PRODUCER_RECEIPT="$LEDGER/production_alpha_signal_runner_v1.json"
           SMOKE="/tmp/zel-production-smoke-${{ github.run_id }}"
           EXPECTED=/tmp/zel-production-expected.json
           RECEIPT=/tmp/zel-production-deploy-receipt.json
@@ -134,6 +147,8 @@ jobs:
           PYTHONPATH="$RELEASE" python3 -m py_compile \
             backend/production/zel_production_risk_sizing_v1.py \
             backend/production/zel_production_bingx_freshness_v1.py \
+            backend/production/zel_production_trend_momentum_v1.py \
+            backend/production/zel_production_alpha_signal_runner_v1.py \
             backend/production/zel_production_paper_account_state_v1.py \
             backend/production/zel_production_active_alpha_adapter_v1.py \
             backend/production/zel_production_paper_source_adapter_v1.py \
@@ -141,6 +156,12 @@ jobs:
             backend/production/zel_production_paper_loop_v1.py \
             backend/production/zel_production_improvement_controller_v1.py
           PYTHONPATH="$RELEASE" python3 backend/production/zel_production_pipeline_audit_v2.py --repo-root "$RELEASE" --out "$SMOKE/pipeline-audit.json"
+
+          ZEL_PRODUCTION_ALPHA_AUTHORITY_PATH="$SMOKE/missing-authority.json" \
+          ZEL_PRODUCTION_ACTIVE_ALPHA_SIGNAL_PATH="$SMOKE/signal.json" \
+          ZEL_PRODUCTION_ALPHA_SIGNAL_RUNNER_RECEIPT_PATH="$SMOKE/alpha-runner.json" \
+          PYTHONPATH="$RELEASE" \
+          python3 -m backend.production.zel_production_alpha_signal_runner_v1
 
           ZEL_PRODUCTION_ALPHA_AUTHORITY_PATH="$SMOKE/missing-authority.json" \
           ZEL_PRODUCTION_PAPER_INPUT_PATH="$SMOKE/input.json" \
@@ -159,6 +180,10 @@ jobs:
           import json, sqlite3
           from pathlib import Path
           smoke=Path('$SMOKE')
+          producer=json.loads((smoke/'alpha-runner.json').read_text())
+          assert producer['state']=='HOLD_NO_EXECUTABLE_ALPHA'
+          assert producer['network_called'] is False and producer['signal_written'] is False
+          assert not (smoke/'signal.json').exists()
           inp=json.loads((smoke/'input.json').read_text())
           assert inp['source_state']=='NO_VALIDATED_ALPHA'
           assert inp['signal']=='FLAT' and inp['risk_state']=='HOLD'
@@ -167,7 +192,7 @@ jobs:
           count=db.execute('SELECT COUNT(*) FROM trade_events').fetchone()[0]
           db.close()
           assert count==0
-          print('PASS_NO_ALPHA_ZERO_EVENT_SMOKE')
+          print('PASS_PRODUCER_NO_ALPHA_ZERO_EVENT_SMOKE')
           PY
 
           LINK_TMP=/home/z/.zel-production-current.new
@@ -188,8 +213,12 @@ jobs:
 
           UNIT_INSTALLED=false
           ENV_READY=false
+          SAFE_IDLE=false
           SERVICE_ENABLED=false
           SERVICE_ACTIVE=false
+          PRODUCER_SAFE_IDLE_VERIFIED=false
+          LEDGER_EVENT_DELTA=0
+
           if [ "$PRIVILEGED" = true ]; then
             $INSTALL -m 0644 "$RELEASE/deploy/systemd/zel-production-paper-loop-v1.service" /etc/systemd/system/zel-production-paper-loop-v1.service
             $SYSTEMCTL daemon-reload
@@ -215,25 +244,111 @@ jobs:
           PYENV
           fi
 
+          SAFE_IDLE=$(PYTHONPATH="$RELEASE" python3 - <<PY
+          import json
+          from pathlib import Path
+          from backend.production.zel_production_active_alpha_adapter_v1 import authority_is_executable
+          authority=Path('$AUTHORITY')
+          evidence=Path('$EVIDENCE')
+          executable=False
+          if authority.exists():
+              try:
+                  row=json.loads(authority.read_text())
+                  executable=isinstance(row,dict) and authority_is_executable(row)
+              except Exception:
+                  executable=True
+          print('true' if (not executable and not evidence.exists()) else 'false')
+          PY
+          )
+
+          count_events() {
+            python3 - "$EVENTS" <<'PY'
+          import sqlite3,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          if not p.exists():
+              print(0); raise SystemExit
+          db=sqlite3.connect(p)
+          try:
+              found=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_events'").fetchone()
+              print(db.execute('SELECT COUNT(*) FROM trade_events').fetchone()[0] if found else 0)
+          finally:
+              db.close()
+          PY
+          }
+
+          BEFORE=$(count_events)
           if [ "$PRIVILEGED" = true ] && [ "$ENV_READY" = true ]; then
-            $SYSTEMCTL enable --now zel-production-paper-loop-v1.service
-            [ "$($SYSTEMCTL is-enabled zel-production-paper-loop-v1.service)" = enabled ] && SERVICE_ENABLED=true
-            [ "$($SYSTEMCTL is-active zel-production-paper-loop-v1.service)" = active ] && SERVICE_ACTIVE=true
+            $SYSTEMCTL enable zel-production-paper-loop-v1.service >/dev/null
+            $SYSTEMCTL restart zel-production-paper-loop-v1.service
+            sleep 8
+          elif [ "$PRIVILEGED" = true ] && [ "$SAFE_IDLE" = true ]; then
+            # SSOT is still intentionally empty, but no executable alpha/evidence
+            # exists. Restart onto the new release and prove the producer remains
+            # O(1) HOLD with zero network and zero trade-event delta.
+            $SYSTEMCTL enable zel-production-paper-loop-v1.service >/dev/null
+            $SYSTEMCTL restart zel-production-paper-loop-v1.service
+            sleep 8
+            AFTER=$(count_events)
+            LEDGER_EVENT_DELTA=$((AFTER-BEFORE))
+            PYTHONPATH="$RELEASE" python3 - <<PY
+          import json
+          from pathlib import Path
+          producer=json.loads(Path('$PRODUCER_RECEIPT').read_text())
+          inp=json.loads(Path('$INPUT').read_text())
+          assert producer['state']=='HOLD_NO_EXECUTABLE_ALPHA'
+          assert producer['network_called'] is False
+          assert producer['signal_written'] is False
+          assert producer['exchange_order_submitted'] is False
+          assert inp['source_state']=='NO_VALIDATED_ALPHA'
+          assert inp['signal']=='FLAT' and inp['risk_state']=='HOLD'
+          assert 'price' not in inp and 'qty' not in inp
+          assert int('$LEDGER_EVENT_DELTA')==0
+          PY
+            PRODUCER_SAFE_IDLE_VERIFIED=true
+          elif [ "$PRIVILEGED" = true ]; then
+            # Never keep an old release running when SSOT is unbound and active
+            # authority/evidence exists. Fail closed instead.
+            $SYSTEMCTL stop zel-production-paper-loop-v1.service || true
+          fi
+
+          if [ "$PRIVILEGED" = true ]; then
+            [ "$($SYSTEMCTL is-enabled zel-production-paper-loop-v1.service 2>/dev/null || true)" = enabled ] && SERVICE_ENABLED=true
+            [ "$($SYSTEMCTL is-active zel-production-paper-loop-v1.service 2>/dev/null || true)" = active ] && SERVICE_ACTIVE=true
+          fi
+
+          if [ "$ENV_READY" = true ] && [ "$SERVICE_ACTIVE" != true ]; then
+            echo 'PRODUCTION_SERVICE_EXPECTED_ACTIVE_WITH_SSOT' >&2
+            exit 4
+          fi
+          if [ "$SAFE_IDLE" = true ] && [ "$ENV_READY" != true ] && [ "$PRODUCER_SAFE_IDLE_VERIFIED" != true ]; then
+            [ "$PRIVILEGED" != true ] || $SYSTEMCTL stop zel-production-paper-loop-v1.service || true
+            echo 'SAFE_IDLE_NEW_RELEASE_NOT_VERIFIED' >&2
+            exit 5
           fi
 
           PYTHONPATH="$RELEASE" python3 "$RELEASE/ops/zel_production_vps_preflight_v1.py" \
             --root "$CURRENT" --ledger "$LEDGER" --manifest "$EXPECTED" --out "$PREFLIGHT"
 
-          export UNIT_INSTALLED ENV_READY SERVICE_ENABLED SERVICE_ACTIVE
+          export UNIT_INSTALLED ENV_READY SAFE_IDLE SERVICE_ENABLED SERVICE_ACTIVE PRODUCER_SAFE_IDLE_VERIFIED LEDGER_EVENT_DELTA
           python3 - <<PY
           import json, os
           from pathlib import Path
           pre=json.loads(Path('$PREFLIGHT').read_text())
           flag=lambda name: os.environ.get(name,'false').lower()=='true'
+          env_ready=flag('ENV_READY')
+          safe_idle=flag('SAFE_IDLE')
           service_active=flag('SERVICE_ACTIVE')
+          producer_verified=flag('PRODUCER_SAFE_IDLE_VERIFIED')
+          if service_active and env_ready:
+              state='PASS_CODE_DEPLOYED_SERVICE_ACTIVE'
+          elif service_active and safe_idle and producer_verified:
+              state='PASS_CODE_DEPLOYED_SAFE_IDLE_ACTIVE'
+          else:
+              state='HOLD_CODE_DEPLOYED_SERVICE_NOT_ACTIVE'
           receipt={
-            'schema_version':'zel.production_isolated_deploy.v1',
-            'state':'PASS_CODE_DEPLOYED_SERVICE_ACTIVE' if service_active else 'HOLD_CODE_DEPLOYED_SERVICE_NOT_ACTIVE',
+            'schema_version':'zel.production_isolated_deploy.v2',
+            'state':state,
             'master_sha':'${{ github.sha }}',
             'release':'$RELEASE',
             'current':'$CURRENT',
@@ -241,7 +356,10 @@ jobs:
             'no_alpha_smoke_pass':True,
             'zero_trade_event_smoke_pass':True,
             'unit_installed':flag('UNIT_INSTALLED'),
-            'env_ssot_ready':flag('ENV_READY'),
+            'env_ssot_ready':env_ready,
+            'safe_idle':safe_idle,
+            'producer_safe_idle_verified':producer_verified,
+            'ledger_event_delta':int(os.environ.get('LEDGER_EVENT_DELTA','0')),
             'service_enabled':flag('SERVICE_ENABLED'),
             'service_active':service_active,
             'preflight_state':pre['state'],
@@ -270,9 +388,17 @@ jobs:
           assert r['zero_trade_event_smoke_pass'] is True
           assert r['exchange_order_submitted'] is False
           assert r['live_trade_authority']=='BLOCKED'
+          if r['safe_idle'] and not r['env_ssot_ready']:
+              assert r['state']=='PASS_CODE_DEPLOYED_SAFE_IDLE_ACTIVE'
+              assert r['producer_safe_idle_verified'] is True
+              assert r['ledger_event_delta']==0
+              assert r['service_active'] is True and r['service_enabled'] is True
           print('STATE='+r['state'])
           print('ENV_READY='+str(r['env_ssot_ready']))
+          print('SAFE_IDLE='+str(r['safe_idle']))
+          print('PRODUCER_SAFE_IDLE_VERIFIED='+str(r['producer_safe_idle_verified']))
           print('SERVICE_ACTIVE='+str(r['service_active']))
+          print('LEDGER_DELTA='+str(r['ledger_event_delta']))
           print('BLOCKERS='+','.join(r['preflight_blockers']))
           PY
       - uses: actions/upload-artifact@v4

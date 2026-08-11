@@ -111,4 +111,4 @@ def test_source_ready_unknown_signature_holds_template_required() -> None:
 def test_no_proposal_is_o1_hold() -> None:
     out=materialize_tick(policy(),proposal=None,source_registry=source_registry(),template_registry=templates(),now_ms=5)
     assert out['state']=='HOLD_AI_ADMISSION_NO_SOURCE_READY_PROPOSAL'
-    assert out['contract_count']==0
+    assert out['contracts']==[]

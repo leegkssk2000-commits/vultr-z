@@ -1,0 +1,139 @@
+name: ZEL P3 Flow Provenance Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/p3_flow_source_provenance_audit.py'
+      - '.github/workflows/zel-p3-flow-provenance-audit-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-p3-flow-provenance-audit-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flow-provenance:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile and assert discovery-only contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/p3_flow_source_provenance_audit.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/research/p3_flow_source_provenance_audit.py').read_text()
+          for token in (
+              'synthetic_proxy_allowed',
+              'raw_market_values_emitted',
+              'runtime_mutated',
+              'service_state_mutated',
+              'selection_authority',
+              'promotion_authority',
+              'execution_authority',
+              'order_authority',
+          ):
+              assert token in p
+          assert 'binding_allowed' in p
+          assert 'BLOCKED' in p and 'NONE' in p
+          print('PASS_FLOW_PROVENANCE_DISCOVERY_ONLY_CONTRACT')
+          PY
+          mkdir -p out ~/.ssh
+
+      - name: Local repository flow provenance smoke
+        run: |
+          python backend/research/p3_flow_source_provenance_audit.py --root . --out out/local_flow_provenance.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/local_flow_provenance.json'))
+          assert r['schema_version']=='zel.p3.flow_source_provenance_audit.v1'
+          assert r['binding_allowed'] is False
+          assert r['synthetic_proxy_allowed'] is False
+          assert r['raw_market_values_emitted'] is False
+          assert r['runtime_mutated'] is False
+          assert r['service_state_mutated'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          print('PASS_LOCAL_FLOW_PROVENANCE',r['state'],r['flow_match_count'],r['endpoint_backed_candidate_count'])
+          PY
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run bounded VPS flow provenance audit read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-p3-flow-provenance-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          echo "$remote" > out/remote_path.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes backend/research/p3_flow_source_provenance_audit.py "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "G0_ROOT=/home/z/z nice -n 19 ionice -c3 /usr/bin/python3 '$remote' --out /tmp/p3-flow-provenance.json >/dev/null && cat /tmp/p3-flow-provenance.json && rm -f /tmp/p3-flow-provenance.json" \
+            > out/vps_flow_provenance.json
+          python -m json.tool out/vps_flow_provenance.json >/dev/null
+
+      - name: Verify VPS receipt and print provenance only
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/vps_flow_provenance.json'))
+          assert r['schema_version']=='zel.p3.flow_source_provenance_audit.v1'
+          assert r['binding_allowed'] is False
+          assert r['synthetic_proxy_allowed'] is False
+          assert r['raw_market_values_emitted'] is False
+          assert r['runtime_mutated'] is False and r['service_state_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          print('P3_FLOW_STATE',r['state'])
+          print('P3_FLOW_MATCH_COUNT',r['flow_match_count'])
+          print('P3_FLOW_ENDPOINT_BACKED_COUNT',r['endpoint_backed_candidate_count'])
+          print('P3_FLOW_ENDPOINTS',json.dumps(r['unique_endpoint_literals_in_flow_matches'],sort_keys=True))
+          for row in r['flow_matches']:
+              print('P3_FLOW_MATCH',row['path'],row['sha256'],','.join(row['flow_tags']),json.dumps(row['endpoint_literals'],sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-p3-flow-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/local_flow_provenance.json
+            out/vps_flow_provenance.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup remote probe
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f '$remote' /tmp/p3-flow-provenance.json" 2>/dev/null || true
+          rm -f ~/.ssh/vps_key

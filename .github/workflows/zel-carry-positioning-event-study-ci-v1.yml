@@ -1,0 +1,98 @@
+name: ZEL Carry Positioning Event Study CI V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/carry_positioning_event_study_v1.py'
+      - 'config/zel_production_carry_positioning_v1.json'
+      - 'config/zel_production_alpha_factory_v1.json'
+      - 'config/zel_production_economic_edge_router_v1.json'
+      - 'tests/test_carry_positioning_event_study_v1.py'
+      - '.github/workflows/zel-carry-positioning-event-study-auto-v1.yml'
+      - '.github/workflows/zel-carry-positioning-event-study-ci-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run deterministic event-study tests
+        run: |
+          python -m pip install --disable-pip-version-check pytest pyyaml
+          python -m py_compile backend/research/carry_positioning_event_study_v1.py
+          PYTHONPATH=. pytest -q tests/test_carry_positioning_event_study_v1.py
+      - name: Verify frozen mechanism and cost derivation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('config/zel_production_carry_positioning_v1.json').read_text())
+          assert c['state']=='FROZEN_PROSPECTIVE_EVENT_STUDY_PENDING_COVERAGE'
+          assert c['family']=='carry_positioning'
+          assert c['mechanism']['parameter_search'] is False
+          assert c['mechanism']['numeric_signal_thresholds']==[]
+          assert c['mechanism']['event_anchor']=='native premiumIndex.nextFundingTime'
+          assert c['mechanism']['temporal_durability_split']=='FIRST_HALF_VS_SECOND_HALF_BY_ORDERED_NATIVE_FUNDING_EVENT_GROUP'
+          assert c['coverage_contract']['source_pull_request']==659
+          assert c['coverage_contract']['source_window_pull_request']==605
+          assert c['coverage_contract']['required_capture_span_ms']==1814340000
+          x=c['execution_cost_authority']
+          expected=2*x['taker_fee_pct_one_way']*100 + 2*x['slippage_floor_bps_one_way']
+          assert abs(expected-x['round_trip_execution_cost_bps']) < 1e-9
+          assert x['source_pull_request']==570 and x['source_workflow_run']==30875649505 and x['source_artifact']==8879430753
+          assert c['economic_gate']['survivor_authority_from_event_study'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_CARRY_POSITIONING_FROZEN_CONTRACT')
+          PY
+      - name: Prove current production factory separates history and flow blockers
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          import json
+          from pathlib import Path
+          from backend.production.zel_production_economic_edge_router_v1 import route_tick
+          policy=json.loads(Path('config/zel_production_economic_edge_router_v1.json').read_text())
+          factory=json.loads(Path('config/zel_production_alpha_factory_v1.json').read_text())
+          bootstrap={
+            'schema_version':'zel.production_performance_bootstrap.v1',
+            'state':'HOLD_BOOTSTRAP_ADMISSION_REJECTED_ROUTE_CHANGE',
+            'action':'hold','exchange_order_submitted':False,
+            'order_authority':'BLOCKED','live_trade_authority':'BLOCKED'
+          }
+          r=route_tick(policy,factory=factory,bootstrap=bootstrap,now_ms=1)
+          assert r['state']=='HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED',r
+          by={x['family_id']:x for x in r['blockers']}
+          assert by['carry_positioning']['classification']=='SOURCE_UNBOUND'
+          assert by['carry_positioning']['missing_source_fields']==['history_coverage_bound']
+          assert by['carry_flow']['classification']=='SOURCE_UNBOUND'
+          assert by['carry_flow']['missing_source_fields']==['flow_source_bound']
+          assert by['trend_momentum']['classification']=='TERMINAL_REJECT'
+          assert by['relative_value_psa']['classification']=='TERMINAL_REJECT'
+          print('PASS_CARRY_POSITIONING_FACTORY_ROUTER_BLOCKERS')
+          PY
+      - name: Verify auto listener is schedule-result bound and authority free
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/zel-carry-positioning-event-study-auto-v1.yml').read_text()
+          assert 'workflow_run:' in text
+          assert 'ZEL P3 Carry Flow Prospective Activation V1' in text
+          assert "github.event.workflow_run.event == 'schedule'" in text
+          assert "head_branch == 'master'" in text
+          assert 'production_carry_positioning_event_study_v1.json' in text
+          assert 'order_authority' in text and 'BLOCKED' in text
+          for forbidden in ('submit_order','real_order_enabled=True','source_code_mutation'):
+              assert forbidden not in text
+          print('PASS_CARRY_POSITIONING_AUTO_LISTENER_CONTRACT')
+          PY

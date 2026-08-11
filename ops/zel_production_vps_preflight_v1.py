@@ -168,7 +168,7 @@ def audit(preferred_root: Path, ledger_path: Path, manifest_path: Path, env_path
         "schema_version": SCHEMA,
         "state": "PASS_VPS_PRODUCTION_PAPER_READY" if not blockers else "HOLD_VPS_PRODUCTION_DEPLOYMENT_REQUIRED",
         "preferred_root": str(preferred_root), "selected_root": str(root), "ledger_path": str(ledger_path),
-        "preferred_root_exact_match_selected": bool(preferred.is_dir() and preferred.resolve() == root),
+        "preferred_root_exact_match_selected": bool(preferred_root.is_dir() and preferred_root.resolve() == root),
         "root_candidates": root_candidates, "source_file_count": len(file_results), "source_parity": parity_ok, "files": file_results,
         "env": {"path_exists": env_exists, "required_key_count": len(REQUIRED_ENV_KEYS), "missing_keys": env_missing, "empty_keys": env_empty, "values_redacted": True, "ready": env_ready},
         "ledger_writable": ledger_ready,

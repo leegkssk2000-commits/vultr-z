@@ -7,7 +7,7 @@ on:
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
       - 'config/zel_production_ai_admission_materializer_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
-      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
       - 'tests/test_zel_production_ai_admission_materializer_v1.py'
       - '.github/workflows/zel-production-ai-admission-materializer-v1.yml'
 
@@ -53,18 +53,20 @@ jobs:
           assert 'urllib' not in src and 'https://' not in src and 'submit_order' not in src
           print('PASS_DECLARATIVE_ADMISSION_AUTHORITY_BOUNDARY')
           PY
-      - name: Verify Explore-to-admission ordering
+      - name: Verify hourly Explore-to-admission ordering and PAPER isolation
         run: |
           python - <<'PY'
           from pathlib import Path
-          r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
-          first_router=r.index('zel_production_economic_edge_router_v1')
-          proposal=r.index('zel_production_ai_proposal_layer_v1')
-          resolver=r.index('zel_production_source_acquisition_v1')
-          second_router=r.index('zel_production_economic_edge_router_v1',first_router+1)
-          admission=r.index('zel_production_ai_admission_materializer_v1')
-          alpha=r.index('zel_production_alpha_signal_runner_v1')
-          assert first_router < proposal < resolver < second_router < admission < alpha
-          assert r.count('zel_production_ai_admission_materializer_v1')==1
-          print('PASS_EXPLORE_TO_FROZEN_ADMISSION_SAME_CYCLE')
+          wf=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
+          first_router=wf.index('zel_production_economic_edge_router_v1 --tick')
+          proposal=wf.index('zel_production_ai_proposal_layer_v1 --tick')
+          resolver=wf.index('zel_production_source_acquisition_v1')
+          second_router=wf.index('zel_production_economic_edge_router_v1 --tick',first_router+1)
+          admission=wf.index('zel_production_ai_admission_materializer_v1')
+          assert first_router < proposal < resolver < second_router < admission
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          assert 'zel_production_ai_admission_materializer_v1' not in runner
+          assert 'zel_production_ai_proposal_layer_v1' not in runner
+          assert 'zel_production_source_acquisition_v1' not in runner
+          print('PASS_ASYNC_EXPLORE_TO_FROZEN_ADMISSION_AND_PAPER_ISOLATION')
           PY

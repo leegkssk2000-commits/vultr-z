@@ -35,6 +35,11 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("SURVIVOR_POOL_TARGET_MUST_BE_3_PLUS_2")
     if policy.get("distinct_family_required") is not True:
         raise RuntimeError("SURVIVOR_POOL_DISTINCT_FAMILY_REQUIRED")
+    if policy.get("ranking_method") != "LEXICOGRAPHIC_NO_WEIGHT":
+        raise RuntimeError("SURVIVOR_POOL_RANKING_METHOD_INVALID")
+    expected = ["net_expectancy_desc", "profit_factor_desc", "max_dd_pct_asc", "net_pnl_desc", "trade_count_desc"]
+    if policy.get("ranking_fields") != expected:
+        raise RuntimeError("SURVIVOR_POOL_RANKING_FIELDS_INVALID")
     for key in ("candidate_catalog_path", "legacy_incumbent_registry_path", "pool_state_path", "pool_event_path"):
         if not str(policy.get(key) or "").strip():
             raise RuntimeError(f"SURVIVOR_POOL_PATH_MISSING:{key}")
@@ -54,7 +59,6 @@ def _metrics(row: Mapping[str, Any]) -> dict[str, float]:
     if not isinstance(metrics, Mapping):
         raise RuntimeError("SURVIVOR_POOL_METRICS_MISSING")
     return {
-        "score": _f(metrics.get("score"), "score"),
         "net_expectancy": _f(metrics.get("net_expectancy"), "net_expectancy"),
         "profit_factor": _f(metrics.get("profit_factor"), "profit_factor"),
         "net_pnl": _f(metrics.get("net_pnl"), "net_pnl"),
@@ -131,14 +135,16 @@ def _from_registry(registry: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return _validated_candidate(synthetic, source="LEGACY_INCUMBENT_REGISTRY")
 
 
-def _rank_key(row: Mapping[str, Any]) -> tuple[float, float, float, float, float, float]:
+def _rank_key(row: Mapping[str, Any]) -> tuple[float, float, float, float, float]:
+    # Cross-family ordering deliberately avoids the generic improvement `score`:
+    # that field is not governed by a repo-wide formula. This tuple is explicit,
+    # unweighted and stable: higher expectancy/PF, lower DD, higher net PnL/sample.
     m = row["metrics"]
     return (
-        float(m["score"]),
         float(m["net_expectancy"]),
         float(m["profit_factor"]),
-        float(m["net_pnl"]),
         -float(m["max_dd_pct"]),
+        float(m["net_pnl"]),
         float(m["trade_count"]),
     )
 
@@ -206,6 +212,8 @@ def pool_tick(
         "verified_family_count": len(ranked),
         "active": active,
         "reserve": reserve,
+        "ranking_method": cfg["ranking_method"],
+        "ranking_fields": list(cfg["ranking_fields"]),
         "diversity_state": "STRUCTURAL_FAMILY_DISTINCT_ONLY",
         "statistical_independence_claimed": False,
         "selection_authority": False,

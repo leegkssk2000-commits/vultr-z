@@ -1,0 +1,53 @@
+name: ZEL Squeeze Admission Auto Handoff CI V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-squeeze-admission-auto-handoff-v1.yml'
+      - '.github/workflows/zel-squeeze-admission-auto-handoff-ci-v1.yml'
+      - 'backend/production/zel_production_admission_result_bridge_v1.py'
+      - 'tests/test_zel_production_admission_result_bridge_v1.py'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Parse workflow and verify bounded trigger
+        run: |
+          python -m pip install --disable-pip-version-check pyyaml pytest
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          p=Path('.github/workflows/zel-squeeze-admission-auto-handoff-v1.yml')
+          doc=yaml.safe_load(p.read_text())
+          text=p.read_text()
+          assert isinstance(doc,dict)
+          assert 'workflow_run' in text
+          assert 'ZEL Squeeze Break 150D Admission V1' in text
+          assert "800544aeaa0ec2add5c223e1fa05f46702ed25cb" in text
+          assert "github.event.workflow_run.conclusion == 'success'" in text
+          assert 'head_repository.full_name == github.repository' in text
+          assert 'production_bootstrap_admission_evidence_v1.json' in text
+          assert 'production_performance_bootstrap_v1 --tick' in text
+          assert 'order_authority' in text and 'BLOCKED' in text
+          assert 'live_trade_authority' in text and 'BLOCKED' in text
+          assert 'exchange_order_submitted' in text
+          for forbidden in ('curl -X POST','/order','submit_order','real_order_enabled=True'):
+              assert forbidden not in text, forbidden
+          print('PASS_SQUEEZE_AUTO_HANDOFF_STATIC_CONTRACT')
+          PY
+      - name: Compile and run bridge regression
+        run: |
+          python -m py_compile backend/production/zel_production_admission_result_bridge_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_admission_result_bridge_v1.py

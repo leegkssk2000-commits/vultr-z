@@ -1,0 +1,100 @@
+name: ZEL Production SSOT Source Recovery V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'ops/zel_production_ssot_source_recovery_v1.py'
+      - '.github/workflows/zel-production-ssot-source-recovery-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'ops/zel_production_ssot_source_recovery_v1.py'
+      - '.github/workflows/zel-production-ssot-source-recovery-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ssot-source-recovery-v1
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and assert read-only contract
+        run: |
+          python -m py_compile ops/zel_production_ssot_source_recovery_v1.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('ops/zel_production_ssot_source_recovery_v1.py').read_text()
+          for token in ('env_mutated', 'service_mutated', 'exchange_order_submitted', 'authority_candidate'):
+              assert token in p, token
+          for forbidden in ('systemctl', '/etc/zel/production-paper-loop.env', 'subprocess.run', 'os.system'):
+              assert forbidden not in p, forbidden
+          print('PASS_SSOT_SOURCE_RECOVERY_READ_ONLY')
+          PY
+
+  vps-source-recovery:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: static-contract
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload scanner and execute read-only provenance recovery
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key ops/zel_production_ssot_source_recovery_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_production_ssot_source_recovery_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_production_ssot_source_recovery_v1.py \
+              --root /home/z/zel-production-current \
+              --root /home/z/z \
+              --out /tmp/zel-production-ssot-source-recovery.json"
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-ssot-source-recovery.json" \
+            /tmp/zel-production-ssot-source-recovery.json
+      - name: Assert no mutation and print target states
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-ssot-source-recovery.json').read_text())
+          assert r['env_mutated'] is False
+          assert r['service_mutated'] is False
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          print('STATE='+r['state'])
+          print('RESOLVED='+str(r['resolved_single_value_count']))
+          print('CONFLICT='+str(r['conflict_count']))
+          print('UNRESOLVED='+str(r['unresolved_count']))
+          for key,row in r['targets'].items():
+              values=','.join(row['authority_distinct_values']) if row['authority_distinct_values'] else '-'
+              print(f'{key}|{row["state"]}|values={values}|sources={len(row["authority_sources"])}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-ssot-source-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-production-ssot-source-recovery.json
+          if-no-files-found: error
+          retention-days: 30

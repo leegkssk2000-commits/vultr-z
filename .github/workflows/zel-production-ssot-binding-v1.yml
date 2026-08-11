@@ -1,0 +1,272 @@
+name: ZEL Production SSOT Binding V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'config/zel_production_ssot_binding_v1.json'
+      - 'ops/zel_production_ssot_binding_v1.py'
+      - 'tests/test_zel_production_ssot_binding_v1.py'
+      - '.github/workflows/zel-production-ssot-binding-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'config/zel_production_ssot_binding_v1.json'
+      - 'ops/zel_production_ssot_binding_v1.py'
+      - 'tests/test_zel_production_ssot_binding_v1.py'
+      - '.github/workflows/zel-production-ssot-binding-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ssot-binding-v1
+  cancel-in-progress: false
+
+jobs:
+  validate-binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.binding.outputs.ready }}
+      state: ${{ steps.binding.outputs.state }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Compile and test binding contract
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m py_compile ops/zel_production_ssot_binding_v1.py
+          python -m json.tool config/zel_production_ssot_binding_v1.json >/dev/null
+          pytest -q tests/test_zel_production_ssot_binding_v1.py
+      - name: Validate canonical manifest
+        id: binding
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          rm -f /tmp/zel-production-paper-loop.env.candidate
+          python ops/zel_production_ssot_binding_v1.py \
+            --manifest config/zel_production_ssot_binding_v1.json \
+            --out /tmp/zel-production-ssot-binding-receipt.json \
+            --env-out /tmp/zel-production-paper-loop.env.candidate
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-ssot-binding-receipt.json').read_text())
+          print('ready='+('true' if r['ready'] else 'false'))
+          print('state='+r['state'])
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          if not r['ready']:
+              assert not Path('/tmp/zel-production-paper-loop.env.candidate').exists()
+              assert r['env_write_allowed'] is False
+          else:
+              assert Path('/tmp/zel-production-paper-loop.env.candidate').exists()
+              assert len(Path('/tmp/zel-production-paper-loop.env.candidate').read_text().strip().splitlines())==15
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-ssot-binding-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/zel-production-ssot-binding-receipt.json
+            /tmp/zel-production-paper-loop.env.candidate
+          if-no-files-found: warn
+          retention-days: 30
+
+  bind-vps-env:
+    if: github.event_name != 'pull_request' && needs.validate-binding.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: validate-binding
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Regenerate exact candidate from master
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python ops/zel_production_ssot_binding_v1.py \
+            --manifest config/zel_production_ssot_binding_v1.json \
+            --out /tmp/zel-production-ssot-binding-receipt.json \
+            --env-out /tmp/zel-production-paper-loop.env.candidate \
+            --require-ready
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload candidate and validation receipt
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            /tmp/zel-production-paper-loop.env.candidate \
+            /tmp/zel-production-ssot-binding-receipt.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Atomically bind env and verify service
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          DEST=/etc/zel/production-paper-loop.env
+          CAND=/tmp/zel-production-paper-loop.env.candidate
+          VALIDATION=/tmp/zel-production-ssot-binding-receipt.json
+          BACKUP=/tmp/zel-production-paper-loop.env.rollback
+          REMOTE_RECEIPT=/tmp/zel-production-ssot-bind-vps-receipt.json
+          SERVICE=zel-production-paper-loop-v1.service
+
+          if [ "$(id -u)" = "0" ]; then
+            SUDO=''
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            SUDO='sudo'
+          else
+            echo 'SSOT_BIND_NO_PRIVILEGED_AUTHORITY' >&2
+            exit 3
+          fi
+
+          python3 - "$CAND" "$VALIDATION" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          cand=Path(sys.argv[1])
+          receipt=json.loads(Path(sys.argv[2]).read_text())
+          raw=cand.read_bytes()
+          lines=cand.read_text().strip().splitlines()
+          assert receipt['ready'] is True and receipt['state']=='PASS_SSOT_BINDING_READY'
+          assert len(lines)==15 and all('=' in line and line.split('=',1)[1] for line in lines)
+          assert hashlib.sha256(raw).hexdigest()==receipt['env_sha256']
+          PY
+
+          WAS_ACTIVE=false
+          WAS_ENABLED=false
+          if $SUDO systemctl is-active --quiet "$SERVICE"; then WAS_ACTIVE=true; fi
+          if [ "$($SUDO systemctl is-enabled "$SERVICE" 2>/dev/null || true)" = enabled ]; then WAS_ENABLED=true; fi
+          HAD_DEST=false
+          if $SUDO test -f "$DEST"; then
+            HAD_DEST=true
+            $SUDO cp -a "$DEST" "$BACKUP"
+          else
+            $SUDO rm -f "$BACKUP"
+          fi
+
+          VERIFIED=false
+          rollback() {
+            rc=$?
+            if [ "$VERIFIED" != true ]; then
+              $SUDO systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+              if [ "$HAD_DEST" = true ]; then
+                $SUDO install -m 0600 -o root -g root "$BACKUP" "$DEST"
+              else
+                $SUDO rm -f "$DEST"
+              fi
+              if [ "$WAS_ENABLED" = true ]; then
+                $SUDO systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+              else
+                $SUDO systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+              fi
+              if [ "$WAS_ACTIVE" = true ]; then
+                $SUDO systemctl restart "$SERVICE" >/dev/null 2>&1 || true
+              fi
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          $SUDO install -d -m 0750 -o root -g root /etc/zel
+          $SUDO install -m 0600 -o root -g root "$CAND" /etc/zel/.production-paper-loop.env.new
+          $SUDO mv -f /etc/zel/.production-paper-loop.env.new "$DEST"
+          $SUDO chown root:root "$DEST"
+          $SUDO chmod 0600 "$DEST"
+          $SUDO systemctl enable "$SERVICE" >/dev/null
+          $SUDO systemctl restart "$SERVICE"
+          sleep 8
+          [ "$($SUDO systemctl is-active "$SERVICE")" = active ]
+          [ "$($SUDO systemctl is-enabled "$SERVICE")" = enabled ]
+
+          PID=$($SUDO systemctl show "$SERVICE" -p MainPID --value)
+          [ -n "$PID" ] && [ "$PID" != 0 ]
+          $SUDO python3 - "$DEST" "$PID" <<'PY'
+          import sys
+          from pathlib import Path
+          expected={}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line and not line.startswith('#') and '=' in line:
+                  k,v=line.split('=',1); expected[k]=v
+          assert len(expected)==15 and all(expected.values())
+          raw=Path(f'/proc/{sys.argv[2]}/environ').read_bytes().split(b'\0')
+          actual={}
+          for item in raw:
+              if b'=' in item:
+                  k,v=item.split(b'=',1); actual[k.decode(errors='ignore')]=v.decode(errors='ignore')
+          assert all(actual.get(k)==v for k,v in expected.items())
+          PY
+
+          export WAS_ACTIVE WAS_ENABLED HAD_DEST
+          $SUDO python3 - "$DEST" "$VALIDATION" "$REMOTE_RECEIPT" <<'PY'
+          import hashlib,json,os,stat,sys
+          from pathlib import Path
+          dest=Path(sys.argv[1]); validation=json.loads(Path(sys.argv[2]).read_text())
+          st=dest.stat()
+          receipt={
+            'schema_version':'zel.production_ssot_bind_vps.v1',
+            'state':'PASS_SSOT_ENV_BOUND_SERVICE_ACTIVE',
+            'validation_receipt_sha256':validation['receipt_sha256'],
+            'env_sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),
+            'required_key_count':15,
+            'mode':oct(stat.S_IMODE(st.st_mode)),
+            'uid':st.st_uid,
+            'gid':st.st_gid,
+            'service_active':True,
+            'service_enabled':True,
+            'rollback_armed':True,
+            'exchange_order_submitted':False,
+            'live_trade_authority':'BLOCKED',
+          }
+          assert receipt['env_sha256']==validation['env_sha256']
+          assert receipt['mode']=='0o600' and receipt['uid']==0 and receipt['gid']==0
+          Path(sys.argv[3]).write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          VERIFIED=true
+          trap - EXIT
+          REMOTE
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-ssot-bind-vps-receipt.json" \
+            /tmp/zel-production-ssot-bind-vps-receipt.json
+      - name: Assert bound state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-ssot-bind-vps-receipt.json').read_text())
+          assert r['state']=='PASS_SSOT_ENV_BOUND_SERVICE_ACTIVE'
+          assert r['required_key_count']==15
+          assert r['mode']=='0o600' and r['uid']==0 and r['gid']==0
+          assert r['service_active'] is True and r['service_enabled'] is True
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          print('PASS_SSOT_BIND_VPS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-ssot-bind-vps-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/zel-production-ssot-binding-receipt.json
+            /tmp/zel-production-ssot-bind-vps-receipt.json
+          if-no-files-found: error
+          retention-days: 30

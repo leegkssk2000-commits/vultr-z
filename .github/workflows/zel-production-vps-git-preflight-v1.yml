@@ -1,0 +1,93 @@
+name: ZEL Production VPS Git Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'ops/zel_production_vps_git_state_v1.py'
+      - '.github/workflows/zel-production-vps-git-preflight-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'ops/zel_production_vps_git_state_v1.py'
+      - '.github/workflows/zel-production-vps-git-preflight-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile ops/zel_production_vps_git_state_v1.py
+      - name: Assert no working-tree/service mutation contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('ops/zel_production_vps_git_state_v1.py').read_text()
+          assert 'working_tree_mutated' in p
+          assert 'service_mutated' in p
+          assert 'exchange_order_submitted' in p
+          assert 'git", "-C"' in p
+          for forbidden in ('reset', 'checkout', 'merge', 'pull', 'clean', 'systemctl'):
+              assert f'"{forbidden}"' not in p
+          print('PASS_VPS_GIT_PREFLIGHT_READ_ONLY')
+          PY
+
+  vps-readonly-git-state:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Execute read-only VPS git-state preflight
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key ops/zel_production_vps_git_state_v1.py \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel_production_vps_git_state_v1.py"
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_production_vps_git_state_v1.py --root /home/z/z --out /tmp/zel-production-vps-git-state.json"
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-vps-git-state.json" \
+            /tmp/zel-production-vps-git-state.json
+      - name: Assert probe safety and print state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-vps-git-state.json').read_text())
+          assert r['working_tree_mutated'] is False
+          assert r['service_mutated'] is False
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          print('STATE='+r['state'])
+          print('BRANCH='+r['branch'])
+          print('DIRTY='+str(r['tracked_dirty_count']))
+          print('UNTRACKED='+str(r['untracked_count']))
+          print('AHEAD='+str(r['ahead_of_origin_master']))
+          print('BEHIND='+str(r['behind_origin_master']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-vps-git-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-production-vps-git-state.json
+          if-no-files-found: error
+          retention-days: 30

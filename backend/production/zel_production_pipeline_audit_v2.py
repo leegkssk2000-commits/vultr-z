@@ -61,20 +61,15 @@ def audit(root: Path) -> dict[str, Any]:
     env_example = read(root, "deploy/systemd/zel-production-paper-loop-v1.env.example")
 
     checks: dict[str, bool] = {}
-
-    # Active production market data must bypass the generic service because it
-    # contains a DummyTickerAdapter fallback. The fallback may remain elsewhere
-    # for dev/tests, but it cannot sit on the active PAPER execution path.
     checks["strict_bingx_native_path"] = (
         "fetch_fresh_bingx_quote" in source
         and "BingXPublicAdapter" in freshness
         and "DummyTickerAdapter" not in freshness
         and "MarketDataService(" not in source
     )
-    checks["no_alpha_fast_path_before_network"] = (
-        source.index("if authority is None or not authority_is_executable(authority)")
-        < source.index("fetch_fresh_bingx_quote")
-    )
+    no_alpha_guard = source.index("if authority is None or not authority_is_executable(authority)")
+    active_network_call = source.index("market_receipt = fetch_fresh_bingx_quote")
+    checks["no_alpha_fast_path_before_network"] = no_alpha_guard < active_network_call
 
     source_i = runner.index("zel_production_paper_source_adapter_v1")
     cycle_i = runner.index("zel_production_paper_loop_v1")
@@ -130,12 +125,7 @@ def audit(root: Path) -> dict[str, Any]:
     checks["systemd_write_scope_ledger_only"] = "ReadWritePaths=/home/zel/apps/zel/ledger" in service
     checks["systemd_circuit_no_restart"] = "RestartPreventExitStatus=2" in service
     checks["systemd_no_new_privileges"] = "NoNewPrivileges=true" in service
-
-    # Runtime code must retain hard blocks regardless of configuration.
-    checks["no_live_submit_in_new_modules"] = all(
-        token in source + freshness + improvement
-        for token in ("exchange_order_submitted", "BLOCKED")
-    )
+    checks["no_live_submit_in_new_modules"] = all(token in source + freshness + improvement for token in ("exchange_order_submitted", "BLOCKED"))
 
     failed = sorted(name for name, passed in checks.items() if not passed)
     require(not failed, f"AUDIT_CHECKS_FAILED:{failed}")

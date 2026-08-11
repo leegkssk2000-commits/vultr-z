@@ -25,7 +25,7 @@ def load(path: Path) -> dict[str, Any]:
     return row
 
 
-def validate_source(row: Mapping[str, Any]) -> None:
+def validate_source_identity(row: Mapping[str, Any]) -> None:
     if row.get("schema_version") != SOURCE_SCHEMA:
         raise RuntimeError("ADMISSION_BRIDGE_SOURCE_SCHEMA_INVALID")
     if str(row.get("strategy_id") or "") != STRATEGY_ID:
@@ -48,16 +48,10 @@ def validate_source(row: Mapping[str, Any]) -> None:
     for key in ("strategy_parameter_changes", "feature_gate_changes", "side_filter_changes"):
         if int(source.get(key) or 0) != 0:
             raise RuntimeError(f"ADMISSION_BRIDGE_MUTATION_DETECTED:{key}")
-    integrity = row.get("integrity")
-    if not isinstance(integrity, Mapping):
+    if not isinstance(row.get("integrity"), Mapping):
         raise RuntimeError("ADMISSION_BRIDGE_INTEGRITY_MISSING")
-    if integrity.get("integrity_ok") is not True:
-        raise RuntimeError("ADMISSION_BRIDGE_INTEGRITY_NOT_PASS")
-    if int(integrity.get("duplicate_trade_identity_count") or 0) != 0:
-        raise RuntimeError("ADMISSION_BRIDGE_DUPLICATE_FAIL")
-    funding = row.get("funding")
-    if not isinstance(funding, Mapping) or funding.get("complete_for_scoring") is not True:
-        raise RuntimeError("ADMISSION_BRIDGE_FUNDING_NOT_COMPLETE")
+    if not isinstance(row.get("funding"), Mapping):
+        raise RuntimeError("ADMISSION_BRIDGE_FUNDING_MISSING")
     receipt = str(row.get("receipt_sha256") or "").strip()
     if not receipt:
         raise RuntimeError("ADMISSION_BRIDGE_SOURCE_RECEIPT_MISSING")
@@ -65,6 +59,17 @@ def validate_source(row: Mapping[str, Any]) -> None:
     material.pop("receipt_sha256", None)
     if stable_sha(material) != receipt:
         raise RuntimeError("ADMISSION_BRIDGE_SOURCE_RECEIPT_MISMATCH")
+
+
+def require_terminal_economic_integrity(row: Mapping[str, Any]) -> None:
+    integrity = row["integrity"]
+    funding = row["funding"]
+    if integrity.get("integrity_ok") is not True:
+        raise RuntimeError("ADMISSION_BRIDGE_TERMINAL_INTEGRITY_NOT_PASS")
+    if int(integrity.get("duplicate_trade_identity_count") or 0) != 0:
+        raise RuntimeError("ADMISSION_BRIDGE_TERMINAL_DUPLICATE_FAIL")
+    if funding.get("complete_for_scoring") is not True:
+        raise RuntimeError("ADMISSION_BRIDGE_TERMINAL_FUNDING_NOT_COMPLETE")
 
 
 def _reject_evidence(source: Mapping[str, Any]) -> dict[str, Any]:
@@ -75,11 +80,7 @@ def _reject_evidence(source: Mapping[str, Any]) -> dict[str, Any]:
         "source_schema_version": source.get("schema_version"),
         "source_receipt_sha256": source.get("receipt_sha256"),
         "reason": "PRODUCTION_W1_W2_W3_DURABILITY_NOT_ALL_POSITIVE_AFTER_COSTS",
-        "integrity": {
-            "error_count": 0,
-            "duplicate_count": 0,
-            "censored_count": 0,
-        },
+        "integrity": {"error_count": 0, "duplicate_count": 0, "censored_count": 0},
         "production_window_gates": dict(source.get("production_window_gates") or {}),
         "aggregate_metrics_source": dict(source.get("aggregate") or {}).get("production_symbols"),
         "selection_authority": False,
@@ -95,9 +96,10 @@ def _reject_evidence(source: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def bridge(source: Mapping[str, Any]) -> dict[str, Any]:
-    validate_source(source)
+    validate_source_identity(source)
     state = str(source.get("state") or "")
     if state == "REJECT_SQUEEZE150_PRODUCTION_DURABILITY":
+        require_terminal_economic_integrity(source)
         evidence = _reject_evidence(source)
         out: dict[str, Any] = {
             "schema_version": BRIDGE_SCHEMA,
@@ -113,6 +115,7 @@ def bridge(source: Mapping[str, Any]) -> dict[str, Any]:
             "action": "route_change",
         }
     elif state == "HOLD_SQUEEZE150_ECONOMIC_PASS_AUTHORITY_GATES_PENDING":
+        require_terminal_economic_integrity(source)
         gates = source.get("bootstrap_authority_gates")
         if not isinstance(gates, Mapping):
             raise RuntimeError("ADMISSION_BRIDGE_AUTHORITY_GATES_MISSING")
@@ -165,12 +168,7 @@ def main() -> int:
             raise RuntimeError("ADMISSION_BRIDGE_EVIDENCE_OUT_REQUIRED")
         ns.evidence_out.parent.mkdir(parents=True, exist_ok=True)
         ns.evidence_out.write_text(json.dumps(result["admission_evidence"], indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({
-        "state": result["state"],
-        "write_admission_evidence": result["write_admission_evidence"],
-        "action": result["action"],
-        "receipt_sha256": result["receipt_sha256"],
-    }, sort_keys=True))
+    print(json.dumps({"state": result["state"], "write_admission_evidence": result["write_admission_evidence"], "action": result["action"], "receipt_sha256": result["receipt_sha256"]}, sort_keys=True))
     return 0
 
 

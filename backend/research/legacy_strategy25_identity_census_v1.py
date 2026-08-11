@@ -17,6 +17,7 @@ DEFAULT_ROOT = Path(".")
 ROOT_NAMES = ("strategies", "backend", "config", "policies", "research", "runtime", "scripts", "tools")
 TEXT_SUFFIXES = {".py", ".json", ".jsonl", ".yml", ".yaml", ".md", ".txt", ".toml", ".ini", ".sh"}
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "archive", "artifacts", "cache", ".cache"}
+ARCHIVE_MARKERS = ("archive", "backup", "snapshot", "restore")
 MAX_FILES = 12000
 MAX_BYTES = 1_000_000
 
@@ -85,6 +86,13 @@ def explicit_id_pattern(name: str) -> re.Pattern[str]:
     )
 
 
+def archived_runtime_copy(root: Path, path: Path) -> bool:
+    rel = safe_rel(root, path).lower()
+    if not rel.startswith("runtime/"):
+        return False
+    return any(any(marker in part for marker in ARCHIVE_MARKERS) for part in Path(rel).parts)
+
+
 def classify(root: Path, name: str, files: list[Path], texts: dict[Path, str]) -> dict[str, Any]:
     token = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
     explicit = explicit_id_pattern(name)
@@ -97,14 +105,16 @@ def classify(root: Path, name: str, files: list[Path], texts: dict[Path, str]) -
         token_match = bool(token.search(text))
         if not (basename_match or explicit_match or token_match):
             continue
+        archived_copy = archived_runtime_copy(root, path)
         row = {
             "path": safe_rel(root, path),
             "sha256": sha256_file(path),
             "suffix": path.suffix.lower(),
             "basename_match": basename_match,
             "explicit_strategy_id_match": explicit_match,
+            "archived_runtime_copy": archived_copy,
         }
-        if basename_match or explicit_match:
+        if (basename_match or explicit_match) and not archived_copy:
             direct.append(row)
         else:
             references.append(row)

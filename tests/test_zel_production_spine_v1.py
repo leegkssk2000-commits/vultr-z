@@ -26,6 +26,15 @@ def test_zero_survivor_holds_but_engine_runs():
     assert row.reason == "NO_VALIDATED_ALPHA"
 
 
+def test_zero_survivor_precedes_market_data_requirement():
+    p = base_payload()
+    p.update(alpha_state="NONE", signal="FLAT", risk_state="HOLD", market_data_ok=False)
+    row = evaluate_spine(p)
+    assert row.state == "HOLD"
+    assert row.order_intent == "NONE"
+    assert row.reason == "NO_VALIDATED_ALPHA"
+
+
 def test_shadow_validated_alpha_builds_simulated_order_plan():
     p = base_payload()
     p.update(alpha_state="SURVIVOR_ACTIVE", alpha_id="alpha.real.1")

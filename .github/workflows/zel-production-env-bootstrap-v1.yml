@@ -1,0 +1,196 @@
+name: ZEL Production PAPER Env Bootstrap V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'deploy/systemd/zel-production-paper-loop-v1.env.example'
+      - '.github/workflows/zel-production-env-bootstrap-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'deploy/systemd/zel-production-paper-loop-v1.env.example'
+      - '.github/workflows/zel-production-env-bootstrap-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-env-bootstrap-v1
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate fail-closed template
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('deploy/systemd/zel-production-paper-loop-v1.env.example')
+          required=(
+            'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
+            'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
+            'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
+            'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET'
+          )
+          rows={}
+          for raw in p.read_text().splitlines():
+              line=raw.strip()
+              if line and not line.startswith('#') and '=' in line:
+                  k,v=line.split('=',1)
+                  rows.setdefault(k.strip(),[]).append(v.strip())
+          assert set(rows)==set(required), (set(rows),set(required))
+          assert all(len(rows[k])==1 for k in required)
+          assert all(rows[k][0]=='' for k in required)
+          print('PASS_ENV_TEMPLATE_15_EMPTY_SSOT_KEYS')
+          PY
+
+  bootstrap-vps-env:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: static-contract
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload canonical empty template
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            deploy/systemd/zel-production-paper-loop-v1.env.example \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-paper-loop.env.bootstrap"
+      - name: Create env file without inventing SSOT values
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          DEST=/etc/zel/production-paper-loop.env
+          SRC=/tmp/zel-production-paper-loop.env.bootstrap
+          RECEIPT=/tmp/zel-production-env-bootstrap-receipt.json
+
+          if [ "$(id -u)" = "0" ]; then
+            SUDO=''
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            SUDO='sudo'
+          else
+            echo 'NO_PRIVILEGED_INSTALL_AUTHORITY' >&2
+            exit 2
+          fi
+
+          CREATED=false
+          if [ ! -e "$DEST" ]; then
+            $SUDO install -d -m 0750 -o root -g root /etc/zel
+            $SUDO install -m 0600 -o root -g root "$SRC" "$DEST"
+            CREATED=true
+          fi
+
+          # Never overwrite an existing SSOT file. Only normalize security mode.
+          $SUDO chmod 0600 "$DEST"
+          $SUDO chown root:root "$DEST"
+
+          SERVICE_ACTIVE=false
+          if systemctl is-active --quiet zel-production-paper-loop-v1.service; then
+            SERVICE_ACTIVE=true
+          fi
+          if [ "$SERVICE_ACTIVE" = true ]; then
+            echo 'SERVICE_UNEXPECTEDLY_ACTIVE_ABORT' >&2
+            exit 3
+          fi
+
+          export CREATED SERVICE_ACTIVE DEST
+          $SUDO python3 - <<'PY'
+          import json, os, stat
+          from pathlib import Path
+          dest=Path(os.environ['DEST'])
+          required=(
+            'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
+            'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
+            'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
+            'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET'
+          )
+          rows={}
+          for raw in dest.read_text().splitlines():
+              line=raw.strip()
+              if line and not line.startswith('#') and '=' in line:
+                  k,v=line.split('=',1)
+                  rows.setdefault(k.strip(),[]).append(v.strip())
+          missing=[k for k in required if k not in rows]
+          duplicates=[k for k,v in rows.items() if k in required and len(v)!=1]
+          nonempty=[k for k in required if rows.get(k,[''])[0] != '']
+          created=os.environ['CREATED'].lower()=='true'
+          if missing or duplicates:
+              raise SystemExit(f'ENV_CONTRACT_INVALID missing={missing} duplicates={duplicates}')
+          if created and nonempty:
+              raise SystemExit(f'NEW_ENV_MUST_NOT_INVENT_VALUES nonempty={nonempty}')
+          st=dest.stat()
+          receipt={
+            'schema_version':'zel.production_env_bootstrap.v1',
+            'state':'PASS_ENV_CREATED_FAIL_CLOSED' if created else 'PASS_ENV_PRESERVED',
+            'path':str(dest),
+            'created':created,
+            'required_key_count':len(required),
+            'missing_key_count':len(missing),
+            'duplicate_key_count':len(duplicates),
+            'nonempty_key_count':len(nonempty),
+            'nonempty_keys_redacted':True,
+            'mode':oct(stat.S_IMODE(st.st_mode)),
+            'uid':st.st_uid,
+            'gid':st.st_gid,
+            'service_active':False,
+            'service_started_by_workflow':False,
+            'exchange_order_submitted':False,
+            'live_trade_authority':'BLOCKED',
+          }
+          Path('/tmp/zel-production-env-bootstrap-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          REMOTE
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-env-bootstrap-receipt.json" \
+            /tmp/zel-production-env-bootstrap-receipt.json
+      - name: Assert env file security and HOLD state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-env-bootstrap-receipt.json').read_text())
+          assert r['required_key_count']==15
+          assert r['missing_key_count']==0
+          assert r['duplicate_key_count']==0
+          assert r['mode']=='0o600'
+          assert r['uid']==0 and r['gid']==0
+          assert r['service_active'] is False
+          assert r['service_started_by_workflow'] is False
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          if r['created']:
+              assert r['nonempty_key_count']==0
+          print('STATE='+r['state'])
+          print('CREATED='+str(r['created']))
+          print('NONEMPTY_KEYS='+str(r['nonempty_key_count']))
+          print('SERVICE_ACTIVE='+str(r['service_active']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-env-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-production-env-bootstrap-receipt.json
+          if-no-files-found: error
+          retention-days: 30

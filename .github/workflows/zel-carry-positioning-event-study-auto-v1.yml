@@ -1,0 +1,150 @@
+name: ZEL Carry Positioning Event Study Auto V1
+
+on:
+  workflow_run:
+    workflows: ["ZEL P3 Carry Flow Prospective Activation V1"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: zel-carry-positioning-event-study-auto-v1
+  cancel-in-progress: false
+
+jobs:
+  event-study:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'schedule' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download exact prospective activation artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zel-p3-prospective-activation-*
+          path: /tmp/p3
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          repository: ${{ github.repository }}
+
+      - name: Run frozen carry-positioning event study
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /tmp/p3/p3_coverage_receipt.json
+          test -f /tmp/p3/p3_history/premium_index__BTCUSDT.ndjson
+          test -f /tmp/p3/p3_history/premium_index__ETHUSDT.ndjson
+          test -f /tmp/p3/p3_history/open_interest__BTCUSDT.ndjson
+          test -f /tmp/p3/p3_history/open_interest__ETHUSDT.ndjson
+          python -m py_compile backend/research/carry_positioning_event_study_v1.py
+          python backend/research/carry_positioning_event_study_v1.py \
+            --history-dir /tmp/p3/p3_history \
+            --coverage /tmp/p3/p3_coverage_receipt.json \
+            --contract config/zel_production_carry_positioning_v1.json \
+            --out /tmp/carry_positioning_event_study.json
+
+      - name: Verify fail-closed authority and route state
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/carry_positioning_event_study.json'))
+          assert r['state'] in {
+            'HOLD_CARRY_POSITIONING_HISTORY_COVERAGE_PENDING',
+            'HOLD_CARRY_POSITIONING_EVENT_GROUPS_INSUFFICIENT',
+            'PASS_CARRY_POSITIONING_EVENT_STUDY_CANDIDATE_AUTHORITY_BLOCKED',
+            'REJECT_CARRY_POSITIONING_EVENT_STUDY_DURABILITY',
+          },r['state']
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          if r['state'].startswith('PASS_CARRY_POSITIONING_EVENT_STUDY'):
+            assert r['economic_candidate'] is True
+            assert r['survivor_authority'] is False
+            assert r['next']=='BIND_RISK_DD_RETENTION_AUTHORITY_BEFORE_BOOTSTRAP_CANDIDATE'
+          print('PASS_CARRY_POSITIONING_AUTO_FAIL_CLOSED',r['state'],r.get('trade_count',0),r.get('next'))
+          PY
+
+      - name: Persist latest event-study receipt to prospective data branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/carry_data_repo
+          mkdir /tmp/carry_data_repo
+          cd /tmp/carry_data_repo
+          git init
+          git config user.name 'zel-carry-positioning-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch origin zel-p3-prospective-data
+          git checkout -B zel-p3-prospective-data origin/zel-p3-prospective-data
+          mkdir -p research/data/p3_prospective
+          cp /tmp/carry_positioning_event_study.json research/data/p3_prospective/latest_carry_positioning_event_study.json
+          git add research/data/p3_prospective/latest_carry_positioning_event_study.json
+          if git diff --cached --quiet; then
+            echo NO_EVENT_STUDY_STATE_CHANGE
+            exit 0
+          fi
+          git commit -m "data(carry-positioning): update event-study state ${{ github.event.workflow_run.id }}"
+          git push origin zel-p3-prospective-data
+
+      - name: Publish authority-free event-study state to VPS ledger
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          remote="/tmp/zel-carry-positioning-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes /tmp/carry_positioning_event_study.json "$VPS_USER@$VPS_HOST:$remote"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "REMOTE='$remote' python3 - <<'PY'
+          import json, os, pathlib, tempfile
+          src=pathlib.Path(os.environ['REMOTE'])
+          obj=json.loads(src.read_text())
+          assert obj['selection_authority'] is False and obj['promotion_authority'] is False
+          assert obj['execution_authority']=='NONE' and obj['order_authority']=='BLOCKED'
+          dst=pathlib.Path('/home/z/z/ledger/production_carry_positioning_event_study_v1.json')
+          fd,tmp=tempfile.mkstemp(prefix=dst.name+'.',dir=str(dst.parent))
+          try:
+            with os.fdopen(fd,'w') as f:
+              json.dump(obj,f,indent=2,sort_keys=True,allow_nan=False); f.write('\n'); f.flush(); os.fsync(f.fileno())
+            os.replace(tmp,dst)
+          finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+          src.unlink(missing_ok=True)
+          print('PASS_VPS_CARRY_POSITIONING_STATE',obj['state'])
+          PY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-carry-positioning-event-study-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/carry_positioning_event_study.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

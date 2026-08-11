@@ -89,12 +89,16 @@ def evaluate_spine(payload: Mapping[str, Any]) -> SpineDecision:
 
     if emergency_stop:
         return decision("STOPPED", "stop", "NONE", "EMERGENCY_STOP")
-    if not market_data_ok:
-        return decision("HOLD", "hold", "NONE", "MARKET_DATA_INTEGRITY_FAIL")
     if mode == "LIVE":
         return decision("BLOCKED", "block", "NONE", "LIVE_NOT_ACTIVATED")
+    # A missing/non-executable alpha is a complete, deterministic no-order state.
+    # Do not require or synthesize market price/quantity merely to prove that no
+    # trading authority exists. Once alpha is active, market integrity remains
+    # mandatory before risk/order planning.
     if alpha_state != ACTIVE_ALPHA_STATE:
         return decision("HOLD", "hold", "NONE", "NO_VALIDATED_ALPHA")
+    if not market_data_ok:
+        return decision("HOLD", "hold", "NONE", "MARKET_DATA_INTEGRITY_FAIL")
     if risk_state != "PASS":
         return decision("BLOCKED", "block", "NONE", f"RISK_GATE_{risk_state}")
 

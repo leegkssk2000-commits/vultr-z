@@ -12,6 +12,7 @@ SCHEMA = "zel.production_economic_edge_router.v1"
 POLICY_SCHEMA = "zel.production_economic_edge_router_policy.v1"
 FACTORY_SCHEMA = "zel.production_alpha_factory.v1"
 BOOTSTRAP_SCHEMA = "zel.production_performance_bootstrap.v1"
+AI_PROPOSAL_SCHEMA = "zel.production_ai_proposal_layer.v1"
 DEFAULT_POLICY = Path("config/zel_production_economic_edge_router_v1.json")
 CARRY_POSITIONING_EVENT_SCHEMA = "zel.carry_positioning.event_study.v1"
 CARRY_POSITIONING_PASS = "PASS_CARRY_POSITIONING_EVENT_STUDY_CANDIDATE_AUTHORITY_BLOCKED"
@@ -25,7 +26,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("EDGE_ROUTER_NON_PAPER_FORBIDDEN")
     if int(policy.get("candidate_budget") or 0) != 1:
         raise RuntimeError("EDGE_ROUTER_CANDIDATE_BUDGET_MUST_BE_1")
-    for key in ("factory_path", "bootstrap_state_path", "acquisition_state_path"):
+    for key in ("factory_path", "bootstrap_state_path", "acquisition_state_path", "ai_proposal_state_path"):
         if not str(policy.get(key) or "").strip():
             raise RuntimeError(f"EDGE_ROUTER_PATH_MISSING:{key}")
     if policy.get("order_authority") != "BLOCKED" or policy.get("live_trade_authority") != "BLOCKED":
@@ -156,9 +157,21 @@ def _family_status(family_id: str, row: Mapping[str, Any], required: list[str]) 
         }
     missing = [key for key in required if row.get(key) is not True]
     if missing:
-        return False, {"family_id": family_id, "status": status, "classification": "SOURCE_UNBOUND", "missing_source_fields": missing, "dynamic_event_study_state": row.get("dynamic_event_study_state")}
+        return False, {
+            "family_id": family_id,
+            "status": status,
+            "classification": "SOURCE_UNBOUND",
+            "missing_source_fields": missing,
+            "dynamic_event_study_state": row.get("dynamic_event_study_state"),
+        }
     if row.get("dynamic_event_study_hold") is True:
-        return False, {"family_id": family_id, "status": status, "classification": "EVENT_STUDY_HOLD", "missing_source_fields": [], "dynamic_event_study_state": row.get("dynamic_event_study_state")}
+        return False, {
+            "family_id": family_id,
+            "status": status,
+            "classification": "EVENT_STUDY_HOLD",
+            "missing_source_fields": [],
+            "dynamic_event_study_state": row.get("dynamic_event_study_state"),
+        }
     return True, {
         "family_id": family_id,
         "strategy_id": str(row.get("strategy_id") or ""),
@@ -171,7 +184,85 @@ def _family_status(family_id: str, row: Mapping[str, Any], required: list[str]) 
     }
 
 
-def route_tick(policy: Mapping[str, Any], *, factory: Mapping[str, Any] | None, bootstrap: Mapping[str, Any] | None, now_ms: int | None = None) -> dict[str, Any]:
+def _explore_context(blockers: list[dict[str, Any]], bootstrap_state: Any) -> str:
+    return stable_sha(
+        {
+            "state": "HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED",
+            "next": "REGISTER_NEW_VERIFIED_ECONOMIC_FAMILY_OR_BIND_MISSING_NATIVE_SOURCE",
+            "bootstrap_state": bootstrap_state,
+            "blockers": blockers,
+            "acquisition_queue": [],
+        }
+    )
+
+
+def _validate_ai_proposals(
+    proposal_state: Mapping[str, Any] | None,
+    *,
+    explore_context_sha256: str,
+    existing_family_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(proposal_state, Mapping):
+        return [], []
+    if proposal_state.get("schema_version") != AI_PROPOSAL_SCHEMA:
+        raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_SCHEMA_INVALID")
+    if proposal_state.get("explore_context_sha256") != explore_context_sha256:
+        return [], []
+    if proposal_state.get("selection_authority") is not False or proposal_state.get("promotion_authority") is not False:
+        raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_AUTHORITY_INVALID")
+    if proposal_state.get("execution_authority") != "NONE" or proposal_state.get("order_authority") != "BLOCKED":
+        raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_EXECUTION_INVALID")
+    if proposal_state.get("live_trade_authority") != "BLOCKED" or proposal_state.get("exchange_order_submitted") is not False:
+        raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_LIVE_INVALID")
+    raw = proposal_state.get("proposals")
+    if not isinstance(raw, list) or len(raw) > 2:
+        raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_LIST_INVALID")
+    ready: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_ROW_INVALID")
+        family_id = str(item.get("family_id") or "")
+        if not family_id or family_id in seen or family_id in existing_family_ids:
+            raise RuntimeError("EDGE_ROUTER_AI_PROPOSAL_ID_INVALID")
+        seen.add(family_id)
+        for key in ("selection_authority", "promotion_authority"):
+            if item.get(key) is not False:
+                raise RuntimeError(f"EDGE_ROUTER_AI_PROPOSAL_ROW_AUTHORITY:{family_id}:{key}")
+        if item.get("execution_authority") != "NONE" or item.get("order_authority") != "BLOCKED":
+            raise RuntimeError(f"EDGE_ROUTER_AI_PROPOSAL_ROW_EXECUTION:{family_id}")
+        if item.get("live_trade_authority") != "BLOCKED":
+            raise RuntimeError(f"EDGE_ROUTER_AI_PROPOSAL_ROW_LIVE:{family_id}")
+        row = {
+            "proposal_id": str(item.get("proposal_id") or ""),
+            "family_id": family_id,
+            "proposal_type": str(item.get("proposal_type") or ""),
+            "economic_mechanism": str(item.get("economic_mechanism") or ""),
+            "required_sources": list(item.get("required_sources") or []),
+            "missing_sources": list(item.get("missing_sources") or []),
+            "causal_reason": str(item.get("causal_reason") or ""),
+            "falsification_test": str(item.get("falsification_test") or ""),
+            "expected_horizon": str(item.get("expected_horizon") or ""),
+            "classification": "AI_PROPOSAL_SOURCE_READY" if item.get("source_ready") is True else "AI_PROPOSAL_SOURCE_UNBOUND",
+            "selection_authority": False,
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+            "live_trade_authority": "BLOCKED",
+        }
+        (ready if item.get("source_ready") is True else blocked).append(row)
+    return ready, blocked
+
+
+def route_tick(
+    policy: Mapping[str, Any],
+    *,
+    factory: Mapping[str, Any] | None,
+    bootstrap: Mapping[str, Any] | None,
+    ai_proposals: Mapping[str, Any] | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
     cfg = validate_policy(policy)
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     if bootstrap is None:
@@ -221,10 +312,33 @@ def route_tick(policy: Mapping[str, Any], *, factory: Mapping[str, Any] | None, 
             out["blockers"] = blockers
             out["next"] = "RUN_BOUNDED_ECONOMIC_ADMISSION_FOR_QUEUED_FAMILY"
         else:
-            out = _base("HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED", "NO_SOURCE_READY_ECONOMIC_FAMILY")
-            out["acquisition_queue"] = []
-            out["blockers"] = blockers
-            out["next"] = "REGISTER_NEW_VERIFIED_ECONOMIC_FAMILY_OR_BIND_MISSING_NATIVE_SOURCE"
+            context_sha = _explore_context(blockers, bootstrap.get("state"))
+            ready_ai, blocked_ai = _validate_ai_proposals(
+                ai_proposals,
+                explore_context_sha256=context_sha,
+                existing_family_ids=set(map(str, families)),
+            )
+            if ready_ai:
+                chosen = ready_ai[: int(cfg["candidate_budget"])]
+                out = _base("PASS_EDGE_ACQUISITION_AI_PROPOSAL_QUEUE", "AI_PROPOSAL_PASSED_SOURCE_AVAILABILITY_ONLY")
+                out["acquisition_queue"] = chosen
+                out["ai_source_blocked_proposals"] = blocked_ai
+                out["blockers"] = blockers
+                out["next"] = "FREEZE_AI_PROPOSAL_AND_BUILD_DETERMINISTIC_ADMISSION"
+            elif blocked_ai:
+                missing = sorted({src for row in blocked_ai for src in row.get("missing_sources", [])})
+                out = _base("HOLD_EDGE_AI_PROPOSAL_SOURCE_BINDING_REQUIRED", "AI_PROPOSAL_REQUIRES_UNBOUND_NATIVE_SOURCE")
+                out["acquisition_queue"] = []
+                out["ai_source_blocked_proposals"] = blocked_ai
+                out["missing_proposal_sources"] = missing
+                out["blockers"] = blockers
+                out["next"] = "BIND_AI_PROPOSAL_REQUIRED_NATIVE_SOURCES"
+            else:
+                out = _base("HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED", "NO_SOURCE_READY_ECONOMIC_FAMILY")
+                out["acquisition_queue"] = []
+                out["blockers"] = blockers
+                out["next"] = "REGISTER_NEW_VERIFIED_ECONOMIC_FAMILY_OR_BIND_MISSING_NATIVE_SOURCE"
+            out["explore_context_sha256"] = context_sha
         out["bootstrap_state"] = bootstrap.get("state")
     out["updated_at_ms"] = now
     out["receipt_sha256"] = stable_sha(out)
@@ -240,11 +354,22 @@ def main() -> int:
     cfg = validate_policy(policy)
     factory = read_json(Path(str(cfg["factory_path"])))
     bootstrap = read_json(Path(str(cfg["bootstrap_state_path"])))
+    proposals = read_json(Path(str(cfg["ai_proposal_state_path"])))
     if isinstance(factory, Mapping):
         factory = enrich_factory_dynamic_state(factory)
-    result = route_tick(cfg, factory=factory, bootstrap=bootstrap)
+    result = route_tick(cfg, factory=factory, bootstrap=bootstrap, ai_proposals=proposals)
     atomic_json_write(Path(str(cfg["acquisition_state_path"])), result)
-    print(json.dumps({"state": result["state"], "next": result.get("next"), "queue_count": len(result.get("acquisition_queue") or []), "receipt_sha256": result["receipt_sha256"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "state": result["state"],
+                "next": result.get("next"),
+                "queue_count": len(result.get("acquisition_queue") or []),
+                "receipt_sha256": result["receipt_sha256"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

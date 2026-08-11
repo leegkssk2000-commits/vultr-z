@@ -1,0 +1,64 @@
+name: ZEL AI Proposal Redacted Proof V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-ai-proposal-redacted-proof-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Export proposal metadata only
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/proposal-redacted.json <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
+          r=json.loads(p.read_text())
+          assert r.get('schema_version')=='zel.production_ai_proposal_layer.v1'
+          rows=[]
+          for x in r.get('proposals',[]):
+              rows.append({
+                  'proposal_id':x.get('proposal_id'),
+                  'proposal_type':x.get('proposal_type'),
+                  'family_id':x.get('family_id'),
+                  'economic_mechanism':x.get('economic_mechanism'),
+                  'required_sources':x.get('required_sources'),
+                  'missing_sources':x.get('missing_sources'),
+                  'source_ready':x.get('source_ready'),
+                  'causal_reason':x.get('causal_reason'),
+                  'falsification_test':x.get('falsification_test'),
+                  'expected_horizon':x.get('expected_horizon'),
+              })
+          print(json.dumps({
+              'schema_version':'zel.ai_proposal_redacted_proof.v1',
+              'state':r.get('state'),
+              'proposal_count':r.get('proposal_count'),
+              'source_ready_count':r.get('source_ready_count'),
+              'proposals':rows,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+          },indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-ai-proposal-redacted-proof
+          path: out/proposal-redacted.json
+          if-no-files-found: error
+          retention-days: 7

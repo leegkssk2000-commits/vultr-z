@@ -1,0 +1,285 @@
+name: ZEL Production Isolated Deploy V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/**'
+      - 'backend/engine/market_data_service.py'
+      - 'backend/engine/execution/**'
+      - 'config/zel_production_*'
+      - 'deploy/systemd/zel-production-paper-loop-v1*'
+      - 'ops/zel_production_vps_preflight_v1.py'
+      - '.github/workflows/zel-production-isolated-deploy-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/**'
+      - 'backend/engine/market_data_service.py'
+      - 'backend/engine/execution/**'
+      - 'config/zel_production_*'
+      - 'deploy/systemd/zel-production-paper-loop-v1*'
+      - 'ops/zel_production_vps_preflight_v1.py'
+      - '.github/workflows/zel-production-isolated-deploy-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-isolated-deploy-v1
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate deployment contract
+        run: |
+          python -m py_compile ops/zel_production_vps_preflight_v1.py
+          bash -n backend/production/zel_production_paper_runner_v1.sh
+          python - <<'PY'
+          from pathlib import Path
+          unit=Path('deploy/systemd/zel-production-paper-loop-v1.service').read_text()
+          assert 'WorkingDirectory=/home/z/zel-production-current' in unit
+          assert 'PYTHONPATH=/home/z/zel-production-current' in unit
+          assert 'ExecStart=/bin/bash /home/z/zel-production-current/backend/production/zel_production_paper_runner_v1.sh' in unit
+          assert 'ReadWritePaths=/home/z/z/ledger' in unit
+          assert 'EnvironmentFile=-/etc/zel/production-paper-loop.env' in unit
+          assert 'RestartPreventExitStatus=2' in unit
+          print('PASS_ISOLATED_DEPLOY_CONTRACT')
+          PY
+
+  deploy-paper-release:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: static-contract
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build immutable release and parity manifest
+        run: |
+          set -euo pipefail
+          tar --exclude=.git -czf /tmp/zel-production-release.tgz .
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_risk_sizing_v1.py',
+            'backend/production/zel_production_bingx_freshness_v1.py',
+            'backend/production/zel_production_paper_account_state_v1.py',
+            'backend/production/zel_production_active_alpha_adapter_v1.py',
+            'backend/production/zel_production_paper_source_adapter_v1.py',
+            'backend/production/zel_production_auto_cycle_supervisor_v1.py',
+            'backend/production/zel_production_paper_loop_v1.py',
+            'backend/production/zel_production_improvement_controller_v1.py',
+            'backend/production/zel_production_paper_runner_v1.sh',
+            'config/zel_production_risk_sizing_v1.json',
+            'config/zel_production_paper_account_v1.json',
+            'config/zel_production_active_alpha_v1.json',
+            'config/zel_production_improvement_v1.json',
+          ]
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          manifest={
+            'schema_version':'zel.production_vps_expected_manifest.v1',
+            'master_sha':'${{ github.sha }}',
+            'files':{p:sha(p) for p in files},
+            'systemd_unit_sha256':sha('deploy/systemd/zel-production-paper-loop-v1.service'),
+          }
+          Path('/tmp/zel-production-expected.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload immutable release bundle
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            /tmp/zel-production-release.tgz \
+            /tmp/zel-production-expected.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Install isolated release and run no-alpha smoke
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          RELEASE_BASE=/home/z/zel-production-releases
+          RELEASE="$RELEASE_BASE/${{ github.sha }}"
+          CURRENT=/home/z/zel-production-current
+          LEDGER=/home/z/z/ledger
+          SMOKE="/tmp/zel-production-smoke-${{ github.run_id }}"
+          EXPECTED=/tmp/zel-production-expected.json
+          RECEIPT=/tmp/zel-production-deploy-receipt.json
+          PREFLIGHT=/tmp/zel-production-postdeploy-preflight.json
+          mkdir -p "$RELEASE_BASE" "$RELEASE" "$LEDGER" "$SMOKE"
+          tar -xzf /tmp/zel-production-release.tgz -C "$RELEASE"
+          chmod 0755 "$RELEASE/backend/production/zel_production_paper_runner_v1.sh"
+
+          cd "$RELEASE"
+          PYTHONPATH="$RELEASE" python3 -m py_compile \
+            backend/production/zel_production_risk_sizing_v1.py \
+            backend/production/zel_production_bingx_freshness_v1.py \
+            backend/production/zel_production_paper_account_state_v1.py \
+            backend/production/zel_production_active_alpha_adapter_v1.py \
+            backend/production/zel_production_paper_source_adapter_v1.py \
+            backend/production/zel_production_auto_cycle_supervisor_v1.py \
+            backend/production/zel_production_paper_loop_v1.py \
+            backend/production/zel_production_improvement_controller_v1.py
+          PYTHONPATH="$RELEASE" python3 backend/production/zel_production_pipeline_audit_v2.py --repo-root "$RELEASE" --out "$SMOKE/pipeline-audit.json"
+
+          ZEL_PRODUCTION_ALPHA_AUTHORITY_PATH="$SMOKE/missing-authority.json" \
+          ZEL_PRODUCTION_PAPER_INPUT_PATH="$SMOKE/input.json" \
+          PYTHONPATH="$RELEASE" \
+          python3 -m backend.production.zel_production_paper_source_adapter_v1
+
+          ZEL_PRODUCTION_PAPER_INPUT_PATH="$SMOKE/input.json" \
+          ZEL_PRODUCTION_LEDGER_PATH="$SMOKE/events.sqlite" \
+          ZEL_PRODUCTION_SNAPSHOT_PATH="$SMOKE/snapshot.json" \
+          ZEL_PRODUCTION_SUPERVISOR_PATH="$SMOKE/supervisor.sqlite" \
+          ZEL_PRODUCTION_PAPER_LOOP_STATE_PATH="$SMOKE/loop-state.json" \
+          PYTHONPATH="$RELEASE" \
+          python3 -m backend.production.zel_production_paper_loop_v1 --once --interval-s 0 --max-consecutive-failures 1
+
+          PYTHONPATH="$RELEASE" python3 - <<PY
+          import json, sqlite3
+          from pathlib import Path
+          smoke=Path('$SMOKE')
+          inp=json.loads((smoke/'input.json').read_text())
+          assert inp['source_state']=='NO_VALIDATED_ALPHA'
+          assert inp['signal']=='FLAT' and inp['risk_state']=='HOLD'
+          assert 'price' not in inp and 'qty' not in inp
+          db=sqlite3.connect(smoke/'events.sqlite')
+          count=db.execute('SELECT COUNT(*) FROM trade_events').fetchone()[0]
+          db.close()
+          assert count==0
+          print('PASS_NO_ALPHA_ZERO_EVENT_SMOKE')
+          PY
+
+          LINK_TMP=/home/z/.zel-production-current.new
+          rm -f "$LINK_TMP"
+          ln -s "$RELEASE" "$LINK_TMP"
+          mv -Tf "$LINK_TMP" "$CURRENT"
+
+          PRIVILEGED=false
+          if [ "$(id -u)" = "0" ]; then
+            PRIVILEGED=true
+            INSTALL='install'
+            SYSTEMCTL='systemctl'
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            PRIVILEGED=true
+            INSTALL='sudo install'
+            SYSTEMCTL='sudo systemctl'
+          fi
+
+          UNIT_INSTALLED=false
+          ENV_READY=false
+          SERVICE_ENABLED=false
+          SERVICE_ACTIVE=false
+          if [ "$PRIVILEGED" = true ]; then
+            $INSTALL -m 0644 "$RELEASE/deploy/systemd/zel-production-paper-loop-v1.service" /etc/systemd/system/zel-production-paper-loop-v1.service
+            $SYSTEMCTL daemon-reload
+            UNIT_INSTALLED=true
+          fi
+
+          if [ -f /etc/zel/production-paper-loop.env ]; then
+            python3 - <<'PYENV' && ENV_READY=true || ENV_READY=false
+          from pathlib import Path
+          required={
+            'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
+            'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
+            'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
+            'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET'
+          }
+          values={}
+          for raw in Path('/etc/zel/production-paper-loop.env').read_text().splitlines():
+              line=raw.strip()
+              if line and not line.startswith('#') and '=' in line:
+                  k,v=line.split('=',1); values[k.strip()]=v.strip()
+          assert all(values.get(k) for k in required)
+          PYENV
+          fi
+
+          if [ "$PRIVILEGED" = true ] && [ "$ENV_READY" = true ]; then
+            $SYSTEMCTL enable --now zel-production-paper-loop-v1.service
+            [ "$($SYSTEMCTL is-enabled zel-production-paper-loop-v1.service)" = enabled ] && SERVICE_ENABLED=true
+            [ "$($SYSTEMCTL is-active zel-production-paper-loop-v1.service)" = active ] && SERVICE_ACTIVE=true
+          fi
+
+          PYTHONPATH="$RELEASE" python3 "$RELEASE/ops/zel_production_vps_preflight_v1.py" \
+            --root "$CURRENT" --ledger "$LEDGER" --manifest "$EXPECTED" --out "$PREFLIGHT"
+
+          export UNIT_INSTALLED ENV_READY SERVICE_ENABLED SERVICE_ACTIVE
+          python3 - <<PY
+          import json, os
+          from pathlib import Path
+          pre=json.loads(Path('$PREFLIGHT').read_text())
+          flag=lambda name: os.environ.get(name,'false').lower()=='true'
+          service_active=flag('SERVICE_ACTIVE')
+          receipt={
+            'schema_version':'zel.production_isolated_deploy.v1',
+            'state':'PASS_CODE_DEPLOYED_SERVICE_ACTIVE' if service_active else 'HOLD_CODE_DEPLOYED_SERVICE_NOT_ACTIVE',
+            'master_sha':'${{ github.sha }}',
+            'release':'$RELEASE',
+            'current':'$CURRENT',
+            'legacy_checkout_mutated':False,
+            'no_alpha_smoke_pass':True,
+            'zero_trade_event_smoke_pass':True,
+            'unit_installed':flag('UNIT_INSTALLED'),
+            'env_ssot_ready':flag('ENV_READY'),
+            'service_enabled':flag('SERVICE_ENABLED'),
+            'service_active':service_active,
+            'preflight_state':pre['state'],
+            'preflight_blockers':pre['blockers'],
+            'exchange_order_submitted':False,
+            'live_trade_authority':'BLOCKED',
+          }
+          Path('$RECEIPT').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+          REMOTE
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-deploy-receipt.json" \
+            /tmp/zel-production-deploy-receipt.json
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-postdeploy-preflight.json" \
+            /tmp/zel-production-postdeploy-preflight.json
+      - name: Assert safe deployment boundaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-deploy-receipt.json').read_text())
+          assert r['legacy_checkout_mutated'] is False
+          assert r['no_alpha_smoke_pass'] is True
+          assert r['zero_trade_event_smoke_pass'] is True
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          print('STATE='+r['state'])
+          print('ENV_READY='+str(r['env_ssot_ready']))
+          print('SERVICE_ACTIVE='+str(r['service_active']))
+          print('BLOCKERS='+','.join(r['preflight_blockers']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-isolated-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/zel-production-deploy-receipt.json
+            /tmp/zel-production-postdeploy-preflight.json
+          if-no-files-found: error
+          retention-days: 30

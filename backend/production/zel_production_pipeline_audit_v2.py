@@ -107,6 +107,14 @@ def audit(root: Path) -> dict[str, Any]:
             and '"relative_value_psa_v1"' in active_adapter
             and "strategy_id not in TERMINAL_REJECTED_STRATEGY_IDS" in active_adapter
         ),
+        "improvement_terminal_recontamination_guard": (
+            "from backend.production.zel_production_active_alpha_adapter_v1 import TERMINAL_REJECTED_STRATEGY_IDS" in improvement
+            and "IMPROVEMENT_TERMINAL_STRATEGY_FORBIDDEN" in improvement
+            and "HOLD_TERMINAL_INCUMBENT" in improvement
+            and "HOLD_TERMINAL_STRATEGY_FORBIDDEN" in improvement
+            and "HOLD_ROLLBACK_TERMINAL_FORBIDDEN" in improvement
+            and "TERMINAL_STRATEGY_REGISTRY_QUARANTINED_NO_REPAIR_OR_CANDIDATES" in improvement
+        ),
         "carry_native_data_owner_strict": (
             '"premium_index": "/openApi/swap/v2/quote/premiumIndex"' in carry_data
             and '"open_interest": "/openApi/swap/v2/quote/openInterest"' in carry_data
@@ -249,6 +257,7 @@ def audit(root: Path) -> dict[str, Any]:
             "trend_momentum": "TERMINAL_REJECT_DO_NOT_REACTIVATE",
             "carry_flow": "CARRY_POSITIONING_DATA_BOUND_FLOW_AND_SIGNAL_BLOCKED",
             "relative_value_psa": "TERMINAL_REJECT_DO_NOT_REACTIVATE",
+            "improvement_terminal_recontamination": "BLOCKED_AT_SEED_REGISTRY_AND_ROLLBACK",
             "legacy_strategy_role": "MATERIAL_ONLY",
             "candidate_budget": 2,
             "source_code_self_modification": False,

@@ -13,6 +13,9 @@ POLICY_SCHEMA = "zel.production_economic_edge_router_policy.v1"
 FACTORY_SCHEMA = "zel.production_alpha_factory.v1"
 BOOTSTRAP_SCHEMA = "zel.production_performance_bootstrap.v1"
 DEFAULT_POLICY = Path("config/zel_production_economic_edge_router_v1.json")
+CARRY_POSITIONING_EVENT_SCHEMA = "zel.carry_positioning.event_study.v1"
+CARRY_POSITIONING_PASS = "PASS_CARRY_POSITIONING_EVENT_STUDY_CANDIDATE_AUTHORITY_BLOCKED"
+CARRY_POSITIONING_REJECT = "REJECT_CARRY_POSITIONING_EVENT_STUDY_DURABILITY"
 
 
 def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
@@ -69,6 +72,61 @@ def _validate_factory(factory: Mapping[str, Any]) -> Mapping[str, Any]:
     return families
 
 
+def _validate_dynamic_event_study(family_id: str, row: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+    if evidence.get("schema_version") != CARRY_POSITIONING_EVENT_SCHEMA:
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_SCHEMA_INVALID:{family_id}")
+    if evidence.get("family") != family_id:
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_FAMILY_MISMATCH:{family_id}")
+    if evidence.get("strategy_id") != row.get("strategy_id"):
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_STRATEGY_MISMATCH:{family_id}")
+    if evidence.get("selection_authority") is not False or evidence.get("promotion_authority") is not False:
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_SELECTION_AUTHORITY:{family_id}")
+    if evidence.get("execution_authority") != "NONE" or evidence.get("order_authority") != "BLOCKED":
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_EXECUTION_AUTHORITY:{family_id}")
+    if evidence.get("live_trade_authority") != "BLOCKED" or evidence.get("exchange_order_submitted") is not False:
+        raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_LIVE_AUTHORITY:{family_id}")
+    return dict(evidence)
+
+
+def enrich_factory_dynamic_state(factory: Mapping[str, Any]) -> dict[str, Any]:
+    families = _validate_factory(factory)
+    out = dict(factory)
+    enriched: dict[str, Any] = {}
+    for family_id, raw in families.items():
+        if not isinstance(raw, Mapping):
+            enriched[str(family_id)] = raw
+            continue
+        row = dict(raw)
+        path_raw = str(row.get("dynamic_event_study_path") or "").strip()
+        if not path_raw:
+            enriched[str(family_id)] = row
+            continue
+        evidence = read_json(Path(path_raw))
+        if not isinstance(evidence, Mapping):
+            enriched[str(family_id)] = row
+            continue
+        ev = _validate_dynamic_event_study(str(family_id), row, evidence)
+        state = str(ev.get("state") or "")
+        row["dynamic_event_study_state"] = state
+        row["dynamic_event_study_receipt_sha256"] = ev.get("receipt_sha256")
+        if ev.get("coverage_ready") is True:
+            row["history_coverage_bound"] = True
+        if state == CARRY_POSITIONING_REJECT:
+            row["status"] = "TERMINAL_REJECT_EVENT_STUDY_DO_NOT_REACTIVATE"
+            row["reactivation_allowed"] = False
+        elif state == CARRY_POSITIONING_PASS:
+            if ev.get("economic_candidate") is not True or ev.get("survivor_authority") is not False:
+                raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_CANDIDATE_CONTRACT_INVALID:{family_id}")
+            row["economic_candidate_bound"] = True
+        elif state.startswith("HOLD_CARRY_POSITIONING_"):
+            row["dynamic_event_study_hold"] = True
+        else:
+            raise RuntimeError(f"EDGE_ROUTER_DYNAMIC_STATE_UNKNOWN:{family_id}:{state}")
+        enriched[str(family_id)] = row
+    out["families"] = enriched
+    return out
+
+
 def _route_required(bootstrap: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
     if bootstrap.get("schema_version") != BOOTSTRAP_SCHEMA:
         raise RuntimeError("EDGE_ROUTER_BOOTSTRAP_SCHEMA_INVALID")
@@ -82,24 +140,25 @@ def _route_required(bootstrap: Mapping[str, Any], policy: Mapping[str, Any]) -> 
 def _family_status(family_id: str, row: Mapping[str, Any], required: list[str]) -> tuple[bool, dict[str, Any]]:
     status = str(row.get("status") or "")
     if status.startswith("TERMINAL_REJECT") or row.get("reactivation_allowed") is False:
-        return False, {
-            "family_id": family_id,
-            "status": status,
-            "classification": "TERMINAL_REJECT",
-            "missing_source_fields": [],
-        }
+        return False, {"family_id": family_id, "status": status, "classification": "TERMINAL_REJECT", "missing_source_fields": []}
     if row.get("selection_authority") is not False or row.get("promotion_authority") is not False:
         raise RuntimeError(f"EDGE_ROUTER_PREEXISTING_SELECTION_AUTHORITY:{family_id}")
     if row.get("execution_authority") != "NONE":
         raise RuntimeError(f"EDGE_ROUTER_PREEXISTING_EXECUTION_AUTHORITY:{family_id}")
-    missing = [key for key in required if row.get(key) is not True]
-    if missing:
+    if row.get("economic_candidate_bound") is True:
         return False, {
             "family_id": family_id,
+            "strategy_id": str(row.get("strategy_id") or ""),
             "status": status,
-            "classification": "SOURCE_UNBOUND",
-            "missing_source_fields": missing,
+            "classification": "ECONOMIC_CANDIDATE_AUTHORITY_BLOCKED",
+            "dynamic_event_study_state": row.get("dynamic_event_study_state"),
+            "missing_source_fields": [],
         }
+    missing = [key for key in required if row.get(key) is not True]
+    if missing:
+        return False, {"family_id": family_id, "status": status, "classification": "SOURCE_UNBOUND", "missing_source_fields": missing, "dynamic_event_study_state": row.get("dynamic_event_study_state")}
+    if row.get("dynamic_event_study_hold") is True:
+        return False, {"family_id": family_id, "status": status, "classification": "EVENT_STUDY_HOLD", "missing_source_fields": [], "dynamic_event_study_state": row.get("dynamic_event_study_state")}
     return True, {
         "family_id": family_id,
         "strategy_id": str(row.get("strategy_id") or ""),
@@ -126,6 +185,7 @@ def route_tick(policy: Mapping[str, Any], *, factory: Mapping[str, Any] | None, 
         families = _validate_factory(factory)
         blockers: list[dict[str, Any]] = []
         queue: list[dict[str, Any]] = []
+        candidate_block: dict[str, Any] | None = None
         requirements = cfg["family_requirements"]
         for raw_id in cfg["family_priority"]:
             family_id = str(raw_id)
@@ -138,6 +198,10 @@ def route_tick(policy: Mapping[str, Any], *, factory: Mapping[str, Any] | None, 
                 blockers.append({"family_id": family_id, "classification": "SOURCE_REQUIREMENTS_UNDECLARED", "missing_source_fields": []})
                 continue
             eligible, detail = _family_status(family_id, row, [str(x) for x in required_raw])
+            if detail.get("classification") == "ECONOMIC_CANDIDATE_AUTHORITY_BLOCKED":
+                blockers.append(detail)
+                candidate_block = detail
+                break
             if eligible and len(queue) < int(cfg["candidate_budget"]):
                 if not detail.get("strategy_id"):
                     blockers.append({"family_id": family_id, "classification": "STRATEGY_ID_MISSING", "missing_source_fields": []})
@@ -145,7 +209,13 @@ def route_tick(policy: Mapping[str, Any], *, factory: Mapping[str, Any] | None, 
                     queue.append(detail)
             else:
                 blockers.append(detail)
-        if queue:
+        if candidate_block is not None:
+            out = _base("HOLD_EDGE_CANDIDATE_AUTHORITY_BINDING_REQUIRED", "ECONOMIC_CANDIDATE_EXISTS_WITHOUT_RISK_DD_RETENTION_AUTHORITY")
+            out["acquisition_queue"] = []
+            out["candidate"] = candidate_block
+            out["blockers"] = blockers
+            out["next"] = "BIND_RISK_DD_RETENTION_AUTHORITY_BEFORE_BOOTSTRAP_CANDIDATE"
+        elif queue:
             out = _base("PASS_EDGE_ACQUISITION_SOURCE_READY_QUEUE", "SOURCE_READY_FAMILY_AVAILABLE")
             out["acquisition_queue"] = queue
             out["blockers"] = blockers
@@ -170,14 +240,11 @@ def main() -> int:
     cfg = validate_policy(policy)
     factory = read_json(Path(str(cfg["factory_path"])))
     bootstrap = read_json(Path(str(cfg["bootstrap_state_path"])))
+    if isinstance(factory, Mapping):
+        factory = enrich_factory_dynamic_state(factory)
     result = route_tick(cfg, factory=factory, bootstrap=bootstrap)
     atomic_json_write(Path(str(cfg["acquisition_state_path"])), result)
-    print(json.dumps({
-        "state": result["state"],
-        "next": result.get("next"),
-        "queue_count": len(result.get("acquisition_queue") or []),
-        "receipt_sha256": result["receipt_sha256"],
-    }, sort_keys=True))
+    print(json.dumps({"state": result["state"], "next": result.get("next"), "queue_count": len(result.get("acquisition_queue") or []), "receipt_sha256": result["receipt_sha256"]}, sort_keys=True))
     return 0
 
 

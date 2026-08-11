@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.production_ssot_source_recovery.v2"
+SCHEMA = "zel.production_ssot_source_recovery.v3"
 
 TARGETS = {
     "ZEL_DATA_STALE_MS": ("ZEL_DATA_STALE_MS", "DATA_STALE_MS", "market_data_stale_ms", "data_stale_ms"),
@@ -36,8 +36,9 @@ EXCLUDED_PARTS = {
 NON_AUTHORITY_PARTS = {
     "tests", "test", "research", ".github", "fixtures", "fixture", "examples", "example",
     "archive", "archives", "backup", "backups", "tmp", "temp",
+    "runtime", "data", "static", "reports", "report", "_incoming.patch", "_incoming",
 }
-EXPLICIT_AUTHORITY_MARKERS = ("z_policy", "z-policy", "z policy", "ssot")
+PATH_AUTHORITY_MARKERS = ("z_policy", "z-policy", "ssot")
 CURRENT_POLICY_HINTS = ("policy", "config", "ssot", "z_policy", "z-policy")
 
 NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
@@ -73,30 +74,29 @@ def clean_value(value: Any) -> str | None:
     return None
 
 
-def classify(root: Path, path: Path, text: str) -> tuple[bool, str]:
+def classify(root: Path, path: Path) -> tuple[bool, str]:
     rel = path.relative_to(root)
     lowered_parts = {part.lower() for part in rel.parts}
     name = path.name.lower()
     if lowered_parts & NON_AUTHORITY_PARTS or name.endswith(".example") or ".env" in name:
-        return False, "NON_AUTHORITY_PATH"
+        return False, "NON_AUTHORITY_OR_GENERATED_PATH"
 
     full = str(rel).lower()
-    sample = text[:250_000].lower()
-    explicit = any(marker in full or marker in sample for marker in EXPLICIT_AUTHORITY_MARKERS)
-    if explicit:
-        return True, "EXPLICIT_Z_POLICY_OR_SSOT_MARKER"
-
-    # Only the immutable current production release may use a generic policy/config
-    # path as authority. The dirty legacy checkout is evidence-only unless it
-    # explicitly declares Z_POLICY/SSOT. This prevents local risk/runtime snapshots
-    # from silently becoming production policy.
     current_release = root.name == "zel-production-current"
-    if current_release and any(hint in full for hint in CURRENT_POLICY_HINTS):
-        return True, "CURRENT_PRODUCTION_RELEASE_POLICY_CONFIG"
 
-    if current_release:
-        return False, "CURRENT_RELEASE_NON_POLICY_PATH"
-    return False, "LEGACY_REQUIRES_EXPLICIT_Z_POLICY_SSOT"
+    # The dirty legacy checkout is evidence-only unless the path itself is an
+    # explicit Z_POLICY/SSOT document. A string inside generated JSON is not
+    # enough to grant authority.
+    if not current_release:
+        if any(marker in full for marker in PATH_AUTHORITY_MARKERS):
+            return True, "LEGACY_EXPLICIT_Z_POLICY_OR_SSOT_PATH"
+        return False, "LEGACY_REQUIRES_EXPLICIT_Z_POLICY_SSOT_PATH"
+
+    # The immutable current production release may use its own policy/config
+    # contracts as authority, while runtime/metric outputs remain excluded above.
+    if any(hint in full for hint in CURRENT_POLICY_HINTS):
+        return True, "CURRENT_PRODUCTION_RELEASE_POLICY_CONFIG"
+    return False, "CURRENT_RELEASE_NON_POLICY_PATH"
 
 
 def target_for_key(key: str) -> str | None:
@@ -183,7 +183,7 @@ def scan_file(root: Path, path: Path, hits: list[dict[str, Any]]) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return
-    authority, authority_reason = classify(root, path, text)
+    authority, authority_reason = classify(root, path)
     if path.suffix.lower() == ".json":
         try:
             walk_json(
@@ -274,6 +274,7 @@ def build_receipt(roots: list[Path]) -> dict[str, Any]:
         "unresolved_count": len(TARGETS) - resolved_count,
         "roots": root_summaries,
         "targets": targets,
+        "legacy_generated_state_is_authority": False,
         "legacy_generic_policy_is_authority": False,
         "env_mutated": False,
         "service_mutated": False,

@@ -136,6 +136,7 @@ def audit(root: Path) -> dict[str, Any]:
     trend_cfg = families.get("trend_momentum") or {}
     carry_cfg = families.get("carry_flow") or {}
     rv_cfg = families.get("relative_value_psa") or {}
+    rv_terminal = rv_cfg.get("terminal_evidence") or {}
     material = alpha_factory.get("legacy_strategy_material") or {}
     checks.update({
         "alpha_factory_paper_only": (
@@ -168,7 +169,21 @@ def audit(root: Path) -> dict[str, Any]:
             and carry_cfg.get("promotion_authority") is False
             and carry_cfg.get("execution_authority") == "NONE"
         ),
-        "relative_value_not_fake_bound": rv_cfg.get("status") == "PENDING_PRODUCTION_DATA_BINDING" and rv_cfg.get("execution_authority") == "NONE",
+        "relative_value_terminal_reject_sealed": (
+            rv_cfg.get("strategy_id") == "relative_value_psa_v1"
+            and rv_cfg.get("status") == "TERMINAL_REJECT_DO_NOT_REACTIVATE"
+            and rv_cfg.get("mechanism") == "BTC_ETH_7D_LOG_RATIO_MEAN_REVERSION"
+            and rv_cfg.get("reactivation_allowed") is False
+            and rv_cfg.get("selection_authority") is False
+            and rv_cfg.get("promotion_authority") is False
+            and rv_cfg.get("execution_authority") == "NONE"
+            and rv_terminal.get("pull_request") == 606
+            and rv_terminal.get("workflow_run") == 31407842533
+            and rv_terminal.get("w3_trade_count") == 12
+            and float(rv_terminal.get("w3_net_compound_pct")) < 0.0
+            and float(rv_terminal.get("w3_net_expectancy_pct_per_trade")) < 0.0
+            and float(rv_terminal.get("w3_net_profit_factor")) < 1.0
+        ),
         "legacy_strategies_material_only": (
             material.get("role") == "MATERIAL_ONLY"
             and material.get("direct_execution_authority") is False
@@ -218,7 +233,7 @@ def audit(root: Path) -> dict[str, Any]:
             "runner_stage_order": "ALPHA_PRODUCER_THEN_SOURCE_THEN_PAPER_THEN_IMPROVEMENT",
             "primary_alpha_family": "trend_momentum",
             "carry_flow": "CARRY_POSITIONING_DATA_BOUND_FLOW_AND_SIGNAL_BLOCKED",
-            "relative_value_psa": "PENDING_PRODUCTION_DATA_BINDING",
+            "relative_value_psa": "TERMINAL_REJECT_DO_NOT_REACTIVATE",
             "legacy_strategy_role": "MATERIAL_ONLY",
             "candidate_budget": 2,
             "source_code_self_modification": False,

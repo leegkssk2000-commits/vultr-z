@@ -1,0 +1,67 @@
+name: ZEL Source Acquisition Proof V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-source-acquisition-proof-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Export source acquisition state only
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'python3 -' > out/proof.json <<'PY'
+          import json,sqlite3,subprocess
+          from pathlib import Path
+          root=Path('/home/z/z/ledger')
+          acq=json.loads((root/'production_source_acquisition_v1.json').read_text())
+          prop=json.loads((root/'production_ai_edge_proposals_v1.json').read_text())
+          edge=json.loads((root/'production_economic_edge_acquisition_v1.json').read_text())
+          q=[{'source_id':x.get('source_id'),'state':x.get('state'),'acquisition_action':x.get('acquisition_action')} for x in acq.get('queue',[])]
+          svc=subprocess.check_output(['systemctl','is-active','zel-production-paper-loop-v1.service'],text=True).strip()
+          events=root/'production_events_v1.sqlite'
+          n=0
+          if events.exists():
+              db=sqlite3.connect(events)
+              try:
+                  if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trade_events'").fetchone():
+                      n=db.execute('SELECT COUNT(*) FROM trade_events').fetchone()[0]
+              finally: db.close()
+          print(json.dumps({
+              'schema_version':'zel.source_acquisition_proof.v1',
+              'source_acquisition_state':acq.get('state'),
+              'queue':q,
+              'missing_source_count':acq.get('missing_source_count'),
+              'resolved_source_count':acq.get('resolved_source_count'),
+              'proposal_state':prop.get('state'),
+              'proposal_count':prop.get('proposal_count'),
+              'source_ready_count':prop.get('source_ready_count'),
+              'edge_state':edge.get('state'),
+              'service_state':svc,
+              'trade_event_count':n,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED'
+          },indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-source-acquisition-proof
+          path: out/proof.json
+          if-no-files-found: error
+          retention-days: 7

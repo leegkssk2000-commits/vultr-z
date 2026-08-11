@@ -7,11 +7,13 @@ MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 
 while true; do
   "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
+
+  # Resolve deterministic Explore state only. AI proposal generation and source
+  # acquisition are intentionally outside this 5-second PAPER daemon and run in
+  # bounded asynchronous GitHub Actions. The router consumes durable receipts
+  # but grants no selection/promotion/execution/LIVE/order authority to AI.
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
-  "${PYTHON_BIN}" -m backend.production.zel_production_ai_proposal_layer_v1 --tick
-  "${PYTHON_BIN}" -m backend.production.zel_production_source_acquisition_v1
-  "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
-  "${PYTHON_BIN}" -m backend.production.zel_production_ai_admission_materializer_v1
+
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 

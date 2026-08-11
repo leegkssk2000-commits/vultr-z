@@ -1,0 +1,119 @@
+name: ZEL Production VPS Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'ops/zel_production_vps_preflight_v1.py'
+      - '.github/workflows/zel-production-vps-preflight-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile ops/zel_production_vps_preflight_v1.py
+      - name: Assert read-only preflight contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('ops/zel_production_vps_preflight_v1.py').read_text()
+          assert 'mutation_performed' in p
+          assert 'exchange_order_submitted' in p
+          assert 'values_redacted' in p
+          assert 'systemctl("start"' not in p
+          assert 'systemctl("restart"' not in p
+          assert 'systemctl("enable"' not in p
+          assert 'write_text' in p  # receipt only
+          print('PASS_VPS_PREFLIGHT_READ_ONLY_CONTRACT')
+          PY
+
+  vps-readonly-preflight:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Build expected master parity manifest
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_risk_sizing_v1.py',
+            'backend/production/zel_production_bingx_freshness_v1.py',
+            'backend/production/zel_production_paper_account_state_v1.py',
+            'backend/production/zel_production_active_alpha_adapter_v1.py',
+            'backend/production/zel_production_paper_source_adapter_v1.py',
+            'backend/production/zel_production_auto_cycle_supervisor_v1.py',
+            'backend/production/zel_production_paper_loop_v1.py',
+            'backend/production/zel_production_improvement_controller_v1.py',
+            'backend/production/zel_production_paper_runner_v1.sh',
+            'config/zel_production_risk_sizing_v1.json',
+            'config/zel_production_paper_account_v1.json',
+            'config/zel_production_active_alpha_v1.json',
+            'config/zel_production_improvement_v1.json',
+          ]
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          manifest={
+            'schema_version':'zel.production_vps_expected_manifest.v1',
+            'master_sha':'${{ github.sha }}',
+            'files':{p:sha(p) for p in files},
+            'systemd_unit_sha256':sha('deploy/systemd/zel-production-paper-loop-v1.service'),
+          }
+          Path('/tmp/zel-production-vps-expected.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+      - name: Upload read-only probe inputs to tmp
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key \
+            ops/zel_production_vps_preflight_v1.py \
+            /tmp/zel-production-vps-expected.json \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
+      - name: Execute read-only VPS preflight
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "python3 /tmp/zel_production_vps_preflight_v1.py --manifest /tmp/zel-production-vps-expected.json --out /tmp/zel-production-vps-preflight.json"
+          scp -i ~/.ssh/vps_key \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/zel-production-vps-preflight.json" \
+            /tmp/zel-production-vps-preflight.json
+      - name: Assert preflight did not mutate runtime
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/zel-production-vps-preflight.json').read_text())
+          assert r['mutation_performed'] is False
+          assert r['exchange_order_submitted'] is False
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['env']['values_redacted'] is True
+          print('STATE='+r['state'])
+          print('BLOCKERS='+','.join(r['blockers']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-vps-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/zel-production-vps-preflight.json
+          if-no-files-found: error
+          retention-days: 30

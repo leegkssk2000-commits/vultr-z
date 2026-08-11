@@ -10,9 +10,15 @@ on:
       - 'backend/production/zel_production_auto_cycle_supervisor_v1.py'
       - 'backend/production/zel_production_owner_binding_v1.py'
       - 'backend/production/zel_production_spine_v1.py'
+      - 'backend/production/zel_production_bingx_freshness_v1.py'
+      - 'backend/production/zel_production_risk_sizing_v1.py'
+      - 'backend/production/zel_production_paper_account_state_v1.py'
+      - 'backend/production/zel_production_active_alpha_adapter_v1.py'
+      - 'backend/production/zel_production_improvement_controller_v1.py'
       - 'tests/test_zel_production_paper_loop_v1.py'
       - 'tests/test_zel_production_paper_source_adapter_v1.py'
       - 'tests/test_zel_production_spine_v1.py'
+      - 'tests/test_zel_production_paper_trade_e2e_v2.py'
       - 'deploy/systemd/zel-production-paper-loop-v1.service'
       - '.github/workflows/zel-production-paper-loop-v1.yml'
   workflow_dispatch:
@@ -35,6 +41,11 @@ jobs:
         run: |
           python -m py_compile \
             backend/production/zel_production_paper_source_adapter_v1.py \
+            backend/production/zel_production_bingx_freshness_v1.py \
+            backend/production/zel_production_risk_sizing_v1.py \
+            backend/production/zel_production_paper_account_state_v1.py \
+            backend/production/zel_production_active_alpha_adapter_v1.py \
+            backend/production/zel_production_improvement_controller_v1.py \
             backend/production/zel_production_paper_loop_v1.py \
             backend/production/zel_production_auto_cycle_supervisor_v1.py \
             backend/production/zel_production_owner_binding_v1.py \
@@ -49,13 +60,18 @@ jobs:
           pytest -q \
             tests/test_zel_production_paper_source_adapter_v1.py \
             tests/test_zel_production_paper_loop_v1.py \
-            tests/test_zel_production_spine_v1.py
+            tests/test_zel_production_spine_v1.py \
+            tests/test_zel_production_paper_trade_e2e_v2.py
       - name: Assert PAPER-only daemon safety contract
         run: |
           python - <<'PY'
           from pathlib import Path
 
           adapter = Path('backend/production/zel_production_paper_source_adapter_v1.py').read_text()
+          freshness = Path('backend/production/zel_production_bingx_freshness_v1.py').read_text()
+          risk = Path('backend/production/zel_production_risk_sizing_v1.py').read_text()
+          active = Path('backend/production/zel_production_active_alpha_adapter_v1.py').read_text()
+          improvement = Path('backend/production/zel_production_improvement_controller_v1.py').read_text()
           loop = Path('backend/production/zel_production_paper_loop_v1.py').read_text()
           runner = Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
           unit = Path('deploy/systemd/zel-production-paper-loop-v1.service').read_text()
@@ -73,13 +89,20 @@ jobs:
           assert 'mode != "PAPER"' in loop
 
           assert 'NO_VALIDATED_ALPHA' in adapter
-          assert 'ACTIVE_ALPHA_DATA_RISK_SIZING_BINDING_REQUIRED' in adapter
-          assert 'UNBOUND_FAIL_CLOSED' in adapter
-          assert 'backend/engine/market_data_service.py' in adapter
-          assert 'backend/engine/risk_engine.py' in adapter
+          assert 'fetch_fresh_bingx_quote' in adapter
+          assert 'build_risk_sizing' in adapter
+          assert 'bind_active_alpha' in adapter
+          assert 'BingXPublicAdapter' in freshness
+          assert 'DummyTickerAdapter' not in freshness
+          assert 'conditional_25x_enabled' in risk
+          assert 'PAPER_SIM_ONLY' in active
+          assert 'CONFIG_ONLY' in improvement
+          assert 'self_modification_applied' in improvement
 
-          assert 'zel_production_paper_source_adapter_v1' in runner
-          assert 'zel_production_paper_loop_v1' in runner
+          source_i = runner.index('zel_production_paper_source_adapter_v1')
+          cycle_i = runner.index('zel_production_paper_loop_v1')
+          improve_i = runner.index('zel_production_improvement_controller_v1')
+          assert source_i < cycle_i < improve_i
           assert '--once' in runner
           assert 'exit 2' in runner
 
@@ -88,5 +111,5 @@ jobs:
           assert 'ProtectSystem=strict' in unit
           assert 'ReadWritePaths=/home/zel/apps/zel/ledger' in unit
           assert 'backend/production/zel_production_paper_runner_v1.sh' in unit
-          print('PASS_PRODUCTION_PAPER_SOURCE_BINDING_CONTRACT')
+          print('PASS_PRODUCTION_PAPER_SOURCE_BINDING_CONTRACT_V2')
           PY

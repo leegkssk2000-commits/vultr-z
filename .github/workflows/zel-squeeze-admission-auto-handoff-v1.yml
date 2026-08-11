@@ -4,10 +4,6 @@ on:
   workflow_run:
     workflows: ["ZEL Squeeze Break 150D Admission V1"]
     types: [completed]
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/zel-squeeze-admission-auto-handoff-v1.yml'
 
 permissions:
   contents: read
@@ -20,11 +16,9 @@ concurrency:
 jobs:
   handoff:
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.head_sha == '800544aeaa0ec2add5c223e1fa05f46702ed25cb')
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == '800544aeaa0ec2add5c223e1fa05f46702ed25cb'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,7 +39,7 @@ jobs:
           path: /tmp/squeeze-handoff
           merge-multiple: true
           github-token: ${{ github.token }}
-          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || 31526961888 }}
+          run-id: ${{ github.event.workflow_run.id }}
           repository: ${{ github.repository }}
 
       - name: Build fail-closed bridge output

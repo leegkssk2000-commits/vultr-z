@@ -14,18 +14,25 @@ while true; do
   # exchange order is possible here.
   "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
 
-  # 1) Refresh the active-alpha signal before building PAPER input.
+  # 1) If bootstrap has exhausted/rejected its bounded admission candidate,
+  # route to the next already source-ready economic family. This controller is
+  # O(1), network-free and authority-free: it only reads the frozen factory and
+  # bootstrap state and writes an acquisition receipt. Terminal families and
+  # source-unbound families cannot enter the queue.
+  "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
+
+  # 2) Refresh the active-alpha signal before building PAPER input.
   # Missing/non-executable authority is an O(1) HOLD: no BingX call and no
   # signal-file mutation. Only an already executable nonterminal authority is
   # allowed to reach a strict production signal producer.
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1
 
-  # 2) Refresh authoritative PAPER input. Missing/non-executable alpha emits
+  # 3) Refresh authoritative PAPER input. Missing/non-executable alpha emits
   # NO_VALIDATED_ALPHA without touching BingX or inventing price/qty.
   # Active alpha uses strict BingX-native freshness + canonical Risk/Sizing.
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_source_adapter_v1
 
-  # 3) Execute exactly one bounded PAPER cycle under the existing single-flight,
+  # 4) Execute exactly one bounded PAPER cycle under the existing single-flight,
   # idempotence, retry-budget and circuit-breaker supervisor.
   set +e
   "${PYTHON_BIN}" -m backend.production.zel_production_paper_loop_v1 \
@@ -44,7 +51,7 @@ while true; do
     exit "${rc}"
   fi
 
-  # 4) Advance cumulative improvement after the cycle receipt is durable.
+  # 5) Advance cumulative improvement after the cycle receipt is durable.
   # With no incumbent/evidence this is an O(1) HOLD. With valid evidence it may
   # atomically promote/rollback CONFIG_ONLY PAPER authority. It never edits
   # source code and never submits an exchange order.

@@ -57,5 +57,11 @@ while true; do
   # source code and never submits an exchange order.
   "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
 
+  # 6) Rebuild the distinct-family survivor portfolio after any improvement
+  # state transition. The pool never creates a survivor and never grants trade
+  # authority: it only ranks already verified family survivors into Top3 ACTIVE
+  # + Top2 RESERVE and writes a change receipt for notification/rotation logic.
+  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_pool_v1
+
   sleep "${INTERVAL_S}"
 done

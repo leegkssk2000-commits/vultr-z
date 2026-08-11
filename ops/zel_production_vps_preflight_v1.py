@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.production_vps_preflight.v1"
+SCHEMA = "zel.production_vps_preflight.v2"
 REQUIRED_ENV_KEYS = (
     "ZEL_DATA_STALE_MS",
     "ZEL_ACCOUNT_STALE_MS",
@@ -26,6 +26,7 @@ REQUIRED_ENV_KEYS = (
     "ZEL_IMPROVE_MAX_DD_REGRESSION_PCT",
     "ZEL_IMPROVE_ERROR_BUDGET",
 )
+SEARCH_BASES = (Path("/root"), Path("/home"), Path("/opt"))
 
 
 def sha256_file(path: Path) -> str:
@@ -46,6 +47,78 @@ def systemctl(*args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip()
 
 
+def _find_files(pattern: str) -> list[Path]:
+    roots = [str(path) for path in SEARCH_BASES if path.exists()]
+    if not roots:
+        return []
+    proc = subprocess.run(
+        ["find", *roots, "-maxdepth", "7", "-type", "f", "-path", pattern, "-print"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    return [Path(line.strip()) for line in (proc.stdout or "").splitlines() if line.strip()]
+
+
+def discover_roots(preferred: Path, expected_files: dict[str, str]) -> tuple[Path | None, list[dict[str, Any]]]:
+    candidates: set[Path] = set()
+    if preferred.is_dir():
+        candidates.add(preferred.resolve())
+
+    for config in _find_files("*/.git/config"):
+        try:
+            text = config.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "vultr-z" in text:
+            candidates.add(config.parent.parent.resolve())
+
+    for marker in _find_files("*/backend/engine/market_data_service.py"):
+        try:
+            candidates.add(marker.parents[2].resolve())
+        except IndexError:
+            pass
+
+    for marker in _find_files("*/backend/production/zel_production_spine_v1.py"):
+        try:
+            candidates.add(marker.parents[2].resolve())
+        except IndexError:
+            pass
+
+    scored: list[dict[str, Any]] = []
+    for root in sorted(candidates, key=str):
+        existing = sum(1 for rel in expected_files if (root / rel).is_file())
+        exact = sum(
+            1
+            for rel, expected_sha in expected_files.items()
+            if (root / rel).is_file() and sha256_file(root / rel) == expected_sha
+        )
+        git_match = False
+        config = root / ".git" / "config"
+        if config.is_file():
+            try:
+                git_match = "vultr-z" in config.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                git_match = False
+        scored.append(
+            {
+                "root": str(root),
+                "expected_files_present": existing,
+                "exact_master_matches": exact,
+                "git_remote_matches_repo": git_match,
+                "score": exact * 100 + existing * 10 + (1 if git_match else 0),
+            }
+        )
+
+    if not scored:
+        return None, []
+    ranked = sorted(scored, key=lambda row: (-int(row["score"]), str(row["root"])))
+    if len(ranked) > 1 and ranked[0]["score"] == ranked[1]["score"]:
+        return None, ranked
+    return Path(str(ranked[0]["root"])), ranked
+
+
 def parse_env_presence(path: Path) -> tuple[bool, list[str], list[str]]:
     if not path.exists():
         return False, list(REQUIRED_ENV_KEYS), []
@@ -63,11 +136,27 @@ def parse_env_presence(path: Path) -> tuple[bool, list[str], list[str]]:
     return True, missing, empty
 
 
-def audit(root: Path, manifest_path: Path, env_path: Path) -> dict[str, Any]:
+def audit(preferred_root: Path, manifest_path: Path, env_path: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     expected_files = manifest.get("files") or {}
     if not isinstance(expected_files, dict) or not expected_files:
         raise RuntimeError("PREFLIGHT_MANIFEST_INVALID")
+
+    root, root_candidates = discover_roots(preferred_root, expected_files)
+    if root is None:
+        result = {
+            "schema_version": SCHEMA,
+            "state": "HOLD_VPS_ROOT_AUTHORITY_UNRESOLVED",
+            "preferred_root": str(preferred_root),
+            "selected_root": None,
+            "root_candidates": root_candidates,
+            "blockers": ["VPS_REPOSITORY_ROOT_UNRESOLVED"],
+            "mutation_performed": False,
+            "exchange_order_submitted": False,
+            "live_trade_authority": "BLOCKED",
+        }
+        result["receipt_sha256"] = stable_sha(result)
+        return result
 
     file_results: dict[str, Any] = {}
     parity_ok = True
@@ -81,7 +170,6 @@ def audit(root: Path, manifest_path: Path, env_path: Path) -> dict[str, Any]:
 
     env_exists, env_missing, env_empty = parse_env_presence(env_path)
     env_ready = bool(env_exists and not env_missing and not env_empty)
-
     ledger = root / "ledger"
     ledger_ready = ledger.is_dir() and os.access(ledger, os.W_OK)
 
@@ -141,7 +229,9 @@ def audit(root: Path, manifest_path: Path, env_path: Path) -> dict[str, Any]:
     result = {
         "schema_version": SCHEMA,
         "state": state,
-        "root": str(root),
+        "preferred_root": str(preferred_root),
+        "selected_root": str(root),
+        "root_candidates": root_candidates,
         "source_file_count": len(file_results),
         "source_parity": parity_ok,
         "files": file_results,

@@ -1,0 +1,133 @@
+name: ZEL Strategy25 Performance Admission V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/legacy_strategy25_identity_census_v1.py'
+      - 'backend/research/legacy_strategy25_baseline_smoke_v1.py'
+      - 'backend/research/zel_strategy25_performance_admission_v2.py'
+      - 'backend/research/zel_strategy25_performance_admission_v2.json'
+      - 'research/legacy_strategy25_inventory_v1.json'
+      - '.github/workflows/zel-strategy25-performance-admission-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-strategy25-performance-admission-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  final-admission:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and validate control plane
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            control/backend/research/legacy_strategy25_identity_census_v1.py \
+            control/backend/research/legacy_strategy25_baseline_smoke_v1.py \
+            control/backend/research/zel_strategy25_performance_admission_v2.py
+          python -m json.tool control/backend/research/zel_strategy25_performance_admission_v2.json >/dev/null
+          mkdir -p out ~/.ssh
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"; test -n "$VPS_HOST"; test -n "$VPS_USER"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run exact-source identity and baseline smoke on VPS read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_identity_py="/tmp/zel-s25-identity-${tag}.py"
+          remote_smoke_py="/tmp/zel-s25-smoke-${tag}.py"
+          remote_inv="/tmp/zel-s25-inventory-${tag}.json"
+          remote_identity="/tmp/zel-s25-identity-${tag}.json"
+          remote_smoke="/tmp/zel-s25-smoke-${tag}.json"
+          printf '%s\n' "$remote_identity_py" "$remote_smoke_py" "$remote_inv" "$remote_identity" "$remote_smoke" > out/remote_paths.txt
+          scp -i ~/.ssh/vps_key -o BatchMode=yes control/backend/research/legacy_strategy25_identity_census_v1.py "$VPS_USER@$VPS_HOST:$remote_identity_py"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes control/backend/research/legacy_strategy25_baseline_smoke_v1.py "$VPS_USER@$VPS_HOST:$remote_smoke_py"
+          scp -i ~/.ssh/vps_key -o BatchMode=yes control/research/legacy_strategy25_inventory_v1.json "$VPS_USER@$VPS_HOST:$remote_inv"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "$VPS_USER@$VPS_HOST" \
+            "nice -n 19 ionice -c3 /usr/bin/python3 '$remote_identity_py' --root /home/z/z --inventory '$remote_inv' --out '$remote_identity' >/dev/null && /usr/bin/python3 '$remote_smoke_py' --root /home/z/z --identity '$remote_identity' --out '$remote_smoke' >/dev/null && cat '$remote_identity'" \
+            > out/vps_identity.json
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "cat '$remote_smoke'" > out/vps_smoke.json
+          python -m json.tool out/vps_identity.json >/dev/null
+          python -m json.tool out/vps_smoke.json >/dev/null
+      - name: Verify 25-of-25 source gate and smoke
+        run: |
+          python - <<'PY'
+          import json
+          identity=json.load(open('out/vps_identity.json'))
+          smoke=json.load(open('out/vps_smoke.json'))
+          assert identity['state']=='PASS_STRATEGY25_IDENTITY_25_OF_25', identity
+          assert identity['unique_source_identity_count']==25 and identity['missing_source_identity_count']==0 and identity['ambiguous_source_identity_count']==0, identity
+          assert smoke['state']=='PASS_STRATEGY25_BASELINE_SMOKE_25_OF_25', smoke
+          assert smoke['strategy_count']==25 and smoke['compile_pass_count']==25 and smoke['compile_fail_count']==0, smoke
+          assert smoke['replay_performed'] is False and smoke['market_values_read'] is False, smoke
+          print('PASS_STRATEGY25_IDENTITY_AND_BASELINE_SMOKE_25_OF_25')
+          PY
+      - name: Compute final performance disposition from immutable Exact25 terminal
+        run: |
+          set -euo pipefail
+          terminal=results/runtime_results/zel/historical_oos_exact25_replay_v1/1m/latest.json
+          test -f "$terminal"
+          python control/backend/research/zel_strategy25_performance_admission_v2.py \
+            --policy control/backend/research/zel_strategy25_performance_admission_v2.json \
+            --identity out/vps_identity.json \
+            --smoke out/vps_smoke.json \
+            --terminal "$terminal" \
+            --out out/performance_admission.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/performance_admission.json'))
+          assert r['state']=='PASS_STRATEGY25_FINAL_PERFORMANCE_ADMISSION', r
+          assert r['strategy_count']==25 and r['closed_trade_count']==1951, r
+          assert r['final'] is True and r['replay_performed_by_this_stage'] is False, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED', r
+          print('PERFORMANCE_ROUTE',r['economic_survivor_count'],r['next_route'],r['route_candidates'],r['counts'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-strategy25-performance-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 90
+      - name: Cleanup remote probes
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          if test -f out/remote_paths.txt; then
+            paths=$(tr '\n' ' ' < out/remote_paths.txt)
+            ssh -i ~/.ssh/vps_key -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -f $paths" 2>/dev/null || true
+          fi
+          rm -f ~/.ssh/vps_key

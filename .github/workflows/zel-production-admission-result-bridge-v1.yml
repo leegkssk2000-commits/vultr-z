@@ -1,0 +1,41 @@
+name: ZEL Production Admission Result Bridge V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_admission_result_bridge_v1.py'
+      - 'tests/test_zel_production_admission_result_bridge_v1.py'
+      - '.github/workflows/zel-production-admission-result-bridge-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile bridge
+        run: python -m py_compile backend/production/zel_production_admission_result_bridge_v1.py
+      - name: Run fail-closed tests
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          PYTHONPATH=. pytest -q tests/test_zel_production_admission_result_bridge_v1.py
+      - name: Prove no PASS authority constructor exists
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('backend/production/zel_production_admission_result_bridge_v1.py').read_text()
+          assert 'PASS_BOOTSTRAP_ADMISSION_EVIDENCE' not in text
+          assert 'authority_candidate' not in text
+          assert 'REJECT_BOOTSTRAP_ADMISSION_EVIDENCE' in text
+          assert 'write_admission_evidence' in text
+          print('PASS_ADMISSION_BRIDGE_NO_FABRICATED_PROMOTION_PATH')
+          PY

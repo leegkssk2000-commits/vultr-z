@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'ops/zel_production_vps_preflight_v1.py'
+      - 'tests/test_zel_production_vps_preflight_v1.py'
       - '.github/workflows/zel-production-vps-preflight-v1.yml'
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - 'config/zel_production_*'
       - 'deploy/systemd/zel-production-paper-loop-v1*'
       - 'ops/zel_production_vps_preflight_v1.py'
+      - 'tests/test_zel_production_vps_preflight_v1.py'
       - '.github/workflows/zel-production-vps-preflight-v1.yml'
   workflow_dispatch:
 
@@ -30,7 +32,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m py_compile ops/zel_production_vps_preflight_v1.py
+      - name: Compile and test preferred-root selection
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile ops/zel_production_vps_preflight_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_vps_preflight_v1.py
       - name: Assert read-only preflight contract
         run: |
           python - <<'PY'
@@ -39,6 +45,7 @@ jobs:
           assert 'mutation_performed' in p
           assert 'exchange_order_submitted' in p
           assert 'values_redacted' in p
+          assert 'preferred_root_exact_match_selected' in p
           assert 'systemctl("start"' not in p
           assert 'systemctl("restart"' not in p
           assert 'systemctl("enable"' not in p
@@ -63,6 +70,8 @@ jobs:
           files=[
             'backend/production/zel_production_risk_sizing_v1.py',
             'backend/production/zel_production_bingx_freshness_v1.py',
+            'backend/production/zel_production_trend_momentum_v1.py',
+            'backend/production/zel_production_alpha_signal_runner_v1.py',
             'backend/production/zel_production_paper_account_state_v1.py',
             'backend/production/zel_production_active_alpha_adapter_v1.py',
             'backend/production/zel_production_paper_source_adapter_v1.py',
@@ -70,6 +79,7 @@ jobs:
             'backend/production/zel_production_paper_loop_v1.py',
             'backend/production/zel_production_improvement_controller_v1.py',
             'backend/production/zel_production_paper_runner_v1.sh',
+            'config/zel_production_alpha_factory_v1.json',
             'config/zel_production_risk_sizing_v1.json',
             'config/zel_production_paper_account_v1.json',
             'config/zel_production_active_alpha_v1.json',
@@ -116,6 +126,9 @@ jobs:
           assert r['exchange_order_submitted'] is False
           assert r['live_trade_authority']=='BLOCKED'
           assert r['env']['values_redacted'] is True
+          assert r['preferred_root_exact_match_selected'] is True
+          assert r['selected_root'] is not None
+          assert 'VPS_PRODUCTION_CODE_ROOT_UNRESOLVED' not in r['blockers']
           print('STATE='+r['state'])
           print('BLOCKERS='+','.join(r['blockers']))
           PY

@@ -230,7 +230,6 @@ def build_output_snapshot(
         "exchange_order_submitted": False,
     }
     canonical["snapshot_sha256"] = stable_sha(canonical)
-    # Both surfaces receive the exact same canonical payload and hash.
     return {
         "canonical": canonical,
         "alimi": {"snapshot_sha256": canonical["snapshot_sha256"], "snapshot": canonical},
@@ -244,11 +243,19 @@ def _execution_intent(payload: Mapping[str, Any], decision: Mapping[str, Any], p
     route = "paper" if mode == "paper" else "noop"
     if intent_kind == "OPEN_LONG":
         side, reduce_only = "buy", False
+        qty = _f(payload.get("qty"), 1.0)
     elif intent_kind == "OPEN_SHORT":
         side, reduce_only = "sell", False
+        qty = _f(payload.get("qty"), 1.0)
     elif intent_kind == "CLOSE":
         side = "sell" if position["state"] == "LONG" else "buy"
         reduce_only = True
+        # Closing exposure is owned by the canonical ledger position. Upstream
+        # Risk+Sizing intentionally emits qty=0 for EXIT/FLAT because it must not
+        # invent a new exposure quantity. Resolve exact reduce-only quantity here.
+        qty = _f(position.get("qty"), 0.0)
+        if qty <= 0.0:
+            raise RuntimeError("CLOSE_POSITION_QTY_INVALID")
     else:
         raise ValueError(f"UNSUPPORTED_ORDER_INTENT:{intent_kind}")
     key = str(decision["idempotency_key"])
@@ -257,7 +264,7 @@ def _execution_intent(payload: Mapping[str, Any], decision: Mapping[str, Any], p
         side=side,
         event_id=str(payload.get("event_id") or key),
         decision_id=str(payload.get("decision_id") or key),
-        qty=_f(payload.get("qty"), 1.0),
+        qty=qty,
         price=_f(payload.get("price")),
         order_type="market",
         reduce_only=reduce_only,
@@ -277,9 +284,7 @@ def run_cycle(payload: Mapping[str, Any], ledger: ProductionEventLedger) -> dict
     spine_input["position_state"] = current["state"]
     spine_input["market_data_ok"] = bool(payload.get("market_data_ok", True)) and _f(payload.get("price")) > 0.0
     spine_decision = evaluate_spine(spine_input)
-    decision = {
-        key: value for key, value in spine_decision.__dict__.items()
-    }
+    decision = {key: value for key, value in spine_decision.__dict__.items()}
     fill = None
 
     if spine_decision.order_intent != "NONE":

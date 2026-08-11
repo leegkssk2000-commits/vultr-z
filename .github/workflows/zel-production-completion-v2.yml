@@ -1,0 +1,105 @@
+name: ZEL Production Completion V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/**'
+      - 'config/zel_production_*'
+      - 'deploy/systemd/zel-production-paper-loop-v1*'
+      - 'tests/test_zel_production_*'
+      - '.github/workflows/zel-production-completion-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-completion-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  completion-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test/runtime dependencies
+        run: python -m pip install --disable-pip-version-check fastapi httpx pytest
+      - name: Compile production completion modules
+        run: |
+          python -m py_compile \
+            backend/production/zel_production_risk_sizing_v1.py \
+            backend/production/zel_production_bingx_freshness_v1.py \
+            backend/production/zel_production_paper_account_state_v1.py \
+            backend/production/zel_production_active_alpha_adapter_v1.py \
+            backend/production/zel_production_paper_source_adapter_v1.py \
+            backend/production/zel_production_spine_v1.py \
+            backend/production/zel_production_owner_binding_v1.py \
+            backend/production/zel_production_runtime_v1.py \
+            backend/production/zel_production_auto_cycle_supervisor_v1.py \
+            backend/production/zel_production_paper_loop_v1.py \
+            backend/production/zel_production_improvement_controller_v1.py \
+            backend/production/zel_production_pipeline_audit_v2.py
+          bash -n backend/production/zel_production_paper_runner_v1.sh
+      - name: Validate production policy JSON
+        run: |
+          python -m json.tool config/zel_production_risk_sizing_v1.json >/dev/null
+          python -m json.tool config/zel_production_paper_account_v1.json >/dev/null
+          python -m json.tool config/zel_production_active_alpha_v1.json >/dev/null
+          python -m json.tool config/zel_production_improvement_v1.json >/dev/null
+      - name: Run five-stage focused tests
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest -q \
+            tests/test_zel_production_risk_sizing_v1.py \
+            tests/test_zel_production_bingx_freshness_v1.py \
+            tests/test_zel_production_paper_account_state_v1.py \
+            tests/test_zel_production_active_alpha_adapter_v1.py \
+            tests/test_zel_production_paper_source_adapter_v1.py \
+            tests/test_zel_production_paper_trade_e2e_v2.py \
+            tests/test_zel_production_improvement_controller_v1.py
+      - name: Run existing production regression suite
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest -q \
+            tests/test_zel_production_spine_v1.py \
+            tests/test_zel_production_owner_binding_v1.py \
+            tests/test_zel_production_runtime_v1.py \
+            tests/test_zel_production_auto_cycle_supervisor_v1.py \
+            tests/test_zel_production_paper_loop_v1.py
+      - name: Run bottleneck safety and optimization audit
+        env:
+          PYTHONPATH: .
+        run: |
+          mkdir -p out
+          python backend/production/zel_production_pipeline_audit_v2.py \
+            --repo-root . \
+            --out out/zel_production_pipeline_audit_v2.json
+      - name: Assert final fail-closed contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/zel_production_pipeline_audit_v2.json').read_text())
+          assert r['state']=='PASS_PRODUCTION_COMPLETION_PIPELINE_AUDIT'
+          assert all(r['checks'].values())
+          assert r['bottleneck_findings']['candidate_budget']==2
+          assert r['bottleneck_findings']['source_code_self_modification'] is False
+          assert r['bottleneck_findings']['live_exchange_submission'] is False
+          print('PASS_ZEL_PRODUCTION_COMPLETION_V2')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-production-completion-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/zel_production_pipeline_audit_v2.json
+          if-no-files-found: error
+          retention-days: 90

@@ -224,23 +224,26 @@ jobs:
           PYTHONPATH="$RELEASE" python3 "$RELEASE/ops/zel_production_vps_preflight_v1.py" \
             --root "$CURRENT" --ledger "$LEDGER" --manifest "$EXPECTED" --out "$PREFLIGHT"
 
+          export UNIT_INSTALLED ENV_READY SERVICE_ENABLED SERVICE_ACTIVE
           python3 - <<PY
-          import json
+          import json, os
           from pathlib import Path
           pre=json.loads(Path('$PREFLIGHT').read_text())
+          flag=lambda name: os.environ.get(name,'false').lower()=='true'
+          service_active=flag('SERVICE_ACTIVE')
           receipt={
             'schema_version':'zel.production_isolated_deploy.v1',
-            'state':'PASS_CODE_DEPLOYED_SERVICE_ACTIVE' if ${SERVICE_ACTIVE} else 'HOLD_CODE_DEPLOYED_SERVICE_NOT_ACTIVE',
+            'state':'PASS_CODE_DEPLOYED_SERVICE_ACTIVE' if service_active else 'HOLD_CODE_DEPLOYED_SERVICE_NOT_ACTIVE',
             'master_sha':'${{ github.sha }}',
             'release':'$RELEASE',
             'current':'$CURRENT',
             'legacy_checkout_mutated':False,
             'no_alpha_smoke_pass':True,
             'zero_trade_event_smoke_pass':True,
-            'unit_installed':${UNIT_INSTALLED},
-            'env_ssot_ready':${ENV_READY},
-            'service_enabled':${SERVICE_ENABLED},
-            'service_active':${SERVICE_ACTIVE},
+            'unit_installed':flag('UNIT_INSTALLED'),
+            'env_ssot_ready':flag('ENV_READY'),
+            'service_enabled':flag('SERVICE_ENABLED'),
+            'service_active':service_active,
             'preflight_state':pre['state'],
             'preflight_blockers':pre['blockers'],
             'exchange_order_submitted':False,

@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.production_vps_preflight.v3"
+SCHEMA = "zel.production_vps_preflight.v4"
 REQUIRED_ENV_KEYS = (
     "ZEL_DATA_STALE_MS", "ZEL_ACCOUNT_STALE_MS", "ZEL_MAX_DD_DAY_PCT", "ZEL_MAX_DD_TOTAL_PCT",
     "ZEL_ALPHA_SIGNAL_STALE_MS", "ZEL_PAPER_INITIAL_EQUITY_USDT", "ZEL_RISK_DAY_TZ",
@@ -48,23 +48,45 @@ def _find_files(pattern: str) -> list[Path]:
     return [Path(line.strip()) for line in (proc.stdout or "").splitlines() if line.strip()]
 
 
+def _score_root(root: Path, expected_files: dict[str, str]) -> dict[str, Any]:
+    existing = sum(1 for rel in expected_files if (root / rel).is_file())
+    exact = sum(
+        1 for rel, sha in expected_files.items()
+        if (root / rel).is_file() and sha256_file(root / rel) == sha
+    )
+    return {
+        "root": str(root),
+        "expected_files_present": existing,
+        "exact_master_matches": exact,
+        "score": exact * 100 + existing * 10,
+    }
+
+
 def discover_roots(preferred: Path, expected_files: dict[str, str]) -> tuple[Path | None, list[dict[str, Any]]]:
     candidates: set[Path] = set()
+    preferred_resolved: Path | None = None
     if preferred.is_dir():
-        candidates.add(preferred.resolve())
+        preferred_resolved = preferred.resolve()
+        candidates.add(preferred_resolved)
     for marker in _find_files("*/backend/production/zel_production_spine_v1.py"):
         try:
             candidates.add(marker.parents[2].resolve())
         except IndexError:
             pass
-    scored: list[dict[str, Any]] = []
-    for root in sorted(candidates, key=str):
-        existing = sum(1 for rel in expected_files if (root / rel).is_file())
-        exact = sum(1 for rel, sha in expected_files.items() if (root / rel).is_file() and sha256_file(root / rel) == sha)
-        scored.append({"root": str(root), "expected_files_present": existing, "exact_master_matches": exact, "score": exact * 100 + existing * 10})
+
+    scored = [_score_root(root, expected_files) for root in sorted(candidates, key=str)]
     if not scored:
         return None, []
     ranked = sorted(scored, key=lambda row: (-int(row["score"]), str(row["root"])))
+
+    # `/home/z/zel-production-current` is an intentionally managed immutable
+    # release symlink. If its resolved target matches every expected master file,
+    # that explicit deployment authority must win over identical older releases.
+    if preferred_resolved is not None:
+        preferred_row = next((row for row in ranked if row["root"] == str(preferred_resolved)), None)
+        if preferred_row and preferred_row["exact_master_matches"] == len(expected_files):
+            return preferred_resolved, ranked
+
     if len(ranked) > 1 and ranked[0]["score"] == ranked[1]["score"]:
         return None, ranked
     return Path(str(ranked[0]["root"])), ranked
@@ -146,6 +168,7 @@ def audit(preferred_root: Path, ledger_path: Path, manifest_path: Path, env_path
         "schema_version": SCHEMA,
         "state": "PASS_VPS_PRODUCTION_PAPER_READY" if not blockers else "HOLD_VPS_PRODUCTION_DEPLOYMENT_REQUIRED",
         "preferred_root": str(preferred_root), "selected_root": str(root), "ledger_path": str(ledger_path),
+        "preferred_root_exact_match_selected": bool(preferred_root.is_dir() and preferred_root.resolve() == root),
         "root_candidates": root_candidates, "source_file_count": len(file_results), "source_parity": parity_ok, "files": file_results,
         "env": {"path_exists": env_exists, "required_key_count": len(REQUIRED_ENV_KEYS), "missing_keys": env_missing, "empty_keys": env_empty, "values_redacted": True, "ready": env_ready},
         "ledger_writable": ledger_ready,

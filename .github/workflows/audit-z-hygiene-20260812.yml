@@ -1,0 +1,144 @@
+name: audit Z hygiene 20260812
+
+on:
+  push:
+    branches: [zel-hygiene-audit-20260812]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-hygiene-audit-20260812
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Repository hygiene inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json,re
+          root=Path('.github/workflows')
+          files=sorted(root.glob('*.yml'))+sorted(root.glob('*.yaml'))
+          cats={'zel_production':0,'r7a4d':0,'diag':0,'tmp':0,'other':0}
+          scheduled=[]
+          ai_refs={'gemini':[],'openai':[],'codex':[]}
+          for p in files:
+              n=p.name.lower()
+              if n.startswith('zel-production-'): cats['zel_production']+=1
+              elif n.startswith('r7a4d-'): cats['r7a4d']+=1
+              elif n.startswith('diag-') or n.startswith('audit-'): cats['diag']+=1
+              elif n.startswith('_tmp') or 'tmp-' in n: cats['tmp']+=1
+              else: cats['other']+=1
+              text=p.read_text(errors='replace')
+              if re.search(r'(?m)^\s*schedule\s*:', text):
+                  crons=re.findall(r"cron\s*:\s*['\"]?([^'\"\n]+)",text)
+                  scheduled.append({'path':str(p),'cron':crons})
+              low=text.lower()
+              if 'gemini' in low or 'generativelanguage.googleapis.com' in low or 'gemini_api_key' in low:
+                  ai_refs['gemini'].append(str(p))
+              if 'openai' in low or 'api.openai.com' in low or 'openai_api_key' in low:
+                  ai_refs['openai'].append(str(p))
+              if 'codex' in low:
+                  ai_refs['codex'].append(str(p))
+          print('REPO_WORKFLOW_COUNTS='+json.dumps({'total':len(files),**cats},sort_keys=True))
+          print('SCHEDULED_WORKFLOWS='+json.dumps(scheduled,sort_keys=True))
+          print('AI_WORKFLOW_REFS='+json.dumps({k:sorted(v) for k,v in ai_refs.items()},sort_keys=True))
+          PY
+          echo '=== AI CODE REFERENCES ==='
+          grep -RIlE 'generativelanguage\.googleapis\.com|GEMINI_API_KEY|api\.openai\.com|OPENAI_API_KEY|\bOpenAI\b|\bCodex\b' backend config .github/workflows 2>/dev/null | sort | head -n 250 || true
+          echo '=== ROOT TEMP/DIAG FILES ==='
+          find . -maxdepth 3 -type f \( -iname '*tmp*' -o -iname '*diag*' -o -iname '*debug*' \) -printf '%p\n' | sort | head -n 250 || true
+
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: VPS read-only hygiene inventory
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -u
+          echo '=== PRODUCTION LOOP STATUS ==='
+          systemctl is-active zel-production-paper-loop-v1.timer zel-production-paper-loop-v1.service 2>/dev/null || true
+          systemctl is-enabled zel-production-paper-loop-v1.timer 2>/dev/null || true
+          systemctl list-timers --all --no-pager 2>/dev/null | grep -Ei 'zel|r7a4d' | head -n 220 || true
+
+          echo '=== FAILED ZEL/R7A4D UNITS ==='
+          systemctl --failed --no-pager --no-legend 2>/dev/null | grep -Ei 'zel|r7a4d' || true
+
+          echo '=== UNIT FILE COUNTS ==='
+          printf 'zel_unit_files='; systemctl list-unit-files --no-legend 2>/dev/null | awk '$1 ~ /^zel-/ {c++} END{print c+0}'
+          printf 'r7a4d_unit_files='; systemctl list-unit-files --no-legend 2>/dev/null | awk '$1 ~ /^r7a4d-/ {c++} END{print c+0}'
+          printf 'zel_enabled='; systemctl list-unit-files --no-legend 2>/dev/null | awk '$1 ~ /^zel-/ && $2 ~ /enabled/ {c++} END{print c+0}'
+          printf 'r7a4d_enabled='; systemctl list-unit-files --no-legend 2>/dev/null | awk '$1 ~ /^r7a4d-/ && $2 ~ /enabled/ {c++} END{print c+0}'
+
+          echo '=== MISSING EXECSTART ABSOLUTE TARGETS ==='
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,shlex
+          roots=[Path('/etc/systemd/system'),Path('/usr/lib/systemd/system')]
+          out=[]
+          seen=set()
+          for root in roots:
+              if not root.exists(): continue
+              for p in root.glob('*'):
+                  if not p.is_file() or not (p.name.startswith('zel-') or p.name.startswith('r7a4d-')): continue
+                  try: lines=p.read_text(errors='replace').splitlines()
+                  except Exception: continue
+                  for line in lines:
+                      if not line.startswith('ExecStart='): continue
+                      cmd=line.split('=',1)[1].strip()
+                      if cmd.startswith('-'): cmd=cmd[1:].lstrip()
+                      try: parts=shlex.split(cmd)
+                      except Exception: parts=cmd.split()
+                      if not parts: continue
+                      target=parts[0]
+                      if target.startswith('/') and not Path(target).exists():
+                          key=(p.name,target)
+                          if key not in seen:
+                              seen.add(key); out.append({'unit':p.name,'missing_exec':target})
+          import json
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+          echo '=== KNOWN LEGACY/MISSING REFERENCES ==='
+          grep -RsnE 'zel_q4r3_candidate_skill_annotator\.py|s4f18c-shadow-close-writer|h2e9s4f2-shadow-close-engine|h87-stuck-exit-shadow-close-bind|w234-router-stale-open-pending-reconciler' /etc/systemd/system /usr/lib/systemd/system /etc/cron* 2>/dev/null | head -n 240 || true
+
+          echo '=== CRON ZEL/R7A4D REFERENCES ==='
+          grep -RsnEi 'zel|r7a4d' /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily 2>/dev/null | head -n 240 || true
+
+          echo '=== DISK / LEDGER ==='
+          du -sh /home/z/z/ledger /home/z/zel-production-current 2>/dev/null || true
+          printf 'ledger_files='; find /home/z/z/ledger -maxdepth 1 -type f 2>/dev/null | wc -l
+          printf 'ledger_stale_30d='; find /home/z/z/ledger -maxdepth 1 -type f -mtime +30 2>/dev/null | wc -l
+          printf 'ledger_stale_90d='; find /home/z/z/ledger -maxdepth 1 -type f -mtime +90 2>/dev/null | wc -l
+          find /home/z/z/ledger -maxdepth 1 -type f -printf '%s %TY-%Tm-%Td %TH:%TM:%TS %f\n' 2>/dev/null | sort -nr | head -n 35 || true
+
+          echo '=== VPS TMP/DIAG NAMES ==='
+          find /home/z/zel-production-current /home/z/z -maxdepth 3 -type f \( -iname '*tmp*' -o -iname '*diag*' -o -iname '*debug*' \) -printf '%p\n' 2>/dev/null | sort | head -n 260 || true
+
+          echo '=== RECENT PAPER LOOP ==='
+          journalctl -u zel-production-paper-loop-v1.service -n 80 --no-pager -o short-iso 2>/dev/null || true
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

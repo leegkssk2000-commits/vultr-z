@@ -8,13 +8,17 @@ on:
       - 'backend/production/zel_production_ai_admission_executor_v2.py'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
       - 'backend/production/zel_production_ai_family_canary_handoff_v1.py'
+      - 'backend/production/zel_production_family_paper_canary_runner_v1.py'
       - 'config/zel_production_ai_admission_executor_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'config/zel_production_ai_family_canary_handoff_v1.json'
+      - 'config/zel_production_family_paper_canary_runner_v1.json'
       - 'config/zel_production_family_paper_evidence_producer_v1.json'
+      - 'config/zel_production_risk_sizing_v1.json'
       - 'tests/test_zel_production_ai_admission_executor_v1.py'
       - 'tests/test_zel_production_ai_admission_executor_v2.py'
       - 'tests/test_zel_production_ai_family_canary_handoff_v1.py'
+      - 'tests/test_zel_production_family_paper_canary_runner_v1.py'
       - '.github/workflows/zel-production-ai-admission-executor-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Proposal Explore V1']
@@ -40,7 +44,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and test frozen admission executor V2 and canary handoff
+      - name: Compile and test frozen admission, handoff, and independent canary
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
@@ -48,29 +52,37 @@ jobs:
             backend/production/zel_production_ai_admission_executor_v1.py \
             backend/production/zel_production_ai_admission_executor_v2.py \
             backend/production/zel_production_ai_admission_materializer_v1.py \
-            backend/production/zel_production_ai_family_canary_handoff_v1.py
+            backend/production/zel_production_ai_family_canary_handoff_v1.py \
+            backend/production/zel_production_family_paper_canary_runner_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_admission_executor_v1.py \
             tests/test_zel_production_ai_admission_executor_v2.py \
             tests/test_zel_production_ai_admission_materializer_v1.py \
-            tests/test_zel_production_ai_family_canary_handoff_v1.py
-      - name: Verify frozen no-search no-authority boundary
+            tests/test_zel_production_ai_family_canary_handoff_v1.py \
+            tests/test_zel_production_family_paper_canary_runner_v1.py \
+            tests/test_zel_production_family_paper_evidence_producer_v1.py \
+            tests/test_zel_production_family_survivor_verifier_v1.py
+      - name: Verify frozen no-search no-authority and prospective-independence boundary
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           p=json.loads(Path('config/zel_production_ai_admission_executor_v1.json').read_text())
           h=json.loads(Path('config/zel_production_ai_family_canary_handoff_v1.json').read_text())
+          c=json.loads(Path('config/zel_production_family_paper_canary_runner_v1.json').read_text())
           t=json.loads(Path('config/zel_production_ai_admission_template_registry_v1.json').read_text())
-          assert p['mode']=='PAPER'
+          r=json.loads(Path('config/zel_production_risk_sizing_v1.json').read_text())
+          assert p['mode']=='PAPER' and c['mode']=='PAPER'
           assert p['numeric_signal_thresholds']==[] and p['parameter_search'] is False
-          assert p['selection_authority'] is False and p['promotion_authority'] is False
-          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
-          assert p['live_trade_authority']=='BLOCKED'
-          assert h['mode']=='PAPER' and h['max_requests_per_tick'] in (1,2)
-          assert h['selection_authority'] is False and h['promotion_authority'] is False
-          assert h['execution_authority']=='NONE' and h['order_authority']=='BLOCKED'
-          assert h['live_trade_authority']=='BLOCKED'
+          assert c['numeric_signal_thresholds']==[] and c['parameter_search'] is False
+          assert c['windows']==['W1','W2','W3'] and c['trades_per_window']==60
+          assert c['retention_semantics']=='WINDOW_EXPECTANCY_DIV_W1_EXPECTANCY'
+          assert c['risk_basis']=='MINIMUM_FROZEN_PAPER_EXPOSURE'
+          assert min(r['allowed_leverage_x'])==10 and min(r['allowed_position_pct'])==5
+          for row in (p,h,c):
+              assert row['selection_authority'] is False and row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
           expected={
             'l2_inventory_pressure_v1':(['basis','l2_order_book'],'REQUIRE_BASIS_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN'),
             'basis_oi_deleveraging_v1':(['basis','open_interest'],'REQUIRE_OPEN_INTEREST_INCREASE_AND_NONZERO_BASIS_CHANGE'),
@@ -84,12 +96,16 @@ jobs:
               assert row['negative_controls']==['DIRECTION_REVERSAL','PLUS_ONE_EVENT_DELAY','NO_SIGNAL_PLACEBO']
           src=Path('backend/production/zel_production_ai_admission_executor_v2.py').read_text()
           bridge=Path('backend/production/zel_production_ai_family_canary_handoff_v1.py').read_text()
+          runner=Path('backend/production/zel_production_family_paper_canary_runner_v1.py').read_text()
           assert 'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE' in src
           assert 'BUILD_INDEPENDENT_FAMILY_PAPER_CANARY' in src
           assert 'admission_history_reuse_allowed' in bridge and 'prospective_only' in bridge
-          assert 'submit_order' not in src and 'https://' not in src
-          assert 'submit_order' not in bridge and 'https://' not in bridge
-          print('PASS_FROZEN_ADMISSION_TO_CANARY_HANDOFF_BOUNDARY')
+          assert 'admission_history_reuse_allowed' in runner and 'first_not_before_ms' in runner
+          assert 'production_family_paper_canary_history_v1' in Path('config/zel_production_family_paper_canary_runner_v1.json').read_text()
+          assert 'production_ai_admission_observations_v1.ndjson' not in runner
+          for code in (src,bridge,runner):
+              assert 'submit_order' not in code and 'https://' not in code
+          print('PASS_FROZEN_ADMISSION_TO_INDEPENDENT_CANARY_BOUNDARY')
           PY
 
   execute-on-vps:
@@ -113,7 +129,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded frozen admission V2 and canary handoff tick
+      - name: Run one bounded frozen admission, handoff, and prospective canary tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -127,13 +143,16 @@ jobs:
             'backend/production/zel_production_ai_admission_executor_v2.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_ai_family_canary_handoff_v1.py',
+            'backend/production/zel_production_family_paper_canary_runner_v1.py',
             'backend/production/zel_production_carry_flow_data_v1.py',
             'backend/production/zel_production_l2_order_book_data_v1.py',
             'backend/engine/market_data_service.py',
             'config/zel_production_ai_admission_executor_v1.json',
             'config/zel_production_ai_admission_template_registry_v1.json',
             'config/zel_production_ai_family_canary_handoff_v1.json',
+            'config/zel_production_family_paper_canary_runner_v1.json',
             'config/zel_production_family_paper_evidence_producer_v1.json',
+            'config/zel_production_risk_sizing_v1.json',
             'config/zel_production_carry_positioning_v1.json',
           ]
           print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
@@ -170,11 +189,13 @@ jobs:
           python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-admission-carry.json
           python3 -m backend.production.zel_production_ai_admission_executor_v2 >/tmp/zel-ai-admission-executor.json
           python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-family-canary-handoff.json
+          python3 -m backend.production.zel_production_family_paper_canary_runner_v1 >/tmp/zel-family-paper-canary-runner.json
           python3 - <<'PY'
           import json
           from pathlib import Path
           row=json.loads(Path('/tmp/zel-ai-admission-executor.json').read_text())
           handoff=json.loads(Path('/tmp/zel-ai-family-canary-handoff.json').read_text())
+          canary=json.loads(Path('/tmp/zel-family-paper-canary-runner.json').read_text())
           assert row['state'] in {
               'HOLD_AI_ADMISSION_NO_FROZEN_CONTRACT',
               'HOLD_AI_ADMISSION_EXECUTOR_AUTHORITY_MISSING',
@@ -189,6 +210,13 @@ jobs:
               'HOLD_AI_FAMILY_CANARY_LINEAGE_MISSING',
               'HOLD_AI_FAMILY_CANARY_NO_PASSING_RESULT',
               'PASS_AI_FAMILY_CANARY_HANDOFF_READY',
+          }
+          assert canary['state'] in {
+              'HOLD_FAMILY_CANARY_NO_ACTIVE_REQUEST',
+              'HOLD_FAMILY_PAPER_CANARY_ACCUMULATING',
+              'HOLD_FAMILY_PAPER_CANARY_TERMINAL_ONLY',
+              'PASS_FAMILY_PAPER_CANARY_RESULT_READY',
+              'REJECT_FAMILY_PAPER_CANARY',
           }
           persisted=Path('/home/z/z/ledger/production_ai_admission_economic_v1.json')
           if persisted.exists():
@@ -209,6 +237,24 @@ jobs:
               assert h.get('order_authority')=='BLOCKED'
               assert h.get('live_trade_authority')=='BLOCKED'
               assert h.get('exchange_order_submitted') is False
-          print(json.dumps({'admission':row,'handoff':handoff},sort_keys=True))
+          cs=Path('/home/z/z/ledger/production_family_paper_canary_runner_state_v1.json')
+          if cs.exists():
+              c=json.loads(cs.read_text())
+              assert c.get('selection_authority') is False
+              assert c.get('promotion_authority') is False
+              assert c.get('execution_authority')=='NONE'
+              assert c.get('order_authority')=='BLOCKED'
+              assert c.get('live_trade_authority')=='BLOCKED'
+              assert c.get('exchange_order_submitted') is False
+          result=Path('/home/z/z/ledger/production_family_paper_canary_result_v1.json')
+          if result.exists():
+              r=json.loads(result.read_text())
+              assert r.get('state')=='PASS_FAMILY_PAPER_CANARY'
+              assert r.get('prospective_only') is True
+              assert r.get('admission_history_reuse_allowed') is False
+              assert r.get('metrics',{}).get('trade_count')==180
+              assert r.get('risk_request')=={'leverage_x':10,'position_pct':5.0}
+              assert r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+          print(json.dumps({'admission':row,'handoff':handoff,'canary':canary},sort_keys=True))
           PY
           REMOTE

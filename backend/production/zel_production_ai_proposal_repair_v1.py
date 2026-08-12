@@ -155,6 +155,36 @@ def repair_tick(
     return out, True
 
 
+def _sanitized_proposal_status(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, Mapping) or row.get("schema_version") != SCHEMA:
+        return None
+    proposals = row.get("proposals")
+    safe_rows: list[dict[str, Any]] = []
+    if isinstance(proposals, list):
+        for raw in proposals:
+            if not isinstance(raw, Mapping):
+                continue
+            safe_rows.append(
+                {
+                    "proposal_id": str(raw.get("proposal_id") or ""),
+                    "family_id": str(raw.get("family_id") or ""),
+                    "proposal_type": str(raw.get("proposal_type") or ""),
+                    "required_sources": sorted(map(str, raw.get("required_sources") or [])),
+                    "missing_sources": sorted(map(str, raw.get("missing_sources") or [])),
+                    "source_ready": bool(raw.get("source_ready")),
+                }
+            )
+    return {
+        "state": str(row.get("state") or ""),
+        "proposal_count": int(row.get("proposal_count") or 0),
+        "source_ready_count": int(row.get("source_ready_count") or 0),
+        "repair_attempted": bool(row.get("repair_attempted")),
+        "ai_call_succeeded": bool(row.get("ai_call_succeeded")),
+        "proposals": safe_rows,
+        "receipt_sha256": row.get("receipt_sha256"),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="One-shot corrective retry for invalid AI proposal source vocabulary")
     ap.add_argument("--policy", type=Path, default=Path("config/zel_production_ai_proposal_layer_v1.json"))
@@ -185,7 +215,16 @@ def main(argv: list[str] | None = None) -> int:
         ai_caller=caller,
     )
     if result is None:
-        print(json.dumps({"state": "HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_NOT_REQUIRED", "written": False}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "state": "HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_NOT_REQUIRED",
+                    "written": False,
+                    "persisted_proposal": _sanitized_proposal_status(previous),
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if should_write:
         atomic_json_write(proposal_path, result)
@@ -199,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                 "ai_call_succeeded": bool(result.get("ai_call_succeeded")),
                 "written": bool(should_write),
                 "receipt_sha256": result.get("receipt_sha256"),
+                "persisted_proposal": _sanitized_proposal_status(result),
             },
             sort_keys=True,
         )

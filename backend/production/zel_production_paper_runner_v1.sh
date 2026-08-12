@@ -7,11 +7,13 @@ MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 
 while true; do
   "${PYTHON_BIN}" -m backend.production.zel_production_performance_bootstrap_v1 --tick
+  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_pool_refill_bridge_v1
 
   # Resolve deterministic Explore state only. AI proposal generation and source
   # acquisition are intentionally outside this 5-second PAPER daemon and run in
-  # bounded asynchronous GitHub Actions. The router consumes durable receipts
-  # but grants no selection/promotion/execution/LIVE/order authority to AI.
+  # bounded asynchronous GitHub Actions. The refill bridge can only turn a
+  # verified 3+2 pool deficit into the existing bounded route-change demand; it
+  # grants no selection/promotion/execution/LIVE/order authority.
   "${PYTHON_BIN}" -m backend.production.zel_production_economic_edge_router_v1 --tick
 
   "${PYTHON_BIN}" -m backend.production.zel_production_alpha_signal_runner_v1

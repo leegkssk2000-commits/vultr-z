@@ -11,6 +11,9 @@ from backend.production.zel_production_improvement_controller_v1 import atomic_j
 
 FUNDING_VOLUME_TEMPLATE = "funding_volume_elasticity_v1"
 FUNDING_VOLUME_CONTEXT = "REQUIRE_CURRENT_VOLUME_GT_PREVIOUS_OBSERVED_VOLUME_AND_CURRENT_FUNDING_EQ_PREVIOUS_OBSERVED_FUNDING"
+DEFAULT_REJECTION_EVIDENCE_POLICY = Path("config/zel_production_family_paper_evidence_producer_v1.json")
+REJECTION_EVIDENCE_SCHEMA = "zel.production_family_paper_evidence_producer_policy.v1"
+REJECTION_EVIDENCE_SOURCE = "FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT"
 
 
 def validate_funding_volume_contract(contract: Mapping[str, Any], template_registry: Mapping[str, Any]) -> dict[str, Any]:
@@ -33,6 +36,66 @@ def validate_funding_volume_contract(contract: Mapping[str, Any], template_regis
         raise RuntimeError("AI_ADMISSION_V3_FUNDING_VOLUME_CONTROLS_DRIFT")
     if row.get("numeric_signal_thresholds") != [] or row.get("parameter_search") is not False:
         raise RuntimeError("AI_ADMISSION_V3_FUNDING_VOLUME_SEARCH_FORBIDDEN")
+    return row
+
+
+def load_rejection_evidence_floor(policy: Mapping[str, Any]) -> dict[str, Any]:
+    raw_path = str(policy.get("rejection_evidence_policy_path") or DEFAULT_REJECTION_EVIDENCE_POLICY)
+    path = Path(raw_path)
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_POLICY_UNREADABLE") from exc
+    if not isinstance(row, Mapping) or row.get("schema_version") != REJECTION_EVIDENCE_SCHEMA:
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_POLICY_SCHEMA")
+    survivor = row.get("survivor_contract")
+    if not isinstance(survivor, Mapping):
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_CONTRACT_MISSING")
+    try:
+        trade_floor = int(survivor.get("min_trades_per_window"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_TRADE_FLOOR_INVALID") from exc
+    source = str(survivor.get("source") or "")
+    if trade_floor <= 0 or source != REJECTION_EVIDENCE_SOURCE:
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_AUTHORITY_DRIFT")
+    return {
+        "trade_floor": trade_floor,
+        "source": source,
+        "policy_path": raw_path,
+    }
+
+
+def defer_early_rejection(result: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(result)
+    if row.get("state") != "REJECT_AI_ADMISSION_ECONOMIC_EDGE":
+        return row
+    aggregate = row.get("aggregate")
+    trade_count = int(aggregate.get("trade_count") or 0) if isinstance(aggregate, Mapping) else 0
+    trade_floor = int(evidence.get("trade_floor") or 0)
+    if trade_floor <= 0:
+        raise RuntimeError("AI_ADMISSION_V3_REJECTION_EVIDENCE_TRADE_FLOOR_INVALID")
+    row.update(
+        {
+            "rejection_evidence_trade_count": trade_count,
+            "rejection_evidence_trade_floor": trade_floor,
+            "rejection_evidence_source": str(evidence.get("source") or ""),
+            "rejection_evidence_policy_path": str(evidence.get("policy_path") or ""),
+        }
+    )
+    if trade_count < trade_floor:
+        row.update(
+            {
+                "state": "HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT",
+                "next": "CONTINUE_PROSPECTIVE_SOURCE_HISTORY",
+                "economic_candidate": False,
+                "rejection_deferred": True,
+                "rejection_evidence_met": False,
+            }
+        )
+    else:
+        row["rejection_deferred"] = False
+        row["rejection_evidence_met"] = True
+    row["receipt_sha256"] = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
     return row
 
 
@@ -166,6 +229,24 @@ def executor_tick(
             candles_by_symbol=candles_by_symbol,
             history=history,
         )
+    try:
+        rejection_evidence = load_rejection_evidence_floor(cfg)
+    except RuntimeError:
+        out = {
+            "schema_version": v2.SCHEMA,
+            "state": "HOLD_AI_ADMISSION_REJECTION_EVIDENCE_AUTHORITY_MISSING",
+            "results": [],
+            "selection_authority": False,
+            "promotion_authority": False,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+            "live_trade_authority": "BLOCKED",
+            "exchange_order_submitted": False,
+            "action": "hold",
+            "next": "RESTORE_FROZEN_REJECTION_EVIDENCE_AUTHORITY",
+        }
+        out["receipt_sha256"] = stable_sha(out)
+        return out, []
     if not isinstance(template_registry, Mapping) or not isinstance(cost_authority, Mapping):
         raise RuntimeError("AI_ADMISSION_V3_AUTHORITY_MISSING")
     if not isinstance(carry_snapshot, Mapping):
@@ -209,7 +290,8 @@ def executor_tick(
         results.extend([dict(x) for x in base_result.get("results") or [] if isinstance(x, Mapping)])
     merged = existing + observations
     for contract in validated_target:
-        results.append(v2.evaluate_contract(contract, merged, cost_bps))
+        evaluated = v2.evaluate_contract(contract, merged, cost_bps)
+        results.append(defer_early_rejection(evaluated, rejection_evidence))
     out: dict[str, Any] = {
         "schema_version": v2.SCHEMA,
         "results": results,

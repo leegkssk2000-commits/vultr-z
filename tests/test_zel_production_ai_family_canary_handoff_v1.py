@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.production.zel_production_ai_family_canary_handoff_v1 import handoff_tick
+from backend.production.zel_production_improvement_controller_v1 import stable_sha
 
 
 def policy():
@@ -46,6 +49,29 @@ def family_policy():
 
 
 def contracts():
+    contract = {
+        "contract_id": "contract-1",
+        "family_id": "basis_oi_deleveraging",
+        "proposal_id": "proposal-1",
+        "proposal_receipt_sha256": "a" * 64,
+        "template_id": "basis_oi_deleveraging_v1",
+        "template_sha256": "b" * 64,
+        "source_registry_sha256": "c" * 64,
+        "required_sources": ["basis", "open_interest"],
+        "outcome_source": "ohlcv",
+        "mechanism_class": "POSITIONING_DELEVERAGING",
+        "event_anchor": "NATIVE_CARRY_SNAPSHOT_CHANGE",
+        "direction_rule": "FADE_BASIS_CHANGE_SIGN_WHEN_OI_EXPANDS",
+        "context_rule": "REQUIRE_OPEN_INTEREST_INCREASE_AND_NONZERO_BASIS_CHANGE",
+        "horizon_rule": "NEXT_CANONICAL_OUTCOME_OBSERVATION",
+        "negative_controls": ["DIRECTION_REVERSAL", "PLUS_ONE_EVENT_DELAY", "NO_SIGNAL_PLACEBO"],
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+    }
+    contract["receipt_sha256"] = stable_sha(contract)
     return {
         "schema_version": "zel.production_ai_admission_materializer.v1",
         "selection_authority": False,
@@ -53,59 +79,48 @@ def contracts():
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED",
-        "contracts": [
-            {
-                "contract_id": "contract-1",
-                "family_id": "basis_oi_deleveraging",
-                "proposal_id": "proposal-1",
-                "proposal_receipt_sha256": "a" * 64,
-                "template_id": "basis_oi_deleveraging_v1",
-                "template_sha256": "b" * 64,
-                "source_registry_sha256": "c" * 64,
-                "required_sources": ["basis", "open_interest"],
-                "outcome_source": "ohlcv",
-                "mechanism_class": "POSITIONING_DELEVERAGING",
-                "event_anchor": "NATIVE_CARRY_SNAPSHOT_CHANGE",
-                "direction_rule": "FADE_BASIS_CHANGE_SIGN_WHEN_OI_EXPANDS",
-                "context_rule": "REQUIRE_OPEN_INTEREST_INCREASE_AND_NONZERO_BASIS_CHANGE",
-                "horizon_rule": "NEXT_CANONICAL_OUTCOME_OBSERVATION",
-                "negative_controls": ["DIRECTION_REVERSAL", "PLUS_ONE_EVENT_DELAY", "NO_SIGNAL_PLACEBO"],
-                "selection_authority": False,
-                "promotion_authority": False,
-                "execution_authority": "NONE",
-                "order_authority": "BLOCKED",
-                "live_trade_authority": "BLOCKED",
-                "receipt_sha256": "d" * 64,
-            }
-        ],
+        "contracts": [contract],
     }
 
 
-def economic(state="PASS_AI_ADMISSION_ECONOMIC_CANDIDATE"):
+def economic(state="PASS_AI_ADMISSION_ECONOMIC_CANDIDATE", updated_at_ms=1000):
     result_state = "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE" if state == "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE" else state
-    return {
+    result = {
         "schema_version": "zel.production_ai_admission_executor.v1",
-        "state": state,
-        "updated_at_ms": 1000,
+        "state": result_state,
+        "economic_candidate": state == "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE",
+        "family_id": "basis_oi_deleveraging",
+        "contract_id": "contract-1",
+        "template_id": "basis_oi_deleveraging_v1",
+        "execution_cost_bps": 4.5,
         "selection_authority": False,
         "promotion_authority": False,
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED",
         "exchange_order_submitted": False,
-        "receipt_sha256": "e" * 64,
-        "results": [
-            {
-                "state": result_state,
-                "economic_candidate": state == "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE",
-                "family_id": "basis_oi_deleveraging",
-                "contract_id": "contract-1",
-                "template_id": "basis_oi_deleveraging_v1",
-                "execution_cost_bps": 4.5,
-                "receipt_sha256": "f" * 64,
-            }
-        ],
+        "action": "hold",
     }
+    result["receipt_sha256"] = stable_sha(result)
+    row = {
+        "schema_version": "zel.production_ai_admission_executor.v1",
+        "state": state,
+        "updated_at_ms": updated_at_ms,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+        "results": [result],
+    }
+    row["receipt_sha256"] = stable_sha(row)
+    return row
+
+
+def _rehash_top(row):
+    row["receipt_sha256"] = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
+    return row
 
 
 def test_pass_candidate_emits_lineage_locked_independent_request():
@@ -151,8 +166,36 @@ def test_non_candidate_does_not_emit_request():
     assert batch is None
 
 
-def test_request_identity_is_idempotent_for_same_lineage():
-    _, a = handoff_tick(policy(), economic_result=economic(), contract_state=contracts(), family_evidence_policy=family_policy(), now_ms=2000)
-    _, b = handoff_tick(policy(), economic_result=economic(), contract_state=contracts(), family_evidence_policy=family_policy(), now_ms=9000)
+def test_request_identity_ignores_volatile_batch_timestamp_and_receipt():
+    _, a = handoff_tick(
+        policy(),
+        economic_result=economic(updated_at_ms=1000),
+        contract_state=contracts(),
+        family_evidence_policy=family_policy(),
+        now_ms=2000,
+    )
+    _, b = handoff_tick(
+        policy(),
+        economic_result=economic(updated_at_ms=9000),
+        contract_state=contracts(),
+        family_evidence_policy=family_policy(),
+        now_ms=10000,
+    )
     assert a is not None and b is not None
+    assert a["requests"][0]["lineage"]["economic_batch_receipt_sha256"] != b["requests"][0]["lineage"]["economic_batch_receipt_sha256"]
     assert a["requests"][0]["request_id"] == b["requests"][0]["request_id"]
+
+
+def test_tampered_economic_result_is_rejected_even_if_batch_is_rehashed():
+    row = economic()
+    row["results"][0]["execution_cost_bps"] = 99.0
+    _rehash_top(row)
+    with pytest.raises(RuntimeError, match="ECONOMIC_RESULT_RECEIPT_MISMATCH"):
+        handoff_tick(policy(), economic_result=row, contract_state=contracts(), family_evidence_policy=family_policy(), now_ms=2000)
+
+
+def test_tampered_contract_is_rejected():
+    cs = contracts()
+    cs["contracts"][0]["direction_rule"] = "TAMPERED"
+    with pytest.raises(RuntimeError, match="CONTRACT_RECEIPT_MISMATCH"):
+        handoff_tick(policy(), economic_result=economic(), contract_state=cs, family_evidence_policy=family_policy(), now_ms=2000)

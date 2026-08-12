@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -26,13 +25,19 @@ def _f(v: Any, name: str) -> float:
     return out
 
 
-def _hold(state: str, reason: str, *, missing: list[str] | None = None) -> dict[str, Any]:
+def _i(v: Any, name: str) -> int:
+    out = _f(v, name)
+    if not out.is_integer():
+        raise RuntimeError(f"FAMILY_PAPER_EVIDENCE_INTEGER_INVALID:{name}")
+    return int(out)
+
+
+def _hold(state: str, reason: str) -> dict[str, Any]:
     row = {
         "schema_version": SCHEMA,
         "state": state,
         "action": "hold",
         "reason": reason,
-        "missing": list(missing or []),
         "write_evidence": False,
         "selection_authority": False,
         "promotion_authority": False,
@@ -46,6 +51,35 @@ def _hold(state: str, reason: str, *, missing: list[str] | None = None) -> dict[
     return row
 
 
+def _contract(policy: Mapping[str, Any]) -> dict[str, float | str]:
+    raw = policy.get("survivor_contract")
+    if not isinstance(raw, Mapping):
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_SURVIVOR_CONTRACT_MISSING")
+    out: dict[str, float | str] = {
+        "min_trades_per_window": float(_i(raw.get("min_trades_per_window"), "min_trades_per_window")),
+        "min_profit_factor": _f(raw.get("min_profit_factor"), "min_profit_factor"),
+        "min_expectancy_exclusive": _f(raw.get("min_expectancy_exclusive"), "min_expectancy_exclusive"),
+        "min_net_pnl_exclusive": _f(raw.get("min_net_pnl_exclusive"), "min_net_pnl_exclusive"),
+        "min_payoff_ratio": _f(raw.get("min_payoff_ratio"), "min_payoff_ratio"),
+        "min_retention": _f(raw.get("min_retention"), "min_retention"),
+        "max_dd_pct": _f(raw.get("max_dd_pct"), "max_dd_pct"),
+        "source": str(raw.get("source") or "").strip(),
+    }
+    if out["min_trades_per_window"] != 60.0:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_MIN_TRADES_CONTRACT_INVALID")
+    if out["min_profit_factor"] != 1.0 or out["min_payoff_ratio"] != 1.0:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_RATIO_CONTRACT_INVALID")
+    if out["min_expectancy_exclusive"] != 0.0 or out["min_net_pnl_exclusive"] != 0.0:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_POSITIVE_EDGE_CONTRACT_INVALID")
+    if out["min_retention"] != 0.60:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_RETENTION_CONTRACT_INVALID")
+    if out["max_dd_pct"] != 10.0:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_DD_CONTRACT_INVALID")
+    if not out["source"]:
+        raise RuntimeError("FAMILY_PAPER_EVIDENCE_CONTRACT_SOURCE_MISSING")
+    return out
+
+
 def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     if policy.get("schema_version") != POLICY_SCHEMA:
         raise RuntimeError("FAMILY_PAPER_EVIDENCE_POLICY_SCHEMA_INVALID")
@@ -54,9 +88,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("canary_result_path", "evidence_path", "state_path"):
         if not str(policy.get(key) or "").strip():
             raise RuntimeError(f"FAMILY_PAPER_EVIDENCE_PATH_MISSING:{key}")
-    envs = policy.get("required_ssot_env")
-    if not isinstance(envs, list) or not envs:
-        raise RuntimeError("FAMILY_PAPER_EVIDENCE_SSOT_ENV_MISSING")
+    _contract(policy)
     if policy.get("selection_authority") is not False or policy.get("promotion_authority") is not False:
         raise RuntimeError("FAMILY_PAPER_EVIDENCE_AUTHORITY_FORBIDDEN")
     if policy.get("execution_authority") != "NONE" or policy.get("order_authority") != "BLOCKED":
@@ -66,20 +98,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     return dict(policy)
 
 
-def _ssot_bound(policy: Mapping[str, Any]) -> tuple[dict[str, float], list[str]]:
-    values: dict[str, float] = {}
-    missing: list[str] = []
-    for env_name in policy["required_ssot_env"]:
-        name = str(env_name)
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            missing.append(name)
-        else:
-            values[name] = _f(raw, name)
-    return values, sorted(missing)
-
-
-def _normalize_canary(row: Mapping[str, Any], ssot: Mapping[str, float]) -> dict[str, Any]:
+def _normalize_canary(row: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     if row.get("schema_version") != INPUT_SCHEMA or row.get("state") != "PASS_FAMILY_PAPER_CANARY":
         raise RuntimeError("FAMILY_PAPER_CANARY_NOT_PASS")
     if row.get("economic_gate_pass") is not True or row.get("durability_gate_pass") is not True or row.get("integrity_pass") is not True:
@@ -107,17 +126,44 @@ def _normalize_canary(row: Mapping[str, Any], ssot: Mapping[str, float]) -> dict
         w = windows[name]
         if not isinstance(w, Mapping):
             raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_INVALID:{name}")
+        trades = _i(w.get("trade_count"), f"{name}.trade_count")
+        net = _f(w.get("net_pnl"), f"{name}.net_pnl")
+        pf = _f(w.get("profit_factor"), f"{name}.profit_factor")
+        exp = _f(w.get("expectancy"), f"{name}.expectancy")
+        payoff = _f(w.get("payoff_ratio"), f"{name}.payoff_ratio")
+        retention = _f(w.get("retention"), f"{name}.retention")
+        if trades < int(contract["min_trades_per_window"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_TRADES_FAIL:{name}")
+        if net <= float(contract["min_net_pnl_exclusive"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_NET_FAIL:{name}")
+        if pf < float(contract["min_profit_factor"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_PF_FAIL:{name}")
+        if exp <= float(contract["min_expectancy_exclusive"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_EXPECTANCY_FAIL:{name}")
+        if payoff < float(contract["min_payoff_ratio"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_PAYOFF_FAIL:{name}")
+        if retention < float(contract["min_retention"]):
+            raise RuntimeError(f"FAMILY_PAPER_CANARY_WINDOW_RETENTION_FAIL:{name}")
         out_windows[name] = {
-            "net_pnl": _f(w.get("net_pnl"), f"{name}.net_pnl"),
-            "profit_factor": _f(w.get("profit_factor"), f"{name}.profit_factor"),
-            "expectancy": _f(w.get("expectancy"), f"{name}.expectancy"),
-            "payoff_ratio": _f(w.get("payoff_ratio"), f"{name}.payoff_ratio"),
-            "retention": _f(w.get("retention"), f"{name}.retention"),
+            "trade_count": float(trades),
+            "net_pnl": net,
+            "profit_factor": pf,
+            "expectancy": exp,
+            "payoff_ratio": payoff,
+            "retention": retention,
         }
     metrics = row.get("metrics")
     if not isinstance(metrics, Mapping):
         raise RuntimeError("FAMILY_PAPER_CANARY_METRICS_MISSING")
     out_metrics = {k: _f(metrics.get(k), k) for k in ("trade_count", "net_expectancy", "profit_factor", "net_pnl", "max_dd_pct")}
+    expected_trades = sum(v["trade_count"] for v in out_windows.values())
+    if abs(out_metrics["trade_count"] - expected_trades) > 1e-9:
+        raise RuntimeError("FAMILY_PAPER_CANARY_AGGREGATE_TRADE_COUNT_MISMATCH")
+    if out_metrics["net_expectancy"] <= 0 or out_metrics["profit_factor"] < 1.0 or out_metrics["net_pnl"] <= 0:
+        raise RuntimeError("FAMILY_PAPER_CANARY_AGGREGATE_ECONOMIC_FAIL")
+    if out_metrics["max_dd_pct"] < 0 or out_metrics["max_dd_pct"] > float(contract["max_dd_pct"]):
+        raise RuntimeError("FAMILY_PAPER_CANARY_AGGREGATE_DD_FAIL")
+    contract_material = dict(contract)
     out = {
         "schema_version": OUTPUT_SCHEMA,
         "state": "PASS_FAMILY_PAPER_EVIDENCE",
@@ -131,7 +177,8 @@ def _normalize_canary(row: Mapping[str, Any], ssot: Mapping[str, float]) -> dict
         "risk_request": {"leverage_x": lev, "position_pct": pos},
         "windows": out_windows,
         "metrics": out_metrics,
-        "ssot_binding": {"bound": True, "env_names": sorted(ssot), "values_sha256": stable_sha(dict(sorted(ssot.items())))},
+        "survivor_contract": contract_material,
+        "survivor_contract_sha256": stable_sha(contract_material),
         "canary_receipt_sha256": str(row.get("receipt_sha256") or stable_sha(row)),
         "selection_authority": False,
         "promotion_authority": False,
@@ -147,13 +194,10 @@ def _normalize_canary(row: Mapping[str, Any], ssot: Mapping[str, float]) -> dict
 
 def tick(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     cfg = validate_policy(policy)
-    ssot, missing = _ssot_bound(cfg)
-    if missing:
-        return _hold("HOLD_FAMILY_PAPER_EVIDENCE_SSOT_UNBOUND", "REQUIRED_Z_POLICY_SSOT_ENV_UNBOUND", missing=missing), None
     canary = read_json(Path(str(cfg["canary_result_path"])))
     if canary is None:
         return _hold("HOLD_FAMILY_PAPER_CANARY_MISSING", "NORMALIZED_FAMILY_PAPER_CANARY_NOT_AVAILABLE"), None
-    evidence = _normalize_canary(canary, ssot)
+    evidence = _normalize_canary(canary, _contract(cfg))
     state = {
         "schema_version": SCHEMA,
         "state": "PASS_FAMILY_PAPER_EVIDENCE_READY",

@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
+      - 'backend/production/zel_production_openai_critic_v1.py'
       - 'backend/production/zel_production_ai_terminal_feedback_v1.py'
       - 'backend/production/zel_production_source_acquisition_v1.py'
       - 'backend/production/zel_production_l2_order_book_data_v1.py'
@@ -28,6 +29,7 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
+      - 'backend/production/zel_production_openai_critic_v1.py'
       - 'backend/production/zel_production_ai_terminal_feedback_v1.py'
       - 'backend/production/zel_production_source_acquisition_v1.py'
       - 'backend/production/zel_production_l2_order_book_data_v1.py'
@@ -69,6 +71,7 @@ jobs:
           python -m pip install --disable-pip-version-check pytest
           python -m py_compile \
             backend/production/zel_production_ai_proposal_layer_v1.py \
+            backend/production/zel_production_openai_critic_v1.py \
             backend/production/zel_production_ai_terminal_feedback_v1.py \
             backend/production/zel_production_source_acquisition_v1.py \
             backend/production/zel_production_l2_order_book_data_v1.py \
@@ -92,6 +95,12 @@ jobs:
           assert p['mode']=='PAPER' and f['mode']=='PAPER'
           assert p['candidate_budget']<=2
           assert p['numeric_threshold_proposals_allowed'] is False
+          critic=p.get('openai_critic',{})
+          assert critic.get('enabled') is True
+          assert critic.get('required') is False
+          assert critic.get('execution_authority')=='NONE'
+          assert critic.get('order_authority')=='BLOCKED'
+          assert critic.get('live_trade_authority')=='BLOCKED'
           for k in ('raw_trades_sent','private_code_sent','account_data_sent','credentials_sent'):
               assert p[k] is False
           for row in (p,f):
@@ -100,10 +109,12 @@ jobs:
               assert row['order_authority']=='BLOCKED' and row['live_trade_authority']=='BLOCKED'
               assert row['source_code_mutation_allowed'] is False and row['self_modification_allowed'] is False
           src=Path('backend/production/zel_production_ai_proposal_layer_v1.py').read_text()
+          openai=Path('backend/production/zel_production_openai_critic_v1.py').read_text()
           guard=Path('backend/production/zel_production_ai_terminal_feedback_v1.py').read_text()
           assert 'generativelanguage.googleapis.com' in src
+          assert 'api.openai.com/v1/responses' in openai
           assert 'BingX' not in src and 'submit_order' not in src
-          assert 'submit_order' not in guard and 'https://' not in guard
+          assert 'submit_order' not in openai and 'submit_order' not in guard
           print('PASS_AI_PROPOSAL_ONLY_AUTHORITY_BOUNDARY')
           PY
       - name: Verify PAPER runner stays network-free from AI Explore
@@ -120,11 +131,14 @@ jobs:
           assert bootstrap < router < alpha < paper < improve < pool
           for forbidden in (
               'zel_production_ai_proposal_layer_v1',
+              'zel_production_openai_critic_v1',
               'zel_production_ai_terminal_feedback_v1',
               'zel_production_source_acquisition_v1',
               'zel_production_ai_admission_materializer_v1',
               'GEMINI_API_KEY',
+              'OPENAI_API_KEY',
               'generativelanguage.googleapis.com',
+              'api.openai.com',
           ):
               assert forbidden not in r
           assert r.count('zel_production_economic_edge_router_v1') == 1
@@ -136,6 +150,7 @@ jobs:
           from pathlib import Path
           w=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
           assert 'RUNTIME_PARITY_B64' in w and 'RUNTIME_PARITY_TIMEOUT' in w
+          assert 'secrets.OPENAI_API_KEY' in w
           feedback=w.index('zel_production_ai_terminal_feedback_v1 >/tmp/zel-ai-explore-feedback.json')
           router=w.index('zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json')
           proposal=w.index('zel_production_ai_proposal_layer_v1 --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json --tick')
@@ -182,15 +197,18 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          OPENAI_KEY_B64="$(printf '%s' "$OPENAI_API_KEY" | base64 -w0)"
           RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
           import hashlib,json
           from pathlib import Path
           files=[
             'backend/production/zel_production_ai_proposal_layer_v1.py',
+            'backend/production/zel_production_openai_critic_v1.py',
             'backend/production/zel_production_ai_terminal_feedback_v1.py',
             'backend/production/zel_production_source_acquisition_v1.py',
             'backend/production/zel_production_l2_order_book_data_v1.py',
@@ -208,7 +226,7 @@ jobs:
           print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
           PY
           )"
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' EVENT_NAME='$EVENT_NAME' bash -se" <<'REMOTE'
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' OPENAI_KEY_B64='$OPENAI_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' EVENT_NAME='$EVENT_NAME' bash -se" <<'REMOTE'
           set -euo pipefail
           if [ "$EVENT_NAME" = "push" ]; then
             matched=0
@@ -239,6 +257,7 @@ jobs:
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          export OPENAI_API_KEY="$(printf '%s' "$OPENAI_KEY_B64" | base64 -d)"
           python3 -m backend.production.zel_production_ai_terminal_feedback_v1 >/tmp/zel-ai-explore-feedback.json
           python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json
           python3 -m backend.production.zel_production_ai_proposal_layer_v1 --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json --tick >/tmp/zel-ai-explore-proposal.json

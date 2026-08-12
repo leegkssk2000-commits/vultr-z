@@ -1,4 +1,4 @@
-name: trace Z 5s legacy invoker 20260812
+name: map Z legacy caller owners 20260812
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  trace:
+  map:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,7 +23,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Trace dynamic legacy invoker read-only
+      - name: Map active caller scripts to unit owners read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -31,44 +31,39 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
           set -u
-          echo '=== ACTIVE ZEL TIMERS ==='
-          systemctl list-timers --all --no-pager --no-legend 2>/dev/null | grep -Ei 'zel|q4r3|s4f|s4g8|paper' | head -n 320 || true
-
-          echo '=== ACTIVE ZEL SERVICES / EXECSTART ==='
-          while read -r u _; do
-            [ -n "$u" ] || continue
-            echo "--- $u ---"
-            systemctl show "$u" -p ActiveState -p SubState -p MainPID -p ExecStart --no-pager 2>/dev/null || true
-          done < <(systemctl list-units --type=service --state=running --no-legend 2>/dev/null | grep -Ei 'zel|q4r3|s4f|s4g8|paper' | head -n 180)
-
-          echo '=== GENERIC DYNAMIC SYSTEMCTL CALLERS ==='
-          grep -RsnE 'systemctl[[:space:]]+(start|restart|try-restart)|subprocess\.(run|call|Popen).*systemctl|os\.system\(.*systemctl' \
-            /usr/local/bin /home/z/zel-production-current/backend /home/z/z 2>/dev/null \
-            | grep -Ei 'zel|service|unit|timer|start' | head -n 520 || true
-
-          echo '=== LEGACY NAME FRAGMENTS ANYWHERE ==='
-          grep -RsnEi 's4f18c|s4g8r4|shadow.?close.?writer|zero.?epoch.?q4|projection.?single.?writer' \
-            /usr/local/bin /home/z/zel-production-current/backend /home/z/z /etc/systemd/system 2>/dev/null | head -n 520 || true
-
-          echo '=== SAMPLE 22 SECONDS OF TARGET STARTS ==='
-          before="$(date --iso-8601=seconds)"
-          sleep 22
-          after="$(date --iso-8601=seconds)"
-          echo "window=$before..$after"
-          journalctl --since "$before" --until "$after" --no-pager -o short-iso 2>/dev/null \
-            | grep -E 'Starting ZEL S4F18C|Starting ZEL S4G8R4|s4f18c-shadow-close-writer|s4g8r4-zero-epoch-q4-display-mirror|Failed to start|can.t open file' \
-            | tail -n 260 || true
-
-          echo '=== SAME WINDOW SYSTEMD START/FINISH NEIGHBORS ==='
-          journalctl --since "$before" --until "$after" --no-pager -o short-iso 2>/dev/null \
-            | grep -E 'systemd\[1\]: (Starting|Started|Finished|Failed).*ZEL|systemd\[1\]: (Starting|Started|Finished|Failed).*zel' \
-            | tail -n 520 || true
-
-          echo '=== TARGET SHOW AFTER SAMPLE ==='
-          for u in zel-s4f18c-shadow-close-writer.service zel-s4g8r4-zero-epoch-q4-display-mirror.service; do
-            systemctl show "$u" -p ActiveEnterTimestamp -p InactiveEnterTimestamp -p InvocationID -p Result -p ExecMainCode -p ExecMainStatus --no-pager 2>/dev/null || true
+          scripts=(
+            zel_s4g8r7f5j_direct_tv_price_to_close_feed.py
+            zel_s4g8r7f5l_shadow_auto_close_fallback.py
+            zel_s4g8r7f5k_clean_upstream_price_close_bind.py
+            zel_s4g8r7f5h_auto_close_price_feed_bind.py
+            zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py
+          )
+          for s in "${scripts[@]}"; do
+            echo "=== SCRIPT $s ==="
+            grep -RslF "/usr/local/bin/$s" /etc/systemd/system /usr/lib/systemd/system 2>/dev/null | sort || true
+            echo '-- call-site context --'
+            grep -nE 'systemctl (start|restart)|subprocess\.run|os\.system|DISPLAY_UNIT|CLOSE=' "/usr/local/bin/$s" 2>/dev/null | tail -n 40 || true
           done
-          echo 'PASS_5S_LEGACY_INVOKER_TRACE_READ_ONLY'
+
+          echo '=== MATCHED UNIT STATES ==='
+          units="$(grep -RslE 'zel_s4g8r7f5(j_direct_tv_price_to_close_feed|l_shadow_auto_close_fallback|k_clean_upstream_price_close_bind|h_auto_close_price_feed_bind)|zel_s4g8r7f3a_state_aware_shadow_wakeup_router' /etc/systemd/system /usr/lib/systemd/system 2>/dev/null | sed -E 's#.*/##' | sort -u || true)"
+          for u in $units; do
+            echo "--- $u ---"
+            systemctl show "$u" -p ActiveState -p SubState -p UnitFileState -p TriggeredBy -p Triggers -p ExecStart --no-pager 2>/dev/null || true
+            b="${u%.service}"
+            systemctl show "$b.timer" -p ActiveState -p UnitFileState -p NextElapseUSecRealtime -p LastTriggerUSec --no-pager 2>/dev/null || true
+          done
+
+          echo '=== RECENT CALLER JOURNALS ==='
+          for pat in s4g8r7f5j s4g8r7f5l s4g8r7f5k s4g8r7f5h s4g8r7f3a; do
+            journalctl --since '-4 min' --no-pager -o short-iso 2>/dev/null | grep -i "$pat" | tail -n 100 || true
+          done
+
+          echo '=== OUTPUT FRESHNESS ==='
+          find /var/www/z-os-alimi/api -maxdepth 1 -type f \( \
+            -name '*s4g8r7f5j*' -o -name '*s4g8r7f5l*' -o -name '*s4g8r7f5k*' -o -name '*s4g8r7f5h*' -o -name '*s4g8r7f3a*' -o -name 's4f18c_shadow_tp_sl_close_writer_latest.json' \
+          \) -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %f\n' 2>/dev/null | sort || true
+          echo 'PASS_LEGACY_CALLER_OWNER_MAP_READ_ONLY'
           REMOTE
 
       - name: Cleanup SSH key

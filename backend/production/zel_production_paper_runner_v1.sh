@@ -13,6 +13,7 @@ MAX_FAILURES="${ZEL_PRODUCTION_PAPER_MAX_CONSECUTIVE_FAILURES:-3}"
 # Nothing is persisted: every service restart necessarily runs the chain once.
 cold_source_fp=""
 cold_output_fp=""
+declare -a cold_pipeline_modules=()
 
 cold_pipeline_fingerprints() {
   "${PYTHON_BIN}" - <<'PY'
@@ -60,11 +61,10 @@ PY
 }
 
 run_cold_pipeline() {
-  "${PYTHON_BIN}" -m backend.production.zel_production_family_paper_evidence_producer_v1
-  "${PYTHON_BIN}" -m backend.production.zel_production_family_survivor_verifier_v1
-  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_catalog_v1
-  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_pool_v2
-  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_authority_activation_v2
+  local module
+  for module in "${cold_pipeline_modules[@]}"; do
+    "${PYTHON_BIN}" -m "${module}"
+  done
 }
 
 while true; do
@@ -98,6 +98,19 @@ while true; do
   # Keep repair/recovery semantics hot.  This controller may restore authority
   # or queue state even when market evidence itself has not changed.
   "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
+
+  # Keep the cold-chain order as executable data adjacent to the gated call.
+  # This makes the runtime contract explicit without pulling control-plane work
+  # back into the 5-second hot path.  Initialize once per service lifetime.
+  if [[ "${#cold_pipeline_modules[@]}" -eq 0 ]]; then
+    cold_pipeline_modules=(
+      backend.production.zel_production_family_paper_evidence_producer_v1
+      backend.production.zel_production_family_survivor_verifier_v1
+      backend.production.zel_production_survivor_catalog_v1
+      backend.production.zel_production_survivor_pool_v2
+      backend.production.zel_production_survivor_authority_activation_v2
+    )
+  fi
 
   read -r source_before output_before < <(cold_pipeline_fingerprints)
   if [[ -z "${cold_source_fp}" || -z "${cold_output_fp}" \

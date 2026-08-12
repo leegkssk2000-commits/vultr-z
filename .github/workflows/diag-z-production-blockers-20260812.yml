@@ -1,0 +1,162 @@
+name: diag ZEL production blockers 20260812
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only VPS proof
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/proof.json <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+
+          def cmd(args):
+              try:
+                  p=subprocess.run(args, text=True, capture_output=True, timeout=5)
+                  return {"rc":p.returncode,"stdout":p.stdout.strip()[:1000],"stderr":p.stderr.strip()[:500]}
+              except Exception as e:
+                  return {"rc":99,"stdout":"","stderr":type(e).__name__+":"+str(e)[:300]}
+
+          def read_json(path):
+              try:
+                  p=Path(path)
+                  if not p.is_file(): return None
+                  return json.loads(p.read_text(errors="ignore"))
+              except Exception:
+                  return None
+
+          def safe_state(path):
+              p=Path(path)
+              r=read_json(path)
+              return {
+                  "exists":p.is_file(),
+                  "mtime_ms":int(p.stat().st_mtime*1000) if p.is_file() else None,
+                  "state":r.get("state") if isinstance(r,dict) else None,
+                  "action":r.get("action") if isinstance(r,dict) else None,
+                  "next":r.get("next") if isinstance(r,dict) else None,
+                  "missing":r.get("missing") if isinstance(r,dict) else None,
+                  "receipt_sha256":r.get("receipt_sha256") if isinstance(r,dict) else None,
+              }
+
+          now=int(time.time()*1000)
+          service="zel-production-paper-loop-v1.service"
+          active=cmd(["systemctl","is-active",service])
+          enabled=cmd(["systemctl","is-enabled",service])
+          show=cmd(["systemctl","show",service,"--property=ActiveState,SubState,Result,NRestarts,ExecMainStatus,MainPID"])
+
+          current=Path("/home/z/zel-production-current")
+          current_target=str(current.resolve()) if current.exists() else None
+          root=Path(current_target) if current_target else Path("/home/z/z")
+          registry=read_json(root/"config/zel_production_source_capability_registry_v1.json")
+          src={}
+          if isinstance(registry,dict):
+              for sid in ("funding","basis","open_interest","ohlcv","volume","flow","liquidation","trade_sequence","l2_order_book"):
+                  row=(registry.get("sources") or {}).get(sid) or {}
+                  src[sid]={
+                      "proposal_available":row.get("proposal_available"),
+                      "native_read_bound":row.get("native_read_bound"),
+                      "owner_path":row.get("owner_path"),
+                      "native_endpoint":row.get("native_endpoint"),
+                      "history_state":row.get("history_state"),
+                  }
+
+          env_path=Path("/etc/zel/production-paper-loop.env")
+          keys={}
+          if env_path.is_file():
+              try:
+                  for line in env_path.read_text(errors="ignore").splitlines():
+                      s=line.strip()
+                      if not s or s.startswith("#") or "=" not in s: continue
+                      k,v=s.split("=",1)
+                      keys[k.strip()]=bool(v.strip())
+              except Exception:
+                  pass
+          required=[
+              "ZEL_DATA_STALE_MS","ZEL_ACCOUNT_STALE_MS","ZEL_MAX_DD_DAY_PCT","ZEL_MAX_DD_TOTAL_PCT",
+              "ZEL_ALPHA_SIGNAL_STALE_MS","ZEL_PAPER_INITIAL_EQUITY_USDT","ZEL_RISK_DAY_TZ",
+              "ZEL_IMPROVE_MIN_TRADES","ZEL_IMPROVE_MIN_EXPECTANCY","ZEL_IMPROVE_MIN_PF","ZEL_IMPROVE_MIN_NET_PNL",
+              "ZEL_IMPROVE_MAX_DD_PCT","ZEL_IMPROVE_MIN_SCORE_GAIN","ZEL_IMPROVE_MAX_DD_REGRESSION_PCT","ZEL_IMPROVE_ERROR_BUDGET"
+          ]
+          env_status={k:bool(keys.get(k,False)) for k in required}
+
+          proposal=read_json("/home/z/z/ledger/production_ai_edge_proposals_v1.json")
+          proposal_summary={"exists":isinstance(proposal,dict)}
+          if isinstance(proposal,dict):
+              proposal_summary.update({
+                  "state":proposal.get("state"),
+                  "proposal_count":proposal.get("proposal_count"),
+                  "source_ready_count":proposal.get("source_ready_count"),
+                  "updated_at_ms":proposal.get("source_resolution_updated_at_ms") or proposal.get("updated_at_ms"),
+                  "proposals":[{
+                      "family_id":x.get("family_id"),
+                      "required_sources":x.get("required_sources"),
+                      "missing_sources":x.get("missing_sources"),
+                      "source_ready":x.get("source_ready"),
+                      "state":x.get("state"),
+                  } for x in (proposal.get("proposals") or []) if isinstance(x,dict)][:5]
+              })
+
+          ledger_paths={
+              "source_acquisition":"/home/z/z/ledger/production_source_acquisition_v1.json",
+              "family_evidence_producer":"/home/z/z/ledger/production_family_paper_evidence_producer_state_v1.json",
+              "family_survivor_verifier":"/home/z/z/ledger/production_family_survivor_verifier_state_v1.json",
+              "survivor_catalog":"/home/z/z/ledger/production_survivor_catalog_state_v1.json",
+              "survivor_pool":"/home/z/z/ledger/production_survivor_pool_state_v1.json",
+              "improvement":"/home/z/z/ledger/production_improvement_state_v1.json",
+          }
+          ledger={k:safe_state(v) for k,v in ledger_paths.items()}
+
+          out={
+              "schema_version":"zel.diag.production_blockers.20260812.v1",
+              "observed_at_ms":now,
+              "service":{"name":service,"active":active,"enabled":enabled,"show":show},
+              "current_release":current_target,
+              "registry_sha256":registry.get("receipt_sha256") if isinstance(registry,dict) else None,
+              "sources":src,
+              "ssot_env":{"path_exists":env_path.is_file(),"nonempty_count":sum(env_status.values()),"required_count":len(required),"missing":[k for k,v in env_status.items() if not v],"present":[k for k,v in env_status.items() if v]},
+              "proposal":proposal_summary,
+              "ledger":ledger,
+              "read_only":True,
+              "exchange_order_submitted":False,
+              "live_trade_authority":"BLOCKED",
+          }
+          print(json.dumps(out,sort_keys=True))
+          PY
+          python -m json.tool out/proof.json >/dev/null
+      - name: Upload proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-z-production-blockers-20260812-${{ github.run_id }}
+          path: out/proof.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

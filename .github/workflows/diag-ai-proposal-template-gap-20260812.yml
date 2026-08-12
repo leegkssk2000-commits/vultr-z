@@ -1,0 +1,98 @@
+name: diag AI proposal template gap 20260812
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only proposal/template gap proof
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/proof.json <<'PY'
+          import json, hashlib
+          from pathlib import Path
+
+          def load(path):
+              p=Path(path)
+              if not p.is_file(): return None, None
+              try:r=json.loads(p.read_text(errors="ignore"))
+              except Exception:return None, hashlib.sha256(p.read_bytes()).hexdigest()
+              return r, hashlib.sha256(p.read_bytes()).hexdigest()
+
+          proposal, proposal_sha=load('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
+          admission, admission_sha=load('/home/z/z/ledger/production_ai_admission_contracts_v1.json')
+          economic, economic_sha=load('/home/z/z/ledger/production_ai_admission_economic_v1.json')
+          terminal, terminal_sha=load('/home/z/z/ledger/production_ai_terminal_families_v1.json')
+
+          proposals=[]
+          if isinstance(proposal,dict):
+              for x in proposal.get('proposals') or []:
+                  if not isinstance(x,dict): continue
+                  proposals.append({
+                    'proposal_id':x.get('proposal_id'),
+                    'family_id':x.get('family_id'),
+                    'proposal_type':x.get('proposal_type'),
+                    'economic_mechanism':x.get('economic_mechanism'),
+                    'required_sources':x.get('required_sources'),
+                    'missing_sources':x.get('missing_sources'),
+                    'source_ready':x.get('source_ready'),
+                    'causal_reason':x.get('causal_reason'),
+                    'falsification_test':x.get('falsification_test'),
+                    'expected_horizon':x.get('expected_horizon'),
+                    'state':x.get('state'),
+                  })
+          terminals=[]
+          if isinstance(terminal,dict):
+              for x in terminal.get('entries') or []:
+                  if isinstance(x,dict):
+                      terminals.append({'family_id':x.get('family_id'),'state':x.get('state'),'template_id':x.get('template_id'),'reactivation_allowed':x.get('reactivation_allowed')})
+          out={
+            'schema_version':'zel.diag.ai_proposal_template_gap.20260812.v1',
+            'proposal_state':proposal.get('state') if isinstance(proposal,dict) else None,
+            'proposal_count':proposal.get('proposal_count') if isinstance(proposal,dict) else 0,
+            'source_ready_count':proposal.get('source_ready_count') if isinstance(proposal,dict) else 0,
+            'proposals':proposals,
+            'admission_state':admission.get('state') if isinstance(admission,dict) else None,
+            'admission_blockers':admission.get('blockers') if isinstance(admission,dict) else None,
+            'contract_count':admission.get('contract_count') if isinstance(admission,dict) else 0,
+            'economic_state':economic.get('state') if isinstance(economic,dict) else None,
+            'terminal_families':terminals,
+            'sha256':{'proposal':proposal_sha,'admission':admission_sha,'economic':economic_sha,'terminal':terminal_sha},
+            'read_only':True,
+            'exchange_order_submitted':False,
+          }
+          print(json.dumps(out,sort_keys=True))
+          PY
+          python -m json.tool out/proof.json >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-proposal-template-gap-${{ github.run_id }}
+          path: out/proof.json
+          retention-days: 3
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

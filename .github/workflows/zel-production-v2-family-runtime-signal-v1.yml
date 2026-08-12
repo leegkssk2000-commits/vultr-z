@@ -1,0 +1,66 @@
+name: ZEL Production V2 Family Runtime Signal V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_v2_family_signal_v1.py'
+      - 'backend/production/zel_production_alpha_signal_runner_v1.py'
+      - 'config/zel_production_v2_family_signal_v1.json'
+      - 'tests/test_zel_production_v2_family_signal_v1.py'
+      - 'tests/test_zel_production_alpha_signal_runner_v1.py'
+      - '.github/workflows/zel-production-v2-family-runtime-signal-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test deterministic V2 family runtime signals
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile \
+            backend/production/zel_production_v2_family_signal_v1.py \
+            backend/production/zel_production_alpha_signal_runner_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_v2_family_signal_v1.py \
+            tests/test_zel_production_alpha_signal_runner_v1.py \
+            tests/test_zel_production_active_alpha_adapter_v1.py \
+            tests/test_zel_production_paper_source_adapter_v1.py
+      - name: Verify no-search no-live deterministic family boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_v2_family_signal_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['numeric_signal_thresholds']==[] and p['parameter_search'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='PAPER_SIGNAL_ONLY'
+          assert p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          assert set(p['supported_strategy_ids'])=={
+              'l2_inventory_pressure_v1',
+              'basis_oi_deleveraging_v1',
+              'funding_l2_inventory_exhaustion_v1',
+          }
+          src=Path('backend/production/zel_production_v2_family_signal_v1.py').read_text()
+          runner=Path('backend/production/zel_production_alpha_signal_runner_v1.py').read_text()
+          assert 'PASS_FAMILY_PAPER_CANARY' in src
+          assert 'verified_native_bingx_snapshots' in src
+          assert 'submit_order' not in src and 'submit_order' not in runner
+          assert 'parameter_search' in src
+          assert 'BingXPublicAdapter' not in src
+          print('PASS_V2_FAMILY_RUNTIME_SIGNAL_BOUNDARY')
+          PY

@@ -72,6 +72,19 @@ jobs:
           grep -F 'critic_provider' backend/production/zel_production_ai_proposal_layer_v1.py
           grep -F 'OPENAI_API_KEY' backend/production/zel_production_ai_proposal_layer_v1.py
 
+      - name: Commit bounded integration
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/production/zel_production_ai_proposal_layer_v1.py; then
+            echo OPENAI_CRITIC_ALREADY_WIRED
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/production/zel_production_ai_proposal_layer_v1.py
+          git commit -m 'feat: wire OpenAI critic into Gemini proposal path [openai-critic-wired]'
+          git push origin HEAD:zel-hygiene-audit-20260812
+
       - name: Authenticated OpenAI critic smoke
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -107,16 +120,3 @@ jobs:
           assert receipt["decision"] in {"PASS", "HOLD", "REJECT"}
           print(f"PASS_OPENAI_AUTHENTICATED_SMOKE model={used_model} decision={receipt['decision']}")
           PY
-
-      - name: Commit bounded integration
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- backend/production/zel_production_ai_proposal_layer_v1.py; then
-            echo OPENAI_CRITIC_ALREADY_WIRED
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add backend/production/zel_production_ai_proposal_layer_v1.py
-          git commit -m 'feat: wire OpenAI critic into Gemini proposal path [openai-critic-wired]'
-          git push origin HEAD:zel-hygiene-audit-20260812

@@ -1,0 +1,56 @@
+name: ZEL Production Family Survivor Verifier V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_family_survivor_verifier_v1.py'
+      - 'config/zel_production_family_survivor_verifier_v1.json'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'backend/production/zel_production_survivor_catalog_v1.py'
+      - 'backend/production/zel_production_survivor_pool_v1.py'
+      - 'tests/test_zel_production_family_survivor_verifier_v1.py'
+      - '.github/workflows/zel-production-family-survivor-verifier-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test fail-closed survivor verifier
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_family_survivor_verifier_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_family_survivor_verifier_v1.py \
+            tests/test_zel_production_survivor_catalog_v1.py \
+            tests/test_zel_production_survivor_pool_v1.py
+      - name: Verify runner handoff and no authority creation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          improve=r.index('zel_production_improvement_controller_v1 --tick')
+          verify=r.index('zel_production_family_survivor_verifier_v1')
+          catalog=r.index('zel_production_survivor_catalog_v1')
+          pool=r.index('zel_production_survivor_pool_v1')
+          assert improve < verify < catalog < pool
+          cfg=json.loads(Path('config/zel_production_family_survivor_verifier_v1.json').read_text())
+          assert cfg['selection_authority'] is False and cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED' and cfg['live_trade_authority']=='BLOCKED'
+          src=Path('backend/production/zel_production_family_survivor_verifier_v1.py').read_text()
+          assert 'submit_order' not in src and 'https://' not in src
+          print('PASS_FAMILY_SURVIVOR_VERIFIER_TO_3_PLUS_2_FAIL_CLOSED')
+          PY

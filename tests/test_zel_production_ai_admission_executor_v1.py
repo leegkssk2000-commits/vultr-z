@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POLICY = json.loads((ROOT / "config/zel_production_ai_admission_executor_v1.json").read_text())
 TEMPLATES = json.loads((ROOT / "config/zel_production_ai_admission_template_registry_v1.json").read_text())
 COST = json.loads((ROOT / "config/zel_production_carry_positioning_v1.json").read_text())
+BASE_TS = 1_780_000_000_000
 
 
 def contract() -> dict:
@@ -82,23 +83,13 @@ def observation(ts: int, close: float, sign: int = 1, basis_sign: int = 1) -> di
 
 
 def l2_snapshot() -> dict:
-    row = {
+    return {
         "schema_version": "zel.production_l2_order_book_data.v1",
         "state": "PASS_L2_ORDER_BOOK_NATIVE_SNAPSHOT",
-        "observed_at_ms": 20_000_000,
+        "observed_at_ms": BASE_TS + 7_200_000,
         "records": [
-            {
-                "symbol": "BTC-USDT",
-                "imbalance_returned_book": 0.25,
-                "primary_imbalance_sign": 1,
-                "source_payload_sha256": "1" * 64,
-            },
-            {
-                "symbol": "ETH-USDT",
-                "imbalance_returned_book": -0.25,
-                "primary_imbalance_sign": -1,
-                "source_payload_sha256": "5" * 64,
-            },
+            {"symbol": "BTC-USDT", "imbalance_returned_book": 0.25, "primary_imbalance_sign": 1, "source_payload_sha256": "1" * 64},
+            {"symbol": "ETH-USDT", "imbalance_returned_book": -0.25, "primary_imbalance_sign": -1, "source_payload_sha256": "5" * 64},
         ],
         "selection_authority": False,
         "promotion_authority": False,
@@ -107,7 +98,6 @@ def l2_snapshot() -> dict:
         "live_trade_authority": "BLOCKED",
         "receipt_sha256": "3" * 64,
     }
-    return row
 
 
 def carry_snapshot() -> dict:
@@ -129,8 +119,8 @@ def carry_snapshot() -> dict:
 
 def test_build_observations_uses_basis_sign_without_numeric_thresholds() -> None:
     candles = {
-        "BTC-USDT": [{"ts": 10_000_000, "cl": 100.0}],
-        "ETH-USDT": [{"ts": 10_000_000, "cl": 200.0}],
+        "BTC-USDT": [{"ts": BASE_TS, "cl": 100.0}],
+        "ETH-USDT": [{"ts": BASE_TS, "cl": 200.0}],
     }
     rows = build_observations(contract(), l2_snapshot(), carry_snapshot(), candles, POLICY["symbols"])
     assert len(rows) == 2
@@ -144,10 +134,8 @@ def test_build_observations_uses_basis_sign_without_numeric_thresholds() -> None
 
 
 def test_evaluate_contract_passes_only_candidate_not_survivor() -> None:
-    # Decreasing but strongly positive hourly returns make the main no-delay path
-    # stronger than the frozen +1-event-delay control without fitting anything.
     closes = [100.0, 105.0, 109.0, 112.0, 114.0]
-    rows = [observation(1_000_000 + i * 3_600_000, close) for i, close in enumerate(closes)]
+    rows = [observation(BASE_TS + i * 3_600_000, close) for i, close in enumerate(closes)]
     result = evaluate_contract(contract(), rows, 12.30757224)
     assert result["state"] == "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE"
     assert result["economic_candidate"] is True
@@ -161,7 +149,7 @@ def test_evaluate_contract_passes_only_candidate_not_survivor() -> None:
 
 def test_evaluate_contract_rejects_negative_edge() -> None:
     closes = [100.0, 98.0, 96.0, 94.0, 92.0]
-    rows = [observation(1_000_000 + i * 3_600_000, close) for i, close in enumerate(closes)]
+    rows = [observation(BASE_TS + i * 3_600_000, close) for i, close in enumerate(closes)]
     result = evaluate_contract(contract(), rows, 12.30757224)
     assert result["state"] == "REJECT_AI_ADMISSION_ECONOMIC_EDGE"
     assert result["economic_candidate"] is False
@@ -169,7 +157,7 @@ def test_evaluate_contract_rejects_negative_edge() -> None:
 
 
 def test_evaluate_contract_holds_on_insufficient_history() -> None:
-    result = evaluate_contract(contract(), [observation(1_000_000, 100.0), observation(4_600_000, 101.0)], 12.30757224)
+    result = evaluate_contract(contract(), [observation(BASE_TS, 100.0), observation(BASE_TS + 3_600_000, 101.0)], 12.30757224)
     assert result["state"] == "HOLD_AI_ADMISSION_HISTORY_INSUFFICIENT"
     assert result["economic_candidate"] is False
 
@@ -204,8 +192,8 @@ def test_executor_keeps_unbound_template_local_and_l2_history_active() -> None:
         carry_snapshot=carry_snapshot(),
         cost_authority=COST,
         candles_by_symbol={
-            "BTC-USDT": [{"ts": 10_000_000, "cl": 100.0}],
-            "ETH-USDT": [{"ts": 10_000_000, "cl": 200.0}],
+            "BTC-USDT": [{"ts": BASE_TS, "cl": 100.0}],
+            "ETH-USDT": [{"ts": BASE_TS, "cl": 200.0}],
         },
         history=[],
     )

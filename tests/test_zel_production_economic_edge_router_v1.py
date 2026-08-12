@@ -5,6 +5,8 @@ import copy
 import pytest
 
 from backend.production.zel_production_economic_edge_router_v1 import route_tick
+from backend.production.zel_production_improvement_controller_v1 import stable_sha
+from backend.production.zel_production_survivor_pool_refill_bridge_v1 import bridge_tick
 
 
 def policy() -> dict:
@@ -13,7 +15,7 @@ def policy() -> dict:
         "state": "FROZEN_PAPER_ONLY",
         "mode": "PAPER",
         "factory_path": "config/zel_production_alpha_factory_v1.json",
-        "bootstrap_state_path": "/home/z/z/ledger/production_performance_bootstrap_state_v1.json",
+        "bootstrap_state_path": "/home/z/z/ledger/production_edge_bootstrap_demand_v1.json",
         "acquisition_state_path": "/home/z/z/ledger/production_economic_edge_acquisition_v1.json",
         "ai_proposal_state_path": "/home/z/z/ledger/production_ai_edge_proposals_v1.json",
         "route_change_states": [
@@ -87,6 +89,26 @@ def factory(flow_bound: bool = False) -> dict:
     }
 
 
+def survivor_pool(active_count: int, reserve_count: int) -> dict:
+    state = "PASS_SURVIVOR_POOL_TARGET_3_PLUS_2" if (active_count, reserve_count) == (3, 2) else "HOLD_SURVIVOR_POOL_BUILDING"
+    row = {
+        "schema_version": "zel.production_survivor_pool.v1",
+        "state": state,
+        "active_target": 3,
+        "reserve_target": 2,
+        "active_count": active_count,
+        "reserve_count": reserve_count,
+        "active": [],
+        "reserve": [],
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+        "quarantine_receipt_sha256": "q" * 64,
+    }
+    row["receipt_sha256"] = stable_sha(row)
+    return row
+
+
 def test_current_catalog_exhausted_fail_closed() -> None:
     r = route_tick(policy(), factory=factory(False), bootstrap=bootstrap(), now_ms=1)
     assert r["state"] == "HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED"
@@ -136,3 +158,35 @@ def test_policy_cannot_open_live() -> None:
     p["live_trade_authority"] = "ALLOWED"
     with pytest.raises(RuntimeError, match="LIVE_AUTHORITY_FORBIDDEN"):
         route_tick(p, factory=factory(False), bootstrap=bootstrap(), now_ms=6)
+
+
+def test_pool_deficit_forces_existing_bounded_route_change() -> None:
+    original = bootstrap("PASS_BOOTSTRAP_INCUMBENT_EXISTS")
+    state, effective = bridge_tick(original, survivor_pool(3, 1), now_ms=10)
+    assert state["state"] == "PASS_SURVIVOR_POOL_REFILL_DEMAND_ROUTED"
+    assert state["refill_required"] is True
+    assert state["deficit_count"] == 1
+    assert effective["state"] == "HOLD_BOOTSTRAP_ROUTE_CHANGE"
+    assert effective["reason"] == "SURVIVOR_POOL_REFILL_REQUIRED"
+    assert effective["pool_refill_deficit_count"] == 1
+    routed = route_tick(policy(), factory=factory(False), bootstrap=effective, now_ms=11)
+    assert routed["state"] == "HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED"
+    assert routed["order_authority"] == "BLOCKED"
+    assert routed["live_trade_authority"] == "BLOCKED"
+
+
+def test_full_pool_preserves_incumbent_no_acquisition_state() -> None:
+    original = bootstrap("PASS_BOOTSTRAP_INCUMBENT_EXISTS")
+    state, effective = bridge_tick(original, survivor_pool(3, 2), now_ms=12)
+    assert state["state"] == "PASS_SURVIVOR_POOL_REFILL_TARGET_SATISFIED"
+    assert state["refill_required"] is False
+    assert effective == original
+    routed = route_tick(policy(), factory=factory(False), bootstrap=effective, now_ms=13)
+    assert routed["state"] == "HOLD_EDGE_ACQUISITION_NOT_REQUIRED"
+
+
+def test_pool_receipt_tamper_fails_closed() -> None:
+    pool = survivor_pool(2, 1)
+    pool["reserve_count"] = 0
+    with pytest.raises(RuntimeError, match="POOL_RECEIPT_MISMATCH"):
+        bridge_tick(bootstrap("PASS_BOOTSTRAP_INCUMBENT_EXISTS"), pool, now_ms=14)

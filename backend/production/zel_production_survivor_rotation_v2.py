@@ -50,6 +50,76 @@ def _health_gate(
     return True, "RUNTIME_HEALTH_REJECT_CONFIRMED"
 
 
+def _eligible_pool_view(pool: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
+    if pool.get("schema_version") != v1.POOL_SCHEMA:
+        raise RuntimeError("SURVIVOR_ROTATION_V2_POOL_SCHEMA_INVALID")
+    source_receipt = v1._receipt(pool, "POOL")
+    out = dict(pool)
+    skipped: list[dict[str, str]] = []
+    for bucket in ("active", "reserve"):
+        raw_rows = pool.get(bucket)
+        if not isinstance(raw_rows, list):
+            raise RuntimeError("SURVIVOR_ROTATION_V2_POOL_ROWS_INVALID")
+        kept: list[dict[str, Any]] = []
+        for raw in raw_rows:
+            if not isinstance(raw, Mapping):
+                skipped.append({"bucket": bucket, "reason": "NON_MAPPING"})
+                continue
+            try:
+                kept.append(v1._validate_candidate(raw, cfg["risk_request"]))
+            except RuntimeError as exc:
+                skipped.append({
+                    "bucket": bucket,
+                    "family_id": str(raw.get("family_id") or ""),
+                    "reason": str(exc),
+                })
+        out[bucket] = kept
+    out["active_count"] = len(out["active"])
+    out["reserve_count"] = len(out["reserve"])
+    out["rotation_filter_source_pool_receipt_sha256"] = source_receipt
+    out["rotation_ineligible_row_count"] = len(skipped)
+    out["rotation_ineligible_rows"] = skipped
+    out["receipt_sha256"] = stable_sha({k: v for k, v in out.items() if k != "receipt_sha256"})
+    return out, source_receipt
+
+
+def _original_index(pool: Mapping[str, Any], authority: Mapping[str, Any]) -> int:
+    target = v1._identity(authority)
+    rows: list[Mapping[str, Any]] = []
+    for bucket in ("active", "reserve"):
+        raw = pool.get(bucket)
+        if isinstance(raw, list):
+            rows.extend(x for x in raw if isinstance(x, Mapping))
+    for idx, row in enumerate(rows):
+        if v1._identity(row) == target:
+            return idx
+    return -1
+
+
+def _restore_source_pool_provenance(
+    state: dict[str, Any],
+    authority: dict[str, Any] | None,
+    source_pool_receipt: str,
+    source_pool: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if authority is None or state.get("state") != "PASS_SURVIVOR_RUNTIME_ROTATED":
+        return state, authority
+    fallback_view_receipt = str(authority.get("pool_receipt_sha256") or "")
+    original_idx = _original_index(source_pool, authority)
+    authority = dict(authority)
+    authority["pool_receipt_sha256"] = source_pool_receipt
+    authority["fallback_pool_view_receipt_sha256"] = fallback_view_receipt
+    authority["pool_rank"] = original_idx
+    authority["receipt_sha256"] = stable_sha({k: v for k, v in authority.items() if k != "receipt_sha256"})
+    state = dict(state)
+    state["source_pool_receipt_sha256"] = source_pool_receipt
+    state["fallback_pool_view_receipt_sha256"] = fallback_view_receipt
+    state["pool_order_index"] = original_idx
+    state["authority_receipt_sha256"] = authority["receipt_sha256"]
+    state["receipt_sha256"] = stable_sha({k: v for k, v in state.items() if k != "receipt_sha256"})
+    return state, authority
+
+
 def rotate_tick(
     policy: Mapping[str, Any],
     *,
@@ -69,15 +139,25 @@ def rotate_tick(
     rotate, reason = _health_gate(authority, health_state, health_result)
     if not rotate:
         return _hold(reason, now), None, None
-    return v1.rotate_tick(
+    if not isinstance(pool, Mapping):
+        raise RuntimeError("SURVIVOR_ROTATION_V2_POOL_MISSING")
+    filtered_pool, source_pool_receipt = _eligible_pool_view(pool, cfg)
+    state, replacement, quarantine = v1.rotate_tick(
         cfg,
         authority=authority,
         health_result=health_result,
-        pool=pool,
+        pool=filtered_pool,
         canary_state=canary_state,
         quarantine_catalog=quarantine_catalog,
         now_ms=now,
     )
+    state, replacement = _restore_source_pool_provenance(
+        state,
+        replacement,
+        source_pool_receipt,
+        pool,
+    )
+    return state, replacement, quarantine
 
 
 def main(argv: list[str] | None = None) -> int:

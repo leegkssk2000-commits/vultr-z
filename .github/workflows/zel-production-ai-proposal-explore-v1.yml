@@ -5,9 +5,11 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
+      - 'backend/production/zel_production_ai_terminal_feedback_v1.py'
       - 'backend/production/zel_production_source_acquisition_v1.py'
       - 'backend/production/zel_production_l2_order_book_data_v1.py'
       - 'config/zel_production_ai_proposal_layer_v1.json'
+      - 'config/zel_production_ai_terminal_feedback_v1.json'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
@@ -17,6 +19,7 @@ on:
       - 'config/zel_production_economic_edge_router_v1.json'
       - 'backend/production/zel_production_paper_runner_v1.sh'
       - 'tests/test_zel_production_ai_proposal_layer_v1.py'
+      - 'tests/test_zel_production_ai_terminal_feedback_v1.py'
       - 'tests/test_zel_production_ai_admission_materializer_v1.py'
       - 'tests/test_zel_production_economic_edge_router_v1.py'
       - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
@@ -24,9 +27,11 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
+      - 'backend/production/zel_production_ai_terminal_feedback_v1.py'
       - 'backend/production/zel_production_source_acquisition_v1.py'
       - 'backend/production/zel_production_l2_order_book_data_v1.py'
       - 'config/zel_production_ai_proposal_layer_v1.json'
+      - 'config/zel_production_ai_terminal_feedback_v1.json'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
@@ -63,6 +68,7 @@ jobs:
           python -m pip install --disable-pip-version-check pytest
           python -m py_compile \
             backend/production/zel_production_ai_proposal_layer_v1.py \
+            backend/production/zel_production_ai_terminal_feedback_v1.py \
             backend/production/zel_production_source_acquisition_v1.py \
             backend/production/zel_production_l2_order_book_data_v1.py \
             backend/production/zel_production_ai_admission_materializer_v1.py \
@@ -70,6 +76,7 @@ jobs:
           bash -n backend/production/zel_production_paper_runner_v1.sh
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_ai_terminal_feedback_v1.py \
             tests/test_zel_production_ai_admission_materializer_v1.py \
             tests/test_zel_production_economic_edge_router_v1.py \
             tests/test_zel_production_economic_edge_dynamic_v1.py \
@@ -80,18 +87,22 @@ jobs:
           import json
           from pathlib import Path
           p=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
-          assert p['mode']=='PAPER'
+          f=json.loads(Path('config/zel_production_ai_terminal_feedback_v1.json').read_text())
+          assert p['mode']=='PAPER' and f['mode']=='PAPER'
           assert p['candidate_budget']<=2
           assert p['numeric_threshold_proposals_allowed'] is False
           for k in ('raw_trades_sent','private_code_sent','account_data_sent','credentials_sent'):
               assert p[k] is False
-          assert p['selection_authority'] is False and p['promotion_authority'] is False
-          assert p['execution_authority']=='NONE'
-          assert p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
-          assert p['source_code_mutation_allowed'] is False and p['self_modification_allowed'] is False
+          for row in (p,f):
+              assert row['selection_authority'] is False and row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED' and row['live_trade_authority']=='BLOCKED'
+              assert row['source_code_mutation_allowed'] is False and row['self_modification_allowed'] is False
           src=Path('backend/production/zel_production_ai_proposal_layer_v1.py').read_text()
+          guard=Path('backend/production/zel_production_ai_terminal_feedback_v1.py').read_text()
           assert 'generativelanguage.googleapis.com' in src
           assert 'BingX' not in src and 'submit_order' not in src
+          assert 'submit_order' not in guard and 'https://' not in guard
           print('PASS_AI_PROPOSAL_ONLY_AUTHORITY_BOUNDARY')
           PY
       - name: Verify PAPER runner stays network-free from AI Explore
@@ -108,6 +119,7 @@ jobs:
           assert bootstrap < router < alpha < paper < improve < pool
           for forbidden in (
               'zel_production_ai_proposal_layer_v1',
+              'zel_production_ai_terminal_feedback_v1',
               'zel_production_source_acquisition_v1',
               'zel_production_ai_admission_materializer_v1',
               'GEMINI_API_KEY',
@@ -117,17 +129,20 @@ jobs:
           assert r.count('zel_production_economic_edge_router_v1') == 1
           print('PASS_PAPER_LOOP_AI_EXPLORE_NETWORK_ISOLATION')
           PY
-      - name: Verify runtime parity guard and L2 collection precede source resolution
+      - name: Verify terminal feedback precedes router and proposal
         run: |
           python - <<'PY'
           from pathlib import Path
           w=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
           assert 'RUNTIME_PARITY_B64' in w and 'RUNTIME_PARITY_TIMEOUT' in w
+          feedback=w.index('zel_production_ai_terminal_feedback_v1 >/tmp/zel-ai-explore-feedback.json')
+          router=w.index('zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json')
+          proposal=w.index('zel_production_ai_proposal_layer_v1 --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json --tick')
           l2=w.index('zel_production_l2_order_book_data_v1 --append-history')
           resolver=w.index('zel_production_source_acquisition_v1 >/tmp/zel-ai-explore-source-acquisition.json')
           admission=w.index('zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-explore-admission.json')
-          assert l2 < resolver < admission
-          print('PASS_EXPLORE_RUNTIME_PARITY_AND_L2_SOURCE_ORDER')
+          assert feedback < router < proposal < l2 < resolver < admission
+          print('PASS_EXPLORE_TERMINAL_FEEDBACK_ORDER')
           PY
       - name: Verify router cannot treat AI as authority
         run: |
@@ -161,7 +176,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded Explore proposal, L2 collection, source-resolution and admission-materialization tick
+      - name: Run one bounded terminal-feedback Explore tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -175,16 +190,19 @@ jobs:
           from pathlib import Path
           files=[
             'backend/production/zel_production_ai_proposal_layer_v1.py',
+            'backend/production/zel_production_ai_terminal_feedback_v1.py',
             'backend/production/zel_production_source_acquisition_v1.py',
             'backend/production/zel_production_l2_order_book_data_v1.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_economic_edge_router_v1.py',
             'config/zel_production_ai_proposal_layer_v1.json',
+            'config/zel_production_ai_terminal_feedback_v1.json',
             'config/zel_production_source_acquisition_v1.json',
             'config/zel_production_source_capability_registry_v1.json',
             'config/zel_production_ai_admission_materializer_v1.json',
             'config/zel_production_ai_admission_template_registry_v1.json',
             'config/zel_production_economic_edge_router_v1.json',
+            'config/zel_production_alpha_factory_v1.json',
           ]
           print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
           PY
@@ -220,8 +238,9 @@ jobs:
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          python3 -m backend.production.zel_production_ai_terminal_feedback_v1 >/tmp/zel-ai-explore-feedback.json
           python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json
-          python3 -m backend.production.zel_production_ai_proposal_layer_v1 --tick >/tmp/zel-ai-explore-proposal.json
+          python3 -m backend.production.zel_production_ai_proposal_layer_v1 --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json --tick >/tmp/zel-ai-explore-proposal.json
           if python3 -m backend.production.zel_production_l2_order_book_data_v1 --append-history >/tmp/zel-ai-explore-l2.json 2>/tmp/zel-ai-explore-l2.err; then
             :
           else
@@ -233,10 +252,12 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
+          feedback=json.loads(Path('/tmp/zel-ai-explore-feedback.json').read_text())
           proposal=json.loads(Path('/tmp/zel-ai-explore-proposal.json').read_text())
           l2=json.loads(Path('/tmp/zel-ai-explore-l2.json').read_text())
           acquisition=json.loads(Path('/tmp/zel-ai-explore-source-acquisition.json').read_text())
           admission=json.loads(Path('/tmp/zel-ai-explore-admission.json').read_text())
+          assert feedback['state'] in {'HOLD_AI_TERMINAL_FEEDBACK_NO_NEW_REJECT','PASS_AI_TERMINAL_REJECT_FEEDBACK_APPLIED'}
           allowed={
             'HOLD_AI_PROPOSAL_NOT_REQUIRED','HOLD_AI_PROPOSAL_FACTORY_MISSING',
             'HOLD_AI_PROPOSAL_CALLER_UNAVAILABLE','HOLD_AI_PROPOSAL_CALL_FAILED',
@@ -268,6 +289,6 @@ jobs:
               assert row.get('exchange_order_submitted') is False
               assert row.get('source_code_mutation_applied') is False
               assert row.get('self_modification_applied') is False
-          print(json.dumps({'l2':l2,'proposal':proposal,'acquisition':acquisition,'admission':admission},sort_keys=True))
+          print(json.dumps({'feedback':feedback,'l2':l2,'proposal':proposal,'acquisition':acquisition,'admission':admission},sort_keys=True))
           PY
           REMOTE

@@ -25,6 +25,8 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"SOURCE_ACQUISITION_PATH_MISSING:{key}")
     if policy.get("auto_resolve_registered_sources") is not True:
         raise RuntimeError("SOURCE_ACQUISITION_AUTO_RESOLUTION_REQUIRED")
+    if policy.get("unverified_proposal_policy") != "DROP_STALE_UNVERIFIED":
+        raise RuntimeError("SOURCE_ACQUISITION_UNVERIFIED_PROPOSAL_POLICY_INVALID")
     if policy.get("endpoint_discovery_allowed") is not False or policy.get("synthetic_source_allowed") is not False:
         raise RuntimeError("SOURCE_ACQUISITION_UNVERIFIED_SOURCE_FORBIDDEN")
     if policy.get("source_code_mutation_allowed") is not False or policy.get("self_modification_allowed") is not False:
@@ -86,6 +88,8 @@ def _base(state: str, now_ms: int) -> dict[str, Any]:
         "queue": [],
         "resolved_source_count": 0,
         "missing_source_count": 0,
+        "dropped_proposal_count": 0,
+        "dropped_family_ids": [],
         "proposal_updated": False,
         "selection_authority": False,
         "promotion_authority": False,
@@ -125,10 +129,9 @@ def source_acquisition_tick(
 
     updated_proposal = dict(proposal)
     resolved_rows: list[dict[str, Any]] = []
-    queue_by_source: dict[str, dict[str, Any]] = {}
     changed = False
     resolved_source_ids: set[str] = set()
-    missing_source_ids: set[str] = set()
+    dropped_family_ids: list[str] = []
 
     for raw in raw_proposals:
         if not isinstance(raw, Mapping):
@@ -141,59 +144,52 @@ def source_acquisition_tick(
         unknown = [sid for sid in required_ids if sid not in sources]
         if unknown:
             raise RuntimeError("SOURCE_ACQUISITION_UNKNOWN_SOURCE:" + ",".join(unknown))
-        missing = sorted(sid for sid in required_ids if sources[sid].get("proposal_available") is not True)
-        ready = not missing
-        if sorted(map(str, row.get("missing_sources") or [])) != missing or bool(row.get("source_ready")) != ready:
+
+        unverified = sorted(
+            sid
+            for sid in required_ids
+            if sources[sid].get("proposal_available") is not True
+            or sources[sid].get("native_read_bound") is not True
+        )
+        if unverified:
+            changed = True
+            dropped_family_ids.append(str(row.get("family_id") or row.get("proposal_id") or "UNKNOWN"))
+            continue
+
+        if sorted(map(str, row.get("missing_sources") or [])) != [] or bool(row.get("source_ready")) is not True:
             changed = True
         row["required_sources"] = required_ids
-        row["missing_sources"] = missing
-        row["source_ready"] = ready
-        row["state"] = "PASS_AI_PROPOSAL_SOURCE_READY" if ready else "HOLD_AI_PROPOSAL_SOURCE_UNBOUND"
+        row["missing_sources"] = []
+        row["source_ready"] = True
+        row["state"] = "PASS_AI_PROPOSAL_SOURCE_READY"
         resolved_rows.append(row)
-        for sid in required_ids:
-            if sources[sid].get("proposal_available") is True:
-                resolved_source_ids.add(sid)
-        for sid in missing:
-            missing_source_ids.add(sid)
-            source_row = sources[sid]
-            queue_by_source[sid] = {
-                "source_id": sid,
-                "state": str(source_row.get("history_state") or "UNBOUND"),
-                "owner_path": source_row.get("owner_path"),
-                "native_endpoint": source_row.get("native_endpoint"),
-                "acquisition_action": (
-                    "REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER"
-                    if not source_row.get("native_endpoint")
-                    else "BUILD_PROSPECTIVE_NATIVE_COLLECTOR"
-                ),
-                "synthetic_source_allowed": False,
-                "endpoint_discovery_allowed": False,
-            }
+        resolved_source_ids.update(required_ids)
 
     updated_proposal["proposals"] = resolved_rows
     updated_proposal["proposal_count"] = len(resolved_rows)
-    updated_proposal["source_ready_count"] = sum(bool(row.get("source_ready")) for row in resolved_rows)
+    updated_proposal["source_ready_count"] = len(resolved_rows)
+    updated_proposal["dropped_unverified_family_ids"] = sorted(dropped_family_ids)
+    updated_proposal["dropped_unverified_proposal_count"] = len(dropped_family_ids)
     if resolved_rows:
-        updated_proposal["state"] = (
-            "PASS_AI_PROPOSAL_SOURCE_READY"
-            if updated_proposal["source_ready_count"]
-            else "HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED"
-        )
+        updated_proposal["state"] = "PASS_AI_PROPOSAL_SOURCE_READY"
+    elif dropped_family_ids:
+        updated_proposal["state"] = "HOLD_AI_PROPOSAL_STALE_UNVERIFIED_DROPPED"
     updated_proposal["source_resolution_registry_sha256"] = stable_sha(reg)
     updated_proposal["source_resolution_updated_at_ms"] = now
     updated_proposal["receipt_sha256"] = stable_sha({k: v for k, v in updated_proposal.items() if k != "receipt_sha256"})
 
-    if not resolved_rows:
-        out = _base("HOLD_SOURCE_ACQUISITION_NO_CANDIDATES", now)
-    elif queue_by_source:
-        out = _base("HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED", now)
-        out["queue"] = [queue_by_source[key] for key in sorted(queue_by_source)]
-        out["next"] = "REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER"
-    else:
+    if resolved_rows:
         out = _base("PASS_SOURCE_ACQUISITION_PROPOSALS_SOURCE_READY", now)
         out["next"] = "DETERMINISTIC_EXPLORE_ROUTER_RECHECK"
+    elif dropped_family_ids:
+        out = _base("HOLD_SOURCE_ACQUISITION_STALE_UNVERIFIED_DROPPED", now)
+        out["next"] = "WAIT_NEW_VERIFIED_SOURCE_ONLY_PROPOSAL"
+    else:
+        out = _base("HOLD_SOURCE_ACQUISITION_NO_CANDIDATES", now)
     out["resolved_source_count"] = len(resolved_source_ids)
-    out["missing_source_count"] = len(missing_source_ids)
+    out["missing_source_count"] = 0
+    out["dropped_proposal_count"] = len(dropped_family_ids)
+    out["dropped_family_ids"] = sorted(dropped_family_ids)
     out["proposal_updated"] = changed
     out["proposal_receipt_sha256"] = updated_proposal["receipt_sha256"]
     out["source_registry_sha256"] = stable_sha(reg)
@@ -222,6 +218,7 @@ def main() -> int:
         "queue_count": len(result.get("queue") or []),
         "missing_source_count": result["missing_source_count"],
         "resolved_source_count": result["resolved_source_count"],
+        "dropped_proposal_count": result["dropped_proposal_count"],
         "proposal_updated": result["proposal_updated"],
         "receipt_sha256": result["receipt_sha256"],
     }, sort_keys=True))

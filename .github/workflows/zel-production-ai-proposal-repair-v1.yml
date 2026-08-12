@@ -67,6 +67,9 @@ jobs:
           workflow=Path('.github/workflows/zel-production-ai-proposal-repair-v1.yml').read_text()
           assert 'push:\n    branches: [master]' in workflow
           assert "github.event_name == 'push'" in workflow
+          assert "row.get('ai_call_succeeded') is True" in workflow
+          assert "int(row.get('proposal_count') or 0) > 0" in workflow
+          assert 'zel_production_source_acquisition_v1' in workflow
           print('PASS_BOUNDED_AI_PROPOSAL_REPAIR_BOUNDARY')
           PY
 
@@ -123,14 +126,15 @@ jobs:
             --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json \
             >/tmp/zel-ai-proposal-repair.json
 
-          REPAIR_STATE="$(python3 - <<'PY'
+          CHAIN_READY="$(python3 - <<'PY'
           import json
           from pathlib import Path
-          print(json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())['state'])
+          row=json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())
+          print('1' if row.get('ai_call_succeeded') is True and int(row.get('proposal_count') or 0) > 0 else '0')
           PY
           )"
 
-          if [ "$REPAIR_STATE" = "PASS_AI_PROPOSAL_SOURCE_READY" ]; then
+          if [ "$CHAIN_READY" = "1" ]; then
             python3 -m backend.production.zel_production_source_acquisition_v1 >/tmp/zel-ai-repair-source.json
             python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-repair-router.json
             python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-repair-materializer.json

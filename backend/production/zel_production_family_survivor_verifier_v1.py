@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,19 +26,42 @@ def _f(value: Any, name: str) -> float:
     return out
 
 
-def _required_thresholds(policy: Mapping[str, Any]) -> tuple[dict[str, float], list[str]]:
-    env_map = policy.get("required_env")
-    if not isinstance(env_map, Mapping) or not env_map:
-        raise RuntimeError("FAMILY_SURVIVOR_REQUIRED_ENV_MISSING")
-    values: dict[str, float] = {}
-    missing: list[str] = []
-    for key, env_name in env_map.items():
-        raw = os.environ.get(str(env_name), "").strip()
-        if not raw:
-            missing.append(str(env_name))
-            continue
-        values[str(key)] = _f(raw, str(key))
-    return values, sorted(missing)
+def _i(value: Any, name: str) -> int:
+    out = _f(value, name)
+    if not out.is_integer():
+        raise RuntimeError(f"FAMILY_SURVIVOR_INTEGER_INVALID:{name}")
+    return int(out)
+
+
+def _contract(policy: Mapping[str, Any]) -> dict[str, float | str]:
+    raw = policy.get("survivor_contract")
+    if not isinstance(raw, Mapping):
+        raise RuntimeError("FAMILY_SURVIVOR_CONTRACT_MISSING")
+    out: dict[str, float | str] = {
+        "min_trades_per_window": float(_i(raw.get("min_trades_per_window"), "min_trades_per_window")),
+        "min_profit_factor": _f(raw.get("min_profit_factor"), "min_profit_factor"),
+        "min_expectancy_exclusive": _f(raw.get("min_expectancy_exclusive"), "min_expectancy_exclusive"),
+        "min_net_pnl_exclusive": _f(raw.get("min_net_pnl_exclusive"), "min_net_pnl_exclusive"),
+        "min_payoff_ratio": _f(raw.get("min_payoff_ratio"), "min_payoff_ratio"),
+        "min_retention": _f(raw.get("min_retention"), "min_retention"),
+        "max_dd_pct": _f(raw.get("max_dd_pct"), "max_dd_pct"),
+        "source": str(raw.get("source") or "").strip(),
+    }
+    expected = {
+        "min_trades_per_window": 60.0,
+        "min_profit_factor": 1.0,
+        "min_expectancy_exclusive": 0.0,
+        "min_net_pnl_exclusive": 0.0,
+        "min_payoff_ratio": 1.0,
+        "min_retention": 0.60,
+        "max_dd_pct": 10.0,
+    }
+    for key, value in expected.items():
+        if out[key] != value:
+            raise RuntimeError(f"FAMILY_SURVIVOR_CONTRACT_INVALID:{key}")
+    if not out["source"]:
+        raise RuntimeError("FAMILY_SURVIVOR_CONTRACT_SOURCE_MISSING")
+    return out
 
 
 def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
@@ -50,6 +72,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("evidence_path", "verified_survivor_intake_path", "state_path"):
         if not str(policy.get(key) or "").strip():
             raise RuntimeError(f"FAMILY_SURVIVOR_PATH_MISSING:{key}")
+    _contract(policy)
     if policy.get("selection_authority") is not False or policy.get("promotion_authority") is not False:
         raise RuntimeError("FAMILY_SURVIVOR_POLICY_AUTHORITY_FORBIDDEN")
     if policy.get("execution_authority") != "NONE" or policy.get("order_authority") != "BLOCKED":
@@ -59,13 +82,12 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     return dict(policy)
 
 
-def _hold(state: str, reason: str, *, missing: list[str] | None = None, now_ms: int) -> dict[str, Any]:
+def _hold(state: str, reason: str, *, now_ms: int) -> dict[str, Any]:
     row = {
         "schema_version": SCHEMA,
         "state": state,
         "action": "hold",
         "reason": reason,
-        "missing": list(missing or []),
         "write_verified_intake": False,
         "selection_authority": False,
         "promotion_authority": False,
@@ -79,13 +101,18 @@ def _hold(state: str, reason: str, *, missing: list[str] | None = None, now_ms: 
     return row
 
 
-def _validate_evidence(e: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_evidence(e: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     if e.get("schema_version") != EVIDENCE_SCHEMA:
         raise RuntimeError("FAMILY_SURVIVOR_EVIDENCE_SCHEMA_INVALID")
     if e.get("state") != "PASS_FAMILY_PAPER_EVIDENCE":
         raise RuntimeError("FAMILY_SURVIVOR_EVIDENCE_NOT_PASS")
     if e.get("economic_gate_pass") is not True or e.get("durability_gate_pass") is not True or e.get("integrity_pass") is not True:
         raise RuntimeError("FAMILY_SURVIVOR_REQUIRED_GATE_FAIL")
+    embedded = e.get("survivor_contract")
+    if not isinstance(embedded, Mapping) or dict(embedded) != dict(contract):
+        raise RuntimeError("FAMILY_SURVIVOR_CONTRACT_MISMATCH")
+    if str(e.get("survivor_contract_sha256") or "") != stable_sha(dict(contract)):
+        raise RuntimeError("FAMILY_SURVIVOR_CONTRACT_SHA_MISMATCH")
     family_id = str(e.get("family_id") or "").strip()
     strategy_id = str(e.get("strategy_id") or "").strip()
     alpha_id = str(e.get("alpha_id") or "").strip()
@@ -104,19 +131,24 @@ def _validate_evidence(e: Mapping[str, Any]) -> dict[str, Any]:
     windows = e.get("windows")
     if not isinstance(windows, Mapping) or set(windows) != {"W1", "W2", "W3"}:
         raise RuntimeError("FAMILY_SURVIVOR_WINDOWS_INVALID")
+    total_trades = 0
     for name in ("W1", "W2", "W3"):
         row = windows[name]
         if not isinstance(row, Mapping):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_INVALID:{name}")
-        if _f(row.get("net_pnl"), f"{name}.net_pnl") <= 0:
+        trades = _i(row.get("trade_count"), f"{name}.trade_count")
+        if trades < int(contract["min_trades_per_window"]):
+            raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_TRADES_FAIL:{name}")
+        total_trades += trades
+        if _f(row.get("net_pnl"), f"{name}.net_pnl") <= float(contract["min_net_pnl_exclusive"]):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_NET_FAIL:{name}")
-        if _f(row.get("profit_factor"), f"{name}.profit_factor") < 1.0:
+        if _f(row.get("profit_factor"), f"{name}.profit_factor") < float(contract["min_profit_factor"]):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_PF_FAIL:{name}")
-        if _f(row.get("expectancy"), f"{name}.expectancy") <= 0:
+        if _f(row.get("expectancy"), f"{name}.expectancy") <= float(contract["min_expectancy_exclusive"]):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_EXPECTANCY_FAIL:{name}")
-        if _f(row.get("payoff_ratio"), f"{name}.payoff_ratio") < 1.0:
+        if _f(row.get("payoff_ratio"), f"{name}.payoff_ratio") < float(contract["min_payoff_ratio"]):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_PAYOFF_FAIL:{name}")
-        if _f(row.get("retention"), f"{name}.retention") < 0.60:
+        if _f(row.get("retention"), f"{name}.retention") < float(contract["min_retention"]):
             raise RuntimeError(f"FAMILY_SURVIVOR_WINDOW_RETENTION_FAIL:{name}")
     metrics = e.get("metrics")
     if not isinstance(metrics, Mapping):
@@ -128,31 +160,23 @@ def _validate_evidence(e: Mapping[str, Any]) -> dict[str, Any]:
         "net_pnl": _f(metrics.get("net_pnl"), "net_pnl"),
         "max_dd_pct": _f(metrics.get("max_dd_pct"), "max_dd_pct"),
     }
-    if parsed["trade_count"] <= 0:
-        raise RuntimeError("FAMILY_SURVIVOR_TRADE_COUNT_NONPOSITIVE")
+    if parsed["trade_count"] != float(total_trades):
+        raise RuntimeError("FAMILY_SURVIVOR_AGGREGATE_TRADE_COUNT_MISMATCH")
+    if parsed["net_expectancy"] <= 0 or parsed["profit_factor"] < 1.0 or parsed["net_pnl"] <= 0:
+        raise RuntimeError("FAMILY_SURVIVOR_AGGREGATE_ECONOMIC_FAIL")
+    if parsed["max_dd_pct"] < 0 or parsed["max_dd_pct"] > float(contract["max_dd_pct"]):
+        raise RuntimeError("FAMILY_SURVIVOR_MAX_DD_FAIL")
     return {"family_id": family_id, "strategy_id": strategy_id, "alpha_id": alpha_id, "source_hashes": sorted(set(map(str, hashes))), "risk_request": {"leverage_x": lev, "position_pct": pos}, "metrics": parsed}
 
 
 def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now_ms: int | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
     cfg = validate_policy(policy)
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
-    thresholds, missing = _required_thresholds(cfg)
-    if missing:
-        return _hold("HOLD_FAMILY_SURVIVOR_SSOT_UNBOUND", "REQUIRED_Z_POLICY_SSOT_ENV_UNBOUND", missing=missing, now_ms=now), None
     if evidence is None:
         return _hold("HOLD_FAMILY_SURVIVOR_EVIDENCE_MISSING", "NORMALIZED_PAPER_EVIDENCE_NOT_AVAILABLE", now_ms=now), None
-    parsed = _validate_evidence(evidence)
+    contract = _contract(cfg)
+    parsed = _validate_evidence(evidence, contract)
     m = parsed["metrics"]
-    if m["trade_count"] < thresholds["min_trades"]:
-        raise RuntimeError("FAMILY_SURVIVOR_MIN_TRADES_FAIL")
-    if m["net_expectancy"] < thresholds["min_expectancy"]:
-        raise RuntimeError("FAMILY_SURVIVOR_MIN_EXPECTANCY_FAIL")
-    if m["profit_factor"] < thresholds["min_profit_factor"]:
-        raise RuntimeError("FAMILY_SURVIVOR_MIN_PF_FAIL")
-    if m["net_pnl"] < thresholds["min_net_pnl"]:
-        raise RuntimeError("FAMILY_SURVIVOR_MIN_NET_PNL_FAIL")
-    if m["max_dd_pct"] > thresholds["max_dd_pct"]:
-        raise RuntimeError("FAMILY_SURVIVOR_MAX_DD_FAIL")
     intake = {
         "schema_version": INTAKE_SCHEMA,
         "state": "PASS_ECONOMIC_SURVIVOR",
@@ -166,6 +190,7 @@ def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now
         "source_hashes": parsed["source_hashes"],
         "risk_request": parsed["risk_request"],
         "metrics": m,
+        "survivor_contract_sha256": stable_sha(dict(contract)),
         "selection_authority": False,
         "promotion_authority": False,
         "execution_authority": "NONE",

@@ -1,4 +1,4 @@
-name: trace Z legacy external callers 20260812
+name: trace Z 5s legacy invoker 20260812
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Trace disabled-but-invoked and missing-target owners
+      - name: Trace dynamic legacy invoker read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -31,52 +31,44 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
           set -u
-          echo '=== MASTER/PAPER PARITY ==='
-          readlink -f /home/z/zel-production-current || true
-          systemctl is-active zel-production-paper-loop-v1.service || true
+          echo '=== ACTIVE ZEL TIMERS ==='
+          systemctl list-timers --all --no-pager --no-legend 2>/dev/null | grep -Ei 'zel|q4r3|s4f|s4g8|paper' | head -n 320 || true
 
-          targets=(
-            zel-s4f18c-shadow-close-writer.service
-            zel-s4g8r4-zero-epoch-q4-display-mirror.service
-            zel-q4r3-recent-trace-unifier.service
-            zel-telegram-bot-clean-adapter.service
-          )
-          for u in "${targets[@]}"; do
-            b="${u%.service}"
-            echo "=== TARGET $u ==="
-            systemctl show "$u" -p ActiveState -p SubState -p UnitFileState -p TriggeredBy -p Triggers -p RequiredBy -p WantedBy -p PartOf -p ConsistsOf --no-pager 2>/dev/null || true
-            systemctl show "$b.timer" -p ActiveState -p UnitFileState -p Triggers -p RequiredBy -p WantedBy --no-pager 2>/dev/null || true
-            echo '-- reverse --'
-            systemctl list-dependencies --reverse --all "$u" 2>/dev/null | head -n 120 || true
-            echo '-- cat --'
-            systemctl cat "$u" 2>/dev/null || true
+          echo '=== ACTIVE ZEL SERVICES / EXECSTART ==='
+          while read -r u _; do
+            [ -n "$u" ] || continue
+            echo "--- $u ---"
+            systemctl show "$u" -p ActiveState -p SubState -p MainPID -p ExecStart --no-pager 2>/dev/null || true
+          done < <(systemctl list-units --type=service --state=running --no-legend 2>/dev/null | grep -Ei 'zel|q4r3|s4f|s4g8|paper' | head -n 180)
+
+          echo '=== GENERIC DYNAMIC SYSTEMCTL CALLERS ==='
+          grep -RsnE 'systemctl[[:space:]]+(start|restart|try-restart)|subprocess\.(run|call|Popen).*systemctl|os\.system\(.*systemctl' \
+            /usr/local/bin /home/z/zel-production-current/backend /home/z/z 2>/dev/null \
+            | grep -Ei 'zel|service|unit|timer|start' | head -n 520 || true
+
+          echo '=== LEGACY NAME FRAGMENTS ANYWHERE ==='
+          grep -RsnEi 's4f18c|s4g8r4|shadow.?close.?writer|zero.?epoch.?q4|projection.?single.?writer' \
+            /usr/local/bin /home/z/zel-production-current/backend /home/z/z /etc/systemd/system 2>/dev/null | head -n 520 || true
+
+          echo '=== SAMPLE 22 SECONDS OF TARGET STARTS ==='
+          before="$(date --iso-8601=seconds)"
+          sleep 22
+          after="$(date --iso-8601=seconds)"
+          echo "window=$before..$after"
+          journalctl --since "$before" --until "$after" --no-pager -o short-iso 2>/dev/null \
+            | grep -E 'Starting ZEL S4F18C|Starting ZEL S4G8R4|s4f18c-shadow-close-writer|s4g8r4-zero-epoch-q4-display-mirror|Failed to start|can.t open file' \
+            | tail -n 260 || true
+
+          echo '=== SAME WINDOW SYSTEMD START/FINISH NEIGHBORS ==='
+          journalctl --since "$before" --until "$after" --no-pager -o short-iso 2>/dev/null \
+            | grep -E 'systemd\[1\]: (Starting|Started|Finished|Failed).*ZEL|systemd\[1\]: (Starting|Started|Finished|Failed).*zel' \
+            | tail -n 520 || true
+
+          echo '=== TARGET SHOW AFTER SAMPLE ==='
+          for u in zel-s4f18c-shadow-close-writer.service zel-s4g8r4-zero-epoch-q4-display-mirror.service; do
+            systemctl show "$u" -p ActiveEnterTimestamp -p InactiveEnterTimestamp -p InvocationID -p Result -p ExecMainCode -p ExecMainStatus --no-pager 2>/dev/null || true
           done
-
-          echo '=== STATIC REFERENCES TO UNIT NAMES ==='
-          grep -RsnF 'zel-s4f18c-shadow-close-writer.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
-          grep -RsnF 'zel-s4g8r4-zero-epoch-q4-display-mirror.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
-          grep -RsnF 'zel-q4r3-recent-trace-unifier.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
-          grep -RsnF 'zel-telegram-bot-clean-adapter.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
-
-          echo '=== STATIC REFERENCES TO MISSING SCRIPT BASENAMES ==='
-          grep -RsnE 'zel_s4f18c_shadow_tp_sl_close_writer|zel_s4g8r7f5p5_canonical_projection_single_writer|zel_s4g8r7d8_display_active_open_priority_mirror|zel_q4r3_recent_trace_unifier|zel_telegram_bot_clean_adapter' \
-            /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 420 || true
-
-          echo '=== JOURNAL START CORRELATION LAST 12 MIN ==='
-          journalctl --since '-12 min' --no-pager -o short-iso 2>/dev/null \
-            | grep -E 'Starting ZEL S4F18C|Starting ZEL S4G8R4|Starting ZEL Q4R3 Recent Trace|Starting ZEL Telegram Bot Clean|systemctl start|shadow-close-writer|zero-epoch-q4-display-mirror|recent-trace-unifier|telegram-bot-clean-adapter' \
-            | tail -n 420 || true
-
-          echo '=== CALLING SCRIPT SEARCH: SYSTEMCTL START/TRY-RESTART ==='
-          grep -RsnE 'systemctl[[:space:]]+(start|restart|try-restart|reload-or-restart)[^\n]*(s4f18c-shadow-close-writer|s4g8r4-zero-epoch-q4-display-mirror|q4r3-recent-trace-unifier|telegram-bot-clean-adapter)' \
-            /usr/local/bin /home/z/z /home/z/zel-production-current /etc/systemd/system 2>/dev/null | head -n 360 || true
-
-          echo '=== TIMER POST-CLEANUP ==='
-          for t in zel-q4r3-candidate-skill-annotator.timer zel-q4r3-chart-current-binder.timer; do
-            printf '%s active=' "$t"; systemctl is-active "$t" 2>/dev/null || true
-            printf '%s enabled=' "$t"; systemctl is-enabled "$t" 2>/dev/null || true
-          done
-          echo 'PASS_EXTERNAL_CALLER_TRACE_READ_ONLY'
+          echo 'PASS_5S_LEGACY_INVOKER_TRACE_READ_ONLY'
           REMOTE
 
       - name: Cleanup SSH key

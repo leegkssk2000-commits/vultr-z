@@ -50,15 +50,13 @@ def _symbol_eval(
             "windows": None,
             "metrics": None,
         }
-
     frozen_trades = list(trades[:required])
     values = [float(x["equity_return_pct"]) for x in frozen_trades]
-    windows: dict[str, dict[str, Any]] = {}
     raw_stats: dict[str, dict[str, float]] = {}
+    windows: dict[str, dict[str, Any]] = {}
     for idx, name in enumerate(WINDOWS):
         start = idx * trades_per_window
-        stop = start + trades_per_window
-        raw_stats[name] = v1._stats(values[start:stop])
+        raw_stats[name] = v1._stats(values[start:start + trades_per_window])
     w1_expectancy = raw_stats["W1"]["expectancy"]
     for name in WINDOWS:
         stats = raw_stats[name]
@@ -127,14 +125,17 @@ def evaluate_canary(
         symbol: _symbol_eval(by_symbol[symbol], trades_per_window=trades_per_window, frozen_contract=frozen_contract)
         for symbol in precedence
     }
-    selected = next((symbol for symbol in precedence if evaluations[symbol]["state"] == "PASS_SYMBOL_PAPER_CANARY"), None)
-    if selected is None and any(evaluations[symbol]["state"] == "PENDING_SYMBOL_SAMPLE" for symbol in precedence):
-        return None
 
+    selected: str | None = None
+    for symbol in precedence:
+        symbol_state = str(evaluations[symbol]["state"])
+        if symbol_state == "PASS_SYMBOL_PAPER_CANARY":
+            selected = symbol
+            break
+        if symbol_state == "PENDING_SYMBOL_SAMPLE":
+            return None
     diagnostic_symbol = selected or precedence[0]
     selected_eval = evaluations[diagnostic_symbol]
-    if selected is None and selected_eval["state"] == "PENDING_SYMBOL_SAMPLE":
-        selected_eval = next(v for v in evaluations.values() if v["state"] != "PENDING_SYMBOL_SAMPLE")
     passed = selected is not None
     selected_native = selected.replace("USDT", "-USDT") if selected is not None else None
     source_history = [x for x in history if selected_native is None or str(x.get("symbol") or "") == selected_native]
@@ -160,7 +161,10 @@ def evaluate_canary(
         "canary_key": str(meta.get("canary_key") or ""),
         "contract_id": str(meta.get("contract_id") or ""),
         "source_hashes": source_hashes,
-        "risk_request": {"leverage_x": v1._i(risk.get("leverage_x"), "leverage_x"), "position_pct": v1._f(risk.get("position_pct"), "position_pct")},
+        "risk_request": {
+            "leverage_x": v1._i(risk.get("leverage_x"), "leverage_x"),
+            "position_pct": v1._f(risk.get("position_pct"), "position_pct"),
+        },
         "windows": selected_eval.get("windows"),
         "metrics": selected_eval.get("metrics"),
         "retention_semantics": "WINDOW_EXPECTANCY_DIV_W1_EXPECTANCY",

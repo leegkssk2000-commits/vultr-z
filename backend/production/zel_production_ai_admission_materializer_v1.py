@@ -75,6 +75,8 @@ def validate_template_registry(registry: Mapping[str, Any]) -> dict[str, Any]:
         controls = raw.get("negative_controls")
         if controls != ["DIRECTION_REVERSAL", "PLUS_ONE_EVENT_DELAY", "NO_SIGNAL_PLACEBO"]:
             raise RuntimeError(f"AI_ADMISSION_TEMPLATE_CONTROLS_DRIFT:{template_id}")
+        if str(template_id) == "l2_inventory_pressure_v1" and raw.get("context_rule") != "REQUIRE_BASIS_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN":
+            raise RuntimeError("AI_ADMISSION_L2_CONTEXT_RULE_DRIFT")
     return dict(registry)
 
 
@@ -167,6 +169,7 @@ def materialize_tick(
             "mechanism_class": template["mechanism_class"],
             "event_anchor": template["event_anchor"],
             "direction_rule": template["direction_rule"],
+            "context_rule": template.get("context_rule"),
             "horizon_rule": template["horizon_rule"],
             "temporal_durability_split": template["temporal_durability_split"],
             "negative_controls": list(template["negative_controls"]),

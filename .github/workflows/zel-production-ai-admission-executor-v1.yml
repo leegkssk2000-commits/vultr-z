@@ -1,0 +1,165 @@
+name: ZEL Production AI Admission Executor V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_admission_executor_v1.py'
+      - 'backend/production/zel_production_ai_admission_materializer_v1.py'
+      - 'config/zel_production_ai_admission_executor_v1.json'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
+      - 'tests/test_zel_production_ai_admission_executor_v1.py'
+      - '.github/workflows/zel-production-ai-admission-executor-v1.yml'
+  workflow_run:
+    workflows: ['ZEL Production AI Proposal Explore V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ai-admission-executor-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test frozen admission executor
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile \
+            backend/production/zel_production_ai_admission_executor_v1.py \
+            backend/production/zel_production_ai_admission_materializer_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_ai_admission_executor_v1.py \
+            tests/test_zel_production_ai_admission_materializer_v1.py
+      - name: Verify frozen no-search no-authority boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_ai_admission_executor_v1.json').read_text())
+          t=json.loads(Path('config/zel_production_ai_admission_template_registry_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['numeric_signal_thresholds']==[] and p['parameter_search'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          assert p['live_trade_authority']=='BLOCKED'
+          l2=t['templates']['l2_inventory_pressure_v1']
+          assert l2['context_rule']=='REQUIRE_BASIS_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN'
+          assert l2['numeric_signal_thresholds']==[] and l2['parameter_search'] is False
+          src=Path('backend/production/zel_production_ai_admission_executor_v1.py').read_text()
+          assert 'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE' in src
+          assert 'BUILD_INDEPENDENT_FAMILY_PAPER_CANARY' in src
+          assert 'submit_order' not in src
+          print('PASS_FROZEN_ADMISSION_EXECUTOR_BOUNDARY')
+          PY
+
+  execute-on-vps:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded frozen admission tick
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_ai_admission_executor_v1.py',
+            'backend/production/zel_production_ai_admission_materializer_v1.py',
+            'backend/production/zel_production_carry_flow_data_v1.py',
+            'backend/production/zel_production_l2_order_book_data_v1.py',
+            'backend/engine/market_data_service.py',
+            'config/zel_production_ai_admission_executor_v1.json',
+            'config/zel_production_ai_admission_template_registry_v1.json',
+            'config/zel_production_carry_positioning_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" <<'REMOTE'
+          set -euo pipefail
+          matched=0
+          for _ in $(seq 1 60); do
+            if RUNTIME_PARITY_B64="$RUNTIME_PARITY_B64" python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path('/home/z/zel-production-current')
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              ok=ok and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$matched" -ne 1 ]; then
+            echo 'RUNTIME_PARITY_TIMEOUT' >&2
+            exit 71
+          fi
+          ROOT=/home/z/zel-production-current
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-admission-carry.json
+          python3 -m backend.production.zel_production_ai_admission_executor_v1 >/tmp/zel-ai-admission-executor.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('/tmp/zel-ai-admission-executor.json').read_text())
+          assert row['state'] in {
+              'HOLD_AI_ADMISSION_NO_FROZEN_CONTRACT',
+              'HOLD_AI_ADMISSION_EXECUTOR_AUTHORITY_MISSING',
+              'HOLD_AI_ADMISSION_EXECUTOR_SOURCE_SNAPSHOT_MISSING',
+              'HOLD_AI_ADMISSION_HISTORY_ACCUMULATING',
+              'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE',
+              'REJECT_AI_ADMISSION_ECONOMIC_EDGE',
+          }
+          persisted=Path('/home/z/z/ledger/production_ai_admission_economic_v1.json')
+          if persisted.exists():
+              p=json.loads(persisted.read_text())
+              assert p.get('selection_authority') is False
+              assert p.get('promotion_authority') is False
+              assert p.get('execution_authority')=='NONE'
+              assert p.get('order_authority')=='BLOCKED'
+              assert p.get('live_trade_authority')=='BLOCKED'
+              assert p.get('exchange_order_submitted') is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+          REMOTE

@@ -118,11 +118,13 @@ jobs:
           runner=Path('backend/production/zel_production_family_paper_canary_runner_v2.py').read_text()
           evidence=Path('backend/production/zel_production_family_paper_evidence_producer_v1.py').read_text()
           verifier=Path('backend/production/zel_production_family_survivor_verifier_v1.py').read_text()
+          workflow=Path('.github/workflows/zel-production-ai-admission-executor-v1.yml').read_text()
           assert 'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE' in src
           assert 'BUILD_INDEPENDENT_FAMILY_PAPER_CANARY' in src
           assert 'admission_history_reuse_allowed' in bridge and 'prospective_only' in bridge
           assert 'runtime_symbol_precedence' in runner and 'FROZEN_PRECEDENCE_FIRST_QUALIFIED_NO_METRIC_SEARCH' in runner
           assert 'symbol_qualified' in evidence and 'runtime_symbol' in verifier
+          assert "p.get('executor_version') in {'V2','V3'}" in workflow
           assert 'production_family_paper_canary_history_v1' in Path('config/zel_production_family_paper_canary_runner_v1.json').read_text()
           assert 'production_ai_admission_observations_v1.ndjson' not in runner
           for code in (src,bridge,runner,evidence,verifier):
@@ -255,7 +257,8 @@ jobs:
               assert p.get('order_authority')=='BLOCKED'
               assert p.get('live_trade_authority')=='BLOCKED'
               assert p.get('exchange_order_submitted') is False
-              assert p.get('executor_version')=='V2'
+              # V3 may legitimately advance the shared authority-free receipt while this legacy V2 compatibility job is still verifying it.
+              assert p.get('executor_version') in {'V2','V3'}
           cs=Path('/home/z/z/ledger/production_family_paper_canary_runner_state_v1.json')
           if cs.exists():
               c=json.loads(cs.read_text())

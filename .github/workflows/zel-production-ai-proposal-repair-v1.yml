@@ -1,0 +1,166 @@
+name: ZEL Production AI Proposal Repair V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_proposal_repair_v1.py'
+      - 'tests/test_zel_production_ai_proposal_repair_v1.py'
+      - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
+      - '.github/workflows/zel-ai-proposal-error-diagnostic-v1.yml'
+  workflow_run:
+    workflows: ['ZEL Production AI Proposal Explore V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ai-proposal-repair-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test bounded corrective retry
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_ai_proposal_repair_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_ai_proposal_repair_v1.py \
+            tests/test_zel_production_ai_proposal_layer_v1.py
+      - name: Verify repair authority and vocabulary boundaries
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
+          assert p['source_vocabulary']==['funding','basis','open_interest','ohlcv','volume','l2_order_book']
+          assert p['numeric_threshold_proposals_allowed'] is False
+          src=Path('backend/production/zel_production_ai_proposal_repair_v1.py').read_text()
+          assert 'AI_PROPOSAL_REQUIRED_SOURCE_OUTSIDE_VOCAB' in src
+          assert 'max_corrective_attempts' in src
+          assert 'silent_source_substitution' in src
+          assert 'submit_order' not in src
+          assert 'selection_authority' in src and 'promotion_authority' in src
+          assert 'order_authority' in src and 'live_trade_authority' in src
+          runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          assert 'zel_production_ai_proposal_repair_v1' not in runner
+          assert 'GEMINI_API_KEY' not in runner
+          print('PASS_BOUNDED_AI_PROPOSAL_REPAIR_BOUNDARY')
+          PY
+
+  repair-on-vps:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded corrective proposal retry and continue deterministic chain
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          REPAIR_SHA="$(sha256sum backend/production/zel_production_ai_proposal_repair_v1.py | awk '{print $1}')"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' REPAIR_SHA='$REPAIR_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          matched=0
+          for _ in $(seq 1 60); do
+            p="$ROOT/backend/production/zel_production_ai_proposal_repair_v1.py"
+            if [ -f "$p" ] && [ "$(sha256sum "$p" | awk '{print $1}')" = "$REPAIR_SHA" ]; then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$matched" -ne 1 ]; then
+            echo "REPAIR_RUNTIME_PARITY_TIMEOUT" >&2
+            exit 71
+          fi
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+
+          python3 -m backend.production.zel_production_ai_proposal_repair_v1 \
+            --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json \
+            >/tmp/zel-ai-proposal-repair.json
+
+          REPAIR_STATE="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())['state'])
+          PY
+          )"
+
+          if [ "$REPAIR_STATE" = "PASS_AI_PROPOSAL_SOURCE_READY" ]; then
+            python3 -m backend.production.zel_production_source_acquisition_v1 >/tmp/zel-ai-repair-source.json
+            python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-repair-router.json
+            python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-repair-materializer.json
+            python3 -m backend.production.zel_production_ai_admission_executor_v2 >/tmp/zel-ai-repair-economic.json
+            python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-repair-handoff.json
+            python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-repair-canary.json
+          fi
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          repair=json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())
+          allowed={
+              'HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_NOT_REQUIRED',
+              'HOLD_AI_PROPOSAL_CORRECTIVE_CALLER_UNAVAILABLE',
+              'HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_FAILED',
+              'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED',
+              'HOLD_AI_PROPOSAL_NO_CANDIDATE',
+              'PASS_AI_PROPOSAL_SOURCE_READY',
+          }
+          assert repair['state'] in allowed
+          receipt=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
+          if receipt.exists():
+              row=json.loads(receipt.read_text())
+              assert row.get('selection_authority') is False
+              assert row.get('promotion_authority') is False
+              assert row.get('execution_authority')=='NONE'
+              assert row.get('order_authority')=='BLOCKED'
+              assert row.get('live_trade_authority')=='BLOCKED'
+              assert row.get('exchange_order_submitted') is False
+          summary={'repair':repair}
+          for name in ('source','router','materializer','economic','handoff','canary'):
+              p=Path(f'/tmp/zel-ai-repair-{name}.json')
+              if p.exists():
+                  summary[name]=json.loads(p.read_text())
+          print(json.dumps(summary,sort_keys=True))
+          PY
+          REMOTE
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

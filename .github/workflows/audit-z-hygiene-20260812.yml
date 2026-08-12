@@ -1,4 +1,4 @@
-name: cleanup Z orphan timers 20260812
+name: trace Z legacy external callers 20260812
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  cleanup:
+  trace:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,55 +23,60 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Disable only proven orphan failing timers
+      - name: Trace disabled-but-invoked and missing-target owners
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
-          set -euo pipefail
-          EXPECTED=/home/z/zel-production-releases/373ea890530a46d0b04da6414462e6c3873e5498
-          CURRENT="$(readlink -f /home/z/zel-production-current)"
-          test "$CURRENT" = "$EXPECTED"
-          test "$(systemctl is-active zel-production-paper-loop-v1.service)" = active
+          set -u
+          echo '=== MASTER/PAPER PARITY ==='
+          readlink -f /home/z/zel-production-current || true
+          systemctl is-active zel-production-paper-loop-v1.service || true
 
-          cleanup_one() {
-            svc="$1"; timer="$2"; script="$3"
-            echo "=== PRE $svc ==="
-            systemctl is-active "$svc" || true
-            systemctl is-active "$timer" || true
-            systemctl is-enabled "$timer" || true
-            test ! -e "$script"
-            systemctl cat "$svc" | grep -Fq "$script"
-            req="$(systemctl show "$svc" -p RequiredBy --value || true)"
-            want="$(systemctl show "$svc" -p WantedBy --value || true)"
-            test -z "$req"
-            test -z "$want"
-            systemctl disable --now "$timer"
-            systemctl reset-failed "$svc" || true
-            echo "=== POST $svc ==="
-            test "$(systemctl is-active "$timer" || true)" = inactive
-            test "$(systemctl is-enabled "$timer" || true)" = disabled
-            post="$(systemctl is-active "$svc" || true)"
-            test "$post" != failed
-            printf 'service=%s timer=%s state=%s\n' "$svc" "$timer" "$post"
-          }
+          targets=(
+            zel-s4f18c-shadow-close-writer.service
+            zel-s4g8r4-zero-epoch-q4-display-mirror.service
+            zel-q4r3-recent-trace-unifier.service
+            zel-telegram-bot-clean-adapter.service
+          )
+          for u in "${targets[@]}"; do
+            b="${u%.service}"
+            echo "=== TARGET $u ==="
+            systemctl show "$u" -p ActiveState -p SubState -p UnitFileState -p TriggeredBy -p Triggers -p RequiredBy -p WantedBy -p PartOf -p ConsistsOf --no-pager 2>/dev/null || true
+            systemctl show "$b.timer" -p ActiveState -p UnitFileState -p Triggers -p RequiredBy -p WantedBy --no-pager 2>/dev/null || true
+            echo '-- reverse --'
+            systemctl list-dependencies --reverse --all "$u" 2>/dev/null | head -n 120 || true
+            echo '-- cat --'
+            systemctl cat "$u" 2>/dev/null || true
+          done
 
-          cleanup_one \
-            zel-q4r3-candidate-skill-annotator.service \
-            zel-q4r3-candidate-skill-annotator.timer \
-            /usr/local/bin/zel_q4r3_candidate_skill_annotator.py
-          cleanup_one \
-            zel-q4r3-chart-current-binder.service \
-            zel-q4r3-chart-current-binder.timer \
-            /usr/local/bin/zel_q4r3_chart_current_binder.py
+          echo '=== STATIC REFERENCES TO UNIT NAMES ==='
+          grep -RsnF 'zel-s4f18c-shadow-close-writer.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
+          grep -RsnF 'zel-s4g8r4-zero-epoch-q4-display-mirror.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
+          grep -RsnF 'zel-q4r3-recent-trace-unifier.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
+          grep -RsnF 'zel-telegram-bot-clean-adapter.service' /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 260 || true
 
-          sleep 12
-          test "$(systemctl is-active zel-production-paper-loop-v1.service)" = active
-          echo '=== REMAINING FAILED ZEL ==='
-          systemctl --failed --no-pager --no-legend | grep -E '^.?[[:space:]]*zel-' || true
-          echo 'PASS_ORPHAN_FAILING_TIMERS_DISABLED'
+          echo '=== STATIC REFERENCES TO MISSING SCRIPT BASENAMES ==='
+          grep -RsnE 'zel_s4f18c_shadow_tp_sl_close_writer|zel_s4g8r7f5p5_canonical_projection_single_writer|zel_s4g8r7d8_display_active_open_priority_mirror|zel_q4r3_recent_trace_unifier|zel_telegram_bot_clean_adapter' \
+            /etc/systemd/system /usr/lib/systemd/system /usr/local/bin /home/z/z /home/z/zel-production-current 2>/dev/null | head -n 420 || true
+
+          echo '=== JOURNAL START CORRELATION LAST 12 MIN ==='
+          journalctl --since '-12 min' --no-pager -o short-iso 2>/dev/null \
+            | grep -E 'Starting ZEL S4F18C|Starting ZEL S4G8R4|Starting ZEL Q4R3 Recent Trace|Starting ZEL Telegram Bot Clean|systemctl start|shadow-close-writer|zero-epoch-q4-display-mirror|recent-trace-unifier|telegram-bot-clean-adapter' \
+            | tail -n 420 || true
+
+          echo '=== CALLING SCRIPT SEARCH: SYSTEMCTL START/TRY-RESTART ==='
+          grep -RsnE 'systemctl[[:space:]]+(start|restart|try-restart|reload-or-restart)[^\n]*(s4f18c-shadow-close-writer|s4g8r4-zero-epoch-q4-display-mirror|q4r3-recent-trace-unifier|telegram-bot-clean-adapter)' \
+            /usr/local/bin /home/z/z /home/z/zel-production-current /etc/systemd/system 2>/dev/null | head -n 360 || true
+
+          echo '=== TIMER POST-CLEANUP ==='
+          for t in zel-q4r3-candidate-skill-annotator.timer zel-q4r3-chart-current-binder.timer; do
+            printf '%s active=' "$t"; systemctl is-active "$t" 2>/dev/null || true
+            printf '%s enabled=' "$t"; systemctl is-enabled "$t" 2>/dev/null || true
+          done
+          echo 'PASS_EXTERNAL_CALLER_TRACE_READ_ONLY'
           REMOTE
 
       - name: Cleanup SSH key

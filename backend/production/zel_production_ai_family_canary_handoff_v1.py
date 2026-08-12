@@ -53,6 +53,17 @@ def _hold(state: str, reason: str, now_ms: int) -> dict[str, Any]:
     return row
 
 
+def _verified_receipt(row: Mapping[str, Any], label: str) -> str:
+    claimed = str(row.get("receipt_sha256") or "")
+    if len(claimed) != 64:
+        raise RuntimeError(f"AI_FAMILY_CANARY_HANDOFF_{label}_RECEIPT_INVALID")
+    payload = {k: v for k, v in row.items() if k != "receipt_sha256"}
+    actual = stable_sha(payload)
+    if actual != claimed:
+        raise RuntimeError(f"AI_FAMILY_CANARY_HANDOFF_{label}_RECEIPT_MISMATCH")
+    return claimed
+
+
 def _survivor_contract(policy: Mapping[str, Any]) -> dict[str, Any]:
     if policy.get("schema_version") != FAMILY_EVIDENCE_POLICY_SCHEMA:
         raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_EVIDENCE_POLICY_SCHEMA_INVALID")
@@ -93,6 +104,7 @@ def _contract_map(contract_state: Mapping[str, Any]) -> dict[str, dict[str, Any]
         if not cid or cid in out:
             raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_CONTRACT_ID_INVALID")
         _authority_guard(raw, "AI_FAMILY_CANARY_HANDOFF_CONTRACT")
+        _verified_receipt(raw, "CONTRACT")
         out[cid] = dict(raw)
     return out
 
@@ -114,6 +126,7 @@ def handoff_tick(
     _authority_guard(economic_result, "AI_FAMILY_CANARY_HANDOFF_ECONOMIC")
     if economic_result.get("exchange_order_submitted") is not False:
         raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_ECONOMIC_ORDER_INVALID")
+    batch_receipt = _verified_receipt(economic_result, "ECONOMIC")
     if economic_result.get("state") != "PASS_AI_ADMISSION_ECONOMIC_CANDIDATE":
         return _hold("HOLD_AI_FAMILY_CANARY_NO_ECONOMIC_CANDIDATE", str(economic_result.get("state") or "UNKNOWN"), now), None
     if not isinstance(contract_state, Mapping) or not isinstance(family_evidence_policy, Mapping):
@@ -121,9 +134,6 @@ def handoff_tick(
 
     contracts = _contract_map(contract_state)
     survivor_contract = _survivor_contract(family_evidence_policy)
-    batch_receipt = str(economic_result.get("receipt_sha256") or "")
-    if len(batch_receipt) != 64:
-        raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_ECONOMIC_RECEIPT_INVALID")
     results = economic_result.get("results")
     if not isinstance(results, list):
         raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_ECONOMIC_RESULTS_INVALID")
@@ -134,6 +144,7 @@ def handoff_tick(
             continue
         if raw.get("economic_candidate") is not True:
             raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_CANDIDATE_FLAG_INVALID")
+        result_receipt = _verified_receipt(raw, "ECONOMIC_RESULT")
         cid = str(raw.get("contract_id") or "")
         contract = contracts.get(cid)
         if contract is None:
@@ -146,12 +157,8 @@ def handoff_tick(
         required_sources = sorted(set(map(str, contract.get("required_sources") or [])))
         if not required_sources:
             raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_REQUIRED_SOURCES_MISSING")
-        result_receipt = str(raw.get("receipt_sha256") or "")
-        contract_receipt = str(contract.get("receipt_sha256") or "")
-        if len(result_receipt) != 64 or len(contract_receipt) != 64:
-            raise RuntimeError("AI_FAMILY_CANARY_HANDOFF_LINEAGE_RECEIPT_INVALID")
+        contract_receipt = str(contract["receipt_sha256"])
         request_id = stable_sha({
-            "economic_batch_receipt_sha256": batch_receipt,
             "economic_result_receipt_sha256": result_receipt,
             "contract_receipt_sha256": contract_receipt,
         })[:32]

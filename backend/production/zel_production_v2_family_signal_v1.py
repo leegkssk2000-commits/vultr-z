@@ -138,6 +138,7 @@ def _passed_canary(authority: Mapping[str, Any], canary_state: Mapping[str, Any]
     if canary_state.get("schema_version") != CANARY_STATE_SCHEMA:
         raise RuntimeError("V2_FAMILY_SIGNAL_CANARY_STATE_SCHEMA_INVALID")
     _authority_guard(canary_state, "V2_FAMILY_SIGNAL_CANARY_STATE")
+    _verified_receipt(canary_state, "CANARY_STATE")
     rows = canary_state.get("canaries")
     raw = rows.get(lineage["canary_key"]) if isinstance(rows, Mapping) else None
     if not isinstance(raw, Mapping):
@@ -156,19 +157,32 @@ def _passed_canary(authority: Mapping[str, Any], canary_state: Mapping[str, Any]
     if not isinstance(result, Mapping) or result.get("state") != "PASS_FAMILY_PAPER_CANARY":
         raise RuntimeError("V2_FAMILY_SIGNAL_CANARY_RESULT_NOT_PASS")
     _verified_receipt(result, "CANARY_RESULT")
+    expected = {
+        "family_id": lineage["family_id"],
+        "strategy_id": lineage["strategy_id"],
+        "alpha_id": lineage["alpha_id"],
+        "canary_key": lineage["canary_key"],
+        "contract_id": lineage["contract_id"],
+        "contract_receipt_sha256": lineage["contract_receipt_sha256"],
+    }
+    for key, value in expected.items():
+        if str(result.get(key) or "") != value:
+            raise RuntimeError(f"V2_FAMILY_SIGNAL_CANARY_RESULT_LINEAGE_MISMATCH:{key}")
     if result.get("prospective_only") is not True or result.get("admission_history_reuse_allowed") is not False:
         raise RuntimeError("V2_FAMILY_SIGNAL_CANARY_INDEPENDENCE_INVALID")
     return dict(raw)
 
 
 def _latest_history(history: Sequence[Mapping[str, Any]], contract_id: str, native_symbol: str) -> dict[str, Any] | None:
-    rows = [
-        dict(x)
-        for x in history
-        if isinstance(x, Mapping)
-        and str(x.get("contract_id") or "") == contract_id
-        and str(x.get("symbol") or "") == native_symbol
-    ]
+    rows: list[dict[str, Any]] = []
+    for raw in history:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("contract_id") or "") != contract_id or str(raw.get("symbol") or "") != native_symbol:
+            continue
+        _authority_guard(raw, "V2_FAMILY_SIGNAL_HISTORY")
+        _verified_receipt(raw, "HISTORY")
+        rows.append(dict(raw))
     if not rows:
         return None
     rows.sort(key=lambda x: (_i(x.get("observed_at_ms"), "history.observed_at_ms"), _i(x.get("outcome_candle_ts_ms"), "history.outcome_candle_ts_ms")))
@@ -184,6 +198,9 @@ def _verified_prior_signal(prior: Mapping[str, Any] | None, lineage: Mapping[str
         return None
     if str(prior.get("symbol") or "").replace("-", "").upper() != compact_symbol:
         return None
+    for key in ("family_id", "contract_id", "canary_key", "contract_receipt_sha256"):
+        if str(prior.get(key) or "") != lineage[key]:
+            return None
     _verified_receipt(prior, "PRIOR_SIGNAL")
     return dict(prior)
 
@@ -406,7 +423,6 @@ def generate_runtime_signal(
     canary_state = read_json(Path(str(cfg["canary_state_path"])), required=True)
     if canary_state is None:
         raise RuntimeError("V2_FAMILY_SIGNAL_CANARY_STATE_MISSING")
-    lineage = _authority_lineage(authority)
     canary = _passed_canary(authority, canary_state)
     history_path = str(canary.get("history_path") or "")
     if not history_path:

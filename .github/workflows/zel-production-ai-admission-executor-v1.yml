@@ -5,10 +5,12 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_admission_executor_v1.py'
+      - 'backend/production/zel_production_ai_admission_executor_v2.py'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
       - 'config/zel_production_ai_admission_executor_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'tests/test_zel_production_ai_admission_executor_v1.py'
+      - 'tests/test_zel_production_ai_admission_executor_v2.py'
       - '.github/workflows/zel-production-ai-admission-executor-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Proposal Explore V1']
@@ -34,15 +36,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and test frozen admission executor
+      - name: Compile and test frozen admission executor V2
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
           python -m py_compile \
             backend/production/zel_production_ai_admission_executor_v1.py \
+            backend/production/zel_production_ai_admission_executor_v2.py \
             backend/production/zel_production_ai_admission_materializer_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_admission_executor_v1.py \
+            tests/test_zel_production_ai_admission_executor_v2.py \
             tests/test_zel_production_ai_admission_materializer_v1.py
       - name: Verify frozen no-search no-authority boundary
         run: |
@@ -56,14 +60,22 @@ jobs:
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
           assert p['live_trade_authority']=='BLOCKED'
-          l2=t['templates']['l2_inventory_pressure_v1']
-          assert l2['context_rule']=='REQUIRE_BASIS_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN'
-          assert l2['numeric_signal_thresholds']==[] and l2['parameter_search'] is False
-          src=Path('backend/production/zel_production_ai_admission_executor_v1.py').read_text()
+          expected={
+            'l2_inventory_pressure_v1':(['basis','l2_order_book'],'REQUIRE_BASIS_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN'),
+            'basis_oi_deleveraging_v1':(['basis','open_interest'],'REQUIRE_OPEN_INTEREST_INCREASE_AND_NONZERO_BASIS_CHANGE'),
+            'funding_l2_inventory_exhaustion_v1':(['funding','l2_order_book'],'REQUIRE_FUNDING_SIGN_MATCH_PRIMARY_IMBALANCE_SIGN'),
+          }
+          for tid,(sources,context) in expected.items():
+              row=t['templates'][tid]
+              assert row['required_sources_exact']==sources
+              assert row['context_rule']==context
+              assert row['numeric_signal_thresholds']==[] and row['parameter_search'] is False
+              assert row['negative_controls']==['DIRECTION_REVERSAL','PLUS_ONE_EVENT_DELAY','NO_SIGNAL_PLACEBO']
+          src=Path('backend/production/zel_production_ai_admission_executor_v2.py').read_text()
           assert 'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE' in src
           assert 'BUILD_INDEPENDENT_FAMILY_PAPER_CANARY' in src
-          assert 'submit_order' not in src
-          print('PASS_FROZEN_ADMISSION_EXECUTOR_BOUNDARY')
+          assert 'submit_order' not in src and 'https://' not in src
+          print('PASS_FROZEN_ADMISSION_EXECUTOR_V2_BOUNDARY')
           PY
 
   execute-on-vps:
@@ -87,7 +99,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded frozen admission tick
+      - name: Run one bounded frozen admission V2 tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -98,6 +110,7 @@ jobs:
           from pathlib import Path
           files=[
             'backend/production/zel_production_ai_admission_executor_v1.py',
+            'backend/production/zel_production_ai_admission_executor_v2.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_carry_flow_data_v1.py',
             'backend/production/zel_production_l2_order_book_data_v1.py',
@@ -138,7 +151,7 @@ jobs:
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-admission-carry.json
-          python3 -m backend.production.zel_production_ai_admission_executor_v1 >/tmp/zel-ai-admission-executor.json
+          python3 -m backend.production.zel_production_ai_admission_executor_v2 >/tmp/zel-ai-admission-executor.json
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -160,6 +173,7 @@ jobs:
               assert p.get('order_authority')=='BLOCKED'
               assert p.get('live_trade_authority')=='BLOCKED'
               assert p.get('exchange_order_submitted') is False
+              assert p.get('executor_version')=='V2'
           print(json.dumps(row,sort_keys=True))
           PY
           REMOTE

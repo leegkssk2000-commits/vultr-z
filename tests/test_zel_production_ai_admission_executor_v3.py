@@ -9,6 +9,9 @@ from backend.production.zel_production_ai_admission_executor_v3 import (
     build_funding_volume_observations,
 )
 
+OBSERVED_AT_MS = 1_800_000_000_000
+CANDLE_TS_MS = OBSERVED_AT_MS - 7_200_000
+
 
 def contract() -> dict:
     return {
@@ -18,7 +21,7 @@ def contract() -> dict:
     }
 
 
-def carry(funding: float, observed_at_ms: int = 10_800_000) -> dict:
+def carry(funding: float, observed_at_ms: int = OBSERVED_AT_MS) -> dict:
     return {
         "schema_version": "zel.production_carry_flow_data.v1",
         "state": "PASS_CARRY_POSITIONING_RAW_DATA",
@@ -43,7 +46,7 @@ def carry(funding: float, observed_at_ms: int = 10_800_000) -> dict:
 def candles(open_price: float, close_price: float, volume: float) -> dict:
     return {
         "BTC-USDT": [
-            {"ts": 3_600_000, "op": open_price, "cl": close_price, "vol": volume}
+            {"ts": CANDLE_TS_MS, "op": open_price, "cl": close_price, "vol": volume}
         ]
     }
 
@@ -55,8 +58,8 @@ def previous(*, funding: float, volume: float) -> dict:
         "family_id": "funding_volume_elasticity",
         "template_id": FUNDING_VOLUME_TEMPLATE,
         "symbol": "BTC-USDT",
-        "observed_at_ms": 1,
-        "outcome_candle_ts_ms": 1,
+        "observed_at_ms": OBSERVED_AT_MS - 3_600_000,
+        "outcome_candle_ts_ms": CANDLE_TS_MS - 3_600_000,
         "outcome_close": 100.0,
         "funding_rate": funding,
         "volume": volume,

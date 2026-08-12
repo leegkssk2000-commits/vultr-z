@@ -17,6 +17,10 @@ def proposal_policy() -> dict:
     return json.loads(Path("config/zel_production_ai_proposal_layer_v1.json").read_text())
 
 
+def source_registry() -> dict:
+    return json.loads(Path("config/zel_production_source_capability_registry_v1.json").read_text())
+
+
 def router_policy() -> dict:
     return json.loads(Path("config/zel_production_economic_edge_router_v1.json").read_text())
 
@@ -55,6 +59,19 @@ def initial_edge() -> dict:
     return r
 
 
+def test_source_vocabulary_matches_verified_native_registry() -> None:
+    policy = proposal_policy()
+    registry = source_registry()
+    verified = sorted(
+        source_id
+        for source_id, row in registry["sources"].items()
+        if row.get("proposal_available") is True and row.get("native_read_bound") is True
+    )
+    assert sorted(policy["source_vocabulary"]) == verified
+    assert policy["source_vocabulary_policy"] == "VERIFIED_NATIVE_ONLY_READD_AFTER_SOURCE_REGISTRY_BIND"
+    assert {"liquidation", "flow", "trade_sequence"}.isdisjoint(policy["source_vocabulary"])
+
+
 def test_not_triggered_does_not_call_ai() -> None:
     edge = initial_edge()
     edge["state"] = "PASS_EDGE_ACQUISITION_SOURCE_READY_QUEUE"
@@ -66,14 +83,8 @@ def test_not_triggered_does_not_call_ai() -> None:
         return "fixture", {"status": "PASS", "proposals": [proposal_item()]}
 
     result, wrote = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=2,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=2,
     )
     assert result is None
     assert wrote is False
@@ -88,14 +99,8 @@ def test_source_ready_proposal_is_bounded_and_authority_free() -> None:
         return "models/gemini-fixture", {"status": "PASS", "proposals": [proposal_item()]}
 
     result, wrote = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=3,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=3,
     )
     assert wrote is True
     assert result is not None
@@ -112,7 +117,7 @@ def test_source_ready_proposal_is_bounded_and_authority_free() -> None:
     assert result["exchange_order_submitted"] is False
 
 
-def test_unbound_source_proposal_holds() -> None:
+def test_unverified_source_proposal_is_rejected_before_routing() -> None:
     edge = initial_edge()
 
     def caller(_: str):
@@ -122,19 +127,14 @@ def test_unbound_source_proposal_holds() -> None:
         }
 
     result, _ = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=4,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=4,
     )
     assert result is not None
-    assert result["state"] == "HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED"
+    assert result["state"] == "HOLD_AI_PROPOSAL_CALL_FAILED"
+    assert "REQUIRED_SOURCE_OUTSIDE_VOCAB" in result["error_code"]
+    assert result["proposal_count"] == 0
     assert result["source_ready_count"] == 0
-    assert result["proposals"][0]["missing_sources"] == ["liquidation"]
 
 
 def test_same_context_reuses_previous_without_new_ai_call() -> None:
@@ -147,25 +147,13 @@ def test_same_context_reuses_previous_without_new_ai_call() -> None:
         return "models/gemini-fixture", {"status": "PASS", "proposals": [proposal_item()]}
 
     first, wrote = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=5,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=5,
     )
     assert first is not None and wrote is True and called == 1
     second, wrote2 = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=first,
-        ai_caller=caller,
-        now_ms=6,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=first, ai_caller=caller, now_ms=6,
     )
     assert second == first
     assert wrote2 is False
@@ -183,14 +171,8 @@ def test_duplicate_existing_family_is_rejected() -> None:
         }
 
     result, _ = proposal_tick(
-        proposal_policy(),
-        edge=context_edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=7,
+        proposal_policy(), edge=context_edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=7,
     )
     assert result is not None
     assert result["state"] == "HOLD_AI_PROPOSAL_CALL_FAILED"
@@ -221,22 +203,12 @@ def test_router_consumes_source_ready_ai_proposal_same_context() -> None:
         return "models/gemini-fixture", {"status": "PASS", "proposals": [proposal_item()]}
 
     proposal_state, _ = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=8,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=8,
     )
     assert proposal_state is not None
     routed = route_tick(
-        router_policy(),
-        factory=factory(),
-        bootstrap=bootstrap(),
-        ai_proposals=proposal_state,
-        now_ms=9,
+        router_policy(), factory=factory(), bootstrap=bootstrap(), ai_proposals=proposal_state, now_ms=9,
     )
     assert routed["state"] == "PASS_EDGE_ACQUISITION_AI_PROPOSAL_QUEUE"
     assert len(routed["acquisition_queue"]) == 1
@@ -247,7 +219,7 @@ def test_router_consumes_source_ready_ai_proposal_same_context() -> None:
     assert routed["execution_authority"] == "NONE"
 
 
-def test_router_surfaces_ai_source_binding_requirement() -> None:
+def test_router_never_receives_unverified_source_proposal() -> None:
     edge = initial_edge()
 
     def caller(_: str):
@@ -257,26 +229,15 @@ def test_router_surfaces_ai_source_binding_requirement() -> None:
         }
 
     proposal_state, _ = proposal_tick(
-        proposal_policy(),
-        edge=edge,
-        factory=factory(),
-        pool=None,
-        improvement=None,
-        previous=None,
-        ai_caller=caller,
-        now_ms=10,
+        proposal_policy(), edge=edge, factory=factory(), pool=None, improvement=None,
+        previous=None, ai_caller=caller, now_ms=10,
     )
     assert proposal_state is not None
+    assert proposal_state["state"] == "HOLD_AI_PROPOSAL_CALL_FAILED"
     routed = route_tick(
-        router_policy(),
-        factory=factory(),
-        bootstrap=bootstrap(),
-        ai_proposals=proposal_state,
-        now_ms=11,
+        router_policy(), factory=factory(), bootstrap=bootstrap(), ai_proposals=proposal_state, now_ms=11,
     )
-    assert routed["state"] == "HOLD_EDGE_AI_PROPOSAL_SOURCE_BINDING_REQUIRED"
-    assert routed["missing_proposal_sources"] == ["liquidation"]
-    assert routed["next"] == "BIND_AI_PROPOSAL_REQUIRED_NATIVE_SOURCES"
+    assert routed["state"] == "HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED"
     assert routed["order_authority"] == "BLOCKED"
 
 
@@ -294,11 +255,7 @@ def test_stale_ai_context_is_ignored() -> None:
         "exchange_order_submitted": False,
     }
     routed = route_tick(
-        router_policy(),
-        factory=factory(),
-        bootstrap=bootstrap(),
-        ai_proposals=stale,
-        now_ms=12,
+        router_policy(), factory=factory(), bootstrap=bootstrap(), ai_proposals=stale, now_ms=12,
     )
     assert routed["state"] == "HOLD_EDGE_ACQUISITION_CATALOG_EXHAUSTED"
     assert routed["explore_context_sha256"] == edge["explore_context_sha256"]

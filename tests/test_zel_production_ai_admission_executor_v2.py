@@ -163,7 +163,7 @@ def test_funding_l2_requires_sign_consensus_then_fades_crowding_sign() -> None:
 
 def test_generic_v2_evaluation_can_only_create_economic_candidate() -> None:
     c = contract(FUNDING_L2_TEMPLATE, "l2_liquidity_asymmetry_shock", ["funding", "l2_order_book"])
-    closes = [100.0, 95.0, 90.0, 85.0, 80.0]
+    closes = [100.0, 90.0, 85.0, 80.0, 75.0]
     rows = []
     for i, close in enumerate(closes):
         row = {

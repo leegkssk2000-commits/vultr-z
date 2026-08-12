@@ -174,7 +174,22 @@ def main(argv: list[str] | None = None) -> int:
     carry_snapshot = read_json(Path(str(cfg["carry_snapshot_path"])))
     history = v1.read_history(Path(str(cfg["observation_history_path"])))
     executor_summary = json.loads(ns.executor_summary.read_text(encoding="utf-8"))
-    candles = asyncio.run(v2._fetch_candles(cfg["symbols"]))
+    try:
+        candles = asyncio.run(v2._fetch_candles(cfg["symbols"]))
+    except Exception:
+        out = _base("HOLD_PROSPECTIVE_SOURCE_CANDLE_UNAVAILABLE", "WAIT_FOR_VERIFIED_CARRY_AND_CLOSED_CANDLE")
+        out.update(
+            {
+                "observation_history_appended": int(executor_summary.get("observation_history_appended") or 0),
+                "expected_key_count": 0,
+                "history_key_count": len(history),
+                "source_fetch_ok": False,
+                "integrity_ok": True,
+            }
+        )
+        out["receipt_sha256"] = stable_sha(out)
+        print(json.dumps(out, sort_keys=True))
+        return 0
     out = progress_guard_tick(
         cfg,
         contract_state=contract_state,

@@ -92,7 +92,7 @@ def _validated_candidate(row: Mapping[str, Any], *, source: str) -> dict[str, An
     contract_id = str(row.get("contract_id") or "").strip()
     contract_receipt = str(row.get("contract_receipt_sha256") or "").strip()
     canary_receipt = str(row.get("canary_receipt_sha256") or "").strip()
-    verified_family = source == "SURVIVOR_CATALOG" and row.get("symbol_qualified") is True
+    verified_family = row.get("symbol_qualified") is True
     if verified_family and (not canary_key or not contract_id or len(contract_receipt) != 64 or len(canary_receipt) != 64):
         raise RuntimeError("SURVIVOR_POOL_FAMILY_LINEAGE_INCOMPLETE")
     risk = row.get("risk_request")
@@ -213,7 +213,7 @@ def pool_tick(
         for row in rows:
             if not isinstance(row, Mapping):
                 raise RuntimeError("SURVIVOR_POOL_CATALOG_ROW_INVALID")
-            candidates.append(_validated_candidate(row, source="SURVIVOR_CATALOG"))
+            candidates.append(_validated_candidate(row, source=str(row.get("source") or "SURVIVOR_CATALOG")))
 
     incumbent = _from_registry(incumbent_registry)
     if incumbent is not None:

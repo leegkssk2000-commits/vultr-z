@@ -1,0 +1,122 @@
+name: ZEL Production AI Admission Executor V3
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
+      - 'tests/test_zel_production_ai_admission_executor_v3.py'
+      - '.github/workflows/zel-production-ai-admission-executor-v3.yml'
+  workflow_run:
+    workflows: ['ZEL Production AI Admission Executor V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ai-admission-executor-v3
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify persistent V3 admission
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_ai_admission_executor_v3.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_ai_admission_executor_v3.py tests/test_zel_production_ai_admission_executor_v2.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          t=json.loads(Path('config/zel_production_ai_admission_template_registry_v1.json').read_text())['templates']['funding_volume_elasticity_v1']
+          assert t['required_sources_exact']==['funding','ohlcv','volume']
+          assert t['numeric_signal_thresholds']==[] and t['parameter_search'] is False
+          src=Path('backend/production/zel_production_ai_admission_executor_v3.py').read_text()
+          assert 'submit_order' not in src and 'https://' not in src
+          assert 'executor_version' in src and 'V3' in src
+          print('PASS_PERSISTENT_AI_ADMISSION_V3')
+          PY
+
+  execute-on-vps:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run persistent V3 admission and canary continuation
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          V3_SHA="$(sha256sum backend/production/zel_production_ai_admission_executor_v3.py | awk '{print $1}')"
+          TEMPLATE_SHA="$(sha256sum config/zel_production_ai_admission_template_registry_v1.json | awk '{print $1}')"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "V3_SHA='$V3_SHA' TEMPLATE_SHA='$TEMPLATE_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          matched=0
+          for _ in $(seq 1 60); do
+            a="$ROOT/backend/production/zel_production_ai_admission_executor_v3.py"
+            b="$ROOT/config/zel_production_ai_admission_template_registry_v1.json"
+            if [ -f "$a" ] && [ -f "$b" ] && [ "$(sha256sum "$a" | awk '{print $1}')" = "$V3_SHA" ] && [ "$(sha256sum "$b" | awk '{print $1}')" = "$TEMPLATE_SHA" ]; then
+              matched=1; break
+            fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo V3_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-v3-carry.json
+          python3 -m backend.production.zel_production_ai_admission_executor_v3 >/tmp/zel-ai-v3-executor.json
+          python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-v3-handoff.json
+          python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-v3-canary.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          e=json.loads(Path('/tmp/zel-ai-v3-executor.json').read_text())
+          h=json.loads(Path('/tmp/zel-ai-v3-handoff.json').read_text())
+          c=json.loads(Path('/tmp/zel-ai-v3-canary.json').read_text())
+          assert e['executor_version']=='V3'
+          assert e['state'] in {'HOLD_AI_ADMISSION_NO_FROZEN_CONTRACT','HOLD_AI_ADMISSION_EXECUTOR_SOURCE_SNAPSHOT_MISSING','HOLD_AI_ADMISSION_HISTORY_ACCUMULATING','PASS_AI_ADMISSION_ECONOMIC_CANDIDATE','REJECT_AI_ADMISSION_ECONOMIC_EDGE'}
+          assert c['runner_version']=='V2_SYMBOL_QUALIFIED'
+          persisted=Path('/home/z/z/ledger/production_ai_admission_economic_v1.json')
+          if persisted.exists():
+              p=json.loads(persisted.read_text())
+              assert p.get('executor_version')=='V3'
+              assert p.get('selection_authority') is False and p.get('promotion_authority') is False
+              assert p.get('execution_authority')=='NONE' and p.get('order_authority')=='BLOCKED' and p.get('live_trade_authority')=='BLOCKED'
+              assert p.get('exchange_order_submitted') is False
+          print(json.dumps({'executor':e,'handoff':h,'canary':c},sort_keys=True))
+          PY
+          REMOTE
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

@@ -1,0 +1,48 @@
+name: ZEL Production AI Terminal Feedback V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_terminal_feedback_v1.py'
+      - 'config/zel_production_ai_terminal_feedback_v1.json'
+      - 'tests/test_zel_production_ai_terminal_feedback_v1.py'
+      - '.github/workflows/zel-production-ai-terminal-feedback-v1.yml'
+      - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test terminal feedback
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_ai_terminal_feedback_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_ai_terminal_feedback_v1.py
+      - name: Verify no authority or network path
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_ai_terminal_feedback_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED'
+          assert p['live_trade_authority']=='BLOCKED'
+          assert p['source_code_mutation_allowed'] is False and p['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_ai_terminal_feedback_v1.py').read_text()
+          assert 'https://' not in src and 'submit_order' not in src
+          assert 'TERMINAL_REJECT_AI_ADMISSION_DO_NOT_REACTIVATE' in src
+          print('PASS_AI_TERMINAL_FEEDBACK_FAIL_CLOSED')
+          PY

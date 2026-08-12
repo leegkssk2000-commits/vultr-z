@@ -8,6 +8,12 @@ on:
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'tests/test_zel_production_ai_admission_executor_v3.py'
       - '.github/workflows/zel-production-ai-admission-executor-v3.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
+      - '.github/workflows/zel-production-ai-admission-executor-v3.yml'
   workflow_run:
     workflows: ['ZEL Production AI Admission Executor V1']
     types: [completed]
@@ -47,11 +53,15 @@ jobs:
           src=Path('backend/production/zel_production_ai_admission_executor_v3.py').read_text()
           assert 'submit_order' not in src and 'https://' not in src
           assert 'executor_version' in src and 'V3' in src
+          workflow=Path('.github/workflows/zel-production-ai-admission-executor-v3.yml').read_text()
+          assert 'push:\n    branches: [master]' in workflow
+          assert "github.event_name == 'push'" in workflow
           print('PASS_PERSISTENT_AI_ADMISSION_V3')
           PY
 
   execute-on-vps:
     if: >-
+      github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
@@ -86,9 +96,7 @@ jobs:
           for _ in $(seq 1 60); do
             a="$ROOT/backend/production/zel_production_ai_admission_executor_v3.py"
             b="$ROOT/config/zel_production_ai_admission_template_registry_v1.json"
-            if [ -f "$a" ] && [ -f "$b" ] && [ "$(sha256sum "$a" | awk '{print $1}')" = "$V3_SHA" ] && [ "$(sha256sum "$b" | awk '{print $1}')" = "$TEMPLATE_SHA" ]; then
-              matched=1; break
-            fi
+            if [ -f "$a" ] && [ -f "$b" ] && [ "$(sha256sum "$a" | awk '{print $1}')" = "$V3_SHA" ] && [ "$(sha256sum "$b" | awk '{print $1}')" = "$TEMPLATE_SHA" ]; then matched=1; break; fi
             sleep 2
           done
           [ "$matched" -eq 1 ] || { echo V3_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }

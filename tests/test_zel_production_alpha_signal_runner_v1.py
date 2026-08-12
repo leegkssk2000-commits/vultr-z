@@ -107,6 +107,43 @@ def test_stale_terminal_trend_survivor_authority_is_forced_to_safe_idle(tmp_path
     assert signal_path.read_text() == "preserve-terminal-signal"
 
 
+def test_supported_v2_family_dispatches_without_direct_network_call(tmp_path):
+    cfg = factory(tmp_path)
+    auth = executable_authority("basis_oi_deleveraging_v1")
+    write(Path(cfg["active_authority_path"]), auth)
+    calls = []
+
+    def family_generator(authority, **kwargs):
+        calls.append((authority["strategy_id"], kwargs.get("now_ms")))
+        return {
+            "schema_version": "zel.production_alpha_signal.v1",
+            "producer_schema_version": "zel.production_v2_family_signal.v1",
+            "state": "PASS_ACTIVE_ALPHA_SIGNAL",
+            "strategy_id": authority["strategy_id"],
+            "alpha_id": authority["alpha_id"],
+            "symbol": authority["symbol"],
+            "signal": "LONG",
+            "signal_ts": kwargs["now_ms"],
+            "source_hashes": ["a" * 64],
+            "promotion_authority": False,
+            "execution_authority": "PAPER_SIGNAL_ONLY",
+            "order_authority": "BLOCKED",
+            "live_trade_authority": "BLOCKED",
+            "exchange_order_submitted": False,
+            "receipt_sha256": "b" * 64,
+        }
+
+    result = run_once(factory=cfg, now_ms=10_000, signal_generator=family_generator)
+    assert result["state"] == "PASS_ACTIVE_ALPHA_SIGNAL_WRITTEN"
+    assert result["producer"] == "VERIFIED_NATIVE_SNAPSHOT_V2_FAMILY"
+    assert result["network_called"] is False
+    assert result["signal_written"] is True
+    assert calls == [("basis_oi_deleveraging_v1", 10_000)]
+    persisted = json.loads(Path(cfg["active_signal_path"]).read_text())
+    assert persisted["strategy_id"] == "basis_oi_deleveraging_v1"
+    assert persisted["order_authority"] == "BLOCKED"
+
+
 def test_unsupported_future_executable_strategy_fails_closed_before_generator(tmp_path):
     cfg = factory(tmp_path)
     write(Path(cfg["active_authority_path"]), executable_authority("carry_flow_v1"))

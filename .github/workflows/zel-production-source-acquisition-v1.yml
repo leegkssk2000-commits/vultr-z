@@ -90,17 +90,21 @@ jobs:
           assert before < proposal < resolver < after
           print('PASS_AI_PROPOSAL_SOURCE_RESOLUTION_ASYNC_ISOLATED')
           PY
-      - name: Verify resolver and L2 owner cannot grant trade authority
+      - name: Verify resolver drops stale unverified sources and cannot grant trade authority
         run: |
           python - <<'PY'
+          import json
           from pathlib import Path
           resolver=Path('backend/production/zel_production_source_acquisition_v1.py').read_text()
+          policy=json.loads(Path('config/zel_production_source_acquisition_v1.json').read_text())
           l2=Path('backend/production/zel_production_l2_order_book_data_v1.py').read_text()
-          assert 'REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER' in resolver
+          assert policy['unverified_proposal_policy']=='DROP_STALE_UNVERIFIED'
+          assert 'HOLD_SOURCE_ACQUISITION_STALE_UNVERIFIED_DROPPED' in resolver
+          assert 'dropped_unverified_family_ids' in resolver
           assert 'synthetic_source_allowed' in resolver and 'endpoint_discovery_allowed' in resolver
           assert 'urllib' not in resolver and 'https://' not in resolver and 'submit_order' not in resolver
           assert '/openApi/swap/v2/quote/depth' in l2
           assert 'submit_order' not in l2 and 'cancel_order' not in l2
           assert 'order_authority' in l2 and 'BLOCKED' in l2
-          print('PASS_SOURCE_ACQUISITION_AND_L2_FAIL_CLOSED_BOUNDARY')
+          print('PASS_STALE_UNVERIFIED_DROP_AND_L2_FAIL_CLOSED_BOUNDARY')
           PY

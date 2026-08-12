@@ -71,21 +71,40 @@ def proposal() -> dict:
     }
 
 
-def test_current_real_blocker_is_only_unverified_liquidation_source() -> None:
+def test_stale_unverified_liquidation_is_dropped_while_verified_l2_survives() -> None:
     out, updated = source_acquisition_tick(policy(), proposal=proposal(), registry=registry(), now_ms=1)
-    assert out["state"] == "HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED"
-    assert [x["source_id"] for x in out["queue"]] == ["liquidation"]
-    assert out["queue"][0]["acquisition_action"] == "REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER"
-    assert out["missing_source_count"] == 1
-    assert out["resolved_source_count"] == 3  # basis + OI + verified L2
+    assert out["state"] == "PASS_SOURCE_ACQUISITION_PROPOSALS_SOURCE_READY"
+    assert out["queue"] == []
+    assert out["missing_source_count"] == 0
+    assert out["dropped_proposal_count"] == 1
+    assert out["dropped_family_ids"] == ["liquidation_cascade_imbalance"]
+    assert out["resolved_source_count"] == 2  # basis + verified L2
     assert updated is not None
-    rows = {x["family_id"]: x for x in updated["proposals"]}
-    assert rows["order_book_inventory_asymmetry"]["source_ready"] is True
-    assert rows["order_book_inventory_asymmetry"]["missing_sources"] == []
-    assert rows["liquidation_cascade_imbalance"]["source_ready"] is False
+    assert updated["proposal_count"] == 1
     assert updated["source_ready_count"] == 1
+    assert updated["dropped_unverified_family_ids"] == ["liquidation_cascade_imbalance"]
+    row = updated["proposals"][0]
+    assert row["family_id"] == "order_book_inventory_asymmetry"
+    assert row["source_ready"] is True
+    assert row["missing_sources"] == []
     assert out["order_authority"] == "BLOCKED"
     assert out["exchange_order_submitted"] is False
+
+
+def test_only_unverified_stale_proposal_becomes_nonblocking_hold() -> None:
+    p = proposal()
+    p["proposals"] = [p["proposals"][0]]
+    p["proposal_count"] = 1
+    out, updated = source_acquisition_tick(policy(), proposal=p, registry=registry(), now_ms=2)
+    assert out["state"] == "HOLD_SOURCE_ACQUISITION_STALE_UNVERIFIED_DROPPED"
+    assert out["queue"] == []
+    assert out["missing_source_count"] == 0
+    assert out["dropped_proposal_count"] == 1
+    assert out["next"] == "WAIT_NEW_VERIFIED_SOURCE_ONLY_PROPOSAL"
+    assert updated is not None
+    assert updated["proposals"] == []
+    assert updated["proposal_count"] == 0
+    assert updated["state"] == "HOLD_AI_PROPOSAL_STALE_UNVERIFIED_DROPPED"
 
 
 def test_current_registry_binds_exact_verified_l2_owner_and_endpoint() -> None:
@@ -111,6 +130,7 @@ def test_binding_liquidation_releases_both_proposals_but_never_grants_authority(
     out, updated = source_acquisition_tick(policy(), proposal=proposal(), registry=reg, now_ms=3)
     assert out["state"] == "PASS_SOURCE_ACQUISITION_PROPOSALS_SOURCE_READY"
     assert out["queue"] == []
+    assert out["dropped_proposal_count"] == 0
     assert updated is not None and updated["source_ready_count"] == 2
     assert updated["selection_authority"] is False
     assert updated["promotion_authority"] is False
@@ -135,4 +155,5 @@ def test_unknown_source_fails_closed() -> None:
 def test_no_proposal_is_o1_hold() -> None:
     out, updated = source_acquisition_tick(policy(), proposal=None, registry=registry(), now_ms=5)
     assert out["state"] == "HOLD_SOURCE_ACQUISITION_NO_AI_PROPOSAL"
+    assert out["dropped_proposal_count"] == 0
     assert updated is None

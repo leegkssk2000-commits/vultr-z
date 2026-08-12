@@ -39,7 +39,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"SURVIVOR_ACTIVATION_PATH_MISSING:{key}")
     if policy.get("required_pool_state") != "PASS_SURVIVOR_POOL_TARGET_3_PLUS_2":
         raise RuntimeError("SURVIVOR_ACTIVATION_POOL_GATE_DRIFT")
-    if int(policy.get("active_slot_index") or -1) != 0:
+    if policy.get("active_slot_index") != 0:
         raise RuntimeError("SURVIVOR_ACTIVATION_SLOT_DRIFT")
     if policy.get("selection_rule") != "POOL_RANKED_ACTIVE_SLOT_0_NO_RESELECTION":
         raise RuntimeError("SURVIVOR_ACTIVATION_SELECTION_RULE_DRIFT")

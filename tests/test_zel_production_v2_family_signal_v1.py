@@ -7,7 +7,7 @@ from backend.production.zel_production_v2_family_signal_v1 import build_signal
 
 
 def seal(row: dict) -> dict:
-    row["receipt_sha256"] = stable_sha(row)
+    row["receipt_sha256"] = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
     return row
 
 
@@ -27,6 +27,12 @@ def canary_state(auth: dict, *, status: str = "PASS") -> dict:
     result = seal({
         "schema_version": "zel.production_family_paper_canary_result.v1",
         "state": "PASS_FAMILY_PAPER_CANARY",
+        "family_id": auth["family_id"],
+        "strategy_id": auth["strategy_id"],
+        "alpha_id": auth["alpha_id"],
+        "canary_key": auth["canary_key"],
+        "contract_id": auth["contract_id"],
+        "contract_receipt_sha256": auth["contract_receipt_sha256"],
         "prospective_only": True,
         "admission_history_reuse_allowed": False,
         "selection_authority": False,
@@ -44,7 +50,7 @@ def canary_state(auth: dict, *, status: str = "PASS") -> dict:
         "contract_receipt_sha256": auth["contract_receipt_sha256"],
         "result": result,
     }
-    return {
+    return seal({
         "schema_version": "zel.production_family_paper_canary_runner.v1",
         "state": "HOLD_FAMILY_PAPER_CANARY_TERMINAL_ONLY",
         "canaries": {auth["canary_key"]: meta},
@@ -54,7 +60,7 @@ def canary_state(auth: dict, *, status: str = "PASS") -> dict:
         "order_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED",
         "exchange_order_submitted": False,
-    }
+    })
 
 
 def carry_snapshot(*, observed_at_ms: int = 1000, basis_bps: float = 5.0, funding_rate: float = 0.001, oi: float = 110.0) -> dict:
@@ -230,6 +236,25 @@ def test_nonpassing_canary_cannot_produce_runtime_signal() -> None:
             canary_state=canary_state(auth, status="REJECT"),
             history=[history_row()],
             l2_snapshot=None,
+            carry_snapshot=carry_snapshot(),
+            now_ms=1200,
+            max_stale_ms=1000,
+        )
+
+
+def test_canary_result_lineage_tamper_is_rejected_even_with_valid_receipts() -> None:
+    auth = authority("l2_inventory_pressure_v1")
+    state = canary_state(auth)
+    result = state["canaries"][auth["canary_key"]]["result"]
+    result["strategy_id"] = "funding_l2_inventory_exhaustion_v1"
+    seal(result)
+    seal(state)
+    with pytest.raises(RuntimeError, match="CANARY_RESULT_LINEAGE_MISMATCH:strategy_id"):
+        build_signal(
+            auth,
+            canary_state=state,
+            history=[],
+            l2_snapshot=l2_snapshot(),
             carry_snapshot=carry_snapshot(),
             now_ms=1200,
             max_stale_ms=1000,

@@ -38,6 +38,8 @@ jobs:
             backend/production/zel_production_ai_proposal_layer_v1.py \
             tools/wire_openai_critic_20260812.py
           python3 - <<'PY'
+          import json
+          from pathlib import Path
           from backend.production.zel_production_openai_critic_v1 import (
               SCHEMA,
               fail_closed_receipt,
@@ -56,6 +58,9 @@ jobs:
               "allowed_decisions": ["PASS", "HOLD", "REJECT"],
           })
           assert cfg["required"] is True
+          policy = json.loads(Path("config/zel_production_ai_proposal_layer_v1.json").read_text())
+          assert policy["openai_critic"]["enabled"] is True
+          assert policy["openai_critic"]["required"] is False
           receipt = validate_receipt({
               "schema_version": SCHEMA,
               "decision": "PASS",
@@ -67,7 +72,7 @@ jobs:
           _, hold = review_or_hold("", "gpt-5-mini", {"status": "PASS", "proposals": [{"family_id": "x"}]})
           assert hold["decision"] == "HOLD"
           assert fail_closed_receipt("OPENAI_API_KEY_MISSING")["decision"] == "HOLD"
-          print("PASS_OPENAI_CRITIC_LOCAL_FAIL_CLOSED")
+          print("PASS_OPENAI_CRITIC_LOCAL_FAIL_CLOSED_OPTIONAL_POLICY")
           PY
           grep -F 'critic_provider' backend/production/zel_production_ai_proposal_layer_v1.py
           grep -F 'OPENAI_API_KEY' backend/production/zel_production_ai_proposal_layer_v1.py
@@ -97,26 +102,37 @@ jobs:
           from backend.production.zel_production_openai_critic_v1 import call_openai_critic
 
           model = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-5-mini"
-          used_model, receipt = call_openai_critic(
-              os.environ["OPENAI_API_KEY"],
-              model,
-              {
-                  "status": "PASS",
-                  "proposals": [
-                      {
-                          "proposal_type": "NEW_ECONOMIC_FAMILY",
-                          "family_id": "synthetic_auth_smoke",
-                          "economic_mechanism": "A bounded synthetic hypothesis used only to verify critic authentication and schema transport.",
-                          "required_sources": ["funding"],
-                          "causal_reason": "Transport-only smoke; no profitability claim is made.",
-                          "falsification_test": "Reject the synthetic hypothesis if its stated causal relation is absent in deterministic held-out evidence.",
-                          "expected_horizon": "natural market horizon",
-                      }
-                  ],
-              },
-              timeout_sec=60,
-              max_output_tokens=1200,
-          )
+          try:
+              used_model, receipt = call_openai_critic(
+                  os.environ["OPENAI_API_KEY"],
+                  model,
+                  {
+                      "status": "PASS",
+                      "proposals": [
+                          {
+                              "proposal_type": "NEW_ECONOMIC_FAMILY",
+                              "family_id": "synthetic_auth_smoke",
+                              "economic_mechanism": "A bounded synthetic hypothesis used only to verify critic authentication and schema transport.",
+                              "required_sources": ["funding"],
+                              "causal_reason": "Transport-only smoke; no profitability claim is made.",
+                              "falsification_test": "Reject the synthetic hypothesis if its stated causal relation is absent in deterministic held-out evidence.",
+                              "expected_horizon": "natural market horizon",
+                          }
+                      ],
+                  },
+                  timeout_sec=60,
+                  max_output_tokens=1200,
+              )
+          except RuntimeError as exc:
+              msg = str(exc)
+              quota = (
+                  "OPENAI_CRITIC_HTTP_429" in msg
+                  and ("insufficient_quota" in msg or "credit_balance_exhausted" in msg or "no credits remaining" in msg.lower())
+              )
+              if quota:
+                  print("HOLD_OPENAI_QUOTA_UNAVAILABLE critic_optional=true")
+                  raise SystemExit(0)
+              raise
           assert receipt["decision"] in {"PASS", "HOLD", "REJECT"}
           print(f"PASS_OPENAI_AUTHENTICATED_SMOKE model={used_model} decision={receipt['decision']}")
           PY

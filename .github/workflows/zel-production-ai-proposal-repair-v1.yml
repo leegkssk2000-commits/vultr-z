@@ -8,6 +8,11 @@ on:
       - 'tests/test_zel_production_ai_proposal_repair_v1.py'
       - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
       - '.github/workflows/zel-ai-proposal-error-diagnostic-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_proposal_repair_v1.py'
+      - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Proposal Explore V1']
     types: [completed]
@@ -59,11 +64,14 @@ jobs:
           runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
           assert 'zel_production_ai_proposal_repair_v1' not in runner
           assert 'GEMINI_API_KEY' not in runner
+          workflow=Path('.github/workflows/zel-production-ai-proposal-repair-v1.yml').read_text()
+          assert 'push:\n    branches: [master]' in workflow
+          assert "github.event_name == 'push'" in workflow
           print('PASS_BOUNDED_AI_PROPOSAL_REPAIR_BOUNDARY')
           PY
 
   repair-on-vps:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:

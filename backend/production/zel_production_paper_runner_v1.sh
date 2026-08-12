@@ -36,5 +36,6 @@ while true; do
   "${PYTHON_BIN}" -m backend.production.zel_production_family_survivor_verifier_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_survivor_catalog_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_survivor_pool_v1
+  "${PYTHON_BIN}" -m backend.production.zel_production_survivor_authority_activation_v1
   sleep "${INTERVAL_S}"
 done

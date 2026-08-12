@@ -5,8 +5,9 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
-      - 'config/zel_production_ai_proposal_layer_v1.json'
       - 'backend/production/zel_production_source_acquisition_v1.py'
+      - 'backend/production/zel_production_l2_order_book_data_v1.py'
+      - 'config/zel_production_ai_proposal_layer_v1.json'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
@@ -23,8 +24,9 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_layer_v1.py'
-      - 'config/zel_production_ai_proposal_layer_v1.json'
       - 'backend/production/zel_production_source_acquisition_v1.py'
+      - 'backend/production/zel_production_l2_order_book_data_v1.py'
+      - 'config/zel_production_ai_proposal_layer_v1.json'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
@@ -62,6 +64,7 @@ jobs:
           python -m py_compile \
             backend/production/zel_production_ai_proposal_layer_v1.py \
             backend/production/zel_production_source_acquisition_v1.py \
+            backend/production/zel_production_l2_order_book_data_v1.py \
             backend/production/zel_production_ai_admission_materializer_v1.py \
             backend/production/zel_production_economic_edge_router_v1.py
           bash -n backend/production/zel_production_paper_runner_v1.sh
@@ -69,7 +72,8 @@ jobs:
             tests/test_zel_production_ai_proposal_layer_v1.py \
             tests/test_zel_production_ai_admission_materializer_v1.py \
             tests/test_zel_production_economic_edge_router_v1.py \
-            tests/test_zel_production_economic_edge_dynamic_v1.py
+            tests/test_zel_production_economic_edge_dynamic_v1.py \
+            tests/test_zel_production_l2_order_book_data_v1.py
       - name: Verify proposal-only AI authority boundary
         run: |
           python - <<'PY'
@@ -113,6 +117,18 @@ jobs:
           assert r.count('zel_production_economic_edge_router_v1') == 1
           print('PASS_PAPER_LOOP_AI_EXPLORE_NETWORK_ISOLATION')
           PY
+      - name: Verify deploy parity guard and L2 collection precede source resolution
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          w=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
+          assert 'EXPECTED_SHA' in w and 'zel-production-current' in w and 'DEPLOY_PARITY_TIMEOUT' in w
+          l2=w.index('zel_production_l2_order_book_data_v1 --append-history')
+          resolver=w.index('zel_production_source_acquisition_v1 >/tmp/zel-ai-explore-source-acquisition.json')
+          admission=w.index('zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-explore-admission.json')
+          assert l2 < resolver < admission
+          print('PASS_EXPLORE_DEPLOY_PARITY_AND_L2_SOURCE_ORDER')
+          PY
       - name: Verify router cannot treat AI as authority
         run: |
           python - <<'PY'
@@ -145,22 +161,43 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded Explore proposal, source-resolution and admission-materialization tick
+      - name: Run one bounded Explore proposal, L2 collection, source-resolution and admission-materialization tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' bash -se" <<'REMOTE'
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' EXPECTED_SHA='$EXPECTED_SHA' EVENT_NAME='$EVENT_NAME' bash -se" <<'REMOTE'
           set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            matched=0
+            for _ in $(seq 1 60); do
+              target="$(readlink -f /home/z/zel-production-current 2>/dev/null || true)"
+              case "$target" in
+                */"$EXPECTED_SHA") matched=1; break ;;
+              esac
+              sleep 2
+            done
+            if [ "$matched" -ne 1 ]; then
+              echo "DEPLOY_PARITY_TIMEOUT expected=$EXPECTED_SHA" >&2
+              exit 71
+            fi
+          fi
           ROOT=/home/z/zel-production-current
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
           python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-before.json
           python3 -m backend.production.zel_production_ai_proposal_layer_v1 --tick >/tmp/zel-ai-explore-proposal.json
+          if python3 -m backend.production.zel_production_l2_order_book_data_v1 --append-history >/tmp/zel-ai-explore-l2.json 2>/tmp/zel-ai-explore-l2.err; then
+            :
+          else
+            printf '%s\n' '{"state":"HOLD_L2_NATIVE_FETCH_FAILED","history_appended":false}' >/tmp/zel-ai-explore-l2.json
+          fi
           python3 -m backend.production.zel_production_source_acquisition_v1 >/tmp/zel-ai-explore-source-acquisition.json
           python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-explore-router-after.json
           python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-explore-admission.json
@@ -168,6 +205,7 @@ jobs:
           import json
           from pathlib import Path
           proposal=json.loads(Path('/tmp/zel-ai-explore-proposal.json').read_text())
+          l2=json.loads(Path('/tmp/zel-ai-explore-l2.json').read_text())
           acquisition=json.loads(Path('/tmp/zel-ai-explore-source-acquisition.json').read_text())
           admission=json.loads(Path('/tmp/zel-ai-explore-admission.json').read_text())
           allowed={
@@ -179,6 +217,7 @@ jobs:
           assert proposal['state'] in allowed
           if proposal['state']=='HOLD_AI_PROPOSAL_NOT_REQUIRED':
               assert proposal.get('written') is False
+          assert l2['state'] in {'PASS_L2_ORDER_BOOK_NATIVE_SNAPSHOT','HOLD_L2_NATIVE_FETCH_FAILED'}
           assert acquisition['state'] in {
               'HOLD_SOURCE_ACQUISITION_NO_AI_PROPOSAL','HOLD_SOURCE_ACQUISITION_REGISTRY_MISSING',
               'HOLD_SOURCE_ACQUISITION_NO_CANDIDATES','HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED',
@@ -200,6 +239,6 @@ jobs:
               assert row.get('exchange_order_submitted') is False
               assert row.get('source_code_mutation_applied') is False
               assert row.get('self_modification_applied') is False
-          print(json.dumps({'proposal':proposal,'acquisition':acquisition,'admission':admission},sort_keys=True))
+          print(json.dumps({'l2':l2,'proposal':proposal,'acquisition':acquisition,'admission':admission},sort_keys=True))
           PY
           REMOTE

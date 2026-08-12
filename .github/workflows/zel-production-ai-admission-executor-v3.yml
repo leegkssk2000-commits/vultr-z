@@ -5,15 +5,18 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'backend/production/zel_production_ai_admission_progress_guard_v1.py'
       - 'config/zel_production_ai_admission_executor_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'config/zel_production_family_paper_evidence_producer_v1.json'
       - 'tests/test_zel_production_ai_admission_executor_v3.py'
+      - 'tests/test_zel_production_ai_admission_progress_guard_v1.py'
       - '.github/workflows/zel-production-ai-admission-executor-v3.yml'
   push:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'backend/production/zel_production_ai_admission_progress_guard_v1.py'
       - 'config/zel_production_ai_admission_executor_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'config/zel_production_family_paper_evidence_producer_v1.json'
@@ -42,12 +45,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify persistent V3 admission and rejection evidence floor
+      - name: Verify persistent V3 admission, rejection evidence floor, and prospective progress guard
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
-          python -m py_compile backend/production/zel_production_ai_admission_executor_v3.py
-          PYTHONPATH=. pytest -q tests/test_zel_production_ai_admission_executor_v3.py tests/test_zel_production_ai_admission_executor_v2.py
+          python -m py_compile \
+            backend/production/zel_production_ai_admission_executor_v3.py \
+            backend/production/zel_production_ai_admission_progress_guard_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_ai_admission_executor_v3.py \
+            tests/test_zel_production_ai_admission_executor_v2.py \
+            tests/test_zel_production_ai_admission_progress_guard_v1.py
           python - <<'PY'
           import json
           from pathlib import Path
@@ -60,14 +68,20 @@ jobs:
           assert e['survivor_contract']['min_trades_per_window']==60
           assert e['survivor_contract']['source']=='FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT'
           src=Path('backend/production/zel_production_ai_admission_executor_v3.py').read_text()
+          guard=Path('backend/production/zel_production_ai_admission_progress_guard_v1.py').read_text()
           assert 'submit_order' not in src and 'https://' not in src
+          assert 'submit_order' not in guard and 'https://' not in guard
           assert 'executor_version' in src and 'V3' in src
           assert 'HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT' in src
           assert 'REJECTION_EVIDENCE_SOURCE' in src
+          assert 'HOLD_PROSPECTIVE_APPEND_MISSING' in guard
+          assert 'HOLD_PROSPECTIVE_HISTORY_DUPLICATE_KEY' in guard
+          assert 'PASS_PROSPECTIVE_HISTORY_ADVANCED' in guard
           workflow=Path('.github/workflows/zel-production-ai-admission-executor-v3.yml').read_text()
           assert 'push:\n    branches: [master]' in workflow
           assert "github.event_name == 'push'" in workflow
-          print('PASS_PERSISTENT_AI_ADMISSION_V3_REJECTION_EVIDENCE_FLOOR')
+          assert 'zel_production_ai_admission_progress_guard_v1' in workflow
+          print('PASS_PERSISTENT_AI_ADMISSION_V3_PROSPECTIVE_PROGRESS_GUARD')
           PY
 
   execute-on-vps:
@@ -92,27 +106,30 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run persistent V3 admission and canary continuation
+      - name: Run persistent V3 admission, prospective progress guard, and canary continuation
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           V3_SHA="$(sha256sum backend/production/zel_production_ai_admission_executor_v3.py | awk '{print $1}')"
+          GUARD_SHA="$(sha256sum backend/production/zel_production_ai_admission_progress_guard_v1.py | awk '{print $1}')"
           TEMPLATE_SHA="$(sha256sum config/zel_production_ai_admission_template_registry_v1.json | awk '{print $1}')"
           POLICY_SHA="$(sha256sum config/zel_production_ai_admission_executor_v1.json | awk '{print $1}')"
           EVIDENCE_SHA="$(sha256sum config/zel_production_family_paper_evidence_producer_v1.json | awk '{print $1}')"
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "V3_SHA='$V3_SHA' TEMPLATE_SHA='$TEMPLATE_SHA' POLICY_SHA='$POLICY_SHA' EVIDENCE_SHA='$EVIDENCE_SHA' bash -se" <<'REMOTE'
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "V3_SHA='$V3_SHA' GUARD_SHA='$GUARD_SHA' TEMPLATE_SHA='$TEMPLATE_SHA' POLICY_SHA='$POLICY_SHA' EVIDENCE_SHA='$EVIDENCE_SHA' bash -se" <<'REMOTE'
           set -euo pipefail
           ROOT=/home/z/zel-production-current
           matched=0
           for _ in $(seq 1 60); do
             a="$ROOT/backend/production/zel_production_ai_admission_executor_v3.py"
+            g="$ROOT/backend/production/zel_production_ai_admission_progress_guard_v1.py"
             b="$ROOT/config/zel_production_ai_admission_template_registry_v1.json"
             c="$ROOT/config/zel_production_ai_admission_executor_v1.json"
             d="$ROOT/config/zel_production_family_paper_evidence_producer_v1.json"
-            if [ -f "$a" ] && [ -f "$b" ] && [ -f "$c" ] && [ -f "$d" ] \
+            if [ -f "$a" ] && [ -f "$g" ] && [ -f "$b" ] && [ -f "$c" ] && [ -f "$d" ] \
               && [ "$(sha256sum "$a" | awk '{print $1}')" = "$V3_SHA" ] \
+              && [ "$(sha256sum "$g" | awk '{print $1}')" = "$GUARD_SHA" ] \
               && [ "$(sha256sum "$b" | awk '{print $1}')" = "$TEMPLATE_SHA" ] \
               && [ "$(sha256sum "$c" | awk '{print $1}')" = "$POLICY_SHA" ] \
               && [ "$(sha256sum "$d" | awk '{print $1}')" = "$EVIDENCE_SHA" ]; then matched=1; break; fi
@@ -123,12 +140,14 @@ jobs:
           export PYTHONPATH="$ROOT"
           python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-v3-carry.json
           python3 -m backend.production.zel_production_ai_admission_executor_v3 >/tmp/zel-ai-v3-executor.json
+          python3 -m backend.production.zel_production_ai_admission_progress_guard_v1 --executor-summary /tmp/zel-ai-v3-executor.json >/tmp/zel-ai-v3-progress.json
           python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-v3-handoff.json
           python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-v3-canary.json
           python3 - <<'PY'
           import json
           from pathlib import Path
           e=json.loads(Path('/tmp/zel-ai-v3-executor.json').read_text())
+          g=json.loads(Path('/tmp/zel-ai-v3-progress.json').read_text())
           h=json.loads(Path('/tmp/zel-ai-v3-handoff.json').read_text())
           c=json.loads(Path('/tmp/zel-ai-v3-canary.json').read_text())
           assert e['executor_version']=='V3'
@@ -140,6 +159,14 @@ jobs:
               'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE',
               'REJECT_AI_ADMISSION_ECONOMIC_EDGE',
           }
+          assert g['state'] in {
+              'PASS_PROSPECTIVE_HISTORY_ADVANCED',
+              'HOLD_PROSPECTIVE_DUPLICATE_CANDLE',
+              'HOLD_PROSPECTIVE_NO_TARGET_CONTRACT',
+              'HOLD_PROSPECTIVE_SOURCE_CANDLE_UNAVAILABLE',
+          }
+          assert g['integrity_ok'] is True
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED' and g['live_trade_authority']=='BLOCKED'
           assert c['runner_version']=='V2_SYMBOL_QUALIFIED'
           persisted=Path('/home/z/z/ledger/production_ai_admission_economic_v1.json')
           if persisted.exists():
@@ -153,7 +180,7 @@ jobs:
                       assert r.get('rejection_deferred') is True
                       assert int(r.get('rejection_evidence_trade_count') or 0) < int(r.get('rejection_evidence_trade_floor') or 0)
                       assert r.get('rejection_evidence_source')=='FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT'
-          print(json.dumps({'executor':e,'handoff':h,'canary':c},sort_keys=True))
+          print(json.dumps({'executor':e,'progress':g,'handoff':h,'canary':c},sort_keys=True))
           PY
           REMOTE
       - name: Cleanup SSH key

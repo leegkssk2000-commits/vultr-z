@@ -1,4 +1,4 @@
-name: audit Z hygiene 20260812
+name: audit Z display consumers 20260812
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Audit display restart target and AI runtime read-only
+      - name: Prove display path consumers read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -31,39 +31,27 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
           set -u
+          U=zel-s4g8r4-zero-epoch-q4-display-mirror.service
+          T=zel-s4g8r4-zero-epoch-q4-display-mirror.timer
           echo '=== BASELINE ==='
           readlink -f /home/z/zel-production-current
           systemctl is-active zel-production-paper-loop-v1.service
-
-          U=zel-s4g8r4-zero-epoch-q4-display-mirror.service
-          W=/usr/local/bin/zel_s4g8r7f5p5_d8_canonical_projection_wrapper.sh
-          echo '=== DISPLAY EFFECTIVE UNIT ==='
-          systemctl cat "$U" 2>/dev/null || true
-          systemctl show "$U" -p ActiveState -p SubState -p Result -p UnitFileState -p ExecStart -p FragmentPath -p DropInPaths --no-pager 2>/dev/null || true
-          echo '=== DISPLAY RECENT JOURNAL ==='
-          journalctl -u "$U" --since '-20 min' --no-pager -o short-iso 2>/dev/null | tail -n 240 || true
-
-          echo '=== DISPLAY WRAPPER ==='
-          if [ -f "$W" ]; then
-            bash -n "$W" && echo WRAPPER_BASH_N_PASS || true
-            nl -ba "$W" | sed -n '1,260p'
-          else
-            echo WRAPPER_MISSING
-          fi
-          echo '=== DISPLAY CALLERS ==='
-          grep -RsnF "$U" /etc/systemd/system /usr/lib/systemd/system /usr/local/bin 2>/dev/null | tail -n 160 || true
-          echo '=== DISPLAY PROD CONSUMERS ==='
-          grep -RsnE 's4g8r7f5p5|canonical_projection|zero_epoch_q4|display_mirror' /home/z/zel-production-current/backend /home/z/zel-production-current/config 2>/dev/null | tail -n 160 || true
-          echo '=== DISPLAY OUTPUTS ==='
-          find /var/www/z-os-alimi/api -maxdepth 1 -type f \( -name '*display*' -o -name '*projection*' -o -name '*s4g8r7f5p5*' -o -name '*s4g8r7f3a*' \) -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %f\n' 2>/dev/null | sort | tail -n 120 || true
-          echo '=== ROUTER LATEST ==='
-          cat /var/www/z-os-alimi/api/s4g8r7f3a_state_aware_shadow_wakeup_router_latest.json 2>/dev/null || true
-
-          echo '=== AI RUNTIME LOCATE ==='
-          grep -RsnE 'call_gemini|GEMINI_API_KEY|strategy11_ai_review_router|GROQ_API_KEY|CLOUDFLARE_WORKERS_AI_TOKEN|github_models' /home/z/zel-production-current/backend /home/z/zel-production-current/scripts /home/z/zel-production-current/config 2>/dev/null | head -n 240 || true
-          echo '=== AI UNITS/TIMERS ==='
-          systemctl list-unit-files --no-pager 2>/dev/null | grep -Ei 'gemini|ai-review|research|strategy11' | head -n 160 || true
-          echo PASS_DISPLAY_AND_AI_RUNTIME_AUDIT_READ_ONLY
+          echo '=== TIMER ==='
+          systemctl cat "$T" 2>/dev/null || true
+          systemctl show "$T" -p ActiveState -p UnitFileState -p LastTriggerUSec -p NextElapseUSecRealtime -p Triggers --no-pager 2>/dev/null || true
+          echo '=== ACTIVE CALLERS EXACT ==='
+          grep -RsnF "$U" /etc/systemd/system /usr/lib/systemd/system /usr/local/bin 2>/dev/null | grep -vE '\.DEAD_|\.bak\.' || true
+          echo '=== FULL PRODUCTION REFERENCES ==='
+          grep -RsnE 'zel-s4g8r4-zero-epoch-q4-display-mirror|s4g8r4_zero_epoch_q4_display_mirror|s4g8r7d8_display_active_open_priority_mirror|s4g8r7f5p5_canonical_projection_single_writer|s4g8r7f5p5_d8_canonical_projection_wrapper' /home/z/zel-production-current 2>/dev/null | head -n 300 || true
+          echo '=== WEB/API REFERENCES ==='
+          grep -RsnE 's4g8r4_zero_epoch_q4_display_mirror|s4g8r7d8_display_active_open_priority_mirror|s4g8r7f5p5_canonical_projection_single_writer' /var/www/z-os-alimi --exclude='*.jsonl' --exclude='*.bak*' --exclude='*.tmp*' 2>/dev/null | head -n 300 || true
+          echo '=== MISSING CHILDREN ==='
+          for p in /usr/local/bin/zel_s4g8r7d8_display_active_open_priority_mirror.py /usr/local/bin/zel_s4g8r7f5p5_canonical_projection_single_writer.py; do
+            if [ -e "$p" ]; then echo EXISTS:$p; else echo MISSING:$p; fi
+          done
+          echo '=== RECENT FAIL COUNT ==='
+          journalctl -u "$U" --since '-60 min' --no-pager 2>/dev/null | grep -c 'Failed to start' || true
+          echo PASS_DISPLAY_CONSUMER_PROOF_READ_ONLY
           REMOTE
 
       - name: Cleanup SSH key

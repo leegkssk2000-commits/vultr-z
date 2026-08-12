@@ -1,0 +1,52 @@
+name: ZEL Production Family PAPER Evidence Producer V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/production/zel_production_family_paper_evidence_producer_v1.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'config/zel_production_family_paper_evidence_producer_v1.json'
+      - 'tests/test_zel_production_family_paper_evidence_producer_v1.py'
+      - '.github/workflows/zel-production-family-paper-evidence-producer-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Compile
+        run: python -m py_compile backend/production/zel_production_family_paper_evidence_producer_v1.py
+      - name: Test producer and downstream verifier
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m pytest -q \
+            tests/test_zel_production_family_paper_evidence_producer_v1.py \
+            tests/test_zel_production_family_survivor_verifier_v1.py \
+            tests/test_zel_production_survivor_catalog_v1.py \
+            tests/test_zel_production_survivor_pool_v1.py
+      - name: Runner order contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
+          order=[
+            'zel_production_improvement_controller_v1',
+            'zel_production_family_paper_evidence_producer_v1',
+            'zel_production_family_survivor_verifier_v1',
+            'zel_production_survivor_catalog_v1',
+            'zel_production_survivor_pool_v1',
+          ]
+          idx=[s.index(x) for x in order]
+          assert idx == sorted(idx)
+          assert 'GEMINI' not in s.upper()
+          PY

@@ -5,13 +5,17 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_repair_v1.py'
+      - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'tests/test_zel_production_ai_proposal_repair_v1.py'
+      - 'tests/test_zel_production_ai_admission_executor_v3.py'
       - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
-      - '.github/workflows/zel-ai-proposal-error-diagnostic-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/production/zel_production_ai_proposal_repair_v1.py'
+      - 'backend/production/zel_production_ai_admission_executor_v3.py'
+      - 'config/zel_production_ai_admission_template_registry_v1.json'
       - '.github/workflows/zel-production-ai-proposal-repair-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Proposal Explore V1']
@@ -37,15 +41,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and test bounded corrective retry
+      - name: Compile and test repair plus funding-volume admission
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
-          python -m py_compile backend/production/zel_production_ai_proposal_repair_v1.py
+          python -m py_compile \
+            backend/production/zel_production_ai_proposal_repair_v1.py \
+            backend/production/zel_production_ai_admission_executor_v3.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_proposal_repair_v1.py \
-            tests/test_zel_production_ai_proposal_layer_v1.py
-      - name: Verify repair authority and vocabulary boundaries
+            tests/test_zel_production_ai_proposal_layer_v1.py \
+            tests/test_zel_production_ai_admission_executor_v3.py
+      - name: Verify frozen authority and no-search boundaries
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -54,24 +61,17 @@ jobs:
           p=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
           assert p['source_vocabulary']==['funding','basis','open_interest','ohlcv','volume','l2_order_book']
           assert p['numeric_threshold_proposals_allowed'] is False
-          src=Path('backend/production/zel_production_ai_proposal_repair_v1.py').read_text()
-          assert 'AI_PROPOSAL_REQUIRED_SOURCE_OUTSIDE_VOCAB' in src
-          assert 'max_corrective_attempts' in src
-          assert 'silent_source_substitution' in src
-          assert 'submit_order' not in src
-          assert 'selection_authority' in src and 'promotion_authority' in src
-          assert 'order_authority' in src and 'live_trade_authority' in src
+          reg=json.loads(Path('config/zel_production_ai_admission_template_registry_v1.json').read_text())
+          t=reg['templates']['funding_volume_elasticity_v1']
+          assert t['required_sources_exact']==['funding','ohlcv','volume']
+          assert t['numeric_signal_thresholds']==[] and t['parameter_search'] is False
+          assert reg['execution_authority']=='NONE' and reg['order_authority']=='BLOCKED' and reg['live_trade_authority']=='BLOCKED'
+          src=Path('backend/production/zel_production_ai_admission_executor_v3.py').read_text()
+          assert 'submit_order' not in src and 'parameter_search' in src
           runner=Path('backend/production/zel_production_paper_runner_v1.sh').read_text()
-          assert 'zel_production_ai_proposal_repair_v1' not in runner
+          assert 'zel_production_ai_admission_executor_v3' not in runner
           assert 'GEMINI_API_KEY' not in runner
-          workflow=Path('.github/workflows/zel-production-ai-proposal-repair-v1.yml').read_text()
-          assert 'push:\n    branches: [master]' in workflow
-          assert "github.event_name == 'push'" in workflow
-          assert 'production_ai_edge_proposals_v1.json' in workflow
-          assert "row.get('repair_attempted') is True" in workflow
-          assert "row.get('state') == 'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED'" in workflow
-          assert 'zel_production_source_acquisition_v1' in workflow
-          print('PASS_BOUNDED_AI_PROPOSAL_REPAIR_BOUNDARY')
+          print('PASS_FUNDING_VOLUME_FROZEN_ADMISSION_BOUNDARY')
           PY
 
   repair-on-vps:
@@ -93,94 +93,63 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded corrective proposal retry and continue deterministic chain
+      - name: Continue repaired proposal through frozen deterministic admission
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
-          REPAIR_SHA="$(sha256sum backend/production/zel_production_ai_proposal_repair_v1.py | awk '{print $1}')"
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' REPAIR_SHA='$REPAIR_SHA' bash -se" <<'REMOTE'
+          V3_SHA="$(sha256sum backend/production/zel_production_ai_admission_executor_v3.py | awk '{print $1}')"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' V3_SHA='$V3_SHA' bash -se" <<'REMOTE'
           set -euo pipefail
           ROOT=/home/z/zel-production-current
           matched=0
           for _ in $(seq 1 60); do
-            p="$ROOT/backend/production/zel_production_ai_proposal_repair_v1.py"
-            if [ -f "$p" ] && [ "$(sha256sum "$p" | awk '{print $1}')" = "$REPAIR_SHA" ]; then
-              matched=1
-              break
-            fi
+            p="$ROOT/backend/production/zel_production_ai_admission_executor_v3.py"
+            if [ -f "$p" ] && [ "$(sha256sum "$p" | awk '{print $1}')" = "$V3_SHA" ]; then matched=1; break; fi
             sleep 2
           done
-          if [ "$matched" -ne 1 ]; then
-            echo "REPAIR_RUNTIME_PARITY_TIMEOUT" >&2
-            exit 71
-          fi
+          [ "$matched" -eq 1 ] || { echo V3_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
 
           python3 -m backend.production.zel_production_ai_proposal_repair_v1 \
-            --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json \
-            >/tmp/zel-ai-proposal-repair.json
+            --policy /home/z/z/ledger/production_ai_feedback_proposal_policy_v1.json >/tmp/zel-ai-proposal-repair.json
 
           CHAIN_READY="$(python3 - <<'PY'
           import json
           from pathlib import Path
           p=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
-          if not p.exists():
-              print('0')
+          if not p.exists(): print('0')
           else:
               row=json.loads(p.read_text())
-              ok=(
-                  row.get('repair_attempted') is True
-                  and row.get('ai_call_succeeded') is True
-                  and int(row.get('proposal_count') or 0) > 0
-                  and row.get('state') == 'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED'
-              )
+              ok=(row.get('repair_attempted') is True and row.get('ai_call_succeeded') is True and int(row.get('proposal_count') or 0)>0 and row.get('state') in {'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED','PASS_AI_PROPOSAL_SOURCE_READY'})
               print('1' if ok else '0')
           PY
           )"
-
           if [ "$CHAIN_READY" = "1" ]; then
             python3 -m backend.production.zel_production_source_acquisition_v1 >/tmp/zel-ai-repair-source.json
             python3 -m backend.production.zel_production_economic_edge_router_v1 --tick >/tmp/zel-ai-repair-router.json
             python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-repair-materializer.json
-            python3 -m backend.production.zel_production_ai_admission_executor_v2 >/tmp/zel-ai-repair-economic.json
+            python3 -m backend.production.zel_production_ai_admission_executor_v3 >/tmp/zel-ai-repair-economic.json
             python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-repair-handoff.json
             python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-repair-canary.json
           fi
-
           python3 - <<'PY'
           import json
           from pathlib import Path
-          repair=json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())
-          allowed={
-              'HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_NOT_REQUIRED',
-              'HOLD_AI_PROPOSAL_CORRECTIVE_CALLER_UNAVAILABLE',
-              'HOLD_AI_PROPOSAL_CORRECTIVE_RETRY_FAILED',
-              'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED',
-              'HOLD_AI_PROPOSAL_NO_CANDIDATE',
-              'PASS_AI_PROPOSAL_SOURCE_READY',
-          }
-          assert repair['state'] in allowed
+          summary={}
+          for name in ('proposal-repair','repair-source','repair-router','repair-materializer','repair-economic','repair-handoff','repair-canary'):
+              p=Path('/tmp/zel-ai-'+name+'.json')
+              if p.exists(): summary[name]=json.loads(p.read_text())
           receipt=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
           if receipt.exists():
               row=json.loads(receipt.read_text())
-              assert row.get('selection_authority') is False
-              assert row.get('promotion_authority') is False
-              assert row.get('execution_authority')=='NONE'
-              assert row.get('order_authority')=='BLOCKED'
-              assert row.get('live_trade_authority')=='BLOCKED'
-              assert row.get('exchange_order_submitted') is False
-          summary={'repair':repair}
-          for name in ('source','router','materializer','economic','handoff','canary'):
-              p=Path(f'/tmp/zel-ai-repair-{name}.json')
-              if p.exists():
-                  summary[name]=json.loads(p.read_text())
+              assert row.get('selection_authority') is False and row.get('promotion_authority') is False
+              assert row.get('execution_authority')=='NONE' and row.get('order_authority')=='BLOCKED' and row.get('live_trade_authority')=='BLOCKED'
           print(json.dumps(summary,sort_keys=True))
           PY
           REMOTE

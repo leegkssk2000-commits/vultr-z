@@ -7,6 +7,8 @@ from backend.production.zel_production_ai_admission_executor_v3 import (
     FUNDING_VOLUME_CONTEXT,
     FUNDING_VOLUME_TEMPLATE,
     build_funding_volume_observations,
+    defer_early_rejection,
+    load_rejection_evidence_floor,
 )
 
 OBSERVED_AT_MS = 1_800_000_000_000
@@ -130,3 +132,58 @@ def test_registered_template_is_exact_and_search_free() -> None:
     assert registry["execution_authority"] == "NONE"
     assert registry["order_authority"] == "BLOCKED"
     assert registry["live_trade_authority"] == "BLOCKED"
+
+
+def test_rejection_floor_is_reused_from_frozen_edge_to_portfolio_contract() -> None:
+    policy = json.loads(Path("config/zel_production_ai_admission_executor_v1.json").read_text())
+    evidence = load_rejection_evidence_floor(policy)
+    assert evidence["trade_floor"] == 60
+    assert evidence["source"] == "FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT"
+    assert evidence["policy_path"] == "config/zel_production_family_paper_evidence_producer_v1.json"
+
+
+def test_early_negative_edge_is_held_not_terminally_rejected() -> None:
+    evidence = {
+        "trade_floor": 60,
+        "source": "FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT",
+        "policy_path": "config/zel_production_family_paper_evidence_producer_v1.json",
+    }
+    raw = {
+        "state": "REJECT_AI_ADMISSION_ECONOMIC_EDGE",
+        "next": "RETURN_TO_EDGE_ACQUISITION",
+        "economic_candidate": False,
+        "aggregate": {"trade_count": 2, "net_return_sum_bps": -1.0, "net_expectancy_bps": -0.5, "profit_factor": 0.0},
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+    }
+    row = defer_early_rejection(raw, evidence)
+    assert row["state"] == "HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT"
+    assert row["next"] == "CONTINUE_PROSPECTIVE_SOURCE_HISTORY"
+    assert row["rejection_deferred"] is True
+    assert row["rejection_evidence_trade_count"] == 2
+    assert row["rejection_evidence_trade_floor"] == 60
+    assert row["order_authority"] == "BLOCKED"
+    assert row["live_trade_authority"] == "BLOCKED"
+
+
+def test_rejection_is_allowed_only_after_frozen_trade_floor() -> None:
+    evidence = {
+        "trade_floor": 60,
+        "source": "FROZEN_ZEL_EDGE_TO_PORTFOLIO_CONTRACT",
+        "policy_path": "config/zel_production_family_paper_evidence_producer_v1.json",
+    }
+    raw = {
+        "state": "REJECT_AI_ADMISSION_ECONOMIC_EDGE",
+        "next": "RETURN_TO_EDGE_ACQUISITION",
+        "economic_candidate": False,
+        "aggregate": {"trade_count": 60, "net_return_sum_bps": -10.0, "net_expectancy_bps": -0.1, "profit_factor": 0.8},
+    }
+    row = defer_early_rejection(raw, evidence)
+    assert row["state"] == "REJECT_AI_ADMISSION_ECONOMIC_EDGE"
+    assert row["next"] == "RETURN_TO_EDGE_ACQUISITION"
+    assert row["rejection_deferred"] is False
+    assert row["rejection_evidence_met"] is True

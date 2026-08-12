@@ -117,17 +117,17 @@ jobs:
           assert r.count('zel_production_economic_edge_router_v1') == 1
           print('PASS_PAPER_LOOP_AI_EXPLORE_NETWORK_ISOLATION')
           PY
-      - name: Verify deploy parity guard and L2 collection precede source resolution
+      - name: Verify runtime parity guard and L2 collection precede source resolution
         run: |
           python - <<'PY'
           from pathlib import Path
           w=Path('.github/workflows/zel-production-ai-proposal-explore-v1.yml').read_text()
-          assert 'EXPECTED_SHA' in w and 'zel-production-current' in w and 'DEPLOY_PARITY_TIMEOUT' in w
+          assert 'RUNTIME_PARITY_B64' in w and 'RUNTIME_PARITY_TIMEOUT' in w
           l2=w.index('zel_production_l2_order_book_data_v1 --append-history')
           resolver=w.index('zel_production_source_acquisition_v1 >/tmp/zel-ai-explore-source-acquisition.json')
           admission=w.index('zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-explore-admission.json')
           assert l2 < resolver < admission
-          print('PASS_EXPLORE_DEPLOY_PARITY_AND_L2_SOURCE_ORDER')
+          print('PASS_EXPLORE_RUNTIME_PARITY_AND_L2_SOURCE_ORDER')
           PY
       - name: Verify router cannot treat AI as authority
         run: |
@@ -166,24 +166,53 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          EXPECTED_SHA: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' EXPECTED_SHA='$EXPECTED_SHA' EVENT_NAME='$EVENT_NAME' bash -se" <<'REMOTE'
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_ai_proposal_layer_v1.py',
+            'backend/production/zel_production_source_acquisition_v1.py',
+            'backend/production/zel_production_l2_order_book_data_v1.py',
+            'backend/production/zel_production_ai_admission_materializer_v1.py',
+            'backend/production/zel_production_economic_edge_router_v1.py',
+            'config/zel_production_ai_proposal_layer_v1.json',
+            'config/zel_production_source_acquisition_v1.json',
+            'config/zel_production_source_capability_registry_v1.json',
+            'config/zel_production_ai_admission_materializer_v1.json',
+            'config/zel_production_ai_admission_template_registry_v1.json',
+            'config/zel_production_economic_edge_router_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "API_KEY_B64='$API_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' EVENT_NAME='$EVENT_NAME' bash -se" <<'REMOTE'
           set -euo pipefail
           if [ "$EVENT_NAME" = "push" ]; then
             matched=0
             for _ in $(seq 1 60); do
-              target="$(readlink -f /home/z/zel-production-current 2>/dev/null || true)"
-              case "$target" in
-                */"$EXPECTED_SHA") matched=1; break ;;
-              esac
+              if RUNTIME_PARITY_B64="$RUNTIME_PARITY_B64" python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path('/home/z/zel-production-current')
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              ok=ok and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==want
+          raise SystemExit(0 if ok else 1)
+          PY
+              then
+                matched=1
+                break
+              fi
               sleep 2
             done
             if [ "$matched" -ne 1 ]; then
-              echo "DEPLOY_PARITY_TIMEOUT expected=$EXPECTED_SHA" >&2
+              echo "RUNTIME_PARITY_TIMEOUT" >&2
               exit 71
             fi
           fi

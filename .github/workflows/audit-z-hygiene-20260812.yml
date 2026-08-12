@@ -1,4 +1,4 @@
-name: map Z legacy caller owners 20260812
+name: audit Z dead side-effects 20260812
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  map:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,47 +23,66 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Map active caller scripts to unit owners read-only
+      - name: Prove dead side-effect targets and current consumers
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
-          set -u
-          scripts=(
-            zel_s4g8r7f5j_direct_tv_price_to_close_feed.py
-            zel_s4g8r7f5l_shadow_auto_close_fallback.py
-            zel_s4g8r7f5k_clean_upstream_price_close_bind.py
-            zel_s4g8r7f5h_auto_close_price_feed_bind.py
-            zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py
-          )
-          for s in "${scripts[@]}"; do
-            echo "=== SCRIPT $s ==="
-            grep -RslF "/usr/local/bin/$s" /etc/systemd/system /usr/lib/systemd/system 2>/dev/null | sort || true
-            echo '-- call-site context --'
-            grep -nE 'systemctl (start|restart)|subprocess\.run|os\.system|DISPLAY_UNIT|CLOSE=' "/usr/local/bin/$s" 2>/dev/null | tail -n 40 || true
-          done
+          set -euo pipefail
+          echo '=== MASTER/PAPER BASELINE ==='
+          readlink -f /home/z/zel-production-current
+          systemctl is-active zel-production-paper-loop-v1.service
 
-          echo '=== MATCHED UNIT STATES ==='
-          units="$(grep -RslE 'zel_s4g8r7f5(j_direct_tv_price_to_close_feed|l_shadow_auto_close_fallback|k_clean_upstream_price_close_bind|h_auto_close_price_feed_bind)|zel_s4g8r7f3a_state_aware_shadow_wakeup_router' /etc/systemd/system /usr/lib/systemd/system 2>/dev/null | sed -E 's#.*/##' | sort -u || true)"
-          for u in $units; do
+          echo '=== DEAD TARGET DEFINITIONS ==='
+          for u in zel-s4f18c-shadow-close-writer.service zel-s4g8r4-zero-epoch-q4-display-mirror.service zel-h2e9s4f2-shadow-close-engine.service; do
             echo "--- $u ---"
-            systemctl show "$u" -p ActiveState -p SubState -p UnitFileState -p TriggeredBy -p Triggers -p ExecStart --no-pager 2>/dev/null || true
-            b="${u%.service}"
-            systemctl show "$b.timer" -p ActiveState -p UnitFileState -p NextElapseUSecRealtime -p LastTriggerUSec --no-pager 2>/dev/null || true
+            systemctl cat "$u" 2>/dev/null || true
+            systemctl show "$u" -p ActiveState -p SubState -p Result -p UnitFileState -p TriggeredBy -p RequiredBy -p WantedBy --no-pager 2>/dev/null || true
           done
 
-          echo '=== RECENT CALLER JOURNALS ==='
-          for pat in s4g8r7f5j s4g8r7f5l s4g8r7f5k s4g8r7f5h s4g8r7f3a; do
-            journalctl --since '-4 min' --no-pager -o short-iso 2>/dev/null | grep -i "$pat" | tail -n 100 || true
+          echo '=== TARGET EXECSTART FILE EXISTENCE ==='
+          python3 - <<'PY'
+          import shlex,subprocess,json
+          from pathlib import Path
+          units=['zel-s4f18c-shadow-close-writer.service','zel-s4g8r4-zero-epoch-q4-display-mirror.service','zel-h2e9s4f2-shadow-close-engine.service']
+          rows=[]
+          for u in units:
+              cp=subprocess.run(['systemctl','show',u,'-p','ExecStart','--value'],capture_output=True,text=True)
+              text=cp.stdout.strip()
+              paths=[]
+              for token in text.replace('{',' ').replace('}',' ').replace(';',' ').split():
+                  if token.startswith('/'):
+                      token=token.rstrip(';')
+                      paths.append({'path':token,'exists':Path(token).exists()})
+              rows.append({'unit':u,'execstart':text,'paths':paths})
+          print(json.dumps(rows,sort_keys=True))
+          PY
+
+          echo '=== CURRENT PRODUCTION CONSUMERS BY UNIT NAME ==='
+          grep -RsnE 'zel-s4f18c-shadow-close-writer|zel-s4g8r4-zero-epoch-q4-display-mirror|zel-h2e9s4f2-shadow-close-engine' \
+            /home/z/zel-production-current/backend /home/z/zel-production-current/config 2>/dev/null || true
+
+          echo '=== CURRENT PRODUCTION CONSUMERS BY OUTPUT FILE ==='
+          grep -RsnE 's4f18c_shadow_tp_sl_close_writer_latest|zero_epoch_q4|display_mirror|h2e9s4f2' \
+            /home/z/zel-production-current/backend /home/z/zel-production-current/config 2>/dev/null || true
+
+          echo '=== ACTIVE CALLER SNIPPETS ==='
+          nl -ba /usr/local/bin/zel_s4g8r7f5k_clean_upstream_price_close_bind.py | sed -n '400,435p'
+          nl -ba /usr/local/bin/zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py | sed -n '1,35p;105,130p;235,270p'
+
+          echo '=== ACTIVE CALLER UNIT/TIMER ==='
+          for t in zel-s4g8r7f5k-clean-upstream-price-close-bind.timer zel-s4g8r7f3a-state-aware-shadow-wakeup-router.timer; do
+            systemctl show "$t" -p ActiveState -p UnitFileState -p LastTriggerUSec -p NextElapseUSecRealtime --no-pager
           done
 
           echo '=== OUTPUT FRESHNESS ==='
-          find /var/www/z-os-alimi/api -maxdepth 1 -type f \( \
-            -name '*s4g8r7f5j*' -o -name '*s4g8r7f5l*' -o -name '*s4g8r7f5k*' -o -name '*s4g8r7f5h*' -o -name '*s4g8r7f3a*' -o -name 's4f18c_shadow_tp_sl_close_writer_latest.json' \
-          \) -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %f\n' 2>/dev/null | sort || true
-          echo 'PASS_LEGACY_CALLER_OWNER_MAP_READ_ONLY'
+          stat -c '%y %s %n' \
+            /var/www/z-os-alimi/api/s4g8r7f5k_clean_upstream_price_close_bind_latest.json \
+            /var/www/z-os-alimi/api/s4g8r7f3a_state_aware_shadow_wakeup_router_latest.json \
+            /var/www/z-os-alimi/api/s4f18c_shadow_tp_sl_close_writer_latest.json 2>/dev/null || true
+          echo 'PASS_DEAD_SIDE_EFFECT_AUDIT_READ_ONLY'
           REMOTE
 
       - name: Cleanup SSH key

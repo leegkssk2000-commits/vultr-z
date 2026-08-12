@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   wire:
-    if: ${{ !contains(github.event.head_commit.message, '[openai-critic-wired]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -135,37 +134,15 @@ jobs:
           python3 -m py_compile backend/production/zel_production_openai_critic_v1.py backend/production/zel_production_ai_proposal_layer_v1.py
           python3 - <<'PY'
           import json
-          from backend.production.zel_production_openai_critic_v1 import (
-              SCHEMA,
-              fail_closed_receipt,
-              review_or_hold,
-              validate_critic_config,
-              validate_receipt,
-          )
+          from backend.production.zel_production_openai_critic_v1 import SCHEMA, fail_closed_receipt, review_or_hold, validate_critic_config, validate_receipt
 
-          cfg = validate_critic_config({
-              'enabled': True,
-              'required': True,
-              'model_env': 'OPENAI_MODEL',
-              'default_model': 'gpt-5-mini',
-              'timeout_sec': 60,
-              'max_output_tokens': 1200,
-              'allowed_decisions': ['PASS','HOLD','REJECT'],
-          })
+          cfg = validate_critic_config({'enabled': True, 'required': True, 'model_env': 'OPENAI_MODEL', 'default_model': 'gpt-5-mini', 'timeout_sec': 60, 'max_output_tokens': 1200, 'allowed_decisions': ['PASS','HOLD','REJECT']})
           assert cfg['required'] is True
-          receipt = validate_receipt({
-              'schema_version': SCHEMA,
-              'decision': 'PASS',
-              'causal_critique': 'No material internal causal contradiction found in the bounded proposal.',
-              'falsification_test': 'Reject if the deterministic out-of-sample test contradicts the proposed mechanism.',
-              'blocker_codes': [],
-          })
+          receipt = validate_receipt({'schema_version': SCHEMA, 'decision': 'PASS', 'causal_critique': 'No material internal causal contradiction found in the bounded proposal.', 'falsification_test': 'Reject if the deterministic out-of-sample test contradicts the proposed mechanism.', 'blocker_codes': []})
           assert receipt['decision'] == 'PASS'
           _, hold = review_or_hold('', 'gpt-5-mini', {'status':'PASS','proposals':[{'family_id':'x'}]})
-          assert hold['decision'] == 'HOLD'
-          assert hold['blocker_codes']
-          bad = fail_closed_receipt('OPENAI_API_KEY_MISSING')
-          assert bad['decision'] == 'HOLD'
+          assert hold['decision'] == 'HOLD' and hold['blocker_codes']
+          assert fail_closed_receipt('OPENAI_API_KEY_MISSING')['decision'] == 'HOLD'
           print(json.dumps({'status':'PASS_OPENAI_CRITIC_LOCAL_FAIL_CLOSED','missing_key_decision':hold['decision']}, sort_keys=True))
           PY
           grep -F 'critic_provider' backend/production/zel_production_ai_proposal_layer_v1.py

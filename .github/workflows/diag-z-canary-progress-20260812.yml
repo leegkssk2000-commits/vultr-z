@@ -22,115 +22,49 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Read canary progress and timer ownership
+      - name: Verify PAPER loop ownership
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          echo '=== UNIT_SHOW ==='
+          systemctl show zel-production-paper-loop-v1.service \
+            -p ActiveState -p SubState -p MainPID -p FragmentPath -p ExecStart --no-pager
+          echo '=== UNIT_CAT ==='
+          systemctl cat zel-production-paper-loop-v1.service --no-pager
+          pid="$(systemctl show zel-production-paper-loop-v1.service -p MainPID --value)"
+          echo '=== MAIN_PID_CMDLINE ==='
+          if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/cmdline" ]; then
+            tr '\0' ' ' < "/proc/$pid/cmdline"; echo
+          else
+            echo 'NO_RUNNING_MAINPID'
+          fi
+          echo '=== TARGET_PATH_REFERENCES ==='
+          grep -Rsn --exclude-dir='__pycache__' -E \
+            'production_ai_admission_observations_v1\.ndjson|production_family_paper_canary_runner_state_v1\.json|zel_production_ai_admission_executor_v3|zel_production_family_paper_canary_runner_v2' \
+            "$ROOT/backend" "$ROOT/config" 2>/dev/null | head -n 160 || true
+          echo '=== PAPER_LOOP_FILES ==='
+          find "$ROOT" -maxdepth 4 -type f \( -name '*paper*loop*v1*.py' -o -name '*production*loop*.py' \) -print | sort
+          echo '=== PAPER_LOOP_SOURCE ==='
+          for f in $(find "$ROOT" -maxdepth 4 -type f \( -name '*paper*loop*v1*.py' -o -name '*production*loop*.py' \) -print | sort); do
+            echo "--- $f ---"
+            sed -n '1,280p' "$f"
+          done
+          echo '=== CANARY_STATE_COMPACT ==='
           python3 - <<'PY'
-          import json, subprocess
+          import json
           from pathlib import Path
-
-          def read_json(path):
-              p=Path(path)
-              if not p.is_file():
-                  return None
-              try:
-                  return json.loads(p.read_text())
-              except Exception as exc:
-                  return {"_read_error": type(exc).__name__}
-
-          state_path=Path('/home/z/z/ledger/production_family_paper_canary_runner_state_v1.json')
-          state=read_json(state_path) or {}
-          canaries=[]
-          for key, meta in sorted((state.get('canaries') or {}).items()):
-              if not isinstance(meta, dict):
-                  continue
-              hp=Path(str(meta.get('history_path') or '')) if meta.get('history_path') else None
-              rows=[]
-              if hp and hp.is_file():
-                  try:
-                      rows=[json.loads(x) for x in hp.read_text().splitlines() if x.strip()]
-                  except Exception:
-                      rows=[]
-              result=meta.get('result') if isinstance(meta.get('result'), dict) else None
-              canaries.append({
-                  'canary_key': key,
-                  'family_id': meta.get('family_id'),
-                  'strategy_id': meta.get('strategy_id'),
-                  'contract_id': meta.get('contract_id'),
-                  'status': meta.get('status'),
-                  'trade_count': meta.get('trade_count'),
-                  'symbol_trade_counts': meta.get('symbol_trade_counts'),
-                  'observation_count': meta.get('observation_count'),
-                  'first_not_before_ms': meta.get('first_not_before_ms'),
-                  'updated_at_ms': meta.get('updated_at_ms'),
-                  'terminal_at_ms': meta.get('terminal_at_ms'),
-                  'published': meta.get('published'),
-                  'consumed': meta.get('consumed'),
-                  'result_state': result.get('state') if result else None,
-                  'history_path': str(hp) if hp else None,
-                  'history_row_count': len(rows),
-                  'history_first_observed_at_ms': rows[0].get('observed_at_ms') if rows else None,
-                  'history_last_observed_at_ms': rows[-1].get('observed_at_ms') if rows else None,
-              })
-
-          obs=Path('/home/z/z/ledger/production_ai_admission_observations_v1.ndjson')
-          obs_rows=[]
-          if obs.is_file():
-              try:
-                  obs_rows=[json.loads(x) for x in obs.read_text().splitlines() if x.strip()]
-              except Exception:
-                  obs_rows=[]
-
-          timers=subprocess.run(
-              ['systemctl','list-timers','--all','--no-pager','--no-legend'],
-              text=True,capture_output=True,check=False
-          ).stdout.splitlines()
-          timer_hits=[x.strip() for x in timers if any(k in x.lower() for k in ('zel','admission','canary','survivor'))]
-
-          units=subprocess.run(
-              ['systemctl','list-units','--type=service','--all','--no-pager','--no-legend'],
-              text=True,capture_output=True,check=False
-          ).stdout.splitlines()
-          unit_hits=[x.strip() for x in units if any(k in x.lower() for k in ('zel','admission','canary','survivor'))]
-
-          out={
-              'state_summary': {
-                  'state': state.get('state'),
-                  'runner_version': state.get('runner_version'),
-                  'active_count': state.get('active_count'),
-                  'pass_count': state.get('pass_count'),
-                  'reject_count': state.get('reject_count'),
-                  'initialized_count': state.get('initialized_count'),
-                  'runtime_symbol_precedence': state.get('runtime_symbol_precedence'),
-              },
-              'canaries': canaries,
-              'economic_result': read_json('/home/z/z/ledger/production_ai_admission_economic_v1.json'),
-              'handoff_state': read_json('/home/z/z/ledger/production_ai_family_canary_handoff_state_v1.json'),
-              'request': read_json('/home/z/z/ledger/production_family_paper_canary_request_v1.json'),
-              'survivor_pool': read_json('/home/z/z/ledger/production_survivor_pool_v1.json'),
-              'alpha_authority': read_json('/home/z/z/ledger/production_alpha_authority_v1.json'),
-              'admission_observation_history': {
-                  'row_count': len(obs_rows),
-                  'mtime_ms': int(obs.stat().st_mtime*1000) if obs.is_file() else None,
-                  'tail': [
-                      {
-                          'contract_id': x.get('contract_id'),
-                          'symbol': x.get('symbol'),
-                          'outcome_candle_ts_ms': x.get('outcome_candle_ts_ms'),
-                          'observed_at_ms': x.get('observed_at_ms'),
-                          'template_id': x.get('template_id'),
-                      }
-                      for x in obs_rows[-6:]
-                  ],
-              },
-              'timer_hits': timer_hits,
-              'service_hits': unit_hits,
-          }
-          print(json.dumps(out, sort_keys=True))
+          p=Path('/home/z/z/ledger/production_family_paper_canary_runner_state_v1.json')
+          s=json.loads(p.read_text()) if p.is_file() else {}
+          out={'state':s.get('state'),'active_count':s.get('active_count'),'pass_count':s.get('pass_count'),'reject_count':s.get('reject_count'),'canaries':[]}
+          for key,m in sorted((s.get('canaries') or {}).items()):
+              if not isinstance(m,dict): continue
+              out['canaries'].append({'key':key,'family_id':m.get('family_id'),'status':m.get('status'),'observation_count':m.get('observation_count'),'trade_count':m.get('trade_count'),'symbol_trade_counts':m.get('symbol_trade_counts'),'updated_at_ms':m.get('updated_at_ms')})
+          print(json.dumps(out,sort_keys=True))
           PY
           REMOTE
       - name: Cleanup SSH key

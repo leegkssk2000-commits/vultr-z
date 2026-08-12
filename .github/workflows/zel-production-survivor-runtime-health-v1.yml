@@ -14,6 +14,7 @@ on:
       - 'config/zel_production_survivor_rotation_v1.json'
       - 'config/zel_production_survivor_pool_v1.json'
       - 'tests/test_zel_production_survivor_runtime_health_rotation_v1.py'
+      - 'tests/test_zel_production_survivor_rotation_v2_legacy_skip.py'
       - '.github/workflows/zel-production-survivor-runtime-health-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Admission Executor V1']
@@ -49,7 +50,9 @@ jobs:
             backend/production/zel_production_survivor_rotation_v2.py \
             backend/production/zel_production_survivor_pool_v2.py \
             backend/production/zel_production_survivor_authority_activation_v2.py
-          PYTHONPATH=. pytest -q tests/test_zel_production_survivor_runtime_health_rotation_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_survivor_runtime_health_rotation_v1.py \
+            tests/test_zel_production_survivor_rotation_v2_legacy_skip.py
       - name: Verify frozen prospective and no-live boundary
         run: |
           python - <<'PY'
@@ -86,13 +89,21 @@ jobs:
           ):
               src=Path(rel).read_text()
               assert 'submit_order' not in src and 'https://' not in src
+          workflow=Path('.github/workflows/zel-production-survivor-runtime-health-v1.yml').read_text()
+          assert "github.event.workflow_run.head_branch == 'master'" in workflow
+          assert 'github.event.workflow_run.head_repository.full_name == github.repository' in workflow
+          assert "github.event.workflow_run.event != 'pull_request'" in workflow
           print('PASS_SURVIVOR_RUNTIME_HEALTH_NO_LIVE_BOUNDARY')
           PY
 
   execute-on-vps:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == 'master' &&
+       github.event.workflow_run.event != 'pull_request')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:

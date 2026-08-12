@@ -1,0 +1,91 @@
+name: cleanup proven ghost workflows 20260813
+
+on:
+  push:
+    branches:
+      - zel-hygiene-audit-20260812
+    paths:
+      - .github/workflows/cleanup-ghost-workflows-20260813.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Disable only master-missing tmp/diag workflow registrations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          targets = [
+              (324236557, ".github/workflows/_tmp_patch_gemini_cohort_envelope.yml"),
+              (324257783, ".github/workflows/_tmp_patch_gemini_v3_2_final.yml"),
+              (332638679, ".github/workflows/diag-ai-proposal-template-gap-20260812.yml"),
+              (332412453, ".github/workflows/diag-paper-capital-authority-20260812.yml"),
+              (333061755, ".github/workflows/diag-z-canary-progress-20260812.yml"),
+              (332388526, ".github/workflows/diag-z-production-blockers-20260812.yml"),
+          ]
+          allowed_prefixes = (".github/workflows/_tmp_", ".github/workflows/diag-")
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "zel-ghost-workflow-cleanup",
+          }
+
+          def request(url, method="GET"):
+              req = urllib.request.Request(url, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      body = resp.read().decode("utf-8")
+                      return resp.status, body
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8", errors="replace")
+
+          results = []
+          for workflow_id, path in targets:
+              if not path.startswith(allowed_prefixes):
+                  raise SystemExit(f"UNSAFE_PATH_NOT_WHITELISTED:{path}")
+              quoted = urllib.parse.quote(path, safe="/")
+              content_url = f"https://api.github.com/repos/{repo}/contents/{quoted}?ref=master"
+              status, _ = request(content_url)
+              if status != 404:
+                  raise SystemExit(f"ABORT_MASTER_FILE_NOT_MISSING:{workflow_id}:{path}:http={status}")
+
+              meta_url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_id}"
+              meta_status, meta_body = request(meta_url)
+              if meta_status != 200:
+                  raise SystemExit(f"WORKFLOW_META_FAILED:{workflow_id}:http={meta_status}")
+              meta = json.loads(meta_body)
+              if meta.get("path") != path:
+                  raise SystemExit(f"WORKFLOW_PATH_MISMATCH:{workflow_id}:{meta.get('path')}:{path}")
+              pre_state = str(meta.get("state") or "")
+              if pre_state == "active":
+                  disable_status, _ = request(meta_url + "/disable", method="PUT")
+                  if disable_status not in (204,):
+                      raise SystemExit(f"DISABLE_FAILED:{workflow_id}:http={disable_status}")
+              verify_status, verify_body = request(meta_url)
+              if verify_status != 200:
+                  raise SystemExit(f"VERIFY_META_FAILED:{workflow_id}:http={verify_status}")
+              post = json.loads(verify_body)
+              post_state = str(post.get("state") or "")
+              if post_state == "active":
+                  raise SystemExit(f"DISABLE_DID_NOT_STICK:{workflow_id}")
+              results.append({"id": workflow_id, "path": path, "pre": pre_state, "post": post_state})
+
+          print(json.dumps({"status": "PASS_PROVEN_GHOST_WORKFLOWS_DISABLED", "count": len(results), "results": results}, sort_keys=True))
+          PY

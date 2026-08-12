@@ -14,6 +14,7 @@ POLICY_SCHEMA = "zel.production_family_survivor_verifier_policy.v1"
 EVIDENCE_SCHEMA = "zel.production_family_paper_evidence.v1"
 INTAKE_SCHEMA = "zel.production_verified_survivor_receipt.v1"
 DEFAULT_POLICY = Path("config/zel_production_family_survivor_verifier_v1.json")
+RUNTIME_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
 
 def _f(value: Any, name: str) -> float:
@@ -31,6 +32,16 @@ def _i(value: Any, name: str) -> int:
     if not out.is_integer():
         raise RuntimeError(f"FAMILY_SURVIVOR_INTEGER_INVALID:{name}")
     return int(out)
+
+
+def _verified_receipt(row: Mapping[str, Any], label: str) -> str:
+    claimed = str(row.get("receipt_sha256") or "")
+    if len(claimed) != 64:
+        raise RuntimeError(f"FAMILY_SURVIVOR_{label}_RECEIPT_INVALID")
+    actual = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
+    if actual != claimed:
+        raise RuntimeError(f"FAMILY_SURVIVOR_{label}_RECEIPT_MISMATCH")
+    return claimed
 
 
 def _contract(policy: Mapping[str, Any]) -> dict[str, float | str]:
@@ -106,6 +117,16 @@ def _validate_evidence(e: Mapping[str, Any], contract: Mapping[str, Any]) -> dic
         raise RuntimeError("FAMILY_SURVIVOR_EVIDENCE_SCHEMA_INVALID")
     if e.get("state") != "PASS_FAMILY_PAPER_EVIDENCE":
         raise RuntimeError("FAMILY_SURVIVOR_EVIDENCE_NOT_PASS")
+    evidence_receipt = _verified_receipt(e, "EVIDENCE")
+    if e.get("symbol_qualified") is not True:
+        raise RuntimeError("FAMILY_SURVIVOR_SYMBOL_NOT_QUALIFIED")
+    runtime_symbol = str(e.get("runtime_symbol") or "").replace("-", "").upper()
+    if runtime_symbol not in RUNTIME_SYMBOLS:
+        raise RuntimeError("FAMILY_SURVIVOR_RUNTIME_SYMBOL_INVALID")
+    if list(map(str, e.get("runtime_symbol_precedence") or [])) != list(RUNTIME_SYMBOLS):
+        raise RuntimeError("FAMILY_SURVIVOR_RUNTIME_SYMBOL_PRECEDENCE_INVALID")
+    if e.get("symbol_selection_method") != "FROZEN_PRECEDENCE_FIRST_QUALIFIED_NO_METRIC_SEARCH":
+        raise RuntimeError("FAMILY_SURVIVOR_SYMBOL_SELECTION_METHOD_INVALID")
     if e.get("economic_gate_pass") is not True or e.get("durability_gate_pass") is not True or e.get("integrity_pass") is not True:
         raise RuntimeError("FAMILY_SURVIVOR_REQUIRED_GATE_FAIL")
     embedded = e.get("survivor_contract")
@@ -116,10 +137,16 @@ def _validate_evidence(e: Mapping[str, Any], contract: Mapping[str, Any]) -> dic
     family_id = str(e.get("family_id") or "").strip()
     strategy_id = str(e.get("strategy_id") or "").strip()
     alpha_id = str(e.get("alpha_id") or "").strip()
-    if not family_id or not strategy_id or not alpha_id:
+    canary_key = str(e.get("canary_key") or "").strip()
+    contract_id = str(e.get("contract_id") or "").strip()
+    contract_receipt = str(e.get("contract_receipt_sha256") or "").strip()
+    canary_receipt = str(e.get("canary_receipt_sha256") or "").strip()
+    if not family_id or not strategy_id or not alpha_id or not canary_key or not contract_id:
         raise RuntimeError("FAMILY_SURVIVOR_IDENTITY_MISSING")
+    if len(contract_receipt) != 64 or len(canary_receipt) != 64:
+        raise RuntimeError("FAMILY_SURVIVOR_LINEAGE_RECEIPT_INVALID")
     hashes = e.get("source_hashes")
-    if not isinstance(hashes, list) or not hashes or any(not str(v).strip() for v in hashes):
+    if not isinstance(hashes, list) or not hashes or any(len(str(v)) != 64 for v in hashes):
         raise RuntimeError("FAMILY_SURVIVOR_SOURCE_HASHES_INVALID")
     risk = e.get("risk_request")
     if not isinstance(risk, Mapping):
@@ -166,7 +193,20 @@ def _validate_evidence(e: Mapping[str, Any], contract: Mapping[str, Any]) -> dic
         raise RuntimeError("FAMILY_SURVIVOR_AGGREGATE_ECONOMIC_FAIL")
     if parsed["max_dd_pct"] < 0 or parsed["max_dd_pct"] > float(contract["max_dd_pct"]):
         raise RuntimeError("FAMILY_SURVIVOR_MAX_DD_FAIL")
-    return {"family_id": family_id, "strategy_id": strategy_id, "alpha_id": alpha_id, "source_hashes": sorted(set(map(str, hashes))), "risk_request": {"leverage_x": lev, "position_pct": pos}, "metrics": parsed}
+    return {
+        "family_id": family_id,
+        "strategy_id": strategy_id,
+        "alpha_id": alpha_id,
+        "runtime_symbol": runtime_symbol,
+        "canary_key": canary_key,
+        "contract_id": contract_id,
+        "contract_receipt_sha256": contract_receipt,
+        "canary_receipt_sha256": canary_receipt,
+        "evidence_receipt_sha256": evidence_receipt,
+        "source_hashes": sorted(set(map(str, hashes))),
+        "risk_request": {"leverage_x": lev, "position_pct": pos},
+        "metrics": parsed,
+    }
 
 
 def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now_ms: int | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -174,6 +214,8 @@ def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     if evidence is None:
         return _hold("HOLD_FAMILY_SURVIVOR_EVIDENCE_MISSING", "NORMALIZED_PAPER_EVIDENCE_NOT_AVAILABLE", now_ms=now), None
+    if evidence.get("runtime_symbol") is None:
+        return _hold("HOLD_FAMILY_SURVIVOR_SYMBOL_QUALIFICATION_REQUIRED", "LEGACY_OR_UNQUALIFIED_FAMILY_EVIDENCE", now_ms=now), None
     contract = _contract(cfg)
     parsed = _validate_evidence(evidence, contract)
     m = parsed["metrics"]
@@ -183,10 +225,16 @@ def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now
         "economic_gate_pass": True,
         "durability_gate_pass": True,
         "integrity_pass": True,
+        "symbol_qualified": True,
+        "runtime_symbol": parsed["runtime_symbol"],
         "family_id": parsed["family_id"],
         "strategy_id": parsed["strategy_id"],
         "alpha_id": parsed["alpha_id"],
-        "authority_receipt_sha256": str(evidence.get("receipt_sha256") or stable_sha(evidence)),
+        "canary_key": parsed["canary_key"],
+        "contract_id": parsed["contract_id"],
+        "contract_receipt_sha256": parsed["contract_receipt_sha256"],
+        "canary_receipt_sha256": parsed["canary_receipt_sha256"],
+        "authority_receipt_sha256": parsed["evidence_receipt_sha256"],
         "source_hashes": parsed["source_hashes"],
         "risk_request": parsed["risk_request"],
         "metrics": m,
@@ -207,6 +255,7 @@ def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now
         "write_verified_intake": True,
         "family_id": parsed["family_id"],
         "strategy_id": parsed["strategy_id"],
+        "runtime_symbol": parsed["runtime_symbol"],
         "intake_receipt_sha256": intake["receipt_sha256"],
         "selection_authority": False,
         "promotion_authority": False,
@@ -221,7 +270,7 @@ def verify(policy: Mapping[str, Any], evidence: Mapping[str, Any] | None, *, now
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Verify normalized independent-family PAPER evidence before survivor catalog intake")
+    ap = argparse.ArgumentParser(description="Verify symbol-qualified independent-family PAPER evidence before survivor catalog intake")
     ap.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     ns = ap.parse_args()
     policy = read_json(ns.policy, required=True)

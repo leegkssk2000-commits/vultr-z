@@ -13,6 +13,7 @@ INPUT_SCHEMA = "zel.production_family_paper_canary_result.v1"
 OUTPUT_SCHEMA = "zel.production_family_paper_evidence.v1"
 POLICY_SCHEMA = "zel.production_family_paper_evidence_producer_policy.v1"
 DEFAULT_POLICY = Path("config/zel_production_family_paper_evidence_producer_v1.json")
+RUNTIME_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
 
 def _f(v: Any, name: str) -> float:
@@ -30,6 +31,16 @@ def _i(v: Any, name: str) -> int:
     if not out.is_integer():
         raise RuntimeError(f"FAMILY_PAPER_EVIDENCE_INTEGER_INVALID:{name}")
     return int(out)
+
+
+def _verified_receipt(row: Mapping[str, Any], label: str) -> str:
+    claimed = str(row.get("receipt_sha256") or "")
+    if len(claimed) != 64:
+        raise RuntimeError(f"FAMILY_PAPER_EVIDENCE_{label}_RECEIPT_INVALID")
+    actual = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
+    if actual != claimed:
+        raise RuntimeError(f"FAMILY_PAPER_EVIDENCE_{label}_RECEIPT_MISMATCH")
+    return claimed
 
 
 def _hold(state: str, reason: str) -> dict[str, Any]:
@@ -101,15 +112,33 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
 def _normalize_canary(row: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     if row.get("schema_version") != INPUT_SCHEMA or row.get("state") != "PASS_FAMILY_PAPER_CANARY":
         raise RuntimeError("FAMILY_PAPER_CANARY_NOT_PASS")
+    canary_receipt = _verified_receipt(row, "CANARY")
+    if row.get("symbol_qualified") is not True:
+        raise RuntimeError("FAMILY_PAPER_CANARY_SYMBOL_NOT_QUALIFIED")
+    runtime_symbol = str(row.get("runtime_symbol") or "").replace("-", "").upper()
+    if runtime_symbol not in RUNTIME_SYMBOLS:
+        raise RuntimeError("FAMILY_PAPER_CANARY_RUNTIME_SYMBOL_INVALID")
+    precedence = list(map(str, row.get("runtime_symbol_precedence") or []))
+    if precedence != list(RUNTIME_SYMBOLS):
+        raise RuntimeError("FAMILY_PAPER_CANARY_RUNTIME_SYMBOL_PRECEDENCE_INVALID")
+    if row.get("symbol_selection_method") != "FROZEN_PRECEDENCE_FIRST_QUALIFIED_NO_METRIC_SEARCH":
+        raise RuntimeError("FAMILY_PAPER_CANARY_SYMBOL_SELECTION_METHOD_INVALID")
+    symbol_evaluations = row.get("symbol_evaluations")
+    selected_eval = symbol_evaluations.get(runtime_symbol) if isinstance(symbol_evaluations, Mapping) else None
+    if not isinstance(selected_eval, Mapping) or selected_eval.get("state") != "PASS_SYMBOL_PAPER_CANARY":
+        raise RuntimeError("FAMILY_PAPER_CANARY_SELECTED_SYMBOL_NOT_PASS")
     if row.get("economic_gate_pass") is not True or row.get("durability_gate_pass") is not True or row.get("integrity_pass") is not True:
         raise RuntimeError("FAMILY_PAPER_CANARY_GATE_FAIL")
     family_id = str(row.get("family_id") or "").strip()
     strategy_id = str(row.get("strategy_id") or "").strip()
     alpha_id = str(row.get("alpha_id") or "").strip()
-    if not family_id or not strategy_id or not alpha_id:
+    canary_key = str(row.get("canary_key") or "").strip()
+    contract_id = str(row.get("contract_id") or "").strip()
+    contract_receipt = str(row.get("contract_receipt_sha256") or "").strip()
+    if not family_id or not strategy_id or not alpha_id or not canary_key or not contract_id or len(contract_receipt) != 64:
         raise RuntimeError("FAMILY_PAPER_CANARY_IDENTITY_MISSING")
     hashes = row.get("source_hashes")
-    if not isinstance(hashes, list) or not hashes or any(not str(x).strip() for x in hashes):
+    if not isinstance(hashes, list) or not hashes or any(len(str(x)) != 64 for x in hashes):
         raise RuntimeError("FAMILY_PAPER_CANARY_SOURCE_HASHES_INVALID")
     risk = row.get("risk_request")
     if not isinstance(risk, Mapping):
@@ -121,6 +150,8 @@ def _normalize_canary(row: Mapping[str, Any], contract: Mapping[str, Any]) -> di
     windows = row.get("windows")
     if not isinstance(windows, Mapping) or set(windows) != {"W1", "W2", "W3"}:
         raise RuntimeError("FAMILY_PAPER_CANARY_WINDOWS_INVALID")
+    if dict(selected_eval.get("windows") or {}) != dict(windows):
+        raise RuntimeError("FAMILY_PAPER_CANARY_SELECTED_WINDOWS_MISMATCH")
     out_windows: dict[str, dict[str, float]] = {}
     for name in ("W1", "W2", "W3"):
         w = windows[name]
@@ -155,6 +186,8 @@ def _normalize_canary(row: Mapping[str, Any], contract: Mapping[str, Any]) -> di
     metrics = row.get("metrics")
     if not isinstance(metrics, Mapping):
         raise RuntimeError("FAMILY_PAPER_CANARY_METRICS_MISSING")
+    if dict(selected_eval.get("metrics") or {}) != dict(metrics):
+        raise RuntimeError("FAMILY_PAPER_CANARY_SELECTED_METRICS_MISMATCH")
     out_metrics = {k: _f(metrics.get(k), k) for k in ("trade_count", "net_expectancy", "profit_factor", "net_pnl", "max_dd_pct")}
     expected_trades = sum(v["trade_count"] for v in out_windows.values())
     if abs(out_metrics["trade_count"] - expected_trades) > 1e-9:
@@ -170,16 +203,23 @@ def _normalize_canary(row: Mapping[str, Any], contract: Mapping[str, Any]) -> di
         "economic_gate_pass": True,
         "durability_gate_pass": True,
         "integrity_pass": True,
+        "symbol_qualified": True,
+        "runtime_symbol": runtime_symbol,
+        "runtime_symbol_precedence": precedence,
+        "symbol_selection_method": row["symbol_selection_method"],
         "family_id": family_id,
         "strategy_id": strategy_id,
         "alpha_id": alpha_id,
+        "canary_key": canary_key,
+        "contract_id": contract_id,
+        "contract_receipt_sha256": contract_receipt,
         "source_hashes": sorted(set(map(str, hashes))),
         "risk_request": {"leverage_x": lev, "position_pct": pos},
         "windows": out_windows,
         "metrics": out_metrics,
         "survivor_contract": contract_material,
         "survivor_contract_sha256": stable_sha(contract_material),
-        "canary_receipt_sha256": str(row.get("receipt_sha256") or stable_sha(row)),
+        "canary_receipt_sha256": canary_receipt,
         "selection_authority": False,
         "promotion_authority": False,
         "execution_authority": "NONE",
@@ -197,6 +237,8 @@ def tick(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | No
     canary = read_json(Path(str(cfg["canary_result_path"])))
     if canary is None:
         return _hold("HOLD_FAMILY_PAPER_CANARY_MISSING", "NORMALIZED_FAMILY_PAPER_CANARY_NOT_AVAILABLE"), None
+    if canary.get("runtime_symbol_precedence") is None:
+        return _hold("HOLD_FAMILY_PAPER_CANARY_SYMBOL_QUALIFICATION_REQUIRED", "LEGACY_OR_UNQUALIFIED_CANARY_RESULT"), None
     evidence = _normalize_canary(canary, _contract(cfg))
     state = {
         "schema_version": SCHEMA,
@@ -205,6 +247,7 @@ def tick(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | No
         "write_evidence": True,
         "family_id": evidence["family_id"],
         "strategy_id": evidence["strategy_id"],
+        "runtime_symbol": evidence["runtime_symbol"],
         "evidence_receipt_sha256": evidence["receipt_sha256"],
         "selection_authority": False,
         "promotion_authority": False,

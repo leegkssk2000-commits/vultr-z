@@ -9,6 +9,11 @@ on:
       - 'backend/production/zel_production_ai_admission_materializer_v1.py'
       - 'backend/production/zel_production_ai_family_canary_handoff_v1.py'
       - 'backend/production/zel_production_family_paper_canary_runner_v1.py'
+      - 'backend/production/zel_production_family_paper_canary_runner_v2.py'
+      - 'backend/production/zel_production_family_paper_evidence_producer_v1.py'
+      - 'backend/production/zel_production_family_survivor_verifier_v1.py'
+      - 'backend/production/zel_production_survivor_catalog_v1.py'
+      - 'backend/production/zel_production_survivor_pool_v1.py'
       - 'config/zel_production_ai_admission_executor_v1.json'
       - 'config/zel_production_ai_admission_template_registry_v1.json'
       - 'config/zel_production_ai_family_canary_handoff_v1.json'
@@ -19,6 +24,11 @@ on:
       - 'tests/test_zel_production_ai_admission_executor_v2.py'
       - 'tests/test_zel_production_ai_family_canary_handoff_v1.py'
       - 'tests/test_zel_production_family_paper_canary_runner_v1.py'
+      - 'tests/test_zel_production_family_paper_canary_runner_v2.py'
+      - 'tests/test_zel_production_family_paper_evidence_producer_v1.py'
+      - 'tests/test_zel_production_family_survivor_verifier_v1.py'
+      - 'tests/test_zel_production_survivor_catalog_v1.py'
+      - 'tests/test_zel_production_survivor_pool_v1.py'
       - '.github/workflows/zel-production-ai-admission-executor-v1.yml'
   workflow_run:
     workflows: ['ZEL Production AI Proposal Explore V1']
@@ -44,7 +54,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and test frozen admission, handoff, and independent canary
+      - name: Compile and test frozen admission, symbol-qualified canary, and survivor lineage
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
@@ -53,16 +63,24 @@ jobs:
             backend/production/zel_production_ai_admission_executor_v2.py \
             backend/production/zel_production_ai_admission_materializer_v1.py \
             backend/production/zel_production_ai_family_canary_handoff_v1.py \
-            backend/production/zel_production_family_paper_canary_runner_v1.py
+            backend/production/zel_production_family_paper_canary_runner_v1.py \
+            backend/production/zel_production_family_paper_canary_runner_v2.py \
+            backend/production/zel_production_family_paper_evidence_producer_v1.py \
+            backend/production/zel_production_family_survivor_verifier_v1.py \
+            backend/production/zel_production_survivor_catalog_v1.py \
+            backend/production/zel_production_survivor_pool_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_ai_admission_executor_v1.py \
             tests/test_zel_production_ai_admission_executor_v2.py \
             tests/test_zel_production_ai_admission_materializer_v1.py \
             tests/test_zel_production_ai_family_canary_handoff_v1.py \
             tests/test_zel_production_family_paper_canary_runner_v1.py \
+            tests/test_zel_production_family_paper_canary_runner_v2.py \
             tests/test_zel_production_family_paper_evidence_producer_v1.py \
-            tests/test_zel_production_family_survivor_verifier_v1.py
-      - name: Verify frozen no-search no-authority and prospective-independence boundary
+            tests/test_zel_production_family_survivor_verifier_v1.py \
+            tests/test_zel_production_survivor_catalog_v1.py \
+            tests/test_zel_production_survivor_pool_v1.py
+      - name: Verify frozen no-search no-authority and symbol-qualified prospective boundary
         run: |
           python - <<'PY'
           import json
@@ -76,6 +94,7 @@ jobs:
           assert p['numeric_signal_thresholds']==[] and p['parameter_search'] is False
           assert c['numeric_signal_thresholds']==[] and c['parameter_search'] is False
           assert c['windows']==['W1','W2','W3'] and c['trades_per_window']==60
+          assert c['runtime_symbol_precedence']==['BTCUSDT','ETHUSDT']
           assert c['retention_semantics']=='WINDOW_EXPECTANCY_DIV_W1_EXPECTANCY'
           assert c['risk_basis']=='MINIMUM_FROZEN_PAPER_EXPOSURE'
           assert min(r['allowed_leverage_x'])==10 and min(r['allowed_position_pct'])==5
@@ -96,16 +115,19 @@ jobs:
               assert row['negative_controls']==['DIRECTION_REVERSAL','PLUS_ONE_EVENT_DELAY','NO_SIGNAL_PLACEBO']
           src=Path('backend/production/zel_production_ai_admission_executor_v2.py').read_text()
           bridge=Path('backend/production/zel_production_ai_family_canary_handoff_v1.py').read_text()
-          runner=Path('backend/production/zel_production_family_paper_canary_runner_v1.py').read_text()
+          runner=Path('backend/production/zel_production_family_paper_canary_runner_v2.py').read_text()
+          evidence=Path('backend/production/zel_production_family_paper_evidence_producer_v1.py').read_text()
+          verifier=Path('backend/production/zel_production_family_survivor_verifier_v1.py').read_text()
           assert 'PASS_AI_ADMISSION_ECONOMIC_CANDIDATE' in src
           assert 'BUILD_INDEPENDENT_FAMILY_PAPER_CANARY' in src
           assert 'admission_history_reuse_allowed' in bridge and 'prospective_only' in bridge
-          assert 'admission_history_reuse_allowed' in runner and 'first_not_before_ms' in runner
+          assert 'runtime_symbol_precedence' in runner and 'FROZEN_PRECEDENCE_FIRST_QUALIFIED_NO_METRIC_SEARCH' in runner
+          assert 'symbol_qualified' in evidence and 'runtime_symbol' in verifier
           assert 'production_family_paper_canary_history_v1' in Path('config/zel_production_family_paper_canary_runner_v1.json').read_text()
           assert 'production_ai_admission_observations_v1.ndjson' not in runner
-          for code in (src,bridge,runner):
+          for code in (src,bridge,runner,evidence,verifier):
               assert 'submit_order' not in code and 'https://' not in code
-          print('PASS_FROZEN_ADMISSION_TO_INDEPENDENT_CANARY_BOUNDARY')
+          print('PASS_FROZEN_ADMISSION_TO_SYMBOL_QUALIFIED_SURVIVOR_BOUNDARY')
           PY
 
   execute-on-vps:
@@ -129,7 +151,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded frozen admission, handoff, and prospective canary tick
+      - name: Run one bounded frozen admission, handoff, and symbol-qualified canary tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -144,6 +166,11 @@ jobs:
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_ai_family_canary_handoff_v1.py',
             'backend/production/zel_production_family_paper_canary_runner_v1.py',
+            'backend/production/zel_production_family_paper_canary_runner_v2.py',
+            'backend/production/zel_production_family_paper_evidence_producer_v1.py',
+            'backend/production/zel_production_family_survivor_verifier_v1.py',
+            'backend/production/zel_production_survivor_catalog_v1.py',
+            'backend/production/zel_production_survivor_pool_v1.py',
             'backend/production/zel_production_carry_flow_data_v1.py',
             'backend/production/zel_production_l2_order_book_data_v1.py',
             'backend/engine/market_data_service.py',
@@ -189,7 +216,7 @@ jobs:
           python3 -m backend.production.zel_production_carry_flow_data_v1 >/tmp/zel-ai-admission-carry.json
           python3 -m backend.production.zel_production_ai_admission_executor_v2 >/tmp/zel-ai-admission-executor.json
           python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-family-canary-handoff.json
-          python3 -m backend.production.zel_production_family_paper_canary_runner_v1 >/tmp/zel-family-paper-canary-runner.json
+          python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-family-paper-canary-runner.json
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -211,6 +238,7 @@ jobs:
               'HOLD_AI_FAMILY_CANARY_NO_PASSING_RESULT',
               'PASS_AI_FAMILY_CANARY_HANDOFF_READY',
           }
+          assert canary['runner_version']=='V2_SYMBOL_QUALIFIED'
           assert canary['state'] in {
               'HOLD_FAMILY_CANARY_NO_ACTIVE_REQUEST',
               'HOLD_FAMILY_PAPER_CANARY_ACCUMULATING',
@@ -228,18 +256,11 @@ jobs:
               assert p.get('live_trade_authority')=='BLOCKED'
               assert p.get('exchange_order_submitted') is False
               assert p.get('executor_version')=='V2'
-          hs=Path('/home/z/z/ledger/production_ai_family_canary_handoff_state_v1.json')
-          if hs.exists():
-              h=json.loads(hs.read_text())
-              assert h.get('selection_authority') is False
-              assert h.get('promotion_authority') is False
-              assert h.get('execution_authority')=='NONE'
-              assert h.get('order_authority')=='BLOCKED'
-              assert h.get('live_trade_authority')=='BLOCKED'
-              assert h.get('exchange_order_submitted') is False
           cs=Path('/home/z/z/ledger/production_family_paper_canary_runner_state_v1.json')
           if cs.exists():
               c=json.loads(cs.read_text())
+              assert c.get('runner_version')=='V2_SYMBOL_QUALIFIED'
+              assert c.get('runtime_symbol_precedence')==['BTCUSDT','ETHUSDT']
               assert c.get('selection_authority') is False
               assert c.get('promotion_authority') is False
               assert c.get('execution_authority')=='NONE'
@@ -249,12 +270,16 @@ jobs:
           result=Path('/home/z/z/ledger/production_family_paper_canary_result_v1.json')
           if result.exists():
               r=json.loads(result.read_text())
-              assert r.get('state')=='PASS_FAMILY_PAPER_CANARY'
-              assert r.get('prospective_only') is True
-              assert r.get('admission_history_reuse_allowed') is False
-              assert r.get('metrics',{}).get('trade_count')==180
-              assert r.get('risk_request')=={'leverage_x':10,'position_pct':5.0}
-              assert r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+              if r.get('runtime_symbol_precedence') is not None:
+                  assert r.get('state')=='PASS_FAMILY_PAPER_CANARY'
+                  assert r.get('symbol_qualified') is True
+                  assert r.get('runtime_symbol') in {'BTCUSDT','ETHUSDT'}
+                  assert r.get('runtime_symbol_precedence')==['BTCUSDT','ETHUSDT']
+                  assert r.get('prospective_only') is True
+                  assert r.get('admission_history_reuse_allowed') is False
+                  assert r.get('metrics',{}).get('trade_count')==180
+                  assert r.get('risk_request')=={'leverage_x':10,'position_pct':5.0}
+                  assert r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
           print(json.dumps({'admission':row,'handoff':handoff,'canary':canary},sort_keys=True))
           PY
           REMOTE

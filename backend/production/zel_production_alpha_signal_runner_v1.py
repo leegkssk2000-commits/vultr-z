@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from backend.production.zel_production_active_alpha_adapter_v1 import authority_is_executable
 from backend.production.zel_production_trend_momentum_v1 import generate_live_signal, load_config
+from backend.production.zel_production_v2_family_signal_v1 import SUPPORTED_STRATEGIES as V2_FAMILY_STRATEGIES, generate_runtime_signal
 
 SCHEMA = "zel.production_alpha_signal_runner.v1"
 DEFAULT_FACTORY = Path("config/zel_production_alpha_factory_v1.json")
@@ -82,7 +83,7 @@ def run_once(
     *,
     factory: Mapping[str, Any] | None = None,
     now_ms: int | None = None,
-    signal_generator=generate_live_signal,
+    signal_generator=None,
 ) -> dict[str, Any]:
     cfg = dict(factory) if factory is not None else load_config(DEFAULT_FACTORY)
     if cfg.get("schema_version") != "zel.production_alpha_factory.v1":
@@ -115,10 +116,25 @@ def run_once(
         )
 
     strategy_id = str(authority.get("strategy_id") or "")
-    if strategy_id != "trend_momentum_v1":
+    if strategy_id in V2_FAMILY_STRATEGIES:
+        if signal_generator is None:
+            signal = generate_runtime_signal(authority, now_ms=now)
+        else:
+            signal = signal_generator(authority, factory=cfg, now_ms=now)
+        network_called = False
+        reason = "EXECUTABLE_V2_FAMILY_SIGNAL_REFRESHED"
+        producer = "VERIFIED_NATIVE_SNAPSHOT_V2_FAMILY"
+    elif strategy_id == "trend_momentum_v1":
+        # This path remains for compatibility, but current terminal-strategy
+        # authority rules make a terminal trend authority non-executable.
+        generator = signal_generator or generate_live_signal
+        signal = generator(authority, factory=cfg, now_ms=now)
+        network_called = True
+        reason = "EXECUTABLE_TREND_MOMENTUM_SIGNAL_REFRESHED"
+        producer = "BINGX_LIVE_TREND_MOMENTUM"
+    else:
         raise RuntimeError(f"ALPHA_PRODUCER_UNSUPPORTED_STRATEGY:{strategy_id or 'MISSING'}")
 
-    signal = signal_generator(authority, factory=cfg, now_ms=now)
     if not isinstance(signal, Mapping):
         raise RuntimeError("ALPHA_SIGNAL_RUNNER_GENERATOR_NOT_MAPPING")
     if signal.get("schema_version") != "zel.production_alpha_signal.v1":
@@ -127,13 +143,20 @@ def run_once(
         raise RuntimeError("ALPHA_SIGNAL_RUNNER_SIGNAL_NOT_PASS")
     if signal.get("exchange_order_submitted") is not False:
         raise RuntimeError("ALPHA_SIGNAL_RUNNER_EXCHANGE_SUBMISSION_FORBIDDEN")
+    if str(signal.get("strategy_id") or "") != strategy_id:
+        raise RuntimeError("ALPHA_SIGNAL_RUNNER_SIGNAL_STRATEGY_MISMATCH")
+    if str(signal.get("alpha_id") or "") != str(authority.get("alpha_id") or ""):
+        raise RuntimeError("ALPHA_SIGNAL_RUNNER_SIGNAL_ALPHA_MISMATCH")
+    if str(signal.get("symbol") or "").replace("-", "").upper() != str(authority.get("symbol") or "").replace("-", "").upper():
+        raise RuntimeError("ALPHA_SIGNAL_RUNNER_SIGNAL_SYMBOL_MISMATCH")
 
     atomic_json_write(signal_path, signal)
     return {
         "schema_version": SCHEMA,
         "state": "PASS_ACTIVE_ALPHA_SIGNAL_WRITTEN",
         "action": "hold",
-        "reason": "EXECUTABLE_TREND_MOMENTUM_SIGNAL_REFRESHED",
+        "reason": reason,
+        "producer": producer,
         "observed_at_ms": now,
         "strategy_id": strategy_id,
         "alpha_id": signal.get("alpha_id"),
@@ -142,7 +165,7 @@ def run_once(
         "signal_receipt_sha256": signal.get("receipt_sha256"),
         "authority_path": str(authority_path),
         "signal_path": str(signal_path),
-        "network_called": True,
+        "network_called": network_called,
         "signal_written": True,
         "exchange_order_submitted": False,
         "live_trade_authority": "BLOCKED",

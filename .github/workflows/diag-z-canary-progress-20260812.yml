@@ -22,7 +22,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Locate V3 and canary owners
+      - name: Trace admission writer timestamp
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -30,23 +30,15 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
-          echo '=== SYSTEMD_EXACT_REFERENCES ==='
-          grep -Rsn -E 'zel_production_ai_admission_executor_v3|zel_production_family_paper_canary_runner_v2|production_ai_admission_observations_v1\.ndjson|production_family_paper_canary_runner_state_v1\.json' \
-            /etc/systemd/system /usr/lib/systemd/system 2>/dev/null || true
-          echo '=== CRON_EXACT_REFERENCES ==='
-          grep -Rsn -E 'zel_production_ai_admission_executor_v3|zel_production_family_paper_canary_runner_v2|production_ai_admission_observations_v1\.ndjson|production_family_paper_canary_runner_state_v1\.json' \
-            /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/crontab 2>/dev/null || true
-          echo '=== LIVE_PROCESS_REFERENCES ==='
-          ps -eo pid,ppid,lstart,args --sort=pid | grep -E 'zel_production_ai_admission_executor_v3|zel_production_family_paper_canary_runner_v2|zel_production_paper_runner_v1|zel_production_paper_loop_v1' | grep -v grep || true
-          echo '=== PAPER_RUNNER_EXACT_CALLS ==='
-          grep -nE 'admission|canary|survivor|paper_loop' /home/z/zel-production-current/backend/production/zel_production_paper_runner_v1.sh || true
-          echo '=== JOURNAL_200225_200235_UTC ==='
-          journalctl --since '2026-08-12 22:02:20' --until '2026-08-12 22:02:40' --no-pager -o short-iso 2>/dev/null \
-            | grep -Ei 'admission|canary|paper|python|zel' | tail -n 160 || true
-          echo '=== OBS_HISTORY_STAT ==='
-          stat -c 'mtime=%y size=%s inode=%i' /home/z/z/ledger/production_ai_admission_observations_v1.ndjson
-          echo '=== CANARY_HISTORY_STAT ==='
-          find /home/z/z/ledger/production_family_paper_canary_history_v1 -maxdepth 1 -type f -name '*.ndjson' -printf '%f %TY-%Tm-%Td %TH:%TM:%TS %s\n' | sort
+          echo '=== TARGET_JOURNAL ==='
+          journalctl --since '2026-08-12 22:02:26' --until '2026-08-12 22:02:32' --no-pager -o short-iso 2>/dev/null \
+            | grep -Ei 'admission|executor_version|funding_volume|canary|economic_candidate|history_accumulating|history_insufficient' || true
+          echo '=== ALL_PROCESS_JOURNAL_WINDOW ==='
+          journalctl --since '2026-08-12 22:02:27' --until '2026-08-12 22:02:30' --no-pager -o short-iso 2>/dev/null \
+            | grep -E 'bash\[[0-9]+\]|python3?\[[0-9]+\]|sshd\[[0-9]+\]' | head -n 220 || true
+          echo '=== FILE_TIMES ==='
+          stat -c 'obs mtime=%y ctime=%z size=%s' /home/z/z/ledger/production_ai_admission_observations_v1.ndjson
+          stat -c 'canary mtime=%y ctime=%z size=%s' /home/z/z/ledger/production_family_paper_canary_history_v1/47f04711995def01091ea9928f37c81d.ndjson
           REMOTE
       - name: Cleanup SSH key
         if: always()

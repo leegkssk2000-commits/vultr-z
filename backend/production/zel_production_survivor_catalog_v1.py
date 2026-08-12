@@ -14,6 +14,7 @@ POLICY_SCHEMA = "zel.production_survivor_catalog_policy.v1"
 INTAKE_SCHEMA = "zel.production_verified_survivor_receipt.v1"
 REGISTRY_SCHEMA = "zel.production_incumbent_registry.v1"
 DEFAULT_POLICY = Path("config/zel_production_survivor_catalog_v1.json")
+RUNTIME_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
 
 def _f(value: Any, name: str) -> float:
@@ -88,8 +89,11 @@ def _validate_survivor(row: Mapping[str, Any], *, source: str) -> dict[str, Any]
     family_id = str(row.get("family_id") or "").strip()
     strategy_id = str(row.get("strategy_id") or "").strip()
     alpha_id = str(row.get("alpha_id") or "").strip()
+    runtime_symbol = str(row.get("runtime_symbol") or "").replace("-", "").upper()
     if not family_id or not strategy_id or not alpha_id:
         raise RuntimeError("SURVIVOR_CATALOG_IDENTITY_MISSING")
+    if runtime_symbol not in RUNTIME_SYMBOLS:
+        raise RuntimeError("SURVIVOR_CATALOG_RUNTIME_SYMBOL_INVALID")
     hashes = row.get("source_hashes")
     if not isinstance(hashes, list) or not hashes or any(not str(v).strip() for v in hashes):
         raise RuntimeError("SURVIVOR_CATALOG_SOURCE_HASHES_INVALID")
@@ -102,16 +106,36 @@ def _validate_survivor(row: Mapping[str, Any], *, source: str) -> dict[str, Any]
         raise RuntimeError("SURVIVOR_CATALOG_INPUT_ORDER_AUTHORITY_INVALID")
     if str(row.get("live_trade_authority") or "BLOCKED") != "BLOCKED":
         raise RuntimeError("SURVIVOR_CATALOG_INPUT_LIVE_AUTHORITY_INVALID")
+
+    canary_key = str(row.get("canary_key") or "").strip()
+    contract_id = str(row.get("contract_id") or "").strip()
+    contract_receipt = str(row.get("contract_receipt_sha256") or "").strip()
+    canary_receipt = str(row.get("canary_receipt_sha256") or "").strip()
+    verified_family = source in {"VERIFIED_SURVIVOR_INTAKE", "SURVIVOR_CATALOG"} or row.get("symbol_qualified") is True
+    if verified_family and (not canary_key or not contract_id or len(contract_receipt) != 64 or len(canary_receipt) != 64):
+        raise RuntimeError("SURVIVOR_CATALOG_FAMILY_LINEAGE_INCOMPLETE")
+    risk = row.get("risk_request")
+    risk_out = None
+    if isinstance(risk, Mapping):
+        risk_out = {"leverage_x": int(_f(risk.get("leverage_x"), "risk_request.leverage_x")), "position_pct": _f(risk.get("position_pct"), "risk_request.position_pct")}
+
     return {
         "state": "PASS_ECONOMIC_SURVIVOR",
         "economic_gate_pass": True,
         "durability_gate_pass": True,
         "integrity_pass": True,
+        "symbol_qualified": bool(verified_family),
+        "runtime_symbol": runtime_symbol,
         "family_id": family_id,
         "strategy_id": strategy_id,
         "alpha_id": alpha_id,
+        "canary_key": canary_key or None,
+        "contract_id": contract_id or None,
+        "contract_receipt_sha256": contract_receipt or None,
+        "canary_receipt_sha256": canary_receipt or None,
         "authority_receipt_sha256": receipt,
         "source_hashes": sorted(set(str(v) for v in hashes)),
+        "risk_request": risk_out,
         "metrics": _metrics(row),
         "source": source,
         "selection_authority": False,
@@ -142,19 +166,24 @@ def _from_registry(registry: Mapping[str, Any] | None) -> dict[str, Any] | None:
     strategy_id = str(authority.get("strategy_id") or "").strip()
     family_id = str(authority.get("family_id") or strategy_id).strip()
     alpha_id = str(authority.get("alpha_id") or "").strip()
+    runtime_symbol = str(authority.get("symbol") or "").replace("-", "").upper()
     hashes = authority.get("source_hashes")
     if not strategy_id or not family_id or not alpha_id or not isinstance(hashes, list) or not hashes:
         raise RuntimeError("SURVIVOR_CATALOG_REGISTRY_IDENTITY_INVALID")
+    if runtime_symbol not in RUNTIME_SYMBOLS:
+        return None
     synthetic = {
         "state": "PASS_ECONOMIC_SURVIVOR",
         "economic_gate_pass": True,
         "durability_gate_pass": True,
         "integrity_pass": True,
+        "runtime_symbol": runtime_symbol,
         "family_id": family_id,
         "strategy_id": strategy_id,
         "alpha_id": alpha_id,
         "authority_receipt_sha256": str(authority.get("receipt_sha256") or ""),
         "source_hashes": list(hashes),
+        "risk_request": authority.get("risk_request"),
         "metrics": dict(metrics),
         "selection_authority": False,
         "promotion_authority": False,
@@ -169,6 +198,8 @@ def _from_intake(intake: Mapping[str, Any] | None) -> dict[str, Any] | None:
         return None
     if intake.get("schema_version") != INTAKE_SCHEMA:
         raise RuntimeError("SURVIVOR_CATALOG_INTAKE_SCHEMA_INVALID")
+    if intake.get("runtime_symbol") is None or intake.get("symbol_qualified") is not True:
+        return None
     return _validate_survivor(intake, source="VERIFIED_SURVIVOR_INTAKE")
 
 
@@ -180,7 +211,17 @@ def _existing_rows(catalog: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     rows = catalog.get("survivors")
     if not isinstance(rows, list):
         raise RuntimeError("SURVIVOR_CATALOG_EXISTING_ROWS_INVALID")
-    return [_validate_survivor(v, source=str(v.get("source") or "CATALOG")) for v in rows if isinstance(v, Mapping)]
+    out: list[dict[str, Any]] = []
+    for raw in rows:
+        if not isinstance(raw, Mapping):
+            continue
+        source = str(raw.get("source") or "CATALOG")
+        if raw.get("runtime_symbol") is None:
+            continue
+        if source != "INCUMBENT_REGISTRY" and raw.get("symbol_qualified") is not True:
+            continue
+        out.append(_validate_survivor(raw, source=source))
+    return out
 
 
 def catalog_tick(
@@ -204,8 +245,8 @@ def catalog_tick(
             best_by_family[family] = row
 
     ranked = sorted(best_by_family.values(), key=_rank_key, reverse=True)
-    previous_ids = [(v["family_id"], v["alpha_id"], v["authority_receipt_sha256"]) for v in rows]
-    current_ids = [(v["family_id"], v["alpha_id"], v["authority_receipt_sha256"]) for v in ranked]
+    previous_ids = [(v["family_id"], v["alpha_id"], v["authority_receipt_sha256"], v.get("runtime_symbol")) for v in rows]
+    current_ids = [(v["family_id"], v["alpha_id"], v["authority_receipt_sha256"], v.get("runtime_symbol")) for v in ranked]
     changed = previous_ids != current_ids
     state = {
         "schema_version": SCHEMA,
@@ -233,6 +274,7 @@ def catalog_tick(
             "previous_family_count": len(rows),
             "current_family_count": len(ranked),
             "families": [v["family_id"] for v in ranked],
+            "runtime_symbols": [v["runtime_symbol"] for v in ranked],
             "catalog_receipt_sha256": state["receipt_sha256"],
             "order_authority": "BLOCKED",
             "live_trade_authority": "BLOCKED",
@@ -244,7 +286,7 @@ def catalog_tick(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="ZEL verified multi-family survivor catalog writer")
+    ap = argparse.ArgumentParser(description="ZEL verified symbol-qualified multi-family survivor catalog writer")
     ap.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     ns = ap.parse_args()
     policy = read_json(ns.policy, required=True)

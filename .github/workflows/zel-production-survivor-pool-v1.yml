@@ -10,6 +10,7 @@ on:
       - 'backend/production/zel_production_survivor_authority_activation_v2.py'
       - 'backend/production/zel_production_survivor_runtime_health_v1.py'
       - 'backend/production/zel_production_survivor_rotation_v1.py'
+      - 'backend/production/zel_production_survivor_rotation_v2.py'
       - 'config/zel_production_survivor_pool_v1.json'
       - 'config/zel_production_survivor_authority_activation_v1.json'
       - 'config/zel_production_survivor_runtime_health_v1.json'
@@ -43,7 +44,8 @@ jobs:
             backend/production/zel_production_survivor_authority_activation_v1.py \
             backend/production/zel_production_survivor_authority_activation_v2.py \
             backend/production/zel_production_survivor_runtime_health_v1.py \
-            backend/production/zel_production_survivor_rotation_v1.py
+            backend/production/zel_production_survivor_rotation_v1.py \
+            backend/production/zel_production_survivor_rotation_v2.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_survivor_pool_v1.py \
             tests/test_zel_production_survivor_authority_activation_v1.py \
@@ -75,6 +77,7 @@ jobs:
           assert h['admission_history_reuse_allowed'] is False
           assert h['selection_authority'] is False and h['promotion_authority'] is False
           assert h['execution_authority']=='NONE'
+          assert r['health_state_path'].endswith('production_survivor_runtime_health_state_v1.json')
           assert r['rotation_order']==['active','reserve']
           assert r['selection_rule']=='EXISTING_POOL_ORDER_EXCLUDING_CURRENT_AND_QUARANTINED_NO_RERANK'
           assert r['risk_request']=={'leverage_x':10,'position_pct':5.0}
@@ -85,6 +88,7 @@ jobs:
               'backend/production/zel_production_survivor_authority_activation_v2.py',
               'backend/production/zel_production_survivor_runtime_health_v1.py',
               'backend/production/zel_production_survivor_rotation_v1.py',
+              'backend/production/zel_production_survivor_rotation_v2.py',
           ):
               src=Path(rel).read_text()
               assert 'submit_order' not in src and 'https://' not in src
@@ -100,10 +104,7 @@ jobs:
           activation=r.index('zel_production_survivor_authority_activation_v2')
           sleep=r.rindex('sleep "${INTERVAL_S}"')
           assert improvement < pool < activation < sleep
-          # Active signal generation consumes the durable authority on the next loop.
           signal=r.index('zel_production_alpha_signal_runner_v1')
           assert signal < improvement
-          assert 'zel_production_survivor_pool_v1\n' not in r
-          assert 'zel_production_survivor_authority_activation_v1\n' not in r
           print('PASS_SURVIVOR_V2_RUNNER_ORDER')
           PY

@@ -67,8 +67,9 @@ jobs:
           workflow=Path('.github/workflows/zel-production-ai-proposal-repair-v1.yml').read_text()
           assert 'push:\n    branches: [master]' in workflow
           assert "github.event_name == 'push'" in workflow
-          assert "row.get('ai_call_succeeded') is True" in workflow
-          assert "int(row.get('proposal_count') or 0) > 0" in workflow
+          assert 'production_ai_edge_proposals_v1.json' in workflow
+          assert "row.get('repair_attempted') is True" in workflow
+          assert "row.get('state') == 'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED'" in workflow
           assert 'zel_production_source_acquisition_v1' in workflow
           print('PASS_BOUNDED_AI_PROPOSAL_REPAIR_BOUNDARY')
           PY
@@ -129,8 +130,18 @@ jobs:
           CHAIN_READY="$(python3 - <<'PY'
           import json
           from pathlib import Path
-          row=json.loads(Path('/tmp/zel-ai-proposal-repair.json').read_text())
-          print('1' if row.get('ai_call_succeeded') is True and int(row.get('proposal_count') or 0) > 0 else '0')
+          p=Path('/home/z/z/ledger/production_ai_edge_proposals_v1.json')
+          if not p.exists():
+              print('0')
+          else:
+              row=json.loads(p.read_text())
+              ok=(
+                  row.get('repair_attempted') is True
+                  and row.get('ai_call_succeeded') is True
+                  and int(row.get('proposal_count') or 0) > 0
+                  and row.get('state') == 'HOLD_AI_PROPOSAL_SOURCE_BINDING_REQUIRED'
+              )
+              print('1' if ok else '0')
           PY
           )"
 

@@ -1,100 +1,185 @@
-name: cleanup Z dead display restart 20260812
+name: wire OpenAI critic 20260812
 
 on:
   push:
     branches: [zel-hygiene-audit-20260812]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  cleanup:
+  wire:
+    if: ${{ !contains(github.event.head_commit.message, '[openai-critic-wired]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Prepare SSH
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-hygiene-audit-20260812
+          fetch-depth: 0
+
+      - name: Apply exact bounded integration patch
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
-          chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
-      - name: Remove only proven dead display restart side-effect
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
-          set -euo pipefail
-          EXPECT=/home/z/zel-production-releases/373ea890530a46d0b04da6414462e6c3873e5498
-          CURRENT="$(readlink -f /home/z/zel-production-current)"
-          test "$CURRENT" = "$EXPECT"
-          test "$(systemctl is-active zel-production-paper-loop-v1.service)" = active
-
-          SCRIPT=/usr/local/bin/zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py
-          TIMER=zel-s4g8r7f3a-state-aware-shadow-wakeup-router.timer
-          DEAD_SERVICE=zel-s4g8r4-zero-epoch-q4-display-mirror.service
-          DEAD_TIMER=zel-s4g8r4-zero-epoch-q4-display-mirror.timer
-          OLD='DISPLAY_UNIT="zel-s4g8r4-zero-epoch-q4-display-mirror.service"'
-          NEW='DISPLAY_UNIT=""  # CLEANUP_20260812: retired dead display side-effect; production display projection is no longer owned here'
-
-          test -f "$SCRIPT"
-          test "$(grep -Fxc "$OLD" "$SCRIPT")" = 1
-          test "$(systemctl is-active "$DEAD_TIMER" || true)" = inactive
-          test "$(systemctl is-enabled "$DEAD_TIMER" || true)" = disabled
-          test "$(grep -RsnE 'zel-s4g8r4-zero-epoch-q4-display-mirror|s4g8r4_zero_epoch_q4_display_mirror|s4g8r7d8_display_active_open_priority_mirror|s4g8r7f5p5_canonical_projection_single_writer' /home/z/zel-production-current 2>/dev/null | wc -l)" = 0
-          test ! -e /usr/local/bin/zel_s4g8r7d8_display_active_open_priority_mirror.py
-          test ! -e /usr/local/bin/zel_s4g8r7f5p5_canonical_projection_single_writer.py
-
-          mkdir -p /home/z/z/rollback/hygiene-20260812
-          cp -a "$SCRIPT" /home/z/z/rollback/hygiene-20260812/zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py.pre_display_cleanup
-          PRE_SHA="$(sha256sum "$SCRIPT" | awk '{print $1}')"
-          PRE_MTIME="$(stat -c %Y /var/www/z-os-alimi/api/s4g8r7f3a_state_aware_shadow_wakeup_router_latest.json)"
-          PRE_FAILS="$(journalctl -u "$DEAD_SERVICE" --since '-60 min' --no-pager 2>/dev/null | grep -c 'Failed to start' || true)"
-
-          systemctl stop "$TIMER"
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('/usr/local/bin/zel_s4g8r7f3a_state_aware_shadow_wakeup_router.py')
-          old='DISPLAY_UNIT="zel-s4g8r4-zero-epoch-q4-display-mirror.service"'
-          new='DISPLAY_UNIT=""  # CLEANUP_20260812: retired dead display side-effect; production display projection is no longer owned here'
-          text=p.read_text()
-          if text.count(old) != 1:
-              raise SystemExit('EXACT_DISPLAY_UNIT_COUNT_MISMATCH')
-          p.write_text(text.replace(old,new,1))
+
+          p = Path('backend/production/zel_production_ai_proposal_layer_v1.py')
+          text = p.read_text(encoding='utf-8')
+
+          import_old = 'from backend.production.zel_production_improvement_controller_v1 import atomic_json_write, read_json, stable_sha\n'
+          import_new = import_old + 'from backend.production.zel_production_openai_critic_v1 import review_or_hold, validate_critic_config\n'
+          if import_new not in text:
+              if text.count(import_old) != 1:
+                  raise SystemExit('OPENAI_PATCH_IMPORT_ANCHOR_MISMATCH')
+              text = text.replace(import_old, import_new, 1)
+
+          start_marker = '    api_key = os.environ.get("GEMINI_API_KEY", "").strip()\n\n    def caller(prompt: str) -> tuple[str, Mapping[str, Any]]:\n'
+          end_marker = '    result, should_write = proposal_tick(\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start + 1)
+          if start < 0 or end < 0:
+              if 'critic_trace: dict[str, Any] = {}' not in text:
+                  raise SystemExit('OPENAI_PATCH_MAIN_ANCHOR_MISMATCH')
+          else:
+              replacement = '''    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    critic_cfg = validate_critic_config(cfg.get("openai_critic"))
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    openai_model = os.environ.get(str(critic_cfg.get("model_env") or "OPENAI_MODEL"), "").strip() or str(critic_cfg.get("default_model") or "gpt-5-mini")
+    critic_trace: dict[str, Any] = {}
+
+    previous_for_tick = previous
+    if critic_cfg.get("enabled") is True and critic_cfg.get("required") is True:
+        prior_receipt = previous.get("critic_receipt") if isinstance(previous, Mapping) else None
+        prior_ok = (
+            isinstance(prior_receipt, Mapping)
+            and previous.get("critic_provider") == "OPENAI"
+            and str(prior_receipt.get("decision") or "") in {"PASS", "HOLD", "REJECT"}
+        )
+        if not prior_ok:
+            previous_for_tick = None
+
+    def caller(prompt: str) -> tuple[str, Mapping[str, Any]]:
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY_MISSING")
+        gemini_model, raw = call_gemini(
+            api_key,
+            [str(v) for v in cfg["models"]],
+            prompt,
+            int(cfg["max_output_tokens"]),
+            float(cfg["temperature"]),
+        )
+        raw_proposals = raw.get("proposals") if isinstance(raw, Mapping) else None
+        if critic_cfg.get("enabled") is True and isinstance(raw_proposals, list) and raw_proposals:
+            critic_model, receipt = review_or_hold(
+                openai_key,
+                openai_model,
+                raw,
+                timeout_sec=int(critic_cfg["timeout_sec"]),
+                max_output_tokens=int(critic_cfg["max_output_tokens"]),
+            )
+            critic_trace.clear()
+            critic_trace.update(
+                {
+                    "provider": "OPENAI",
+                    "model": critic_model,
+                    "receipt": receipt,
+                    "required": bool(critic_cfg.get("required")),
+                }
+            )
+            if critic_cfg.get("required") is True and receipt.get("decision") != "PASS":
+                raw = {
+                    "status": "HOLD",
+                    "proposals": [],
+                    "hold_reason": f"OPENAI_CRITIC_{receipt.get('decision')}",
+                }
+        return gemini_model, raw
+
+'''
+              text = text[:start] + replacement + text[end:]
+
+          old_call = '''        previous=previous,
+        ai_caller=caller,
+    )
+    if result is None:
+'''
+          new_call = '''        previous=previous_for_tick,
+        ai_caller=caller,
+    )
+    if isinstance(result, dict) and critic_trace:
+        result = dict(result)
+        receipt = dict(critic_trace["receipt"])
+        result["critic_provider"] = "OPENAI"
+        result["critic_model"] = critic_trace["model"]
+        result["critic_required"] = bool(critic_trace["required"])
+        result["critic_receipt"] = receipt
+        if result["critic_required"] and receipt.get("decision") != "PASS":
+            result["state"] = f"HOLD_AI_PROPOSAL_OPENAI_CRITIC_{receipt.get('decision')}"
+            result["proposal_count"] = 0
+            result["source_ready_count"] = 0
+            result["proposals"] = []
+        result["receipt_sha256"] = stable_sha({k: v for k, v in result.items() if k != "receipt_sha256"})
+    if result is None:
+'''
+          if new_call not in text:
+              if text.count(old_call) != 1:
+                  raise SystemExit('OPENAI_PATCH_CALL_ANCHOR_MISMATCH')
+              text = text.replace(old_call, new_call, 1)
+
+          p.write_text(text, encoding='utf-8')
           PY
-          python3 -m py_compile "$SCRIPT"
-          test "$(grep -Fxc "$OLD" "$SCRIPT" || true)" = 0
-          test "$(grep -Fxc "$NEW" "$SCRIPT")" = 1
-          systemctl reset-failed "$DEAD_SERVICE" || true
-          systemctl start "$TIMER"
-          test "$(systemctl is-active "$TIMER")" = active
 
-          ok=0
-          for _ in $(seq 1 15); do
-            sleep 2
-            POST_MTIME="$(stat -c %Y /var/www/z-os-alimi/api/s4g8r7f3a_state_aware_shadow_wakeup_router_latest.json)"
-            if [ "$POST_MTIME" -gt "$PRE_MTIME" ]; then ok=1; break; fi
-          done
-          test "$ok" = 1
-          sleep 12
-          test "$(systemctl is-active zel-production-paper-loop-v1.service)" = active
-          test "$(systemctl is-active "$DEAD_TIMER" || true)" = inactive
-          test "$(systemctl is-enabled "$DEAD_TIMER" || true)" = disabled
-          POST_FAILS="$(journalctl -u "$DEAD_SERVICE" --since '-60 min' --no-pager 2>/dev/null | grep -c 'Failed to start' || true)"
-          test "$POST_FAILS" = "$PRE_FAILS"
-          POST_SHA="$(sha256sum "$SCRIPT" | awk '{print $1}')"
-          printf 'PASS_DEAD_DISPLAY_RESTART_REMOVED pre_sha=%s post_sha=%s fail_count=%s\n' "$PRE_SHA" "$POST_SHA" "$POST_FAILS"
-          systemctl show "$TIMER" -p ActiveState -p UnitFileState -p LastTriggerUSec --no-pager
-          systemctl show "$DEAD_SERVICE" -p ActiveState -p SubState -p Result --no-pager
-          stat -c '%y %s %n' /var/www/z-os-alimi/api/s4g8r7f3a_state_aware_shadow_wakeup_router_latest.json
-          REMOTE
+      - name: Compile and fail-closed tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile backend/production/zel_production_openai_critic_v1.py backend/production/zel_production_ai_proposal_layer_v1.py
+          python3 - <<'PY'
+          import json
+          from backend.production.zel_production_openai_critic_v1 import (
+              SCHEMA,
+              fail_closed_receipt,
+              review_or_hold,
+              validate_critic_config,
+              validate_receipt,
+          )
 
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/vps_key
+          cfg = validate_critic_config({
+              'enabled': True,
+              'required': True,
+              'model_env': 'OPENAI_MODEL',
+              'default_model': 'gpt-5-mini',
+              'timeout_sec': 60,
+              'max_output_tokens': 1200,
+              'allowed_decisions': ['PASS','HOLD','REJECT'],
+          })
+          assert cfg['required'] is True
+          receipt = validate_receipt({
+              'schema_version': SCHEMA,
+              'decision': 'PASS',
+              'causal_critique': 'No material internal causal contradiction found in the bounded proposal.',
+              'falsification_test': 'Reject if the deterministic out-of-sample test contradicts the proposed mechanism.',
+              'blocker_codes': [],
+          })
+          assert receipt['decision'] == 'PASS'
+          _, hold = review_or_hold('', 'gpt-5-mini', {'status':'PASS','proposals':[{'family_id':'x'}]})
+          assert hold['decision'] == 'HOLD'
+          assert hold['blocker_codes']
+          bad = fail_closed_receipt('OPENAI_API_KEY_MISSING')
+          assert bad['decision'] == 'HOLD'
+          print(json.dumps({'status':'PASS_OPENAI_CRITIC_LOCAL_FAIL_CLOSED','missing_key_decision':hold['decision']}, sort_keys=True))
+          PY
+          grep -F 'critic_provider' backend/production/zel_production_ai_proposal_layer_v1.py
+          grep -F 'OPENAI_API_KEY' backend/production/zel_production_ai_proposal_layer_v1.py
+
+      - name: Commit integration to branch
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/production/zel_production_ai_proposal_layer_v1.py; then
+            echo 'OPENAI_CRITIC_ALREADY_WIRED'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/production/zel_production_ai_proposal_layer_v1.py
+          git commit -m 'feat: wire OpenAI critic into Gemini proposal path [openai-critic-wired]'
+          git push origin HEAD:zel-hygiene-audit-20260812

@@ -1,0 +1,81 @@
+name: diag pipeline write churn 20260813
+
+on:
+  push:
+    branches:
+      - zel-hygiene-audit-20260812
+    paths:
+      - .github/workflows/diag-pipeline-write-churn-20260813.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Read-only sample hot-loop ledger writes
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'python3 -' <<'PY'
+          import hashlib, json, os, time
+          from pathlib import Path
+
+          service = os.popen('systemctl is-active zel-production-paper-loop-v1.service').read().strip()
+          if service != 'active':
+              raise SystemExit(f'PAPER_LOOP_NOT_ACTIVE:{service}')
+
+          root = Path('/home/z/z/ledger')
+          files = [
+              'production_family_paper_evidence_producer_state_v1.json',
+              'production_family_paper_evidence_v1.json',
+              'production_family_survivor_verifier_state_v1.json',
+              'production_verified_survivor_intake_v1.json',
+              'production_survivor_candidates_v1.json',
+              'production_survivor_pool_v1.json',
+              'production_survivor_authority_activation_v1.json',
+              'production_alpha_authority_v1.json',
+          ]
+
+          def sig(path: Path):
+              if not path.exists():
+                  return {'exists': False, 'mtime_ns': None, 'size': None, 'sha256': None}
+              data = path.read_bytes()
+              st = path.stat()
+              return {'exists': True, 'mtime_ns': st.st_mtime_ns, 'size': st.st_size, 'sha256': hashlib.sha256(data).hexdigest()}
+
+          prev = {name: sig(root / name) for name in files}
+          changes = {name: 0 for name in files}
+          samples = 16
+          for _ in range(samples):
+              time.sleep(1)
+              cur = {name: sig(root / name) for name in files}
+              for name in files:
+                  if cur[name] != prev[name]:
+                      changes[name] += 1
+              prev = cur
+
+          print(json.dumps({
+              'status': 'PASS_READ_ONLY_PIPELINE_WRITE_CHURN_AUDIT',
+              'service': service,
+              'sample_seconds': samples,
+              'changes': changes,
+              'final': prev,
+          }, sort_keys=True))
+          PY

@@ -32,6 +32,7 @@ while true; do
   fi
 
   "${PYTHON_BIN}" -m backend.production.zel_production_improvement_controller_v1 --tick
+  "${PYTHON_BIN}" -m backend.production.zel_production_family_survivor_verifier_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_survivor_catalog_v1
   "${PYTHON_BIN}" -m backend.production.zel_production_survivor_pool_v1
   sleep "${INTERVAL_S}"

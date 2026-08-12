@@ -1,0 +1,94 @@
+name: ZEL Production L2 Native Owner V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_l2_order_book_data_v1.py'
+      - 'config/zel_production_source_capability_registry_v1.json'
+      - 'tests/test_zel_production_l2_order_book_data_v1.py'
+      - 'tests/test_zel_production_source_acquisition_v1.py'
+      - '.github/workflows/zel-production-l2-native-owner-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-real-read-only-owner:
+    if: github.actor == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static and deterministic tests
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_l2_order_book_data_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_l2_order_book_data_v1.py tests/test_zel_production_source_acquisition_v1.py
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run exact verified depth endpoint read-only smoke on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/zel-l2-native-owner-${GITHUB_RUN_ID}"
+          echo "$remote" > out/remote_path.txt
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes backend/production/zel_production_l2_order_book_data_v1.py "$VPS_USER@$VPS_HOST:$remote/"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "$VPS_USER@$VPS_HOST" \
+            "/home/z/z/.venv/bin/python '$remote/zel_production_l2_order_book_data_v1.py' --out '$remote/snapshot.json' > '$remote/stdout.json'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/snapshot.json" \
+            "$VPS_USER@$VPS_HOST:$remote/stdout.json" out/
+      - name: Verify live source receipt and authority boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          r=json.load(open('out/snapshot.json'))
+          expected=r.pop('receipt_sha256')
+          actual=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()
+          assert actual==expected,(actual,expected)
+          assert r['state']=='PASS_L2_ORDER_BOOK_NATIVE_SNAPSHOT',r
+          assert r['native_endpoint']=='/openApi/swap/v2/quote/depth'
+          assert r['record_count']==5 and len(r['records'])==5
+          assert r['history_ready_for_economic_claim'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert all(x['bid_level_count']>0 and x['ask_level_count']>0 for x in r['records'])
+          assert all(x['best_bid']<x['best_ask'] for x in r['records'])
+          print({'state':r['state'],'records':r['record_count'],'endpoint':r['native_endpoint'],'receipt':expected})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-production-l2-native-owner-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30
+      - name: Cleanup
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          remote=$(cat out/remote_path.txt 2>/dev/null || true)
+          test -z "$remote" || ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote'" 2>/dev/null || true
+          rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

@@ -5,11 +5,13 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_source_acquisition_v1.py'
+      - 'backend/production/zel_production_l2_order_book_data_v1.py'
       - 'config/zel_production_source_acquisition_v1.json'
       - 'config/zel_production_source_capability_registry_v1.json'
       - 'backend/production/zel_production_paper_runner_v1.sh'
       - '.github/workflows/zel-production-ai-proposal-explore-v1.yml'
       - 'tests/test_zel_production_source_acquisition_v1.py'
+      - 'tests/test_zel_production_l2_order_book_data_v1.py'
       - '.github/workflows/zel-production-source-acquisition-v1.yml'
 
 permissions:
@@ -30,9 +32,12 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
-          python -m py_compile backend/production/zel_production_source_acquisition_v1.py
+          python -m py_compile \
+            backend/production/zel_production_source_acquisition_v1.py \
+            backend/production/zel_production_l2_order_book_data_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_source_acquisition_v1.py \
+            tests/test_zel_production_l2_order_book_data_v1.py \
             tests/test_zel_production_ai_proposal_layer_v1.py \
             tests/test_zel_production_economic_edge_router_v1.py \
             tests/test_zel_production_economic_edge_dynamic_v1.py
@@ -46,6 +51,7 @@ jobs:
           sources=r['sources']
           carry=Path('backend/production/zel_production_carry_flow_data_v1.py').read_text()
           md=Path('backend/engine/market_data_service.py').read_text()
+          l2=Path('backend/production/zel_production_l2_order_book_data_v1.py').read_text()
           for sid in ('funding','basis'):
               x=sources[sid]; assert x['proposal_available'] is True and x['native_read_bound'] is True
               assert x['owner_path']=='backend/production/zel_production_carry_flow_data_v1.py'
@@ -55,13 +61,18 @@ jobs:
               x=sources[sid]; assert x['proposal_available'] is True and x['native_read_bound'] is True
               assert x['owner_path']=='backend/engine/market_data_service.py'
               assert x['native_endpoint'] in md
-          for sid in ('flow','liquidation','trade_sequence','l2_order_book'):
+          x=sources['l2_order_book']
+          assert x['proposal_available'] is True and x['native_read_bound'] is True
+          assert x['owner_path']=='backend/production/zel_production_l2_order_book_data_v1.py'
+          assert x['native_endpoint']=='/openApi/swap/v2/quote/depth' and x['native_endpoint'] in l2
+          assert x['history_state']=='PROSPECTIVE_HISTORY_ACCUMULATING'
+          for sid in ('flow','liquidation','trade_sequence'):
               x=sources[sid]
               assert x['proposal_available'] is False and x['native_read_bound'] is False
               assert x['native_endpoint'] is None and x['owner_path'] is None
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
-          print('PASS_CANONICAL_SOURCE_CAPABILITY_REGISTRY')
+          print('PASS_CANONICAL_SOURCE_CAPABILITY_REGISTRY_WITH_L2')
           PY
       - name: Verify source resolution moved outside PAPER daemon
         run: |
@@ -79,14 +90,17 @@ jobs:
           assert before < proposal < resolver < after
           print('PASS_AI_PROPOSAL_SOURCE_RESOLUTION_ASYNC_ISOLATED')
           PY
-      - name: Verify resolver cannot invent a source or authority
+      - name: Verify resolver and L2 owner cannot grant trade authority
         run: |
           python - <<'PY'
           from pathlib import Path
-          src=Path('backend/production/zel_production_source_acquisition_v1.py').read_text()
-          assert 'REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER' in src
-          assert 'synthetic_source_allowed' in src
-          assert 'endpoint_discovery_allowed' in src
-          assert 'urllib' not in src and 'https://' not in src and 'submit_order' not in src
-          print('PASS_SOURCE_ACQUISITION_FAIL_CLOSED_BOUNDARY')
+          resolver=Path('backend/production/zel_production_source_acquisition_v1.py').read_text()
+          l2=Path('backend/production/zel_production_l2_order_book_data_v1.py').read_text()
+          assert 'REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER' in resolver
+          assert 'synthetic_source_allowed' in resolver and 'endpoint_discovery_allowed' in resolver
+          assert 'urllib' not in resolver and 'https://' not in resolver and 'submit_order' not in resolver
+          assert '/openApi/swap/v2/quote/depth' in l2
+          assert 'submit_order' not in l2 and 'cancel_order' not in l2
+          assert 'order_authority' in l2 and 'BLOCKED' in l2
+          print('PASS_SOURCE_ACQUISITION_AND_L2_FAIL_CLOSED_BOUNDARY')
           PY

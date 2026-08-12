@@ -71,49 +71,43 @@ def proposal() -> dict:
     }
 
 
-def test_current_real_blockers_become_explicit_source_queue() -> None:
+def test_current_real_blocker_is_only_unverified_liquidation_source() -> None:
     out, updated = source_acquisition_tick(policy(), proposal=proposal(), registry=registry(), now_ms=1)
     assert out["state"] == "HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED"
-    assert [x["source_id"] for x in out["queue"]] == ["l2_order_book", "liquidation"]
-    assert all(x["acquisition_action"] == "REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER" for x in out["queue"])
-    assert out["missing_source_count"] == 2
-    assert out["resolved_source_count"] == 2  # basis + OI are verified/available
-    assert updated is None  # fixture already reflects current registry accurately
-    assert out["order_authority"] == "BLOCKED"
-    assert out["exchange_order_submitted"] is False
-
-
-def test_new_verified_l2_source_resolves_existing_proposal_without_ai_recall() -> None:
-    reg = copy.deepcopy(registry())
-    reg["sources"]["l2_order_book"] = {
-        "proposal_available": True,
-        "native_read_bound": True,
-        "owner_path": "backend/production/verified_l2_owner.py",
-        "native_endpoint": "/verified/native/l2",
-        "history_state": "PROSPECTIVE_HISTORY_ACCUMULATING",
-    }
-    out, updated = source_acquisition_tick(policy(), proposal=proposal(), registry=reg, now_ms=2)
-    assert out["state"] == "HOLD_SOURCE_ACQUISITION_VERIFIED_SOURCE_REQUIRED"
     assert [x["source_id"] for x in out["queue"]] == ["liquidation"]
+    assert out["queue"][0]["acquisition_action"] == "REGISTER_VERIFIED_NATIVE_ENDPOINT_OR_DATA_PROVIDER"
+    assert out["missing_source_count"] == 1
+    assert out["resolved_source_count"] == 3  # basis + OI + verified L2
     assert updated is not None
     rows = {x["family_id"]: x for x in updated["proposals"]}
     assert rows["order_book_inventory_asymmetry"]["source_ready"] is True
     assert rows["order_book_inventory_asymmetry"]["missing_sources"] == []
     assert rows["liquidation_cascade_imbalance"]["source_ready"] is False
     assert updated["source_ready_count"] == 1
-    assert updated["ai_call_succeeded"] if "ai_call_succeeded" in updated else True
+    assert out["order_authority"] == "BLOCKED"
+    assert out["exchange_order_submitted"] is False
 
 
-def test_all_sources_bound_releases_proposals_but_never_grants_authority() -> None:
+def test_current_registry_binds_exact_verified_l2_owner_and_endpoint() -> None:
+    row = registry()["sources"]["l2_order_book"]
+    assert row == {
+        "proposal_available": True,
+        "native_read_bound": True,
+        "owner_path": "backend/production/zel_production_l2_order_book_data_v1.py",
+        "native_endpoint": "/openApi/swap/v2/quote/depth",
+        "history_state": "PROSPECTIVE_HISTORY_ACCUMULATING",
+    }
+
+
+def test_binding_liquidation_releases_both_proposals_but_never_grants_authority() -> None:
     reg = copy.deepcopy(registry())
-    for sid in ("l2_order_book", "liquidation"):
-        reg["sources"][sid] = {
-            "proposal_available": True,
-            "native_read_bound": True,
-            "owner_path": f"backend/production/verified_{sid}.py",
-            "native_endpoint": f"/verified/native/{sid}",
-            "history_state": "PROSPECTIVE_HISTORY_ACCUMULATING",
-        }
+    reg["sources"]["liquidation"] = {
+        "proposal_available": True,
+        "native_read_bound": True,
+        "owner_path": "backend/production/verified_liquidation.py",
+        "native_endpoint": "/verified/native/liquidation",
+        "history_state": "PROSPECTIVE_HISTORY_ACCUMULATING",
+    }
     out, updated = source_acquisition_tick(policy(), proposal=proposal(), registry=reg, now_ms=3)
     assert out["state"] == "PASS_SOURCE_ACQUISITION_PROPOSALS_SOURCE_READY"
     assert out["queue"] == []

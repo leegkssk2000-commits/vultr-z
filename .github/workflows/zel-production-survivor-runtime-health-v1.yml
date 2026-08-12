@@ -1,0 +1,224 @@
+name: ZEL Production Survivor Runtime Health V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_survivor_runtime_health_v1.py'
+      - 'backend/production/zel_production_survivor_rotation_v1.py'
+      - 'backend/production/zel_production_survivor_rotation_v2.py'
+      - 'backend/production/zel_production_survivor_pool_v2.py'
+      - 'backend/production/zel_production_survivor_authority_activation_v2.py'
+      - 'backend/production/zel_production_paper_runner_v1.sh'
+      - 'config/zel_production_survivor_runtime_health_v1.json'
+      - 'config/zel_production_survivor_rotation_v1.json'
+      - 'config/zel_production_survivor_pool_v1.json'
+      - 'tests/test_zel_production_survivor_runtime_health_rotation_v1.py'
+      - '.github/workflows/zel-production-survivor-runtime-health-v1.yml'
+  workflow_run:
+    workflows: ['ZEL Production AI Admission Executor V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-survivor-runtime-health-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test post-activation health and rotation
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile \
+            backend/production/zel_production_survivor_runtime_health_v1.py \
+            backend/production/zel_production_survivor_rotation_v1.py \
+            backend/production/zel_production_survivor_rotation_v2.py \
+            backend/production/zel_production_survivor_pool_v2.py \
+            backend/production/zel_production_survivor_authority_activation_v2.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_survivor_runtime_health_rotation_v1.py
+      - name: Verify frozen prospective and no-live boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          h=json.loads(Path('config/zel_production_survivor_runtime_health_v1.json').read_text())
+          r=json.loads(Path('config/zel_production_survivor_rotation_v1.json').read_text())
+          p=json.loads(Path('config/zel_production_survivor_pool_v1.json').read_text())
+          assert h['mode']=='PAPER'
+          assert h['windows']==['W1','W2','W3'] and h['trades_per_window']==60
+          assert h['contract_source']=='ORIGINAL_SYMBOL_QUALIFIED_CANARY_SURVIVOR_CONTRACT'
+          assert h['prospective_only'] is True
+          assert h['canary_history_reuse_allowed'] is False
+          assert h['admission_history_reuse_allowed'] is False
+          assert h['selection_authority'] is False and h['promotion_authority'] is False
+          assert h['execution_authority']=='NONE'
+          assert r['health_state_path']==h['state_path']
+          assert r['health_result_path']==h['result_path']
+          assert r['rotation_order']==['active','reserve']
+          assert r['selection_rule']=='EXISTING_POOL_ORDER_EXCLUDING_CURRENT_AND_QUARANTINED_NO_RERANK'
+          assert r['risk_request']=={'leverage_x':10,'position_pct':5.0}
+          assert r['execution_authority']=='PAPER_SIM_ONLY'
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert p['quarantine_path']==r['quarantine_path']
+          for row in (h,r,p):
+              assert row['order_authority']=='BLOCKED' and row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+          for rel in (
+              'backend/production/zel_production_survivor_runtime_health_v1.py',
+              'backend/production/zel_production_survivor_rotation_v1.py',
+              'backend/production/zel_production_survivor_rotation_v2.py',
+              'backend/production/zel_production_survivor_pool_v2.py',
+              'backend/production/zel_production_survivor_authority_activation_v2.py',
+          ):
+              src=Path(rel).read_text()
+              assert 'submit_order' not in src and 'https://' not in src
+          print('PASS_SURVIVOR_RUNTIME_HEALTH_NO_LIVE_BOUNDARY')
+          PY
+
+  execute-on-vps:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded prospective health and rotation cycle
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_survivor_runtime_health_v1.py',
+            'backend/production/zel_production_survivor_rotation_v1.py',
+            'backend/production/zel_production_survivor_rotation_v2.py',
+            'backend/production/zel_production_survivor_pool_v1.py',
+            'backend/production/zel_production_survivor_pool_v2.py',
+            'backend/production/zel_production_survivor_authority_activation_v1.py',
+            'backend/production/zel_production_survivor_authority_activation_v2.py',
+            'backend/production/zel_production_family_paper_canary_runner_v1.py',
+            'backend/production/zel_production_family_paper_canary_runner_v2.py',
+            'backend/production/zel_production_ai_admission_executor_v1.py',
+            'backend/production/zel_production_ai_admission_executor_v2.py',
+            'backend/production/zel_production_improvement_controller_v1.py',
+            'config/zel_production_survivor_runtime_health_v1.json',
+            'config/zel_production_survivor_rotation_v1.json',
+            'config/zel_production_survivor_pool_v1.json',
+            'config/zel_production_survivor_authority_activation_v1.json',
+            'config/zel_production_family_paper_canary_runner_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" <<'REMOTE'
+          set -euo pipefail
+          matched=0
+          for _ in $(seq 1 60); do
+            if RUNTIME_PARITY_B64="$RUNTIME_PARITY_B64" python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path('/home/z/zel-production-current')
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              ok=ok and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$matched" -ne 1 ]; then
+            echo 'RUNTIME_PARITY_TIMEOUT' >&2
+            exit 71
+          fi
+          ROOT=/home/z/zel-production-current
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_survivor_runtime_health_v1 >/tmp/zel-survivor-runtime-health.json
+          python3 -m backend.production.zel_production_survivor_rotation_v2 >/tmp/zel-survivor-rotation.json
+          python3 -m backend.production.zel_production_survivor_pool_v2 >/tmp/zel-survivor-pool-v2.json
+          python3 -m backend.production.zel_production_survivor_authority_activation_v2 >/tmp/zel-survivor-activation-v2.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          health=json.loads(Path('/tmp/zel-survivor-runtime-health.json').read_text())
+          rotation=json.loads(Path('/tmp/zel-survivor-rotation.json').read_text())
+          pool=json.loads(Path('/tmp/zel-survivor-pool-v2.json').read_text())
+          activation=json.loads(Path('/tmp/zel-survivor-activation-v2.json').read_text())
+          assert health['state'] in {
+              'HOLD_SURVIVOR_RUNTIME_HEALTH',
+              'HOLD_SURVIVOR_RUNTIME_HEALTH_ACCUMULATING',
+              'PASS_SURVIVOR_RUNTIME_HEALTH',
+              'REJECT_SURVIVOR_RUNTIME_HEALTH',
+          }
+          assert rotation['state'] in {
+              'HOLD_SURVIVOR_ROTATION',
+              'HOLD_SURVIVOR_ROTATION_NO_ELIGIBLE_FALLBACK',
+              'PASS_SURVIVOR_RUNTIME_ROTATED',
+          }
+          assert pool['state'] in {'HOLD_SURVIVOR_POOL_BUILDING','PASS_SURVIVOR_POOL_TARGET_3_PLUS_2'}
+          assert activation['state'] in {
+              'HOLD_SURVIVOR_AUTHORITY_ALREADY_EXECUTABLE',
+              'HOLD_SURVIVOR_AUTHORITY_NOT_READY',
+              'PASS_SURVIVOR_PAPER_AUTHORITY_READY',
+          }
+          authority_path=Path('/home/z/z/ledger/production_alpha_authority_v1.json')
+          if authority_path.exists():
+              a=json.loads(authority_path.read_text())
+              assert a.get('order_authority')=='BLOCKED'
+              assert a.get('live_trade_authority')=='BLOCKED'
+              assert a.get('exchange_order_submitted') is False
+              if a.get('alpha_state')=='SURVIVOR_ACTIVE':
+                  assert a.get('promotion_authority') is True
+                  assert a.get('execution_allowed') is True
+                  assert a.get('runtime_bound') is True
+                  assert a.get('runtime_authority',{}).get('execution_authority')=='PAPER_SIM_ONLY'
+              elif a.get('alpha_state')=='QUARANTINED':
+                  assert a.get('promotion_authority') is False
+                  assert a.get('execution_allowed') is False
+                  assert a.get('runtime_bound') is False
+                  assert a.get('runtime_authority',{}).get('execution_authority')=='NONE'
+          qpath=Path('/home/z/z/ledger/production_survivor_quarantine_v1.json')
+          if qpath.exists():
+              q=json.loads(qpath.read_text())
+              assert q.get('order_authority')=='BLOCKED'
+              assert q.get('live_trade_authority')=='BLOCKED'
+              assert q.get('exchange_order_submitted') is False
+          print(json.dumps({'health':health,'rotation':rotation,'pool':pool,'activation':activation},sort_keys=True))
+          PY
+          REMOTE

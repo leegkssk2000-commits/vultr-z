@@ -1,0 +1,72 @@
+name: diag PAPER capital authority 20260812
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only capital proof
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" 'python3 -' > out/proof.json <<'PY'
+          import json, hashlib
+          from pathlib import Path
+
+          paths=[
+            "/home/z/z/ledger/production_snapshot_v1.json",
+            "/home/z/z/ledger/production_paper_account_state_v1.json",
+            "/home/z/zel-production-current/ledger/production_snapshot_v1.json",
+            "/home/z/zel-production-current/ledger/production_paper_account_state_v1.json",
+          ]
+          wanted={"equity_usdt","initial_equity_usdt","available_balance_usdt","day_start_equity_usdt","peak_equity_usdt","pnl_total_usdt","total","state","mode","updated_at_ms","receipt_sha256"}
+          def scrub(path):
+            p=Path(path)
+            if not p.is_file(): return {"path":path,"exists":False}
+            try:r=json.loads(p.read_text(errors="ignore"))
+            except Exception as e:return {"path":path,"exists":True,"json":False,"error":type(e).__name__}
+            out={"path":path,"exists":True,"json":isinstance(r,dict),"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+            if isinstance(r,dict):
+              def walk(obj,prefix=""):
+                vals={}
+                if isinstance(obj,dict):
+                  for k,v in obj.items():
+                    key=f"{prefix}.{k}" if prefix else k
+                    if k in wanted and isinstance(v,(int,float,str,bool,type(None))): vals[key]=v
+                    if isinstance(v,dict): vals.update(walk(v,key))
+                return vals
+              out["fields"]=walk(r)
+            return out
+          print(json.dumps({"schema_version":"zel.diag.paper_capital_authority.20260812.v1","files":[scrub(p) for p in paths],"read_only":True,"exchange_order_submitted":False},sort_keys=True))
+          PY
+          python -m json.tool out/proof.json >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-capital-authority-${{ github.run_id }}
+          path: out/proof.json
+          retention-days: 3
+      - name: Cleanup
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

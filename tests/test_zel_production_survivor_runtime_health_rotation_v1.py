@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-
 import pytest
 
 from backend.production import zel_production_survivor_runtime_health_v1 as health
@@ -10,7 +8,7 @@ from backend.production.zel_production_improvement_controller_v1 import stable_s
 from backend.production.zel_production_survivor_authority_activation_v1 import activate_tick as activate_v1
 from backend.production.zel_production_survivor_authority_activation_v2 import activate_tick as activate_v2
 from backend.production.zel_production_survivor_pool_v2 import pool_tick as pool_v2_tick
-from backend.production.zel_production_survivor_rotation_v1 import rotate_tick
+from backend.production.zel_production_survivor_rotation_v2 import rotate_tick
 
 
 def _receipt(row: dict) -> dict:
@@ -50,6 +48,7 @@ def _rotation_policy() -> dict:
         "authority_path": "/tmp/authority.json",
         "pool_path": "/tmp/pool.json",
         "canary_state_path": "/tmp/canary.json",
+        "health_state_path": "/tmp/health-state.json",
         "health_result_path": "/tmp/health.json",
         "quarantine_path": "/tmp/quarantine.json",
         "state_path": "/tmp/rotation.json",
@@ -211,6 +210,41 @@ def _health_reject(authority: dict) -> dict:
     return _receipt(row)
 
 
+def _health_state(authority: dict, result: dict) -> dict:
+    return _receipt({
+        "schema_version": "zel.production_survivor_runtime_health.v1",
+        "state": "REJECT_SURVIVOR_RUNTIME_HEALTH",
+        "status": "REJECT",
+        "action": "hold",
+        "health_key": result["health_key"],
+        "epoch_index": result["epoch_index"],
+        "epoch_not_before_ms": result["epoch_not_before_ms"],
+        "history_path": "/tmp/health.ndjson",
+        "authority_receipt_sha256": authority["receipt_sha256"],
+        "family_id": authority["family_id"],
+        "strategy_id": authority["strategy_id"],
+        "alpha_id": authority["alpha_id"],
+        "runtime_symbol": authority["runtime_symbol"],
+        "canary_key": authority["canary_key"],
+        "contract_id": authority["contract_id"],
+        "contract_receipt_sha256": authority["contract_receipt_sha256"],
+        "trade_count": 180,
+        "required_trade_count": 180,
+        "observation_count": 181,
+        "last_observed_at_ms": 4999,
+        "terminal_result_receipt_sha256": result["receipt_sha256"],
+        "completed_at_ms": 5000,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+        "created_at_ms": 2000,
+        "updated_at_ms": 5000,
+    })
+
+
 def test_activation_v2_does_not_rewrite_healthy_authority() -> None:
     pool, canary_state, _ = _fixtures()
     authority = _authority(pool, canary_state)
@@ -229,10 +263,12 @@ def test_activation_v2_does_not_rewrite_healthy_authority() -> None:
 def test_runtime_health_reject_quarantines_and_rotates_by_existing_pool_order() -> None:
     pool, canary_state, _ = _fixtures()
     authority = _authority(pool, canary_state)
+    result = _health_reject(authority)
     state, replacement, quarantine = rotate_tick(
         _rotation_policy(),
         authority=authority,
-        health_result=_health_reject(authority),
+        health_state=_health_state(authority, result),
+        health_result=result,
         pool=pool,
         canary_state=canary_state,
         quarantine_catalog=None,
@@ -248,7 +284,30 @@ def test_runtime_health_reject_quarantines_and_rotates_by_existing_pool_order() 
     assert quarantine["entries"][0]["family_id"] == "family_1"
 
 
-def test_rotation_fails_closed_on_stale_health_lineage() -> None:
+def test_stale_health_state_does_not_rotate_new_authority() -> None:
+    pool, canary_state, _ = _fixtures()
+    authority = _authority(pool, canary_state)
+    result = _health_reject(authority)
+    stale = _health_state(authority, result)
+    stale.pop("receipt_sha256")
+    stale["authority_receipt_sha256"] = "0" * 64
+    stale = _receipt(stale)
+    state, replacement, quarantine = rotate_tick(
+        _rotation_policy(),
+        authority=authority,
+        health_state=stale,
+        health_result=result,
+        pool=pool,
+        canary_state=canary_state,
+        quarantine_catalog=None,
+        now_ms=6000,
+    )
+    assert state["state"] == "HOLD_SURVIVOR_ROTATION"
+    assert state["reason"] == "RUNTIME_HEALTH_STATE_STALE_AUTHORITY"
+    assert replacement is None and quarantine is None
+
+
+def test_rotation_fails_closed_on_health_result_lineage_mismatch() -> None:
     pool, canary_state, _ = _fixtures()
     authority = _authority(pool, canary_state)
     bad = _health_reject(authority)
@@ -259,6 +318,7 @@ def test_rotation_fails_closed_on_stale_health_lineage() -> None:
         rotate_tick(
             _rotation_policy(),
             authority=authority,
+            health_state=_health_state(authority, bad),
             health_result=bad,
             pool=pool,
             canary_state=canary_state,
@@ -270,10 +330,12 @@ def test_rotation_fails_closed_on_stale_health_lineage() -> None:
 def test_quarantine_aware_pool_removes_failed_exact_lineage() -> None:
     pool, canary_state, candidates = _fixtures()
     authority = _authority(pool, canary_state)
+    result = _health_reject(authority)
     _, _, quarantine = rotate_tick(
         _rotation_policy(),
         authority=authority,
-        health_result=_health_reject(authority),
+        health_state=_health_state(authority, result),
+        health_result=result,
         pool=pool,
         canary_state=canary_state,
         quarantine_catalog=None,

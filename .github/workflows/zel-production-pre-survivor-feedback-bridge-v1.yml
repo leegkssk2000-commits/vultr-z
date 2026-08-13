@@ -10,6 +10,14 @@ on:
       - 'config/zel_production_ai_terminal_feedback_v1.json'
       - 'tests/test_zel_production_pre_survivor_feedback_bridge_v1.py'
       - '.github/workflows/zel-production-pre-survivor-feedback-bridge-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_feedback_bridge_v1.py'
+      - 'config/zel_production_pre_survivor_feedback_bridge_v1.json'
+      - 'config/zel_production_ai_proposal_layer_pre_survivor_v1.json'
+      - 'config/zel_production_ai_terminal_feedback_v1.json'
+      - '.github/workflows/zel-production-pre-survivor-feedback-bridge-v1.yml'
   workflow_run:
     workflows: ['ZEL Production Pre-Survivor Progress V1']
     types: [completed]
@@ -70,11 +78,15 @@ jobs:
           assert 'submit_order' not in src and 'https://' not in src
           assert 'win_rate_pct' in src and 'net_pnl' in src and 'net_expectancy' in src
           assert 'PROVISIONAL_ACCUMULATING' in src
+          workflow=Path('.github/workflows/zel-production-pre-survivor-feedback-bridge-v1.yml').read_text()
+          assert 'push:\n    branches: [master]' in workflow
+          assert "github.event_name == 'push'" in workflow
           print('PASS_PRE_SURVIVOR_FEEDBACK_BRIDGE_BOUNDARY')
           PY
 
   project-on-vps:
     if: >-
+      github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&

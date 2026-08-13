@@ -5,8 +5,12 @@ on:
     branches: [master]
     paths:
       - 'backend/production/zel_production_pre_survivor_research_comparator_v1.py'
+      - 'backend/production/zel_production_pre_survivor_research_controller_v1.py'
       - 'config/zel_production_pre_survivor_research_comparator_v1.json'
+      - 'config/zel_production_pre_survivor_research_controller_v1.json'
+      - 'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json'
       - 'tests/test_zel_production_pre_survivor_research_comparator_v1.py'
+      - 'tests/test_zel_production_pre_survivor_research_controller_v1.py'
       - '.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml'
   schedule:
     - cron: '37 * * * *'
@@ -31,48 +35,61 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and test research comparator
+      - name: Compile and test research closed loop
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pytest
-          python -m py_compile backend/production/zel_production_pre_survivor_research_comparator_v1.py
-          PYTHONPATH=. pytest -q tests/test_zel_production_pre_survivor_research_comparator_v1.py
-      - name: Verify PAPER-only isolated challenger boundary
+          python -m py_compile \
+            backend/production/zel_production_pre_survivor_research_comparator_v1.py \
+            backend/production/zel_production_pre_survivor_research_controller_v1.py
+          PYTHONPATH=. pytest -q \
+            tests/test_zel_production_pre_survivor_research_comparator_v1.py \
+            tests/test_zel_production_pre_survivor_research_controller_v1.py
+      - name: Verify PAPER-only isolated generational boundary
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           from pathlib import Path
           p=json.loads(Path('config/zel_production_pre_survivor_research_comparator_v1.json').read_text())
-          assert p['mode']=='PAPER'
+          c=json.loads(Path('config/zel_production_pre_survivor_research_controller_v1.json').read_text())
+          n=json.loads(Path('config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json').read_text())
+          assert p['mode']=='PAPER' and c['mode']=='PAPER' and n['mode']=='PAPER'
           assert p['comparison_role']=='RESEARCH_ONLY_NOT_ROUTE'
+          assert p['reference_feedback_path']==c['research_feedback_path']
+          assert n['feedback_path']==c['research_feedback_path']
+          assert n['output_path']==p['next_hypothesis_path']
           isolated={
               p['challenger_contract_state_path'],p['challenger_history_path'],p['challenger_economic_path'],
-              p['challenger_evidence_path'],p['output_path'],
+              p['challenger_evidence_path'],p['output_path'],c['research_feedback_path'],c['incumbent_path'],
           }
           active={
               '/home/z/z/ledger/production_ai_admission_contracts_v1.json',
               '/home/z/z/ledger/production_ai_admission_observations_v1.ndjson',
               '/home/z/z/ledger/production_ai_admission_economic_v1.json',
           }
-          assert len(isolated)==5 and not (isolated & active)
-          assert p['selection_authority'] is False
-          assert p['promotion_authority'] is False
-          assert p['execution_authority']=='NONE'
-          assert p['order_authority']=='BLOCKED'
-          assert p['live_trade_authority']=='BLOCKED'
-          assert p['exchange_order_submitted'] is False
-          assert p['source_code_mutation_allowed'] is False
-          assert p['self_modification_allowed'] is False
-          src=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
+          assert len(isolated)==7 and not (isolated & active)
+          for row in (p,c,n):
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+              assert row['source_code_mutation_allowed'] is False
+              assert row['self_modification_allowed'] is False
+          comp=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
+          ctrl=Path('backend/production/zel_production_pre_survivor_research_controller_v1.py').read_text()
           for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
-              assert token in src
-          assert 'produce_challenger_evidence' in src
-          assert 'materialize_tick' in src
-          assert 'executor_tick' in src
-          assert 'submit_order' not in src
-          assert 'https://' not in src
-          print('PASS_PRE_SURVIVOR_RESEARCH_CLOSED_LOOP_BOUNDARY')
+              assert token in comp and token in ctrl
+          assert 'produce_challenger_evidence' in comp
+          assert 'materialize_tick' in comp
+          assert 'executor_tick' in comp
+          assert 'update_incumbent' in ctrl
+          assert 'prepare_reference' in ctrl
+          assert 'submit_order' not in comp and 'submit_order' not in ctrl
+          assert 'https://' not in comp and 'https://' not in ctrl
+          print('PASS_PRE_SURVIVOR_RESEARCH_GENERATIONAL_CLOSED_LOOP_BOUNDARY')
           PY
 
   run-on-vps:
@@ -96,7 +113,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Run one bounded pre-survivor improvement research tick
+      - name: Run one bounded pre-survivor generational research tick
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -112,13 +129,15 @@ jobs:
           from pathlib import Path
           files=[
             'backend/production/zel_production_pre_survivor_research_comparator_v1.py',
+            'backend/production/zel_production_pre_survivor_research_controller_v1.py',
             'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_ai_admission_executor_v2.py',
             'backend/production/zel_production_ai_admission_executor_v3.py',
             'backend/production/zel_production_pre_survivor_progress_v1.py',
             'config/zel_production_pre_survivor_research_comparator_v1.json',
-            'config/zel_production_ai_pre_survivor_next_hypothesis_v1.json',
+            'config/zel_production_pre_survivor_research_controller_v1.json',
+            'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
             'config/zel_production_ai_proposal_layer_pre_survivor_v1.json',
             'config/zel_production_ai_admission_materializer_v1.json',
             'config/zel_production_ai_admission_executor_v1.json',
@@ -163,32 +182,63 @@ jobs:
               for p in active:
                   out[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
               return out
+          def run_json(args):
+              raw=subprocess.check_output(args,text=True).strip().splitlines()[-1]
+              return json.loads(raw)
           before=digests()
-          subprocess.run([
+          prep=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
+              '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','prepare',
+          ])
+          run_json([
               'python3','-m','backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1',
-              '--policy','config/zel_production_ai_pre_survivor_next_hypothesis_v1.json',
-          ],check=True)
-          subprocess.run([
+              '--policy','config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
+          ])
+          run_json([
               'python3','-m','backend.production.zel_production_pre_survivor_research_comparator_v1',
               '--policy','config/zel_production_pre_survivor_research_comparator_v1.json',
-          ],check=True)
+          ])
+          upd=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
+              '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','update',
+          ])
           after=digests()
           if before!=after:
               raise SystemExit('ACTIVE_ADMISSION_LEDGER_MUTATED:'+json.dumps({'before':before,'after':after},sort_keys=True))
-          comp=Path('/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json')
-          evidence=Path('/home/z/z/ledger/production_pre_survivor_challenger_evidence_v1.json')
-          nextp=Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json')
-          if not comp.is_file() or not evidence.is_file() or not nextp.is_file():
-              raise SystemExit('PRE_SURVIVOR_RESEARCH_LEDGER_MISSING')
-          c=json.loads(comp.read_text()); e=json.loads(evidence.read_text()); n=json.loads(nextp.read_text())
-          for row in (c,e,n):
+          paths={
+              'comparison':Path('/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json'),
+              'evidence':Path('/home/z/z/ledger/production_pre_survivor_challenger_evidence_v1.json'),
+              'next':Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json'),
+              'reference':Path('/home/z/z/ledger/production_pre_survivor_research_reference_feedback_v1.json'),
+              'incumbent':Path('/home/z/z/ledger/production_pre_survivor_research_incumbent_v1.json'),
+          }
+          for key in ('comparison','evidence','next','reference'):
+              if not paths[key].is_file():
+                  raise SystemExit('PRE_SURVIVOR_RESEARCH_LEDGER_MISSING:'+key)
+          c=json.loads(paths['comparison'].read_text())
+          e=json.loads(paths['evidence'].read_text())
+          n=json.loads(paths['next'].read_text())
+          r=json.loads(paths['reference'].read_text())
+          inc=json.loads(paths['incumbent'].read_text()) if paths['incumbent'].is_file() else None
+          for row in (c,e,n,r):
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
               assert row['order_authority']=='BLOCKED'
               assert row['live_trade_authority']=='BLOCKED'
               assert row['exchange_order_submitted'] is False
+          if isinstance(inc,dict):
+              assert inc['research_incumbent_only'] is True
+              assert inc['production_promotion_applied'] is False
+              assert inc['selection_authority'] is False
+              assert inc['promotion_authority'] is False
+              assert inc['execution_authority']=='NONE'
+              assert inc['order_authority']=='BLOCKED'
+              assert inc['live_trade_authority']=='BLOCKED'
+              assert inc['exchange_order_submitted'] is False
           print(json.dumps({
+              'reference_source':r.get('research_reference_source'),
+              'reference_family_id':r.get('family_id'),
               'next_hypothesis_state':n.get('state'),
               'next_hypothesis_proposal_count':int(n.get('proposal_count') or 0),
               'challenger_evidence_state':e.get('state'),
@@ -198,6 +248,9 @@ jobs:
               'comparison_count':int(c.get('comparison_count') or 0),
               'research_preference':c.get('research_preference'),
               'preferred_challenger_family_ids':c.get('preferred_challenger_family_ids') or [],
+              'incumbent_changed':bool(upd.get('changed')),
+              'incumbent_family_id':upd.get('family_id'),
+              'incumbent_generation':int(upd.get('generation') or 0),
               'active_ledger_unchanged':True,
               'selection_authority':False,
               'promotion_authority':False,

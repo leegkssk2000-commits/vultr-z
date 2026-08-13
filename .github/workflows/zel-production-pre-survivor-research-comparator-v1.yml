@@ -6,11 +6,14 @@ on:
     paths:
       - 'backend/production/zel_production_pre_survivor_research_comparator_v1.py'
       - 'backend/production/zel_production_pre_survivor_research_controller_v1.py'
+      - 'backend/production/zel_production_pre_survivor_challenger_queue_v1.py'
       - 'config/zel_production_pre_survivor_research_comparator_v1.json'
       - 'config/zel_production_pre_survivor_research_controller_v1.json'
+      - 'config/zel_production_pre_survivor_challenger_queue_v1.json'
       - 'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json'
       - 'tests/test_zel_production_pre_survivor_research_comparator_v1.py'
       - 'tests/test_zel_production_pre_survivor_research_controller_v1.py'
+      - 'tests/test_zel_production_pre_survivor_challenger_queue_v1.py'
       - '.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml'
   schedule:
     - cron: '37 * * * *'
@@ -41,10 +44,12 @@ jobs:
           python -m pip install --disable-pip-version-check pytest
           python -m py_compile \
             backend/production/zel_production_pre_survivor_research_comparator_v1.py \
-            backend/production/zel_production_pre_survivor_research_controller_v1.py
+            backend/production/zel_production_pre_survivor_research_controller_v1.py \
+            backend/production/zel_production_pre_survivor_challenger_queue_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_pre_survivor_research_comparator_v1.py \
-            tests/test_zel_production_pre_survivor_research_controller_v1.py
+            tests/test_zel_production_pre_survivor_research_controller_v1.py \
+            tests/test_zel_production_pre_survivor_challenger_queue_v1.py
       - name: Verify PAPER-only isolated generational boundary
         run: |
           set -euo pipefail
@@ -54,22 +59,24 @@ jobs:
           p=json.loads(Path('config/zel_production_pre_survivor_research_comparator_v1.json').read_text())
           c=json.loads(Path('config/zel_production_pre_survivor_research_controller_v1.json').read_text())
           n=json.loads(Path('config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json').read_text())
-          assert p['mode']=='PAPER' and c['mode']=='PAPER' and n['mode']=='PAPER'
+          q=json.loads(Path('config/zel_production_pre_survivor_challenger_queue_v1.json').read_text())
+          assert p['mode']=='PAPER' and c['mode']=='PAPER' and n['mode']=='PAPER' and q['mode']=='PAPER'
           assert p['comparison_role']=='RESEARCH_ONLY_NOT_ROUTE'
-          assert p['reference_feedback_path']==c['research_feedback_path']
+          assert p['reference_feedback_path']==c['research_feedback_path']==q['reference_feedback_path']
           assert n['feedback_path']==c['research_feedback_path']
-          assert n['output_path']==p['next_hypothesis_path']
+          assert n['output_path']==q['input_path']
+          assert q['output_path']==p['next_hypothesis_path']
           isolated={
               p['challenger_contract_state_path'],p['challenger_history_path'],p['challenger_economic_path'],
-              p['challenger_evidence_path'],p['output_path'],c['research_feedback_path'],c['incumbent_path'],
+              p['challenger_evidence_path'],p['output_path'],c['research_feedback_path'],c['incumbent_path'],q['output_path'],
           }
           active={
               '/home/z/z/ledger/production_ai_admission_contracts_v1.json',
               '/home/z/z/ledger/production_ai_admission_observations_v1.ndjson',
               '/home/z/z/ledger/production_ai_admission_economic_v1.json',
           }
-          assert len(isolated)==7 and not (isolated & active)
-          for row in (p,c,n):
+          assert len(isolated)==8 and not (isolated & active)
+          for row in (p,c,n,q):
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
@@ -80,6 +87,7 @@ jobs:
               assert row['self_modification_allowed'] is False
           comp=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
           ctrl=Path('backend/production/zel_production_pre_survivor_research_controller_v1.py').read_text()
+          queue=Path('backend/production/zel_production_pre_survivor_challenger_queue_v1.py').read_text()
           for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
               assert token in comp and token in ctrl
           assert 'produce_challenger_evidence' in comp
@@ -87,9 +95,10 @@ jobs:
           assert 'executor_tick' in comp
           assert 'update_incumbent' in ctrl
           assert 'prepare_reference' in ctrl
-          assert 'submit_order' not in comp and 'submit_order' not in ctrl
-          assert 'https://' not in comp and 'https://' not in ctrl
-          print('PASS_PRE_SURVIVOR_RESEARCH_GENERATIONAL_CLOSED_LOOP_BOUNDARY')
+          assert 'TERMINAL_REJECT' in queue and 'candidate_budget' in queue
+          assert 'submit_order' not in comp and 'submit_order' not in ctrl and 'submit_order' not in queue
+          assert 'https://' not in comp and 'https://' not in ctrl and 'https://' not in queue
+          print('PASS_PRE_SURVIVOR_RESEARCH_GENERATIONAL_QUEUE_BOUNDARY')
           PY
 
   run-on-vps:
@@ -130,6 +139,7 @@ jobs:
           files=[
             'backend/production/zel_production_pre_survivor_research_comparator_v1.py',
             'backend/production/zel_production_pre_survivor_research_controller_v1.py',
+            'backend/production/zel_production_pre_survivor_challenger_queue_v1.py',
             'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_ai_admission_executor_v2.py',
@@ -137,6 +147,7 @@ jobs:
             'backend/production/zel_production_pre_survivor_progress_v1.py',
             'config/zel_production_pre_survivor_research_comparator_v1.json',
             'config/zel_production_pre_survivor_research_controller_v1.json',
+            'config/zel_production_pre_survivor_challenger_queue_v1.json',
             'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
             'config/zel_production_ai_proposal_layer_pre_survivor_v1.json',
             'config/zel_production_ai_admission_materializer_v1.json',
@@ -190,11 +201,15 @@ jobs:
               'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
               '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','prepare',
           ])
-          run_json([
+          nxt=run_json([
               'python3','-m','backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1',
               '--policy','config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
           ])
-          run_json([
+          queue_cli=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_challenger_queue_v1',
+              '--policy','config/zel_production_pre_survivor_challenger_queue_v1.json',
+          ])
+          comp_cli=run_json([
               'python3','-m','backend.production.zel_production_pre_survivor_research_comparator_v1',
               '--policy','config/zel_production_pre_survivor_research_comparator_v1.json',
           ])
@@ -209,18 +224,20 @@ jobs:
               'comparison':Path('/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json'),
               'evidence':Path('/home/z/z/ledger/production_pre_survivor_challenger_evidence_v1.json'),
               'next':Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json'),
+              'queue':Path('/home/z/z/ledger/production_pre_survivor_challenger_queue_v1.json'),
               'reference':Path('/home/z/z/ledger/production_pre_survivor_research_reference_feedback_v1.json'),
               'incumbent':Path('/home/z/z/ledger/production_pre_survivor_research_incumbent_v1.json'),
           }
-          for key in ('comparison','evidence','next','reference'):
+          for key in ('comparison','evidence','next','queue','reference'):
               if not paths[key].is_file():
                   raise SystemExit('PRE_SURVIVOR_RESEARCH_LEDGER_MISSING:'+key)
           c=json.loads(paths['comparison'].read_text())
           e=json.loads(paths['evidence'].read_text())
           n=json.loads(paths['next'].read_text())
+          q=json.loads(paths['queue'].read_text())
           r=json.loads(paths['reference'].read_text())
           inc=json.loads(paths['incumbent'].read_text()) if paths['incumbent'].is_file() else None
-          for row in (c,e,n,r):
+          for row in (c,e,n,q,r):
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
@@ -241,6 +258,10 @@ jobs:
               'reference_family_id':r.get('family_id'),
               'next_hypothesis_state':n.get('state'),
               'next_hypothesis_proposal_count':int(n.get('proposal_count') or 0),
+              'queue_state':q.get('state'),
+              'queue_proposal_count':int(q.get('proposal_count') or 0),
+              'queue_family_ids':q.get('queue_family_ids') or [],
+              'queue_cli':queue_cli,
               'challenger_evidence_state':e.get('state'),
               'challenger_count':int(e.get('challenger_count') or 0),
               'history_appended':int(e.get('history_appended') or 0),

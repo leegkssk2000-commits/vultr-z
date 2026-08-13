@@ -1,0 +1,67 @@
+name: ZEL Production Pre-Survivor AI Value Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_ai_value_audit_v1.py'
+      - 'config/zel_production_pre_survivor_ai_value_audit_v1.json'
+      - 'tests/test_zel_production_pre_survivor_ai_value_audit_v1.py'
+      - '.github/workflows/zel-production-pre-survivor-ai-value-audit-v1.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-pre-survivor-ai-value-audit-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test observer-only AI value audit
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_pre_survivor_ai_value_audit_v1.py
+          PYTHONPATH=. python -m backend.production.zel_production_pre_survivor_ai_value_audit_v1 --self-test
+          PYTHONPATH=. pytest -q tests/test_zel_production_pre_survivor_ai_value_audit_v1.py
+          python -m json.tool config/zel_production_pre_survivor_ai_value_audit_v1.json >/dev/null
+      - name: Verify fail-closed attribution and authority boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_pre_survivor_ai_value_audit_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['value_role']=='OBSERVER_ONLY_REALIZED_RESEARCH_VALUE_NOT_ROUTE'
+          assert cfg['next_hypothesis_path']=='/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json'
+          assert cfg['comparison_path']=='/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json'
+          assert cfg['incumbent_path']=='/home/z/z/ledger/production_pre_survivor_research_incumbent_v1.json'
+          assert cfg['history_path']!=cfg['output_path']
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          assert cfg['source_code_mutation_allowed'] is False
+          assert cfg['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_pre_survivor_ai_value_audit_v1.py').read_text()
+          for token in ('ai_call_succeeded','preferred_challenger_count','preferred_epoch_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct','model_breakdown'):
+              assert token in src
+          assert 'AI_GENERATED_CHALLENGER_ASSOCIATED_RESEARCH_VALUE_NOT_CAUSAL_PNL_ATTRIBUTION' in src
+          assert 'submit_order' not in src
+          assert 'https://' not in src
+          assert 'STATIC_ONLY_NOT_RUNTIME_WIRED' in src
+          print('PASS_PRE_SURVIVOR_AI_VALUE_STATIC_BOUNDARY')
+          PY

@@ -1,4 +1,4 @@
-name: TMP SSOT binding audit 20260813
+name: TMP PAPER runtime closure probe 20260813
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   pull-requests: read
 
 jobs:
-  audit:
+  probe:
     runs-on: ubuntu-latest
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Prepare SSH
@@ -33,124 +33,142 @@ jobs:
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
-      - name: Audit SSOT provenance without values
+      - name: Read-only runtime closure and performance
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, subprocess
-          paths=[
-            'config/zel_production_risk_sizing_v1.json',
-            'config/zel_production_paper_account_v1.json',
-            'config/zel_production_active_alpha_v1.json',
-            'config/zel_production_improvement_v1.json',
-          ]
-          wanted={
-            'market_data_stale_ms','account_state_stale_ms','max_dd_day_pct','max_dd_total_pct',
-            'signal_stale_ms','initial_equity_usdt','risk_day_timezone','min_trades','min_expectancy',
-            'min_profit_factor','min_net_pnl','max_dd_pct','min_score_gain','max_dd_regression_pct','error_budget'}
-          def walk(x,p=''):
-            if isinstance(x,dict):
-              for k,v in x.items():
-                q=f'{p}.{k}' if p else k
-                if k in wanted and v is not None: yield q
-                yield from walk(v,q)
-            elif isinstance(x,list):
-              for i,v in enumerate(x): yield from walk(v,f'{p}[{i}]')
-          print('=== REPO_NON_NULL_HISTORY_PROVENANCE ===')
-          for path in paths:
-            shas=subprocess.check_output(['git','log','--format=%H','--',path],text=True).splitlines()[:80]
-            seen=set()
-            for sha in shas:
-              try: raw=subprocess.check_output(['git','show',f'{sha}:{path}'],stderr=subprocess.DEVNULL,text=True)
-              except subprocess.CalledProcessError: continue
-              try: d=json.loads(raw)
-              except Exception: continue
-              fields=tuple(sorted(set(walk(d))))
-              if fields and fields not in seen:
-                seen.add(fields)
-                print('SNAPSHOT',path,sha,'FIELDS='+','.join(fields))
-          PY
-
-          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          MASTER_SHA="$(git rev-parse HEAD)"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "MASTER_SHA='$MASTER_SHA' bash -se" <<'REMOTE'
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import json, os
+          import json, os, sqlite3, subprocess, time
 
-          keys=[
+          required=[
             'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
             'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
             'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
             'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
             'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET']
-          fields={
-            'market_data_stale_ms','account_state_stale_ms','max_dd_day_pct','max_dd_total_pct',
-            'signal_stale_ms','initial_equity_usdt','risk_day_timezone','min_trades','min_expectancy',
-            'min_profit_factor','min_net_pnl','max_dd_pct','min_score_gain','max_dd_regression_pct','error_budget'}
 
-          env_names=set()
+          def cmd(*args):
+            try: return subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL).strip()
+            except Exception: return ''
+
+          def latest(candidates):
+            xs=[Path(x) for x in candidates if Path(x).exists()]
+            return max(xs,key=lambda p:p.stat().st_mtime) if xs else None
+
           envfile=Path('/etc/zel/production-paper-loop.env')
+          rows={}
+          duplicates=[]
           if envfile.is_file():
-            for line in envfile.read_text(errors='ignore').splitlines():
-              s=line.strip()
+            for raw in envfile.read_text(errors='ignore').splitlines():
+              s=raw.strip()
               if not s or s.startswith('#') or '=' not in s: continue
-              name=s.split('=',1)[0].strip().removeprefix('export ').strip()
-              if name in keys: env_names.add(name)
+              k,v=s.split('=',1); k=k.strip().removeprefix('export ').strip(); v=v.strip()
+              if k in rows: duplicates.append(k)
+              rows[k]=v
+          present=sum(k in rows for k in required)
+          nonempty=sum(bool(rows.get(k,'')) for k in required)
 
-          service_names=set()
-          try:
-            import subprocess
-            pid=subprocess.check_output(['systemctl','show','-p','MainPID','--value','zel-production-paper-loop-v1.service'],text=True).strip()
-            p=Path('/proc')/pid/'environ'
-            if pid not in ('','0') and p.is_file():
-              for item in p.read_bytes().split(b'\0'):
-                name=item.split(b'=',1)[0].decode(errors='ignore')
-                if name in keys: service_names.add(name)
-          except Exception:
-            pass
+          service_active=cmd('systemctl','is-active','zel-production-paper-loop-v1.service')=='active'
+          service_enabled=cmd('systemctl','is-enabled','zel-production-paper-loop-v1.service')=='enabled'
+          pid=cmd('systemctl','show','-p','MainPID','--value','zel-production-paper-loop-v1.service') or '0'
+          restarts=cmd('systemctl','show','-p','NRestarts','--value','zel-production-paper-loop-v1.service') or 'NA'
+          service_keys=set()
+          proc=Path('/proc')/pid/'environ'
+          if pid!='0' and proc.is_file():
+            for item in proc.read_bytes().split(b'\0'):
+              if b'=' not in item: continue
+              name=item.split(b'=',1)[0].decode(errors='ignore')
+              if name in required: service_keys.add(name)
 
-          occ={k:[] for k in keys}
-          roots=[Path('/etc/zel'),Path('/home/z/zel-production-current'),Path('/home/z/z'),Path('/home/z/zel-production-releases')]
-          for root in roots:
-            if not root.exists(): continue
-            for p in root.rglob('*'):
+          current=Path('/home/z/zel-production-current')
+          target=''
+          try: target=str(current.resolve())
+          except Exception: pass
+          release_sha=Path(target).name if target else ''
+          master_sha=os.environ.get('MASTER_SHA','')
+          release_parity=bool(master_sha and release_sha==master_sha)
+
+          journal=cmd('journalctl','-u','zel-production-paper-loop-v1.service','--since=-2 hours','--no-pager')
+          sentinel_count=journal.count('PAPER_ENV_SSOT_NOT_READY') if journal else 0
+          traceback_count=journal.count('Traceback') if journal else 0
+          circuit_count=journal.count('CIRCUIT_OPEN') if journal else 0
+
+          ledger_dirs=[Path('/home/z/z/ledger'),Path('/home/zel/apps/zel/ledger')]
+          loop_candidates=[]; snap_candidates=[]; producer_candidates=[]; db_candidates=[]
+          for d in ledger_dirs:
+            if not d.exists(): continue
+            loop_candidates += list(d.glob('production_paper_loop_state_v1.json'))
+            snap_candidates += list(d.glob('production_snapshot_v1.json')) + list(d.glob('production_paper_snapshot_v1.json'))
+            producer_candidates += list(d.glob('production_alpha_signal_runner_v1.json'))
+            db_candidates += list(d.glob('production_events_v1.sqlite'))
+          loop=latest(loop_candidates)
+          snap=latest(snap_candidates)
+          producer=latest(producer_candidates)
+          dbp=latest(db_candidates)
+
+          loop_row={}; snap_row={}; producer_row={}
+          for p,name in [(loop,'loop'),(snap,'snapshot'),(producer,'producer')]:
+            if p:
               try:
-                if not p.is_file() or p.stat().st_size>2_000_000: continue
-                if any(x in {'.git','node_modules','__pycache__'} for x in p.parts): continue
-                lines=p.read_text(errors='ignore').splitlines()
-              except Exception: continue
-              for i,line in enumerate(lines,1):
-                for k in keys:
-                  if k in line:
-                    occ[k].append(f'{p}:{i}')
+                data=json.loads(p.read_text())
+                if name=='loop': loop_row=data
+                elif name=='snapshot': snap_row=data
+                else: producer_row=data
+              except Exception: pass
 
-          semantic=[]
-          json_roots=[Path('/home/z/zel-production-current/config'),Path('/home/z/zel-production-releases'),Path('/home/z/z')]
-          def walk(x,p=''):
-            if isinstance(x,dict):
-              for k,v in x.items():
-                q=f'{p}.{k}' if p else k
-                if k in fields and v is not None: yield q
-                yield from walk(v,q)
-            elif isinstance(x,list):
-              for i,v in enumerate(x): yield from walk(v,f'{p}[{i}]')
-          for root in json_roots:
-            if not root.exists(): continue
-            for p in root.rglob('*.json'):
-              try:
-                if p.stat().st_size>2_000_000: continue
-                d=json.loads(p.read_text())
-                found=sorted(set(walk(d)))
-              except Exception: continue
-              if found: semantic.append((str(p),found))
+          now=time.time()
+          loop_age=None if not loop else round(now-loop.stat().st_mtime,1)
+          snap_age=None if not snap else round(now-snap.stat().st_mtime,1)
 
-          print('=== VPS_KEY_PROVENANCE_MATRIX ===')
-          for k in keys:
-            print(f'KEY {k} ENVFILE={int(k in env_names)} SERVICE={int(k in service_names)} OCCURRENCES={len(occ[k])}')
-            for loc in sorted(set(occ[k]))[:8]: print('  OCC',loc)
-          print('=== VPS_SEMANTIC_NON_NULL_FILES ===')
-          for p,found in semantic[:500]: print('JSON',p,'FIELDS='+','.join(found))
-          print(f'=== SUMMARY ENVFILE={len(env_names)}/15 SERVICE={len(service_names)}/15 ===')
+          perf={'events':0,'opens':0,'closes':0,'wins':0,'losses':0,'flat_closes':0,'win_rate_pct':None,'realized_pnl_usdt':0.0,'max_realized_dd_usdt':0.0}
+          strategy_rows=[]
+          if dbp:
+            try:
+              con=sqlite3.connect(f'file:{dbp}?mode=ro',uri=True,timeout=5)
+              cols={r[1] for r in con.execute('PRAGMA table_info(trade_events)')}
+              if {'sequence_no','event_type','realized_pnl','strategy_id'} <= cols:
+                r=con.execute("SELECT COUNT(*), SUM(CASE WHEN event_type IN ('OPEN_LONG','OPEN_SHORT') THEN 1 ELSE 0 END), SUM(CASE WHEN event_type='CLOSE' THEN 1 ELSE 0 END), SUM(CASE WHEN event_type='CLOSE' AND realized_pnl>0 THEN 1 ELSE 0 END), SUM(CASE WHEN event_type='CLOSE' AND realized_pnl<0 THEN 1 ELSE 0 END), SUM(CASE WHEN event_type='CLOSE' AND realized_pnl=0 THEN 1 ELSE 0 END), COALESCE(SUM(realized_pnl),0) FROM trade_events").fetchone()
+                events,opens,closes,wins,losses,flat,pnl=[0 if x is None else x for x in r]
+                perf.update(events=int(events),opens=int(opens),closes=int(closes),wins=int(wins),losses=int(losses),flat_closes=int(flat),realized_pnl_usdt=round(float(pnl),8))
+                perf['win_rate_pct']=None if closes==0 else round(100.0*wins/closes,2)
+                run=0.0; peak=0.0; maxdd=0.0
+                for (x,) in con.execute("SELECT realized_pnl FROM trade_events WHERE event_type='CLOSE' ORDER BY sequence_no"):
+                  run += float(x or 0.0); peak=max(peak,run); maxdd=max(maxdd,peak-run)
+                perf['max_realized_dd_usdt']=round(maxdd,8)
+                for sid,c,p in con.execute("SELECT strategy_id, COUNT(*), COALESCE(SUM(realized_pnl),0) FROM trade_events WHERE event_type='CLOSE' GROUP BY strategy_id ORDER BY COUNT(*) DESC, strategy_id LIMIT 10"):
+                  strategy_rows.append({'strategy_id':sid,'closes':int(c),'realized_pnl_usdt':round(float(p),8)})
+              con.close()
+            except Exception as e:
+              perf['db_error']=type(e).__name__
+
+          pnl=snap_row.get('pnl') if isinstance(snap_row.get('pnl'),dict) else {}
+          position=snap_row.get('position') if isinstance(snap_row.get('position'),dict) else {}
+          runtime={
+            'env_present':present,'env_nonempty':nonempty,'env_duplicates':len(duplicates),
+            'service_active':service_active,'service_enabled':service_enabled,'service_pid_nonzero':pid!='0',
+            'service_effective_keys':len(service_keys),'service_restarts':restarts,
+            'master_sha':master_sha,'release_sha':release_sha,'release_parity':release_parity,
+            'sentinel_2h':sentinel_count,'traceback_2h':traceback_count,'circuit_open_2h':circuit_count,
+            'loop_file':None if not loop else str(loop),'loop_age_s':loop_age,
+            'loop_state':loop_row.get('state'),'loop_action':loop_row.get('action'),'loop_reason':loop_row.get('reason'),
+            'cycles_executed':loop_row.get('cycles_executed'),'iterations':loop_row.get('iterations'),
+            'circuit_open':loop_row.get('circuit_open'),'exchange_order_submitted':loop_row.get('exchange_order_submitted'),
+            'live_execution':loop_row.get('live_execution'),
+            'snapshot_file':None if not snap else str(snap),'snapshot_age_s':snap_age,
+            'snapshot_symbol':snap_row.get('symbol'),'snapshot_strategy':snap_row.get('strategy_id'),
+            'position_state':position.get('state'),'snapshot_realized_pnl':pnl.get('realized'),
+            'snapshot_unrealized_pnl':pnl.get('unrealized'),'snapshot_total_pnl':pnl.get('total'),
+            'producer_state':producer_row.get('state'),'producer_network_called':producer_row.get('network_called'),
+            'producer_signal_written':producer_row.get('signal_written'),'producer_exchange_order_submitted':producer_row.get('exchange_order_submitted'),
+          }
+          closure=(present==15 and nonempty==15 and not duplicates and service_active and len(service_keys)==15 and release_parity and sentinel_count==0 and runtime['exchange_order_submitted'] is False and runtime['live_execution']=='BLOCKED')
+          print('RUNTIME',json.dumps(runtime,sort_keys=True))
+          print('PERFORMANCE',json.dumps(perf,sort_keys=True))
+          for r in strategy_rows: print('STRATEGY',json.dumps(r,sort_keys=True))
+          print('CLOSURE',json.dumps({'runtime_closure_pass':closure,'canonical_manifest_reconcile_required':True,'read_only_probe':True},sort_keys=True))
           PY
           REMOTE

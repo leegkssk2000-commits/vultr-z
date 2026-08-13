@@ -9,6 +9,7 @@ from backend.production.zel_production_pre_survivor_feedback_bridge_v1 import pr
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = json.loads((ROOT / "config/zel_production_pre_survivor_feedback_bridge_v1.json").read_text())
 BASE_TS = 1_780_000_000_000
+ACCUMULATING_STATE = "HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT"
 
 
 def feedback() -> dict:
@@ -96,9 +97,16 @@ def progress() -> dict:
     return row
 
 
+def _re_receipt(row: dict) -> dict:
+    row["receipt_sha256"] = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
+    return row
+
+
 def test_bridge_projects_most_evidence_reject_without_optimization_authority() -> None:
     result = project_feedback(POLICY, feedback=feedback(), progress=progress(), now_ms=BASE_TS)
     assert result["state"] == "PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED"
+    assert result["context_kind"] == "TERMINAL_REJECT"
+    assert result["non_terminal_context"] is False
     assert result["family_id"] == "more_evidence_family"
     assert result["trade_count"] == 20
     assert result["win_rate_pct"] == 55.0
@@ -118,12 +126,48 @@ def test_bridge_projects_most_evidence_reject_without_optimization_authority() -
     assert result["action"] == "hold"
 
 
-def test_bridge_holds_without_terminal_reject() -> None:
+def test_bridge_projects_accumulating_family_as_provisional_context() -> None:
+    row = feedback()
+    current = dict(row["entries"][0])
+    current["admission_state"] = ACCUMULATING_STATE
+    current["progress_direction"] = "UNCHANGED"
+    row["entries"] = [current]
+    result = project_feedback(POLICY, feedback=_re_receipt(row), progress=progress(), now_ms=BASE_TS)
+    assert result["state"] == "PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED"
+    assert result["context_kind"] == "PROVISIONAL_ACCUMULATING"
+    assert result["non_terminal_context"] is True
+    assert result["source_admission_state"] == ACCUMULATING_STATE
+    assert result["family_id"] == "weak_family"
+    assert result["trade_count"] == 12
+    assert result["progress_direction"] == "UNCHANGED"
+    assert result["context_intent"] == "INFORM_NEXT_NEW_ECONOMIC_FAMILY_WHILE_CURRENT_FAMILY_ACCUMULATES"
+    assert result["selection_authority"] is False
+    assert result["promotion_authority"] is False
+    assert result["execution_authority"] == "NONE"
+    assert result["order_authority"] == "BLOCKED"
+    assert result["live_trade_authority"] == "BLOCKED"
+    assert result["action"] == "hold"
+
+
+def test_bridge_terminal_reject_has_priority_over_larger_accumulating_sample() -> None:
+    row = feedback()
+    provisional = dict(row["entries"][0])
+    provisional["admission_state"] = ACCUMULATING_STATE
+    provisional["metrics"] = dict(provisional["metrics"], trade_count=999)
+    terminal = dict(row["entries"][1])
+    row["entries"] = [provisional, terminal]
+    result = project_feedback(POLICY, feedback=_re_receipt(row), progress=progress(), now_ms=BASE_TS)
+    assert result["state"] == "PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED"
+    assert result["context_kind"] == "TERMINAL_REJECT"
+    assert result["family_id"] == "more_evidence_family"
+    assert result["trade_count"] == 20
+
+
+def test_bridge_holds_without_supported_economic_context() -> None:
     row = feedback()
     row["entries"] = [dict(row["entries"][0], admission_state="HOLD_AI_ADMISSION_HISTORY_INSUFFICIENT")]
-    row["receipt_sha256"] = stable_sha({k: v for k, v in row.items() if k != "receipt_sha256"})
-    result = project_feedback(POLICY, feedback=row, progress=progress(), now_ms=BASE_TS)
-    assert result["state"] == "HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_REJECTED_FAMILY"
+    result = project_feedback(POLICY, feedback=_re_receipt(row), progress=progress(), now_ms=BASE_TS)
+    assert result["state"] == "HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_ECONOMIC_CONTEXT"
     assert "net_pnl" not in result
 
 
@@ -139,8 +183,12 @@ def test_bridge_fail_closed_on_feedback_authority_drift() -> None:
 
 
 def test_terminal_feedback_policy_uses_pre_survivor_context_policy() -> None:
+    bridge = json.loads((ROOT / "config/zel_production_pre_survivor_feedback_bridge_v1.json").read_text())
     terminal = json.loads((ROOT / "config/zel_production_ai_terminal_feedback_v1.json").read_text())
     proposal = json.loads((ROOT / "config/zel_production_ai_proposal_layer_pre_survivor_v1.json").read_text())
+    assert bridge["selection_rule"] == "TERMINAL_REJECT_ELSE_MOST_EVIDENCE_ACCUMULATING_NO_OPTIMIZATION"
+    assert bridge["accumulating_context_allowed"] is True
+    assert bridge["accumulating_admission_state"] == ACCUMULATING_STATE
     assert terminal["proposal_policy_path"] == "config/zel_production_ai_proposal_layer_pre_survivor_v1.json"
     assert proposal["improvement_evidence_path"] == "/home/z/z/ledger/production_pre_survivor_improvement_evidence_v1.json"
     assert proposal["numeric_threshold_proposals_allowed"] is False

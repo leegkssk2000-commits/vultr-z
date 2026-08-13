@@ -1,0 +1,193 @@
+name: TMP post729 final verify
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/_tmp-post729-final-verify.yml'
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: read
+
+jobs:
+  final-verify:
+    runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EXPECTED_MASTER_SHA: 3c667c22df8a8a2090c6bb7ee55ccce1e90bd1c8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify deployed release cold-chain delta gate and optional OpenAI critic
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPENAI_KEY_B64="$(printf '%s' "$OPENAI_API_KEY" | base64 -w0)"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "OPENAI_KEY_B64='$OPENAI_KEY_B64' EXPECTED_MASTER_SHA='$EXPECTED_MASTER_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          LEDGER=/home/z/z/ledger
+          current="$(readlink -f "$ROOT")"
+          test "$(basename "$current")" = "$EXPECTED_MASTER_SHA"
+          test "$(systemctl is-active zel-production-paper-loop-v1.service)" = active
+          test "$(systemctl is-enabled zel-production-paper-loop-v1.service)" = enabled
+          grep -q 'cold_pipeline_fingerprints' "$ROOT/backend/production/zel_production_paper_runner_v1.sh"
+          grep -q 'backend.production.zel_production_survivor_authority_activation_v2' "$ROOT/backend/production/zel_production_paper_runner_v1.sh"
+
+          export OPENAI_API_KEY="$(printf '%s' "$OPENAI_KEY_B64" | base64 -d)"
+          test -n "$OPENAI_API_KEY"
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from backend.production.zel_production_openai_critic_v1 import review_or_hold
+
+          cfg=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
+          oc=cfg['openai_critic']
+          assert oc['enabled'] is True
+          assert oc['required'] is False
+          proposal={
+              'status':'PASS_AI_PROPOSAL_CANDIDATE',
+              'proposals':[{
+                  'proposal_type':'NEW_ECONOMIC_FAMILY',
+                  'family_id':'post729_optional_critic_smoke',
+                  'economic_mechanism':'Synthetic bounded smoke hypothesis for critic transport only; no trading authority.',
+                  'required_sources':['funding_8h_pct'],
+                  'causal_reason':'Transport/schema smoke only.',
+                  'falsification_test':'Reject if the critic cannot preserve bounded causal review semantics.',
+                  'expected_horizon':'research-only',
+              }],
+          }
+          model, receipt=review_or_hold(
+              os.environ['OPENAI_API_KEY'],
+              os.environ.get(oc.get('model_env','OPENAI_MODEL')) or oc.get('default_model','gpt-5-mini'),
+              proposal,
+              timeout_sec=min(int(oc.get('timeout_sec',60)),30),
+              max_output_tokens=min(int(oc.get('max_output_tokens',1200)),512),
+          )
+          assert receipt['decision'] in {'PASS','HOLD','REJECT'}
+          assert set(receipt)=={'schema_version','decision','causal_critique','falsification_test','blocker_codes'}
+          print(json.dumps({'openai_critic_decision':receipt['decision'],'blocker_codes':receipt['blocker_codes'],'model':model},sort_keys=True))
+          PY
+
+          cold_digest() {
+            python3 - "$@" <<'PY'
+          import hashlib, sys
+          from pathlib import Path
+          h=hashlib.sha256()
+          for raw in sys.argv[1:]:
+              p=Path(raw)
+              h.update(raw.encode()+b'\0')
+              if p.is_file():
+                  data=p.read_bytes(); h.update(b'1'); h.update(len(data).to_bytes(8,'big')); h.update(data)
+              else:
+                  h.update(b'0')
+          print(h.hexdigest())
+          PY
+          }
+
+          SOURCES=(
+            "$LEDGER/production_family_paper_canary_result_v1.json"
+            "$LEDGER/production_incumbent_registry_v1.json"
+            "$LEDGER/production_family_paper_canary_runner_state_v1.json"
+            "$LEDGER/production_survivor_quarantine_v1.json"
+            "$LEDGER/production_alpha_authority_v1.json"
+          )
+          OUTPUTS=(
+            "$LEDGER/production_family_paper_evidence_producer_state_v1.json"
+            "$LEDGER/production_family_paper_evidence_v1.json"
+            "$LEDGER/production_family_survivor_verifier_state_v1.json"
+            "$LEDGER/production_verified_survivor_intake_v1.json"
+            "$LEDGER/production_survivor_candidates_v1.json"
+            "$LEDGER/production_survivor_pool_v1.json"
+            "$LEDGER/production_survivor_authority_activation_v1.json"
+          )
+
+          stable=0
+          for attempt in 1 2 3; do
+            s0="$(cold_digest "${SOURCES[@]}")"
+            o0="$(cold_digest "${OUTPUTS[@]}")"
+            sleep 12
+            s1="$(cold_digest "${SOURCES[@]}")"
+            o1="$(cold_digest "${OUTPUTS[@]}")"
+            if [ "$s0" = "$s1" ]; then
+              test "$o0" = "$o1"
+              stable=1
+              echo "PASS_COLD_CHAIN_UNCHANGED_INPUT_SKIP attempt=$attempt source=$s1 output=$o1"
+              break
+            fi
+            echo "SOURCE_CHANGED_RETRY attempt=$attempt"
+          done
+          test "$stable" -eq 1
+          echo "PASS_POST729_VPS_FINAL_VERIFY master=$EXPECTED_MASTER_SHA service=active"
+          REMOTE
+
+      - name: Disable proven ghost hygiene workflows and delete temporary branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.parse, urllib.request
+
+          repo=os.environ['REPO']
+          token=os.environ['GH_TOKEN']
+          ghosts={
+            333088803:'.github/workflows/audit-z-hygiene-20260812.yml',
+            333133807:'.github/workflows/cleanup-all-ghost-tmp-diag-20260813.yml',
+            333129140:'.github/workflows/cleanup-ghost-workflows-20260813.yml',
+            333135544:'.github/workflows/diag-cold-state-consumers-20260813.yml',
+            333134870:'.github/workflows/diag-pipeline-write-churn-20260813.yml',
+            333141861:'.github/workflows/diag-production-runner-shape-20260813.yml',
+          }
+          headers={
+            'Authorization':f'Bearer {token}',
+            'Accept':'application/vnd.github+json',
+            'X-GitHub-Api-Version':'2022-11-28',
+          }
+          def req(url, method='GET'):
+              r=urllib.request.Request(url,headers=headers,method=method)
+              try:
+                  with urllib.request.urlopen(r,timeout=30) as x:
+                      return x.status, x.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()
+
+          for wid,path in ghosts.items():
+              q=urllib.parse.quote(path,safe='/')
+              status,_=req(f'https://api.github.com/repos/{repo}/contents/{q}?ref=master')
+              assert status==404, (wid,path,status,'REFUSE_DISABLE_FILE_STILL_EXISTS')
+              status,_=req(f'https://api.github.com/repos/{repo}/actions/workflows/{wid}/disable',method='PUT')
+              assert status==204, (wid,path,status)
+              status,body=req(f'https://api.github.com/repos/{repo}/actions/workflows/{wid}')
+              assert status==200
+              state=json.loads(body)['state']
+              assert state=='disabled_manually', (wid,state)
+              print(f'DISABLED_GHOST workflow_id={wid} path={path}')
+
+          for branch in ('zel-hygiene-audit-20260812','tmp-post729-final-verify-20260813'):
+              quoted=urllib.parse.quote('heads/'+branch,safe='/')
+              status,_=req(f'https://api.github.com/repos/{repo}/git/refs/{quoted}',method='DELETE')
+              assert status in {204,422,404}, (branch,status)
+              print(f'BRANCH_DELETE_REQUEST branch={branch} status={status}')
+          PY

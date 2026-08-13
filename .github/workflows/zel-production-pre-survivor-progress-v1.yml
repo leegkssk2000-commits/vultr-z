@@ -1,0 +1,188 @@
+name: ZEL Production Pre-Survivor Progress V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_progress_v1.py'
+      - 'config/zel_production_pre_survivor_progress_v1.json'
+      - 'tests/test_zel_production_pre_survivor_progress_v1.py'
+      - '.github/workflows/zel-production-pre-survivor-progress-v1.yml'
+  workflow_run:
+    workflows: ['ZEL Production AI Admission Executor V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-pre-survivor-progress-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test pre-survivor economic progress observer
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_pre_survivor_progress_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_pre_survivor_progress_v1.py
+      - name: Verify observer-only no-search no-live boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_pre_survivor_progress_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['ranking_method']=='LEXICOGRAPHIC_NO_WEIGHT_OBSERVATION_ONLY'
+          assert p['ranking_fields']==[
+              'net_expectancy_bps_desc','profit_factor_desc','max_drawdown_bps_asc','net_pnl_bps_desc','trade_count_desc'
+          ]
+          assert p['win_rate_role']=='OBSERVATION_ONLY_NOT_GATE'
+          assert p['numeric_threshold_proposals_allowed'] is False
+          assert p['parameter_search_allowed'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE'
+          assert p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          assert p['exchange_order_submitted'] is False
+          assert p['source_code_mutation_allowed'] is False and p['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_pre_survivor_progress_v1.py').read_text()
+          assert 'win_rate_pct' in src
+          assert 'net_pnl_bps' in src
+          assert 'net_expectancy_bps' in src
+          assert 'profit_factor' in src
+          assert 'max_drawdown_bps' in src
+          assert 'submit_order' not in src and 'https://' not in src
+          print('PASS_PRE_SURVIVOR_PROGRESS_OBSERVER_BOUNDARY')
+          PY
+
+  capture-on-vps:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == 'master' &&
+       github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture one bounded pre-survivor progress snapshot
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_pre_survivor_progress_v1.py',
+            'backend/production/zel_production_ai_admission_executor_v1.py',
+            'backend/production/zel_production_improvement_controller_v1.py',
+            'config/zel_production_pre_survivor_progress_v1.json',
+            'config/zel_production_carry_positioning_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" <<'REMOTE'
+          set -euo pipefail
+          matched=0
+          for _ in $(seq 1 60); do
+            if RUNTIME_PARITY_B64="$RUNTIME_PARITY_B64" python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path('/home/z/zel-production-current')
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              ok=ok and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$matched" -ne 1 ]; then
+            echo 'RUNTIME_PARITY_TIMEOUT' >&2
+            exit 71
+          fi
+          ROOT=/home/z/zel-production-current
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_pre_survivor_progress_v1 >/tmp/zel-pre-survivor-progress-run.json
+          cat /tmp/zel-pre-survivor-progress-run.json
+          REMOTE
+          scp -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST:/home/z/z/ledger/production_pre_survivor_progress_v1.json" /tmp/production_pre_survivor_progress_v1.json
+          scp -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST:/home/z/z/ledger/production_pre_survivor_feedback_v1.json" /tmp/production_pre_survivor_feedback_v1.json
+      - name: Verify captured progress remains observer-only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          progress=json.loads(Path('/tmp/production_pre_survivor_progress_v1.json').read_text())
+          feedback=json.loads(Path('/tmp/production_pre_survivor_feedback_v1.json').read_text())
+          assert progress['state'] in {
+              'HOLD_PRE_SURVIVOR_PROGRESS_ADMISSION_MISSING',
+              'HOLD_PRE_SURVIVOR_PROGRESS_NO_MEASURABLE_FAMILY',
+              'HOLD_PRE_SURVIVOR_PROGRESS_DATA_REGRESSION',
+              'PASS_PRE_SURVIVOR_PROGRESS_CAPTURED',
+          }
+          assert feedback['state'] in {
+              'HOLD_PRE_SURVIVOR_FEEDBACK_NO_ECONOMIC_RESULT',
+              'HOLD_PRE_SURVIVOR_FEEDBACK_NO_MEASURABLE_FAMILY',
+              'PASS_PRE_SURVIVOR_ECONOMIC_FEEDBACK',
+          }
+          for row in (progress,feedback):
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+              assert row['action']=='hold'
+          for family in progress.get('families') or []:
+              metrics=family['metrics']
+              for key in ('trade_count','win_rate_pct','net_pnl_bps','net_pnl_pct','net_expectancy_bps','profit_factor','max_drawdown_bps','max_drawdown_pct'):
+                  assert key in metrics
+          print(json.dumps({'state':progress['state'],'summary':progress.get('progress_summary',{}),'families':progress.get('families',[])},sort_keys=True))
+          PY
+      - name: Upload auditable economic snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: zel-pre-survivor-progress
+          retention-days: 30
+          path: |
+            /tmp/production_pre_survivor_progress_v1.json
+            /tmp/production_pre_survivor_feedback_v1.json

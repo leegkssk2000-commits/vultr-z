@@ -1,0 +1,56 @@
+name: ZEL Event Corpus Stress Use Gate V1
+
+on:
+  push:
+    branches:
+      - zel-event-corpus-stress-use-gate-v1
+    paths:
+      - backend/research/zel_event_corpus_stress_use_contract_v1.json
+      - backend/tools/zel_event_corpus_stress_use_gate_v1.py
+      - .github/workflows/zel-event-corpus-stress-use-gate-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/research/zel_event_corpus_stress_use_contract_v1.json
+      - backend/tools/zel_event_corpus_stress_use_gate_v1.py
+      - .github/workflows/zel-event-corpus-stress-use-gate-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate event stress contract and gate
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_event_corpus_stress_use_gate_v1.py
+          python backend/tools/zel_event_corpus_stress_use_gate_v1.py --self-test
+          python -m json.tool backend/research/zel_event_corpus_stress_use_contract_v1.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('backend/research/zel_event_corpus_stress_use_contract_v1.json').read_text())
+          assert row['dataset']['source_pull_request']==578
+          assert row['dataset']['dataset_sha256']=='55ab99c400a3b8114b4ed39896fc5765ad6de46a241bb64fce2f3aa5f651f1e7'
+          assert row['dataset']['accepted_event_window_count']==16
+          assert row['dataset']['source_unavailable_window_count']==16
+          assert row['dataset']['interpolation_used'] is False
+          assert row['dataset']['synthetic_candles_used'] is False
+          assert row['admission']['candidate_frozen_before_dataset_access'] is True
+          assert row['admission']['event_label_tuning_forbidden'] is True
+          assert row['evaluation']['independent_oos_stress_only'] is True
+          assert row['authority']['execution_authority']=='NONE'
+          assert row['authority']['order_authority']=='BLOCKED'
+          print('PASS_EVENT_CORPUS_STRESS_USE_STATIC')
+          PY

@@ -8,17 +8,20 @@ on:
       - 'config/zel_production_pre_survivor_research_comparator_v1.json'
       - 'tests/test_zel_production_pre_survivor_research_comparator_v1.py'
       - '.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml'
+  schedule:
+    - cron: '37 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: zel-production-pre-survivor-research-comparator-v1-${{ github.ref }}
+  group: zel-production-pre-survivor-research-comparator-v1
   cancel-in-progress: false
 
 jobs:
   verify:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -34,7 +37,7 @@ jobs:
           python -m pip install --disable-pip-version-check pytest
           python -m py_compile backend/production/zel_production_pre_survivor_research_comparator_v1.py
           PYTHONPATH=. pytest -q tests/test_zel_production_pre_survivor_research_comparator_v1.py
-      - name: Verify PAPER-only research boundary
+      - name: Verify PAPER-only isolated challenger boundary
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -43,6 +46,16 @@ jobs:
           p=json.loads(Path('config/zel_production_pre_survivor_research_comparator_v1.json').read_text())
           assert p['mode']=='PAPER'
           assert p['comparison_role']=='RESEARCH_ONLY_NOT_ROUTE'
+          isolated={
+              p['challenger_contract_state_path'],p['challenger_history_path'],p['challenger_economic_path'],
+              p['challenger_evidence_path'],p['output_path'],
+          }
+          active={
+              '/home/z/z/ledger/production_ai_admission_contracts_v1.json',
+              '/home/z/z/ledger/production_ai_admission_observations_v1.ndjson',
+              '/home/z/z/ledger/production_ai_admission_economic_v1.json',
+          }
+          assert len(isolated)==5 and not (isolated & active)
           assert p['selection_authority'] is False
           assert p['promotion_authority'] is False
           assert p['execution_authority']=='NONE'
@@ -54,7 +67,170 @@ jobs:
           src=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
           for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
               assert token in src
+          assert 'produce_challenger_evidence' in src
+          assert 'materialize_tick' in src
+          assert 'executor_tick' in src
           assert 'submit_order' not in src
           assert 'https://' not in src
-          print('PASS_PRE_SURVIVOR_RESEARCH_COMPARATOR_BOUNDARY')
+          print('PASS_PRE_SURVIVOR_RESEARCH_CLOSED_LOOP_BOUNDARY')
           PY
+
+  run-on-vps:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded pre-survivor improvement research tick
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          test -n "$GEMINI_API_KEY"
+          mkdir -p out
+          API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_pre_survivor_research_comparator_v1.py',
+            'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py',
+            'backend/production/zel_production_ai_admission_materializer_v1.py',
+            'backend/production/zel_production_ai_admission_executor_v2.py',
+            'backend/production/zel_production_ai_admission_executor_v3.py',
+            'backend/production/zel_production_pre_survivor_progress_v1.py',
+            'config/zel_production_pre_survivor_research_comparator_v1.json',
+            'config/zel_production_ai_pre_survivor_next_hypothesis_v1.json',
+            'config/zel_production_ai_proposal_layer_pre_survivor_v1.json',
+            'config/zel_production_ai_admission_materializer_v1.json',
+            'config/zel_production_ai_admission_executor_v1.json',
+            'config/zel_production_ai_admission_template_registry_v1.json',
+            'config/zel_production_source_capability_registry_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "API_KEY_B64='$API_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/pre_survivor_research_vps_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          bad=[]
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              if got!=want:
+                  bad.append({'path':rel,'got':got,'want':want})
+          if bad:
+              raise SystemExit('RUNTIME_PARITY_MISMATCH:'+json.dumps(bad,sort_keys=True))
+          PY
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          python3 - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          active=[
+              Path('/home/z/z/ledger/production_ai_admission_contracts_v1.json'),
+              Path('/home/z/z/ledger/production_ai_admission_observations_v1.ndjson'),
+              Path('/home/z/z/ledger/production_ai_admission_economic_v1.json'),
+          ]
+          def digests():
+              out={}
+              for p in active:
+                  out[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              return out
+          before=digests()
+          subprocess.run([
+              'python3','-m','backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1',
+              '--policy','config/zel_production_ai_pre_survivor_next_hypothesis_v1.json',
+          ],check=True)
+          subprocess.run([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_comparator_v1',
+              '--policy','config/zel_production_pre_survivor_research_comparator_v1.json',
+          ],check=True)
+          after=digests()
+          if before!=after:
+              raise SystemExit('ACTIVE_ADMISSION_LEDGER_MUTATED:'+json.dumps({'before':before,'after':after},sort_keys=True))
+          comp=Path('/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json')
+          evidence=Path('/home/z/z/ledger/production_pre_survivor_challenger_evidence_v1.json')
+          nextp=Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json')
+          if not comp.is_file() or not evidence.is_file() or not nextp.is_file():
+              raise SystemExit('PRE_SURVIVOR_RESEARCH_LEDGER_MISSING')
+          c=json.loads(comp.read_text()); e=json.loads(evidence.read_text()); n=json.loads(nextp.read_text())
+          for row in (c,e,n):
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+          print(json.dumps({
+              'next_hypothesis_state':n.get('state'),
+              'next_hypothesis_proposal_count':int(n.get('proposal_count') or 0),
+              'challenger_evidence_state':e.get('state'),
+              'challenger_count':int(e.get('challenger_count') or 0),
+              'history_appended':int(e.get('history_appended') or 0),
+              'comparison_state':c.get('state'),
+              'comparison_count':int(c.get('comparison_count') or 0),
+              'research_preference':c.get('research_preference'),
+              'preferred_challenger_family_ids':c.get('preferred_challenger_family_ids') or [],
+              'active_ledger_unchanged':True,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+              'exchange_order_submitted':False,
+          },sort_keys=True))
+          PY
+          REMOTE
+      - name: Verify research receipt remains non-authoritative
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/pre_survivor_research_vps_receipt.json').read_text())
+          assert row['active_ledger_unchanged'] is True
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-pre-survivor-research-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/pre_survivor_research_vps_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

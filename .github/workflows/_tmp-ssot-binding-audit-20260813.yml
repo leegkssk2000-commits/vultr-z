@@ -1,0 +1,164 @@
+name: TMP SSOT binding audit 20260813
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/_tmp-ssot-binding-audit-20260813.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Audit authoritative SSOT candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== GIT HISTORY OF CANONICAL ENV-BACKED CONFIGS ==='
+          for path in \
+            config/zel_production_risk_sizing_v1.json \
+            config/zel_production_paper_account_v1.json \
+            config/zel_production_active_alpha_v1.json \
+            config/zel_production_improvement_v1.json; do
+            echo "--- $path"
+            git log --all --format='%H %cI %s' -- "$path" | head -40
+          done
+
+          echo '=== GIT HISTORICAL NON-NULL CONFIG SNAPSHOTS ==='
+          python3 - <<'PY'
+          import json, subprocess
+          paths=[
+            'config/zel_production_risk_sizing_v1.json',
+            'config/zel_production_paper_account_v1.json',
+            'config/zel_production_active_alpha_v1.json',
+            'config/zel_production_improvement_v1.json',
+          ]
+          wanted={
+            'market_data_stale_ms','account_state_stale_ms','max_dd_day_pct','max_dd_total_pct',
+            'signal_stale_ms','initial_equity_usdt','risk_day_timezone','min_trades','min_expectancy',
+            'min_profit_factor','min_net_pnl','max_dd_pct','min_score_gain','max_dd_regression_pct','error_budget'}
+          def walk(x,p=''):
+            if isinstance(x,dict):
+              for k,v in x.items():
+                q=f'{p}.{k}' if p else k
+                if k in wanted and v is not None: yield q,v
+                yield from walk(v,q)
+            elif isinstance(x,list):
+              for i,v in enumerate(x): yield from walk(v,f'{p}[{i}]')
+          for path in paths:
+            shas=subprocess.check_output(['git','log','--format=%H','--',path],text=True).splitlines()[:80]
+            printed=set()
+            for sha in shas:
+              try: raw=subprocess.check_output(['git','show',f'{sha}:{path}'],stderr=subprocess.DEVNULL,text=True)
+              except subprocess.CalledProcessError: continue
+              try: d=json.loads(raw)
+              except Exception: continue
+              vals=tuple(walk(d))
+              if vals and vals not in printed:
+                printed.add(vals)
+                print('SNAPSHOT',path,sha)
+                for k,v in vals: print(f'  {k}={v!r}')
+          PY
+
+          echo '=== VPS AUTHORITATIVE CANDIDATE AUDIT ==='
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          echo '--- CURRENT ENV FILE'
+          if [ -f /etc/zel/production-paper-loop.env ]; then
+            sed -n '1,220p' /etc/zel/production-paper-loop.env
+          else
+            echo MISSING:/etc/zel/production-paper-loop.env
+          fi
+
+          echo '--- EFFECTIVE PAPER SERVICE ZEL ENV'
+          pid="$(systemctl show -p MainPID --value zel-production-paper-loop-v1.service 2>/dev/null || echo 0)"
+          echo MAINPID=$pid
+          if [ "$pid" != 0 ] && [ -r "/proc/$pid/environ" ]; then
+            tr '\0' '\n' < "/proc/$pid/environ" | grep '^ZEL_' | sort || true
+          fi
+
+          echo '--- CANDIDATE SSOT/POLICY/BASELINE FILES'
+          find /etc/zel /home/z/z /home/z/zel-production-releases -xdev -type f \
+            \( -name '*.env' -o -name '*.env.*' -o -iname '*ssot*' -o -iname '*policy*' -o -iname '*baseline*' -o -iname '*risk*' -o -iname '*threshold*' \) \
+            -size -2M 2>/dev/null | sort | head -800 || true
+
+          echo '--- EXACT ENV KEY OCCURRENCES ON VPS'
+          python3 - <<'PY'
+          from pathlib import Path
+          keys=[
+            'ZEL_DATA_STALE_MS','ZEL_ACCOUNT_STALE_MS','ZEL_MAX_DD_DAY_PCT','ZEL_MAX_DD_TOTAL_PCT',
+            'ZEL_ALPHA_SIGNAL_STALE_MS','ZEL_PAPER_INITIAL_EQUITY_USDT','ZEL_RISK_DAY_TZ',
+            'ZEL_IMPROVE_MIN_TRADES','ZEL_IMPROVE_MIN_EXPECTANCY','ZEL_IMPROVE_MIN_PF',
+            'ZEL_IMPROVE_MIN_NET_PNL','ZEL_IMPROVE_MAX_DD_PCT','ZEL_IMPROVE_MIN_SCORE_GAIN',
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','ZEL_IMPROVE_ERROR_BUDGET']
+          roots=[Path('/etc/zel'),Path('/home/z/zel-production-current'),Path('/home/z/z'),Path('/home/z/zel-production-releases')]
+          seen=0
+          for root in roots:
+            if not root.exists(): continue
+            for p in root.rglob('*'):
+              try:
+                if not p.is_file() or p.stat().st_size>2_000_000: continue
+                if any(x in {'.git','node_modules','__pycache__'} for x in p.parts): continue
+                text=p.read_text(errors='ignore')
+              except Exception: continue
+              hits=[(i,line[:700]) for i,line in enumerate(text.splitlines(),1) if any(k in line for k in keys)]
+              if hits:
+                print('FILE',p)
+                for i,line in hits[:100]: print(f'{i}:{line}')
+                seen+=1
+                if seen>=350: raise SystemExit
+          PY
+
+          echo '--- SEMANTIC NON-NULL VALUE CANDIDATES ON VPS'
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          fields={'market_data_stale_ms','account_state_stale_ms','max_dd_day_pct','max_dd_total_pct','signal_stale_ms','initial_equity_usdt','risk_day_timezone','min_trades','min_expectancy','min_profit_factor','min_net_pnl','max_dd_pct','min_score_gain','max_dd_regression_pct','error_budget'}
+          roots=[Path('/home/z/zel-production-current/config'),Path('/home/z/zel-production-releases'),Path('/home/z/z')]
+          def walk(x,p=''):
+            if isinstance(x,dict):
+              for k,v in x.items():
+                q=f'{p}.{k}' if p else k
+                if k in fields and v is not None: yield q,v
+                yield from walk(v,q)
+            elif isinstance(x,list):
+              for i,v in enumerate(x): yield from walk(v,f'{p}[{i}]')
+          count=0
+          for root in roots:
+            if not root.exists(): continue
+            for p in root.rglob('*.json'):
+              try:
+                if p.stat().st_size>2_000_000: continue
+                d=json.loads(p.read_text())
+              except Exception: continue
+              vals=list(walk(d))
+              if vals:
+                print('JSON',p)
+                for k,v in vals[:120]: print(f'  {k}={v!r}')
+                count+=1
+                if count>=500: raise SystemExit
+          PY
+          REMOTE

@@ -1,0 +1,102 @@
+name: TMP SSOT history recovery 20260813
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/_tmp-ssot-history-recovery-20260813.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recover explicit historical Z_POLICY/SSOT provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re, subprocess
+
+          aliases={
+            'ZEL_DATA_STALE_MS':('ZEL_DATA_STALE_MS','DATA_STALE_MS','market_data_stale_ms','data_stale_ms'),
+            'ZEL_ACCOUNT_STALE_MS':('ZEL_ACCOUNT_STALE_MS','account_state_stale_ms','account_stale_ms'),
+            'ZEL_MAX_DD_DAY_PCT':('ZEL_MAX_DD_DAY_PCT','max_dd_day_pct','dd_day_limit_pct','daily_drawdown_limit_pct'),
+            'ZEL_MAX_DD_TOTAL_PCT':('ZEL_MAX_DD_TOTAL_PCT','max_dd_total_pct','dd_total_limit_pct','total_drawdown_limit_pct'),
+            'ZEL_ALPHA_SIGNAL_STALE_MS':('ZEL_ALPHA_SIGNAL_STALE_MS','alpha_signal_stale_ms','signal_stale_ms'),
+            'ZEL_PAPER_INITIAL_EQUITY_USDT':('ZEL_PAPER_INITIAL_EQUITY_USDT','paper_initial_equity_usdt','initial_equity_usdt'),
+            'ZEL_RISK_DAY_TZ':('ZEL_RISK_DAY_TZ','risk_day_timezone','risk_day_tz'),
+            'ZEL_IMPROVE_MIN_TRADES':('ZEL_IMPROVE_MIN_TRADES','improve_min_trades','min_evidence_samples','min_trades'),
+            'ZEL_IMPROVE_MIN_EXPECTANCY':('ZEL_IMPROVE_MIN_EXPECTANCY','improve_min_expectancy','min_expectancy','minimum_expectancy'),
+            'ZEL_IMPROVE_MIN_PF':('ZEL_IMPROVE_MIN_PF','improve_min_profit_factor','min_profit_factor','min_pf'),
+            'ZEL_IMPROVE_MIN_NET_PNL':('ZEL_IMPROVE_MIN_NET_PNL','improve_min_net_pnl','min_net_pnl'),
+            'ZEL_IMPROVE_MAX_DD_PCT':('ZEL_IMPROVE_MAX_DD_PCT','improve_max_dd_pct','max_dd_pct'),
+            'ZEL_IMPROVE_MIN_SCORE_GAIN':('ZEL_IMPROVE_MIN_SCORE_GAIN','improve_min_score_gain','min_score_gain'),
+            'ZEL_IMPROVE_MAX_DD_REGRESSION_PCT':('ZEL_IMPROVE_MAX_DD_REGRESSION_PCT','improve_max_dd_regression_pct','max_dd_regression_pct'),
+            'ZEL_IMPROVE_ERROR_BUDGET':('ZEL_IMPROVE_ERROR_BUDGET','improve_error_budget','error_budget'),
+          }
+          inv={a.lower():k for k,vals in aliases.items() for a in vals}
+          numeric=re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$')
+          tz=re.compile(r'^(?:UTC|Etc/[A-Za-z0-9_+\-]+|[A-Za-z_]+/[A-Za-z0-9_+\-]+)$')
+          pair=re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)\s*(?:=|:)\s*(?P<value>[^#;,}\]]+)')
+
+          raw=subprocess.check_output(['git','log','--all','--name-only','--format='],text=True,errors='replace')
+          paths=sorted({x.strip() for x in raw.splitlines() if x.strip() and re.search(r'(?:^|/)(?:[^/]*(?:z[_-]?policy|ssot)[^/]*)',x,re.I)})
+          print('HISTORY_AUTHORITY_PATH_COUNT',len(paths))
+          for p in paths[:300]: print('HISTORY_AUTHORITY_PATH',p)
+
+          found=[]
+          for path in paths[:300]:
+            try:
+              shas=subprocess.check_output(['git','log','--all','--format=%H','--',path],text=True).splitlines()[:80]
+            except subprocess.CalledProcessError:
+              continue
+            for sha in shas:
+              try:text=subprocess.check_output(['git','show',f'{sha}:{path}'],text=True,stderr=subprocess.DEVNULL,errors='replace')
+              except subprocess.CalledProcessError: continue
+              local=[]
+              # JSON recursive scan.
+              try:
+                d=json.loads(text)
+                def walk(x):
+                  if isinstance(x,dict):
+                    for k,v in x.items():
+                      tail=str(k).lower().split('.')[-1]
+                      target=inv.get(tail)
+                      if target is not None and not isinstance(v,bool) and v is not None:
+                        s=str(v).strip().strip('"\'')
+                        if numeric.fullmatch(s) or tz.fullmatch(s): local.append((target,s,str(k)))
+                      walk(v)
+                  elif isinstance(x,list):
+                    for v in x: walk(v)
+                walk(d)
+              except Exception: pass
+              # Text scan.
+              for line_no,line in enumerate(text.splitlines(),1):
+                for m in pair.finditer(line):
+                  key=m.group('key').lower().split('.')[-1]
+                  target=inv.get(key)
+                  if target is None: continue
+                  s=m.group('value').strip().strip('"\'')
+                  if numeric.fullmatch(s) or tz.fullmatch(s): local.append((target,s,f'line:{line_no}:{m.group("key")}'))
+              if local:
+                uniq=sorted(set(local))
+                found.append((path,sha,uniq))
+          print('HISTORY_AUTHORITY_SNAPSHOTS',len(found))
+          latest_by_target={k:[] for k in aliases}
+          for path,sha,vals in found[:500]:
+            print('HISTORY_SNAPSHOT',json.dumps({'path':path,'sha':sha,'values':[{'target':t,'value':v,'match':m} for t,v,m in vals]},sort_keys=True))
+            for t,v,m in vals: latest_by_target[t].append({'value':v,'path':path,'sha':sha,'match':m})
+          for target,rows in latest_by_target.items():
+            distinct=sorted({r['value'] for r in rows})
+            print('TARGET_HISTORY',json.dumps({'target':target,'distinct_values':distinct,'evidence_count':len(rows),'sample_sources':rows[:8]},sort_keys=True))
+          PY

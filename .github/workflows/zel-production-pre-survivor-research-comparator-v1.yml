@@ -7,13 +7,16 @@ on:
       - 'backend/production/zel_production_pre_survivor_research_comparator_v1.py'
       - 'backend/production/zel_production_pre_survivor_research_controller_v1.py'
       - 'backend/production/zel_production_pre_survivor_challenger_queue_v1.py'
+      - 'backend/production/zel_production_pre_survivor_ai_value_audit_v1.py'
       - 'config/zel_production_pre_survivor_research_comparator_v1.json'
       - 'config/zel_production_pre_survivor_research_controller_v1.json'
       - 'config/zel_production_pre_survivor_challenger_queue_v1.json'
       - 'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json'
+      - 'config/zel_production_pre_survivor_ai_value_audit_v1.json'
       - 'tests/test_zel_production_pre_survivor_research_comparator_v1.py'
       - 'tests/test_zel_production_pre_survivor_research_controller_v1.py'
       - 'tests/test_zel_production_pre_survivor_challenger_queue_v1.py'
+      - 'tests/test_zel_production_pre_survivor_ai_value_audit_v1.py'
       - '.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml'
   schedule:
     - cron: '37 * * * *'
@@ -45,11 +48,13 @@ jobs:
           python -m py_compile \
             backend/production/zel_production_pre_survivor_research_comparator_v1.py \
             backend/production/zel_production_pre_survivor_research_controller_v1.py \
-            backend/production/zel_production_pre_survivor_challenger_queue_v1.py
+            backend/production/zel_production_pre_survivor_challenger_queue_v1.py \
+            backend/production/zel_production_pre_survivor_ai_value_audit_v1.py
           PYTHONPATH=. pytest -q \
             tests/test_zel_production_pre_survivor_research_comparator_v1.py \
             tests/test_zel_production_pre_survivor_research_controller_v1.py \
-            tests/test_zel_production_pre_survivor_challenger_queue_v1.py
+            tests/test_zel_production_pre_survivor_challenger_queue_v1.py \
+            tests/test_zel_production_pre_survivor_ai_value_audit_v1.py
       - name: Verify PAPER-only isolated generational boundary
         run: |
           set -euo pipefail
@@ -60,23 +65,28 @@ jobs:
           c=json.loads(Path('config/zel_production_pre_survivor_research_controller_v1.json').read_text())
           n=json.loads(Path('config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json').read_text())
           q=json.loads(Path('config/zel_production_pre_survivor_challenger_queue_v1.json').read_text())
-          assert p['mode']=='PAPER' and c['mode']=='PAPER' and n['mode']=='PAPER' and q['mode']=='PAPER'
+          a=json.loads(Path('config/zel_production_pre_survivor_ai_value_audit_v1.json').read_text())
+          assert p['mode']=='PAPER' and c['mode']=='PAPER' and n['mode']=='PAPER' and q['mode']=='PAPER' and a['mode']=='PAPER'
           assert p['comparison_role']=='RESEARCH_ONLY_NOT_ROUTE'
+          assert a['value_role']=='OBSERVER_ONLY_REALIZED_RESEARCH_VALUE_NOT_ROUTE'
           assert p['reference_feedback_path']==c['research_feedback_path']==q['reference_feedback_path']
           assert n['feedback_path']==c['research_feedback_path']
-          assert n['output_path']==q['input_path']
+          assert n['output_path']==q['input_path']==a['next_hypothesis_path']
           assert q['output_path']==p['next_hypothesis_path']
+          assert p['output_path']==a['comparison_path']
+          assert c['incumbent_path']==a['incumbent_path']
           isolated={
               p['challenger_contract_state_path'],p['challenger_history_path'],p['challenger_economic_path'],
               p['challenger_evidence_path'],p['output_path'],c['research_feedback_path'],c['incumbent_path'],q['output_path'],
+              a['history_path'],a['output_path'],
           }
           active={
               '/home/z/z/ledger/production_ai_admission_contracts_v1.json',
               '/home/z/z/ledger/production_ai_admission_observations_v1.ndjson',
               '/home/z/z/ledger/production_ai_admission_economic_v1.json',
           }
-          assert len(isolated)==8 and not (isolated & active)
-          for row in (p,c,n,q):
+          assert len(isolated)==10 and not (isolated & active)
+          for row in (p,c,n,q,a):
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
@@ -88,17 +98,23 @@ jobs:
           comp=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
           ctrl=Path('backend/production/zel_production_pre_survivor_research_controller_v1.py').read_text()
           queue=Path('backend/production/zel_production_pre_survivor_challenger_queue_v1.py').read_text()
+          audit=Path('backend/production/zel_production_pre_survivor_ai_value_audit_v1.py').read_text()
+          workflow=Path('.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml').read_text()
           for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
-              assert token in comp and token in ctrl
+              assert token in comp and token in ctrl and token in audit
           assert 'produce_challenger_evidence' in comp
           assert 'materialize_tick' in comp
           assert 'executor_tick' in comp
           assert 'update_incumbent' in ctrl
           assert 'prepare_reference' in ctrl
           assert 'TERMINAL_REJECT' in queue and 'candidate_budget' in queue
-          assert 'submit_order' not in comp and 'submit_order' not in ctrl and 'submit_order' not in queue
-          assert 'https://' not in comp and 'https://' not in ctrl and 'https://' not in queue
-          print('PASS_PRE_SURVIVOR_RESEARCH_GENERATIONAL_QUEUE_BOUNDARY')
+          assert 'audit_tick' in workflow
+          assert 'production_pre_survivor_ai_value_history_v1.ndjson' in workflow
+          assert 'ai_value_state' in workflow
+          assert 'workflow_run:' not in workflow
+          assert 'submit_order' not in comp and 'submit_order' not in ctrl and 'submit_order' not in queue and 'submit_order' not in audit
+          assert 'https://' not in comp and 'https://' not in ctrl and 'https://' not in queue and 'https://' not in audit
+          print('PASS_PRE_SURVIVOR_RESEARCH_GENERATIONAL_QUEUE_WITH_AI_VALUE_AUDIT_BOUNDARY')
           PY
 
   run-on-vps:
@@ -140,6 +156,7 @@ jobs:
             'backend/production/zel_production_pre_survivor_research_comparator_v1.py',
             'backend/production/zel_production_pre_survivor_research_controller_v1.py',
             'backend/production/zel_production_pre_survivor_challenger_queue_v1.py',
+            'backend/production/zel_production_pre_survivor_ai_value_audit_v1.py',
             'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py',
             'backend/production/zel_production_ai_admission_materializer_v1.py',
             'backend/production/zel_production_ai_admission_executor_v2.py',
@@ -149,6 +166,7 @@ jobs:
             'config/zel_production_pre_survivor_research_controller_v1.json',
             'config/zel_production_pre_survivor_challenger_queue_v1.json',
             'config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
+            'config/zel_production_pre_survivor_ai_value_audit_v1.json',
             'config/zel_production_ai_proposal_layer_pre_survivor_v1.json',
             'config/zel_production_ai_admission_materializer_v1.json',
             'config/zel_production_ai_admission_executor_v1.json',
@@ -181,8 +199,10 @@ jobs:
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
           python3 - <<'PY'
-          import hashlib,json,subprocess
+          import hashlib,json,os,subprocess
           from pathlib import Path
+          from backend.production.zel_production_improvement_controller_v1 import atomic_json_write
+          from backend.production.zel_production_pre_survivor_ai_value_audit_v1 import audit_tick, validate_policy as validate_audit_policy
           active=[
               Path('/home/z/z/ledger/production_ai_admission_contracts_v1.json'),
               Path('/home/z/z/ledger/production_ai_admission_observations_v1.ndjson'),
@@ -196,6 +216,28 @@ jobs:
           def run_json(args):
               raw=subprocess.check_output(args,text=True).strip().splitlines()[-1]
               return json.loads(raw)
+          def read_object(path, required=True):
+              if not path.is_file():
+                  if required:
+                      raise SystemExit('PRE_SURVIVOR_AI_VALUE_SOURCE_MISSING:'+str(path))
+                  return None
+              row=json.loads(path.read_text())
+              if not isinstance(row,dict):
+                  raise SystemExit('PRE_SURVIVOR_AI_VALUE_SOURCE_NOT_OBJECT:'+str(path))
+              return row
+          def read_history(path):
+              rows=[]
+              if not path.is_file():
+                  return rows
+              for lineno,line in enumerate(path.read_text().splitlines(),1):
+                  text=line.strip()
+                  if not text:
+                      continue
+                  row=json.loads(text)
+                  if not isinstance(row,dict):
+                      raise SystemExit(f'PRE_SURVIVOR_AI_VALUE_HISTORY_NOT_OBJECT:{path}:{lineno}')
+                  rows.append(row)
+              return rows
           before=digests()
           prep=run_json([
               'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
@@ -217,6 +259,23 @@ jobs:
               'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
               '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','update',
           ])
+          audit_cfg=validate_audit_policy(json.loads(Path('config/zel_production_pre_survivor_ai_value_audit_v1.json').read_text()))
+          audit_history_path=Path(str(audit_cfg['history_path']))
+          audit_output_path=Path(str(audit_cfg['output_path']))
+          audit_out,audit_event=audit_tick(
+              audit_cfg,
+              next_hypothesis=read_object(Path(str(audit_cfg['next_hypothesis_path']))),
+              comparison=read_object(Path(str(audit_cfg['comparison_path']))),
+              incumbent=read_object(Path(str(audit_cfg['incumbent_path'])),required=False),
+              history=read_history(audit_history_path),
+          )
+          if audit_event is not None:
+              audit_history_path.parent.mkdir(parents=True,exist_ok=True)
+              with audit_history_path.open('a',encoding='utf-8') as handle:
+                  handle.write(json.dumps(audit_event,sort_keys=True,separators=(',',':'))+'\n')
+                  handle.flush()
+                  os.fsync(handle.fileno())
+          atomic_json_write(audit_output_path,audit_out)
           after=digests()
           if before!=after:
               raise SystemExit('ACTIVE_ADMISSION_LEDGER_MUTATED:'+json.dumps({'before':before,'after':after},sort_keys=True))
@@ -227,8 +286,10 @@ jobs:
               'queue':Path('/home/z/z/ledger/production_pre_survivor_challenger_queue_v1.json'),
               'reference':Path('/home/z/z/ledger/production_pre_survivor_research_reference_feedback_v1.json'),
               'incumbent':Path('/home/z/z/ledger/production_pre_survivor_research_incumbent_v1.json'),
+              'audit':Path('/home/z/z/ledger/production_pre_survivor_ai_value_audit_v1.json'),
+              'audit_history':Path('/home/z/z/ledger/production_pre_survivor_ai_value_history_v1.ndjson'),
           }
-          for key in ('comparison','evidence','next','queue','reference'):
+          for key in ('comparison','evidence','next','queue','reference','audit'):
               if not paths[key].is_file():
                   raise SystemExit('PRE_SURVIVOR_RESEARCH_LEDGER_MISSING:'+key)
           c=json.loads(paths['comparison'].read_text())
@@ -237,7 +298,8 @@ jobs:
           q=json.loads(paths['queue'].read_text())
           r=json.loads(paths['reference'].read_text())
           inc=json.loads(paths['incumbent'].read_text()) if paths['incumbent'].is_file() else None
-          for row in (c,e,n,q,r):
+          a=json.loads(paths['audit'].read_text())
+          for row in (c,e,n,q,r,a):
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
@@ -253,6 +315,7 @@ jobs:
               assert inc['order_authority']=='BLOCKED'
               assert inc['live_trade_authority']=='BLOCKED'
               assert inc['exchange_order_submitted'] is False
+          aggregate=a.get('aggregate') if isinstance(a.get('aggregate'),dict) else {}
           print(json.dumps({
               'reference_source':r.get('research_reference_source'),
               'reference_family_id':r.get('family_id'),
@@ -272,6 +335,11 @@ jobs:
               'incumbent_changed':bool(upd.get('changed')),
               'incumbent_family_id':upd.get('family_id'),
               'incumbent_generation':int(upd.get('generation') or 0),
+              'ai_value_state':a.get('state'),
+              'ai_value_history_append_required':bool(a.get('history_append_required')),
+              'ai_value_generation_count':int(aggregate.get('generation_count') or 0),
+              'ai_value_preferred_challenger_count':int(aggregate.get('preferred_challenger_count') or 0),
+              'ai_value_preferred_epoch_rate_pct':float(aggregate.get('preferred_epoch_rate_pct') or 0.0),
               'active_ledger_unchanged':True,
               'selection_authority':False,
               'promotion_authority':False,
@@ -296,6 +364,9 @@ jobs:
           assert row['order_authority']=='BLOCKED'
           assert row['live_trade_authority']=='BLOCKED'
           assert row['exchange_order_submitted'] is False
+          assert str(row.get('ai_value_state') or '').startswith(('PASS_','HOLD_'))
+          assert row['ai_value_generation_count'] >= 0
+          assert row['ai_value_preferred_challenger_count'] >= 0
           print(json.dumps(row,sort_keys=True))
           PY
       - name: Remove SSH key

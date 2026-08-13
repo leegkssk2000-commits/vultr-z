@@ -13,6 +13,8 @@ SCHEMA = "zel.production_pre_survivor_feedback_bridge.v1"
 POLICY_SCHEMA = "zel.production_pre_survivor_feedback_bridge_policy.v1"
 DEFAULT_POLICY = Path("config/zel_production_pre_survivor_feedback_bridge_v1.json")
 REJECT_STATE = "REJECT_AI_ADMISSION_ECONOMIC_EDGE"
+ACCUMULATING_STATE = "HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT"
+SELECTION_RULE = "TERMINAL_REJECT_ELSE_MOST_EVIDENCE_ACCUMULATING_NO_OPTIMIZATION"
 
 
 def _authority_guard(row: Mapping[str, Any], prefix: str) -> None:
@@ -34,8 +36,12 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("feedback_path", "progress_path", "output_evidence_path"):
         if not str(policy.get(key) or "").strip():
             raise RuntimeError(f"PRE_SURVIVOR_FEEDBACK_BRIDGE_PATH_MISSING:{key}")
-    if policy.get("selection_rule") != "MOST_EVIDENCE_REJECTED_FAMILY_NO_OPTIMIZATION":
+    if policy.get("selection_rule") != SELECTION_RULE:
         raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_SELECTION_RULE_DRIFT")
+    if policy.get("accumulating_context_allowed") is not True:
+        raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_ACCUMULATING_CONTEXT_DISABLED")
+    if str(policy.get("accumulating_admission_state") or "") != ACCUMULATING_STATE:
+        raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_ACCUMULATING_STATE_DRIFT")
     if policy.get("projection_role") != "CONTEXT_ONLY_NOT_GATE":
         raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_ROLE_DRIFT")
     if policy.get("numeric_threshold_proposals_allowed") is not False or policy.get("parameter_search_allowed") is not False:
@@ -66,6 +72,17 @@ def _base(state: str, now_ms: int) -> dict[str, Any]:
     }
 
 
+def _most_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return max(
+        rows,
+        key=lambda row: (
+            int((row.get("metrics") or {}).get("trade_count") or 0),
+            str(row.get("family_id") or ""),
+            str(row.get("contract_id") or ""),
+        ),
+    )
+
+
 def project_feedback(
     policy: Mapping[str, Any],
     *,
@@ -88,15 +105,35 @@ def project_feedback(
         _authority_guard(progress, "PRE_SURVIVOR_FEEDBACK_BRIDGE_PROGRESS")
 
     rejected: list[dict[str, Any]] = []
+    accumulating: list[dict[str, Any]] = []
     for raw in feedback.get("entries") or []:
-        if not isinstance(raw, Mapping) or str(raw.get("admission_state") or "") != REJECT_STATE:
+        if not isinstance(raw, Mapping):
+            continue
+        admission_state = str(raw.get("admission_state") or "")
+        if admission_state not in {REJECT_STATE, ACCUMULATING_STATE}:
             continue
         metrics = raw.get("metrics")
         if not isinstance(metrics, Mapping):
             raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_METRICS_MISSING")
-        rejected.append(dict(raw))
-    if not rejected:
-        out = _base("HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_REJECTED_FAMILY", now)
+        if admission_state == REJECT_STATE:
+            rejected.append(dict(raw))
+        else:
+            accumulating.append(dict(raw))
+
+    if rejected:
+        selected = _most_evidence(rejected)
+        projected_state = "PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED"
+        context_kind = "TERMINAL_REJECT"
+        context_intent = "INFORM_NEXT_NEW_ECONOMIC_FAMILY_AFTER_TERMINAL_REJECT"
+        non_terminal_context = False
+    elif accumulating and cfg["accumulating_context_allowed"] is True:
+        selected = _most_evidence(accumulating)
+        projected_state = "PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED"
+        context_kind = "PROVISIONAL_ACCUMULATING"
+        context_intent = "INFORM_NEXT_NEW_ECONOMIC_FAMILY_WHILE_CURRENT_FAMILY_ACCUMULATES"
+        non_terminal_context = True
+    else:
+        out = _base("HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_ECONOMIC_CONTEXT", now)
         out.update(
             {
                 "source_feedback_receipt_sha256": str(feedback.get("receipt_sha256") or ""),
@@ -107,14 +144,6 @@ def project_feedback(
         out["receipt_sha256"] = stable_sha(out)
         return out
 
-    selected = max(
-        rejected,
-        key=lambda row: (
-            int((row.get("metrics") or {}).get("trade_count") or 0),
-            str(row.get("family_id") or ""),
-            str(row.get("contract_id") or ""),
-        ),
-    )
     metrics = selected["metrics"]
     required = (
         "trade_count",
@@ -127,12 +156,15 @@ def project_feedback(
     if any(key not in metrics for key in required):
         raise RuntimeError("PRE_SURVIVOR_FEEDBACK_BRIDGE_REQUIRED_METRIC_MISSING")
 
-    out = _base("PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED", now)
+    out = _base(projected_state, now)
     out.update(
         {
             "source_feedback_receipt_sha256": str(feedback.get("receipt_sha256") or ""),
             "source_progress_receipt_sha256": str((progress or {}).get("receipt_sha256") or ""),
             "selection_rule": cfg["selection_rule"],
+            "context_kind": context_kind,
+            "non_terminal_context": non_terminal_context,
+            "source_admission_state": str(selected.get("admission_state") or ""),
             "family_id": str(selected.get("family_id") or ""),
             "contract_id": str(selected.get("contract_id") or ""),
             "template_id": str(selected.get("template_id") or ""),
@@ -153,7 +185,7 @@ def project_feedback(
                 "trade_count": "trades",
             },
             "win_rate_role": "OBSERVATION_ONLY_NOT_GATE",
-            "context_intent": "INFORM_NEXT_NEW_ECONOMIC_FAMILY_AFTER_TERMINAL_REJECT",
+            "context_intent": context_intent,
         }
     )
     out["receipt_sha256"] = stable_sha(out)
@@ -161,7 +193,7 @@ def project_feedback(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Project pre-survivor rejected economics into proposal-only AI context")
+    ap = argparse.ArgumentParser(description="Project pre-survivor economics into proposal-only AI context")
     ap.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     ns = ap.parse_args(argv)
     cfg = validate_policy(json.loads(ns.policy.read_text(encoding="utf-8")))
@@ -175,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "state": result["state"],
+                "context_kind": result.get("context_kind"),
                 "family_id": result.get("family_id"),
                 "trade_count": result.get("trade_count"),
                 "win_rate_pct": result.get("win_rate_pct"),

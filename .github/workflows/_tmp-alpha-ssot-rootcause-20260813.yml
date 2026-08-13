@@ -1,0 +1,152 @@
+name: TMP alpha SSOT rootcause 20260813
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/_tmp-alpha-ssot-rootcause-20260813.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only SSOT and alpha root-cause audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          LEDGER=/home/z/z/ledger
+          OUT=/tmp/zel-ssot-recovery-rootcause.json
+          cd "$ROOT"
+          PYTHONPATH="$ROOT" python3 ops/zel_production_ssot_source_recovery_v1.py \
+            --root "$ROOT" --root /home/z/z --out "$OUT"
+
+          PYTHONPATH="$ROOT" python3 - <<'PY'
+          from pathlib import Path
+          import json, os, subprocess
+
+          out=Path('/tmp/zel-ssot-recovery-rootcause.json')
+          r=json.loads(out.read_text())
+          print('SSOT_SUMMARY', json.dumps({
+              'state':r.get('state'),
+              'target_count':r.get('target_count'),
+              'resolved_single_value_count':r.get('resolved_single_value_count'),
+              'conflict_count':r.get('conflict_count'),
+              'unresolved_count':r.get('unresolved_count'),
+              'legacy_generated_state_is_authority':r.get('legacy_generated_state_is_authority'),
+              'legacy_generic_policy_is_authority':r.get('legacy_generic_policy_is_authority'),
+          }, sort_keys=True))
+          for key,row in (r.get('targets') or {}).items():
+              sources=[]
+              for s in row.get('authority_sources') or []:
+                  sources.append({
+                      'root':s.get('root'),'source':s.get('source'),'line':s.get('line'),
+                      'value':s.get('value'),'source_sha256':s.get('source_sha256'),
+                      'authority_reason':s.get('authority_reason')})
+              print('SSOT_TARGET', json.dumps({
+                  'key':key,'state':row.get('state'),
+                  'authority_distinct_values':row.get('authority_distinct_values'),
+                  'authority_sources':sources,
+                  'all_hit_count':row.get('all_hit_count'),
+                  'non_authority_hit_count':row.get('non_authority_hit_count'),
+              }, sort_keys=True))
+
+          ledger=Path('/home/z/z/ledger')
+          allow_tokens=('canary','survivor','admission','alpha_authority','bootstrap','improvement','proposal','pool','handoff')
+          safe_keys={
+              'schema_version','state','status','action','reason','next','family_id','strategy_id','alpha_id',
+              'runtime_symbol','symbol','canary_key','contract_id','executor_version','proposal_count',
+              'observation_count','observation_history_count','observation_history_appended','history_count',
+              'trade_count','trades','total_trades','sample_count','window_trade_count','w1_trade_count',
+              'w2_trade_count','w3_trade_count','pass_count','reject_count','active_count','reserve_count',
+              'candidate_count','survivor_count','economic_candidate_count','promotion_authority',
+              'execution_authority','order_authority','live_trade_authority','live_execution',
+              'exchange_order_submitted','runtime_bound','network_called','signal_written','source_ready',
+              'missing_source_count','required_source_count','integrity_ok','dedup_valid','updated_at_ms',
+              'created_at_ms','not_before_ms','receipt_sha256','request_id','authority_id'
+          }
+          def compact(obj):
+              if not isinstance(obj,dict): return {}
+              out={}
+              for k,v in obj.items():
+                  if k in safe_keys and isinstance(v,(str,int,float,bool,type(None))): out[k]=v
+                  elif k in ('active','reserve') and isinstance(v,list):
+                      out[k]=[compact(x) if isinstance(x,dict) else str(x) for x in v[:5]]
+                  elif k in ('windows','symbols') and isinstance(v,dict):
+                      sub={}
+                      for sk,sv in v.items():
+                          if isinstance(sv,dict): sub[sk]=compact(sv)
+                      out[k]=sub
+              return out
+
+          rows=[]
+          if ledger.is_dir():
+              for p in ledger.glob('production_*.json'):
+                  n=p.name.lower()
+                  if not any(t in n for t in allow_tokens): continue
+                  try:
+                      d=json.loads(p.read_text())
+                  except Exception: continue
+                  rows.append((p.stat().st_mtime,p.name,compact(d)))
+          for _,name,row in sorted(rows, reverse=True)[:60]:
+              print('RUNTIME_STATE', name, json.dumps(row, sort_keys=True))
+
+          # Per-contract/symbol canary histories: counts only, no market values.
+          hist_roots=[]
+          if ledger.is_dir():
+              for p in ledger.rglob('*'):
+                  if p.is_dir() and 'canary' in p.name.lower(): hist_roots.append(p)
+          seen=set()
+          for root in sorted(hist_roots, key=lambda p:str(p))[:40]:
+              if str(root) in seen: continue
+              seen.add(str(root))
+              files=[p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in {'.json','.jsonl','.ndjson'}]
+              total_lines=0
+              for p in files:
+                  try:
+                      if p.suffix.lower() in {'.jsonl','.ndjson'}:
+                          total_lines += sum(1 for x in p.read_text(errors='ignore').splitlines() if x.strip())
+                      else:
+                          d=json.loads(p.read_text())
+                          if isinstance(d,list): total_lines += len(d)
+                          elif isinstance(d,dict):
+                              for k in ('observations','history','trades','rows'):
+                                  if isinstance(d.get(k),list): total_lines += len(d[k]); break
+                  except Exception: pass
+              if files:
+                  print('CANARY_HISTORY', json.dumps({'path':str(root),'file_count':len(files),'record_like_count':total_lines},sort_keys=True))
+
+          def cmd(*a):
+              try:return subprocess.check_output(a,text=True,stderr=subprocess.DEVNULL).strip()
+              except Exception:return ''
+          print('SERVICE',json.dumps({
+              'active':cmd('systemctl','is-active','zel-production-paper-loop-v1.service'),
+              'enabled':cmd('systemctl','is-enabled','zel-production-paper-loop-v1.service'),
+              'restarts':cmd('systemctl','show','-p','NRestarts','--value','zel-production-paper-loop-v1.service'),
+              'current_release':str(Path('/home/z/zel-production-current').resolve()),
+          },sort_keys=True))
+          PY
+          REMOTE

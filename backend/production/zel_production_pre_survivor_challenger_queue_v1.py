@@ -128,7 +128,11 @@ def queue_tick(
             family = str(row.get("family_id") or "")
             if family and family not in blocked_families and family not in terminal_families:
                 kept.append(dict(row))
-    incoming = _valid_proposals(current)
+    incoming = [
+        row for row in _valid_proposals(current)
+        if str(row.get("family_id") or "") not in blocked_families
+        and str(row.get("family_id") or "") not in terminal_families
+    ]
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in kept + incoming:

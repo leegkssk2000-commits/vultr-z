@@ -54,7 +54,9 @@ jobs:
           t=json.loads(Path('config/zel_production_ai_terminal_feedback_v1.json').read_text())
           assert b['mode']=='PAPER' and p['mode']=='PAPER' and t['mode']=='PAPER'
           assert b['projection_role']=='CONTEXT_ONLY_NOT_GATE'
-          assert b['selection_rule']=='MOST_EVIDENCE_REJECTED_FAMILY_NO_OPTIMIZATION'
+          assert b['selection_rule']=='TERMINAL_REJECT_ELSE_MOST_EVIDENCE_ACCUMULATING_NO_OPTIMIZATION'
+          assert b['accumulating_context_allowed'] is True
+          assert b['accumulating_admission_state']=='HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT'
           assert b['numeric_threshold_proposals_allowed'] is False
           assert b['parameter_search_allowed'] is False
           assert p['improvement_evidence_path']=='/home/z/z/ledger/production_pre_survivor_improvement_evidence_v1.json'
@@ -67,6 +69,7 @@ jobs:
           src=Path('backend/production/zel_production_pre_survivor_feedback_bridge_v1.py').read_text()
           assert 'submit_order' not in src and 'https://' not in src
           assert 'win_rate_pct' in src and 'net_pnl' in src and 'net_expectancy' in src
+          assert 'PROVISIONAL_ACCUMULATING' in src
           print('PASS_PRE_SURVIVOR_FEEDBACK_BRIDGE_BOUNDARY')
           PY
 
@@ -95,7 +98,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Project latest rejected economics into proposal context
+      - name: Project current pre-survivor economics into proposal context
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -156,8 +159,9 @@ jobs:
           row=json.loads(Path('/tmp/production_pre_survivor_improvement_evidence_v1.json').read_text())
           assert row['state'] in {
               'HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_INPUT_MISSING',
-              'HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_REJECTED_FAMILY',
+              'HOLD_PRE_SURVIVOR_FEEDBACK_BRIDGE_NO_ECONOMIC_CONTEXT',
               'PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED',
+              'PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED',
           }
           assert row['projection_role']=='CONTEXT_ONLY_NOT_GATE'
           assert row['numeric_threshold_proposals_allowed'] is False
@@ -169,9 +173,13 @@ jobs:
           assert row['live_trade_authority']=='BLOCKED'
           assert row['exchange_order_submitted'] is False
           assert row['action']=='hold'
-          if row['state']=='PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED':
-              for key in ('trade_count','win_rate_pct','net_pnl','net_expectancy','profit_factor','max_dd_pct'):
+          if row['state'] in {'PASS_PRE_SURVIVOR_REJECT_CONTEXT_PROJECTED','PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED'}:
+              for key in ('context_kind','source_admission_state','trade_count','win_rate_pct','net_pnl','net_expectancy','profit_factor','max_dd_pct'):
                   assert key in row
+          if row['state']=='PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED':
+              assert row['context_kind']=='PROVISIONAL_ACCUMULATING'
+              assert row['non_terminal_context'] is True
+              assert row['source_admission_state']=='HOLD_AI_ADMISSION_REJECTION_EVIDENCE_INSUFFICIENT'
           print(json.dumps(row,sort_keys=True))
           PY
       - name: Upload projected economic context

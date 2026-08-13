@@ -146,7 +146,14 @@ def test_active_can_retake_reference_when_it_strictly_beats_incumbent() -> None:
 
 def test_previous_incumbent_is_kept_when_new_winner_is_not_strictly_better() -> None:
     prev = incumbent_row()
-    weak = challenger(trades=12, wr=60.0, exp=2.0, pf=1.2, pnl=20.0, dd=0.5)
+    weak = challenger(
+        trade_count=12,
+        win_rate_pct=60.0,
+        net_expectancy=2.0,
+        profit_factor=1.2,
+        net_pnl=20.0,
+        max_dd_pct=0.5,
+    )
     out, changed = update_incumbent(
         POLICY,
         comparison=comparison(["challenger_family"]),

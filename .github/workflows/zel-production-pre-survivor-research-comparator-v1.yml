@@ -1,0 +1,60 @@
+name: ZEL Production Pre-Survivor Research Comparator V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_research_comparator_v1.py'
+      - 'config/zel_production_pre_survivor_research_comparator_v1.json'
+      - 'tests/test_zel_production_pre_survivor_research_comparator_v1.py'
+      - '.github/workflows/zel-production-pre-survivor-research-comparator-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-pre-survivor-research-comparator-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test research comparator
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_pre_survivor_research_comparator_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_pre_survivor_research_comparator_v1.py
+      - name: Verify PAPER-only research boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_pre_survivor_research_comparator_v1.json').read_text())
+          assert p['mode']=='PAPER'
+          assert p['comparison_role']=='RESEARCH_ONLY_NOT_ROUTE'
+          assert p['selection_authority'] is False
+          assert p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE'
+          assert p['order_authority']=='BLOCKED'
+          assert p['live_trade_authority']=='BLOCKED'
+          assert p['exchange_order_submitted'] is False
+          assert p['source_code_mutation_allowed'] is False
+          assert p['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_pre_survivor_research_comparator_v1.py').read_text()
+          for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
+              assert token in src
+          assert 'submit_order' not in src
+          assert 'https://' not in src
+          print('PASS_PRE_SURVIVOR_RESEARCH_COMPARATOR_BOUNDARY')
+          PY

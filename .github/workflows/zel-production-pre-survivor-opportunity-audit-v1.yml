@@ -1,0 +1,138 @@
+name: ZEL Production Pre-Survivor Opportunity Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_opportunity_audit_v1.py'
+      - 'config/zel_production_pre_survivor_opportunity_audit_v1.json'
+      - '.github/workflows/zel-production-pre-survivor-opportunity-audit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_pre_survivor_opportunity_audit_v1.py'
+      - 'config/zel_production_pre_survivor_opportunity_audit_v1.json'
+      - '.github/workflows/zel-production-pre-survivor-opportunity-audit-v1.yml'
+  workflow_run:
+    workflows: ['ZEL Production Pre-Survivor Research Comparator V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-pre-survivor-opportunity-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test opportunity audit
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/production/zel_production_pre_survivor_opportunity_audit_v1.py
+          PYTHONPATH=. python - <<'PY'
+          from backend.production.zel_production_pre_survivor_opportunity_audit_v1 import audit_tick
+          safe={'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False}
+          policy={'schema_version':'zel.production_pre_survivor_opportunity_audit_policy.v1','mode':'PAPER','history_path':'/tmp/h','challenger_evidence_path':'/tmp/e','output_path':'/tmp/o','source_code_mutation_allowed':False,'self_modification_allowed':False,**safe}
+          evidence={'challengers':[{'family_id':'basis_oi','contract_id':'c1','template_id':'basis_oi_deleveraging_v1','trade_count':0}],**safe}
+          history=[{'contract_id':'c1','symbol':'BTCUSDT','observed_at_ms':1000,'outcome_candle_ts_ms':1000,'signal_side':1,'context_pass':True},{'contract_id':'c1','symbol':'BTCUSDT','observed_at_ms':2000,'outcome_candle_ts_ms':2000,'signal_side':0,'context_pass':False}]
+          lag=audit_tick(policy,history=history,evidence=evidence,now_ms=3000)
+          assert lag['state']=='HOLD_PRE_SURVIVOR_OPPORTUNITY_PIPELINE_GAP'
+          evidence['challengers'][0]['trade_count']=1
+          ok=audit_tick(policy,history=history,evidence=evidence,now_ms=3000)
+          assert ok['state']=='PASS_PRE_SURVIVOR_OPPORTUNITY_AUDIT'
+          assert ok['contracts'][0]['diagnosis']=='HEALTHY_ACCUMULATING'
+          assert ok['selection_authority'] is False and ok['execution_authority']=='NONE' and ok['order_authority']=='BLOCKED'
+          print('PASS_PRE_SURVIVOR_OPPORTUNITY_AUDIT_SELF_TEST')
+          PY
+
+  audit-on-vps:
+    if: >-
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == 'master' && github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Audit current challenger opportunity coverage
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=['backend/production/zel_production_pre_survivor_opportunity_audit_v1.py','config/zel_production_pre_survivor_opportunity_audit_v1.json']
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST" "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" <<'REMOTE'
+          set -euo pipefail
+          matched=0
+          for _ in $(seq 1 60); do
+            if RUNTIME_PARITY_B64="$RUNTIME_PARITY_B64" python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path('/home/z/zel-production-current')
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=all((root/p).is_file() and hashlib.sha256((root/p).read_bytes()).hexdigest()==sha for p,sha in expected.items())
+          raise SystemExit(0 if ok else 1)
+          PY
+            then matched=1; break; fi
+            sleep 2
+          done
+          test "$matched" -eq 1
+          cd /home/z/zel-production-current
+          export PYTHONPATH=/home/z/zel-production-current
+          python3 -m backend.production.zel_production_pre_survivor_opportunity_audit_v1
+          REMOTE
+          scp -i ~/.ssh/vps_key "$VPS_USER@$VPS_HOST:/home/z/z/ledger/production_pre_survivor_opportunity_audit_v1.json" /tmp/production_pre_survivor_opportunity_audit_v1.json
+      - name: Verify audit remains observer-only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('/tmp/production_pre_survivor_opportunity_audit_v1.json').read_text())
+          assert row['state'] in {'PASS_PRE_SURVIVOR_OPPORTUNITY_AUDIT','HOLD_PRE_SURVIVOR_OPPORTUNITY_PIPELINE_GAP','HOLD_PRE_SURVIVOR_OPPORTUNITY_EVIDENCE_MISSING'}
+          assert row['selection_authority'] is False and row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED' and row['live_trade_authority']=='BLOCKED'
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-pre-survivor-opportunity-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/production_pre_survivor_opportunity_audit_v1.json
+          if-no-files-found: warn
+          retention-days: 30

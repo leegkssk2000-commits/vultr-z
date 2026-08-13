@@ -1,0 +1,223 @@
+name: ZEL Production AI Pre-Survivor Next Hypothesis V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py'
+      - 'config/zel_production_ai_pre_survivor_next_hypothesis_v1.json'
+      - 'config/zel_production_ai_proposal_layer_pre_survivor_v1.json'
+      - 'tests/test_zel_production_ai_pre_survivor_next_hypothesis_v1.py'
+      - '.github/workflows/zel-production-ai-pre-survivor-next-hypothesis-v1.yml'
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['ZEL Production Pre-Survivor Feedback Bridge V1']
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-ai-pre-survivor-next-hypothesis-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test isolated next-hypothesis observer
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_ai_pre_survivor_next_hypothesis_v1.py
+      - name: Verify fail-closed observer contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_ai_pre_survivor_next_hypothesis_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['role']=='PARALLEL_NEXT_HYPOTHESIS_OBSERVER_NOT_ROUTE'
+          assert cfg['feedback_path']=='/home/z/z/ledger/production_pre_survivor_improvement_evidence_v1.json'
+          assert cfg['output_path']=='/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json'
+          assert cfg['output_path']!='/home/z/z/ledger/production_ai_edge_proposals_v1.json'
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          assert cfg['source_code_mutation_allowed'] is False
+          assert cfg['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py').read_text()
+          assert 'submit_order' not in src
+          assert 'ACTIVE_PROPOSAL_PATH' in src
+          assert 'PARALLEL_NEXT_HYPOTHESIS_OBSERVER_NOT_ROUTE' in src
+          assert 'GEMINI_API_KEY' in src
+          print('PASS_PRE_SURVIVOR_NEXT_HYPOTHESIS_FAIL_CLOSED_CONTRACT')
+          PY
+
+  run-on-vps:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Verify deployed observer parity and run one bounded tick
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          test -n "$GEMINI_API_KEY"
+          mkdir -p out
+          API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_ai_pre_survivor_next_hypothesis_v1.py',
+            'backend/production/zel_production_ai_proposal_layer_v1.py',
+            'config/zel_production_ai_pre_survivor_next_hypothesis_v1.json',
+            'config/zel_production_ai_proposal_layer_pre_survivor_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "API_KEY_B64='$API_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/next_hypothesis_vps_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          bad=[]
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              if got!=want:
+                  bad.append({'path':rel,'got':got,'want':want})
+          if bad:
+              raise SystemExit('RUNTIME_PARITY_MISMATCH:'+json.dumps(bad,sort_keys=True))
+          PY
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          python3 -m backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1 \
+            --policy config/zel_production_ai_pre_survivor_next_hypothesis_v1.json \
+            >/tmp/zel-pre-survivor-next-hypothesis-run.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          run=json.loads(Path('/tmp/zel-pre-survivor-next-hypothesis-run.json').read_text())
+          out_path=Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json')
+          if not out_path.is_file():
+              raise SystemExit('NEXT_HYPOTHESIS_LEDGER_MISSING')
+          row=json.loads(out_path.read_text())
+          allowed={
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_NO_ACCUMULATING_CONTEXT',
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_FACTORY_MISSING',
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_CALLER_UNAVAILABLE',
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_CALL_FAILED',
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_SOURCE_BINDING_REQUIRED',
+              'HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_NO_CANDIDATE',
+              'PASS_PRE_SURVIVOR_NEXT_HYPOTHESIS_SOURCE_READY',
+          }
+          assert row['state'] in allowed, row
+          assert row['role']=='PARALLEL_NEXT_HYPOTHESIS_OBSERVER_NOT_ROUTE'
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          assert row['source_code_mutation_applied'] is False
+          assert row['self_modification_applied'] is False
+          if row['state']=='PASS_PRE_SURVIVOR_NEXT_HYPOTHESIS_SOURCE_READY':
+              assert row['ai_call_made'] is True
+              assert row['ai_call_succeeded'] is True
+              assert 1 <= int(row['proposal_count']) <= 2
+              assert 1 <= int(row['source_ready_count']) <= int(row['proposal_count'])
+          feedback_path=Path('/home/z/z/ledger/production_pre_survivor_improvement_evidence_v1.json')
+          feedback=json.loads(feedback_path.read_text()) if feedback_path.is_file() else None
+          if isinstance(feedback,dict) and feedback.get('state')=='PASS_PRE_SURVIVOR_ACCUMULATING_CONTEXT_PROJECTED':
+              assert feedback['selection_authority'] is False
+              assert feedback['promotion_authority'] is False
+              assert feedback['execution_authority']=='NONE'
+              assert feedback['order_authority']=='BLOCKED'
+              assert feedback['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+              'state': row['state'],
+              'trade_count': feedback.get('trade_count') if isinstance(feedback,dict) else None,
+              'current_family_id': row.get('current_family_id'),
+              'current_progress_direction': row.get('current_progress_direction'),
+              'proposal_count': int(row.get('proposal_count') or 0),
+              'source_ready_count': int(row.get('source_ready_count') or 0),
+              'ai_call_made': bool(row.get('ai_call_made')),
+              'ai_call_succeeded': bool(row.get('ai_call_succeeded')),
+              'written': bool(run.get('written')),
+              'receipt_sha256': row.get('receipt_sha256'),
+              'selection_authority': False,
+              'promotion_authority': False,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'live_trade_authority': 'BLOCKED',
+              'exchange_order_submitted': False,
+          },sort_keys=True))
+          PY
+          REMOTE
+      - name: Verify receipt remains non-authoritative
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/next_hypothesis_vps_receipt.json').read_text())
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-pre-survivor-next-hypothesis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/next_hypothesis_vps_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

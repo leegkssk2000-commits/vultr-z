@@ -1,0 +1,147 @@
+name: TMP Pre-Survivor First Generation Smoke 20260813
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/_tmp-pre-survivor-first-generation-smoke-20260813.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      EXPECTED_MASTER_SHA: e3558df23137ea5c5f3d1eab8c75694b63319483
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run one bounded master research generation
+        run: |
+          set -euo pipefail
+          KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "KEY_B64='$KEY_B64' EXPECTED_MASTER_SHA='$EXPECTED_MASTER_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          test "$(basename "$(readlink -f "$ROOT")")" = "$EXPECTED_MASTER_SHA"
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$KEY_B64" | base64 -d)"
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+
+          active=[
+              Path('/home/z/z/ledger/production_ai_admission_contracts_v1.json'),
+              Path('/home/z/z/ledger/production_ai_admission_observations_v1.ndjson'),
+              Path('/home/z/z/ledger/production_ai_admission_economic_v1.json'),
+          ]
+          def digests():
+              return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None for p in active}
+          def run_json(args):
+              raw=subprocess.check_output(args,text=True).strip().splitlines()[-1]
+              return json.loads(raw)
+
+          before=digests()
+          prep=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
+              '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','prepare',
+          ])
+          nxt=run_json([
+              'python3','-m','backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1',
+              '--policy','config/zel_production_ai_pre_survivor_research_next_hypothesis_v1.json',
+          ])
+          comp_run=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_comparator_v1',
+              '--policy','config/zel_production_pre_survivor_research_comparator_v1.json',
+          ])
+          upd=run_json([
+              'python3','-m','backend.production.zel_production_pre_survivor_research_controller_v1',
+              '--policy','config/zel_production_pre_survivor_research_controller_v1.json','--phase','update',
+          ])
+          after=digests()
+          assert before==after, {'before':before,'after':after}
+
+          paths={
+              'reference':Path('/home/z/z/ledger/production_pre_survivor_research_reference_feedback_v1.json'),
+              'next':Path('/home/z/z/ledger/production_ai_pre_survivor_next_hypotheses_v1.json'),
+              'evidence':Path('/home/z/z/ledger/production_pre_survivor_challenger_evidence_v1.json'),
+              'comparison':Path('/home/z/z/ledger/production_pre_survivor_research_comparison_v1.json'),
+              'incumbent':Path('/home/z/z/ledger/production_pre_survivor_research_incumbent_v1.json'),
+          }
+          rows={k:(json.loads(p.read_text()) if p.is_file() else None) for k,p in paths.items()}
+          for k in ('reference','next','evidence','comparison'):
+              row=rows[k]
+              assert isinstance(row,dict), k
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+          if isinstance(rows['incumbent'],dict):
+              inc=rows['incumbent']
+              assert inc['research_incumbent_only'] is True
+              assert inc['production_promotion_applied'] is False
+              assert inc['selection_authority'] is False
+              assert inc['promotion_authority'] is False
+              assert inc['execution_authority']=='NONE'
+              assert inc['order_authority']=='BLOCKED'
+              assert inc['live_trade_authority']=='BLOCKED'
+              assert inc['exchange_order_submitted'] is False
+
+          evidence=rows['evidence']; comparison=rows['comparison']; reference=rows['reference']; nextrow=rows['next']; inc=rows['incumbent'] or {}
+          print(json.dumps({
+              'prep':prep,
+              'next_cli':nxt,
+              'comparison_cli':comp_run,
+              'update':upd,
+              'reference_source':reference.get('research_reference_source'),
+              'reference_family_id':reference.get('family_id'),
+              'reference_trade_count':reference.get('trade_count'),
+              'reference_win_rate_pct':reference.get('win_rate_pct'),
+              'reference_net_pnl':reference.get('net_pnl'),
+              'reference_net_expectancy':reference.get('net_expectancy'),
+              'reference_profit_factor':reference.get('profit_factor'),
+              'reference_max_dd_pct':reference.get('max_dd_pct'),
+              'next_state':nextrow.get('state'),
+              'next_proposal_count':int(nextrow.get('proposal_count') or 0),
+              'next_source_ready_count':int(nextrow.get('source_ready_count') or 0),
+              'challenger_state':evidence.get('state'),
+              'challenger_count':int(evidence.get('challenger_count') or 0),
+              'history_appended':int(evidence.get('history_appended') or 0),
+              'challengers':evidence.get('challengers') or [],
+              'comparison_state':comparison.get('state'),
+              'comparison_count':int(comparison.get('comparison_count') or 0),
+              'research_preference':comparison.get('research_preference'),
+              'preferred_challenger_family_ids':comparison.get('preferred_challenger_family_ids') or [],
+              'incumbent_family_id':inc.get('family_id'),
+              'incumbent_generation':int(inc.get('generation') or 0),
+              'active_ledger_unchanged':True,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+          },sort_keys=True))
+          PY
+          REMOTE
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

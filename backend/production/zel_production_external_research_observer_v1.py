@@ -278,6 +278,7 @@ def research_prompt(context: Mapping[str, Any], max_sources: int, max_youtube: i
                 "required_sources": ["native source"],
                 "falsification_test": "bounded deterministic reject test",
                 "distinct_from_current": "why not cosmetic rescue",
+                "evidence_urls": ["exact URL copied from sources or youtube_candidates that supports this direction"],
             }
         ],
     }
@@ -292,6 +293,7 @@ def research_prompt(context: Mapping[str, Any], max_sources: int, max_youtube: i
         "Prefer the curated videos with verified observed views when relevant; you may discover newer public YouTube candidates, "
         "but claimed view counts must be treated as unverified later unless independently observed by the system. "
         f"Return at most {max_sources} sources, {max_youtube} YouTube candidates, and 3 hypothesis directions. "
+        "For every hypothesis direction, evidence_urls must copy only the exact URLs from the returned sources or youtube_candidates that materially support that direction; never invent or rewrite a URL. "
         "Every useful claim needs a local deterministic test or a stated reproducibility gap. Return strict JSON only.\n\n"
         f"CONTEXT={json.dumps(context, ensure_ascii=False, sort_keys=True)}\n"
         f"OUTPUT_SCHEMA={json.dumps(schema, ensure_ascii=False, sort_keys=True)}"
@@ -521,12 +523,18 @@ def _normalize_direction(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     if not _SAFE_FAMILY.fullmatch(family_id):
         return None
     required = [str(x)[:80] for x in (raw.get("required_sources") or [])[:6] if str(x).strip()]
+    evidence_urls: list[str] = []
+    for value in (raw.get("evidence_urls") or [])[:8]:
+        url = _url(value)
+        if url and url not in evidence_urls:
+            evidence_urls.append(url)
     return {
         "family_id": family_id,
         "mechanism": _trim(raw.get("mechanism"), 1000),
         "required_sources": sorted(set(required)),
         "falsification_test": _trim(raw.get("falsification_test"), 1000),
         "distinct_from_current": _trim(raw.get("distinct_from_current"), 1000),
+        "evidence_urls": evidence_urls,
     }
 
 

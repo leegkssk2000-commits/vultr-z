@@ -1,0 +1,127 @@
+name: ZEL Production A1 WS Channel Isolation Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-channel-isolation-probe-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-channel-isolation-probe-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic-only contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/zel-production-a1-ws-channel-isolation-probe-v1.yml').read_text()
+          assert "'diagnostic_only':True" in p
+          assert "'execution_authority':'NONE'" in p
+          assert "'order_authority':'BLOCKED'" in p
+          print('PASS_A1_WS_CHANNEL_ISOLATION_STATIC')
+          PY
+
+  probe-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Probe depth, trade and kline on isolated public connections
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'cd /home/z/zel-production-current && PYTHONPATH=. python3 -' > out/ws_channel_probe.json <<'PY'
+          import json,socket,time
+          from backend.production.zel_production_bingx_ws_microstructure_v1 import BingXPublicWs
+          endpoint='wss://open-api-swap.bingx.com/swap-market'
+          symbols=['BTC-USDT','ETH-USDT']
+          tests=[
+              ('depth', [f'{s}@depth20@200ms' for s in symbols], 8),
+              ('trade', [f'{s}@trade' for s in symbols], 20),
+              ('kline', [f'{s}@kline_1m' for s in symbols], 70),
+          ]
+          results={}
+          for name,channels,duration in tests:
+              counts={c:0 for c in channels}; other={}; errors=[]
+              ws=BingXPublicWs(endpoint,timeout=5.0)
+              started=time.monotonic()
+              try:
+                  ws.connect()
+                  for c in channels:
+                      ws.subscribe(c)
+                      time.sleep(0.35)
+                  while time.monotonic()-started < duration:
+                      try: text=ws.recv_text()
+                      except socket.timeout: continue
+                      if text=='Ping':
+                          ws.send_text('Pong'); continue
+                      try: msg=json.loads(text)
+                      except Exception:
+                          other['non_json']=other.get('non_json',0)+1; continue
+                      dtype=str(msg.get('dataType') or '') if isinstance(msg,dict) else ''
+                      if dtype in counts: counts[dtype]+=1
+                      else:
+                          key=dtype or str(msg.get('code') if isinstance(msg,dict) else 'unknown')
+                          other[key]=other.get(key,0)+1
+              except Exception as exc:
+                  errors.append(f'{type(exc).__name__}:{exc}'[:300])
+              finally:
+                  ws.close()
+              results[name]={'channels':channels,'counts':counts,'other':other,'errors':errors,'duration_sec':duration}
+          out={
+              'schema_version':'zel.a1_ws_channel_isolation_probe.v1',
+              'state':'PASS_A1_WS_CHANNEL_ISOLATION_PROBE',
+              'diagnostic_only':True,
+              'results':results,
+              'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0,
+          }
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Verify authority and depth evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/ws_channel_probe.json').read_text())
+          assert r['diagnostic_only'] is True
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert sum(r['results']['depth']['counts'].values())>0, r
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-a1-ws-channel-isolation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ws_channel_probe.json
+          if-no-files-found: error
+          retention-days: 30

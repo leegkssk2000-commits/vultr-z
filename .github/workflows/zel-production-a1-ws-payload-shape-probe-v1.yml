@@ -1,0 +1,116 @@
+name: ZEL Production A1 WS Payload Shape Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-payload-shape-probe-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-payload-shape-probe-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/zel-production-a1-ws-payload-shape-probe-v1.yml').read_text()
+          assert "'diagnostic_only':True" in p
+          assert "'execution_authority':'NONE'" in p
+          print('PASS_A1_WS_PAYLOAD_SHAPE_STATIC')
+          PY
+
+  probe-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture one public payload shape per channel
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'cd /home/z/zel-production-current && PYTHONPATH=. python3 -' > out/ws_payload_shape.json <<'PY'
+          import json,socket,time
+          from backend.production.zel_production_bingx_ws_microstructure_v1 import BingXPublicWs
+          endpoint='wss://open-api-swap.bingx.com/swap-market'
+          channels={
+              'depth':'BTC-USDT@depth20@200ms',
+              'trade':'BTC-USDT@trade',
+              'kline':'BTC-USDT@kline_1m',
+          }
+          samples={}
+          for name,channel in channels.items():
+              ws=BingXPublicWs(endpoint,timeout=5.0)
+              sample=None; seen=0; error=None
+              try:
+                  ws.connect(); ws.subscribe(channel)
+                  deadline=time.monotonic()+20
+                  while time.monotonic()<deadline and sample is None:
+                      try:text=ws.recv_text()
+                      except socket.timeout:continue
+                      if text=='Ping': ws.send_text('Pong'); continue
+                      try:msg=json.loads(text)
+                      except Exception:continue
+                      if not isinstance(msg,dict) or str(msg.get('dataType') or '')!=channel:continue
+                      seen+=1
+                      data=msg.get('data')
+                      info={'message_keys':sorted(msg.keys()),'data_type':type(data).__name__}
+                      if isinstance(data,dict):
+                          info['data_keys']=sorted(data.keys())
+                          if name=='kline':
+                              k=data.get('K'); info['K_type']=type(k).__name__; info['K_keys']=sorted(k.keys()) if isinstance(k,dict) else None
+                      elif isinstance(data,list):
+                          info['data_len']=len(data)
+                          first=data[0] if data else None
+                          info['first_type']=type(first).__name__
+                          info['first_keys']=sorted(first.keys()) if isinstance(first,dict) else None
+                      info['sample_sanitized']=data
+                      sample=info
+              except Exception as exc:error=f'{type(exc).__name__}:{exc}'[:300]
+              finally:ws.close()
+              samples[name]={'channel':channel,'seen':seen,'sample':sample,'error':error}
+          out={'schema_version':'zel.a1_ws_payload_shape_probe.v1','state':'PASS_A1_WS_PAYLOAD_SHAPE_PROBE','diagnostic_only':True,'samples':samples,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0}
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Verify authority boundary
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/ws_payload_shape.json').read_text())
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          assert all(r['samples'][s]['sample'] is not None for s in ('depth','trade','kline')),r
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-a1-ws-payload-shape-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ws_payload_shape.json
+          if-no-files-found: error
+          retention-days: 30

@@ -4,7 +4,7 @@ import copy
 import json
 from pathlib import Path
 
-from backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1 import ACTIVE_PROPOSAL_PATH, next_hypothesis_tick, validate_policy
+from backend.production.zel_production_ai_pre_survivor_next_hypothesis_v1 import ACTIVE_PROPOSAL_PATH, next_hypothesis_tick, proposal_prompt, validate_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = json.loads((ROOT / "config/zel_production_ai_pre_survivor_next_hypothesis_v1.json").read_text())
@@ -183,3 +183,11 @@ def test_research_template_mismatch_is_not_reused_forever() -> None:
     assert first["state"] == "HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_TEMPLATE_BINDING_REQUIRED"
     second, wrote = next_hypothesis_tick(RESEARCH_POLICY, PROPOSAL_POLICY, feedback=feedback(), factory=FACTORY, pool=None, previous=first, ai_caller=bad_caller, template_registry=TEMPLATE_REGISTRY, now_ms=BASE_TS + 1)
     assert wrote is True and calls == 2 and second["state"] == "HOLD_PRE_SURVIVOR_NEXT_HYPOTHESIS_TEMPLATE_BINDING_REQUIRED"
+
+
+def test_research_prompt_prefers_cross_signature_diversity_without_forcing_budget_fill() -> None:
+    context = {"frozen_admission_templates": [{"required_sources_exact": ["basis", "open_interest"]}, {"required_sources_exact": ["funding", "l2_order_book"]}]}
+    prompt = proposal_prompt(context, 2)
+    assert "prefer different frozen required_sources_exact signatures" in prompt
+    assert "Do not generate filler" in prompt
+    assert "returning fewer proposals is valid" in prompt

@@ -1,0 +1,159 @@
+name: ZEL Production A1 Jump Liquidity Calibration V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_a1_jump_liquidity_calibration_v1.py'
+      - 'config/zel_production_a1_jump_liquidity_calibration_v1.json'
+      - 'tests/test_zel_production_a1_jump_liquidity_calibration_v1.py'
+      - '.github/workflows/zel-production-a1-jump-liquidity-calibration-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_a1_jump_liquidity_calibration_v1.py'
+      - 'config/zel_production_a1_jump_liquidity_calibration_v1.json'
+      - '.github/workflows/zel-production-a1-jump-liquidity-calibration-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '12,27,42,57 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-a1-jump-liquidity-calibration-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test calibration seal
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_a1_jump_liquidity_calibration_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_a1_jump_liquidity_calibration_v1.py
+      - name: Verify no economic-selection authority
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('config/zel_production_a1_jump_liquidity_calibration_v1.json').read_text())
+          assert c['calibration_elapsed_ms']==21600000
+          assert c['falsification_horizons_sec']==[5,15,30,60]
+          assert c['horizon_policy']=='FIXED_VECTOR_NO_BEST_HORIZON_SELECTION_FROM_PNL'
+          assert c['threshold_selection_uses_future_returns'] is False
+          assert c['threshold_selection_uses_pnl'] is False
+          assert c['threshold_selection_uses_winrate'] is False
+          assert c['economic_outcomes_inspected'] is False
+          assert c['parameter_search'] is False
+          assert c['economic_replay_allowed_by_calibration'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED'
+          print('PASS_A1_JUMP_SOURCE_ONLY_CALIBRATION_STATIC')
+          PY
+
+  seal-on-vps:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Wait runtime parity and seal only when 6h source gate is ready
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_a1_jump_liquidity_calibration_v1.py',
+            'config/zel_production_a1_jump_liquidity_calibration_v1.json',
+            'backend/production/zel_production_a1_jump_liquidity_history_gate_v1.py',
+            'config/zel_production_a1_jump_liquidity_history_gate_v1.json',
+            'config/zel_production_a1_jump_liquidity_source_template_v1.json',
+            'backend/production/zel_production_bingx_ws_microstructure_v2.py',
+            'config/zel_production_bingx_ws_microstructure_v2.json',
+            'config/zel_production_a1_jump_liquidity_autopsy_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/jump_calibration_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          matched=0
+          for _ in $(seq 1 90); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel; got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None; ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then matched=1; break; fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo A1_JUMP_CALIBRATION_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_a1_jump_liquidity_calibration_v1 \
+            --policy config/zel_production_a1_jump_liquidity_calibration_v1.json
+          REMOTE
+      - name: Verify receipt is source-only and fail-closed
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/jump_calibration_receipt.json').read_text())
+          assert r['state'] in {'HOLD_A1_JUMP_CALIBRATION_SOURCE_NOT_READY','PASS_A1_JUMP_SOURCE_ONLY_CALIBRATION_SEALED'},r
+          assert r['economic_outcomes_inspected'] is False
+          assert r['threshold_selection_uses_future_returns'] is False
+          assert r['threshold_selection_uses_pnl'] is False
+          assert r['economic_replay_allowed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert r['protected_mutations']==0
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-a1-jump-calibration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/jump_calibration_receipt.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,175 @@
+name: ZEL Production A1 Jump Liquidity Gate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_a1_jump_liquidity_gate_v1.py'
+      - 'config/zel_production_a1_jump_liquidity_autopsy_v1.json'
+      - 'tests/test_zel_production_a1_jump_liquidity_gate_v1.py'
+      - '.github/workflows/zel-production-a1-jump-liquidity-gate-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_a1_jump_liquidity_gate_v1.py'
+      - 'config/zel_production_a1_jump_liquidity_autopsy_v1.json'
+      - '.github/workflows/zel-production-a1-jump-liquidity-gate-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-a1-jump-liquidity-gate-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test preregistration gate
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_a1_jump_liquidity_gate_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_a1_jump_liquidity_gate_v1.py
+      - name: Verify architecture and authority freeze
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_a1_jump_liquidity_autopsy_v1.json').read_text())
+          assert cfg['family_id']=='jump_liquidity_state_switch'
+          assert sorted(cfg['required_sources_exact'])==['l2_order_book','ohlcv','volume']
+          assert cfg['architecture_result']=='PRE_REGISTERED_NOT_EVALUATED'
+          assert cfg['admission_state']=='HOLD_ADMISSION_TEMPLATE_REQUIRED'
+          assert cfg['admission_template_id'] is None
+          assert cfg['numeric_signal_thresholds']==[]
+          assert cfg['parameter_search'] is False
+          assert cfg['economic_replay_allowed'] is False
+          assert cfg['economic_signal_enabled'] is False
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          print('PASS_A1_JUMP_LIQUIDITY_PREREGISTRATION_FAIL_CLOSED')
+          PY
+
+  materialize-on-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Materialize frozen autopsy against prospective source history
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_a1_jump_liquidity_gate_v1.py',
+            'config/zel_production_a1_jump_liquidity_autopsy_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/a1_jump_liquidity_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          matched=0
+          for _ in $(seq 1 60); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo A1_JUMP_LIQUIDITY_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_a1_jump_liquidity_gate_v1 \
+            --policy config/zel_production_a1_jump_liquidity_autopsy_v1.json
+          REMOTE
+      - name: Verify receipt remains research-only HOLD
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/a1_jump_liquidity_receipt.json').read_text())
+          assert row['state'] in {
+            'HOLD_A1_JUMP_LIQUIDITY_HISTORY_ACCUMULATING',
+            'HOLD_A1_JUMP_LIQUIDITY_LATEST_SOURCE_INCOMPLETE',
+            'HOLD_A1_JUMP_LIQUIDITY_HISTORY_SUMMARY_MISSING',
+            'HOLD_A1_JUMP_LIQUIDITY_HISTORY_SUMMARY_UNSAFE',
+            'HOLD_A1_JUMP_LIQUIDITY_UNRECOGNIZED_HISTORY_GATE',
+          }
+          assert row['architecture_result']=='PRE_REGISTERED_NOT_EVALUATED'
+          assert row['source_ready'] is False
+          assert row['template_ready'] is False
+          assert row['admission_state']=='HOLD_ADMISSION_TEMPLATE_REQUIRED'
+          assert row['economic_replay_allowed'] is False
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-a1-jump-liquidity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_jump_liquidity_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

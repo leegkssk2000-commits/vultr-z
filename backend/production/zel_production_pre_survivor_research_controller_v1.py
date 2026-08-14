@@ -112,17 +112,34 @@ def _feedback_from_incumbent(incumbent: Mapping[str, Any], now_ms: int) -> dict[
     return out
 
 
+def _reference_metrics_hold(active: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+    missing = [key for key in METRICS if key not in active]
+    out = {
+        "schema_version": FEEDBACK_SCHEMA,
+        "state": "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_MISSING",
+        "family_id": str(active.get("family_id") or ""),
+        "source_active_state": str(active.get("state") or ""),
+        "research_reference_source": "NONE",
+        "missing_metrics": missing,
+        "updated_at_ms": now_ms,
+        **_safety(),
+    }
+    out["receipt_sha256"] = stable_sha(out)
+    return out
+
+
 def prepare_reference(policy: Mapping[str, Any], *, active: Mapping[str, Any] | None, incumbent: Mapping[str, Any] | None, now_ms: int | None = None) -> dict[str, Any]:
     validate_policy(policy)
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    incumbent_ready = isinstance(incumbent, Mapping) and incumbent.get("schema_version") == INCUMBENT_SCHEMA and _has_metrics(incumbent)
     if not isinstance(active, Mapping):
-        if isinstance(incumbent, Mapping) and incumbent.get("schema_version") == INCUMBENT_SCHEMA:
+        if incumbent_ready:
             return _feedback_from_incumbent(incumbent, now)
         out = {"schema_version": FEEDBACK_SCHEMA, "state": "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_MISSING", "updated_at_ms": now, **_safety()}
         out["receipt_sha256"] = stable_sha(out)
         return out
     _guard(active, "PRE_SURVIVOR_RESEARCH_CONTROLLER_ACTIVE")
-    use_incumbent = isinstance(incumbent, Mapping) and incumbent.get("schema_version") == INCUMBENT_SCHEMA and _has_metrics(incumbent)
+    use_incumbent = incumbent_ready
     if use_incumbent:
         _guard(incumbent, "PRE_SURVIVOR_RESEARCH_CONTROLLER_INCUMBENT")
         if _has_metrics(active):
@@ -134,6 +151,8 @@ def prepare_reference(policy: Mapping[str, Any], *, active: Mapping[str, Any] | 
                 use_incumbent = False
     if use_incumbent:
         return _feedback_from_incumbent(incumbent, now)
+    if not _has_metrics(active):
+        return _reference_metrics_hold(active, now)
     out = dict(active)
     out["research_reference_source"] = "ACTIVE_PRE_SURVIVOR"
     out["updated_at_ms"] = now

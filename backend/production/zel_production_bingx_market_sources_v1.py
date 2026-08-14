@@ -28,16 +28,13 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("BINGX_MARKET_SOURCE_LIVE_FORBIDDEN")
     if policy.get("source_code_mutation_allowed") is not False or policy.get("self_modification_allowed") is not False:
         raise RuntimeError("BINGX_MARKET_SOURCE_MUTATION_FORBIDDEN")
-    base_url = str(policy.get("base_url") or "").rstrip("/")
-    if base_url not in {"https://open-api.bingx.com", "https://open-api.bingx.pro"}:
+    if str(policy.get("base_url") or "").rstrip("/") not in {"https://open-api.bingx.com", "https://open-api.bingx.pro"}:
         raise RuntimeError("BINGX_MARKET_SOURCE_BASE_URL_INVALID")
     symbols = policy.get("symbols")
     if not isinstance(symbols, list) or not symbols:
         raise RuntimeError("BINGX_MARKET_SOURCE_SYMBOLS_MISSING")
-    for symbol in symbols:
-        text = str(symbol)
-        if not text.endswith("-USDT") or len(text) > 24:
-            raise RuntimeError(f"BINGX_MARKET_SOURCE_SYMBOL_INVALID:{text}")
+    if any(not str(x).endswith("-USDT") or len(str(x)) > 24 for x in symbols):
+        raise RuntimeError("BINGX_MARKET_SOURCE_SYMBOL_INVALID")
     if str(policy.get("kline_interval") or "") not in {"1m", "3m", "5m", "15m", "30m", "1h"}:
         raise RuntimeError("BINGX_MARKET_SOURCE_INTERVAL_INVALID")
     if int(policy.get("kline_limit") or 0) not in range(2, 1441):
@@ -60,16 +57,10 @@ def _request_json(url: str, timeout: int = 20) -> dict[str, Any]:
     return dict(payload)
 
 
-def _get(
-    base_url: str,
-    path: str,
-    params: Mapping[str, Any],
-    fetcher: Callable[[str], Mapping[str, Any]],
-) -> Any:
+def _get(base_url: str, path: str, params: Mapping[str, Any], fetcher: Callable[[str], Mapping[str, Any]]) -> Any:
     query = dict(params)
     query["timestamp"] = int(time.time() * 1000)
-    url = f"{base_url}{path}?{urllib.parse.urlencode(query)}"
-    payload = fetcher(url)
+    payload = fetcher(f"{base_url}{path}?{urllib.parse.urlencode(query)}")
     if int(payload.get("code", -1)) != 0:
         raise RuntimeError(f"BINGX_MARKET_SOURCE_API_ERROR:{payload.get('code')}:{str(payload.get('msg') or '')[:200]}")
     return payload.get("data")
@@ -79,24 +70,38 @@ def _validate_klines(data: Any, minimum: int = 2) -> dict[str, Any]:
     if not isinstance(data, list) or len(data) < minimum:
         raise RuntimeError("BINGX_MARKET_SOURCE_KLINES_INSUFFICIENT")
     last = data[-1]
-    if not isinstance(last, list) or len(last) < 11:
+    # BingX official SKILL currently documents/runtime-returns the 7-field core
+    # [openTime, open, high, low, close, volume, closeTime]. The companion
+    # api-reference documents optional extended fields through index 10.
+    if not isinstance(last, list) or len(last) < 7:
         raise RuntimeError("BINGX_MARKET_SOURCE_KLINE_SCHEMA_INVALID")
-    numeric = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    for idx in numeric:
+    for idx in range(7):
         try:
             float(last[idx])
         except (TypeError, ValueError, OverflowError) as exc:
             raise RuntimeError(f"BINGX_MARKET_SOURCE_KLINE_FIELD_INVALID:{idx}") from exc
-    return {
+    out = {
         "row_count": len(data),
+        "field_count": len(last),
         "last_open_time_ms": int(float(last[0])),
         "last_close_time_ms": int(float(last[6])),
         "last_close": float(last[4]),
         "last_base_volume": float(last[5]),
-        "last_quote_volume": float(last[7]),
-        "last_trade_count": int(float(last[8])),
-        "last_taker_buy_base_volume": float(last[9]),
+        "extended_trade_fields_bound": len(last) >= 11,
     }
+    if len(last) >= 11:
+        try:
+            out.update(
+                {
+                    "last_quote_volume": float(last[7]),
+                    "last_trade_count": int(float(last[8])),
+                    "last_taker_buy_base_volume": float(last[9]),
+                    "last_taker_buy_quote_volume": float(last[10]),
+                }
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("BINGX_MARKET_SOURCE_EXTENDED_KLINE_FIELD_INVALID") from exc
+    return out
 
 
 def _validate_depth(data: Any) -> dict[str, Any]:
@@ -106,10 +111,8 @@ def _validate_depth(data: Any) -> dict[str, Any]:
     if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
         raise RuntimeError("BINGX_MARKET_SOURCE_DEPTH_EMPTY")
     try:
-        best_bid = float(bids[0][0])
-        best_ask = float(asks[0][0])
-        bid_qty = float(bids[0][1])
-        ask_qty = float(asks[0][1])
+        best_bid, bid_qty = float(bids[0][0]), float(bids[0][1])
+        best_ask, ask_qty = float(asks[0][0]), float(asks[0][1])
     except (TypeError, ValueError, IndexError, OverflowError) as exc:
         raise RuntimeError("BINGX_MARKET_SOURCE_DEPTH_SCHEMA_INVALID") from exc
     if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
@@ -133,20 +136,10 @@ def verify_sources(
     cfg = validate_policy(policy)
     caller = fetcher or _request_json
     base_url = str(cfg["base_url"]).rstrip("/")
-    rows: list[dict[str, Any]] = []
+    rows = []
     for symbol in cfg["symbols"]:
-        klines = _get(
-            base_url,
-            "/openApi/swap/v3/quote/klines",
-            {"symbol": symbol, "interval": cfg["kline_interval"], "limit": int(cfg["kline_limit"])},
-            caller,
-        )
-        depth = _get(
-            base_url,
-            "/openApi/swap/v2/quote/depth",
-            {"symbol": symbol, "limit": int(cfg["depth_limit"])},
-            caller,
-        )
+        klines = _get(base_url, "/openApi/swap/v3/quote/klines", {"symbol": symbol, "interval": cfg["kline_interval"], "limit": int(cfg["kline_limit"])}, caller)
+        depth = _get(base_url, "/openApi/swap/v2/quote/depth", {"symbol": symbol, "limit": int(cfg["depth_limit"])}, caller)
         rows.append({"symbol": symbol, "kline": _validate_klines(klines), "depth": _validate_depth(depth)})
     return {
         "schema_version": SCHEMA,
@@ -154,11 +147,7 @@ def verify_sources(
         "role": "PUBLIC_MARKET_SOURCE_VERIFIER_NOT_STRATEGY",
         "provider": "BINGX_PUBLIC_USDT_PERPETUAL",
         "verified_sources": ["ohlcv", "volume", "l2_order_book"],
-        "source_bindings": {
-            "ohlcv_source_bound": True,
-            "volume_source_bound": True,
-            "l2_order_book_source_bound": True,
-        },
+        "source_bindings": {"ohlcv_source_bound": True, "volume_source_bound": True, "l2_order_book_source_bound": True},
         "history_coverage_bound": False,
         "economic_signal_enabled": False,
         "symbols": rows,
@@ -179,8 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     ap.add_argument("--output", type=Path)
     ns = ap.parse_args(argv)
-    policy = json.loads(ns.policy.read_text(encoding="utf-8"))
-    result = verify_sources(policy)
+    result = verify_sources(json.loads(ns.policy.read_text(encoding="utf-8")))
     text = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     if ns.output:
         ns.output.parent.mkdir(parents=True, exist_ok=True)

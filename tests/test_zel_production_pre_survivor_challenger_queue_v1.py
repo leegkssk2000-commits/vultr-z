@@ -144,3 +144,31 @@ def test_queue_deduplicates_exact_proposal_identity() -> None:
         now_ms=4,
     )
     assert row["proposal_count"] == 1
+
+
+def test_queue_allows_only_one_slot_per_family_even_when_mechanism_differs() -> None:
+    prior = queue_tick(
+        POLICY,
+        current=current(proposal("same_family", "basis_oi_deleveraging_v1", "MECHANISM_A")),
+        previous=None,
+        evidence=None,
+        reference={"family_id": "reference", **SAFETY},
+        incumbent=None,
+        candidate_budget=2,
+        now_ms=5,
+    )
+    row = queue_tick(
+        POLICY,
+        current=current(
+            proposal("same_family", "basis_oi_deleveraging_v1", "MECHANISM_B"),
+            proposal("different_family", "funding_l2_inventory_exhaustion_v1", "MECHANISM_C"),
+        ),
+        previous=prior,
+        evidence=None,
+        reference={"family_id": "reference", **SAFETY},
+        incumbent=None,
+        candidate_budget=2,
+        now_ms=6,
+    )
+    assert row["queue_family_ids"] == ["same_family", "different_family"]
+    assert row["proposal_count"] == 2

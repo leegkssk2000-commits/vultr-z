@@ -1,0 +1,158 @@
+name: ZEL Production A1 WS Runtime Capability Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-runtime-capability-probe-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-runtime-capability-probe-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-a1-ws-runtime-capability-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic-only contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/zel-production-a1-ws-runtime-capability-probe-v1.yml').read_text()
+          assert 'open-api-swap.bingx.com' in p
+          assert "'diagnostic_only':True" in p
+          assert "'economic_signal_enabled':False" in p
+          assert "'execution_authority':'NONE'" in p
+          assert "'order_authority':'BLOCKED'" in p
+          assert "'exchange_order_submitted':False" in p
+          print('PASS_A1_WS_RUNTIME_CAPABILITY_PROBE_STATIC')
+          PY
+
+  probe-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Probe VPS runtime and BingX public WS handshake
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/ws_runtime_capability.json <<'PY'
+          import base64, importlib.util, json, os, platform, shutil, socket, ssl
+
+          host='open-api-swap.bingx.com'
+          path='/swap-market'
+          key=base64.b64encode(os.urandom(16)).decode()
+          handshake_ok=False
+          status_line=''
+          error=None
+          try:
+              raw=socket.create_connection((host,443),timeout=10)
+              ctx=ssl.create_default_context()
+              sock=ctx.wrap_socket(raw,server_hostname=host)
+              request=(
+                  f'GET {path} HTTP/1.1\r\n'
+                  f'Host: {host}\r\n'
+                  'Upgrade: websocket\r\n'
+                  'Connection: Upgrade\r\n'
+                  f'Sec-WebSocket-Key: {key}\r\n'
+                  'Sec-WebSocket-Version: 13\r\n'
+                  'User-Agent: ZEL-A1-RESEARCH-PROBE/1.0\r\n\r\n'
+              )
+              sock.sendall(request.encode())
+              response=sock.recv(4096).decode('latin1','replace')
+              status_line=response.split('\r\n',1)[0]
+              handshake_ok=status_line.startswith('HTTP/') and ' 101 ' in f' {status_line} '
+              sock.close()
+          except Exception as exc:
+              error=f'{type(exc).__name__}:{exc}'[:300]
+
+          def cmd(name):
+              p=shutil.which(name)
+              return {'path':p,'available':bool(p)}
+
+          row={
+              'schema_version':'zel.a1_ws_runtime_capability_probe.v1',
+              'state':'PASS_A1_WS_RUNTIME_CAPABILITY_PROBE' if handshake_ok else 'HOLD_A1_WS_RUNTIME_CAPABILITY_PROBE',
+              'python_version':platform.python_version(),
+              'python_websocket_client_available':importlib.util.find_spec('websocket') is not None,
+              'python_websockets_available':importlib.util.find_spec('websockets') is not None,
+              'node':cmd('node'),
+              'websocat':cmd('websocat'),
+              'wscat':cmd('wscat'),
+              'bingx_ws_host':host,
+              'bingx_ws_path':path,
+              'tls_websocket_handshake_ok':handshake_ok,
+              'http_status_line':status_line,
+              'error':error,
+              'diagnostic_only':True,
+              'economic_signal_enabled':False,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+              'exchange_order_submitted':False,
+              'protected_mutations':0,
+          }
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Verify fail-closed receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/ws_runtime_capability.json').read_text())
+          assert row['diagnostic_only'] is True
+          assert row['economic_signal_enabled'] is False
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          assert row['protected_mutations']==0
+          assert row['tls_websocket_handshake_ok'] is True, row
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-a1-ws-runtime-capability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ws_runtime_capability.json
+          if-no-files-found: error
+          retention-days: 30

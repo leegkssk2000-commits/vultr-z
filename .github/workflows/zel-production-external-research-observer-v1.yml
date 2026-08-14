@@ -124,20 +124,27 @@ jobs:
           set -euo pipefail
           ROOT=/home/z/zel-production-current
           export ROOT RUNTIME_PARITY_B64
-          python3 - <<'PY'
+          matched=0
+          for _ in $(seq 1 60); do
+            if python3 - <<'PY'
           import base64,hashlib,json,os
           from pathlib import Path
           root=Path(os.environ['ROOT'])
           expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
-          bad=[]
+          ok=root.exists()
           for rel,want in expected.items():
               p=root/rel
               got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
-              if got!=want:
-                  bad.append({'path':rel,'got':got,'want':want})
-          if bad:
-              raise SystemExit('RUNTIME_PARITY_MISMATCH:'+json.dumps(bad,sort_keys=True))
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
           PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo EXTERNAL_RESEARCH_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
           export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"

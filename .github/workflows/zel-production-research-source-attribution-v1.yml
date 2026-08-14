@@ -1,0 +1,253 @@
+name: ZEL Production Research Source Attribution V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_research_source_attribution_v1.py'
+      - 'config/zel_production_research_source_attribution_v1.json'
+      - 'tests/test_zel_production_research_source_attribution_v1.py'
+      - '.github/workflows/zel-production-research-source-attribution-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_research_source_attribution_v1.py'
+      - 'config/zel_production_research_source_attribution_v1.json'
+      - '.github/workflows/zel-production-research-source-attribution-v1.yml'
+      - 'backend/production/zel_production_external_research_observer_v1.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '47 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-research-source-attribution-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test source attribution observer
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_research_source_attribution_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_research_source_attribution_v1.py
+      - name: Verify isolated PAPER observer boundary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_research_source_attribution_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['role']=='OBSERVER_ONLY_SOURCE_ATTRIBUTION_NOT_ROUTE'
+          isolated={cfg['history_path'],cfg['output_path']}
+          active={
+              '/home/z/z/ledger/production_ai_admission_contracts_v1.json',
+              '/home/z/z/ledger/production_ai_admission_observations_v1.ndjson',
+              '/home/z/z/ledger/production_ai_admission_economic_v1.json',
+          }
+          assert len(isolated)==2 and not (isolated & active)
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          assert cfg['source_code_mutation_allowed'] is False
+          assert cfg['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_research_source_attribution_v1.py').read_text()
+          for token in ('trade_count','win_rate_pct','net_expectancy','profit_factor','net_pnl','max_dd_pct'):
+              assert token in src
+          assert 'EXACT_FAMILY_PLUS_EXPLICIT_EVIDENCE_REF_ASSOCIATION' in src
+          assert 'SOURCE_AND_NATIVE_INPUT_ASSOCIATION_NOT_CAUSAL_OR_MARGINAL_PNL_ATTRIBUTION' in src
+          assert 'submit_order' not in src
+          assert 'https://' not in src
+          print('PASS_RESEARCH_SOURCE_ATTRIBUTION_FAIL_CLOSED_BOUNDARY')
+          PY
+
+  run-on-vps:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture source attribution without touching active admission
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_research_source_attribution_v1.py',
+            'config/zel_production_research_source_attribution_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/research_source_attribution_vps_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          matched=0
+          for _ in $(seq 1 60); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo RESEARCH_SOURCE_ATTRIBUTION_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          from backend.production.zel_production_improvement_controller_v1 import atomic_json_write
+          from backend.production.zel_production_research_source_attribution_v1 import attribution_tick,validate_policy
+
+          active=[
+              Path('/home/z/z/ledger/production_ai_admission_contracts_v1.json'),
+              Path('/home/z/z/ledger/production_ai_admission_observations_v1.ndjson'),
+              Path('/home/z/z/ledger/production_ai_admission_economic_v1.json'),
+          ]
+          def digests():
+              return {str(p):hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None for p in active}
+          def read_object(path):
+              if not path.is_file():
+                  raise SystemExit('RESEARCH_SOURCE_ATTRIBUTION_SOURCE_MISSING:'+str(path))
+              row=json.loads(path.read_text())
+              if not isinstance(row,dict):
+                  raise SystemExit('RESEARCH_SOURCE_ATTRIBUTION_SOURCE_NOT_OBJECT:'+str(path))
+              return row
+          def read_history(path):
+              rows=[]
+              if not path.is_file():
+                  return rows
+              for lineno,line in enumerate(path.read_text().splitlines(),1):
+                  text=line.strip()
+                  if not text:
+                      continue
+                  row=json.loads(text)
+                  if not isinstance(row,dict):
+                      raise SystemExit(f'RESEARCH_SOURCE_ATTRIBUTION_HISTORY_NOT_OBJECT:{path}:{lineno}')
+                  rows.append(row)
+              return rows
+
+          before=digests()
+          cfg=validate_policy(json.loads(Path('config/zel_production_research_source_attribution_v1.json').read_text()))
+          history_path=Path(str(cfg['history_path']))
+          output_path=Path(str(cfg['output_path']))
+          out,event=attribution_tick(
+              cfg,
+              external_evidence=read_object(Path(str(cfg['external_evidence_path']))),
+              next_hypothesis=read_object(Path(str(cfg['next_hypothesis_path']))),
+              comparison=read_object(Path(str(cfg['comparison_path']))),
+              history=read_history(history_path),
+          )
+          if event is not None:
+              history_path.parent.mkdir(parents=True,exist_ok=True)
+              with history_path.open('a',encoding='utf-8') as handle:
+                  handle.write(json.dumps(event,sort_keys=True,separators=(',',':'))+'\n')
+                  handle.flush()
+                  os.fsync(handle.fileno())
+          atomic_json_write(output_path,out)
+          after=digests()
+          if before!=after:
+              raise SystemExit('ACTIVE_ADMISSION_LEDGER_MUTATED:'+json.dumps({'before':before,'after':after},sort_keys=True))
+          current=out.get('current') if isinstance(out.get('current'),dict) else {}
+          aggregate=out.get('aggregate') if isinstance(out.get('aggregate'),dict) else {}
+          print(json.dumps({
+              'state':out.get('state'),
+              'external_evidence_state':current.get('external_evidence_state'),
+              'external_evidence_error_class':current.get('external_evidence_error_class'),
+              'external_evidence_error_code':current.get('external_evidence_error_code'),
+              'comparison_count':int(current.get('comparison_count') or 0),
+              'attributed_comparison_count':int(current.get('attributed_comparison_count') or 0),
+              'attributed_source_count':int(current.get('attributed_source_count') or 0),
+              'preferred_attributed_count':int(current.get('preferred_attributed_count') or 0),
+              'generation_count':int(aggregate.get('generation_count') or 0),
+              'source_breakdown_count':len(aggregate.get('source_breakdown') or {}),
+              'native_source_breakdown_count':len(aggregate.get('native_source_breakdown') or {}),
+              'active_ledger_unchanged':True,
+              'selection_authority':False,
+              'promotion_authority':False,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+              'exchange_order_submitted':False,
+          },sort_keys=True))
+          PY
+          REMOTE
+      - name: Verify attribution receipt remains non-authoritative
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/research_source_attribution_vps_receipt.json').read_text())
+          assert str(row.get('state') or '').startswith(('PASS_','HOLD_'))
+          assert row['active_ledger_unchanged'] is True
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-research-source-attribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/research_source_attribution_vps_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

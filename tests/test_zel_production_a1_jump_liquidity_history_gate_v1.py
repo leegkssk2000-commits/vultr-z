@@ -32,11 +32,19 @@ def row(symbol: str, bucket: int, *, trade=1, kline=1):
 
 def heartbeat(now: int):
     return {
-        'schema_version': m.HEARTBEAT_SCHEMA,
+        'schema_version': policy()['collector_heartbeat_schema'],
         'updated_at_ms': now,
         'parse_errors_total': 0,
         'source_sha256': 'SRC',
         'policy_sha256': 'POL',
+        'streams': {
+            'depth': {'messages': 10, 'normalized_messages': 10},
+            'trade': {'messages': 10, 'normalized_messages': 10},
+            'kline': {'messages': 10, 'normalized_messages': 10},
+        },
+        'depth_messages_total': 10,
+        'trade_messages_total': 10,
+        'kline_messages_total': 10,
         'execution_authority': 'NONE',
         'order_authority': 'BLOCKED',
         'live_trade_authority': 'BLOCKED',
@@ -50,6 +58,15 @@ def make_rows(elapsed_ms: int):
         for b in range(0, elapsed_ms, 5000):
             out.append(row(symbol,b+100_000))
     return out
+
+
+def test_policy_binds_v2_collector_and_history():
+    cfg=m.validate_policy(policy())
+    assert cfg['history_path'].endswith('production_bingx_ws_microstructure_v2.jsonl')
+    assert cfg['heartbeat_path'].endswith('production_bingx_ws_microstructure_heartbeat_v2.json')
+    assert cfg['collector_source_path'].endswith('zel_production_bingx_ws_microstructure_v2.py')
+    assert cfg['collector_policy_path'].endswith('zel_production_bingx_ws_microstructure_v2.json')
+    assert cfg['collector_heartbeat_schema']=='zel.production_bingx_ws_microstructure_heartbeat.v2'
 
 
 def test_accumulating_before_runtime_window():
@@ -72,7 +89,7 @@ def test_runtime_and_calibration_stages_do_not_enable_economic_replay():
         assert receipt['order_authority']=='BLOCKED'
 
 
-def test_missing_trade_or_kline_stays_accumulating():
+def test_missing_trade_or_kline_rows_stays_accumulating():
     rows=[]
     elapsed=900_000
     for symbol in ['BTC-USDT','ETH-USDT']:
@@ -81,6 +98,14 @@ def test_missing_trade_or_kline_stays_accumulating():
     receipt=m.evaluate(policy(),template(),heartbeat(last),rows,now_ms=last,runtime_source_sha256='SRC',runtime_policy_sha256='POL')
     assert receipt['state']=='HOLD_A1_JUMP_SOURCE_HISTORY_ACCUMULATING'
     assert receipt['source_ready'] is False
+
+
+def test_heartbeat_unormalized_stream_is_integrity_hold():
+    hb=heartbeat(1_000_000)
+    hb['streams']['trade']['normalized_messages']=0
+    receipt=m.evaluate(policy(),template(),hb,make_rows(900_000),now_ms=1_000_000,runtime_source_sha256='SRC',runtime_policy_sha256='POL')
+    assert receipt['state']=='HOLD_A1_JUMP_SOURCE_INTEGRITY'
+    assert any('HEARTBEAT_STREAM_NOT_NORMALIZED:trade' in x for x in receipt['integrity_defects'])
 
 
 def test_duplicate_or_sha_drift_is_integrity_hold():

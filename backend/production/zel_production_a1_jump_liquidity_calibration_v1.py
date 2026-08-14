@@ -161,7 +161,8 @@ def _symbol_thresholds(rows: list[dict[str, Any]], quantiles: Mapping[str, float
     total_depth: list[float] = []
     spreads: list[float] = []
     prev_mid: float | None = None
-    for row in rows:
+    ordered = sorted(rows, key=lambda x: int(x.get("bucket_start_ms") or 0))
+    for row in ordered:
         mid = _finite(row.get("mid_last"))
         if mid is not None and mid > 0 and prev_mid is not None and prev_mid > 0:
             abs_returns.append(abs((mid / prev_mid - 1.0) * 10000.0))

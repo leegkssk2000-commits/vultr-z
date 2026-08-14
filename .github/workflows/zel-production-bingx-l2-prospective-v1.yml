@@ -1,0 +1,170 @@
+name: ZEL Production BingX L2 Prospective V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_l2_prospective_v1.py'
+      - 'config/zel_production_bingx_l2_prospective_v1.json'
+      - 'tests/test_zel_production_bingx_l2_prospective_v1.py'
+      - '.github/workflows/zel-production-bingx-l2-prospective-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_l2_prospective_v1.py'
+      - 'config/zel_production_bingx_l2_prospective_v1.json'
+      - '.github/workflows/zel-production-bingx-l2-prospective-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-bingx-l2-prospective-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test prospective collector
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_bingx_l2_prospective_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_bingx_l2_prospective_v1.py
+      - name: Verify fail-closed collection contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_bingx_l2_prospective_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['role']=='PROSPECTIVE_PUBLIC_MARKET_HISTORY_COLLECTOR_NOT_STRATEGY'
+          assert cfg['bucket_ms']==900000
+          assert cfg['depth_limit']==20
+          assert cfg['history_gate_decision']=='UNSET_BY_COLLECTOR'
+          assert cfg['economic_signal_enabled'] is False
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          src=Path('backend/production/zel_production_bingx_l2_prospective_v1.py').read_text()
+          assert '/openApi/swap/v3/quote/klines' in src
+          assert '/openApi/swap/v2/quote/depth' in src
+          assert 'submit_order' not in src
+          assert 'api_key' not in src.lower()
+          print('PASS_BINGX_L2_PROSPECTIVE_FAIL_CLOSED_CONTRACT')
+          PY
+
+  collect-on-vps:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture one deduplicated public L2/OHLCV prospective bucket
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_bingx_l2_prospective_v1.py',
+            'config/zel_production_bingx_l2_prospective_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/l2_prospective_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          matched=0
+          for _ in $(seq 1 60); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              matched=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo BINGX_L2_PROSPECTIVE_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_bingx_l2_prospective_v1 \
+            --policy config/zel_production_bingx_l2_prospective_v1.json
+          REMOTE
+      - name: Verify receipt remains data-only
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/l2_prospective_receipt.json').read_text())
+          assert row['state']=='PASS_BINGX_L2_PROSPECTIVE_HISTORY_ACCUMULATING'
+          assert row['history_gate_decision']=='UNSET_BY_COLLECTOR'
+          assert row['economic_signal_enabled'] is False
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-l2-prospective-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/l2_prospective_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

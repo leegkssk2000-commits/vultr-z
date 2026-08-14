@@ -198,6 +198,16 @@ def compare_tick(
         out["receipt_sha256"] = stable_sha(out)
         return out
     _authority_guard(reference, "PRE_SURVIVOR_RESEARCH_REFERENCE")
+    try:
+        _metrics(reference, "reference")
+    except RuntimeError as exc:
+        state = "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_MISSING" if "METRICS_MISSING:reference" in str(exc) else "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_INVALID"
+        out = _base(state, now)
+        out["reference_family_id"] = str(reference.get("family_id") or "")
+        out["reference_state"] = str(reference.get("state") or "")
+        out["reference_metric_error"] = str(exc)[:500]
+        out["receipt_sha256"] = stable_sha(out)
+        return out
     if not isinstance(challenger, Mapping):
         out = _base("HOLD_PRE_SURVIVOR_RESEARCH_CHALLENGER_MISSING", now)
         out["reference_family_id"] = str(reference.get("family_id") or "")

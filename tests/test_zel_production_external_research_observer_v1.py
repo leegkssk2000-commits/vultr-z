@@ -165,8 +165,12 @@ def test_high_view_registry_is_preference_and_unknown_stays_unverified():
 
 
 def test_observer_uses_search_and_video_but_never_gains_authority():
+    paper_url = "https://example.org/paper"
+    video_url = "https://www.youtube.com/watch?v=highview1"
+
     def search_caller(prompt):
         assert "UNTRUSTED evidence" in prompt
+        assert "evidence_urls" in prompt
         return (
             "models/gemini-test",
             {
@@ -174,7 +178,7 @@ def test_observer_uses_search_and_video_but_never_gains_authority():
                 "research_summary": "Basis/OI dislocation is distinct from the current candle continuation family.",
                 "sources": [
                     {
-                        "url": "https://example.org/paper",
+                        "url": paper_url,
                         "title": "Paper",
                         "publisher": "Research",
                         "source_kind": "ACADEMIC",
@@ -187,7 +191,7 @@ def test_observer_uses_search_and_video_but_never_gains_authority():
                 ],
                 "youtube_candidates": [
                     {
-                        "url": "https://www.youtube.com/watch?v=highview1",
+                        "url": video_url,
                         "title": "High view architecture",
                         "channel": "Research Channel",
                         "claimed_view_count": 999999,
@@ -201,10 +205,11 @@ def test_observer_uses_search_and_video_but_never_gains_authority():
                         "required_sources": ["basis", "open_interest"],
                         "falsification_test": "prospective controls",
                         "distinct_from_current": "positioning state instead of candle continuation",
+                        "evidence_urls": [paper_url, video_url],
                     }
                 ],
             },
-            [{"url": "https://example.org/paper", "title": "Paper"}],
+            [{"url": paper_url, "title": "Paper"}],
         )
 
     def video_caller(prompt, url):
@@ -243,6 +248,7 @@ def test_observer_uses_search_and_video_but_never_gains_authority():
     assert written is True
     assert out["state"] == "PASS_EXTERNAL_RESEARCH_EVIDENCE_READY"
     assert out["verified_high_view_youtube_count"] == 1
+    assert out["hypothesis_directions"][0]["evidence_urls"] == [paper_url, video_url]
     assert out["selection_authority"] is False
     assert out["promotion_authority"] is False
     assert out["execution_authority"] == "NONE"
@@ -312,6 +318,7 @@ def test_context_factory_is_derived_copy_and_marks_external_row_non_strategy():
                 "required_sources": ["basis", "open_interest"],
                 "falsification_test": "controls",
                 "distinct_from_current": "different state variable",
+                "evidence_urls": ["https://example.org/paper"],
             }
         ],
         "receipt_sha256": "a" * 64,
@@ -325,6 +332,7 @@ def test_context_factory_is_derived_copy_and_marks_external_row_non_strategy():
     assert row["status"] == "ADVISORY_CONTEXT_ONLY_NOT_ECONOMIC_FAMILY"
     assert row["reactivation_allowed"] is False
     assert row["mechanism"]["context_only_not_existing_strategy"] is True
+    assert row["mechanism"]["hypothesis_directions"][0]["evidence_urls"] == ["https://example.org/paper"]
     adapter = derived["external_research_context_adapter"]
     assert adapter["selection_authority"] is False
     assert adapter["execution_authority"] == "NONE"

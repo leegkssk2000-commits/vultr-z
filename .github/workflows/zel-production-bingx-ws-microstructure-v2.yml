@@ -152,7 +152,7 @@ jobs:
               --policy config/zel_production_bingx_ws_microstructure_v2.json >> "$LOG" 2>&1 </dev/null &
           fi
           ready=0
-          for _ in $(seq 1 75); do
+          for _ in $(seq 1 90); do
             if [ -f "$HB" ] && EXPECTED_SOURCE="$expected_source" EXPECTED_DEP="$expected_dep" EXPECTED_POLICY="$expected_policy" python3 - <<'PY'
           import json,os,time
           from pathlib import Path
@@ -162,7 +162,9 @@ jobs:
               r.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING' and
               r.get('source_sha256')==os.environ['EXPECTED_SOURCE'] and r.get('dependency_sha256')==os.environ['EXPECTED_DEP'] and r.get('policy_sha256')==os.environ['EXPECTED_POLICY'] and
               now-int(r.get('updated_at_ms') or 0)<=30000 and
-              all(int((streams.get(s) or {}).get('messages') or 0)>0 for s in ('depth','trade','kline')) and
+              all(int((streams.get(s) or {}).get('messages') or 0)>0 and int((streams.get(s) or {}).get('normalized_messages') or 0)>0 for s in ('depth','trade','kline')) and
+              int(r.get('depth_messages_total') or 0)>0 and int(r.get('trade_messages_total') or 0)>0 and int(r.get('kline_messages_total') or 0)>0 and
+              int(r.get('rows_written_total') or 0)>0 and int(r.get('parse_errors_total') or 0)==0 and
               r.get('history_gate_decision')=='UNSET_BY_COLLECTOR' and r.get('economic_signal_enabled') is False and
               r.get('selection_authority') is False and r.get('promotion_authority') is False and
               r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED' and r.get('exchange_order_submitted') is False and int(r.get('protected_mutations') or 0)==0
@@ -173,8 +175,8 @@ jobs:
             sleep 2
           done
           if [ "$ready" -ne 1 ]; then
-            python3 - <<'PY'
-          import json,os,time
+            HB="$HB" python3 - <<'PY'
+          import json,os
           from pathlib import Path
           hb=Path(os.environ['HB']); out={'state':'HOLD_BINGX_WS_MICROSTRUCTURE_V2_NOT_READY','heartbeat':None,'log_tail':[],'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0}
           try:out['heartbeat']=json.loads(hb.read_text())
@@ -196,7 +198,9 @@ jobs:
           from pathlib import Path
           r=json.loads(Path('out/ws_microstructure_v2_receipt.json').read_text())
           assert r['state']=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING', r
-          assert all(r['streams'][s]['messages']>0 for s in ('depth','trade','kline'))
+          assert all(r['streams'][s]['messages']>0 and r['streams'][s]['normalized_messages']>0 for s in ('depth','trade','kline'))
+          assert r['depth_messages_total']>0 and r['trade_messages_total']>0 and r['kline_messages_total']>0
+          assert r['rows_written_total']>0 and r['parse_errors_total']==0
           assert r['history_gate_decision']=='UNSET_BY_COLLECTOR' and r['economic_signal_enabled'] is False
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'

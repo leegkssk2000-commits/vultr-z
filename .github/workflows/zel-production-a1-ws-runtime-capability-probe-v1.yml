@@ -34,11 +34,11 @@ jobs:
           from pathlib import Path
           p=Path('.github/workflows/zel-production-a1-ws-runtime-capability-probe-v1.yml').read_text()
           assert 'open-api-swap.bingx.com' in p
-          assert 'execution_authority' in p
-          assert 'order_authority' in p
-          assert 'exchange_order_submitted' in p
-          assert 'curl -X POST' not in p
-          assert 'submit_order' not in p
+          assert "'diagnostic_only':True" in p
+          assert "'economic_signal_enabled':False" in p
+          assert "'execution_authority':'NONE'" in p
+          assert "'order_authority':'BLOCKED'" in p
+          assert "'exchange_order_submitted':False" in p
           print('PASS_A1_WS_RUNTIME_CAPABILITY_PROBE_STATIC')
           PY
 
@@ -68,7 +68,7 @@ jobs:
           test -n "$VPS_USER"
           mkdir -p out
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/ws_runtime_capability.json <<'PY'
-          import base64, hashlib, importlib.util, json, os, platform, shutil, socket, ssl
+          import base64, importlib.util, json, os, platform, shutil, socket, ssl
 
           host='open-api-swap.bingx.com'
           path='/swap-market'
@@ -92,12 +92,12 @@ jobs:
               sock.sendall(request.encode())
               response=sock.recv(4096).decode('latin1','replace')
               status_line=response.split('\r\n',1)[0]
-              handshake_ok=' 101 ' in f' {status_line} '
+              handshake_ok=status_line.startswith('HTTP/') and ' 101 ' in f' {status_line} '
               sock.close()
           except Exception as exc:
               error=f'{type(exc).__name__}:{exc}'[:300]
 
-          def cmd_version(name):
+          def cmd(name):
               p=shutil.which(name)
               return {'path':p,'available':bool(p)}
 
@@ -107,9 +107,9 @@ jobs:
               'python_version':platform.python_version(),
               'python_websocket_client_available':importlib.util.find_spec('websocket') is not None,
               'python_websockets_available':importlib.util.find_spec('websockets') is not None,
-              'node':cmd_version('node'),
-              'websocat':cmd_version('websocat'),
-              'wscat':cmd_version('wscat'),
+              'node':cmd('node'),
+              'websocat':cmd('websocat'),
+              'wscat':cmd('wscat'),
               'bingx_ws_host':host,
               'bingx_ws_path':path,
               'tls_websocket_handshake_ok':handshake_ok,

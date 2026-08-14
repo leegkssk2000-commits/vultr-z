@@ -68,7 +68,6 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
 class Collector:
     def __init__(self, policy: Mapping[str, Any]):
         self.policy = validate_policy(policy)
-        # v1 Aggregator accepts the same symbols/bucket fields; authority is still supplied by v2 rows/heartbeat.
         v1_policy = {
             "schema_version": "zel.production_bingx_ws_microstructure_policy.v1",
             "state": "FROZEN_PAPER_PROSPECTIVE_MICROSTRUCTURE_ONLY",
@@ -111,6 +110,7 @@ class Collector:
                 "connection_started_ms": None,
                 "last_message_ms": None,
                 "messages": 0,
+                "normalized_messages": 0,
                 "reconnects": 0,
                 "last_error": None,
             }
@@ -121,11 +121,57 @@ class Collector:
         template = str(self.policy["streams"][stream])
         return [template.format(symbol=s) for s in self.policy["symbols"]]
 
+    def _normalize_messages(self, stream: str, message: Mapping[str, Any], received_ms: int) -> list[dict[str, Any]]:
+        dtype = str(message.get("dataType") or "")
+        if dtype not in self._channels(stream):
+            return []
+        data = message.get("data")
+        if stream == "depth":
+            if not isinstance(data, Mapping):
+                raise RuntimeError("WS_MICRO_V2_DEPTH_PAYLOAD_SHAPE_INVALID")
+            if not isinstance(data.get("bids"), list) or not isinstance(data.get("asks"), list):
+                raise RuntimeError("WS_MICRO_V2_DEPTH_BOOK_MISSING")
+            return [{"dataType": dtype, "data": dict(data)}]
+        if not isinstance(data, list) or not data:
+            raise RuntimeError(f"WS_MICRO_V2_{stream.upper()}_PAYLOAD_LIST_REQUIRED")
+        normalized: list[dict[str, Any]] = []
+        for raw in data:
+            if not isinstance(raw, Mapping):
+                raise RuntimeError(f"WS_MICRO_V2_{stream.upper()}_ITEM_INVALID")
+            if stream == "trade":
+                required = {"T", "s", "p", "q", "m"}
+                if not required.issubset(raw):
+                    raise RuntimeError("WS_MICRO_V2_TRADE_FIELDS_MISSING")
+                normalized.append({"dataType": dtype, "data": dict(raw)})
+            elif stream == "kline":
+                required = {"T", "o", "h", "l", "c", "v"}
+                if not required.issubset(raw):
+                    raise RuntimeError("WS_MICRO_V2_KLINE_FIELDS_MISSING")
+                close_ms = int(float(raw["T"]))
+                normalized.append({
+                    "dataType": dtype,
+                    "data": {
+                        "K": {
+                            "t": close_ms - 60_000,
+                            "T": close_ms,
+                            "o": raw["o"],
+                            "h": raw["h"],
+                            "l": raw["l"],
+                            "c": raw["c"],
+                            "v": raw["v"],
+                        }
+                    },
+                })
+            else:
+                raise RuntimeError(f"WS_MICRO_V2_UNKNOWN_STREAM:{stream}")
+        return normalized
+
     def _worker(self, stream: str) -> None:
         endpoint = str(self.policy["websocket_url"])
         backoff = int(self.policy["reconnect_backoff_sec"])
         reconnect_after_ms = int(self.policy["reconnect_after_sec"]) * 1000
         pause = int(self.policy["subscription_pause_ms"]) / 1000.0
+        channels = self._channels(stream)
         while not self.stop.is_set():
             ws: BingXPublicWs | None = None
             try:
@@ -136,7 +182,7 @@ class Collector:
                     state["connected"] = True
                     state["connection_started_ms"] = int(time.time() * 1000)
                     state["last_error"] = None
-                for channel in self._channels(stream):
+                for channel in channels:
                     ws.subscribe(channel)
                     time.sleep(pause)
                 while not self.stop.is_set():
@@ -163,13 +209,18 @@ class Collector:
                     if not isinstance(msg, Mapping):
                         continue
                     dtype = str(msg.get("dataType") or "")
-                    if dtype not in self._channels(stream):
+                    if dtype not in channels:
                         continue
+                    normalized = self._normalize_messages(stream, msg, now)
+                    if not normalized:
+                        raise RuntimeError(f"WS_MICRO_V2_{stream.upper()}_NORMALIZATION_EMPTY")
                     with self.lock:
-                        self.agg.consume(msg, now)
+                        for item in normalized:
+                            self.agg.consume(item, now)
                         state = self.stream_state[stream]
                         state["last_message_ms"] = now
                         state["messages"] = int(state["messages"]) + 1
+                        state["normalized_messages"] = int(state["normalized_messages"]) + len(normalized)
             except Exception as exc:
                 err = f"{type(exc).__name__}:{exc}"[:300]
                 with self.lock:
@@ -200,7 +251,17 @@ class Collector:
                 all_seen = False
             elif now - int(last) > int(self.policy["stale_heartbeat_ms"]):
                 all_fresh = False
-        healthy = all_seen and all_fresh and all(int(stream_copy[s]["messages"]) > 0 for s in ("depth", "trade", "kline"))
+        stream_ready = all(
+            int(stream_copy[s]["messages"]) > 0 and int(stream_copy[s]["normalized_messages"]) > 0
+            for s in ("depth", "trade", "kline")
+        )
+        aggregate_ready = (
+            int(totals.get("depth_messages_total") or 0) > 0
+            and int(totals.get("trade_messages_total") or 0) > 0
+            and int(totals.get("kline_messages_total") or 0) > 0
+            and int(totals.get("parse_errors_total") or 0) == 0
+        )
+        healthy = all_seen and all_fresh and stream_ready and aggregate_ready
         return {
             "schema_version": HEARTBEAT_SCHEMA,
             "state": "PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING" if healthy else "HOLD_BINGX_WS_MICROSTRUCTURE_V2_CONNECTING",

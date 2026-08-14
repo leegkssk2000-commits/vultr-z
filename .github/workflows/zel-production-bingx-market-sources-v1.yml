@@ -1,0 +1,78 @@
+name: ZEL Production BingX Market Sources V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_market_sources_v1.py'
+      - 'config/zel_production_bingx_market_sources_v1.json'
+      - 'tests/test_zel_production_bingx_market_sources_v1.py'
+      - '.github/workflows/zel-production-bingx-market-sources-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_market_sources_v1.py'
+      - 'config/zel_production_bingx_market_sources_v1.json'
+      - '.github/workflows/zel-production-bingx-market-sources-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-bingx-market-sources-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and unit test fail-closed verifier
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_bingx_market_sources_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_bingx_market_sources_v1.py
+      - name: Live-smoke BingX public OHLCV volume and L2 endpoints
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.production.zel_production_bingx_market_sources_v1 \
+            --policy config/zel_production_bingx_market_sources_v1.json \
+            --output out/bingx_market_sources_receipt.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/bingx_market_sources_receipt.json').read_text())
+          assert row['state']=='PASS_BINGX_PUBLIC_MARKET_SOURCES_VERIFIED'
+          assert row['verified_sources']==['ohlcv','volume','l2_order_book']
+          assert row['source_bindings']=={
+              'ohlcv_source_bound':True,
+              'volume_source_bound':True,
+              'l2_order_book_source_bound':True,
+          }
+          assert row['history_coverage_bound'] is False
+          assert row['economic_signal_enabled'] is False
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          assert len(row['symbols'])==2
+          print(row['state'],row['verified_sources'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-market-sources-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/bingx_market_sources_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

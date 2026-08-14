@@ -1,0 +1,144 @@
+name: ZEL Production A1 WS Runtime Diagnostic V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-runtime-diagnostic-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/zel-production-a1-ws-runtime-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify read-only diagnostic contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/zel-production-a1-ws-runtime-diagnostic-v1.yml').read_text()
+          assert 'diagnostic_only' in p
+          assert 'protected_mutations' in p
+          assert 'kill ' not in p
+          assert 'rm -' not in p
+          print('PASS_A1_WS_RUNTIME_DIAGNOSTIC_STATIC')
+          PY
+
+  diagnose-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Capture collector heartbeat, process, log and history shape
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/ws_runtime_diagnostic.json <<'PY'
+          import hashlib,json,os,time
+          from pathlib import Path
+          hb=Path('/home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v1.json')
+          pidp=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v1.pid')
+          logp=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v1.log')
+          hist=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v1.jsonl')
+          src=Path('/home/z/zel-production-current/backend/production/zel_production_bingx_ws_microstructure_v1.py')
+          policy=Path('/home/z/zel-production-current/config/zel_production_bingx_ws_microstructure_v1.json')
+          def read_json(p):
+              try:return json.loads(p.read_text())
+              except Exception:return None
+          def sha(p):
+              try:return hashlib.sha256(p.read_bytes()).hexdigest()
+              except Exception:return None
+          pid=None; alive=False; cmdline=None
+          try: pid=int(pidp.read_text().strip())
+          except Exception: pass
+          if pid:
+              proc=Path(f'/proc/{pid}')
+              alive=proc.exists()
+              try: cmdline=(proc/'cmdline').read_bytes().replace(b'\0',b' ').decode('utf-8','replace')[:500]
+              except Exception: pass
+          lines=[]
+          try: lines=hist.read_text(errors='replace').splitlines()
+          except Exception: pass
+          parsed=[]
+          for line in lines[-50:]:
+              try: parsed.append(json.loads(line))
+              except Exception: pass
+          symbols={}
+          for row in parsed:
+              s=str(row.get('symbol') or '')
+              if not s: continue
+              d=symbols.setdefault(s,{'rows':0,'depth_messages':0,'trade_messages':0,'kline_messages':0,'last_bucket_end_ms':0})
+              d['rows']+=1
+              d['depth_messages']+=int(row.get('depth_messages') or 0)
+              d['trade_messages']+=int(row.get('trade_messages') or 0)
+              d['kline_messages']+=int(row.get('kline_messages') or 0)
+              d['last_bucket_end_ms']=max(d['last_bucket_end_ms'],int(row.get('bucket_end_ms') or 0))
+          log_tail=[]
+          try: log_tail=logp.read_text(errors='replace').splitlines()[-80:]
+          except Exception: pass
+          now=int(time.time()*1000)
+          heartbeat=read_json(hb)
+          out={
+              'schema_version':'zel.a1_ws_runtime_diagnostic.v1',
+              'diagnostic_only':True,
+              'captured_at_ms':now,
+              'heartbeat_exists':hb.is_file(),
+              'heartbeat':heartbeat,
+              'heartbeat_age_ms':(now-int(heartbeat.get('updated_at_ms') or 0)) if isinstance(heartbeat,dict) else None,
+              'pid':pid,'process_alive':alive,'cmdline':cmdline,
+              'history_exists':hist.is_file(),'history_line_count':len(lines),'recent_symbol_summary':symbols,
+              'log_tail':log_tail,
+              'runtime_source_sha256':sha(src),'runtime_policy_sha256':sha(policy),
+              'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0,
+          }
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Verify diagnostic authority boundary
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/ws_runtime_diagnostic.json').read_text())
+          assert r['diagnostic_only'] is True
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert r['protected_mutations']==0
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-a1-ws-runtime-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ws_runtime_diagnostic.json
+          if-no-files-found: error
+          retention-days: 30

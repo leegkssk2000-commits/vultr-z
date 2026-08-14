@@ -145,6 +145,63 @@ def test_less_evidence_cannot_be_research_preferred() -> None:
     assert out["research_guards"]["evidence_not_less"] is False
 
 
+def test_missing_reference_metrics_hold_without_crashing() -> None:
+    reference = {
+        "state": "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_MISSING",
+        "family_id": "reference_family",
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "exchange_order_submitted": False,
+    }
+    challenger = evidence(
+        "challenger_family",
+        trade_count=20,
+        win_rate_pct=57.0,
+        net_expectancy=3.5,
+        profit_factor=1.25,
+        net_pnl=70.0,
+        max_dd_pct=1.4,
+    )
+    out = compare_tick(POLICY, reference=reference, challenger=challenger, now_ms=TS)
+    assert out["state"] == "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_MISSING"
+    assert out["research_preference"] == "NONE"
+    assert "METRICS_MISSING:reference" in out["reference_metric_error"]
+    assert out["selection_authority"] is False
+    assert out["promotion_authority"] is False
+    assert out["execution_authority"] == "NONE"
+    assert out["order_authority"] == "BLOCKED"
+    assert out["live_trade_authority"] == "BLOCKED"
+
+
+def test_invalid_reference_metric_holds_without_crashing() -> None:
+    reference = evidence(
+        "reference_family",
+        trade_count=20,
+        win_rate_pct=55.0,
+        net_expectancy=3.0,
+        profit_factor=1.20,
+        net_pnl=60.0,
+        max_dd_pct=1.5,
+    )
+    reference["net_expectancy"] = "not-a-number"
+    challenger = evidence(
+        "challenger_family",
+        trade_count=20,
+        win_rate_pct=57.0,
+        net_expectancy=3.5,
+        profit_factor=1.25,
+        net_pnl=70.0,
+        max_dd_pct=1.4,
+    )
+    out = compare_tick(POLICY, reference=reference, challenger=challenger, now_ms=TS)
+    assert out["state"] == "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_INVALID"
+    assert out["research_preference"] == "NONE"
+    assert out["order_authority"] == "BLOCKED"
+
+
 def test_missing_challenger_holds_without_authority() -> None:
     reference = evidence(
         "reference_family",

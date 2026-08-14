@@ -66,42 +66,66 @@ def _get(base_url: str, path: str, params: Mapping[str, Any], fetcher: Callable[
     return payload.get("data")
 
 
+def _num(value: Any, label: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(f"BINGX_MARKET_SOURCE_KLINE_FIELD_INVALID:{label}") from exc
+
+
 def _validate_klines(data: Any, minimum: int = 2) -> dict[str, Any]:
     if not isinstance(data, list) or len(data) < minimum:
         raise RuntimeError("BINGX_MARKET_SOURCE_KLINES_INSUFFICIENT")
     last = data[-1]
-    # BingX official SKILL currently documents/runtime-returns the 7-field core
-    # [openTime, open, high, low, close, volume, closeTime]. The companion
-    # api-reference documents optional extended fields through index 10.
-    if not isinstance(last, list) or len(last) < 7:
-        raise RuntimeError("BINGX_MARKET_SOURCE_KLINE_SCHEMA_INVALID")
-    for idx in range(7):
-        try:
-            float(last[idx])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise RuntimeError(f"BINGX_MARKET_SOURCE_KLINE_FIELD_INVALID:{idx}") from exc
-    out = {
-        "row_count": len(data),
-        "field_count": len(last),
-        "last_open_time_ms": int(float(last[0])),
-        "last_close_time_ms": int(float(last[6])),
-        "last_close": float(last[4]),
-        "last_base_volume": float(last[5]),
-        "extended_trade_fields_bound": len(last) >= 11,
-    }
-    if len(last) >= 11:
-        try:
+
+    # Current BingX v3 runtime returns object rows:
+    # {time, open, high, low, close, volume}. The official skill/reference also
+    # describes an array representation. Accept only these explicit schemas.
+    if isinstance(last, Mapping):
+        required = {"time", "open", "high", "low", "close", "volume"}
+        if not required.issubset(last):
+            raise RuntimeError("BINGX_MARKET_SOURCE_KLINE_OBJECT_SCHEMA_INVALID")
+        event_time = int(_num(last.get("time"), "time"))
+        return {
+            "row_count": len(data),
+            "schema": "BINGX_V3_OBJECT_OHLCV",
+            "event_time_ms": event_time,
+            "last_open": _num(last.get("open"), "open"),
+            "last_high": _num(last.get("high"), "high"),
+            "last_low": _num(last.get("low"), "low"),
+            "last_close": _num(last.get("close"), "close"),
+            "last_base_volume": _num(last.get("volume"), "volume"),
+            "extended_trade_fields_bound": False,
+        }
+
+    if isinstance(last, list) and len(last) >= 7:
+        for idx in range(7):
+            _num(last[idx], str(idx))
+        out = {
+            "row_count": len(data),
+            "schema": "BINGX_ARRAY_OHLCV",
+            "field_count": len(last),
+            "last_open_time_ms": int(_num(last[0], "0")),
+            "last_close_time_ms": int(_num(last[6], "6")),
+            "last_open": _num(last[1], "1"),
+            "last_high": _num(last[2], "2"),
+            "last_low": _num(last[3], "3"),
+            "last_close": _num(last[4], "4"),
+            "last_base_volume": _num(last[5], "5"),
+            "extended_trade_fields_bound": len(last) >= 11,
+        }
+        if len(last) >= 11:
             out.update(
                 {
-                    "last_quote_volume": float(last[7]),
-                    "last_trade_count": int(float(last[8])),
-                    "last_taker_buy_base_volume": float(last[9]),
-                    "last_taker_buy_quote_volume": float(last[10]),
+                    "last_quote_volume": _num(last[7], "7"),
+                    "last_trade_count": int(_num(last[8], "8")),
+                    "last_taker_buy_base_volume": _num(last[9], "9"),
+                    "last_taker_buy_quote_volume": _num(last[10], "10"),
                 }
             )
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise RuntimeError("BINGX_MARKET_SOURCE_EXTENDED_KLINE_FIELD_INVALID") from exc
-    return out
+        return out
+
+    raise RuntimeError("BINGX_MARKET_SOURCE_KLINE_SCHEMA_INVALID")
 
 
 def _validate_depth(data: Any) -> dict[str, Any]:

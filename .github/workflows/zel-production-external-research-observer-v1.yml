@@ -1,0 +1,227 @@
+name: ZEL Production External Research Observer V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_external_research_observer_v1.py'
+      - 'config/zel_production_external_research_observer_v1.json'
+      - 'tests/test_zel_production_external_research_observer_v1.py'
+      - '.github/workflows/zel-production-external-research-observer-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_external_research_observer_v1.py'
+      - 'config/zel_production_external_research_observer_v1.json'
+      - 'backend/research/zel_manual_video_registry_v1.json'
+      - '.github/workflows/zel-production-external-research-observer-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '11 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-external-research-observer-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test external research observer
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_external_research_observer_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_external_research_observer_v1.py
+      - name: Verify fail-closed research contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_external_research_observer_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['role']=='ADVISORY_EXTERNAL_EVIDENCE_OBSERVER_NOT_ROUTE'
+          assert cfg['cooldown_ms']>=21600000
+          assert 0 <= cfg['max_youtube_videos'] <= 2
+          assert cfg['preferred_min_view_count']>=100000
+          assert cfg['external_content_instruction_authority'] is False
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          assert cfg['source_code_mutation_allowed'] is False
+          assert cfg['self_modification_allowed'] is False
+          src=Path('backend/production/zel_production_external_research_observer_v1.py').read_text()
+          assert 'google_search' in src
+          assert 'file_data' in src
+          assert 'submit_order' not in src
+          assert 'source_code_mutation_applied' in src
+          assert 'external_content_instruction_authority' in src
+          assert 'production_alpha_factory_external_context_v1.json' in Path('config/zel_production_external_research_observer_v1.json').read_text()
+          print('PASS_EXTERNAL_RESEARCH_OBSERVER_FAIL_CLOSED_CONTRACT')
+          PY
+
+  run-on-vps:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Run bounded Gemini external-evidence tick and refresh context adapter
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          test -n "$GEMINI_API_KEY"
+          mkdir -p out
+          API_KEY_B64="$(printf '%s' "$GEMINI_API_KEY" | base64 -w0)"
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_external_research_observer_v1.py',
+            'config/zel_production_external_research_observer_v1.json',
+            'backend/research/zel_manual_video_registry_v1.json',
+            'config/zel_production_alpha_factory_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "API_KEY_B64='$API_KEY_B64' RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/external_research_vps_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT RUNTIME_PARITY_B64
+          python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          bad=[]
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              if got!=want:
+                  bad.append({'path':rel,'got':got,'want':want})
+          if bad:
+              raise SystemExit('RUNTIME_PARITY_MISMATCH:'+json.dumps(bad,sort_keys=True))
+          PY
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          export GEMINI_API_KEY="$(printf '%s' "$API_KEY_B64" | base64 -d)"
+          python3 -m backend.production.zel_production_external_research_observer_v1 \
+            --policy config/zel_production_external_research_observer_v1.json \
+            >/tmp/zel-external-research-run.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          run=json.loads(Path('/tmp/zel-external-research-run.json').read_text())
+          evidence_path=Path('/home/z/z/ledger/production_external_evidence_v1.json')
+          factory_path=Path('/home/z/z/ledger/production_alpha_factory_external_context_v1.json')
+          if not evidence_path.is_file():
+              raise SystemExit('EXTERNAL_RESEARCH_EVIDENCE_LEDGER_MISSING')
+          if not factory_path.is_file():
+              raise SystemExit('EXTERNAL_RESEARCH_CONTEXT_FACTORY_MISSING')
+          evidence=json.loads(evidence_path.read_text())
+          derived=json.loads(factory_path.read_text())
+          allowed={
+              'PASS_EXTERNAL_RESEARCH_EVIDENCE_READY',
+              'HOLD_EXTERNAL_RESEARCH_NOT_REQUIRED',
+              'HOLD_EXTERNAL_RESEARCH_GEMINI_UNAVAILABLE',
+              'HOLD_EXTERNAL_RESEARCH_CALL_FAILED',
+              'HOLD_EXTERNAL_RESEARCH_NO_REPRODUCIBLE_EVIDENCE',
+          }
+          assert evidence['state'] in allowed, evidence
+          for row in (evidence, derived['external_research_context_adapter']):
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+          assert evidence['exchange_order_submitted'] is False
+          assert evidence['source_code_mutation_applied'] is False
+          assert evidence['self_modification_applied'] is False
+          assert evidence['external_content_instruction_authority'] is False
+          if evidence['state']=='PASS_EXTERNAL_RESEARCH_EVIDENCE_READY':
+              assert evidence['ai_call_made'] is True
+              assert evidence['ai_call_succeeded'] is True
+              assert len(evidence.get('search_sources') or []) <= 8
+              assert len(evidence.get('youtube_extracts') or []) <= 2
+              for video in evidence.get('youtube_extracts') or []:
+                  if video.get('view_count_verified') is not True:
+                      assert video.get('observed_views') is None
+          print(json.dumps({
+              'state': evidence['state'],
+              'run_state': run['state'],
+              'search_source_count': len(evidence.get('search_sources') or []),
+              'youtube_extract_count': len(evidence.get('youtube_extracts') or []),
+              'verified_high_view_youtube_count': int(evidence.get('verified_high_view_youtube_count') or 0),
+              'hypothesis_direction_count': len(evidence.get('hypothesis_directions') or []),
+              'context_factory_written': bool(run.get('context_factory_written')),
+              'receipt_sha256': evidence.get('receipt_sha256'),
+              'selection_authority': False,
+              'promotion_authority': False,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'live_trade_authority': 'BLOCKED',
+              'exchange_order_submitted': False,
+          },sort_keys=True))
+          PY
+          REMOTE
+      - name: Verify receipt remains non-authoritative
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          row=json.loads(Path('out/external_research_vps_receipt.json').read_text())
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-external-research-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/external_research_vps_receipt.json
+          if-no-files-found: warn
+          retention-days: 30

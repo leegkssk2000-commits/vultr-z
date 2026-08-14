@@ -1,0 +1,238 @@
+name: ZEL Production BingX WS Microstructure V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_ws_microstructure_v1.py'
+      - 'config/zel_production_bingx_ws_microstructure_v1.json'
+      - 'tests/test_zel_production_bingx_ws_microstructure_v1.py'
+      - '.github/workflows/zel-production-bingx-ws-microstructure-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_bingx_ws_microstructure_v1.py'
+      - 'config/zel_production_bingx_ws_microstructure_v1.json'
+      - '.github/workflows/zel-production-bingx-ws-microstructure-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '4,19,34,49 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-bingx-ws-microstructure-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test WS collector
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest
+          python -m py_compile backend/production/zel_production_bingx_ws_microstructure_v1.py
+          PYTHONPATH=. pytest -q tests/test_zel_production_bingx_ws_microstructure_v1.py
+      - name: Verify research-only contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('config/zel_production_bingx_ws_microstructure_v1.json').read_text())
+          assert cfg['mode']=='PAPER'
+          assert cfg['websocket_url']=='wss://open-api-swap.bingx.com/swap-market'
+          assert cfg['symbols']==['BTC-USDT','ETH-USDT']
+          assert cfg['depth_level']==20 and cfg['depth_interval']=='200ms'
+          assert cfg['bucket_ms']==5000
+          assert cfg['history_gate_decision']=='UNSET_BY_COLLECTOR'
+          assert cfg['economic_signal_enabled'] is False
+          assert cfg['selection_authority'] is False
+          assert cfg['promotion_authority'] is False
+          assert cfg['execution_authority']=='NONE'
+          assert cfg['order_authority']=='BLOCKED'
+          assert cfg['live_trade_authority']=='BLOCKED'
+          assert cfg['exchange_order_submitted'] is False
+          print('PASS_BINGX_WS_MICROSTRUCTURE_RESEARCH_ONLY')
+          PY
+
+  supervise-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Verify runtime parity and supervise collector
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          mkdir -p out
+          RUNTIME_PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_bingx_ws_microstructure_v1.py',
+            'config/zel_production_bingx_ws_microstructure_v1.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/ws_microstructure_supervisor_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          HB=/home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v1.json
+          PID=/home/z/z/ledger/production_bingx_ws_microstructure_v1.pid
+          LOG=/home/z/z/ledger/production_bingx_ws_microstructure_v1.log
+          export ROOT RUNTIME_PARITY_B64 HB PID
+          matched=0
+          for _ in $(seq 1 90); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['RUNTIME_PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then matched=1; break; fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo WS_MICRO_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          expected_source="$(sha256sum "$ROOT/backend/production/zel_production_bingx_ws_microstructure_v1.py" | awk '{print $1}')"
+          expected_policy="$(sha256sum "$ROOT/config/zel_production_bingx_ws_microstructure_v1.json" | awk '{print $1}')"
+          healthy=0
+          if [ -f "$HB" ]; then
+            if EXPECTED_SOURCE="$expected_source" EXPECTED_POLICY="$expected_policy" python3 - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          p=Path(os.environ['HB'])
+          try: row=json.loads(p.read_text())
+          except Exception: raise SystemExit(1)
+          now=int(time.time()*1000)
+          ok=(
+              row.get('source_sha256')==os.environ['EXPECTED_SOURCE'] and
+              row.get('policy_sha256')==os.environ['EXPECTED_POLICY'] and
+              now-int(row.get('updated_at_ms') or 0)<=30000 and
+              row.get('execution_authority')=='NONE' and
+              row.get('order_authority')=='BLOCKED' and
+              row.get('live_trade_authority')=='BLOCKED' and
+              row.get('exchange_order_submitted') is False
+          )
+          raise SystemExit(0 if ok else 1)
+          PY
+            then healthy=1; fi
+          fi
+          if [ "$healthy" -ne 1 ]; then
+            if [ -f "$PID" ]; then
+              oldpid="$(cat "$PID" 2>/dev/null || true)"
+              if [[ "$oldpid" =~ ^[0-9]+$ ]] && [ -r "/proc/$oldpid/cmdline" ]; then
+                cmd="$(tr '\0' ' ' < "/proc/$oldpid/cmdline" || true)"
+                if [[ "$cmd" == *"zel_production_bingx_ws_microstructure_v1"* ]]; then
+                  kill "$oldpid" 2>/dev/null || true
+                  for _ in $(seq 1 10); do kill -0 "$oldpid" 2>/dev/null || break; sleep 1; done
+                fi
+              fi
+            fi
+            cd "$ROOT"
+            mkdir -p "$(dirname "$LOG")"
+            setsid nohup env PYTHONPATH="$ROOT" python3 -m backend.production.zel_production_bingx_ws_microstructure_v1 \
+              --policy config/zel_production_bingx_ws_microstructure_v1.json >> "$LOG" 2>&1 </dev/null &
+          fi
+          ready=0
+          for _ in $(seq 1 60); do
+            if [ -f "$HB" ] && EXPECTED_SOURCE="$expected_source" EXPECTED_POLICY="$expected_policy" python3 - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          row=json.loads(Path(os.environ['HB']).read_text())
+          now=int(time.time()*1000)
+          ok=(
+              row.get('source_sha256')==os.environ['EXPECTED_SOURCE'] and
+              row.get('policy_sha256')==os.environ['EXPECTED_POLICY'] and
+              now-int(row.get('updated_at_ms') or 0)<=30000 and
+              int(row.get('depth_messages_total') or 0)>0 and
+              int(row.get('trade_messages_total') or 0)>0 and
+              int(row.get('kline_messages_total') or 0)>0 and
+              row.get('history_gate_decision')=='UNSET_BY_COLLECTOR' and
+              row.get('economic_signal_enabled') is False and
+              row.get('selection_authority') is False and
+              row.get('promotion_authority') is False and
+              row.get('execution_authority')=='NONE' and
+              row.get('order_authority')=='BLOCKED' and
+              row.get('live_trade_authority')=='BLOCKED' and
+              row.get('exchange_order_submitted') is False and
+              int(row.get('protected_mutations') or 0)==0
+          )
+          raise SystemExit(0 if ok else 1)
+          PY
+            then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" -eq 1 ] || { tail -n 60 "$LOG" >&2 || true; echo WS_MICRO_HEARTBEAT_NOT_READY >&2; exit 72; }
+          cat "$HB"
+          REMOTE
+      - name: Verify supervisor receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,time
+          from pathlib import Path
+          row=json.loads(Path('out/ws_microstructure_supervisor_receipt.json').read_text())
+          assert row['state']=='PASS_BINGX_WS_MICROSTRUCTURE_ACCUMULATING'
+          assert row['depth_messages_total']>0
+          assert row['trade_messages_total']>0
+          assert row['kline_messages_total']>0
+          assert row['history_gate_decision']=='UNSET_BY_COLLECTOR'
+          assert row['economic_signal_enabled'] is False
+          assert row['selection_authority'] is False
+          assert row['promotion_authority'] is False
+          assert row['execution_authority']=='NONE'
+          assert row['order_authority']=='BLOCKED'
+          assert row['live_trade_authority']=='BLOCKED'
+          assert row['exchange_order_submitted'] is False
+          assert row['protected_mutations']==0
+          assert int(time.time()*1000)-row['updated_at_ms']<=30000
+          print(json.dumps(row,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-bingx-ws-microstructure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/ws_microstructure_supervisor_receipt.json
+          if-no-files-found: error
+          retention-days: 30

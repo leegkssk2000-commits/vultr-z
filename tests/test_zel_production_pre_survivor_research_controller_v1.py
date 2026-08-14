@@ -108,6 +108,32 @@ def test_prepare_uses_active_without_incumbent() -> None:
     assert out["live_trade_authority"] == "BLOCKED"
 
 
+def test_prepare_holds_when_active_exists_without_required_metrics() -> None:
+    active = active_row()
+    for key in ("trade_count", "win_rate_pct", "net_expectancy", "profit_factor", "net_pnl", "max_dd_pct"):
+        active.pop(key)
+    out = prepare_reference(POLICY, active=active, incumbent=None, now_ms=NOW)
+    assert out["state"] == "HOLD_PRE_SURVIVOR_RESEARCH_REFERENCE_METRICS_MISSING"
+    assert out["family_id"] == "active_family"
+    assert out["research_reference_source"] == "NONE"
+    assert out["missing_metrics"] == ["trade_count", "win_rate_pct", "net_expectancy", "profit_factor", "net_pnl", "max_dd_pct"]
+    assert out["selection_authority"] is False
+    assert out["promotion_authority"] is False
+    assert out["execution_authority"] == "NONE"
+    assert out["order_authority"] == "BLOCKED"
+    assert out["live_trade_authority"] == "BLOCKED"
+
+
+def test_prepare_uses_valid_incumbent_when_active_metrics_are_missing() -> None:
+    active = active_row()
+    for key in ("trade_count", "win_rate_pct", "net_expectancy", "profit_factor", "net_pnl", "max_dd_pct"):
+        active.pop(key)
+    out = prepare_reference(POLICY, active=active, incumbent=incumbent_row(), now_ms=NOW)
+    assert out["family_id"] == "incumbent_family"
+    assert out["research_reference_source"] == "RESEARCH_INCUMBENT"
+    assert out["state"] == ACCUMULATING_STATE
+
+
 def test_update_creates_first_research_incumbent_only_when_comparator_prefers() -> None:
     ch = challenger()
     out, changed = update_incumbent(

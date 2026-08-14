@@ -11,7 +11,6 @@ from typing import Any, Mapping
 POLICY_SCHEMA = "zel.production_a1_jump_liquidity_history_gate_policy.v1"
 TEMPLATE_SCHEMA = "zel.production_a1_jump_liquidity_source_template.v1"
 ROW_SCHEMA = "zel.production_bingx_ws_microstructure_row.v1"
-HEARTBEAT_SCHEMA = "zel.production_bingx_ws_microstructure_heartbeat.v1"
 DEFAULT_POLICY = Path("config/zel_production_a1_jump_liquidity_history_gate_v1.json")
 
 
@@ -33,6 +32,8 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("A1_JUMP_HISTORY_FAMILY_INVALID")
     if policy.get("role") != "A1_PROSPECTIVE_SOURCE_QUALITY_GATE_ONLY":
         raise RuntimeError("A1_JUMP_HISTORY_ROLE_DRIFT")
+    if policy.get("collector_heartbeat_schema") != "zel.production_bingx_ws_microstructure_heartbeat.v2":
+        raise RuntimeError("A1_JUMP_HISTORY_HEARTBEAT_SCHEMA_BIND_INVALID")
     if int(policy.get("bucket_ms") or 0) != 5000:
         raise RuntimeError("A1_JUMP_HISTORY_BUCKET_INVALID")
     if int(policy.get("runtime_min_elapsed_ms") or 0) < 900000:
@@ -45,8 +46,7 @@ def validate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("A1_JUMP_HISTORY_GAP_INVALID")
     if int(policy.get("heartbeat_stale_ms") or 0) <= 0:
         raise RuntimeError("A1_JUMP_HISTORY_STALE_INVALID")
-    symbols = policy.get("symbols")
-    if symbols != ["BTC-USDT", "ETH-USDT"]:
+    if policy.get("symbols") != ["BTC-USDT", "ETH-USDT"]:
         raise RuntimeError("A1_JUMP_HISTORY_SYMBOLS_INVALID")
     if policy.get("economic_replay_allowed_by_this_gate") is not False:
         raise RuntimeError("A1_JUMP_HISTORY_ECONOMIC_AUTHORITY_FORBIDDEN")
@@ -123,7 +123,8 @@ def evaluate(
 
     hb = dict(heartbeat) if isinstance(heartbeat, Mapping) else None
     hb_age = None
-    if not hb or hb.get("schema_version") != HEARTBEAT_SCHEMA:
+    hb_streams: dict[str, Any] = {}
+    if not hb or hb.get("schema_version") != cfg["collector_heartbeat_schema"]:
         defects.append("HEARTBEAT_MISSING_OR_SCHEMA_INVALID")
     else:
         hb_age = now - int(hb.get("updated_at_ms") or 0)
@@ -139,6 +140,14 @@ def evaluate(
             defects.append("COLLECTOR_SOURCE_SHA_MISMATCH")
         if runtime_policy_sha256 and hb.get("policy_sha256") != runtime_policy_sha256:
             defects.append("COLLECTOR_POLICY_SHA_MISMATCH")
+        hb_streams = dict(hb.get("streams") or {})
+        for stream in ("depth", "trade", "kline"):
+            state = hb_streams.get(stream) if isinstance(hb_streams.get(stream), Mapping) else {}
+            if int(state.get("messages") or 0) <= 0 or int(state.get("normalized_messages") or 0) <= 0:
+                defects.append(f"HEARTBEAT_STREAM_NOT_NORMALIZED:{stream}")
+        for metric in ("depth_messages_total", "trade_messages_total", "kline_messages_total"):
+            if int(hb.get(metric) or 0) <= 0:
+                defects.append(f"HEARTBEAT_AGGREGATE_EMPTY:{metric}")
 
     symbol_stats: dict[str, Any] = {}
     runtime_ready = True
@@ -209,6 +218,7 @@ def evaluate(
         "economic_replay_allowed": False,
         "history_gate_decision_scope": "SOURCE_QUALITY_ONLY",
         "heartbeat_age_ms": hb_age,
+        "heartbeat_streams": hb_streams,
         "symbol_stats": symbol_stats,
         "malformed_row_count": malformed,
         "duplicate_bucket_count": duplicates,

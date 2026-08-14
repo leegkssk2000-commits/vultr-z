@@ -59,6 +59,8 @@ jobs:
           assert t['economic_signal_enabled'] is False
           assert g['history_gate_decision_scope']=='SOURCE_QUALITY_ONLY'
           assert g['economic_replay_allowed_by_this_gate'] is False
+          assert g['collector_heartbeat_schema']=='zel.production_bingx_ws_microstructure_heartbeat.v2'
+          assert g['history_path'].endswith('production_bingx_ws_microstructure_v2.jsonl')
           assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED'
           print('PASS_A1_JUMP_SOURCE_HISTORY_GATE_STATIC')
           PY
@@ -95,6 +97,8 @@ jobs:
             'backend/production/zel_production_a1_jump_liquidity_history_gate_v1.py',
             'config/zel_production_a1_jump_liquidity_source_template_v1.json',
             'config/zel_production_a1_jump_liquidity_history_gate_v1.json',
+            'backend/production/zel_production_bingx_ws_microstructure_v2.py',
+            'config/zel_production_bingx_ws_microstructure_v2.json',
           ]
           print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
           PY
@@ -103,7 +107,8 @@ jobs:
             "RUNTIME_PARITY_B64='$RUNTIME_PARITY_B64' bash -se" > out/jump_source_history_receipt.json <<'REMOTE'
           set -euo pipefail
           ROOT=/home/z/zel-production-current
-          export ROOT RUNTIME_PARITY_B64
+          HB=/home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json
+          export ROOT RUNTIME_PARITY_B64 HB
           matched=0
           for _ in $(seq 1 90); do
             if python3 - <<'PY'
@@ -122,14 +127,35 @@ jobs:
             sleep 2
           done
           [ "$matched" -eq 1 ] || { echo A1_JUMP_HISTORY_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          expected_source="$(sha256sum "$ROOT/backend/production/zel_production_bingx_ws_microstructure_v2.py" | awk '{print $1}')"
+          expected_policy="$(sha256sum "$ROOT/config/zel_production_bingx_ws_microstructure_v2.json" | awk '{print $1}')"
+          collector_ready=0
+          for _ in $(seq 1 90); do
+            if [ -f "$HB" ] && EXPECTED_SOURCE="$expected_source" EXPECTED_POLICY="$expected_policy" python3 - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          try:r=json.loads(Path(os.environ['HB']).read_text())
+          except Exception:raise SystemExit(1)
+          now=int(time.time()*1000); streams=r.get('streams') or {}
+          ok=(
+              r.get('schema_version')=='zel.production_bingx_ws_microstructure_heartbeat.v2' and
+              r.get('source_sha256')==os.environ['EXPECTED_SOURCE'] and r.get('policy_sha256')==os.environ['EXPECTED_POLICY'] and
+              now-int(r.get('updated_at_ms') or 0)<=30000 and
+              all(int((streams.get(s) or {}).get('normalized_messages') or 0)>0 for s in ('depth','trade','kline')) and
+              int(r.get('depth_messages_total') or 0)>0 and int(r.get('trade_messages_total') or 0)>0 and int(r.get('kline_messages_total') or 0)>0 and
+              int(r.get('parse_errors_total') or 0)==0 and
+              r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED' and r.get('exchange_order_submitted') is False
+          )
+          raise SystemExit(0 if ok else 1)
+          PY
+            then collector_ready=1; break; fi
+            sleep 2
+          done
+          [ "$collector_ready" -eq 1 ] || { echo A1_JUMP_V2_COLLECTOR_NOT_READY >&2; exit 72; }
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
-          set +e
           python3 -m backend.production.zel_production_a1_jump_liquidity_history_gate_v1 \
             --policy config/zel_production_a1_jump_liquidity_history_gate_v1.json
-          rc=$?
-          set -e
-          [ "$rc" -eq 0 ] || exit "$rc"
           REMOTE
       - name: Verify source gate remains non-economic
         run: |

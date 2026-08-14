@@ -44,9 +44,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
+          set +e
           python -m backend.production.zel_production_bingx_market_sources_v1 \
             --policy config/zel_production_bingx_market_sources_v1.json \
-            --output out/bingx_market_sources_receipt.json
+            --output out/bingx_market_sources_receipt.json \
+            >out/live_stdout.txt 2>out/live_stderr.txt
+          rc=$?
+          set -e
+          cat out/live_stdout.txt || true
+          cat out/live_stderr.txt >&2 || true
+          [ "$rc" -eq 0 ] || exit "$rc"
           python - <<'PY'
           import json
           from pathlib import Path
@@ -73,6 +80,6 @@ jobs:
         if: always()
         with:
           name: zel-bingx-market-sources-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/bingx_market_sources_receipt.json
+          path: out/
           if-no-files-found: warn
           retention-days: 30

@@ -135,11 +135,17 @@ def queue_tick(
     ]
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_families: set[str] = set()
     for row in kept + incoming:
+        family = str(row.get("family_id") or "")
+        if family and family in seen_families:
+            continue
         key = _proposal_key(row)
         if key in seen:
             continue
         seen.add(key)
+        if family:
+            seen_families.add(family)
         merged.append(row)
     selected = merged[:candidate_budget]
     out = {

@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'backend/production/zel_production_a1_l2_adverse_selection_v1.py'
+      - 'backend/production/zel_production_a1_l2_adverse_selection_prospective_v1.py'
       - 'config/zel_production_a1_l2_adverse_selection_v1.json'
       - '.github/workflows/zel-production-a1-l2-adverse-selection-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/production/zel_production_a1_l2_adverse_selection_v1.py'
+      - 'backend/production/zel_production_a1_l2_adverse_selection_prospective_v1.py'
       - 'config/zel_production_a1_l2_adverse_selection_v1.json'
       - '.github/workflows/zel-production-a1-l2-adverse-selection-v1.yml'
   workflow_dispatch:
@@ -34,7 +36,7 @@ jobs:
       - name: Static compile and fail-closed contract
         run: |
           set -euo pipefail
-          python -m py_compile backend/production/zel_production_a1_l2_adverse_selection_v1.py
+          python -m py_compile backend/production/zel_production_a1_l2_adverse_selection_v1.py backend/production/zel_production_a1_l2_adverse_selection_prospective_v1.py
           python - <<'PY'
           import json
           p=json.load(open('config/zel_production_a1_l2_adverse_selection_v1.json'))
@@ -42,11 +44,13 @@ jobs:
           assert p['event_contract']['require_no_jump'] is True
           assert p['falsification_horizons_sec']==[5,15,30,60]
           assert p['negative_controls']==['DIRECTION_FLIP','PLUS_ONE_BUCKET_DELAY','TIMESTAMP_SHIFT_PLACEBO','MATCHED_WEAK_IMBALANCE']
+          assert p['family_freeze_not_before_ms']==1786767695000
+          assert len(p.get('evidence_refs',[]))>=4
           assert p['parameter_search'] is False and p['best_horizon_selection'] is False and p['threshold_tuning'] is False
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
           assert p['protected_mutations']==0
-          print('PASS_A1_L2_STATIC')
+          print('PASS_A1_L2_PROSPECTIVE_BOUNDARY_STATIC')
           PY
 
   evaluate-on-vps:
@@ -69,37 +73,42 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Wait runtime parity and evaluate frozen no-jump L2 events
+      - name: Wait runtime parity and evaluate only family-post-freeze L2 events
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          EXPECTED_SCRIPT="$(sha256sum backend/production/zel_production_a1_l2_adverse_selection_v1.py | awk '{print $1}')"
+          EXPECTED_BASE="$(sha256sum backend/production/zel_production_a1_l2_adverse_selection_v1.py | awk '{print $1}')"
+          EXPECTED_WRAPPER="$(sha256sum backend/production/zel_production_a1_l2_adverse_selection_prospective_v1.py | awk '{print $1}')"
           EXPECTED_POLICY="$(sha256sum config/zel_production_a1_l2_adverse_selection_v1.json | awk '{print $1}')"
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            "EXPECTED_SCRIPT='$EXPECTED_SCRIPT' EXPECTED_POLICY='$EXPECTED_POLICY' bash -se" > out/a1_l2_receipt.json <<'REMOTE'
+            "EXPECTED_BASE='$EXPECTED_BASE' EXPECTED_WRAPPER='$EXPECTED_WRAPPER' EXPECTED_POLICY='$EXPECTED_POLICY' bash -se" > out/a1_l2_receipt.json <<'REMOTE'
           set -euo pipefail
           ROOT=/home/z/zel-production-current
           matched=0
           for _ in $(seq 1 120); do
-            got_script="$(sha256sum "$ROOT/backend/production/zel_production_a1_l2_adverse_selection_v1.py" 2>/dev/null | awk '{print $1}' || true)"
+            got_base="$(sha256sum "$ROOT/backend/production/zel_production_a1_l2_adverse_selection_v1.py" 2>/dev/null | awk '{print $1}' || true)"
+            got_wrapper="$(sha256sum "$ROOT/backend/production/zel_production_a1_l2_adverse_selection_prospective_v1.py" 2>/dev/null | awk '{print $1}' || true)"
             got_policy="$(sha256sum "$ROOT/config/zel_production_a1_l2_adverse_selection_v1.json" 2>/dev/null | awk '{print $1}' || true)"
-            if [ "$got_script" = "$EXPECTED_SCRIPT" ] && [ "$got_policy" = "$EXPECTED_POLICY" ]; then matched=1; break; fi
+            if [ "$got_base" = "$EXPECTED_BASE" ] && [ "$got_wrapper" = "$EXPECTED_WRAPPER" ] && [ "$got_policy" = "$EXPECTED_POLICY" ]; then matched=1; break; fi
             sleep 2
           done
           [ "$matched" -eq 1 ] || { echo A1_L2_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
           cd "$ROOT"
           export PYTHONPATH="$ROOT"
-          python3 -m backend.production.zel_production_a1_l2_adverse_selection_v1 --policy config/zel_production_a1_l2_adverse_selection_v1.json
+          python3 -m backend.production.zel_production_a1_l2_adverse_selection_prospective_v1 --policy config/zel_production_a1_l2_adverse_selection_v1.json
           REMOTE
-      - name: Verify receipt remains research-only
+      - name: Verify receipt remains research-only and truly prospective
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           r=json.load(open('out/a1_l2_receipt.json'))
           assert r['state'] in {'PASS_A1_L2_FIRST_PROSPECTIVE_ECONOMIC_EVIDENCE','HOLD_A1_L2_SOURCE_THRESHOLD_SEAL_REQUIRED','HOLD_A1_L2_FUNDING_RATE_REQUIRED','HOLD_A1_L2_NO_QUALIFYING_EVENTS_YET'}, r
+          assert r.get('prospective_boundary_enforced') is True
+          assert r.get('family_freeze_not_before_ms')==1786767695000
+          assert r.get('economic_evaluation_start_bucket_ms',0)>=1786767695000
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False

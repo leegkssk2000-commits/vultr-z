@@ -1,0 +1,63 @@
+name: R3 Rebuild Breakout Policy Batch V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/policy_kernel_v1.py'
+      - 'backend/research/rebuild/breakout_policy_batch_v1.py'
+      - 'backend/research/rebuild/evidence_packet_break_and_continue_v1.json'
+      - 'backend/research/rebuild/evidence_packet_keltner_trend_v1.json'
+      - 'backend/research/rebuild/evidence_packet_squeeze_break_v1.json'
+      - 'tests/test_breakout_policy_batch_v1.py'
+      - '.github/workflows/r3-rebuild-breakout-policy-batch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-policy-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile rebuilt policies
+        run: python -m py_compile backend/research/rebuild/policy_kernel_v1.py backend/research/rebuild/breakout_policy_batch_v1.py tests/test_breakout_policy_batch_v1.py
+      - name: Deterministic R2T tests
+        run: python -m unittest tests.test_breakout_policy_batch_v1 -v
+      - name: Evidence packet schema sanity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ids = ['break_and_continue','keltner_trend','squeeze_break']
+          for sid in ids:
+              d = json.loads(Path(f'backend/research/rebuild/evidence_packet_{sid}_v1.json').read_text())
+              assert d['strategy_id'] == sid
+              assert d['promotion_authority'] is False
+              assert d['selection_authority'] is False
+              assert d['execution_authority'] == 'NONE'
+              assert d['sources']
+              assert d['falsification']
+          print('PASS_EVIDENCE_PACKET_3_OF_3')
+          PY
+      - name: Authority and ownership guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          code_paths = ['backend/research/rebuild/breakout_policy_batch_v1.py','tests/test_breakout_policy_batch_v1.py']
+          forbidden = ('live_order=true','exchange_order_submitted=true','promotion_authority=true','selection_authority=true')
+          for path in code_paths:
+              text = Path(path).read_text().lower()
+              for token in forbidden:
+                  assert token not in text, (path, token)
+          policy = Path('backend/research/rebuild/breakout_policy_batch_v1.py').read_text()
+          for sid in ['break_and_continue','keltner_trend','squeeze_break']:
+              assert sid in policy
+          assert 'verified_round_trip_cost_bps' in policy
+          assert 'hard_no_adverse_add' in policy
+          print('PASS_PROTECTED_MUTATIONS_0')
+          PY

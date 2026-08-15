@@ -1,0 +1,65 @@
+name: R3 Rebuild VWAP BB Policy Batch V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/policy_kernel_v1.py'
+      - 'backend/research/rebuild/vwap_bb_policy_batch_v1.py'
+      - 'backend/research/rebuild/evidence_packet_anchor_vwap_trend_v1.json'
+      - 'backend/research/rebuild/evidence_packet_vwap_revert_v1.json'
+      - 'backend/research/rebuild/evidence_packet_bb_revert_v1.json'
+      - 'tests/test_vwap_bb_policy_batch_v1.py'
+      - '.github/workflows/r3-rebuild-vwap-bb-policy-batch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-policy-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile rebuilt policies
+        run: python -m py_compile backend/research/rebuild/policy_kernel_v1.py backend/research/rebuild/vwap_bb_policy_batch_v1.py tests/test_vwap_bb_policy_batch_v1.py
+      - name: Deterministic R2T tests
+        run: python -m unittest tests.test_vwap_bb_policy_batch_v1 -v
+      - name: Evidence packet schema sanity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ids = ['anchor_vwap_trend','vwap_revert','bb_revert']
+          for sid in ids:
+              p = Path(f'backend/research/rebuild/evidence_packet_{sid}_v1.json')
+              d = json.loads(p.read_text())
+              assert d['strategy_id'] == sid
+              assert d['promotion_authority'] is False
+              assert d['sources']
+              assert d['falsification']
+          print('PASS_EVIDENCE_PACKET_3_OF_3')
+          PY
+      - name: Authority guard
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          code_paths = [
+            'backend/research/rebuild/policy_kernel_v1.py',
+            'backend/research/rebuild/vwap_bb_policy_batch_v1.py',
+            'tests/test_vwap_bb_policy_batch_v1.py',
+          ]
+          for path in code_paths:
+              text = Path(path).read_text().lower()
+              forbidden = ('live_order=true','exchange_order_submitted=true','promotion_authority=true','selection_authority=true')
+              for token in forbidden:
+                  assert token not in text, (path, token)
+          for sid in ['anchor_vwap_trend','vwap_revert','bb_revert']:
+              d = json.loads(Path(f'backend/research/rebuild/evidence_packet_{sid}_v1.json').read_text())
+              assert d.get('promotion_authority') is False
+          print('PASS_PROTECTED_MUTATIONS_0')
+          PY

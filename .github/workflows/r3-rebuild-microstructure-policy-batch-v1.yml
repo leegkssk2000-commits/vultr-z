@@ -1,0 +1,50 @@
+name: R3 rebuild microstructure policy batch v1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/microstructure_policy_batch_v1.py'
+      - 'backend/research/rebuild/evidence_packet_microstructure_batch_v1.json'
+      - 'backend/research/rebuild/microstructure_batch_autopsy_v1.json'
+      - 'tests/test_microstructure_policy_batch_v1.py'
+      - '.github/workflows/r3-rebuild-microstructure-policy-batch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  r2t-structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile structural batch
+        run: |
+          python -m py_compile backend/research/rebuild/policy_kernel_v1.py backend/research/rebuild/microstructure_policy_batch_v1.py tests/test_microstructure_policy_batch_v1.py
+      - name: Deterministic R2T
+        run: python -m unittest tests.test_microstructure_policy_batch_v1 -v
+      - name: Evidence/autopsy schema and authority guard
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          e=json.loads(Path('backend/research/rebuild/evidence_packet_microstructure_batch_v1.json').read_text())
+          a=json.loads(Path('backend/research/rebuild/microstructure_batch_autopsy_v1.json').read_text())
+          expected={'liquidity_sweep','scalp_snap','vol_spike_fade'}
+          assert set(e['strategies']) == expected
+          assert set(a['strategies']) == expected
+          assert e['authority']['selection_authority'] is False
+          assert e['authority']['promotion_authority'] is False
+          assert e['authority']['execution_authority'] == 'NONE'
+          assert e['authority']['order_authority'] == 'BLOCKED'
+          assert e['authority']['live_trade_authority'] == 'BLOCKED'
+          assert e['authority']['protected_mutations'] == 0
+          for sid in expected:
+              assert e['strategies'][sid]['source_ids']
+              assert e['strategies'][sid]['falsification']
+              assert a['strategies'][sid]['source_path'].endswith(f'{sid}.py')
+          print('PASS_MICROSTRUCTURE_BATCH_AUTHORITY_EVIDENCE')
+          PY

@@ -1,0 +1,79 @@
+{
+  "schema_version": "zel.evidence_packet.bb_revert.v2",
+  "state": "READY_FOR_R2T",
+  "research_only": true,
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "protected_mutations": 0,
+  "strategy_id": "bb_revert",
+  "archetype": "mean_reversion_vwap_range",
+  "legacy_material": {
+    "ref": "r7a4d-strategy11-cause-aware-rotation-l090-v6",
+    "path": "backend/strategies/bb_revert.py",
+    "role": "MATERIAL_ONLY",
+    "source_method_warning": "legacy single-asset Bollinger+RSI+EMA vote is not directly supported by the cited statistical literature and is not copied into v2"
+  },
+  "sources": [
+    {
+      "source_id": "ARXIV_1212.4890",
+      "identifier": "arXiv:1212.4890",
+      "language": "en",
+      "tier": "method-bearing primary paper",
+      "mechanism_claim": "Bollinger-band distance is a statistical deviation measure; it is not itself proof of unconditional single-asset reversal alpha.",
+      "implementation_lesson": "use standardized deviation as a proxy and require an explicit reverting regime plus confirmation/invalidation",
+      "limitations": "statistical/pairs framing differs from BingX perpetual single-asset execution"
+    },
+    {
+      "source_id": "LEDGER_2021_213",
+      "identifier": "10.5195/LEDGER.2021.213",
+      "language": "en",
+      "tier": "peer-reviewed publisher",
+      "mechanism_claim": "Bitcoin exhibited short-horizon negative first-order autocorrelation in the studied sample, with stronger reversal after larger moves.",
+      "implementation_lesson": "condition the candidate on move magnitude and use a causal time-stop rather than oscillator-only reversal",
+      "limitations": "historical sample; not current BingX promotion evidence"
+    },
+    {
+      "source_id": "SSRN_5775962",
+      "identifier": "10.2139/ssrn.5775962",
+      "language": "en",
+      "tier": "method-bearing working paper",
+      "mechanism_claim": "BTC/USDT Bollinger breakout versus mean-reversion behavior is regime dependent; mean reversion degrades in sustained directional phases.",
+      "implementation_lesson": "make trend/regime blocking explicit and treat band excursion as conditional, not universal, reversal evidence",
+      "limitations": "retrospective BTC/USDT study; no authority over ZEL parameters or alpha"
+    },
+    {
+      "source_id": "BINGX_PERP_FEE_VIP0",
+      "identifier": "BingX official perpetual futures fee schedule",
+      "language": "multi",
+      "tier": "official exchange",
+      "mechanism_claim": "VIP0 perpetual futures reference fees are maker 0.02% and taker 0.05% per side.",
+      "implementation_lesson": "v2 requires an externally supplied verified round-trip cost authority and blocks structurally sub-cost reversion targets",
+      "limitations": "actual account tier/spread/slippage/funding remain separate execution authority"
+    }
+  ],
+  "architecture": {
+    "economic_mechanism": "temporary overreaction/liquidity-demand imbalance can move price away from a local equilibrium; only a confirmed reclaim in a non-trending state is eligible for a reversion hypothesis",
+    "payer_constraint": "urgent liquidity takers and leveraged overshoot may pay the reversion edge after temporary displacement; hypothesis only",
+    "observable_entry_event": "previous closed bar settles outside a 20-bar two-standard-deviation envelope and the next closed bar reclaims inside that envelope in the opposite direction",
+    "direction": "long after lower-band reclaim; short after upper-band reclaim",
+    "regime_no_trade": "block when normalized slow trend slope is too large, source is stale, move-to-equilibrium cannot cover frozen cost budget, or band width/variance is invalid",
+    "timeframe": "1h closed bars",
+    "invalidation": "stop beyond the excursion extreme by frozen ATR geometry; no adverse averaging or DCA rescue",
+    "target_exit": "primary target is the frozen local mean; time-stop if reversion does not occur within 8 bars; no evaluator-invented exit",
+    "risk_sizing": "fixed equity-risk fraction with notional cap; risk distance comes from policy stop geometry",
+    "partial_trailing_runner": "disabled in v2 because the mechanism is equilibrium reversion rather than trend capture",
+    "pyramiding": "disabled; adverse_add=false",
+    "turnover": "one new intent per confirmed reclaim event; cooldown 2 bars after intent",
+    "expected_move_cost_budget": "entry-to-midline distance must be >=1.5x verified round-trip cost before the policy may emit a tradable intent",
+    "failure_modes": ["band walk", "trend transition", "jump continuation", "liquidation cascade", "variance collapse", "late reclaim", "fee/spread drag", "stale closed-bar source"],
+    "whole_architecture_falsification": "prospective net reversion must beat direction-flip, time-placebo, regime-permutation and delayed-entry controls under identical frozen source/window/cost lineage; otherwise reject v2",
+    "source_method_fidelity": "v2 intentionally removes legacy RSI/EMA voting and adverse adds; standardized band excursion is only a deviation proxy, while regime blocking, reclaim confirmation, risk geometry and cost budget are separately owned"
+  },
+  "ai_lineage": {
+    "successful_provider_calls_this_packet": 0,
+    "note": "No provider invocation is claimed. Direct primary/public-source research fallback was used; AI consensus has no promotion authority."
+  }
+}

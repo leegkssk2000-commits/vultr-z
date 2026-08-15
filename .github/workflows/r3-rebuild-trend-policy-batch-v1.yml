@@ -1,0 +1,62 @@
+name: R3 Rebuild Trend Policy Batch V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/policy_kernel_v1.py'
+      - 'backend/research/rebuild/trend_policy_batch_v1.py'
+      - 'backend/research/rebuild/trend_cluster_autopsy_v1.json'
+      - 'backend/research/rebuild/evidence_packet_trend_cluster_v1.json'
+      - 'tests/test_trend_policy_batch_v1.py'
+      - '.github/workflows/r3-rebuild-trend-policy-batch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-policy-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile rebuilt policies
+        run: python -m py_compile backend/research/rebuild/policy_kernel_v1.py backend/research/rebuild/trend_policy_batch_v1.py tests/test_trend_policy_batch_v1.py
+      - name: Deterministic R2T tests
+        run: python -m unittest tests.test_trend_policy_batch_v1 -v
+      - name: Evidence and autopsy schema sanity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = json.loads(Path('backend/research/rebuild/evidence_packet_trend_cluster_v1.json').read_text())
+          autopsy = json.loads(Path('backend/research/rebuild/trend_cluster_autopsy_v1.json').read_text())
+          ids = {'supertrend_pullback','trend_ma_macd','trend_rider'}
+          assert set(evidence['strategies']) == ids
+          assert {x['strategy_id'] for x in autopsy['strategies']} == ids
+          assert evidence['authority']['promotion_authority'] is False
+          assert evidence['authority']['selection_authority'] is False
+          assert evidence['authority']['execution_authority'] == 'NONE'
+          assert evidence['authority']['protected_mutations'] == 0
+          for sid in ids:
+              assert evidence['strategies'][sid]['falsification']
+              assert evidence['strategies'][sid]['failure_modes']
+          print('PASS_EVIDENCE_PACKET_3_OF_3')
+          PY
+      - name: Authority and ownership guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          code = Path('backend/research/rebuild/trend_policy_batch_v1.py').read_text()
+          low = code.lower()
+          for token in ('live_order=true','exchange_order_submitted=true','promotion_authority=true','selection_authority=true'):
+              assert token not in low
+          for sid in ('supertrend_pullback','trend_ma_macd','trend_rider'):
+              assert sid in code
+          assert 'verified_round_trip_cost_bps' in code
+          assert 'hard_no_adverse_add' in code
+          print('PASS_PROTECTED_MUTATIONS_0')
+          PY

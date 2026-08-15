@@ -1,0 +1,92 @@
+name: R3 Turtle Trend Policy V2
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/turtle_trend_policy_v2.py'
+      - 'backend/research/rebuild/evidence_packet_turtle_trend_v2.json'
+      - 'backend/research/rebuild/turtle_trend_complete_policy_v2_design.json'
+      - 'tests/test_turtle_trend_policy_v2.py'
+      - '.github/workflows/r3-turtle-trend-policy-v2.yml'
+  push:
+    branches: ['master']
+    paths:
+      - 'backend/research/rebuild/turtle_trend_policy_v2.py'
+      - 'backend/research/rebuild/evidence_packet_turtle_trend_v2.json'
+      - 'backend/research/rebuild/turtle_trend_complete_policy_v2_design.json'
+      - 'tests/test_turtle_trend_policy_v2.py'
+      - '.github/workflows/r3-turtle-trend-policy-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/turtle_trend_policy_v2.py tests/test_turtle_trend_policy_v2.py
+      - name: R2T deterministic tests
+        run: python -m unittest discover -s tests -p 'test_turtle_trend_policy_v2.py' -v
+      - name: Validate evidence and authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          packet = json.loads(Path('backend/research/rebuild/evidence_packet_turtle_trend_v2.json').read_text())
+          assert packet['state'] == 'EVIDENCE_PACKET_FROZEN_FOR_R2_REBUILD'
+          assert packet['selection_authority'] is False
+          assert packet['promotion_authority'] is False
+          assert packet['execution_authority'] == 'NONE'
+          assert packet['order_authority'] == 'BLOCKED'
+          assert packet['live_trade_authority'] == 'BLOCKED'
+          assert packet['protected_mutations'] == 0
+          assert len(packet['sources']) >= 5
+          tiers = {x['source_tier'] for x in packet['sources']}
+          assert 1 in tiers and 3 in tiers and 5 in tiers
+          PY
+      - name: Write structural receipt
+        if: success()
+        run: |
+          python - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          files = [
+              'backend/research/rebuild/turtle_trend_policy_v2.py',
+              'backend/research/rebuild/evidence_packet_turtle_trend_v2.json',
+              'tests/test_turtle_trend_policy_v2.py',
+          ]
+          hashes = {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files}
+          receipt = {
+              'schema_version': 'zel.r2t_structural_receipt.v1',
+              'strategy_id': 'turtle_trend',
+              'state': 'PASS_R2T_TURTLE_TREND_STRUCTURAL_FIXTURES',
+              'head_sha': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+              'file_sha256': hashes,
+              'decision_intent_parity': 'PASS_100_PERCENT_FIXTURE',
+              'planted_edge_positive_control': 'PASS',
+              'negative_control_constructors': ['direction_flip','time_placebo','delayed_entry'],
+              'leakage_lookahead': 0,
+              'duplicate_policy': 'FAIL_CLOSED',
+              'stale_missing_policy': 'FAIL_CLOSED',
+              'cost_authority_required': True,
+              'selection_authority': False,
+              'promotion_authority': False,
+              'execution_authority': 'NONE',
+              'order_authority': 'BLOCKED',
+              'live_trade_authority': 'BLOCKED',
+              'protected_mutations': 0,
+              'note': 'Structural R2T PASS is not A1 economic promotion evidence.'
+          }
+          Path('r3_turtle_trend_policy_v2_receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: r3-turtle-trend-policy-v2-receipt
+          path: r3_turtle_trend_policy_v2_receipt.json

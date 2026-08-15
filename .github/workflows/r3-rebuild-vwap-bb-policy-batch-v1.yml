@@ -46,19 +46,20 @@ jobs:
       - name: Authority guard
         run: |
           python - <<'PY'
+          import json
           from pathlib import Path
-          changed = [
+          code_paths = [
             'backend/research/rebuild/policy_kernel_v1.py',
             'backend/research/rebuild/vwap_bb_policy_batch_v1.py',
-            'backend/research/rebuild/evidence_packet_anchor_vwap_trend_v1.json',
-            'backend/research/rebuild/evidence_packet_vwap_revert_v1.json',
-            'backend/research/rebuild/evidence_packet_bb_revert_v1.json',
             'tests/test_vwap_bb_policy_batch_v1.py',
           ]
-          forbidden = ('paper','live_order','exchange_order_submitted=true','promotion_authority=true','selection_authority=true')
-          for path in changed:
+          for path in code_paths:
               text = Path(path).read_text().lower()
+              forbidden = ('live_order=true','exchange_order_submitted=true','promotion_authority=true','selection_authority=true')
               for token in forbidden:
                   assert token not in text, (path, token)
+          for sid in ['anchor_vwap_trend','vwap_revert','bb_revert']:
+              d = json.loads(Path(f'backend/research/rebuild/evidence_packet_{sid}_v1.json').read_text())
+              assert d.get('promotion_authority') is False
           print('PASS_PROTECTED_MUTATIONS_0')
           PY

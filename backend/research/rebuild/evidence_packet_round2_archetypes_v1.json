@@ -1,0 +1,145 @@
+{
+  "schema_version": "zel.r0b.evidence_packet_round2_archetypes.v1",
+  "state": "PASS_R0B_EVIDENCE_HARVEST_EXTENDED",
+  "research_only": true,
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "protected_mutations": 0,
+  "harvest_scope": {
+    "strategies_with_direct_historical_autopsy": ["anchor_vwap_trend", "bb_revert", "liquidity_sweep", "session_bias"],
+    "archetypes_extended": ["trend_breakout_momentum", "mean_reversion_vwap_range", "microstructure_liquidity_sweep", "volatility_liquidity_session_clock"],
+    "new_ai_provider_calls": 0,
+    "ai_note": "Repo router inspected. No provider invocation surface was available to this controller turn; no AI-use claim is made. Direct primary/public research fallback used without stalling."
+  },
+  "sources": [
+    {
+      "source_id": "SSRN_2786955",
+      "identifier": "SSRN 2786955",
+      "date": "2016-05-31",
+      "language": "en",
+      "tier": "method-bearing working paper / Journal of Financial Markets",
+      "authors": "Abby Kim; Yiuman Tse; John K. Wald",
+      "mechanism_claim": "Time-series momentum results can be materially driven by volatility scaling rather than directional signal alone.",
+      "implementation_lesson": "Separate trend estimator from volatility/risk sizing and test their contributions independently; do not credit ATR scaling as directional alpha.",
+      "applicable": ["anchor_vwap_trend", "turtle_trend", "trend_ma_macd", "trend_rider", "keltner_trend", "supertrend_pullback"],
+      "limitations": "Diversified international futures, not BingX crypto perpetuals; architecture evidence only.",
+      "reproducibility": "method described; ZEL implementation must be independently frozen"
+    },
+    {
+      "source_id": "ARXIV_1212.4890",
+      "identifier": "arXiv:1212.4890",
+      "date": "2012-12-20",
+      "language": "en",
+      "tier": "method-bearing arXiv",
+      "authors": "Mark Leeds",
+      "mechanism_claim": "Bollinger Bands have a statistical interpretation and can be used in mean-reversion/pairs contexts; the paper does not establish unconditional single-asset reversal alpha.",
+      "implementation_lesson": "Band excursion is a deviation proxy only; pair it with a frozen reverting/range regime and explicit duration/invalidation instead of oscillator-only reversal.",
+      "applicable": ["bb_revert", "range_fade", "vwap_revert"],
+      "limitations": "Pairs/statistical framing differs from current single-asset legacy bb_revert.",
+      "reproducibility": "paper method inspectable; source-method mismatch must be explicit"
+    },
+    {
+      "source_id": "SSRN_447361",
+      "identifier": "SSRN 447361",
+      "date": "2003",
+      "language": "en",
+      "tier": "primary microstructure working paper",
+      "authors": "Carol L. Osler",
+      "mechanism_claim": "Stop-loss and take-profit orders cluster around salient levels; stop-loss clustering beyond levels can produce rapid continuation after crossings and take-profit clustering can contribute to reversals.",
+      "implementation_lesson": "A sweep/reclaim strategy needs level formation, crossing/reclaim direction and invalidation to be explicit; wick shape alone is an inadequate proxy for the payer mechanism.",
+      "applicable": ["liquidity_sweep", "sr_levels", "pivot_reversal", "break_and_continue"],
+      "limitations": "FX order data, not crypto; direct crypto portability is unproven and must be falsified prospectively.",
+      "reproducibility": "order-clustering mechanism documented; ZEL cannot observe private stops and must use public-price/order-flow proxies only"
+    },
+    {
+      "source_id": "DOI_10.1007_s11156-024-01304-1",
+      "identifier": "10.1007/s11156-024-01304-1",
+      "date": "2024",
+      "language": "en",
+      "tier": "peer-reviewed publisher",
+      "authors": "cryptocurrency intraday-pattern study",
+      "mechanism_claim": "Trading activity, volatility and liquidity show pronounced time-of-day patterns across many crypto exchanges despite 24/7 trading.",
+      "implementation_lesson": "Session/time features may condition opportunity and cost, but clock alone is not an entry signal; venue portability and matched placebo are required.",
+      "applicable": ["session_bias"],
+      "limitations": "Cross-exchange stylized facts do not prove directional return alpha on BingX.",
+      "reproducibility": "large multi-exchange study; ZEL requires BingX matched-placebo replication"
+    },
+    {
+      "source_id": "ARXIV_2109.12142",
+      "identifier": "arXiv:2109.12142",
+      "date": "2021-09-24",
+      "language": "en",
+      "tier": "method-bearing arXiv",
+      "authors": "Peter Reinhard Hansen; Chan Kim; Wade Kimbrough",
+      "mechanism_claim": "BTC/ETH volatility and volume have systematic day/hour/within-hour periodicity linked in part to algorithmic trading and futures funding times.",
+      "implementation_lesson": "Clock/session policy must separate periodic liquidity/volatility state from directional trigger and use placebo/time-shift controls.",
+      "applicable": ["session_bias"],
+      "limitations": "Coinbase/Binance/Uniswap evidence, not BingX-specific directional economics.",
+      "reproducibility": "paper provides defined periodicity measurements; venue-specific validation required"
+    },
+    {
+      "source_id": "DOI_10.5195_LEDGER.2021.213",
+      "identifier": "10.5195/ledger.2021.213",
+      "date": "2021",
+      "language": "en",
+      "tier": "peer-reviewed publisher",
+      "authors": "Giacomo De Nicola",
+      "mechanism_claim": "Bitcoin showed negative first-order autocorrelation at 1h/2h/4h in the studied sample, with larger moves followed by stronger reversals; proposed explanations include overreaction, excess volatility and cascading liquidations.",
+      "implementation_lesson": "For mean-reversion candidates, prior-move magnitude and causal horizon may matter more than unconditional RSI/Bollinger thresholds; liquidation/jump regime must be distinguished from ordinary range reversion.",
+      "applicable": ["bb_revert", "vol_spike_fade", "range_fade", "vwap_revert"],
+      "limitations": "Historical Bitcoin sample and retrospective algorithm; not current BingX survivor evidence.",
+      "reproducibility": "time-horizon claim explicit; prospective ZEL falsification required"
+    }
+  ],
+  "strategy_packets": {
+    "anchor_vwap_trend": {
+      "economic_mechanism": "trend continuation after price accepts above/below a volume-weighted anchor while directional structure persists",
+      "payer_constraint": "late counter-trend liquidity/position adjustment during persistent directional flow; hypothesis only",
+      "source_method_fidelity": "Legacy ZEL uses swing-anchored VWAP + EMA trend + ATR/candle reclaim. External momentum evidence supports separating trend estimator from volatility scaling, not this exact combined rule.",
+      "entry_event": "to be frozen after Feature SSOT reconstruction; anchor acceptance/reclaim plus directional trend, not arbitrary indicator vote",
+      "regime_no_trade": "trend persistence required; block excessive chase and structurally weak/invalid anchor states",
+      "risk_exit": "ATR/structure invalidation and runner/pyramiding must be policy-owned; adds only after favorable progress",
+      "failure_modes": ["false anchor acceptance", "trend turning point", "chop", "volatility scaling masquerading as alpha", "late chase", "fee drag"],
+      "whole_architecture_falsification": "directional trigger must add positive prospective contribution over matched trend/volatility controls after realistic costs",
+      "evidence_ids": ["SSRN_2786955", "HIST_SOURCE_ANCHOR_VWAP_TREND_R7"]
+    },
+    "bb_revert": {
+      "economic_mechanism": "temporary overreaction/deviation that reverts toward a local equilibrium only in a stable reverting regime",
+      "payer_constraint": "liquidity demand/overreaction and leveraged overshoot; hypothesis only",
+      "source_method_fidelity": "Legacy single-asset Bollinger+RSI+EMA gate differs from the statistical/pairs framing of arXiv:1212.4890; mismatch is explicit.",
+      "entry_event": "extreme deviation plus observable reversal/reclaim in a predeclared non-trending regime",
+      "regime_no_trade": "block trend/jump/liquidation-cascade transition unless the architecture specifically models post-shock reversal",
+      "risk_exit": "equilibrium target plus structural failure/time stop; adverse-move averaging prohibited",
+      "failure_modes": ["band walk", "trend transition", "jump continuation", "liquidation cascade", "overtrading", "cost drag"],
+      "whole_architecture_falsification": "reversion event must outperform time-shift/regime-permuted controls net of frozen costs; otherwise reject the specification",
+      "evidence_ids": ["ARXIV_1212.4890", "DOI_10.5195_LEDGER.2021.213", "HIST_SOURCE_BB_REVERT_R7"]
+    },
+    "liquidity_sweep": {
+      "economic_mechanism": "clustered stops/liquidity around salient levels may cause transient overshoot or rapid continuation; reclaim vs acceptance determines direction",
+      "payer_constraint": "forced stop execution and liquidity-demand imbalance near clustered levels; public proxy only",
+      "source_method_fidelity": "Osler observes actual FX orders; ZEL has no private stop book. Legacy wick+swing proxy is therefore indirect and must not be presented as direct stop-flow measurement.",
+      "entry_event": "predeclared swing/level penetration followed by either reclaim or acceptance, with public trade/book confirmation if source-ready",
+      "regime_no_trade": "stale/low-quality book, excessive spread, ambiguous level, or no confirmation",
+      "risk_exit": "failure beyond swept/accepted level; turnover and expected move must dominate costs",
+      "failure_modes": ["false wick proxy", "continuation mistaken for reversal", "level crowding", "stale book", "spread expansion", "adverse selection"],
+      "whole_architecture_falsification": "sweep/reclaim classification must beat direction-flip and random-level controls after frozen execution costs",
+      "evidence_ids": ["SSRN_447361", "HIST_SOURCE_LIQUIDITY_SWEEP_R7"]
+    },
+    "session_bias": {
+      "economic_mechanism": "time-of-day changes participation, volatility and liquidity; session is a conditioning variable rather than standalone directional alpha",
+      "payer_constraint": "global participant overlap and institutional trading-hour concentration alter opportunity/cost state",
+      "source_method_fidelity": "External studies establish periodicity, not the legacy hardcoded Asia/London/NY directional weights. Legacy fixed bias_strength values have no source authority and must not survive automatically.",
+      "entry_event": "directional event must be independent of clock; session/periodicity conditions regime and expected cost only unless a matched-placebo directional effect is demonstrated",
+      "regime_no_trade": "high spread/low depth or placebo-indistinguishable clock effect",
+      "risk_exit": "strategy-specific event invalidation; clock transition alone cannot invent exit without evidence",
+      "failure_modes": ["timezone proxy mismatch", "venue non-portability", "clock placebo", "DST/session overlap error", "cost spike", "directional overinterpretation"],
+      "whole_architecture_falsification": "matched time-shift/placebo must show unique contribution beyond volatility/liquidity state; otherwise session component is removed",
+      "evidence_ids": ["DOI_10.1007_s11156-024-01304-1", "ARXIV_2109.12142", "HIST_SOURCE_SESSION_BIAS_R7"]
+    }
+  },
+  "r3_effect": "HOLD_R3_STRUCTURE_REBUILD_REQUIRED",
+  "next_gate": "CONTINUE_22_SOURCE_AUTOPSIES_AND_BUILD_FIRST_NON_TREND_COMPLETE_POLICY"
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": "zel.production_a1_intraday_liquidity_volatility_regime_policy.v1",
+  "family": "intraday_liquidity_volatility_regime",
+  "role": "A1_COST_AWARE_INTRADAY_REGIME_PROSPECTIVE_FALSIFICATION",
+  "mechanism": "volatility clusters while liquidity degrades; a large 30m directional move occurring in a contemporaneously wider-spread regime may persist over multi-hour horizons because inventory and delayed-information constraints are not resolved instantly",
+  "payer": "slower inventory rebalancing and late-informed participation during volatility/liquidity stress",
+  "history_path": "/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl",
+  "output_path": "/home/z/z/ledger/production_a1_intraday_liquidity_volatility_regime_v1.json",
+  "symbols": ["BTC-USDT", "ETH-USDT"],
+  "side_scope": ["LONG", "SHORT"],
+  "bucket_ms": 5000,
+  "family_freeze_not_before_ms": 1786806000000,
+  "family_freeze_reason": "first 15m boundary after clock-phase early-futility route change; all earlier outcomes excluded",
+  "evidence_refs": [
+    {
+      "id": "wen_bouri_xu_zhao_intraday_predictability",
+      "source": "SSRN:4080253 / DOI:10.2139/ssrn.4080253",
+      "mechanism": "cryptocurrency intraday momentum and reversal vary materially with large jumps and liquidity conditions"
+    },
+    {
+      "id": "hansen_kim_kimbrough_periodicity",
+      "source": "arXiv:2109.12142",
+      "mechanism": "BTC/ETH exhibit systematic intraday volatility and liquidity patterns linked to algorithmic activity and futures funding times"
+    },
+    {
+      "id": "bingx_perpetual_fee_schedule",
+      "source": "BingX official Perpetual Futures Fee Schedule",
+      "mechanism": "reference taker fee 5 bps per side and maker fee 2 bps per side; maker is reference-only without fill evidence"
+    }
+  ],
+  "event_contract": {
+    "decision_grid_ms": 900000,
+    "lookback_move_ms": 1800000,
+    "baseline_ms": 14400000,
+    "move_expansion_multiple": 2.0,
+    "spread_expansion_multiple": 1.0,
+    "direction": "sign(30m return) only when abs(30m return) >= 2x median(abs 30m return) over the preceding 4h and mean spread over the latest 30m >= preceding-4h median 5s spread",
+    "zero_direction_no_trade": true,
+    "entry_time_observable_only": true
+  },
+  "falsification_horizons_sec": [3600, 7200, 14400],
+  "negative_controls": ["DIRECTION_FLIP", "ONE_HOUR_TIMESTAMP_SHIFT_PLACEBO"],
+  "architecture_killing_falsification": "prospective net expectancy fails verified realistic costs or fails both frozen negative controls at SSOT sample/retention requirements",
+  "placebo_shift_ms": 3600000,
+  "fee_model": "ALL_TAKER_CONSERVATIVE",
+  "taker_fee_bps_per_side": 5.0,
+  "maker_fee_bps_per_side_reference_only": 2.0,
+  "fill_model": "NEXT_BUCKET_MID_PLUS_HALF_SPREAD",
+  "execution_assumptions": "taker entry at the frozen 15m decision boundary after all lookback data are observable and taker exit at the frozen horizon; maker fee has no fill authority",
+  "funding_settlement_hours_utc": [0, 8, 16],
+  "funding_rate_source": null,
+  "funding_fail_closed_if_crossed": true,
+  "cost_budget": {
+    "verified_fee_only_round_trip_bps": 10.0,
+    "warning_min_cost_budget_ratio": 1.5,
+    "preferred_design_cost_budget_ratio": 2.0,
+    "design_expected_gross_move_bps": 25.0,
+    "design_cost_budget_ratio": 2.5,
+    "design_only_not_pass_evidence": true
+  },
+  "invalidation": "time-stop at the frozen horizon; no outcome-driven stop/target tuning in A1",
+  "no_trade_regime": "insufficient 4h baseline, incomplete source rows, non-expanded 30m move, non-stressed spread regime, zero 30m direction, or funding settlement crossing without verified event-aligned funding rate",
+  "tail_risks": ["volatility shock reversal", "spread expansion", "funding settlement crossing", "regime decay", "BTC macro integration reducing microstructure predictability"],
+  "turnover_contract": "at most one evidence entry per symbol per 15m decision grid; evidence events do not authorize orders",
+  "parameter_search": false,
+  "best_horizon_selection": false,
+  "threshold_tuning": false,
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "exchange_order_submitted": false,
+  "protected_mutations": 0
+}

@@ -13,8 +13,6 @@ on:
       - 'config/zel_production_a1_clock_phase_liquidity_impulse_v1.json'
       - '.github/workflows/zel-production-a1-clock-phase-liquidity-impulse-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '7,22,37,52 * * * *'
 
 permissions:
   contents: read
@@ -39,18 +37,20 @@ jobs:
           import json
           p=json.load(open('config/zel_production_a1_clock_phase_liquidity_impulse_v1.json'))
           assert p['family']=='clock_phase_liquidity_impulse'
+          assert p['role']=='PASSIVE_OBSERVER_EARLY_FUTILITY'
+          assert p['demotion_evidence']['run_id']==31891075129
+          assert p['demotion_evidence']['completed_4h_trades']==14
+          assert p['demotion_evidence']['net_expectancy_bps']<0
+          assert p['demotion_evidence']['gross_expectancy_bps']<p['cost_budget']['verified_fee_only_round_trip_bps']
           assert p['falsification_horizons_sec']==[14400,28800,43200]
-          assert p['event_contract']['clock_period_ms']==900000
-          assert p['event_contract']['opening_window_ms']==60000
           assert p['family_freeze_not_before_ms']==1786785300000
           assert p['cost_budget']['verified_fee_only_round_trip_bps']==10.0
-          assert p['cost_budget']['design_cost_budget_ratio']>=2.0
           assert p['fee_model']=='ALL_TAKER_CONSERVATIVE' and p['taker_fee_bps_per_side']==5.0
           assert p['parameter_search'] is False and p['best_horizon_selection'] is False and p['threshold_tuning'] is False
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
           assert p['protected_mutations']==0
-          print('PASS_A1_CLOCK_PHASE_FROZEN_COST_AWARE_CONTRACT')
+          print('PASS_A1_CLOCK_PHASE_PASSIVE_EARLY_FUTILITY_CONTRACT')
           PY
 
   evaluate-on-vps:
@@ -73,7 +73,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-      - name: Wait runtime parity and evaluate post-freeze quarter events
+      - name: Wait runtime parity and evaluate passive evidence
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -97,15 +97,12 @@ jobs:
           export PYTHONPATH="$ROOT"
           python3 -m backend.production.zel_production_a1_clock_phase_liquidity_impulse_v1 --policy config/zel_production_a1_clock_phase_liquidity_impulse_v1.json
           REMOTE
-      - name: Verify research-only prospective receipt
+      - name: Verify research-only passive receipt
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           r=json.load(open('out/a1_clock_receipt.json'))
-          assert r['state'] in {'PASS_A1_CLK_FIRST_PROSPECTIVE_ECONOMIC_EVIDENCE','HOLD_A1_CLK_FUNDING_RATE_REQUIRED','HOLD_A1_CLK_NO_PROSPECTIVE_QUARTER_EVENT_YET','HOLD_A1_CLK_EVENTS_WAITING_FROZEN_HORIZON'}, r
-          assert r.get('prospective_boundary_enforced') is True
-          assert r.get('family_freeze_not_before_ms')==1786785300000
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False

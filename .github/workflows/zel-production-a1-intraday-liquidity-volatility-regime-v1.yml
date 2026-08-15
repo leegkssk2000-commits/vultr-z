@@ -1,0 +1,126 @@
+name: ZEL Production A1 Intraday Liquidity Volatility Regime V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/production/zel_production_a1_intraday_liquidity_volatility_regime_v1.py'
+      - 'config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json'
+      - '.github/workflows/zel-production-a1-intraday-liquidity-volatility-regime-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/production/zel_production_a1_intraday_liquidity_volatility_regime_v1.py'
+      - 'config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json'
+      - '.github/workflows/zel-production-a1-intraday-liquidity-volatility-regime-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '4,19,34,49 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-production-a1-intraday-liquidity-volatility-regime-v1
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static compile and frozen contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/production/zel_production_a1_intraday_liquidity_volatility_regime_v1.py
+          python - <<'PY'
+          import json
+          p=json.load(open('config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json'))
+          assert p['family']=='intraday_liquidity_volatility_regime'
+          assert p['falsification_horizons_sec']==[3600,7200,14400]
+          assert p['family_freeze_not_before_ms']==1786806000000
+          assert p['event_contract']['decision_grid_ms']==900000
+          assert p['event_contract']['lookback_move_ms']==1800000
+          assert p['event_contract']['baseline_ms']==14400000
+          assert p['event_contract']['move_expansion_multiple']==2.0
+          assert p['cost_budget']['verified_fee_only_round_trip_bps']==10.0
+          assert p['cost_budget']['design_cost_budget_ratio']==2.5
+          assert p['fee_model']=='ALL_TAKER_CONSERVATIVE' and p['taker_fee_bps_per_side']==5.0
+          assert p['parameter_search'] is False and p['best_horizon_selection'] is False and p['threshold_tuning'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          assert p['protected_mutations']==0
+          print('PASS_A1_ILVR_FROZEN_COST_AWARE_CONTRACT')
+          PY
+
+  evaluate-on-vps:
+    if: github.event_name != 'pull_request'
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Wait runtime parity and evaluate frozen regime events
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          EXPECTED_BASE="$(sha256sum backend/production/zel_production_a1_intraday_liquidity_volatility_regime_v1.py | awk '{print $1}')"
+          EXPECTED_POLICY="$(sha256sum config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json | awk '{print $1}')"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "EXPECTED_BASE='$EXPECTED_BASE' EXPECTED_POLICY='$EXPECTED_POLICY' bash -se" > out/a1_ilvr_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          matched=0
+          for _ in $(seq 1 120); do
+            got_base="$(sha256sum "$ROOT/backend/production/zel_production_a1_intraday_liquidity_volatility_regime_v1.py" 2>/dev/null | awk '{print $1}' || true)"
+            got_policy="$(sha256sum "$ROOT/config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json" 2>/dev/null | awk '{print $1}' || true)"
+            if [ "$got_base" = "$EXPECTED_BASE" ] && [ "$got_policy" = "$EXPECTED_POLICY" ]; then matched=1; break; fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo A1_ILVR_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          python3 -m backend.production.zel_production_a1_intraday_liquidity_volatility_regime_v1 --policy config/zel_production_a1_intraday_liquidity_volatility_regime_v1.json
+          REMOTE
+      - name: Verify research-only prospective receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_ilvr_receipt.json'))
+          assert r['state'] in {'PASS_A1_ILVR_FIRST_PROSPECTIVE_ECONOMIC_EVIDENCE','HOLD_A1_ILVR_NO_PROSPECTIVE_EVENT_YET','HOLD_A1_ILVR_EVENTS_WAITING_FROZEN_HORIZON'}, r
+          assert r.get('prospective_boundary_enforced') is True
+          assert r.get('family_freeze_not_before_ms')==1786806000000
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert r['protected_mutations']==0 and r.get('leakage') is False
+          assert r.get('integrity_defects',[])==[]
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zel-a1-ilvr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_ilvr_receipt.json
+          if-no-files-found: error
+          retention-days: 30

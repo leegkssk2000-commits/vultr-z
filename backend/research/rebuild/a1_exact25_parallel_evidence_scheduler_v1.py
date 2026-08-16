@@ -64,6 +64,10 @@ def _policy_contract(strategy_id: str, inventory: dict[str, Any]) -> dict[str, A
     module, policy_path, policy_sha = ge.load_policy(strategy_id, inventory)
     cfg = ge.config_instance(module)
     timeframe_ms = int(getattr(cfg, "timeframe_ms"))
+    ge.interval_for_ms(timeframe_ms)
+    # Readiness means the generic evaluator can actually consume this policy.
+    # bb_revert has a dedicated evaluator, but also validates through the same policy adapter contract.
+    ge.policy_functions(module, strategy_id)
     evidence_path = ROOT / str(inventory["strategies"][strategy_id]["evidence_packet"])
     return {
         "policy_path": str(policy_path.relative_to(ROOT)),
@@ -114,18 +118,29 @@ def bootstrap(ledger: dict[str, Any], inventory: dict[str, Any], clock: dict[str
         try:
             contract = _policy_contract(sid, inventory)
         except Exception as exc:
+            # Preserve any already-frozen clock for audit, but exclude this identity from heavy scheduling.
+            boundary = crow.get("boundary_utc") or drow.get("prospective_boundary_utc")
             crow.update({
                 "state": "CLOCK_STARTED",
                 "source_ready": False,
-                "source_blocker": f"POLICY_SOURCE_CONTRACT:{type(exc).__name__}:{exc}",
-                "boundary_utc": drow.get("prospective_boundary_utc") or iso(now),
+                "source_blocker": f"POLICY_EVALUATOR_READINESS:{type(exc).__name__}:{exc}",
+                "boundary_utc": boundary,
+                "clock_frozen": bool(boundary),
             })
+            if str(drow.get("status")) == "ACTIVE":
+                drow["status"] = "UNTESTED"
+                if ledger.get("active_strategy_id") == sid:
+                    ledger["active_strategy_id"] = None
             continue
-        boundary = str(drow.get("prospective_boundary_utc") or crow.get("boundary_utc") or iso(now))
-        drow.setdefault("prospective_boundary_utc", boundary)
-        drow.setdefault("policy_sha", contract["policy_sha"])
-        drow.setdefault("config_sha", contract["config_sha"])
-        drow.setdefault("evidence_sha", contract["evidence_sha"])
+        # Once a clock exists it is immutable; never let later serial routing replace it.
+        boundary = str(crow.get("boundary_utc") or drow.get("prospective_boundary_utc") or iso(now))
+        drow["prospective_boundary_utc"] = boundary
+        if not drow.get("policy_sha"):
+            drow["policy_sha"] = contract["policy_sha"]
+        if not drow.get("config_sha"):
+            drow["config_sha"] = contract["config_sha"]
+        if not drow.get("evidence_sha"):
+            drow["evidence_sha"] = contract["evidence_sha"]
         crow.update(contract)
         crow.update({
             "boundary_utc": boundary,
@@ -175,6 +190,8 @@ def _mark_waiting(sid: str, clock: dict[str, Any], *, now: datetime) -> None:
 
 
 def _activate(sid: str, ledger: dict[str, Any], clock: dict[str, Any]) -> None:
+    if clock["strategies"][sid].get("source_ready") is not True:
+        raise RuntimeError(f"ACTIVATE_NON_READY:{sid}")
     previous = ledger.get("active_strategy_id")
     if previous and previous != sid:
         prow = ledger["strategies"][previous]
@@ -182,7 +199,7 @@ def _activate(sid: str, ledger: dict[str, Any], clock: dict[str, Any]) -> None:
             prow["status"] = "UNTESTED"
     for other, row in clock["strategies"].items():
         if other != sid and row.get("state") == "HEAVY_ACTIVE":
-            row["state"] = "READY_FOR_HEAVY"
+            row["state"] = "READY_FOR_HEAVY" if row.get("source_ready") is True else "CLOCK_STARTED"
     ledger["active_strategy_id"] = sid
     ledger["strategies"][sid]["status"] = "ACTIVE"
     clock["strategies"][sid]["state"] = "HEAVY_ACTIVE"
@@ -194,8 +211,15 @@ def route_prepare(ledger: dict[str, Any], clock: dict[str, Any], *, now: datetim
     if current:
         drow = ledger["strategies"][current]
         crow = clock["strategies"][current]
-        if str(drow.get("status")) in TERMINAL:
+        if crow.get("source_ready") is not True:
+            if str(drow.get("status")) == "ACTIVE":
+                drow["status"] = "UNTESTED"
+            ledger["active_strategy_id"] = None
+            current = None
+            routed = True
+        elif str(drow.get("status")) in TERMINAL:
             crow["state"] = "TERMINAL"
+            ledger["active_strategy_id"] = None
             current = None
         elif int(drow.get("intent_count") or 0) == 0 and int(drow.get("completed_trades") or 0) == 0 and drow.get("last_evaluated_utc"):
             _mark_waiting(current, clock, now=now)
@@ -241,7 +265,8 @@ def route_after_receipt(ledger: dict[str, Any], clock: dict[str, Any], receipt: 
 
 def refresh_counts(clock: dict[str, Any]) -> None:
     rows = list(clock["strategies"].values())
-    clock["clocks_started_count"] = sum(1 for x in rows if x.get("boundary_utc"))
+    # A blocked identity may preserve an audit boundary; count it only once, as blocked.
+    clock["clocks_started_count"] = sum(1 for x in rows if x.get("boundary_utc") and x.get("source_ready") is True)
     clock["source_blocked_count"] = sum(1 for x in rows if x.get("source_ready") is False)
     clock["heavy_active_count"] = sum(1 for x in rows if x.get("state") == "HEAVY_ACTIVE")
     clock["waiting_count"] = sum(1 for x in rows if x.get("state") == "WAITING_EVIDENCE")
@@ -275,6 +300,7 @@ def main() -> None:
     write_output("next_strategy_id", next_sid or "")
     write_output("route_changed", "true" if route_changed else "false")
     write_output("clocks_started_count", str(clock["clocks_started_count"]))
+    write_output("source_blocked_count", str(clock["source_blocked_count"]))
     write_output("waiting_count", str(clock["waiting_count"]))
     write_output("ready_count", str(clock["ready_count"]))
     write_output("heavy_active_count", str(clock["heavy_active_count"]))

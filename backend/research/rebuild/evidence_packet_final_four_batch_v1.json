@@ -1,0 +1,85 @@
+{
+  "schema_version": "zel.evidence_packet_final_four_batch.v1",
+  "research_only": true,
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "protected_mutations": 0
+  },
+  "provider_calls_this_batch": 0,
+  "sources": {
+    "HIST_R7_FINAL4": "historical canonical implementations at r7a4d-strategy11-cause-aware-rotation-l090-v6",
+    "GRID_DGT_2025": "arXiv:2506.11921 dynamic grid trading; traditional grid near zero expectation motivates regime/reset falsification",
+    "BTC_INTRADAY_2019": "The intraday dynamics of bitcoin, Research in International Business and Finance/Elsevier indexed result; intraday volume/liquidity/volatility structure",
+    "BTC_INTRADAY_2022": "DOI:10.1016/j.ribaf.2022.101625; London-New York overlap dominates price discovery and intraday liquidity/volatility",
+    "CRYPTO_PERIODICITY": "arXiv:2109.12142; systematic hour/day/within-hour crypto volatility and liquidity periodicity",
+    "SR_WILEY": "DOI:10.1002/9781119209713.ch8; prior range highs/lows as support/resistance and role reversal after breakout",
+    "PRICE_BARRIERS": "Donaldson & Kim, JFQA 1993; statistically significant price-barrier behavior and larger moves after breach",
+    "BINGX_FEE_SCHEDULE": "BingX official Perpetual Futures fee schedule: taker 0.05%/side, maker 0.02%/side"
+  },
+  "strategies": {
+    "grid_rebalance": {
+      "source_ids": ["HIST_R7_FINAL4", "GRID_DGT_2025", "BINGX_FEE_SCHEDULE"],
+      "mechanism": "bounded-range inventory pressure can mean-revert after a sufficiently large anchor excursion and reclaim, but static grid expectation is fragile without regime control",
+      "payer_constraint": "late range-extreme participants and short-horizon inventory imbalance when price re-enters a stable local range",
+      "observable_entry_event": "closed bar beyond 1.10 normalized grid steps from a prior 96-bar anchor, reclaiming versus prior close, with ATR bounds and opposing-trend veto",
+      "regime": "bounded volatility/range; no-trade in strong opposing EMA trend or chase extension",
+      "timeframe": "5m closed bars",
+      "side_policy": "symmetric long/short",
+      "invalidation": "1.25 grid-step structural stop; no adverse averaging",
+      "exit": "1.50R target and 36-bar time-stop; no partial/trailing/runner/pyramiding in v2",
+      "turnover_cost": "single transition entry, duplicate forbidden, verified round-trip cost required, gross move/cost budget >=1.25",
+      "failure_modes": ["persistent trend overwhelms mean reversion", "grid churn loses to fees", "anchor drift"],
+      "falsification": "planted reclaim edge must pass; direction flip/time placebo/delayed entry must remain distinct; missing cost/stale/duplicate input must fail closed",
+      "architecture": "grid_rebalance_complete_policy_v2"
+    },
+    "rbreaker_like": {
+      "source_ids": ["HIST_R7_FINAL4", "SR_WILEY", "PRICE_BARRIERS", "BINGX_FEE_SCHEDULE"],
+      "mechanism": "prior range boundaries create reference points; decisive breach can continue while failed breach/reclaim can reverse",
+      "payer_constraint": "stops and inventory re-pricing clustered around prior range extremes",
+      "observable_entry_event": "closed-bar breach of prior 48-bar high/low with ATR buffer and EMA confirmation, or failed breach followed by reclaim",
+      "regime": "directional expansion or failed-break reversal; no-trade on excessive chase or ATR outlier",
+      "timeframe": "5m closed bars",
+      "side_policy": "symmetric long/short",
+      "invalidation": "0.95 ATR stop beyond entry structure",
+      "exit": "2.00R target and 36-bar time-stop; no scale-in/retest add",
+      "turnover_cost": "one entry per transition, verified round-trip cost mandatory, gross move/cost >=1.25",
+      "failure_modes": ["false breakout", "range boundary contaminated by current bar", "late chase after stop cascade"],
+      "falsification": "excluding current bar from range must be invariant; planted breach/reclaim edge passes while negative controls remain separable",
+      "architecture": "rbreaker_like_complete_policy_v2"
+    },
+    "session_bias": {
+      "source_ids": ["HIST_R7_FINAL4", "BTC_INTRADAY_2019", "BTC_INTRADAY_2022", "CRYPTO_PERIODICITY", "BINGX_FEE_SCHEDULE"],
+      "mechanism": "crypto liquidity, volatility and price discovery vary systematically by global trading session, changing breakout continuation odds",
+      "payer_constraint": "session handoff liquidity and inventory adjustment as major market participation opens/overlaps",
+      "observable_entry_event": "UTC session label plus prior 24-bar range break/reclaim with EMA direction and bounded ATR",
+      "regime": "asia/london/newyork/overlap explicit; no-trade for unknown timestamp or excessive chase",
+      "timeframe": "5m closed bars",
+      "side_policy": "symmetric long/short; session is regime, not directional prior",
+      "invalidation": "1.15 ATR structural stop",
+      "exit": "1.90R target and 36-bar time-stop",
+      "turnover_cost": "single transition entry, verified cost required, gross move/cost >=1.25",
+      "failure_modes": ["timezone misclassification", "weekend/session effect instability", "session label mistaken for directional alpha"],
+      "falsification": "session timestamp permutation/time placebo must destroy session-specific identity without changing accounting; stale/unknown time fails closed",
+      "architecture": "session_bias_complete_policy_v2"
+    },
+    "sr_levels": {
+      "source_ids": ["HIST_R7_FINAL4", "SR_WILEY", "PRICE_BARRIERS", "BINGX_FEE_SCHEDULE"],
+      "mechanism": "prior swing highs/lows act as reference barriers; breakouts with participation expansion can trigger repricing and role reversal",
+      "payer_constraint": "clustered stops, breakout orders and passive liquidity around prior swing levels",
+      "observable_entry_event": "closed bar beyond prior 50-bar swing high/low by 0.12 ATR with relative volume >=1.80 and EMA slope confirmation",
+      "regime": "volume-confirmed expansion; no-trade with missing volume, ATR outlier or chase extension",
+      "timeframe": "5m closed bars",
+      "side_policy": "symmetric long/short",
+      "invalidation": "1.20 ATR stop and failed-break rejection",
+      "exit": "2.00R target and 36-bar time-stop; no dip-add/scale-in",
+      "turnover_cost": "one transition entry, verified cost required, gross move/cost >=1.25",
+      "failure_modes": ["false breakout", "volume spike without follow-through", "current-bar lookahead in level construction"],
+      "falsification": "prior-window-only level invariant plus planted volume breakout PASS; missing volume/stale/duplicate/cost authority fail closed",
+      "architecture": "sr_levels_complete_policy_v2"
+    }
+  }
+}

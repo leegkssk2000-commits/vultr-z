@@ -134,9 +134,9 @@ class IndicatorCoreR2T(unittest.TestCase):
                            verified_round_trip_cost_bps=10.0)
             stop_bps=abs(i.sl-100.0)/100.0*10_000.0
             move_bps=abs(i.tp-100.0)/100.0*10_000.0
-            self.assertAlmostEqual(stop_bps,i.risk_size["stop_distance_bps"],places=9,sid)
-            self.assertAlmostEqual(move_bps,i.move_budget_bps,places=9,sid)
-            self.assertAlmostEqual(move_bps/10.0,i.cost_budget_ratio,places=9,sid)
+            self.assertAlmostEqual(stop_bps,i.risk_size["stop_distance_bps"],places=9,msg=sid)
+            self.assertAlmostEqual(move_bps,i.move_budget_bps,places=9,msg=sid)
+            self.assertAlmostEqual(move_bps/10.0,i.cost_budget_ratio,places=9,msg=sid)
 
 
 if __name__ == "__main__":

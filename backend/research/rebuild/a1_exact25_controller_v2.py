@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
 
 from backend.research.rebuild import a1_exact25_controller_v1 as v1
 
+_V1_TERMINAL_DISPOSITION = v1.terminal_disposition
+
 RULE_PATH = ROOT / "backend/research/rebuild/a1_exact25_resource_budget_v1.json"
 LEDGER_PATH = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
 
@@ -101,7 +103,7 @@ def resource_disposition(receipt: dict[str, Any], *, now: datetime | None = None
 
 
 def terminal_disposition(receipt: dict[str, Any], hardening: dict[str, Any]) -> tuple[str | None, str | None]:
-    disposition, reason = v1.terminal_disposition(receipt, hardening)
+    disposition, reason = _V1_TERMINAL_DISPOSITION(receipt, hardening)
     if disposition is not None or reason == "IMPLEMENTATION_INTEGRITY_REQUIRES_REPAIR":
         return disposition, reason
     return resource_disposition(receipt)

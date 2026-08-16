@@ -7,9 +7,11 @@ on:
       - '.github/workflows/a1-exact25-controller-v1.yml'
       - 'backend/research/rebuild/a1_exact25_controller_v2.py'
       - 'backend/research/rebuild/a1_exact25_resource_budget_v1.json'
+      - 'backend/research/rebuild/a1_exact25_parallel_evidence_scheduler_v1.py'
       - 'backend/research/rebuild/test_a1_exact25_controller_v2.py'
+      - 'backend/research/rebuild/test_a1_exact25_parallel_evidence_scheduler_v1.py'
   schedule:
-    - cron: '11 * * * *'
+    - cron: '11,26,41,56 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -34,11 +36,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Verify finite sparse resource contract
+      - name: Verify finite sparse and parallel scheduler contracts
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest backend.research.rebuild.test_a1_exact25_controller_v2
+          python -m unittest \
+            backend.research.rebuild.test_a1_exact25_controller_v2 \
+            backend.research.rebuild.test_a1_exact25_parallel_evidence_scheduler_v1
+
+      - name: Freeze exact25 parallel evidence clocks and select heavy slot
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/a1_exact25_parallel_evidence_scheduler_v1.py --mode prepare
 
       - name: Read active exact25 strategy
         id: active
@@ -64,7 +75,7 @@ jobs:
             python backend/research/rebuild/a1_exact25_generic_evaluator_v1.py --strategy-id "$SID" --out a1_exact25_current_receipt.json
           fi
 
-      - name: Apply immutable disposition and route
+      - name: Apply immutable disposition
         id: controller
         shell: bash
         run: |
@@ -73,13 +84,27 @@ jobs:
             --receipt a1_exact25_current_receipt.json \
             --out-event a1_exact25_controller_event.json
 
-      - name: Validate research-only authority
+      - name: Release waiting heavy slot and route opportunistically
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/a1_exact25_parallel_evidence_scheduler_v1.py \
+            --mode after-receipt \
+            --receipt a1_exact25_current_receipt.json
+
+      - name: Validate research-only authority and one-heavy invariant
         shell: bash
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          for name in ['a1_exact25_current_receipt.json','a1_exact25_controller_event.json','backend/research/rebuild/a1_exact25_disposition_ledger_v1.json']:
+          for name in [
+              'a1_exact25_current_receipt.json',
+              'a1_exact25_controller_event.json',
+              'backend/research/rebuild/a1_exact25_disposition_ledger_v1.json',
+              'backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json',
+          ]:
               x=json.loads(Path(name).read_text())
               a=x.get('authority', x)
               assert a.get('selection_authority') is False
@@ -88,20 +113,27 @@ jobs:
               assert a.get('order_authority') == 'BLOCKED'
               assert a.get('live_trade_authority') == 'BLOCKED'
               assert int(a.get('protected_mutations',0)) == 0
-          print('PASS_RESEARCH_ONLY_AUTHORITY')
+          clock=json.loads(Path('backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json').read_text())
+          assert int(clock['heavy_active_count']) <= 1
+          assert int(clock['clocks_started_count']) + int(clock['source_blocked_count']) == 25
+          print('PASS_RESEARCH_ONLY_AUTHORITY_AND_PARALLEL_CLOCK')
           PY
 
-      - name: Persist ledger progression only
+      - name: Persist exact25 scheduler and disposition progression
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- backend/research/rebuild/a1_exact25_disposition_ledger_v1.json; then
+          if git diff --quiet -- \
+            backend/research/rebuild/a1_exact25_disposition_ledger_v1.json \
+            backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json; then
             exit 0
           fi
           git config user.name 'a1-exact25-controller'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
-          git commit -m 'A1 exact25: persist baseline disposition ledger [skip ci]'
+          git add \
+            backend/research/rebuild/a1_exact25_disposition_ledger_v1.json \
+            backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json
+          git commit -m 'A1 exact25: persist parallel evidence progression [skip ci]'
           git push origin HEAD:master
 
       - name: Report new strategy disposition once
@@ -119,12 +151,15 @@ jobs:
               body: `${process.env.REPORT_LINE}\n${process.env.EVIDENCE_LINE}`
             })
 
-      - name: Launch next strategy in same cycle
-        if: steps.controller.outputs.next_strategy_id != ''
+      - name: Launch next ready strategy in same cycle
+        if: steps.route.outputs.next_strategy_id != ''
         shell: bash
         run: |
           set -euo pipefail
-          SID='${{ steps.controller.outputs.next_strategy_id }}'
+          SID='${{ steps.route.outputs.next_strategy_id }}'
+          if [ "$SID" = '${{ steps.active.outputs.strategy_id }}' ]; then
+            exit 0
+          fi
           python backend/research/rebuild/a1_exact25_generic_evaluator_v1.py \
             --strategy-id "$SID" \
             --out a1_exact25_next_launch_receipt.json
@@ -140,6 +175,7 @@ jobs:
             a1_exact25_controller_event.json
             a1_exact25_next_launch_receipt.json
             backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
+            backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json
             backend/research/rebuild/a1_exact25_resource_budget_v1.json
 
       - name: Seal sweep-complete state marker

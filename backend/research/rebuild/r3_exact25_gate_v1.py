@@ -64,12 +64,11 @@ def main() -> None:
         owners.add(row["policy_owner"])
         evidence.add(row["evidence_packet"])
 
-    # The recovered registry is identity authority only; no invented substitutions.
     recovery_text = json.dumps(recovery, sort_keys=True)
     for sid in ids:
         assert sid in recovery_text, f"IDENTITY_NOT_IN_RECOVERY_AUTHORITY:{sid}"
 
-    assert len(owners) == 8, owners
+    assert len(owners) == 9, owners
     assert len(evidence) >= 8, evidence
     print(json.dumps({
         "result": "PASS_R3_EXACT25_WHOLE_SET_STRUCTURAL_GATE",

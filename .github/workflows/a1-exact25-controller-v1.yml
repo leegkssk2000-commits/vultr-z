@@ -1,0 +1,135 @@
+name: A1 Exact25 Rebuilt Controller V1
+
+on:
+  schedule:
+    - cron: '11 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-exact25-rebuilt-controller-v1
+  cancel-in-progress: false
+
+jobs:
+  exact25-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Read active exact25 strategy
+        id: active
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          p=Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json')
+          d=json.loads(p.read_text())
+          print('strategy_id=' + str(d.get('active_strategy_id') or ''))
+          PY
+
+      - name: Evaluate current heavy strategy
+        shell: bash
+        run: |
+          set -euo pipefail
+          SID='${{ steps.active.outputs.strategy_id }}'
+          test -n "$SID"
+          if [ "$SID" = "bb_revert" ]; then
+            python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out a1_exact25_current_receipt.json
+          else
+            python backend/research/rebuild/a1_exact25_generic_evaluator_v1.py --strategy-id "$SID" --out a1_exact25_current_receipt.json
+          fi
+
+      - name: Apply immutable disposition and route
+        id: controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/a1_exact25_controller_v1.py \
+            --receipt a1_exact25_current_receipt.json \
+            --out-event a1_exact25_controller_event.json
+
+      - name: Validate research-only authority
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ['a1_exact25_current_receipt.json','a1_exact25_controller_event.json','backend/research/rebuild/a1_exact25_disposition_ledger_v1.json']:
+              x=json.loads(Path(name).read_text())
+              a=x.get('authority', x)
+              assert a.get('selection_authority') is False
+              assert a.get('promotion_authority') is False
+              assert a.get('execution_authority') == 'NONE'
+              assert a.get('order_authority') == 'BLOCKED'
+              assert a.get('live_trade_authority') == 'BLOCKED'
+              assert int(a.get('protected_mutations',0)) == 0
+          print('PASS_RESEARCH_ONLY_AUTHORITY')
+          PY
+
+      - name: Persist ledger progression only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/research/rebuild/a1_exact25_disposition_ledger_v1.json; then
+            exit 0
+          fi
+          git config user.name 'a1-exact25-controller'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
+          git commit -m 'A1 exact25: persist baseline disposition ledger [skip ci]'
+          git push origin HEAD:master
+
+      - name: Report new strategy disposition once
+        if: steps.controller.outputs.report_required == 'true'
+        uses: actions/github-script@v7
+        env:
+          REPORT_LINE: ${{ steps.controller.outputs.report_line }}
+          EVIDENCE_LINE: ${{ steps.controller.outputs.evidence_line }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 566,
+              body: `${process.env.REPORT_LINE}\n${process.env.EVIDENCE_LINE}`
+            })
+
+      - name: Launch next strategy in same cycle
+        if: steps.controller.outputs.next_strategy_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          SID='${{ steps.controller.outputs.next_strategy_id }}'
+          python backend/research/rebuild/a1_exact25_generic_evaluator_v1.py \
+            --strategy-id "$SID" \
+            --out a1_exact25_next_launch_receipt.json
+
+      - name: Upload exact25 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-exact25-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            a1_exact25_current_receipt.json
+            a1_exact25_controller_event.json
+            a1_exact25_next_launch_receipt.json
+            backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
+
+      - name: Seal sweep-complete state marker
+        if: steps.controller.outputs.sweep_complete == 'true'
+        shell: bash
+        run: |
+          echo 'A1_EXACT25_BASELINE_SWEEP_COMPLETE'

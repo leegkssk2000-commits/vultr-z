@@ -1,0 +1,44 @@
+name: A1 Rebuilt BB Revert V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py'
+      - 'backend/research/rebuild/a1_rebuilt_first_family_selection_v1.json'
+      - 'backend/research/rebuild/A1_REBUILT_BASELINE_V1.json'
+      - '.github/workflows/a1-rebuilt-bb-revert-v1.yml'
+  workflow_dispatch:
+concurrency:
+  group: a1-rebuilt-heavy-evaluator
+  cancel-in-progress: false
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile evaluator and policy
+        run: python -m py_compile backend/research/rebuild/bb_revert_policy_v2.py backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py
+      - name: Run prospective evaluator
+        run: python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out a1_rebuilt_bb_revert_receipt.json
+      - name: Authority guard
+        run: |
+          python - <<'PY'
+          import json
+          x=json.load(open('a1_rebuilt_bb_revert_receipt.json'))
+          assert x['selection_authority'] is False
+          assert x['promotion_authority'] is False
+          assert x['execution_authority']=='NONE'
+          assert x['order_authority']=='BLOCKED'
+          assert x['live_trade_authority']=='BLOCKED'
+          assert x['protected_mutations']==0
+          assert x['leakage_lookahead']==0
+          assert x['duplicate_count']==0
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-rebuilt-bb-revert-v1-${{ github.run_id }}
+          path: a1_rebuilt_bb_revert_receipt.json

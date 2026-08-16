@@ -4,6 +4,8 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py'
+      - 'backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json'
+      - 'backend/research/rebuild/a1_rebuilt_bb_revert_activation_v1.json'
       - 'backend/research/rebuild/a1_rebuilt_first_family_selection_v1.json'
       - 'backend/research/rebuild/A1_REBUILT_BASELINE_V1.json'
       - '.github/workflows/a1-rebuilt-bb-revert-v1.yml'
@@ -21,7 +23,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile evaluator and policy
-        run: python -m py_compile backend/research/rebuild/bb_revert_policy_v2.py backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py
+        run: |
+          python -m py_compile backend/research/rebuild/bb_revert_policy_v2.py backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py
+          python -m json.tool backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json >/dev/null
       - name: Run prospective evaluator
         run: python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out a1_rebuilt_bb_revert_receipt.json
       - name: Authority guard
@@ -37,6 +41,14 @@ jobs:
           assert x['protected_mutations']==0
           assert x['leakage_lookahead']==0
           assert x['duplicate_count']==0
+          if x['state']=='A1_REBUILT_ECONOMICS_ACTIVE':
+              c=x['cost_authority']
+              assert c['fee']['round_trip_fee_bps']>=10.0
+              assert c['spread']['round_trip_floor_bps']>0
+              assert c['slippage_impact']['round_trip_floor_bps']>0
+              assert c['funding']['fail_closed_if_crossed_and_rate_missing'] is True
+              assert c['latency']['mode']=='NEXT_1H_BAR_OPEN'
+              assert not x['integrity_defects']
           PY
       - uses: actions/upload-artifact@v4
         with:

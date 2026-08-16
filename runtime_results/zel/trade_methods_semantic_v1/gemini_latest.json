@@ -3,7 +3,17 @@
   "action": "hold",
   "actual_model": "models/gemini-3.5-flash",
   "adapter_creation_allowed": false,
-  "adapter_plan": [],
+  "adapter_plan": [
+    {
+      "allowed_now": false,
+      "required_before_adapter": [
+        "Verify h74tm8_resolve_trade_method signature and return type",
+        "Verify resolve_action_bundle behavior with DecisionInput"
+      ],
+      "source_symbol": null,
+      "target_export": "resolve_trade_method"
+    }
+  ],
   "blockers": [
     "SEMANTIC_ROLE_CANDIDATES_MISSING:RISK_MODE,SIZING_POLICY"
   ],
@@ -14,22 +24,22 @@
         "/home/z/z/backend/engine/skill_resolver.py",
         "/home/z/z/backend/contracts/ZOS_SKILL_REGISTRY_v1.json"
       ],
-      "required_test": "Verify skill_resolver.py imports and parses ZOS_SKILL_REGISTRY_v1.json",
+      "required_test": "import backend.engine.skill_resolver; assert hasattr(backend.engine.skill_resolver, 'resolve_skill_profile' or 'SkillResolver')",
       "verdict": "LIKELY_CANONICAL"
     },
     {
       "component": "team",
       "paths": [
-        "/home/z/z/backend/bots/team_config.py",
-        "/home/z/z/backend/bots/team_manager.py"
+        "/home/z/z/backend/bots/team_manager.py",
+        "/home/z/z/backend/bots/team_config.py"
       ],
-      "required_test": "Verify team_manager.py loads team_config.py",
+      "required_test": "import backend.bots.team_manager; assert hasattr(backend.bots.team_manager, 'TeamManager')",
       "verdict": "LIKELY_CANONICAL"
     }
   ],
   "execution_allowed": false,
   "execution_authority": "NONE",
-  "inventory_sha256": "9dcaf70db9a27ed7adbb87f90388fcea3082067c3db52784651457f221ce8436",
+  "inventory_sha256": "08bb06135e4b6f4a7b9b33a336cc60b54af8983e69ed341ea988d5b67c470f70",
   "live_enabled": false,
   "mapping_is_hypothesis_only": true,
   "next": "DETERMINISTIC_SIGNATURE_AND_BEHAVIOR_PROBES_BEFORE_MINIMAL_COMPATIBILITY_ADAPTER",
@@ -38,72 +48,126 @@
   "personal_source_review": {
     "candidate_paths": [
       "/home/z/z/backend/config/q4r3_exact25_trade_method_consumer_proof_ssot_v1.json",
-      "/home/z/z/backend/config/q4r3_exact25_trade_method_lineage_ssot_v1.json",
-      "/home/z/z/backend/legendary_rebuild/legendary_trade_methods_manifest.json"
+      "/home/z/z/backend/config/q4r3_exact25_trade_method_lineage_ssot_v1.json"
     ],
-    "reason": "Metadata-only review of filenames and paths confirms exact trade_method tokens in config and legendary_rebuild directories.",
+    "reason": "Exact filename match for trade_method metadata and lineage configurations in config directory.",
     "verdict": "EXACT_NAME_FOUND"
   },
   "promotion_authority": false,
-  "prompt_sha256": "b5959709772a58a5276cca44dcfa456ab749a57a8acc4b90ee90e005c95b32ad",
+  "prompt_sha256": "b4e6ebcd4ce0a576724e81d0ba24cf1d79315a1db4c9bc78503551cb8ef61e74",
   "protected_mutations": 0,
-  "receipt_sha256": "76c49e2ce614fdc3caad1f7d69bee105508ebfaed57f4ad5e2563939e3961729",
+  "receipt_sha256": "67167f97a365909e263755d613d8b38150ad0d57ffd70c8cf736a8e6cda6bd49",
   "research_only": true,
-  "response_sha256": "b96ccea6af482de79cdf8aa4b2eeb6a43a0e2969c2384f54362f236394a77585",
+  "response_sha256": "8c752dbabe6921578efc29c5017126c1ac964e7a235b8c3cd24d851d69db8644",
   "role_mappings": [
     {
-      "candidates": [],
-      "reason": "Directly resolves combo strategies, skills, and cost parameters.",
+      "candidates": [
+        {
+          "confidence": 1.0,
+          "kind": "function",
+          "name": "h74tm8_resolve_combo",
+          "path": "backend/trade_methods/policy.py",
+          "required_deterministic_test": "import backend.trade_methods.policy; assert callable(backend.trade_methods.policy.h74tm8_resolve_combo)"
+        }
+      ],
+      "reason": "Directly resolves combo policies combining strategies, skills, and cost parameters.",
       "role": "COMBO_POLICY",
-      "verdict": "NO_MATCH"
+      "verdict": "EXACT_CANDIDATE"
     },
     {
-      "candidates": [],
-      "reason": "Provides base take-profit (TP) ratio parameters for exit policy calculations.",
+      "candidates": [
+        {
+          "confidence": 0.9,
+          "kind": "function",
+          "name": "h74tm8_base_tp_r",
+          "path": "backend/trade_methods/profiles.py",
+          "required_deterministic_test": "import backend.trade_methods.profiles; assert isinstance(backend.trade_methods.profiles.h74tm8_base_tp_r(), float)"
+        }
+      ],
+      "reason": "Provides base take-profit R-values which are part of the exit policy logic.",
       "role": "EXIT_POLICY",
-      "verdict": "NO_MATCH"
+      "verdict": "POSSIBLE_ALIAS"
     },
     {
-      "candidates": [],
-      "reason": "MethodProfile directly models the metadata and structural properties of a trade method plan.",
+      "candidates": [
+        {
+          "confidence": 1.0,
+          "kind": "class",
+          "name": "MethodProfile",
+          "path": "backend/trade_methods/types.py",
+          "required_deterministic_test": "import backend.trade_methods.types; assert issubclass(backend.trade_methods.types.MethodProfile, object)"
+        }
+      ],
+      "reason": "MethodProfile directly represents the plan type structure with fields like method, subtype, label, entry_style, and hold_horizon.",
       "role": "PLAN_TYPE",
-      "verdict": "NO_MATCH"
+      "verdict": "EXACT_CANDIDATE"
     },
     {
-      "candidates": [],
-      "reason": "h74tm8_resolve_trade_method is the primary entry point for resolving trade method decisions.",
+      "candidates": [
+        {
+          "confidence": 1.0,
+          "kind": "function",
+          "name": "resolve_action_bundle",
+          "path": "backend/trade_methods/resolver.py",
+          "required_deterministic_test": "import backend.trade_methods.resolver; assert callable(backend.trade_methods.resolver.resolve_action_bundle)"
+        },
+        {
+          "confidence": 0.9,
+          "kind": "function",
+          "name": "h74tm8_resolve_trade_method",
+          "path": "backend/trade_methods/resolver.py",
+          "required_deterministic_test": "import backend.trade_methods.resolver; assert callable(backend.trade_methods.resolver.h74tm8_resolve_trade_method)"
+        }
+      ],
+      "reason": "resolve_action_bundle and h74tm8_resolve_trade_method are the primary entry points for resolving trade method decisions.",
       "role": "RESOLVER",
-      "verdict": "NO_MATCH"
+      "verdict": "EXACT_CANDIDATE"
     },
     {
       "candidates": [],
-      "reason": "No explicit risk mode candidate found in the runtime symbol inventory.",
+      "reason": "No candidate matching RISK_MODE was found in the AST or runtime symbol inventory.",
       "role": "RISK_MODE",
       "verdict": "NO_MATCH"
     },
     {
-      "candidates": [],
-      "reason": "Evaluates risk levels based on active skills.",
+      "candidates": [
+        {
+          "confidence": 0.9,
+          "kind": "function",
+          "name": "h74tm8_high_risk_skill",
+          "path": "backend/trade_methods/policy.py",
+          "required_deterministic_test": "import backend.trade_methods.policy; assert callable(backend.trade_methods.policy.h74tm8_high_risk_skill)"
+        }
+      ],
+      "reason": "Evaluates risk levels based on active skills, acting as a risk policy guard.",
       "role": "RISK_POLICY",
-      "verdict": "NO_MATCH"
+      "verdict": "POSSIBLE_ALIAS"
     },
     {
       "candidates": [],
-      "reason": "No explicit sizing policy candidate found in the runtime symbol inventory.",
+      "reason": "No candidate matching SIZING_POLICY was found in the AST or runtime symbol inventory.",
       "role": "SIZING_POLICY",
       "verdict": "NO_MATCH"
     },
     {
-      "candidates": [],
-      "reason": "TradeMethod is an Enum representing the specific trade method types/skills.",
+      "candidates": [
+        {
+          "confidence": 0.8,
+          "kind": "function",
+          "name": "h74tm8_high_risk_skill",
+          "path": "backend/trade_methods/policy.py",
+          "required_deterministic_test": "import backend.trade_methods.policy; assert callable(backend.trade_methods.policy.h74tm8_high_risk_skill)"
+        }
+      ],
+      "reason": "Identifies high risk skills but is not a standalone skill type definition.",
       "role": "SKILL_TYPE",
-      "verdict": "NO_MATCH"
+      "verdict": "POSSIBLE_ALIAS"
     }
   ],
   "runtime_bound": false,
   "schema_version": "zel.trade_methods.semantic_gemini.v1",
   "shadow_start_allowed": false,
-  "state": "HOLD_GEMINI_NO_SEMANTIC_MAPPING",
+  "state": "PASS_GEMINI_SEMANTIC_MAPPING_HYPOTHESES",
   "status": "HOLD",
   "version": "ZEL_TRADE_METHODS_SEMANTIC_GEMINI_V1"
 }

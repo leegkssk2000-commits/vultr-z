@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from backend.research.rebuild import a1_exact25_controller_v1 as v1
 
-ROOT = Path(__file__).resolve().parents[3]
 RULE_PATH = ROOT / "backend/research/rebuild/a1_exact25_resource_budget_v1.json"
 LEDGER_PATH = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
 

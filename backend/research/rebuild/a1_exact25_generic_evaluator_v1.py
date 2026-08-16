@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -144,6 +144,7 @@ def load_policy(strategy_id: str, inventory: dict[str, Any]) -> tuple[Any, Path,
     if spec is None or spec.loader is None:
         raise RuntimeError("POLICY_IMPORT_SPEC_FAIL")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module, path, git_blob_sha(path)
 

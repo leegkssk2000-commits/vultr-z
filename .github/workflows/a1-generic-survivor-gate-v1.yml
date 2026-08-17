@@ -1,0 +1,62 @@
+name: A1 Generic Survivor Gate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_exact25_survivor_gate_v1.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v2.py'
+      - 'backend/research/rebuild/a1_exact25_controller_v1.py'
+      - 'backend/research/rebuild/a1_exact25_controller_v2.py'
+      - 'backend/research/rebuild/test_a1_exact25_survivor_gate_v1.py'
+      - '.github/workflows/a1-generic-survivor-gate-v1.yml'
+  push:
+    branches: [master, 'fix/**']
+    paths:
+      - 'backend/research/rebuild/a1_exact25_survivor_gate_v1.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v2.py'
+      - 'backend/research/rebuild/test_a1_exact25_survivor_gate_v1.py'
+      - '.github/workflows/a1-generic-survivor-gate-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and deterministic survivor-gate tests
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_exact25_survivor_gate_v1.py \
+            backend/research/rebuild/a1_exact25_generic_evaluator_v2.py \
+            backend/research/rebuild/a1_exact25_controller_v1.py \
+            backend/research/rebuild/a1_exact25_controller_v2.py
+          python -m unittest backend.research.rebuild.test_a1_exact25_survivor_gate_v1
+      - name: Verify fail-closed authority and policy linkage
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('backend/research/rebuild/a1_exact25_survivor_gate_v1.py').read_text()
+          assert 'zel_economic_hardening_policy_v1.json' in src
+          assert 'completed_trades' in src
+          assert 'tier_a_completed_symbols' in src
+          assert 'retention_positive' in src
+          assert 'oos_positive' in src
+          assert 'negative_control_superiority' in src
+          assert 'passed' in src
+          assert 'execution_authority' in src and 'NONE' in src
+          assert 'order_authority' in src and 'BLOCKED' in src
+          assert 'live_trade_authority' in src and 'BLOCKED' in src
+          print('PASS_A1_GENERIC_SURVIVOR_GATE_FAIL_CLOSED')
+          PY

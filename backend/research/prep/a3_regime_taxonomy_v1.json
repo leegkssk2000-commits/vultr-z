@@ -1,0 +1,23 @@
+{
+  "schema_version": "zel.a3_regime_taxonomy.v1",
+  "stage": "A3_PREP",
+  "purpose": "entry-time-only regime labeling; no survivor scoring",
+  "prohibitions": ["pnl_based_thresholds", "future_bar_inputs", "survivor_selection", "strategy_retuning"],
+  "input_contract": {
+    "required": ["ts_utc", "closed_bar_ts_utc", "symbol", "trend_strength", "realized_vol_pct", "spread_bps", "depth_usdt", "funding_8h_pct", "oi_change_pct"],
+    "optional": ["session_utc_hour"],
+    "stale_after_ms": 7200000,
+    "closed_bar_only": true,
+    "missing_policy": "FAIL_CLOSED"
+  },
+  "taxonomy": {
+    "trend_state": {"TREND": "abs(trend_strength)>=0.35", "RANGE": "abs(trend_strength)<0.35"},
+    "vol_state": {"HIGH_VOL": "realized_vol_pct>=1.0", "LOW_VOL": "realized_vol_pct<1.0"},
+    "liquidity_state": {"THIN": "spread_bps>8 or depth_usdt<100000", "NORMAL": "otherwise"},
+    "session_state": {"ASIA": "00-07 UTC", "EU": "08-15 UTC", "US": "16-23 UTC"},
+    "funding_oi_state": {"CROWDED": "abs(funding_8h_pct)>=0.03 and abs(oi_change_pct)>=3", "NEUTRAL": "otherwise"}
+  },
+  "symbol_scaling": {"mode": "NORMALIZED_INPUTS_ONLY", "raw_price_level_used": false},
+  "coverage_manifest_required": true,
+  "authority": {"selection_authority": false, "promotion_authority": false, "execution_authority": "NONE", "order_authority": "BLOCKED", "live_trade_authority": "BLOCKED", "protected_mutations": 0}
+}

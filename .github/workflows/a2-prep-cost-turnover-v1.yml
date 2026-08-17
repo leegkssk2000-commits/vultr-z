@@ -1,0 +1,49 @@
+name: A2 PREP Cost Turnover V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/a2_cost_turnover_ssot_v1.json'
+      - 'backend/research/prep/a2_cost_turnover_calculator_v1.py'
+      - 'backend/research/prep/test_a2_cost_turnover_v1.py'
+      - 'backend/research/prep/A2_PREP_READY_v1.json'
+      - '.github/workflows/a2-prep-cost-turnover-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  a2-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and parse contracts
+        run: |
+          python -m py_compile backend/research/prep/a2_cost_turnover_calculator_v1.py backend/research/prep/test_a2_cost_turnover_v1.py
+          python -m json.tool backend/research/prep/a2_cost_turnover_ssot_v1.json >/dev/null
+          python -m json.tool backend/research/prep/A2_PREP_READY_v1.json >/dev/null
+      - name: Deterministic A2 prep tests
+        run: python -m unittest backend.research.prep.test_a2_cost_turnover_v1 -v
+      - name: Guard A1 and runtime authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('backend/research/prep/A2_PREP_READY_v1.json').read_text())
+          a=r['authority']
+          assert r['state']=='A2_PREP_READY'
+          assert r['explicit_non_authority']['actual_survivor_evaluated'] is False
+          assert r['explicit_non_authority']['a1_files_modified'] is False
+          assert a['selection_authority'] is False
+          assert a['promotion_authority'] is False
+          assert a['execution_authority']=='NONE'
+          assert a['order_authority']=='BLOCKED'
+          assert a['live_trade_authority']=='BLOCKED'
+          assert a['exchange_order_submitted'] is False
+          assert a['protected_mutations']==0
+          print('PASS_A2_PREP_RESEARCH_ONLY')
+          PY

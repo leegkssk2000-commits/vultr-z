@@ -1,0 +1,86 @@
+{
+  "schema_version": "zel.a2_cost_turnover_ssot.v1",
+  "state": "A2_PREP_READY",
+  "research_only": true,
+  "scope": "survivor-independent cost and turnover preparation only",
+  "source_lineage": {
+    "inherited_a1_cost_authority": "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json",
+    "official_fee_source_id": "BINGX_PERP_FEE_VIP0",
+    "depth_endpoint": "/openApi/swap/v2/quote/depth",
+    "funding_endpoint": "/openApi/swap/v2/quote/fundingRate",
+    "kline_endpoint": "/openApi/swap/v3/quote/klines",
+    "source_urls": [
+      "https://bingx.com/en/support/articles/360046487573-Perpetual%20Futures%20%7C%20Fee%20Schedule/",
+      "https://open-api.bingx.com/openApi/swap/v2/quote/depth",
+      "https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate",
+      "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
+    ],
+    "verified_at_utc": "2026-08-17T00:13:00Z"
+  },
+  "fee": {
+    "taker_fee_bps_one_way": 5.0,
+    "taker_round_trip_bps": 10.0,
+    "maker_reference_only": true,
+    "maker_fill_model_verified": false,
+    "maker_may_reduce_cost": false,
+    "maker_required_evidence": ["queue_position", "fill_probability", "adverse_selection"]
+  },
+  "spread": {
+    "unit": "bps_round_trip",
+    "method": "best_ask_minus_best_bid_over_mid",
+    "floor_bps": 1.0,
+    "fail_closed": true
+  },
+  "depth_vwap_impact": {
+    "unit": "bps_round_trip",
+    "reference_notional_usdt": 10000.0,
+    "method": "buy_vwap_vs_best_ask_plus_best_bid_vs_sell_vwap",
+    "floor_bps": 2.0,
+    "size_aware_recalibration_required_above_reference_notional": true,
+    "fail_closed_if_unfilled": true
+  },
+  "funding": {
+    "unit": "bps",
+    "pretrade": "P95_ABSOLUTE_LAST_100_AS_ONE_SETTLEMENT_RESERVE",
+    "realized": "ABSOLUTE_FUNDING_FOR_SETTLEMENTS_CROSSED",
+    "p95_stress": true,
+    "fail_closed_if_crossed_and_missing": true
+  },
+  "latency": {
+    "base_fill": "NEXT_SOURCE_BAR_OPEN",
+    "stress_fill": "PLUS_ONE_ADDITIONAL_SOURCE_BAR",
+    "same_bar_fill_forbidden": true
+  },
+  "partial_fill_reject": {
+    "partial_fill_cost_fields_required": true,
+    "reject_rate_field_required": true,
+    "unverified_improvement_forbidden": true
+  },
+  "turnover": {
+    "unit": "round_trips_per_day",
+    "metrics": ["round_trips", "gross_turnover_notional", "cost_bps_total", "cost_bps_per_trade"],
+    "duplicate_transition_forbidden": true
+  },
+  "cost_formula": {
+    "one_x": "taker_fee_rt + max(spread_observed,spread_floor) + max(depth_impact_observed,impact_floor) + funding_reserve_or_realized + optional_verified_penalties",
+    "two_x": "2 * one_x",
+    "expected_move_cost_ratio": "expected_gross_move_bps / one_x_cost_bps",
+    "maker_rescue_forbidden": true
+  },
+  "stress_contract": ["1X_COST", "2X_COST", "P95_FUNDING", "PLUS_ONE_BAR"],
+  "gates": {
+    "actual_survivor_evaluation_allowed": false,
+    "selection_allowed": false,
+    "promotion_allowed": false,
+    "old_or_pre_rebuild_pnl_used": false
+  },
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "exchange_order_submitted": false,
+    "protected_mutations": 0
+  }
+}

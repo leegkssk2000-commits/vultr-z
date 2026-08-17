@@ -1,0 +1,41 @@
+name: Followup Prep Lane C V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/g11_g14_lane_c_contract_v1.json'
+      - 'backend/research/prep/test_g11_g14_lane_c_contract_v1.py'
+      - '.github/workflows/followup-prep-lane-c-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lane-c-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify prep-only authority and contracts
+        run: |
+          python -m pytest -q backend/research/prep/test_g11_g14_lane_c_contract_v1.py
+      - name: Verify forbidden runtime activation remains blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/prep/g11_g14_lane_c_contract_v1.json').read_text())
+          assert d['state']=='PREP_ONLY'
+          assert d['authority']['execution_authority']=='NONE'
+          assert d['authority']['order_authority']=='BLOCKED'
+          assert d['authority']['live_trade_authority']=='BLOCKED'
+          assert d['g11']['actual_weight_selection_allowed'] is False
+          assert d['g12']['runtime_activation_allowed'] is False
+          assert d['g13']['paper_activation_allowed'] is False
+          assert d['g14']['explicit_user_approval_required'] is True
+          print('FOLLOWUP_PREP_LANE_C_READY')
+          PY

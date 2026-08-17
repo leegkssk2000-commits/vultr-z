@@ -1,0 +1,39 @@
+name: G6-G9 Followup Prep V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/g6_g9_followup_contract_v1.json'
+      - 'backend/research/prep/test_g6_g9_followup_contract_v1.py'
+      - '.github/workflows/g6-g9-followup-prep-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify G6-G9 research-only contracts
+        run: python -m unittest backend.research.prep.test_g6_g9_followup_contract_v1
+      - name: Assert protected paths untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1
+          CHANGED="$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD)"
+          echo "$CHANGED"
+          ALLOWED='^(backend/research/prep/g6_g9_followup_contract_v1.json|backend/research/prep/test_g6_g9_followup_contract_v1.py|.github/workflows/g6-g9-followup-prep-v1.yml)$'
+          BAD="$(echo "$CHANGED" | grep -Ev "$ALLOWED" || true)"
+          if [ -n "$BAD" ]; then
+            echo 'OUT_OF_SCOPE_MUTATION'
+            echo "$BAD"
+            exit 1
+          fi
+          echo 'PASS_G6_G9_PREP_SCOPE_LOCK'

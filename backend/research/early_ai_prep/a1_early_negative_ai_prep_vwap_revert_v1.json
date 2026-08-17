@@ -1,0 +1,128 @@
+{
+  "schema_version": "zel.a1_early_negative_ai_prep.v1",
+  "created_at_utc": "2026-08-17T21:05:45Z",
+  "strategy_id": "vwap_revert",
+  "state": "EARLY_AI_PREP_READY",
+  "classification": "PRELIMINARY_NOT_TERMINAL",
+  "baseline_authority": "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json",
+  "baseline_mutated": false,
+  "improvement_executed": false,
+  "terminal_required_for_execution": true,
+  "authority": {
+    "research_only": true,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "exchange_order_submitted": false,
+    "protected_mutations": 0
+  },
+  "baseline_metrics": {
+    "run_id": 32062058057,
+    "completed_trades": 11,
+    "gross_expectancy_bps": -41.9340,
+    "net_expectancy_bps": -54.9985,
+    "net_pnl_bps": -604.984,
+    "profit_factor": 0.0,
+    "win_rate": 0.0,
+    "drawdown_bps": 604.984,
+    "verified_pretrade_cost_bps": 14.0,
+    "leakage_lookahead": 0,
+    "integrity_defects": []
+  },
+  "fingerprint": {
+    "primary": "MEAN_REVERSION_ENTRY_AGAINST_PERSISTENT_DIRECTIONAL_FLOW",
+    "secondary": [
+      "GROSS_NEGATIVE_BEFORE_COST",
+      "VWAP_DEVIATION_NOT_REGIME_CONDITIONED"
+    ],
+    "reason": "Eleven completed trades are gross-negative before costs with PF=0, indicating that unconditional VWAP reversion is repeatedly entering while directional/benchmark flow remains active rather than suffering a fee-only problem."
+  },
+  "external_sources": [
+    {
+      "id": "V1",
+      "tier": "working_paper",
+      "title": "VWAP-Based Regime Classification Model for Intraday Price Dynamics",
+      "identifier": "SSRN:6438039",
+      "claim": "Volatility-normalized VWAP deviation can distinguish trend-dominated from mean-reverting intraday environments, supporting state-conditioned rather than unconditional reversion."
+    },
+    {
+      "id": "V2",
+      "tier": "working_paper",
+      "title": "Order Flow and Cryptocurrency Returns",
+      "identifier": "SSRN:5020002",
+      "claim": "Cryptocurrency order flow contains predictive information for returns; persistent directional flow is therefore a causal reason to delay/forbid fading a VWAP deviation."
+    },
+    {
+      "id": "V3",
+      "tier": "working_paper",
+      "title": "Equilibrium Effects of Intraday Order-Splitting Benchmarks",
+      "identifier": "arXiv:1803.08336",
+      "claim": "VWAP/TWAP benchmark trading creates predictable intraday price pressure and affects liquidity/volatility, so benchmark-driven flow can make apparent VWAP dislocations persist instead of revert immediately."
+    },
+    {
+      "id": "V4",
+      "tier": "working_paper",
+      "title": "Volume Profile Mean Reversion Strategy with Tape Speed Confirmation for Cryptocurrency Futures Markets",
+      "identifier": "SSRN:6932998",
+      "claim": "A crypto-futures mean-reversion study explicitly conditions entries on tape-speed confirmation and finds transaction costs can dominate tight-stop specifications, supporting confirmation and cost-aware falsification."
+    }
+  ],
+  "top3_axes": [
+    {
+      "rank": 1,
+      "axis": "DIRECTIONAL_FLOW_EXHAUSTION_CONFIRMATION",
+      "mechanism": "Keep frozen VWAP deviation and exits unchanged; permit reversion intent only after a preregistered entry-time-observable directional order-flow/tape-speed exhaustion or sign-reversal event confirms that the flow causing the deviation is no longer persisting.",
+      "source_ids": ["V2", "V4"],
+      "expected_metric_direction": {
+        "gross_expectancy": "UP",
+        "profit_factor": "UP",
+        "win_rate": "UP",
+        "trade_count": "DOWN",
+        "drawdown": "DOWN"
+      },
+      "falsification": "At a fresh prospective boundary, flow-exhaustion-confirmed trades fail to improve gross/net expectancy and PF versus frozen baseline and a direction-permuted flow control, or gains come only from destructive trade deletion.",
+      "required_data": ["entry-time public trade-flow/tape-speed proxy", "closed-bar OHLCV", "frozen VWAP state", "unchanged cost lineage"],
+      "forbidden_collateral_changes": ["VWAP deviation threshold", "stop", "target", "holding horizon", "fees", "side scope", "additional regime filters"]
+    },
+    {
+      "rank": 2,
+      "axis": "VWAP_MEAN_REVERSION_REGIME_GATE",
+      "mechanism": "Keep entry deviation logic unchanged but allow it only in one preregistered volatility-normalized non-trending VWAP regime; explicitly no-trade in trend-dominated regimes.",
+      "source_ids": ["V1"],
+      "expected_metric_direction": {
+        "gross_expectancy": "UP",
+        "profit_factor": "UP",
+        "false_fades": "DOWN",
+        "trade_count": "DOWN"
+      },
+      "falsification": "Fresh regime-conditioned trades do not outperform a frozen regime-permutation placebo on gross/net expectancy and PF, or retention/sample becomes insufficient.",
+      "required_data": ["closed-bar OHLCV", "VWAP", "entry-time realized-volatility normalization", "frozen trend/regime proxy"],
+      "forbidden_collateral_changes": ["flow-exhaustion confirmation", "VWAP threshold sweep", "exit", "fees", "best-horizon selection"]
+    },
+    {
+      "rank": 3,
+      "axis": "BENCHMARK_PRESSURE_NO_FADE_WINDOW",
+      "mechanism": "Keep VWAP reversion mechanics unchanged; preregister a single no-fade state when entry-time evidence indicates persistent benchmark/order-splitting pressure likely to maintain the VWAP displacement.",
+      "source_ids": ["V3"],
+      "expected_metric_direction": {
+        "gross_expectancy": "UP",
+        "drawdown": "DOWN",
+        "turnover": "DOWN",
+        "trade_count": "DOWN"
+      },
+      "falsification": "Fresh no-fade conditioning fails to improve gross/net expectancy or only removes losing time windows without a mechanism-consistent control benefit.",
+      "required_data": ["entry timestamp", "intraday volume/liquidity profile", "VWAP deviation", "closed-bar OHLCV"],
+      "forbidden_collateral_changes": ["flow gate", "VWAP deviation threshold", "stop", "target", "fees", "time-window sweep"]
+    }
+  ],
+  "ai_lineage": {
+    "gemini_successful_call": false,
+    "gemini_model": null,
+    "gemini_run_id": null,
+    "groq_successful_call": false,
+    "youtube_adopted": [],
+    "note": "No successful Gemini/Groq call is attributed to this prep. Direct public-source research was used; no view-count-verifiable technical YouTube source was needed to establish the preregisterable causal axes."
+  }
+}

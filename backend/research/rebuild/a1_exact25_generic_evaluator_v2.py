@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import sys
 import time
+from pathlib import Path
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as v1
 from backend.research.rebuild.a1_exact25_policy_adapter_v1 import policy_functions
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import attach_survivor_gate, load_external_hardening_evidence
 
 v1.policy_functions = policy_functions
 
@@ -25,5 +29,33 @@ def request_json_with_transient_retry(url: str, params: dict[str, object]):
 v1.request_json = request_json_with_transient_retry
 
 
-if __name__ == "__main__":
+def _output_path(argv: list[str]) -> Path:
+    for i, arg in enumerate(argv):
+        if arg == "--out" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--out="):
+            return Path(arg.split("=", 1)[1])
+    return Path("a1_exact25_receipt.json")
+
+
+def main() -> None:
+    # Preserve the v1 prospective evaluator exactly, then add only a fail-closed
+    # hardening adapter. Missing existing H4/OOS/retention evidence can never be
+    # synthesized into PASS.
     v1.main()
+    out_path = _output_path(sys.argv[1:])
+    receipt = json.loads(out_path.read_text(encoding="utf-8"))
+    receipt = attach_survivor_gate(receipt, hardening_evidence=load_external_hardening_evidence())
+    out_path.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    print(json.dumps({
+        "state": receipt.get("state"),
+        "strategy_id": receipt.get("strategy_id"),
+        "completed_trades": receipt.get("completed_trades"),
+        "survivor_gate_state": (receipt.get("survivor_gate") or {}).get("state"),
+        "survivor_gate_passed": (receipt.get("survivor_gate") or {}).get("passed"),
+        "receipt_sha256": receipt.get("receipt_sha256"),
+    }, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

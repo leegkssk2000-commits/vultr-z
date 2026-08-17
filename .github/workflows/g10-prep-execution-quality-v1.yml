@@ -1,0 +1,35 @@
+name: G10 PREP Execution Quality V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/g10_execution_quality_contract_v1.json'
+      - 'backend/research/prep/g10_execution_quality_ledger_v1.py'
+      - 'backend/research/prep/test_g10_execution_quality_ledger_v1.py'
+      - '.github/workflows/g10-prep-execution-quality-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  g10-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest backend.research.prep.test_g10_execution_quality_ledger_v1
+      - name: Guard source contract and authority
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/prep/g10_execution_quality_contract_v1.json').read_text())
+          assert d['reuse']['a2_cost_ssot']=='backend/research/prep/a2_cost_turnover_ssot_v1.json'
+          assert d['reuse']['duplicate_collector_forbidden'] is True
+          assert d['source_contract']['private_data_mode']=='READ_ONLY_WHEN_EXISTING_HISTORY_IS_AVAILABLE'
+          a=d['authority']
+          assert a['selection_authority'] is False and a['promotion_authority'] is False
+          assert a['execution_authority']=='NONE' and a['order_authority']=='BLOCKED' and a['live_trade_authority']=='BLOCKED'
+          assert a['exchange_order_submitted'] is False and a['protected_mutations']==0
+          print('PASS_G10_PREP_CONTRACT')
+          PY

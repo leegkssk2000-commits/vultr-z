@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import unittest
 
 from backend.research.rebuild.a1_exact25_survivor_gate_v1 import build_survivor_gate

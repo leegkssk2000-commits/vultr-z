@@ -10,7 +10,7 @@ from typing import Any
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as v1
 from backend.research.rebuild.a1_exact25_hardening_evidence_adapter_v1 import load_verified_hardening_evidence
 from backend.research.rebuild.a1_exact25_policy_adapter_v1 import policy_functions
-from backend.research.rebuild.a1_exact25_survivor_gate_v1 import attach_survivor_gate
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import attach_survivor_gate, stable_sha
 
 v1.policy_functions = policy_functions
 
@@ -59,11 +59,23 @@ def main() -> None:
     out_path = _output_path(sys.argv[1:])
     receipt = _finite_json(json.loads(out_path.read_text(encoding="utf-8")))
     receipt = attach_survivor_gate(receipt, hardening_evidence=load_verified_hardening_evidence())
+
+    # Keep the legacy/public field required by downstream ledgers, but derive it
+    # strictly from the attached H4 gate. Missing H4 remains PENDING; nothing is
+    # inferred or auto-passed.
+    receipt["negative_control_state"] = str(
+        receipt.get("negative_control_gate") or "PENDING_H4_NEGATIVE_CONTROL_SUPERIORITY"
+    )
+    receipt["receipt_sha256"] = stable_sha(
+        {k: v for k, v in receipt.items() if k != "receipt_sha256"}
+    )
+
     out_path.write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False, default=str), encoding="utf-8")
     print(json.dumps({
         "state": receipt.get("state"),
         "strategy_id": receipt.get("strategy_id"),
         "completed_trades": receipt.get("completed_trades"),
+        "negative_control_state": receipt.get("negative_control_state"),
         "survivor_gate_state": (receipt.get("survivor_gate") or {}).get("state"),
         "survivor_gate_passed": (receipt.get("survivor_gate") or {}).get("passed"),
         "receipt_sha256": receipt.get("receipt_sha256"),

@@ -6,6 +6,7 @@ on:
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py'
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json'
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_policy_v1.json'
+      - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json'
       - 'backend/research/rebuild/test_a1_experimental_scalp_snap_order_flow_exhaustion_v1.py'
       - '.github/workflows/a1-experimental-scalp-exhaustion-contract-v1.yml'
   push:
@@ -14,6 +15,7 @@ on:
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py'
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json'
       - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_policy_v1.json'
+      - 'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json'
       - 'backend/research/rebuild/test_a1_experimental_scalp_snap_order_flow_exhaustion_v1.py'
       - '.github/workflows/a1-experimental-scalp-exhaustion-contract-v1.yml'
   workflow_dispatch:
@@ -34,16 +36,18 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py
           python -m unittest backend.research.rebuild.test_a1_experimental_scalp_snap_order_flow_exhaustion_v1
-      - name: Verify research-only authority and no fresh boundary yet
+      - name: Verify research-only authority and prospective lineage
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          for path in [
+          from datetime import datetime, timezone
+          paths=[
               'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json',
               'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json',
               'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_policy_v1.json',
-          ]:
+          ]
+          for path in paths:
               d=json.load(open(path))
               a=d.get('authority', d)
               assert a.get('selection_authority') is False
@@ -52,9 +56,20 @@ jobs:
               assert a.get('order_authority') == 'BLOCKED'
               assert a.get('live_trade_authority') == 'BLOCKED'
               assert int(a.get('protected_mutations',0)) == 0
-          cfg=json.load(open('backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json'))
+          cfg=json.load(open(paths[1]))
+          reg=json.load(open(paths[0]))
           assert cfg['verified_pretrade_cost_bps_reference']==14.0
-          assert cfg['fresh_prospective_boundary_utc'] is None
           assert cfg['baseline_clock_reset'] is False
+          assert cfg['parameter_search'] is False and cfg['best_horizon_selection'] is False and cfg['threshold_tuning'] is False
+          boundary=cfg.get('fresh_prospective_boundary_utc')
+          if boundary is not None:
+              b=datetime.fromisoformat(boundary.replace('Z','+00:00'))
+              freeze=datetime.fromisoformat('2026-08-17T23:07:06+00:00')
+              assert b > freeze
+              p=reg['preregistration']
+              assert p['fresh_prospective_boundary_utc']==boundary
+              assert p['evaluator_blob_sha']=='7add3d949e65c52063f5d73e447245f308659bbf'
+              assert p['new_policy_blob_sha']=='ba199e427e76a667727453827581da9a9b1d4da0'
+              assert p['new_config_blob_sha']=='689141b91fabc18d34003c9b681c08aa56b7d2b1'
           print('PASS_SCALP_EXHAUSTION_EXPERIMENTAL_CONTRACT')
           PY

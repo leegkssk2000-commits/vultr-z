@@ -1,0 +1,139 @@
+{
+  "schema_version": "zel.a1_early_negative_ai_prep.strategy.v1",
+  "created_at_utc": "2026-08-17T17:00:00Z",
+  "strategy_id": "vol_spike_fade",
+  "state": "EARLY_AI_PREP_READY",
+  "classification": "TERMINAL_BASELINE_CONFIRMED",
+  "baseline_authority": "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json",
+  "baseline_receipt_sha": "a230eee3141cb0e028986a0691488c423e646e1b0bc43cb07ea1f35e821ff3cc",
+  "baseline_mutated": false,
+  "improvement_executed": false,
+  "terminal_required_for_execution": true,
+  "authority": {
+    "research_only": true,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "exchange_order_submitted": false,
+    "protected_mutations": 0
+  },
+  "metrics": {
+    "completed_trades": 23,
+    "event_count": 25,
+    "gross_expectancy_bps": -8.450837598551999,
+    "net_expectancy_bps": -21.48170716376939,
+    "net_pnl_bps": -494.079264766696,
+    "profit_factor": 0.07723593305496203,
+    "payoff": 0.5149062203664134,
+    "win_rate": 0.13043478260869565,
+    "drawdown_bps": 494.079264766696,
+    "verified_pretrade_cost_bps": 14.0,
+    "leakage_lookahead": 0,
+    "integrity_defects": [],
+    "terminal_disposition": "A1_COST_FUTILITY",
+    "terminal_reason": "GROSS_EDGE_COST_RATIO_LT_0_25:-0.603631",
+    "run_id": 32048208018
+  },
+  "fingerprint": {
+    "primary": "FADE_ENTERS_DURING_PERSISTENT_JUMP_CONTINUATION",
+    "secondary": [
+      "GROSS_EXPECTANCY_NEGATIVE_BEFORE_COST",
+      "PF_AND_PAYOFF_BELOW_ONE",
+      "LARGE_CONTINUATION_DRAWDOWN",
+      "IMMEDIATE_SPIKE_FADE_LACKS_EXHAUSTION_CONFIRMATION"
+    ],
+    "reason": "The frozen baseline loses before costs, so fee reduction cannot rescue it. Bitcoin jump evidence links aggressive flow, order-flow imbalance and spread widening to persistent price changes; the next version must delay the same fade thesis until reversal is observable rather than fading the spike itself."
+  },
+  "ai_router_availability": {
+    "gemini": {
+      "latest_observer_run_id": 32047328930,
+      "quota_class": "GENERIC_QUOTA",
+      "quota_retry_source": "POLICY_FALLBACK_COOLDOWN",
+      "quota_manual_action_required": false,
+      "quota_retry_after_ms": 1786993473556,
+      "successful_call_lineage_for_this_strategy": false,
+      "provider_model": null,
+      "input_sha": null,
+      "prompt_sha": null,
+      "response_sha": null,
+      "report_as": "NONE",
+      "fallback": "DIRECT_PUBLIC_PRIMARY_EVIDENCE"
+    },
+    "groq": {"attempted": false, "successful_call_lineage_for_this_strategy": false, "report_as": "NONE"},
+    "workers_ai": {"attempted": false, "state": "NO_PROVIDER_CALL_CLAIMED; deterministic authority guards remain mandatory"},
+    "github_models": {"attempted": false, "state": "NOT_REQUIRED_FOR_SINGLE_AXIS_TERMINAL_PREREGISTRATION"}
+  },
+  "external_sources": [
+    {
+      "id": "S1",
+      "tier": "primary_preprint",
+      "title": "High-Frequency Jump Analysis of the Bitcoin Market",
+      "identifier": "arXiv:1704.08175 / SSRN:2982298",
+      "claim": "Bitcoin jumps are associated with order-flow imbalance, aggressive traders and spread widening and can create persistent price changes, contradicting an unconditional immediate fade."
+    },
+    {
+      "id": "S2",
+      "tier": "peer_reviewed_or_publisher",
+      "title": "Price Discovery of a Speculative Asset: Evidence from a Bitcoin Exchange",
+      "identifier": "SSRN:3258508 / Journal of Risk and Financial Management 12(4):164",
+      "claim": "Aggressive orders become more informative in high-volatility states, so fading a volatility spike before observing reversal risks trading against informed flow."
+    },
+    {
+      "id": "S3",
+      "tier": "peer_reviewed_doi",
+      "title": "On the Intraday Behavior of Bitcoin",
+      "identifier": "DOI:10.5195/ledger.2021.213",
+      "claim": "Bitcoin shows medium-horizon mean reversion and larger moves can reverse more strongly; this supports preserving the fade hypothesis but only after a prospective reversal confirmation."
+    },
+    {
+      "id": "S4",
+      "tier": "working_paper",
+      "title": "Trading volume and liquidity provision in cryptocurrency markets",
+      "identifier": "SSRN:3239670",
+      "claim": "Reversal/liquidity-provision economics depend on activity and liquidity state, supporting conditional rather than unconditional fade entries."
+    },
+    {
+      "id": "S5",
+      "tier": "repository_cost_authority",
+      "title": "BingX verified exact25 pretrade cost authority",
+      "identifier": "BINGX_FEE_SCHEDULE+existing_exact25_cost_model",
+      "claim": "The frozen 14bps verified pretrade cost remains unchanged and cannot be reduced to rescue the strategy."
+    }
+  ],
+  "top3_axes": [
+    {
+      "rank": 1,
+      "axis": "POST_SPIKE_REVERSAL_CONFIRMATION",
+      "mechanism": "Keep the baseline spike definition and fade direction, but do not enter on the spike bar. Require the next completed 5m bar to reverse through the midpoint of the spike candle body before emitting the same fade-side intent. This delays entry until price itself shows exhaustion of the persistent jump impulse.",
+      "source_ids": ["S1", "S2", "S3"],
+      "expected_metric_direction": {"gross_expectancy":"UP","net_expectancy":"UP","profit_factor":"UP","drawdown":"DOWN","trade_count":"DOWN"},
+      "falsification": "On a fresh prospective boundary under unchanged 14bps cost and exit/risk geometry, gross expectancy does not improve versus the frozen baseline or remains <=0, PF remains <1, or apparent improvement is only sample starvation/cosmetic trade deletion.",
+      "required_data": ["closed-bar 5m OHLCV already source-ready", "unchanged exact25 cost lineage"],
+      "forbidden_collateral_changes": ["baseline spike volume threshold", "baseline spike body threshold", "stop multiple", "timeout", "risk size", "fees", "best-horizon selection", "sealed-outcome threshold tuning"]
+    },
+    {
+      "rank": 2,
+      "axis": "ORDER_FLOW_EXHAUSTION_CONFIRMATION",
+      "mechanism": "Require entry-time aggressive trade-flow sign exhaustion/reversal after the frozen spike before allowing the fade.",
+      "source_ids": ["S1", "S2"],
+      "expected_metric_direction": {"gross_expectancy":"UP","profit_factor":"UP","drawdown":"DOWN"},
+      "falsification": "Fresh flow-conditioned evidence fails to improve pre-cost expectancy/PF or loses effect under preregistered flow controls.",
+      "required_data": ["normalized prospective trade flow", "closed-bar OHLCV", "unchanged cost lineage"],
+      "forbidden_collateral_changes": ["spike thresholds", "exit geometry", "fees", "threshold sweep"]
+    },
+    {
+      "rank": 3,
+      "axis": "LIQUIDITY_REPLENISHMENT_GATE",
+      "mechanism": "Allow the fade only after post-spike near-touch liquidity/spread normalizes, separating temporary withdrawal from informed continuation.",
+      "source_ids": ["S1", "S2", "S4"],
+      "expected_metric_direction": {"gross_expectancy":"UP","net_expectancy":"UP","drawdown":"DOWN","turnover":"DOWN"},
+      "falsification": "Fresh replenishment-conditioned trades do not improve gross expectancy or the apparent gain comes only from eliminating most trades below SSOT retention.",
+      "required_data": ["entry-time historical depth/spread", "closed-bar OHLCV", "unchanged cost lineage"],
+      "forbidden_collateral_changes": ["spike thresholds", "stop", "timeout", "fees", "multi-axis bundle"]
+    }
+  ],
+  "dedup": {"structural_redundancy_threshold": 0.85, "top3_distinct": true},
+  "selected_axis_for_terminal_execution": "POST_SPIKE_REVERSAL_CONFIRMATION"
+}

@@ -1,0 +1,108 @@
+name: A1 Improvement Liquidity Sweep V2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-improvement-liquidity-sweep-v2.yml'
+      - 'backend/research/rebuild/liquidity_sweep_cascade_continuation_v2.py'
+      - 'backend/research/rebuild/a1_improvement_liquidity_sweep_v2_evaluator.py'
+      - 'backend/research/rebuild/a1_improvement_liquidity_sweep_v2_ledger.json'
+      - 'backend/research/rebuild/a1_improvement_liquidity_sweep_v2_inventory.json'
+      - 'backend/research/rebuild/early_ai_prep/liquidity_sweep_v1.json'
+  schedule:
+    - cron: '12,27,42,57 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-exact25-rebuilt-controller-v1
+  cancel-in-progress: false
+
+jobs:
+  liquidity-sweep-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate terminal authority, immutable baseline and heavy lease
+        id: guard
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          base=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          clock=json.loads(Path('backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json').read_text())
+          prep=json.loads(Path('backend/research/rebuild/early_ai_prep/liquidity_sweep_v1.json').read_text())
+          imp=json.loads(Path('backend/research/rebuild/a1_improvement_liquidity_sweep_v2_ledger.json').read_text())
+          status=base['strategies']['liquidity_sweep']['status']
+          assert status in ('A1_SPARSE_EVENT_FUTILITY','A1_ECONOMIC_FAIL'), status
+          assert prep['baseline_mutated'] is False
+          assert prep['terminal_required_for_execution'] is True
+          assert imp['baseline_mutated'] is False
+          assert imp['selected_axis'] == 'stop_cascade_continuation_direction'
+          heavy=int(clock['heavy_active_count'])
+          print('heavy_available=' + ('true' if heavy == 0 else 'false'))
+          print('baseline_status=' + status)
+          PY
+
+      - name: Compile isolated v2 policy
+        if: steps.guard.outputs.heavy_available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/liquidity_sweep_cascade_continuation_v2.py \
+            backend/research/rebuild/a1_improvement_liquidity_sweep_v2_evaluator.py
+
+      - name: Evaluate fresh prospective v2 only
+        if: steps.guard.outputs.heavy_available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_improvement_liquidity_sweep_v2_evaluator \
+            --strategy-id liquidity_sweep \
+            --out a1_improvement_liquidity_sweep_v2_receipt.json
+
+      - name: Validate research-only authority
+        if: steps.guard.outputs.heavy_available == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('a1_improvement_liquidity_sweep_v2_receipt.json').read_text())
+          a=x.get('authority', x)
+          assert a.get('selection_authority') is False
+          assert a.get('promotion_authority') is False
+          assert a.get('execution_authority') == 'NONE'
+          assert a.get('order_authority') == 'BLOCKED'
+          assert a.get('live_trade_authority') == 'BLOCKED'
+          assert int(a.get('protected_mutations',0)) == 0
+          assert x.get('strategy_id') == 'liquidity_sweep'
+          print('PASS_A1_IMPROVEMENT_RESEARCH_ONLY')
+          PY
+
+      - name: Upload immutable improvement evidence
+        if: steps.guard.outputs.heavy_available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-improvement-liquidity-sweep-v2-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            a1_improvement_liquidity_sweep_v2_receipt.json
+            backend/research/rebuild/a1_improvement_liquidity_sweep_v2_ledger.json
+            backend/research/rebuild/a1_improvement_liquidity_sweep_v2_inventory.json
+            backend/research/rebuild/early_ai_prep/liquidity_sweep_v1.json

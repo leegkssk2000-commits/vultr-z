@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import unittest
 
 from backend.research.rebuild.a1_exact25_survivor_gate_v1 import build_survivor_gate
@@ -35,17 +36,35 @@ def valid_receipt():
         "schema_version": "zel.a1_exact25_generic_economics.v1",
         "completed_trades": 25,
         "trades": trades,
-        "metrics": {"net_pnl_bps": 125.0, "net_expectancy_bps": 5.0, "net_profit_factor": 1.4, "net_payoff": 1.2, "gross_expectancy_bps": 19.0},
-        "execution_snapshots": {"BTC-USDT": {"pretrade_verified_cost_bps": 14.0}, "ETH-USDT": {"pretrade_verified_cost_bps": 14.0}},
+        "metrics": {
+            "net_pnl_bps": 125.0,
+            "net_expectancy_bps": 5.0,
+            "net_profit_factor": 1.4,
+            "net_payoff": 1.2,
+            "gross_expectancy_bps": 19.0,
+        },
+        "execution_snapshots": {
+            "BTC-USDT": {"pretrade_verified_cost_bps": 14.0},
+            "ETH-USDT": {"pretrade_verified_cost_bps": 14.0},
+        },
         "integrity_defects": [],
         "leakage_lookahead": 0,
         "intent_count": 25,
-        "source": {"symbols": [{"symbol": "BTC-USDT", "bars_post_boundary": 100}, {"symbol": "ETH-USDT", "bars_post_boundary": 100}], "interval": "5m"},
+        "source": {
+            "symbols": [
+                {"symbol": "BTC-USDT", "bars_post_boundary": 100},
+                {"symbol": "ETH-USDT", "bars_post_boundary": 100},
+            ],
+            "interval": "5m",
+        },
     }
 
 
 def valid_hardening():
-    controls = {name: {"state": "PASS"} for name in POLICY["h4_placebo_negative_controls"]["required_controls"]}
+    controls = {
+        name: {"state": "PASS"}
+        for name in POLICY["h4_placebo_negative_controls"]["required_controls"]
+    }
     return {
         "retention_pct": 75.0,
         "oos": {"net_pnl_bps": 30.0, "net_expectancy_bps": 2.0},
@@ -62,6 +81,12 @@ def valid_hardening():
 
 
 class SurvivorGateTests(unittest.TestCase):
+    def assert_no_pass(self, receipt, evidence):
+        gate = build_survivor_gate(receipt, evidence, POLICY)
+        self.assertFalse(gate["passed"])
+        self.assertNotEqual(gate["state"], "PASS")
+        return gate
+
     def test_missing_hardening_evidence_is_pending_never_pass(self):
         gate = build_survivor_gate(valid_receipt(), None, POLICY)
         self.assertEqual(gate["state"], "PENDING")
@@ -70,15 +95,56 @@ class SurvivorGateTests(unittest.TestCase):
         self.assertIn("oos_positive", gate["pending_checks"])
         self.assertIn("negative_control_superiority", gate["pending_checks"])
 
-    def test_bad_negative_control_fails_closed(self):
-        ev = valid_hardening()
-        ev["negative_control"]["p_value"] = 0.20
-        gate = build_survivor_gate(valid_receipt(), ev, POLICY)
-        self.assertEqual(gate["state"], "FAIL")
-        self.assertFalse(gate["passed"])
+    def test_no_survivor_below_25_trades(self):
+        receipt = valid_receipt()
+        receipt["completed_trades"] = 24
+        receipt["trades"] = receipt["trades"][:24]
+        gate = self.assert_no_pass(receipt, valid_hardening())
+        self.assertIn("tier_a_completed_trades", gate["failed_checks"])
+
+    def test_no_survivor_on_one_symbol(self):
+        receipt = valid_receipt()
+        receipt["trades"] = [dict(x, symbol="BTC-USDT") for x in receipt["trades"]]
+        gate = self.assert_no_pass(receipt, valid_hardening())
+        self.assertIn("tier_a_completed_symbols", gate["failed_checks"])
+
+    def test_no_survivor_on_nonpositive_net_or_pf_or_payoff(self):
+        cases = [
+            ("net_pnl_bps", 0.0, "net_pnl_positive"),
+            ("net_expectancy_bps", 0.0, "net_expectancy_positive"),
+            ("net_profit_factor", 0.99, "profit_factor"),
+            ("net_payoff", 0.99, "payoff"),
+        ]
+        for metric, value, check in cases:
+            with self.subTest(metric=metric):
+                receipt = valid_receipt()
+                receipt["metrics"][metric] = value
+                gate = self.assert_no_pass(receipt, valid_hardening())
+                self.assertIn(check, gate["failed_checks"])
+
+    def test_no_survivor_with_pending_or_failed_negative_control(self):
+        pending = valid_hardening()
+        pending["negative_control"].pop("p_value")
+        gate = self.assert_no_pass(valid_receipt(), pending)
+        self.assertIn("negative_control_superiority", gate["pending_checks"])
+
+        failed = valid_hardening()
+        failed["negative_control"]["p_value"] = 0.20
+        gate = self.assert_no_pass(valid_receipt(), failed)
         self.assertIn("negative_control_superiority", gate["failed_checks"])
 
-    def test_valid_synthetic_fixture_is_only_pass_case_and_controller_accepts(self):
+    def test_no_survivor_with_retention_or_oos_fail(self):
+        retention = valid_hardening()
+        retention["retention_pct"] = 59.9
+        gate = self.assert_no_pass(valid_receipt(), retention)
+        self.assertIn("retention_positive", gate["failed_checks"])
+
+        oos = valid_hardening()
+        oos["oos"]["net_expectancy_bps"] = 0.0
+        gate = self.assert_no_pass(valid_receipt(), oos)
+        self.assertIn("oos_positive", gate["failed_checks"])
+
+    def test_valid_synthetic_fixture_reaches_gate_and_controller_survivor(self):
         receipt = valid_receipt()
         gate = build_survivor_gate(receipt, valid_hardening(), POLICY)
         self.assertEqual(gate["state"], "PASS")
@@ -89,15 +155,13 @@ class SurvivorGateTests(unittest.TestCase):
         self.assertEqual(disposition, "A1_SURVIVOR")
         self.assertEqual(reason, "PROSPECTIVE_COST_ADJUSTED_SSOT_SURVIVOR_GATE_PASS")
 
-    def test_under_25_or_one_symbol_never_passes(self):
+    def test_gate_does_not_mutate_frozen_policy_or_receipt(self):
         receipt = valid_receipt()
-        receipt["completed_trades"] = 24
-        receipt["trades"] = [{"symbol": "BTC-USDT", "net_bps": 5.0} for _ in range(24)]
-        gate = build_survivor_gate(receipt, valid_hardening(), POLICY)
-        self.assertEqual(gate["state"], "FAIL")
-        self.assertFalse(gate["passed"])
-        self.assertIn("tier_a_completed_trades", gate["failed_checks"])
-        self.assertIn("tier_a_completed_symbols", gate["failed_checks"])
+        policy_before = copy.deepcopy(POLICY)
+        receipt_before = copy.deepcopy(receipt)
+        build_survivor_gate(receipt, valid_hardening(), POLICY)
+        self.assertEqual(POLICY, policy_before)
+        self.assertEqual(receipt, receipt_before)
 
 
 if __name__ == "__main__":

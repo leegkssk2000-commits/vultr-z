@@ -75,7 +75,8 @@ def compute_session_bias_feature(
 
     first_open_bar = _bar_by_ts(bars, _utc_ms(first_start))
     first_close_bar = _bar_by_ts(bars, _utc_ms(first_last_bar))
-    at_signal_clock = current_ts == _utc_ms(signal_bar_time)
+    is_weekday = current_dt.weekday() < 5
+    at_signal_clock = is_weekday and current_ts == _utc_ms(signal_bar_time)
     side = "flat"
     first_half_return_bps = 0.0
     if at_signal_clock and first_open_bar is not None and first_close_bar is not None:
@@ -92,6 +93,7 @@ def compute_session_bias_feature(
         "overlap_end_utc": overlap_end.isoformat(),
         "first_half_return_bps": first_half_return_bps,
         "signal_clock_match": at_signal_clock,
+        "weekday_session": is_weekday,
         "entry_axis": "LNY_FIRST_TO_LAST_HALF_HOUR_MOMENTUM_ENTRY",
     }
     strength = min(1.0, abs(first_half_return_bps) / max(a / closes[-1] * 10_000.0, 1e-12)) if side != "flat" else 0.0

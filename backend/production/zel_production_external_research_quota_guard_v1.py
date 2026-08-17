@@ -25,6 +25,15 @@ QUOTA_MARKERS = (
     "rate limit",
     "rate_limit",
     "too many requests",
+    "perminute",
+    "per_minute",
+    "per day",
+    "perday",
+    "per_day",
+    "free_tier",
+    "prepayment credits are depleted",
+    "enable billing",
+    "set up billing",
 )
 _RETRY_SECONDS = re.compile(r"(?:retry(?:delay)?|retry in)[^0-9]{0,40}(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 

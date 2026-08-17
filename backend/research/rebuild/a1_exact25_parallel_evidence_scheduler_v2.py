@@ -87,9 +87,11 @@ def route_after_receipt(
     return None, True
 
 
-v1.route_prepare = route_prepare
-v1.route_after_receipt = route_after_receipt
+def install() -> None:
+    v1.route_prepare = route_prepare
+    v1.route_after_receipt = route_after_receipt
 
 
 if __name__ == "__main__":
+    install()
     v1.main()

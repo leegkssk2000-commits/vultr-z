@@ -89,6 +89,14 @@ def test_transient_retry_uses_retry_delay_not_six_hour_blanket():
     assert policy["quota_manual_action_required"] is False
 
 
+def test_generic_quota_uses_short_reclassification_backoff():
+    policy = m.recovery_policy(cfg(), "HTTP_429 RESOURCE_EXHAUSTED quota exceeded")
+    assert policy["quota_class"] == "GENERIC_QUOTA"
+    assert policy["cooldown_ms"] == 900_000
+    assert policy["quota_retry_source"] == "GENERIC_QUOTA_RECLASSIFY_BACKOFF"
+    assert policy["quota_manual_action_required"] is False
+
+
 def test_billing_failure_marks_manual_action_but_rechecks_boundedly():
     err = "HTTP_429 RESOURCE_EXHAUSTED Your prepayment credits are depleted"
     policy = m.recovery_policy(cfg(), err)
@@ -107,7 +115,7 @@ def test_quota_hold_uses_original_failure_time_across_context_changes():
         context_sha="context-a",
     )
     assert first["quota_failure_at_ms"] == 1_000_000
-    assert first["quota_retry_after_ms"] == 22_600_000
+    assert first["quota_retry_after_ms"] == 1_900_000
     assert first["quota_call_suppressed"] is False
     assert first["quota_class"] == "GENERIC_QUOTA"
 
@@ -120,8 +128,8 @@ def test_quota_hold_uses_original_failure_time_across_context_changes():
     )
     assert second["context_sha256"] == "context-b"
     assert second["quota_failure_at_ms"] == 1_000_000
-    assert second["quota_retry_after_ms"] == 22_600_000
-    assert second["quota_remaining_ms"] == 21_100_000
+    assert second["quota_retry_after_ms"] == 1_900_000
+    assert second["quota_remaining_ms"] == 400_000
     assert second["quota_call_suppressed"] is True
     assert second["ai_call_made"] is False
     assert second["selection_authority"] is False
@@ -133,7 +141,8 @@ def test_run_guard_suppresses_call_when_context_changes_during_quota(monkeypatch
     policy_path = tmp_path / "policy.json"
     policy = full_policy(tmp_path)
     policy_path.write_text(json.dumps(policy))
-    (tmp_path / "evidence.json").write_text(json.dumps(previous_failure()))
+    prior = previous_failure("HTTP_429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    (tmp_path / "evidence.json").write_text(json.dumps(prior))
     (tmp_path / "factory.json").write_text(json.dumps({"families": {}}))
 
     monkeypatch.setattr(m, "current_context_sha", lambda cfg: "new-context-sha")
@@ -154,6 +163,38 @@ def test_run_guard_suppresses_call_when_context_changes_during_quota(monkeypatch
     assert called["value"] is False
     assert persisted["context_sha256"] == "new-context-sha"
     assert persisted["quota_failure_at_ms"] == 1_000_000
+    assert persisted["quota_class"] == "DAILY_QUOTA"
+
+
+def test_existing_generic_quota_is_diagnosed_and_retried_without_six_hour_wait(monkeypatch, tmp_path):
+    policy_path = tmp_path / "policy.json"
+    policy = full_policy(tmp_path)
+    policy_path.write_text(json.dumps(policy))
+    (tmp_path / "evidence.json").write_text(json.dumps(previous_failure()))
+    (tmp_path / "factory.json").write_text(json.dumps({"families": {}}))
+    monkeypatch.setattr(m, "current_context_sha", lambda cfg: "retry-context")
+    monkeypatch.setattr(
+        m,
+        "generic_quota_diagnostic",
+        lambda cfg: "HTTP_429|RESOURCE_EXHAUSTED|GenerateRequestsPerMinutePerProjectPerModel-FreeTier|retryDelay=41s",
+    )
+
+    called = {"value": False}
+
+    def fake_core(argv):
+        called["value"] = True
+        row = {
+            "state": "HOLD_EXTERNAL_RESEARCH_NOT_REQUIRED",
+            "updated_at_ms": 1_100_000,
+            "receipt_sha256": "ok",
+        }
+        Path(policy["output_path"]).write_text(json.dumps(row))
+        return 0
+
+    monkeypatch.setattr(m.core, "main", fake_core)
+    out = m.run_guard(policy_path, now_ms=1_100_000)
+    assert called["value"] is True
+    assert out["state"] == "HOLD_EXTERNAL_RESEARCH_NOT_REQUIRED"
 
 
 def test_transient_quota_expires_quickly_and_allows_retry(monkeypatch, tmp_path):
@@ -185,13 +226,18 @@ def test_transient_quota_expires_quickly_and_allows_retry(monkeypatch, tmp_path)
     assert out["state"] == "HOLD_EXTERNAL_RESEARCH_NOT_REQUIRED"
 
 
-def test_expired_generic_quota_allows_one_retry_and_classifies_new_429(monkeypatch, tmp_path):
+def test_new_generic_429_is_immediately_reclassified_by_diagnostic(monkeypatch, tmp_path):
     policy_path = tmp_path / "policy.json"
     policy = full_policy(tmp_path)
     policy_path.write_text(json.dumps(policy))
     (tmp_path / "evidence.json").write_text(json.dumps(previous_failure()))
     (tmp_path / "factory.json").write_text(json.dumps({"families": {}}))
     monkeypatch.setattr(m, "current_context_sha", lambda cfg: "retry-context")
+    monkeypatch.setattr(
+        m,
+        "generic_quota_diagnostic",
+        lambda cfg: "HTTP_429|RESOURCE_EXHAUSTED|GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+    )
 
     def fake_core(argv):
         row = previous_failure()
@@ -208,4 +254,6 @@ def test_expired_generic_quota_allows_one_retry_and_classifies_new_429(monkeypat
     assert out["ai_call_executed"] is True
     assert saved["quota_failure_at_ms"] == 30_000_000
     assert saved["quota_retry_after_ms"] == 51_600_000
-    assert saved["quota_class"] == "GENERIC_QUOTA"
+    assert saved["quota_class"] == "DAILY_QUOTA"
+    assert saved["quota_diagnostic_version"] == m.GENERIC_DIAGNOSTIC_VERSION
+    assert "GenerateRequestsPerDayPerProjectPerModel" in saved["quota_diagnostic_error_code"]

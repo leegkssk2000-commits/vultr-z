@@ -4,15 +4,19 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import re
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.production import zel_production_external_research_observer_v1 as core
 from backend.production.zel_production_improvement_controller_v1 import atomic_json_write, read_json, stable_sha
 
-SCHEMA = "zel.production_external_research_quota_guard.v2"
+SCHEMA = "zel.production_external_research_quota_guard.v3"
+GENERIC_DIAGNOSTIC_VERSION = "quota-diagnostic-v1"
 QUOTA_STATES = {
     "HOLD_EXTERNAL_RESEARCH_QUOTA_EXHAUSTED",
     "HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN",
@@ -103,8 +107,8 @@ def recovery_policy(cfg: Mapping[str, Any], error: Any) -> dict[str, Any]:
         source = "DAILY_QUOTA_FALLBACK_COOLDOWN"
         manual = False
     else:
-        cooldown_ms = fallback_ms
-        source = "POLICY_FALLBACK_COOLDOWN"
+        cooldown_ms = min(fallback_ms, 15 * 60_000)
+        source = "GENERIC_QUOTA_RECLASSIFY_BACKOFF"
         manual = False
 
     return {
@@ -114,6 +118,134 @@ def recovery_policy(cfg: Mapping[str, Any], error: Any) -> dict[str, Any]:
         "quota_manual_action_required": manual,
         "parsed_retry_delay_ms": parsed_retry_ms,
     }
+
+
+def _safe_http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        raw = exc.read().decode("utf-8", errors="replace")[:8000]
+    except Exception:  # noqa: BLE001
+        raw = ""
+    retry_after = ""
+    try:
+        retry_after = str(exc.headers.get("Retry-After") or "").strip()
+    except Exception:  # noqa: BLE001
+        retry_after = ""
+
+    pieces = [f"HTTP_{int(exc.code)}"]
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    if isinstance(error, Mapping):
+        status = str(error.get("status") or "").strip()
+        message = str(error.get("message") or "").strip()
+        if status:
+            pieces.append(status[:120])
+        if message:
+            pieces.append(message[:1600])
+        for detail in error.get("details") or []:
+            if not isinstance(detail, Mapping):
+                continue
+            dtype = str(detail.get("@type") or "")
+            if dtype.endswith("RetryInfo") and detail.get("retryDelay"):
+                pieces.append(f"retryDelay={str(detail.get('retryDelay'))[:80]}")
+            reason = str(detail.get("reason") or "").strip()
+            if reason:
+                pieces.append(f"reason={reason[:160]}")
+            metadata = detail.get("metadata")
+            if isinstance(metadata, Mapping):
+                for key in (
+                    "quota_metric",
+                    "quota_limit",
+                    "quota_limit_value",
+                    "quota_location",
+                    "service",
+                ):
+                    if metadata.get(key) is not None:
+                        pieces.append(f"{key}={str(metadata.get(key))[:240]}")
+    elif raw:
+        sanitized = re.sub(r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED_API_KEY]", raw)
+        sanitized = re.sub(r"(?i)(x-goog-api-key|api[_-]?key)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", sanitized)
+        pieces.append(sanitized[:1600])
+
+    if retry_after:
+        pieces.append(f"Retry-After={retry_after[:80]}")
+    return "|".join(x for x in pieces if x)[:4000]
+
+
+def generic_quota_diagnostic(cfg: Mapping[str, Any]) -> str:
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return "DIAGNOSTIC_GEMINI_API_KEY_MISSING"
+
+    preferred = [str(x) for x in (cfg.get("models") or []) if str(x).strip()]
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        headers={"x-goog-api-key": api_key},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        return _safe_http_error_detail(exc)
+    except Exception as exc:  # noqa: BLE001
+        return f"DIAGNOSTIC_MODEL_LIST_{type(exc).__name__}:{str(exc)[:500]}"
+
+    eligible = [
+        str(row.get("name"))
+        for row in payload.get("models") or []
+        if isinstance(row, Mapping)
+        and row.get("name")
+        and "generateContent" in (row.get("supportedGenerationMethods") or [])
+    ]
+    ordered = [x for x in preferred if x in eligible]
+    ordered.extend(x for x in eligible if x not in ordered and "flash" in x.lower())
+    if not ordered:
+        return "DIAGNOSTIC_NO_ELIGIBLE_MODEL"
+
+    model = ordered[0]
+    body = json.dumps(
+        {
+            "contents": [{"role": "user", "parts": [{"text": "quota diagnostic; reply OK"}]}],
+            "generationConfig": {"maxOutputTokens": 8, "temperature": 0},
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent",
+        data=body,
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            json.load(response)
+        return "DIAGNOSTIC_GENERATE_OK"
+    except urllib.error.HTTPError as exc:
+        return _safe_http_error_detail(exc)
+    except Exception as exc:  # noqa: BLE001
+        return f"DIAGNOSTIC_GENERATE_{type(exc).__name__}:{str(exc)[:500]}"
+
+
+def _enrich_generic_quota(
+    cfg: Mapping[str, Any],
+    previous: Mapping[str, Any],
+    *,
+    now_ms: int,
+) -> tuple[dict[str, Any], bool]:
+    out = dict(previous)
+    diagnostic = generic_quota_diagnostic(cfg)
+    out["quota_diagnostic_version"] = GENERIC_DIAGNOSTIC_VERSION
+    out["quota_diagnostic_at_ms"] = now_ms
+    out["quota_diagnostic_error_code"] = diagnostic[:4000]
+    klass = quota_class(diagnostic)
+    if klass != "NOT_QUOTA":
+        prior = str(previous.get("error_code") or "")
+        out["error_code"] = f"{prior}|DIAGNOSTIC:{diagnostic}"[:6000]
+    recovered = diagnostic == "DIAGNOSTIC_GENERATE_OK"
+    return out, recovered
 
 
 def current_context_sha(cfg: Mapping[str, Any]) -> str:
@@ -205,31 +337,42 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
         previous_state = str(previous.get("state") or "")
         previous_error = previous.get("error_code")
         quota_known = previous_state in QUOTA_STATES or is_quota_error(previous_error)
+        diagnostic_recovered = False
         if quota_known:
-            failure_at = quota_failure_at(previous, now)
-            policy = recovery_policy(cfg, previous_error)
-            retry_after = failure_at + int(policy["cooldown_ms"])
-            if now < retry_after:
-                held = build_quota_hold(
-                    cfg,
-                    previous,
-                    state="HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN",
-                    now_ms=now,
-                    context_sha=context_sha,
-                )
-                persist(cfg, held)
-                return {
-                    "state": held["state"],
-                    "ai_call_executed": False,
-                    "quota_class": held.get("quota_class"),
-                    "quota_retry_source": held.get("quota_retry_source"),
-                    "quota_manual_action_required": held.get("quota_manual_action_required"),
-                    "quota_failure_at_ms": held["quota_failure_at_ms"],
-                    "quota_retry_after_ms": held["quota_retry_after_ms"],
-                    "quota_remaining_ms": held["quota_remaining_ms"],
-                    "context_factory_written": True,
-                    "receipt_sha256": held["receipt_sha256"],
-                }
+            initial_policy = recovery_policy(cfg, previous_error)
+            if (
+                initial_policy["quota_class"] == "GENERIC_QUOTA"
+                and previous.get("quota_diagnostic_version") != GENERIC_DIAGNOSTIC_VERSION
+            ):
+                previous, diagnostic_recovered = _enrich_generic_quota(cfg, previous, now_ms=now)
+                previous_error = previous.get("error_code")
+            if not diagnostic_recovered:
+                failure_at = quota_failure_at(previous, now)
+                policy = recovery_policy(cfg, previous_error)
+                retry_after = failure_at + int(policy["cooldown_ms"])
+                if now < retry_after:
+                    held = build_quota_hold(
+                        cfg,
+                        previous,
+                        state="HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN",
+                        now_ms=now,
+                        context_sha=context_sha,
+                    )
+                    persist(cfg, held)
+                    return {
+                        "state": held["state"],
+                        "ai_call_executed": False,
+                        "quota_class": held.get("quota_class"),
+                        "quota_retry_source": held.get("quota_retry_source"),
+                        "quota_manual_action_required": held.get("quota_manual_action_required"),
+                        "quota_failure_at_ms": held["quota_failure_at_ms"],
+                        "quota_retry_after_ms": held["quota_retry_after_ms"],
+                        "quota_remaining_ms": held["quota_remaining_ms"],
+                        "quota_diagnostic_version": held.get("quota_diagnostic_version"),
+                        "quota_diagnostic_error_code": held.get("quota_diagnostic_error_code"),
+                        "context_factory_written": True,
+                        "receipt_sha256": held["receipt_sha256"],
+                    }
 
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
@@ -241,9 +384,12 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
     if not isinstance(result, Mapping):
         raise RuntimeError("EXTERNAL_RESEARCH_CORE_OUTPUT_MISSING")
     if result.get("state") == "HOLD_EXTERNAL_RESEARCH_CALL_FAILED" and is_quota_error(result.get("error_code")):
+        enriched = dict(result)
+        if recovery_policy(cfg, result.get("error_code"))["quota_class"] == "GENERIC_QUOTA":
+            enriched, _ = _enrich_generic_quota(cfg, result, now_ms=now)
         classified = build_quota_hold(
             cfg,
-            result,
+            enriched,
             state="HOLD_EXTERNAL_RESEARCH_QUOTA_EXHAUSTED",
             now_ms=now,
             context_sha=context_sha,
@@ -260,6 +406,8 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
         "quota_failure_at_ms": result.get("quota_failure_at_ms"),
         "quota_retry_after_ms": result.get("quota_retry_after_ms"),
         "quota_remaining_ms": result.get("quota_remaining_ms"),
+        "quota_diagnostic_version": result.get("quota_diagnostic_version"),
+        "quota_diagnostic_error_code": result.get("quota_diagnostic_error_code"),
         "context_factory_written": Path(str(cfg["context_factory_output_path"])).is_file(),
         "receipt_sha256": result.get("receipt_sha256"),
     }

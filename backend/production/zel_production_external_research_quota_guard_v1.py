@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,7 +12,7 @@ from typing import Any, Mapping
 from backend.production import zel_production_external_research_observer_v1 as core
 from backend.production.zel_production_improvement_controller_v1 import atomic_json_write, read_json, stable_sha
 
-SCHEMA = "zel.production_external_research_quota_guard.v1"
+SCHEMA = "zel.production_external_research_quota_guard.v2"
 QUOTA_STATES = {
     "HOLD_EXTERNAL_RESEARCH_QUOTA_EXHAUSTED",
     "HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN",
@@ -19,18 +20,91 @@ QUOTA_STATES = {
 QUOTA_MARKERS = (
     "http_429",
     "http 429",
-    "http_429",
     "resource_exhausted",
     "quota",
     "rate limit",
     "rate_limit",
     "too many requests",
 )
+_RETRY_SECONDS = re.compile(r"(?:retry(?:delay)?|retry in)[^0-9]{0,40}(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 
 
 def is_quota_error(value: Any) -> bool:
     text = str(value or "").lower()
     return any(marker in text for marker in QUOTA_MARKERS)
+
+
+def quota_class(value: Any) -> str:
+    text = str(value or "").lower()
+    if not is_quota_error(text):
+        return "NOT_QUOTA"
+    if "prepayment credits are depleted" in text or "prepay" in text and "deplet" in text:
+        return "PREPAY_DEPLETED"
+    if "enable billing" in text or "set up billing" in text:
+        return "BILLING_REQUIRED"
+    if "free_tier" in text and ("limit: 0" in text or '"quotavalue":"0"' in text or "quotavalue': '0" in text):
+        return "FREE_TIER_ZERO_LIMIT"
+    if "perday" in text or "per_day" in text or "per day" in text or "requestsperday" in text or "tokensperday" in text:
+        return "DAILY_QUOTA"
+    if "spend" in text and ("10 minute" in text or "10-minute" in text or "10m" in text):
+        return "SPEND_WINDOW"
+    if "perminute" in text or "per_minute" in text or "per minute" in text or "persecond" in text or "per_second" in text:
+        return "TRANSIENT_RATE_LIMIT"
+    if "rate_limit_exceeded" in text or "requests per minute" in text or "tokens per minute" in text:
+        return "TRANSIENT_RATE_LIMIT"
+    if "retry in" in text or "retrydelay" in text:
+        return "TRANSIENT_RATE_LIMIT"
+    return "GENERIC_QUOTA"
+
+
+def retry_delay_ms(value: Any) -> int | None:
+    text = str(value or "")
+    match = _RETRY_SECONDS.search(text)
+    if not match:
+        return None
+    try:
+        seconds = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return int(seconds * 1000)
+
+
+def recovery_policy(cfg: Mapping[str, Any], error: Any) -> dict[str, Any]:
+    klass = quota_class(error)
+    parsed_retry_ms = retry_delay_ms(error)
+    fallback_ms = int(cfg["cooldown_ms"])
+
+    if klass == "TRANSIENT_RATE_LIMIT":
+        cooldown_ms = max(60_000, (parsed_retry_ms or 60_000) + 5_000)
+        cooldown_ms = min(cooldown_ms, 15 * 60_000)
+        source = "ERROR_RETRY_DELAY_OR_TRANSIENT_BACKOFF"
+        manual = False
+    elif klass == "SPEND_WINDOW":
+        cooldown_ms = max(11 * 60_000, (parsed_retry_ms or 0) + 5_000)
+        source = "GEMINI_SPEND_WINDOW_BACKOFF"
+        manual = False
+    elif klass in {"BILLING_REQUIRED", "PREPAY_DEPLETED", "FREE_TIER_ZERO_LIMIT"}:
+        cooldown_ms = 2 * 60 * 60_000
+        source = "BILLING_OR_PREPAY_RECHECK"
+        manual = True
+    elif klass == "DAILY_QUOTA":
+        cooldown_ms = fallback_ms
+        source = "DAILY_QUOTA_FALLBACK_COOLDOWN"
+        manual = False
+    else:
+        cooldown_ms = fallback_ms
+        source = "POLICY_FALLBACK_COOLDOWN"
+        manual = False
+
+    return {
+        "quota_class": klass,
+        "cooldown_ms": int(cooldown_ms),
+        "quota_retry_source": source,
+        "quota_manual_action_required": manual,
+        "parsed_retry_delay_ms": parsed_retry_ms,
+    }
 
 
 def current_context_sha(cfg: Mapping[str, Any]) -> str:
@@ -65,7 +139,8 @@ def build_quota_hold(
     context_sha: str,
 ) -> dict[str, Any]:
     failure_at = quota_failure_at(previous, now_ms)
-    retry_after = failure_at + int(cfg["cooldown_ms"])
+    policy = recovery_policy(cfg, previous.get("error_code"))
+    retry_after = failure_at + int(policy["cooldown_ms"])
     out = dict(previous)
     out.update(
         {
@@ -78,6 +153,11 @@ def build_quota_hold(
             "quota_remaining_ms": max(0, retry_after - now_ms),
             "quota_call_suppressed": state == "HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN",
             "quota_guard_schema_version": SCHEMA,
+            "quota_class": policy["quota_class"],
+            "quota_retry_source": policy["quota_retry_source"],
+            "quota_manual_action_required": policy["quota_manual_action_required"],
+            "quota_parsed_retry_delay_ms": policy["parsed_retry_delay_ms"],
+            "quota_effective_cooldown_ms": policy["cooldown_ms"],
             "ai_call_made": False if state == "HOLD_EXTERNAL_RESEARCH_QUOTA_COOLDOWN" else previous.get("ai_call_made", True),
             "ai_call_succeeded": False,
             "selection_authority": False,
@@ -118,7 +198,8 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
         quota_known = previous_state in QUOTA_STATES or is_quota_error(previous_error)
         if quota_known:
             failure_at = quota_failure_at(previous, now)
-            retry_after = failure_at + int(cfg["cooldown_ms"])
+            policy = recovery_policy(cfg, previous_error)
+            retry_after = failure_at + int(policy["cooldown_ms"])
             if now < retry_after:
                 held = build_quota_hold(
                     cfg,
@@ -131,6 +212,9 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
                 return {
                     "state": held["state"],
                     "ai_call_executed": False,
+                    "quota_class": held.get("quota_class"),
+                    "quota_retry_source": held.get("quota_retry_source"),
+                    "quota_manual_action_required": held.get("quota_manual_action_required"),
                     "quota_failure_at_ms": held["quota_failure_at_ms"],
                     "quota_retry_after_ms": held["quota_retry_after_ms"],
                     "quota_remaining_ms": held["quota_remaining_ms"],
@@ -161,6 +245,9 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
     return {
         "state": result.get("state"),
         "ai_call_executed": True,
+        "quota_class": result.get("quota_class"),
+        "quota_retry_source": result.get("quota_retry_source"),
+        "quota_manual_action_required": result.get("quota_manual_action_required"),
         "quota_failure_at_ms": result.get("quota_failure_at_ms"),
         "quota_retry_after_ms": result.get("quota_retry_after_ms"),
         "quota_remaining_ms": result.get("quota_remaining_ms"),
@@ -170,7 +257,7 @@ def run_guard(policy_path: Path, *, now_ms: int | None = None) -> dict[str, Any]
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Guard Gemini external research against context-churn quota hammering")
+    ap = argparse.ArgumentParser(description="Guard Gemini external research with quota-aware recovery")
     ap.add_argument("--policy", type=Path, default=core.DEFAULT_POLICY)
     ns = ap.parse_args(argv)
     print(json.dumps(run_guard(ns.policy), sort_keys=True))

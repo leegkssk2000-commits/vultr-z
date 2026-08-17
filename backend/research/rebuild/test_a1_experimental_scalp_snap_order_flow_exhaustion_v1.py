@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def row(start: int, flow: float, book: float, *, complete: bool = True) -> dict:
     return {
-        "schema_version": "zel.production_bingx_ws_microstructure_row.v2",
+        "schema_version": "zel.production_bingx_ws_microstructure_row.v1",
         "symbol": "BTC-USDT",
         "bucket_start_ms": start,
         "bucket_end_ms": start + 5000,
@@ -23,8 +23,7 @@ def row(start: int, flow: float, book: float, *, complete: bool = True) -> dict:
         "spread_bps_mean": 1.0,
         "bid_qty_top20_last": 10.0,
         "ask_qty_top20_last": 10.0,
-        "depth_message_count": 1 if complete else 0,
-        "trade_message_count": 1 if complete else 0,
+        "depth_messages": 1 if complete else 0,
     }
 
 

@@ -1,0 +1,56 @@
+name: G4 Improvement Prep V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/g4_improvement_prep_contract_v1.json'
+      - 'backend/research/prep/g4_improvement_prep_v1.py'
+      - 'backend/research/prep/test_g4_improvement_prep_v1.py'
+      - '.github/workflows/g4-improvement-prep-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  g4-prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify G4 prep deterministic contracts
+        run: python -m unittest backend.research.prep.test_g4_improvement_prep_v1
+      - name: Build exact25 evidence index and ready receipt
+        run: python -m backend.research.prep.g4_improvement_prep_v1 --write
+      - name: Fail closed on authority or A1 mutation markers
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/prep/g4_improvement_prep_ready_v1.json')
+          x=json.loads(p.read_text())
+          assert x['state']=='G4_IMPROVEMENT_PREP_READY'
+          assert x['exact25_evidence_index_count']==25
+          assert x['generation2_evaluator_created'] is False
+          assert x['a1_mutated'] is False
+          assert x['economic_outcomes_consumed'] is False
+          a=x['authority']
+          assert a['selection_authority'] is False
+          assert a['promotion_authority'] is False
+          assert a['execution_authority']=='NONE'
+          assert a['order_authority']=='BLOCKED'
+          assert a['live_trade_authority']=='BLOCKED'
+          assert a['protected_mutations']==0
+          print('PASS_G4_IMPROVEMENT_PREP_READY')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g4-improvement-prep-${{ github.run_id }}
+          retention-days: 90
+          path: |
+            backend/research/prep/g4_exact25_evidence_index_v1.json
+            backend/research/prep/g4_improvement_prep_ready_v1.json
+            backend/research/prep/g4_improvement_prep_contract_v1.json

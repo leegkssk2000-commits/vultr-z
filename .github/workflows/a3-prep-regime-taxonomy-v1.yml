@@ -1,0 +1,38 @@
+name: A3 PREP Regime Taxonomy V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/a3_regime_taxonomy_v1.json'
+      - 'backend/research/prep/a3_regime_labeler_v1.py'
+      - 'backend/research/prep/test_a3_regime_labeler_v1.py'
+      - '.github/workflows/a3-prep-regime-taxonomy-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  a3-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Deterministic A3 prep tests
+        run: python -m unittest backend.research.prep.test_a3_regime_labeler_v1
+      - name: Guard authority and outcome independence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/prep/a3_regime_taxonomy_v1.json').read_text())
+          a=d['authority']
+          assert a['selection_authority'] is False
+          assert a['promotion_authority'] is False
+          assert a['execution_authority']=='NONE'
+          assert a['order_authority']=='BLOCKED'
+          assert a['live_trade_authority']=='BLOCKED'
+          assert a['protected_mutations']==0
+          assert 'pnl_based_thresholds' in d['prohibitions']
+          assert d['input_contract']['closed_bar_only'] is True
+          print('PASS_A3_PREP_CONTRACT')
+          PY

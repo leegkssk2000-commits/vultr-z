@@ -9,7 +9,11 @@ from typing import Any
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as v1
 from backend.research.rebuild.a1_exact25_policy_adapter_v1 import policy_functions
-from backend.research.rebuild.a1_exact25_survivor_gate_v1 import attach_survivor_gate, load_external_hardening_evidence
+from backend.research.rebuild.a1_exact25_survivor_gate_v1 import (
+    attach_survivor_gate,
+    load_external_hardening_evidence,
+    stable_sha,
+)
 
 v1.policy_functions = policy_functions
 
@@ -61,11 +65,24 @@ def main() -> None:
     out_path = _output_path(sys.argv[1:])
     receipt = _finite_json(json.loads(out_path.read_text(encoding="utf-8")))
     receipt = attach_survivor_gate(receipt, hardening_evidence=load_external_hardening_evidence())
+
+    # Preserve the legacy/public field expected by the controller and make it
+    # reflect the attached H4 gate instead of leaving a hard-coded or missing
+    # PENDING placeholder. This does not manufacture H4 evidence: absent H4
+    # evidence remains PENDING and passed=false.
+    receipt["negative_control_state"] = str(
+        receipt.get("negative_control_gate") or "PENDING_H4_NEGATIVE_CONTROL_SUPERIORITY"
+    )
+    receipt["receipt_sha256"] = stable_sha(
+        {k: v for k, v in receipt.items() if k != "receipt_sha256"}
+    )
+
     out_path.write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False, default=str), encoding="utf-8")
     print(json.dumps({
         "state": receipt.get("state"),
         "strategy_id": receipt.get("strategy_id"),
         "completed_trades": receipt.get("completed_trades"),
+        "negative_control_state": receipt.get("negative_control_state"),
         "survivor_gate_state": (receipt.get("survivor_gate") or {}).get("state"),
         "survivor_gate_passed": (receipt.get("survivor_gate") or {}).get("passed"),
         "receipt_sha256": receipt.get("receipt_sha256"),

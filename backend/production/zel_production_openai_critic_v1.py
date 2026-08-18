@@ -110,8 +110,9 @@ def critic_prompt(proposer_response: Mapping[str, Any]) -> str:
 
 
 def _extract_output_text(payload: Mapping[str, Any]) -> str:
-    if str(payload.get("status") or "completed") not in {"completed", "incomplete"}:
-        raise RuntimeError(f"OPENAI_CRITIC_RESPONSE_STATUS:{str(payload.get('status'))[:80]}")
+    status = str(payload.get("status") or "completed")
+    if status not in {"completed", "incomplete"}:
+        raise RuntimeError(f"OPENAI_CRITIC_RESPONSE_STATUS:{status[:80]}")
     texts: list[str] = []
     for item in payload.get("output", []):
         if not isinstance(item, Mapping):
@@ -120,9 +121,13 @@ def _extract_output_text(payload: Mapping[str, Any]) -> str:
             if isinstance(part, Mapping) and part.get("type") == "output_text" and isinstance(part.get("text"), str):
                 texts.append(part["text"])
     text = "\n".join(texts).strip()
-    if not text:
-        raise RuntimeError("OPENAI_CRITIC_EMPTY_RESPONSE")
-    return text
+    if text:
+        return text
+    incomplete = payload.get("incomplete_details")
+    if status == "incomplete" and isinstance(incomplete, Mapping):
+        reason = str(incomplete.get("reason") or "UNKNOWN")[:80]
+        raise RuntimeError(f"OPENAI_CRITIC_INCOMPLETE:{reason}")
+    raise RuntimeError("OPENAI_CRITIC_EMPTY_RESPONSE")
 
 
 def validate_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -169,36 +174,30 @@ def fail_closed_receipt(code: str, detail: str = "") -> dict[str, Any]:
     }
 
 
-def call_openai_critic(
-    api_key: str,
-    model: str,
-    proposer_response: Mapping[str, Any],
-    *,
-    timeout_sec: int = 60,
-    max_output_tokens: int = 1200,
-) -> tuple[str, dict[str, Any]]:
-    if not str(api_key).strip():
-        raise RuntimeError("OPENAI_API_KEY_MISSING")
-    if not str(model).strip():
-        raise RuntimeError("OPENAI_MODEL_MISSING")
-    body = json.dumps(
-        {
-            "model": str(model),
-            "store": False,
-            "instructions": "Return only the required structured critic receipt. Do not use tools or external web data.",
-            "input": critic_prompt(proposer_response),
-            "max_output_tokens": int(max_output_tokens),
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "zel_production_ai_openai_critic_v1",
-                    "strict": True,
-                    "schema": _CRITIC_JSON_SCHEMA,
-                }
-            },
+def _responses_body(model: str, proposer_response: Mapping[str, Any], max_output_tokens: int) -> bytes:
+    payload: dict[str, Any] = {
+        "model": str(model),
+        "store": False,
+        "instructions": "Return only the required structured critic receipt. Do not use tools or external web data.",
+        "input": critic_prompt(proposer_response),
+        "max_output_tokens": int(max_output_tokens),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "zel_production_ai_openai_critic_v1",
+                "strict": True,
+                "schema": _CRITIC_JSON_SCHEMA,
+            }
         },
-        ensure_ascii=False,
-    ).encode("utf-8")
+    }
+    # GPT-5 reasoning tokens count against max_output_tokens. The critic needs only a
+    # bounded structured falsification review, so minimal reasoning preserves visible JSON.
+    if str(model).lower().startswith("gpt-5"):
+        payload["reasoning"] = {"effort": "minimal"}
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _post_responses(api_key: str, body: bytes, timeout_sec: int) -> dict[str, Any]:
     request_id = str(uuid.uuid4())
     req = urllib.request.Request(
         "https://api.openai.com/v1/responses",
@@ -216,10 +215,51 @@ def call_openai_critic(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
         raise RuntimeError(f"OPENAI_CRITIC_HTTP_{exc.code}:{detail}") from exc
-    receipt_raw = json.loads(_extract_output_text(payload))
-    if not isinstance(receipt_raw, Mapping):
+    if not isinstance(payload, Mapping):
         raise RuntimeError("OPENAI_CRITIC_RESPONSE_NOT_OBJECT")
-    return str(model), validate_receipt(receipt_raw)
+    return dict(payload)
+
+
+def call_openai_critic(
+    api_key: str,
+    model: str,
+    proposer_response: Mapping[str, Any],
+    *,
+    timeout_sec: int = 60,
+    max_output_tokens: int = 1200,
+) -> tuple[str, dict[str, Any]]:
+    if not str(api_key).strip():
+        raise RuntimeError("OPENAI_API_KEY_MISSING")
+    if not str(model).strip():
+        raise RuntimeError("OPENAI_MODEL_MISSING")
+
+    budgets = [int(max_output_tokens)]
+    retry_budget = min(4096, max(2400, int(max_output_tokens) * 2))
+    if retry_budget > budgets[0]:
+        budgets.append(retry_budget)
+
+    last_exc: Exception | None = None
+    for idx, budget in enumerate(budgets):
+        payload = _post_responses(
+            str(api_key),
+            _responses_body(str(model), proposer_response, budget),
+            int(timeout_sec),
+        )
+        try:
+            receipt_raw = json.loads(_extract_output_text(payload))
+        except RuntimeError as exc:
+            last_exc = exc
+            incomplete = payload.get("incomplete_details")
+            reason = str(incomplete.get("reason") or "") if isinstance(incomplete, Mapping) else ""
+            if idx == 0 and reason == "max_output_tokens" and len(budgets) > 1:
+                continue
+            raise
+        if not isinstance(receipt_raw, Mapping):
+            raise RuntimeError("OPENAI_CRITIC_RESPONSE_NOT_OBJECT")
+        return str(model), validate_receipt(receipt_raw)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("OPENAI_CRITIC_EMPTY_RESPONSE")
 
 
 def review_or_hold(

@@ -1,0 +1,86 @@
+{
+  "schema_version": "zel.a1_vol_spike_flow_horizon_development_ssot.v1",
+  "state": "FROZEN_BEFORE_DEVELOPMENT_ECONOMICS",
+  "candidate_id": "repair_3_flow_to_horizon",
+  "candidate_sha256": "2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56",
+  "purpose": "Define one deterministic development-only feasibility/control test before inspecting candidate economics. This contract is not a promotion or prospective holdout gate.",
+  "development_corpus": {
+    "source": "/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl",
+    "symbols": ["BTC-USDT", "ETH-USDT"],
+    "source_schema": "zel.production_bingx_ws_microstructure_row.v1",
+    "source_quality_receipt_sha256": "b2aeb92ea562a78157ab7bd15d3917a0cc264e3d333f7e8242750ceee5e3f41a",
+    "source_quality_run_id": 32163260316,
+    "frozen_first_bucket_ms": 1786719305000,
+    "frozen_last_bucket_ms": 1787072390000,
+    "frozen_span_ms": 353090000,
+    "holdout_outcomes_used": false,
+    "future_rows_after_frozen_last_bucket_forbidden": true
+  },
+  "event_definition": {
+    "base_window_minutes": 15,
+    "context_window_minutes": 60,
+    "price_spike": "ABS(current_15m_close_to_close_return) > MAX(ABS(each_of_previous_four_completed_15m_returns))",
+    "flow_exhaustion": "ABS(current_15m_quote_weighted_trade_imbalance) < ABS(previous_completed_15m_quote_weighted_trade_imbalance)",
+    "volume_context": "current_15m_trade_quote_notional > MEDIAN(previous_four_completed_15m_trade_quote_notional)",
+    "direction": "FADE_SIGN(current_15m_close_to_close_return)",
+    "cooldown_minutes": 60,
+    "entry_time_only": true,
+    "threshold_sweep_forbidden": true,
+    "best_horizon_selection_forbidden": true
+  },
+  "development_horizons_hours": [4, 12, 24],
+  "horizon_aggregation": "ALL_FROZEN_HORIZONS_MUST_PASS; Alpha-Proof P3 scalar metrics are the conservative worst-horizon summaries, never the best horizon.",
+  "cost": {
+    "verified_round_trip_cost_bps": 14.0,
+    "expected_move_cost_multiple_target": 2.0,
+    "required_median_mfe_bps": 28.0,
+    "cost_authority_path": "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
+  },
+  "p3_launch_gate": {
+    "ssot_id": "SSOT:A1_VOL_SPIKE_FLOW_HORIZON_DEVELOPMENT_V1",
+    "minimum_completed_events_per_symbol_combined": 12,
+    "each_horizon_gross_expectancy_bps_gt": 14.0,
+    "each_horizon_signed_forward_median_bps_gt": 0.0,
+    "each_horizon_median_mfe_bps_gte": 28.0,
+    "each_horizon_median_mfe_over_median_mae_gte": 1.0,
+    "integrity_defects_eq": 0,
+    "duplicate_events_eq": 0,
+    "holdout_outcomes_used": false
+  },
+  "p4_controls": {
+    "direction_flip": "same events and horizons, opposite direction; full-model gross expectancy must be strictly greater at every horizon",
+    "time_shift_placebo": "same direction shifted +60m; full-model gross expectancy must be strictly greater at every horizon",
+    "delayed_entry": "same direction shifted +15m; full-model gross expectancy must be strictly greater at every horizon",
+    "regime_permutation": "deterministic cyclic permutation of event directions within symbol; full-model gross expectancy must be strictly greater at every horizon",
+    "feature_ablations": {
+      "volatility_spike_state": "remove new-60m-high absolute-return requirement",
+      "aggressive_flow_exhaustion": "remove shrinking-flow requirement",
+      "volume_context": "remove quote-notional context requirement"
+    },
+    "ablation_pass_rule": "full-model gross expectancy must be strictly greater than each ablation at every frozen horizon",
+    "holdout_outcomes_used": false
+  },
+  "parameter_provenance_additions_required_before_p3": [
+    {
+      "name": "development_horizon_vector_hours",
+      "value": [4, 12, 24],
+      "provenance": "PURE_DESIGN_PRIOR",
+      "reason": "Frozen neighborhood spanning the candidate's multi-hour-to-day native horizon; all horizons must pass so there is no best-horizon selection."
+    },
+    {
+      "name": "development_min_completed_events",
+      "value": 12,
+      "provenance": "PURE_DESIGN_PRIOR",
+      "reason": "Bounded early-feasibility floor to prevent one/few-event Alpha Proof while keeping development screening materially faster than prospective survivor validation."
+    }
+  ],
+  "next_if_pass": "Complete P5 adversarial review lineage, rerun exact Alpha Proof V2, and only after P0-P6 PASS freeze a fresh prospective boundary.",
+  "next_if_fail": "Seal economic/control failure and route the active alpha slot to the next non-redundant Alpha-Proof-ready candidate; no rescue threshold/horizon tuning.",
+  "research_only": true,
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "protected_mutations": 0
+}

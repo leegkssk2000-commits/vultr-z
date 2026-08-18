@@ -1,0 +1,87 @@
+name: A1 RCFM Evaluator Freeze V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py'
+      - 'backend/research/architecture_factory/test_a1_regime_conditioned_flow_momentum_v1.py'
+      - '.github/workflows/a1-rcfm-evaluator-freeze-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  freeze-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and deterministic causal tests
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py
+          python -m unittest backend.research.architecture_factory.test_a1_regime_conditioned_flow_momentum_v1
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'))
+          assert p['fresh_prospective_boundary_utc'] is None
+          assert p['momentum_lookback_bars']==48 and p['horizon_bars']==48
+          assert p['expected_move_cost_multiple_floor']==2.0
+          assert p['parameter_search'] is False and p['threshold_tuning'] is False and p['best_horizon_selection'] is False
+          assert p['baseline_mutated'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          print('PASS_RCFM_EVALUATOR_FREEZE_CONTRACT')
+          PY
+      - name: Prove live WS-v2 source readiness and H2 pass before evaluator freeze
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_KEY"
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key; chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/rcfm_source_ready.json <<'PY'
+          import hashlib,json,time
+          from pathlib import Path
+          hb=Path('/home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json'); hist=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
+          if not hb.is_file() or not hist.is_file(): raise SystemExit('RCFM_WS_V2_SOURCE_FILES_MISSING')
+          h=json.loads(hb.read_text()); now=int(time.time()*1000); rows=sum(1 for x in hist.open('rb') if x.strip()); streams=h.get('streams') or {}
+          ok=h.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING' and now-int(h.get('updated_at_ms') or 0)<=120000 and rows>=100 and all(int((streams.get(k) or {}).get('messages') or 0)>0 for k in ('depth','trade','kline'))
+          out={'schema_version':'zel.a1.rcfm.source_ready.v1','state':'PASS_RCFM_SOURCE_READY' if ok else 'HOLD_RCFM_SOURCE_NOT_READY','history_rows':rows,'heartbeat_age_ms':now-int(h.get('updated_at_ms') or 0),'source_sha256':str(h.get('source_sha256') or ''),'dependency_sha256':str(h.get('dependency_sha256') or ''),'policy_sha256':str(h.get('policy_sha256') or ''),'data_sha256':hashlib.sha256(hist.read_bytes()).hexdigest(),'streams':{k:{'messages':(streams.get(k) or {}).get('messages'),'normalized_messages':(streams.get(k) or {}).get('normalized_messages'),'last_message_age_ms':(streams.get(k) or {}).get('last_message_age_ms')} for k in ('depth','trade','kline')},'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0}
+          print(json.dumps(out,sort_keys=True)); raise SystemExit(0 if ok else 2)
+          PY
+          python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_intake_v1 --source-receipt out/rcfm_source_ready.json --out out/a1_rcfm_h2_intake.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_rcfm_h2_intake.json'))
+          assert r['state']=='PASS_RCFM_H2_INTAKE_READY',r
+          h=r['h2_receipt']; assert h['state']=='PASS_ARCHETYPE_INTAKE',h; assert h['maximum_structural_similarity']<=0.85,h
+          print(json.dumps({'H2':h['state'],'max_similarity':h['maximum_structural_similarity'],'history_rows':r['source_receipt']['history_rows'],'data_sha':r['source_receipt']['data_sha256']},sort_keys=True))
+          PY
+      - name: Freeze SHAs and authority receipt
+        run: |
+          set -euo pipefail
+          sha256sum backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json > out/frozen_shas.txt
+          cat out/frozen_shas.txt
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-rcfm-evaluator-freeze-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            out/rcfm_source_ready.json
+            out/a1_rcfm_h2_intake.json
+            out/frozen_shas.txt

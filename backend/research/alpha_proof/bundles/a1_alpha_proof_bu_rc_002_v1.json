@@ -1,0 +1,125 @@
+{
+  "authority": {
+    "execution_authority": "NONE",
+    "live_trade_authority": "BLOCKED",
+    "order_authority": "BLOCKED",
+    "promotion_authority": false,
+    "protected_mutations": 0,
+    "selection_authority": false
+  },
+  "candidate": {
+    "architecture_family": "basis_unwind_regime_carry",
+    "candidate_id": "BU-RC-002",
+    "candidate_sha256": "98dd313e8241fcb80bf5ee04c7ef4ea2577228694b9a427da1210a26fe560e59",
+    "changed_axis": "none",
+    "direction_rule": "both rule",
+    "entry_event": "futures basis widening combined with open_interest accumulation and low funding rebalancing pressure observed at entry",
+    "evidence_ids": ["F3", "F1"],
+    "exit_logic": "exit as basis mean-reverts when open_interest-decay or funding reverts, or when on-chain/news-driven regime indicates structural demand change; time stop caps exposure to multi-day unwind risk",
+    "expected_move_cost_multiple_target": 2.5,
+    "falsification": "if realized basis convergence net of funding and verified round-trip costs fails to exceed 2x cost across K independent basis-widening episodes over a holdout quarter, kill",
+    "forbidden_changes": ["fees", "best-horizon selection", "post-outcome loss deletion"],
+    "invalidation": "if futures basis dynamics no longer reflect constrained arbitrage/speculative demand (e.g., market makers eliminate persistent basis through inventory management), mechanism invalidated",
+    "mechanism": "speculative demand and arbitrage constraints create persistent basis dislocations; traders who carry through funding costs capture convergence when structural pressure relaxes—counterparties (speculators/hedgers) pay through basis compression",
+    "mode": "NEW_ARCHITECTURE",
+    "native_horizon": "multi-day to weeks (natural carry/horizon to capture basis convergence)",
+    "payer": "speculative demand/hedging imbalances and constrained arbitrageurs",
+    "provider": "openai",
+    "regime_owner": "works during funding-stressed or low-hedger-activity regimes; avoid violent spot-jump regimes and exchange-specific liquidity crises",
+    "required_sources": ["basis", "open_interest", "funding", "volume"],
+    "research_only": true,
+    "strategy_id": "NEW",
+    "time_stop_rationale": "time stop matches expected unwind window for basis normalization and limits prolonged funding bleed against position",
+    "turnover_cost_budget": "low turnover, larger per-trade moves expected; carrying multi-day convergence can dominate round-trip costs when move magnitude exceeds cost multiple target",
+    "why_distinct": "unlike carry_positioning prototypes, ties basis entry to concurrent OI accumulation and funding regime conditioning rather than simple funding threshold triggers"
+  },
+  "development_feasibility": {
+    "development_data_sha": "",
+    "holdout_outcomes_used": false,
+    "launch_gate_pass": false,
+    "launch_gate_source": "",
+    "metrics": {
+      "completed_trades": null,
+      "event_count": null,
+      "event_rate_per_day": null,
+      "forward_move_bps_median": null,
+      "gross_expectancy_bps": null,
+      "mae_bps_median": null,
+      "mfe_bps_median": null,
+      "realistic_cost_bps": 14.0
+    },
+    "repo_status": "carry_positioning history_coverage_bound=false / pending frozen prospective history coverage; no BU-RC-002 separated development receipt exists.",
+    "separated_from_prospective_holdout": true
+  },
+  "feature_causal_map": {
+    "ablation_plan_complete": true,
+    "features": [
+      {"direction": "fade dislocation toward convergence", "entry_time_observable": true, "invalidation": "basis expands instead of compressing", "mechanism": "constrained arbitrage/speculative demand creates basis dislocation", "name": "basis_widening", "observable": "mark/index basis"},
+      {"direction": "confirm crowding behind basis dislocation", "entry_time_observable": true, "invalidation": "OI does not confirm or rapidly normalizes", "mechanism": "OI accumulation proxies leveraged positioning/crowding", "name": "open_interest_accumulation", "observable": "open_interest change"},
+      {"direction": "condition basis unwind on funding regime", "entry_time_observable": true, "invalidation": "funding regime contradicts unwind thesis", "mechanism": "funding reflects perp-side financing pressure", "name": "funding_rebalancing_pressure", "observable": "funding rate/state"}
+    ],
+    "redundant_pairs": []
+  },
+  "multi_ai_adversarial_review": {
+    "controller_review_sha": "",
+    "provider_reviews": [
+      {"decision": "HOLD", "input_sha": "", "model": "gpt-5-mini", "prompt_sha": "", "provider": "openai", "resolved_by_evidence": false, "response_sha": "", "successful": true},
+      {"decision": "PASS_TO_REPLAY", "input_sha": "646cb232b50b7b3bbd92995f9d40b220c0eec183021030af5aa1ebaf591c15a3", "model": "allam-2-7b", "prompt_sha": "44d21d8a15be482789d939ed49f69cded6d56430ab42dd8f553561ffe0650e4b", "provider": "groq", "response_sha": "a4bc8b3097155b4502fa4cbfb222148d1f1ce2189e222059cd2d866c98b9eb94", "successful": true},
+      {"decision": "PASS_TO_REPLAY", "input_sha": "646cb232b50b7b3bbd92995f9d40b220c0eec183021030af5aa1ebaf591c15a3", "model": "@cf/meta/llama-3.1-8b-instruct", "prompt_sha": "ff6a5ac2309b24896921466d745badde04991b21586c2496b428250140acbfb1", "provider": "workers_ai", "response_sha": "44edc7f68f3b5daafdb57e3ffbdefabe309bf6b729a488a8830a3b791038c6fe", "successful": true}
+    ]
+  },
+  "negative_controls_and_ablation": {
+    "controls": [
+      {"applicable": true, "kind": "direction_flip", "passed": false},
+      {"applicable": true, "kind": "time_shift_placebo", "passed": false},
+      {"applicable": true, "kind": "delayed_entry", "passed": false},
+      {"applicable": true, "kind": "regime_permutation", "passed": false}
+    ],
+    "feature_ablations": [
+      {"applicable": true, "feature": "basis_widening", "passed": false},
+      {"applicable": true, "feature": "open_interest_accumulation", "passed": false},
+      {"applicable": true, "feature": "funding_rebalancing_pressure", "passed": false}
+    ],
+    "holdout_outcomes_used": false,
+    "repo_status": "No candidate-matched development-only negative-control/ablation receipt exists."
+  },
+  "parameter_provenance": {
+    "numeric_parameter_inventory_complete": true,
+    "parameters": [
+      {"development_justification_sha": "", "name": "expected_move_cost_multiple_target", "provenance": "PURE_DESIGN_PRIOR", "selected_using_holdout": false, "source_or_test_sha": "222634818664234dea8d7ca8b6bab30c0fcc9918d9897dd02f74cc037ef1a556", "value": 2.5}
+    ]
+  },
+  "primary_evidence": {
+    "supports": [
+      {"independent_key": "Gornall-Rinaldi-Xiao", "kind": "PRIMARY", "limitation": "Mechanism evidence only; exact BingX source and economics remain strategy-specific.", "repo_evidence": "backend/research/architecture_factory/a1_free_evidence_sweep_v1.json", "source_id": "F3:SSRN:5036933", "supports_mechanism": true},
+      {"independent_key": "He-Manela-Ross-vonWachter", "kind": "PRIMARY", "limitation": "Mechanism/no-arbitrage evidence; not a validated BU-RC-002 trading rule.", "repo_evidence": "issue #566 strategy autopsy evidence mapping", "source_id": "issue566:arXiv:2212.06888", "supports_mechanism": true}
+    ]
+  },
+  "schema_version": "zel.a1_alpha_proof_bundle.v1",
+  "selection_note": {
+    "factory_artifact_digest": "sha256:52bae1e79b2d3fa9b149585322d056fc9ddf0bd689c4f696e8d84e0ae87acf48",
+    "factory_artifact_id": 9327848627,
+    "factory_receipt_sha256": "90cf51176938534a08f870c7e8725fa937dd535b9fc36f4e95d2692f60cb4933",
+    "factory_run": 32146083698,
+    "master_head": "056d95ce0738d82839d1b86592b1a176513cb84a",
+    "profit_first_rank_reason": [
+      "OF-RM-001 deprioritized: repository route receipt shows prior l2_flow_persistence_regime_filter event_count=0 after 3,695,000ms and PASSIVE_OBSERVER_SPARSE_EVENT_FUTILITY.",
+      "BU-RC-002 preferred over WSR-004 because it is a distinct basis/funding/OI payer mechanism with multi-day move/cost geometry and repository-native basis/OI/funding bindings, but history coverage remains unproven."
+    ]
+  },
+  "source_implementation_reality": {
+    "cost_authority_sha": "",
+    "duplicate_count": 0,
+    "integrity_defect_count": 0,
+    "leakage_count": 0,
+    "repo_status": "Native bindings are recorded, but candidate-matched freshness/source-SHA/history-coverage receipt and cost-authority SHA are absent.",
+    "sources": [
+      {"available": true, "fresh": false, "name": "basis", "proxy": false, "source_sha": ""},
+      {"available": true, "fresh": false, "name": "open_interest", "proxy": false, "source_sha": ""},
+      {"available": true, "fresh": false, "name": "funding", "proxy": false, "source_sha": ""},
+      {"available": true, "fresh": false, "name": "volume", "proxy": false, "source_sha": ""}
+    ],
+    "timestamp_order_error_count": 0,
+    "verified_round_trip_cost_bps": 14.0
+  }
+}

@@ -1,0 +1,383 @@
+name: A1 AI Provider Health V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-ai-provider-health-v1.yml'
+      - 'backend/production/zel_production_openai_critic_v1.py'
+      - 'backend/production/zel_production_external_research_quota_guard_v1.py'
+      - 'config/zel_production_ai_proposal_layer_v1.json'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - 'backend/research/early_ai_prep/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-ai-provider-health-v1.yml'
+      - 'backend/production/zel_production_openai_critic_v1.py'
+      - 'backend/production/zel_production_external_research_quota_guard_v1.py'
+      - 'config/zel_production_ai_proposal_layer_v1.json'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+      - 'backend/research/early_ai_prep/**'
+  workflow_dispatch:
+  schedule:
+    - cron: '7 */6 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-ai-provider-health-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify current AI contracts and A1 wiring surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/production/zel_production_openai_critic_v1.py \
+            backend/production/zel_production_external_research_quota_guard_v1.py \
+            scripts/strategy11_workers_ai_guard.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
+          c=p.get('openai_critic') or {}
+          assert c.get('enabled') is True
+          assert c.get('execution_authority')=='NONE'
+          assert c.get('order_authority')=='BLOCKED'
+          assert c.get('live_trade_authority')=='BLOCKED'
+          assert p.get('selection_authority') is False and p.get('promotion_authority') is False
+          preps=list(Path('backend/research/early_ai_prep').glob('*.json'))
+          assert preps, 'A1_EARLY_AI_PREP_MISSING'
+          print('PASS_A1_AI_PROVIDER_HEALTH_STATIC_CONTRACT')
+          PY
+
+  audit:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Groq client
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Fetch current Gemini observer receipt from VPS without extra Gemini call
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "cat /home/z/z/ledger/production_external_evidence_v1.json 2>/dev/null || printf '%s' '{}'" \
+            > out/gemini_external_evidence.json
+
+      - name: Probe OpenAI Groq Workers AI and audit current A1 wiring
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess, sys, time
+          from pathlib import Path
+          from backend.production.zel_production_openai_critic_v1 import call_openai_critic
+
+          out=Path('out'); out.mkdir(exist_ok=True)
+          now_ms=int(time.time()*1000)
+
+          # A harmless, bounded single-hypothesis fixture; connection health only.
+          proposer={
+              'status':'PASS',
+              'proposals':[{
+                  'proposal_type':'FEATURE_AUGMENTATION',
+                  'family_id':'health_fixture',
+                  'economic_mechanism':'Condition one research-only entry context on a pre-entry liquidity state.',
+                  'required_sources':['ohlcv'],
+                  'causal_reason':'Health fixture for causal/falsification critic connectivity only.',
+                  'falsification_test':'Reject if the frozen control is not improved prospectively.',
+                  'expected_horizon':'native short horizon'
+              }]
+          }
+
+          providers={}
+          # Gemini: consume the already-running observer receipt instead of adding quota pressure.
+          try:
+              g=json.loads(Path('out/gemini_external_evidence.json').read_text() or '{}')
+          except Exception:
+              g={}
+          g_updated=int(g.get('updated_at_ms') or 0)
+          g_age=(now_ms-g_updated) if g_updated else None
+          g_success=bool(g.get('ai_call_succeeded')) and str(g.get('state') or '')=='PASS_EXTERNAL_RESEARCH_EVIDENCE_READY'
+          providers['gemini']={
+              'state': str(g.get('state') or 'MISSING_RECEIPT'),
+              'available_now': g_success,
+              'ai_call_succeeded': bool(g.get('ai_call_succeeded')),
+              'ai_call_made': bool(g.get('ai_call_made')),
+              'quota_class': g.get('quota_class'),
+              'quota_retry_after_ms': g.get('quota_retry_after_ms'),
+              'updated_at_ms': g_updated or None,
+              'age_ms': g_age,
+              'receipt_sha': g.get('receipt_sha256'),
+              'source':'existing_vps_external_research_receipt_no_extra_call'
+          }
+
+          # OpenAI / ChatGPT-family API critic connectivity.
+          openai_key=os.environ.get('OPENAI_API_KEY','').strip()
+          openai_model=os.environ.get('OPENAI_MODEL','').strip() or 'gpt-5-mini'
+          try:
+              if not openai_key:
+                  raise RuntimeError('OPENAI_API_KEY_MISSING')
+              actual_model, receipt=call_openai_critic(openai_key,openai_model,proposer,timeout_sec=45,max_output_tokens=600)
+              providers['openai']={
+                  'state':'PASS_OPENAI_CRITIC_CONNECTION',
+                  'available_now':True,
+                  'model':actual_model,
+                  'decision':receipt.get('decision'),
+                  'blocker_codes':receipt.get('blocker_codes') or []
+              }
+          except Exception as exc:
+              providers['openai']={
+                  'state':'HOLD_OPENAI_CRITIC_CONNECTION',
+                  'available_now':False,
+                  'model':openai_model,
+                  'error':str(exc).replace('\n',' ')[:1200]
+              }
+
+          # Groq live smoke using the already-hardened repository client.
+          groq_cmd=[sys.executable,'scripts/strategy11_groq_redteam.py','--output','out/groq_health.json']
+          groq=subprocess.run(groq_cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,check=False)
+          try:
+              gr=json.loads(Path('out/groq_health.json').read_text())
+          except Exception:
+              gr={}
+          providers['groq']={
+              'state':gr.get('status') or ('HOLD_GROQ_PROBE' if groq.returncode else 'UNKNOWN'),
+              'available_now':bool(gr.get('GROQ_USED')) and gr.get('status')=='PASS_GROQ_REDTEAM_CONNECTION',
+              'model':gr.get('actual_model'),
+              'latency_ms':gr.get('latency_ms'),
+              'blocker':gr.get('blocker_code') or (groq.stderr.strip()[:800] if groq.returncode else None),
+              'input_sha':gr.get('input_sha'),
+              'prompt_sha':gr.get('prompt_sha'),
+              'response_sha':gr.get('response_sha')
+          }
+
+          # Workers AI must receive lineage-complete / one-axis input or its deterministic preflight intentionally skips the provider.
+          workers_input={
+              'strategy_id':'health_fixture',
+              'candidate_axis':'LIQUIDITY_CONTEXT',
+              'changed_axes':['LIQUIDITY_CONTEXT'],
+              'lineage_complete':True,
+              'control':{'trades':25,'net_pct':0.1,'pf':1.01,'dd_pct':1.0},
+              'candidate':{'trades':25,'net_pct':0.1,'pf':1.01,'dd_pct':1.0},
+              'retention':1.0,
+              'lineage':{'source_sha':'health-source','data_sha':'health-data','window_sha':'health-window','candidate_sha':'health-candidate'},
+              'research_only':True,'promotion_authority':False,'execution_allowed':False,'order_authority':'BLOCKED'
+          }
+          Path('out/workers_input.json').write_text(json.dumps(workers_input,sort_keys=True))
+          workers_cmd=[sys.executable,'scripts/strategy11_workers_ai_guard.py','--input','out/workers_input.json','--output','out/workers_health.json']
+          wm=os.environ.get('WORKERS_AI_MODEL','').strip()
+          if wm:
+              workers_cmd += ['--model',wm]
+          workers=subprocess.run(workers_cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,check=False)
+          try:
+              wr=json.loads(Path('out/workers_health.json').read_text())
+          except Exception:
+              wr={}
+          providers['workers_ai']={
+              'state':wr.get('status') or ('HOLD_WORKERS_AI_PROBE' if workers.returncode else 'UNKNOWN'),
+              'available_now':wr.get('status')=='PASS_WORKERS_AI_CONNECTION' and bool(wr.get('model_called')),
+              'model':wr.get('model'),
+              'latency_ms':wr.get('latency_ms'),
+              'blocker':wr.get('blocker_code') or (workers.stderr.strip()[:800] if workers.returncode else None),
+              'input_sha':wr.get('input_sha'),
+              'prompt_sha':wr.get('prompt_sha'),
+              'response_sha':wr.get('response_sha')
+          }
+
+          # GitHub Models is deliberately non-required after the repository recorded HTTP 410 retirement.
+          providers['github_models']={
+              'state':'RETIRED_HTTP_410_NON_REQUIRED',
+              'available_now':False,
+              'blocking':False,
+              'lineage_commit':'7f3139dde3d219424c7ab55a32424be8eb358502'
+          }
+
+          # Static A1 wiring audit: are these providers actually feeding the current exact25 early-prep path?
+          prep_paths=sorted(Path('backend/research/early_ai_prep').glob('*.json'))
+          prep_rows=[]
+          success_counts={'gemini':0,'groq':0,'workers_ai':0,'github_models':0,'openai':0}
+          attempted_counts={'gemini':0,'groq':0,'workers_ai':0,'github_models':0,'openai':0}
+          for p in prep_paths:
+              try:
+                  row=json.loads(p.read_text())
+              except Exception:
+                  continue
+              if row.get('state')!='EARLY_AI_PREP_READY':
+                  continue
+              av=row.get('ai_router_availability') or {}
+              sid=str(row.get('strategy_id') or p.stem)
+              per={}
+              for name in ('gemini','groq','workers_ai','github_models','openai'):
+                  v=av.get(name) if isinstance(av,dict) else None
+                  attempted=False; success=False
+                  if isinstance(v,dict):
+                      attempted=bool(v.get('attempted') or v.get('attempted_recently'))
+                      success=bool(v.get('successful_call_lineage_for_this_strategy'))
+                  attempted_counts[name]+=int(attempted)
+                  success_counts[name]+=int(success)
+                  per[name]={'attempted':attempted,'successful_lineage':success}
+              prep_rows.append({'strategy_id':sid,'path':str(p),'providers':per})
+
+          proposal_policy=json.loads(Path('config/zel_production_ai_proposal_layer_v1.json').read_text())
+          critic=proposal_policy.get('openai_critic') or {}
+          wiring={
+              'early_ai_prep_ready_count':len(prep_rows),
+              'attempted_counts':attempted_counts,
+              'successful_strategy_lineage_counts':success_counts,
+              'openai_critic_enabled':critic.get('enabled') is True,
+              'openai_critic_required':critic.get('required') is True,
+              'openai_proposal_trigger_states':proposal_policy.get('trigger_states') or [],
+              'openai_in_current_a1_early_prep':success_counts['openai']>0 or attempted_counts['openai']>0,
+              'groq_in_current_a1_early_prep':success_counts['groq']>0 or attempted_counts['groq']>0,
+              'workers_ai_in_current_a1_early_prep':success_counts['workers_ai']>0 or attempted_counts['workers_ai']>0,
+              'gemini_in_current_a1_early_prep':attempted_counts['gemini']>0,
+              'prep_rows':prep_rows
+          }
+
+          bottlenecks=[]
+          if not providers['gemini']['available_now']:
+              bottlenecks.append('GEMINI_NOT_CURRENTLY_SUCCESSFUL:' + str(providers['gemini'].get('quota_class') or providers['gemini']['state']))
+          for name in ('openai','groq','workers_ai'):
+              if not providers[name]['available_now']:
+                  bottlenecks.append(name.upper()+'_LIVE_PROBE_FAILED')
+          if not wiring['openai_in_current_a1_early_prep']:
+              bottlenecks.append('OPENAI_CHATGPT_NOT_WIRED_TO_CURRENT_A1_EARLY_PREP')
+          if not wiring['groq_in_current_a1_early_prep']:
+              bottlenecks.append('GROQ_NOT_WIRED_TO_CURRENT_A1_EARLY_PREP')
+          if not wiring['workers_ai_in_current_a1_early_prep']:
+              bottlenecks.append('WORKERS_AI_NOT_WIRED_TO_CURRENT_A1_EARLY_PREP')
+          if providers['gemini'].get('age_ms') is None or int(providers['gemini'].get('age_ms') or 0) > 90*60*1000:
+              bottlenecks.append('GEMINI_OBSERVER_RECEIPT_STALE_OR_MISSING')
+
+          live_count=sum(1 for n in ('gemini','openai','groq','workers_ai') if providers[n]['available_now'])
+          result={
+              'schema_version':'zel.a1_ai_provider_health.v1',
+              'state':'PASS_AI_PROVIDER_RUNTIME_NO_BLOCKER' if not bottlenecks else 'HOLD_AI_PROVIDER_OR_WIRING_GAPS',
+              'updated_at_ms':now_ms,
+              'providers':providers,
+              'wiring':wiring,
+              'live_provider_count':live_count,
+              'bottlenecks':bottlenecks,
+              'selection_authority':False,'promotion_authority':False,
+              'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED',
+              'exchange_order_submitted':False,'protected_mutations':0
+          }
+          Path('out/a1_ai_provider_health.json').write_text(json.dumps(result,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
+          print(json.dumps({
+              'state':result['state'],'live_provider_count':live_count,
+              'providers':{k:v.get('state') for k,v in providers.items()},
+              'bottlenecks':bottlenecks,
+              'early_prep_ready':len(prep_rows),
+              'successful_strategy_lineage_counts':success_counts
+          },sort_keys=True))
+          PY
+
+      - name: Publish latest provider/wiring health to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          r=json.loads(Path('out/a1_ai_provider_health.json').read_text())
+          marker='<!-- A1_AI_PROVIDER_HEALTH_V1 -->'
+          p=r['providers']; w=r['wiring']
+          def yn(v): return 'PASS' if v else 'HOLD'
+          lines=[
+              marker,
+              '## A1 AI Provider Health V1',
+              f"state={r['state']}",
+              f"run={os.environ['RUN_ID']}",
+              f"live_provider_count={r['live_provider_count']}/4",
+              f"Gemini={yn(p['gemini']['available_now'])}|state={p['gemini']['state']}|quota={p['gemini'].get('quota_class')}",
+              f"OpenAI_ChatGPT={yn(p['openai']['available_now'])}|state={p['openai']['state']}|model={p['openai'].get('model')}",
+              f"Groq={yn(p['groq']['available_now'])}|state={p['groq']['state']}|model={p['groq'].get('model')}",
+              f"WorkersAI={yn(p['workers_ai']['available_now'])}|state={p['workers_ai']['state']}|model={p['workers_ai'].get('model')}",
+              'GitHubModels=RETIRED_HTTP_410_NON_REQUIRED',
+              f"early_ai_prep_ready={w['early_ai_prep_ready_count']}",
+              'strategy_success_lineage=' + json.dumps(w['successful_strategy_lineage_counts'],sort_keys=True),
+              'bottlenecks=' + ('NONE' if not r['bottlenecks'] else ';'.join(r['bottlenecks'])),
+              'selection_authority=false|promotion_authority=false|execution=NONE|order/live=BLOCKED'
+          ]
+          body='\n'.join(lines)
+          repo=os.environ['REPO']; token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f'https://api.github.com/repos/{repo}/issues/566/comments'
+          req=urllib.request.Request(base,headers=headers,method='GET')
+          with urllib.request.urlopen(req,timeout=20) as resp:
+              comments=json.load(resp)
+          existing=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          data=json.dumps({'body':body}).encode()
+          url=(existing.get('url') if existing else base)
+          method='PATCH' if existing else 'POST'
+          req=urllib.request.Request(url,data=data,headers=headers,method=method)
+          with urllib.request.urlopen(req,timeout=20) as resp:
+              json.load(resp)
+          print('PASS_A1_AI_PROVIDER_HEALTH_PUBLISHED')
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-ai-provider-health-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            out/a1_ai_provider_health.json
+            out/gemini_external_evidence.json
+            out/groq_health.json
+            out/workers_health.json

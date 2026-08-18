@@ -1,0 +1,109 @@
+name: A1 RCFM New Archetype H2 Intake V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_intake_v1.py'
+      - '.github/workflows/a1-rcfm-new-archetype-h2-intake-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_intake_v1.py'
+      - '.github/workflows/a1-rcfm-new-archetype-h2-intake-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Static new-archetype contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_intake_v1.py
+          python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_intake_v1 --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'))
+          assert p['factory_run']==32123989104 and p['mode']=='NEW_ARCHITECTURE'
+          assert p['independent_live_passes']>=2 and p['independent_rejects']==0
+          assert p['required_sources']==['ohlcv','volume','l2_order_book','trade_flow']
+          assert p['fresh_prospective_boundary_utc'] is None and p['baseline_mutated'] is False
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          print('PASS_RCFM_PREREG_STATIC_CONTRACT')
+          PY
+
+  intake:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Fetch live read-only WS-v2 source readiness
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key; chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" 'python3 -' > out/rcfm_source_ready.json <<'PY'
+          import hashlib,json,time
+          from pathlib import Path
+          hb=Path('/home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json')
+          hist=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
+          if not hb.is_file() or not hist.is_file(): raise SystemExit('RCFM_WS_V2_SOURCE_FILES_MISSING')
+          h=json.loads(hb.read_text()); now=int(time.time()*1000)
+          rows=sum(1 for x in hist.open('rb') if x.strip())
+          source_ok=h.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING' and now-int(h.get('updated_at_ms') or 0)<=120000
+          streams=h.get('streams') or {}
+          source_ok=source_ok and all(int((streams.get(k) or {}).get('messages') or 0)>0 for k in ('depth','trade','kline'))
+          out={'schema_version':'zel.a1.rcfm.source_ready.v1','state':'PASS_RCFM_SOURCE_READY' if source_ok and rows>=100 else 'HOLD_RCFM_SOURCE_NOT_READY','history_rows':rows,'heartbeat_age_ms':now-int(h.get('updated_at_ms') or 0),'source_sha256':str(h.get('source_sha256') or ''),'dependency_sha256':str(h.get('dependency_sha256') or ''),'policy_sha256':str(h.get('policy_sha256') or ''),'data_sha256':hashlib.sha256(hist.read_bytes()).hexdigest(),'streams':{k:{'messages':(streams.get(k) or {}).get('messages'),'normalized_messages':(streams.get(k) or {}).get('normalized_messages'),'last_message_age_ms':(streams.get(k) or {}).get('last_message_age_ms')} for k in ('depth','trade','kline')},'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0}
+          print(json.dumps(out,sort_keys=True))
+          if out['state']!='PASS_RCFM_SOURCE_READY': raise SystemExit('RCFM_SOURCE_READINESS_HOLD')
+          PY
+      - name: Run installed H2 intake gate
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_intake_v1 --source-receipt out/rcfm_source_ready.json --out out/a1_rcfm_h2_intake.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_rcfm_h2_intake.json'))
+          assert r['state']=='PASS_RCFM_H2_INTAKE_READY',r
+          assert r['h2_receipt']['state']=='PASS_ARCHETYPE_INTAKE',r['h2_receipt']
+          assert r['h2_receipt']['maximum_structural_similarity']<=0.85
+          assert r['fresh_boundary_assigned'] is False
+          assert int(r['protected_mutations'])==0
+          print(json.dumps({'state':r['state'],'max_similarity':r['h2_receipt']['maximum_structural_similarity'],'rows':r['source_receipt']['history_rows'],'data_sha':r['source_receipt']['data_sha256'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-rcfm-h2-intake-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            out/rcfm_source_ready.json
+            out/a1_rcfm_h2_intake.json

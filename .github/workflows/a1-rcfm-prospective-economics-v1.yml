@@ -1,0 +1,159 @@
+name: A1 RCFM Prospective Economics V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
+      - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
+      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
+      - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
+  schedule:
+    - cron: '22,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Verify post-freeze boundary-only activation contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from datetime import datetime
+          E='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py'
+          P='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
+          R='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
+          p=json.load(open(P)); r=json.load(open(R))
+          assert hashlib.sha256(open(E,'rb').read()).hexdigest()=='e5b67e57c60b073dc67b26297faf7de00635736662d01d28f37941350a65864c'
+          b=datetime.fromisoformat(p['fresh_prospective_boundary_utc'].replace('Z','+00:00'))
+          freeze=datetime.fromisoformat('2026-08-18T10:08:05+00:00')
+          assert b>freeze and p['fresh_prospective_boundary_utc']==r['fresh_prospective_boundary_utc']=='2026-08-18T10:20:00Z'
+          assert r['h2_intake']['state']=='PASS_ARCHETYPE_INTAKE' and r['h2_intake']['maximum_structural_similarity']<=0.85
+          assert p['parameter_search'] is False and p['threshold_tuning'] is False and p['best_horizon_selection'] is False
+          assert p['baseline_mutated'] is False and r['baseline_mutated'] is False
+          for x in (p,r):
+            assert x['selection_authority'] is False and x['promotion_authority'] is False
+            assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED' and x['live_trade_authority']=='BLOCKED'
+          print('PASS_RCFM_BOUNDARY_LAUNCH_CONTRACT')
+          PY
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Read sealed boundary
+        id: boundary
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          p=json.load(open('backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'))
+          print('boundary='+p['fresh_prospective_boundary_utc'])
+          PY
+      - name: Fetch only prospective WS-v2 evidence read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          BOUNDARY: ${{ steps.boundary.outputs.boundary }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key; chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          FLOOR_MS="$(python - <<'PY'
+          import os
+          from datetime import datetime
+          print(int(datetime.fromisoformat(os.environ['BOUNDARY'].replace('Z','+00:00')).timestamp()*1000)-120000)
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "FLOOR_MS=$FLOOR_MS python3 -" > out/microstructure.jsonl <<'PY'
+          import json,os
+          from pathlib import Path
+          floor=int(os.environ['FLOOR_MS']); p=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl'); kept=0
+          for line in p.read_text().splitlines():
+            if not line.strip(): continue
+            r=json.loads(line)
+            if int(r.get('bucket_end_ms') or 0)>=floor:
+              print(json.dumps(r,sort_keys=True,separators=(',',':'))); kept+=1
+          if kept<1: pass
+          PY
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "cat /home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json" > out/heartbeat.json
+      - name: Verify source and run frozen prospective evaluator
+        env:
+          BOUNDARY: ${{ steps.boundary.outputs.boundary }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,time
+          h=json.load(open('out/heartbeat.json'))
+          assert h['state']=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING',h
+          assert int(time.time()*1000)-int(h['updated_at_ms'])<=120000,h
+          assert h['selection_authority'] is False and h['promotion_authority'] is False
+          assert h['execution_authority']=='NONE' and h['order_authority']=='BLOCKED' and h['live_trade_authority']=='BLOCKED'
+          PY
+          python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_evaluator_v1 --boundary "$BOUNDARY" --history out/microstructure.jsonl --out out/a1_rcfm_economics.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_rcfm_economics.json'))
+          assert r['boundary_utc']=='2026-08-18T10:20:00Z'
+          assert r['leakage_lookahead']==0 and r['duplicate_count']==0 and not r['integrity_defects']
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
+          print(json.dumps({'state':r['state'],'events':r['baseline_event_count'],'confirmed':r['confirmed_intent_count'],'trades':r['completed_trades'],'metrics':r['metrics'],'receipt':r['receipt_sha256']},sort_keys=True,default=str))
+          PY
+      - name: Publish latest RCFM prospective state to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_rcfm_economics.json')); m=r['metrics']; marker='<!-- A1_RCFM_PROSPECTIVE_V1 -->'
+          body='\n'.join([marker,'## A1 RCFM Prospective V1',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"boundary={r['boundary_utc']}",f"events={r['baseline_event_count']}|confirmed={r['confirmed_intent_count']}|trades={r['completed_trades']}",f"gross_expectancy_bps={m.get('gross_expectancy_bps')}|net_expectancy_bps={m.get('net_expectancy_bps')}|PF={m.get('profit_factor')}|payoff={m.get('payoff')}|WR={m.get('win_rate')}|DD_bps={m.get('max_drawdown_bps')}",f"receipt={r['receipt_sha256']}",'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}; base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: cs=json.load(resp)
+          ex=next((c for c in cs if marker in str(c.get('body') or '')),None); url=ex.get('url') if ex else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if ex else 'POST'),timeout=20): pass
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-rcfm-prospective-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            out/a1_rcfm_economics.json
+            out/heartbeat.json

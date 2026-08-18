@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
       - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py'
       - 'backend/research/architecture_factory/test_a1_regime_conditioned_flow_momentum_v1.py'
       - '.github/workflows/a1-rcfm-evaluator-freeze-v1.yml'
@@ -29,16 +28,16 @@ jobs:
           python - <<'PY'
           import json
           p=json.load(open('backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'))
-          assert p['fresh_prospective_boundary_utc'] is None
+          assert p['fresh_prospective_boundary_utc'] in (None,'2026-08-18T10:20:00Z')
           assert p['momentum_lookback_bars']==48 and p['horizon_bars']==48
           assert p['expected_move_cost_multiple_floor']==2.0
           assert p['parameter_search'] is False and p['threshold_tuning'] is False and p['best_horizon_selection'] is False
           assert p['baseline_mutated'] is False
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
-          print('PASS_RCFM_EVALUATOR_FREEZE_CONTRACT')
+          print('PASS_RCFM_EVALUATOR_FREEZE_OR_SEALED_BOUNDARY_CONTRACT')
           PY
-      - name: Prove live WS-v2 source readiness and H2 pass before evaluator freeze
+      - name: Prove live WS-v2 source readiness and H2 pass
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -62,10 +61,9 @@ jobs:
           python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_intake_v1 --source-receipt out/rcfm_source_ready.json --out out/a1_rcfm_h2_intake.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_rcfm_h2_intake.json'))
-          assert r['state']=='PASS_RCFM_H2_INTAKE_READY',r
-          h=r['h2_receipt']; assert h['state']=='PASS_ARCHETYPE_INTAKE',h; assert h['maximum_structural_similarity']<=0.85,h
-          print(json.dumps({'H2':h['state'],'max_similarity':h['maximum_structural_similarity'],'history_rows':r['source_receipt']['history_rows'],'data_sha':r['source_receipt']['data_sha256']},sort_keys=True))
+          r=json.load(open('out/a1_rcfm_h2_intake.json')); h=r['h2_receipt']
+          assert r['state']=='PASS_RCFM_H2_INTAKE_READY' and h['state']=='PASS_ARCHETYPE_INTAKE' and h['maximum_structural_similarity']<=0.85
+          print(json.dumps({'H2':h['state'],'max_similarity':h['maximum_structural_similarity'],'history_rows':r['source_receipt']['history_rows']},sort_keys=True))
           PY
       - name: Freeze SHAs and authority receipt
         run: |

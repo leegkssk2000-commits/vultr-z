@@ -39,7 +39,9 @@ jobs:
           assert p['factory_run']==32123989104 and p['mode']=='NEW_ARCHITECTURE'
           assert p['independent_live_passes']>=2 and p['independent_rejects']==0
           assert p['required_sources']==['ohlcv','volume','l2_order_book','trade_flow']
-          assert p['fresh_prospective_boundary_utc'] is None and p['baseline_mutated'] is False
+          assert p['fresh_prospective_boundary_utc'] in (None,'2026-08-18T10:20:00Z') and p['baseline_mutated'] is False
+          if p['fresh_prospective_boundary_utc'] is not None:
+            assert p['h2_intake']['state']=='PASS_ARCHETYPE_INTAKE' and p['h2_intake']['maximum_structural_similarity']<=0.85
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
           print('PASS_RCFM_PREREG_STATIC_CONTRACT')
@@ -73,13 +75,10 @@ jobs:
           hist=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
           if not hb.is_file() or not hist.is_file(): raise SystemExit('RCFM_WS_V2_SOURCE_FILES_MISSING')
           h=json.loads(hb.read_text()); now=int(time.time()*1000)
-          rows=sum(1 for x in hist.open('rb') if x.strip())
-          source_ok=h.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING' and now-int(h.get('updated_at_ms') or 0)<=120000
-          streams=h.get('streams') or {}
-          source_ok=source_ok and all(int((streams.get(k) or {}).get('messages') or 0)>0 for k in ('depth','trade','kline'))
+          rows=sum(1 for x in hist.open('rb') if x.strip()); streams=h.get('streams') or {}
+          source_ok=h.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING' and now-int(h.get('updated_at_ms') or 0)<=120000 and all(int((streams.get(k) or {}).get('messages') or 0)>0 for k in ('depth','trade','kline'))
           out={'schema_version':'zel.a1.rcfm.source_ready.v1','state':'PASS_RCFM_SOURCE_READY' if source_ok and rows>=100 else 'HOLD_RCFM_SOURCE_NOT_READY','history_rows':rows,'heartbeat_age_ms':now-int(h.get('updated_at_ms') or 0),'source_sha256':str(h.get('source_sha256') or ''),'dependency_sha256':str(h.get('dependency_sha256') or ''),'policy_sha256':str(h.get('policy_sha256') or ''),'data_sha256':hashlib.sha256(hist.read_bytes()).hexdigest(),'streams':{k:{'messages':(streams.get(k) or {}).get('messages'),'normalized_messages':(streams.get(k) or {}).get('normalized_messages'),'last_message_age_ms':(streams.get(k) or {}).get('last_message_age_ms')} for k in ('depth','trade','kline')},'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0}
-          print(json.dumps(out,sort_keys=True))
-          if out['state']!='PASS_RCFM_SOURCE_READY': raise SystemExit('RCFM_SOURCE_READINESS_HOLD')
+          print(json.dumps(out,sort_keys=True)); raise SystemExit(0 if out['state']=='PASS_RCFM_SOURCE_READY' else 2)
           PY
       - name: Run installed H2 intake gate
         run: |
@@ -90,10 +89,8 @@ jobs:
           r=json.load(open('out/a1_rcfm_h2_intake.json'))
           assert r['state']=='PASS_RCFM_H2_INTAKE_READY',r
           assert r['h2_receipt']['state']=='PASS_ARCHETYPE_INTAKE',r['h2_receipt']
-          assert r['h2_receipt']['maximum_structural_similarity']<=0.85
-          assert r['fresh_boundary_assigned'] is False
-          assert int(r['protected_mutations'])==0
-          print(json.dumps({'state':r['state'],'max_similarity':r['h2_receipt']['maximum_structural_similarity'],'rows':r['source_receipt']['history_rows'],'data_sha':r['source_receipt']['data_sha256'],'receipt':r['receipt_sha256']},sort_keys=True))
+          assert r['h2_receipt']['maximum_structural_similarity']<=0.85 and int(r['protected_mutations'])==0
+          print(json.dumps({'state':r['state'],'max_similarity':r['h2_receipt']['maximum_structural_similarity'],'rows':r['source_receipt']['history_rows'],'boundary_assigned':r['fresh_boundary_assigned'],'next':r['next_permitted_action']},sort_keys=True))
           PY
       - name: Remove SSH key
         if: always()

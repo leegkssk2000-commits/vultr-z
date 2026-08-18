@@ -1,0 +1,56 @@
+name: A1 Vol Spike Flow Horizon P2 P6 V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/alpha_proof/a1_vol_spike_flow_horizon_evidence_hardener_v2.py'
+      - 'backend/research/alpha_proof/evidence/a1_vol_spike_flow_horizon_parameter_provenance_v1.json'
+      - '.github/workflows/a1-vol-spike-flow-horizon-p2-p6-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic gate test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/alpha_proof/a1_vol_spike_flow_horizon_evidence_hardener_v2.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v2 --self-test
+      - name: Refresh P2 and live P6 evidence
+        run: |
+          set -euo pipefail
+          python -m backend.research.alpha_proof.a1_vol_spike_flow_horizon_evidence_hardener_v2 \
+            --out-dir out/vol_spike_flow_horizon_p2_p6_v2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=Path('out/vol_spike_flow_horizon_p2_p6_v2')
+          src=json.loads((d/'p2_p6_receipt.json').read_text())
+          alpha=json.loads((d/'alpha_receipt.json').read_text())
+          assert src['candidate_sha256']=='2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56'
+          assert src['p2_passed'] is True and src['p6_passed'] is True
+          assert src['development_history_claimed'] is False and src['alpha_claimed'] is False
+          assert alpha['state']=='HOLD_ALPHA_PROOF' and alpha['heavy_launch_allowed'] is False
+          remaining={g['gate'] for g in alpha['gates'] if not g['passed']}
+          assert remaining=={'P3_EMPIRICAL_MOVE_VS_COST','P4_NEGATIVE_CONTROLS_ABLATION','P5_MULTI_AI_ADVERSARIAL_REVIEW'}, remaining
+          assert alpha['selection_authority'] is False and alpha['promotion_authority'] is False
+          assert alpha['execution_authority']=='NONE' and alpha['order_authority']=='BLOCKED' and alpha['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':alpha['state'],'remaining':sorted(remaining),'source_receipt':src['receipt_sha256'],'alpha_receipt':alpha['receipt_sha256']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-vol-spike-flow-horizon-p2-p6-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/vol_spike_flow_horizon_p2_p6_v2/*.json

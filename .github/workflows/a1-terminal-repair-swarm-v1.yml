@@ -5,12 +5,20 @@ on:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v3.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v2.py'
+      - 'backend/research/alpha_proof/**'
       - '.github/workflows/a1-terminal-repair-swarm-v1.yml'
+      - '.github/workflows/a1-alpha-proof-gate-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v3.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v2.py'
+      - 'backend/research/alpha_proof/**'
       - '.github/workflows/a1-terminal-repair-swarm-v1.yml'
+      - '.github/workflows/a1-alpha-proof-gate-v1.yml'
   workflow_dispatch:
 
 permissions:
@@ -38,6 +46,10 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py
           python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v2 --self-test
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v3.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v3 --self-test
+          python -m py_compile backend/research/alpha_proof/a1_alpha_proof_gate_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python - <<'PY'
           import json
           p=json.load(open('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'))
@@ -76,10 +88,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v2 --output out/a1_terminal_repair_swarm_v2.json
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v3 --output out/a1_terminal_repair_swarm_v3.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_terminal_repair_swarm_v2.json'))
+          r=json.load(open('out/a1_terminal_repair_swarm_v3.json'))
           assert r['research_only'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
@@ -88,12 +100,18 @@ jobs:
           assert float(r['dedup_cosine_threshold'])==0.85
           assert r['terminal_count']>=10
           assert r['queued_repair_count']>0 or r['queued_new_arch_count']>0, r['provider_state']
+          assert r['alpha_proof_required'] is True
+          assert r['preregistration_blocked_without_receipt'] is True
+          assert int(r['eligible_count'])==0
+          assert all(x['eligible_for_preregistration'] is False for x in r.get('global_queue') or [])
+          assert r['launch']['state']=='BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT'
           print(json.dumps({
             'terminal_count':r['terminal_count'],
             'queued_repair_count':r['queued_repair_count'],
             'queued_new_arch_count':r['queued_new_arch_count'],
+            'alpha_proof_ready_count':r['alpha_proof_ready_count'],
             'eligible':r['eligible_count'],
-            'top':[{k:x.get(k) for k in ('candidate_id','strategy_id','mode','architecture_family','score','eligible_for_preregistration')} for x in r['global_queue'][:5]],
+            'top':[{k:x.get(k) for k in ('candidate_id','strategy_id','mode','architecture_family','score','alpha_proof_candidate_ready','eligible_for_preregistration','preregistration_blocker')} for x in r['global_queue'][:5]],
           },ensure_ascii=False,sort_keys=True))
           PY
       - name: Publish immutable state pointer to issue 566
@@ -105,14 +123,15 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_terminal_repair_swarm_v2.json'))
-          marker='<!-- A1_TERMINAL_REPAIR_SWARM_V2 -->'
+          r=json.load(open('out/a1_terminal_repair_swarm_v3.json'))
+          marker='<!-- A1_TERMINAL_REPAIR_SWARM_V3 -->'
           q=r.get('global_queue') or []
-          lines=[marker,'## A1 Terminal Repair Swarm V2',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"done={r['ledger_done_count']}/25|survivors={r['survivor_count']}|terminal_count={r['terminal_count']}",f"queued_repair_count={r['queued_repair_count']}|queued_new_arch_count={r['queued_new_arch_count']}|eligible={r['eligible_count']}"]
+          lines=[marker,'## A1 Terminal Repair Swarm V3',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"done={r['ledger_done_count']}/25|survivors={r['survivor_count']}|terminal_count={r['terminal_count']}",f"queued_repair_count={r['queued_repair_count']}|queued_new_arch_count={r['queued_new_arch_count']}|alpha_proof_ready={r['alpha_proof_ready_count']}|prereg_eligible=0"]
           for i,x in enumerate(q[:8],1):
               cr=x.get('cross_reviews') or {}
-              lines.append(f"Q{i}|strategy={x.get('strategy_id')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|sources={','.join(x.get('required_sources') or [])}|costx={x.get('expected_move_cost_multiple_target')}|score={x.get('score')}|eligible={x.get('eligible_for_preregistration')}|OpenAI={(cr.get('openai') or {}).get('decision')}|Groq={(cr.get('groq') or {}).get('decision')}|Workers={(cr.get('workers_ai') or {}).get('decision')}|id={x.get('candidate_id')}")
-          lines.append('launch=DEFER_TO_GLOBAL_ONE_HEAVY_OWNER')
+              lines.append(f"Q{i}|strategy={x.get('strategy_id')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|sources={','.join(x.get('required_sources') or [])}|costx_design_prior={x.get('expected_move_cost_multiple_target')}|score={x.get('score')}|alpha_proof_ready={x.get('alpha_proof_candidate_ready')}|prereg_eligible={x.get('eligible_for_preregistration')}|blocker={x.get('preregistration_blocker')}|OpenAI={(cr.get('openai') or {}).get('decision')}|Groq={(cr.get('groq') or {}).get('decision')}|Workers={(cr.get('workers_ai') or {}).get('decision')}|id={x.get('candidate_id')}")
+          lines.append('launch=BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT')
+          lines.append('ALPHA_PROOF=P0-P6_REQUIRED_BEFORE_PREREGISTRATION|fresh_boundary_after_PASS_only')
           lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0')
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
@@ -122,12 +141,12 @@ jobs:
           url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_TERMINAL_REPAIR_SWARM_V2_PUBLISHED')
+          print('PASS_A1_TERMINAL_REPAIR_SWARM_V3_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-terminal-repair-swarm-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-terminal-repair-swarm-v3-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           if-no-files-found: error
-          path: out/a1_terminal_repair_swarm_v2.json
+          path: out/a1_terminal_repair_swarm_v3.json

@@ -1,0 +1,172 @@
+name: A1 Vol Spike Flow Horizon History Audit V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-vol-spike-flow-horizon-history-audit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-vol-spike-flow-horizon-history-audit-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-vol-spike-flow-horizon-history-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify frozen source-history dependency only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          q=json.loads(Path('backend/research/alpha_proof/bundles/a1_alpha_proof_vol_spike_flow_horizon_v1.json').read_text())
+          g=json.loads(Path('config/zel_production_a1_jump_liquidity_history_gate_v1.json').read_text())
+          assert q['candidate']['candidate_sha256']=='2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56'
+          assert set(q['candidate']['required_sources'])=={'ohlcv','volume','trade_flow'}
+          assert g['history_gate_decision_scope']=='SOURCE_QUALITY_ONLY'
+          assert g['economic_replay_allowed_by_this_gate'] is False
+          assert int(g['calibration_min_elapsed_ms'])>=21600000
+          assert float(g['coverage_min_pct'])>=95.0
+          assert int(g['max_gap_ms'])<=30000
+          assert g['collector_heartbeat_schema']=='zel.production_bingx_ws_microstructure_heartbeat.v2'
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED'
+          print('PASS_VOL_SPIKE_HISTORY_AUDIT_STATIC')
+          PY
+
+  audit-vps:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Verify runtime parity and audit normalized WS history
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          PARITY_B64="$(python3 - <<'PY' | base64 -w0
+          import hashlib,json
+          from pathlib import Path
+          files=[
+            'backend/production/zel_production_a1_jump_liquidity_history_gate_v1.py',
+            'config/zel_production_a1_jump_liquidity_source_template_v1.json',
+            'config/zel_production_a1_jump_liquidity_history_gate_v1.json',
+            'backend/production/zel_production_bingx_ws_microstructure_v2.py',
+            'config/zel_production_bingx_ws_microstructure_v2.json',
+          ]
+          print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},sort_keys=True,separators=(',',':')))
+          PY
+          )"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "PARITY_B64='$PARITY_B64' bash -se" > out/vol_spike_history_audit.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          export ROOT PARITY_B64
+          matched=0
+          for _ in $(seq 1 90); do
+            if python3 - <<'PY'
+          import base64,hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          expected=json.loads(base64.b64decode(os.environ['PARITY_B64']).decode())
+          ok=root.exists()
+          for rel,want in expected.items():
+              p=root/rel
+              got=hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+              ok=ok and got==want
+          raise SystemExit(0 if ok else 1)
+          PY
+            then matched=1; break; fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo VOL_SPIKE_HISTORY_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          base="$(python3 -m backend.production.zel_production_a1_jump_liquidity_history_gate_v1 --policy config/zel_production_a1_jump_liquidity_history_gate_v1.json)"
+          BASE="$base" python3 - <<'PY'
+          import hashlib,json,os
+          r=json.loads(os.environ['BASE'])
+          defects=list(r.get('integrity_defects') or [])
+          ready=bool(r.get('calibration_ready')) and not defects
+          out={
+            'schema_version':'zel.a1_vol_spike_flow_horizon_history_audit.v1',
+            'candidate_id':'repair_3_flow_to_horizon',
+            'candidate_sha256':'2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56',
+            'state':'PASS_VOL_SPIKE_DEVELOPMENT_SOURCE_HISTORY_READY' if ready else ('HOLD_VOL_SPIKE_SOURCE_INTEGRITY' if defects else 'HOLD_VOL_SPIKE_DEVELOPMENT_SOURCE_HISTORY_ACCUMULATING'),
+            'source_gate_state':r.get('state'),
+            'source_ready':bool(r.get('source_ready')),
+            'calibration_ready':bool(r.get('calibration_ready')),
+            'symbol_stats':r.get('symbol_stats') or {},
+            'malformed_row_count':int(r.get('malformed_row_count') or 0),
+            'duplicate_bucket_count':int(r.get('duplicate_bucket_count') or 0),
+            'integrity_defects':defects,
+            'development_economics_inspected':False,
+            'development_thresholds_selected':False,
+            'holdout_outcomes_used':False,
+            'fresh_boundary_created':False,
+            'heavy_launch_allowed':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED',
+            'protected_mutations':0,
+          }
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          print(json.dumps(out,sort_keys=True))
+          PY
+          REMOTE
+      - name: Verify audit is read-only and classify next step
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/vol_spike_history_audit.json').read_text())
+          assert r['development_economics_inspected'] is False
+          assert r['development_thresholds_selected'] is False
+          assert r['holdout_outcomes_used'] is False
+          assert r['fresh_boundary_created'] is False and r['heavy_launch_allowed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['protected_mutations'])==0
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-vol-spike-history-audit-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/vol_spike_history_audit.json

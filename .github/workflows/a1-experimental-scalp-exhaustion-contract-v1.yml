@@ -19,9 +19,15 @@ on:
       - 'backend/research/rebuild/test_a1_experimental_scalp_snap_order_flow_exhaustion_v1.py'
       - '.github/workflows/a1-experimental-scalp-exhaustion-contract-v1.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '14,29,44,59 * * * *'
 
 permissions:
   contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
 
 jobs:
   contract:
@@ -41,7 +47,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
-          from datetime import datetime, timezone
+          from datetime import datetime
           paths=[
               'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json',
               'backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json',
@@ -62,14 +68,101 @@ jobs:
           assert cfg['baseline_clock_reset'] is False
           assert cfg['parameter_search'] is False and cfg['best_horizon_selection'] is False and cfg['threshold_tuning'] is False
           boundary=cfg.get('fresh_prospective_boundary_utc')
-          if boundary is not None:
-              b=datetime.fromisoformat(boundary.replace('Z','+00:00'))
-              freeze=datetime.fromisoformat('2026-08-17T23:07:06+00:00')
-              assert b > freeze
-              p=reg['preregistration']
-              assert p['fresh_prospective_boundary_utc']==boundary
-              assert p['evaluator_blob_sha']=='7add3d949e65c52063f5d73e447245f308659bbf'
-              assert p['new_policy_blob_sha']=='ba199e427e76a667727453827581da9a9b1d4da0'
-              assert p['new_config_blob_sha']=='689141b91fabc18d34003c9b681c08aa56b7d2b1'
+          assert boundary is not None
+          b=datetime.fromisoformat(boundary.replace('Z','+00:00'))
+          freeze=datetime.fromisoformat('2026-08-17T23:07:06+00:00')
+          assert b > freeze
+          p=reg['preregistration']
+          assert p['fresh_prospective_boundary_utc']==boundary
+          assert p['evaluator_blob_sha']=='7add3d949e65c52063f5d73e447245f308659bbf'
+          assert p['new_policy_blob_sha']=='ba199e427e76a667727453827581da9a9b1d4da0'
+          assert p['new_config_blob_sha']=='689141b91fabc18d34003c9b681c08aa56b7d2b1'
           print('PASS_SCALP_EXHAUSTION_EXPERIMENTAL_CONTRACT')
           PY
+
+  evaluate-on-vps:
+    if: github.event_name != 'pull_request'
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Wait runtime parity and evaluate frozen scalp experiment
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          EXPECTED_EVAL="$(sha256sum backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py | awk '{print $1}')"
+          EXPECTED_CFG="$(sha256sum backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json | awk '{print $1}')"
+          EXPECTED_POLICY="$(sha256sum backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_policy_v1.json | awk '{print $1}')"
+          EXPECTED_REG="$(sha256sum backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json | awk '{print $1}')"
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "EXPECTED_EVAL='$EXPECTED_EVAL' EXPECTED_CFG='$EXPECTED_CFG' EXPECTED_POLICY='$EXPECTED_POLICY' EXPECTED_REG='$EXPECTED_REG' bash -se" > out/a1_experimental_scalp_snap_receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          matched=0
+          for _ in $(seq 1 120); do
+            got_eval="$(sha256sum "$ROOT/backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py" 2>/dev/null | awk '{print $1}' || true)"
+            got_cfg="$(sha256sum "$ROOT/backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json" 2>/dev/null | awk '{print $1}' || true)"
+            got_policy="$(sha256sum "$ROOT/backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_policy_v1.json" 2>/dev/null | awk '{print $1}' || true)"
+            got_reg="$(sha256sum "$ROOT/backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json" 2>/dev/null | awk '{print $1}' || true)"
+            if [ "$got_eval" = "$EXPECTED_EVAL" ] && [ "$got_cfg" = "$EXPECTED_CFG" ] && [ "$got_policy" = "$EXPECTED_POLICY" ] && [ "$got_reg" = "$EXPECTED_REG" ]; then matched=1; break; fi
+            sleep 2
+          done
+          [ "$matched" -eq 1 ] || { echo A1_SCALP_EXPERIMENT_RUNTIME_PARITY_TIMEOUT >&2; exit 71; }
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          BOUNDARY="$(python3 - <<'PY'
+          import json
+          print(json.load(open('backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json'))['fresh_prospective_boundary_utc'])
+          PY
+          )"
+          python3 -m backend.research.rebuild.a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1 \
+            --boundary "$BOUNDARY" \
+            --history /home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl \
+            --symbols BTC-USDT,ETH-USDT \
+            --out /tmp/a1_experimental_scalp_snap_receipt.json >/dev/null
+          cat /tmp/a1_experimental_scalp_snap_receipt.json
+          REMOTE
+      - name: Verify experimental receipt authority and integrity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_experimental_scalp_snap_receipt.json'))
+          assert r['experiment_id']=='scalp_snap_v2_order_flow_exhaustion_confirmation'
+          assert r['experimental_not_baseline'] is True and r['baseline_mutated'] is False
+          assert r['boundary_utc']=='2026-08-17T23:15:00Z'
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          assert int(r.get('leakage_lookahead',0))==0
+          assert r.get('integrity_defects',[])==[]
+          assert int(r.get('duplicate_count',0))==0
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-experimental-scalp-exhaustion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_experimental_scalp_snap_receipt.json
+          if-no-files-found: error
+          retention-days: 90

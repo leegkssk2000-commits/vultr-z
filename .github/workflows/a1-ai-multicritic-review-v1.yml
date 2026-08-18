@@ -1,0 +1,170 @@
+name: A1 AI Multicritic Review V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/a1_ai_multicritic_review_v1.py'
+      - '.github/workflows/a1-ai-multicritic-review-v1.yml'
+      - 'backend/research/early_ai_prep/**'
+      - 'backend/production/zel_production_openai_critic_v1.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/a1_ai_multicritic_review_v1.py'
+      - '.github/workflows/a1-ai-multicritic-review-v1.yml'
+      - 'backend/research/early_ai_prep/**'
+      - 'backend/production/zel_production_openai_critic_v1.py'
+      - 'scripts/strategy11_groq_redteam.py'
+      - 'scripts/strategy11_workers_ai_guard.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-ai-multicritic-review-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/a1_ai_multicritic_review_v1.py
+          python -m backend.research.a1_ai_multicritic_review_v1 --self-test
+
+  review:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Groq SDK
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Fetch existing Gemini external-evidence receipt without new quota pressure
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            "cat /home/z/z/ledger/production_external_evidence_v1.json 2>/dev/null || printf '%s' '{}'" \
+            > out/gemini_external_evidence.json
+
+      - name: Review every current A1 EARLY_AI_PREP top axis with available independent AIs
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+        run: |
+          set -euo pipefail
+          python -m backend.research.a1_ai_multicritic_review_v1 \
+            --gemini-receipt out/gemini_external_evidence.json \
+            --output out/a1_ai_multicritic_review.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_ai_multicritic_review.json'))
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          assert int(r['reviewed_strategy_count']) >= 1
+          # Provider outages are advisory blockers, not a CI failure. At least one live
+          # independent reviewer is expected; otherwise the receipt remains HOLD.
+          print(json.dumps({
+            'state':r['state'],
+            'reviewed':r['reviewed_strategy_count'],
+            'provider_success':r['provider_successful_strategy_counts'],
+            'bottlenecks':r['bottlenecks'],
+          },sort_keys=True))
+          PY
+
+      - name: Publish latest A1 multicritic review to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          r=json.load(open('out/a1_ai_multicritic_review.json'))
+          marker='<!-- A1_AI_MULTICRITIC_REVIEW_V1 -->'
+          lines=[marker,'## A1 AI Multicritic Review V1',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"reviewed_strategy_count={r['reviewed_strategy_count']}", 'provider_successful_strategy_counts='+json.dumps(r['provider_successful_strategy_counts'],sort_keys=True)]
+          for row in r.get('reviews') or []:
+              if row.get('state')=='HOLD_PREP_INVALID':
+                  lines.append(f"{row.get('strategy_id')}|HOLD_PREP_INVALID")
+                  continue
+              ps=row.get('providers') or {}
+              compact=[]
+              for name in ('gemini','openai','groq','workers_ai'):
+                  p=ps.get(name) or {}
+                  compact.append(f"{name}={'PASS' if p.get('successful') else 'HOLD'}:{p.get('decision') or p.get('quota_class') or p.get('state')}")
+              lines.append(f"{row.get('strategy_id')}|axis={row.get('top1_axis')}|"+'|'.join(compact))
+          lines.append('bottlenecks='+('NONE' if not r.get('bottlenecks') else ';'.join(r['bottlenecks'])))
+          lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
+          body='\n'.join(lines)
+          token=os.environ['GH_TOKEN']; repo=os.environ['REPO']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f'https://api.github.com/repos/{repo}/issues/566/comments?per_page=100'
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp:
+              comments=json.load(resp)
+          existing=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          url=existing.get('url') if existing else f'https://api.github.com/repos/{repo}/issues/566/comments'
+          method='PATCH' if existing else 'POST'
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method=method)
+          with urllib.request.urlopen(req,timeout=20) as resp:
+              json.load(resp)
+          print('PASS_A1_AI_MULTICRITIC_PUBLISHED')
+          PY
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-ai-multicritic-review-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            out/a1_ai_multicritic_review.json
+            out/gemini_external_evidence.json

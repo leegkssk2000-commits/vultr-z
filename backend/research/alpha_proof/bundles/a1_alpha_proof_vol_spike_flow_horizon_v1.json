@@ -1,0 +1,220 @@
+{
+  "schema_version": "zel.a1_alpha_proof_bundle.v1",
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "protected_mutations": 0
+  },
+  "candidate": {
+    "candidate_id": "repair_3_flow_to_horizon",
+    "provider": "openai",
+    "mode": "REPAIR",
+    "strategy_id": "vol_spike_fade",
+    "architecture_family": "vol_spike_fade",
+    "changed_axis": "native_horizon",
+    "mechanism": "Ownership of medium intraday-to-swing volatility reversion: participants providing liquidity at slower horizons (swing mean-reverters) act as payers over hours-to-days, enabling larger moves relative to cost",
+    "payer": "slower-horizon liquidity providers and mean-reversion demand",
+    "entry_event": "sustained high intraday volatility spike with order-flow exhaustion signals on 15–60m aggregation (large returns with shrinking aggressive flow share)",
+    "direction_rule": "both",
+    "native_horizon": "multi-hour to several days (intraday-to-swing)",
+    "regime_owner": "active in episodic volatility-spike regimes with evidence of post-spike mean-reversion; inactive in sustained trending volatility regimes",
+    "invalidation": "If volatility spikes no longer mean-revert within the extended horizon (structural regime shift to trending spikes), mechanism invalidated",
+    "exit_logic": "exit when volatility and aggressive-flow exhaustion reverse to normal regime or when larger-timeframe trend resumes; horizon governed by regime reversion, not fixed thresholds",
+    "time_stop_rationale": "hours-to-days horizon aligns with mean-reversion timescale of volatility spikes and allows move size to dominate round-trip costs",
+    "turnover_cost_budget": "longer horizon targets larger expected moves (>=2x cost) by waiting for swing-scale reversion funded by slower liquidity",
+    "required_sources": ["ohlcv", "volume", "trade_flow"],
+    "evidence_ids": ["F2", "F4"],
+    "expected_move_cost_multiple_target": 2.0,
+    "falsification": "Prospective kill if realized reversion magnitude within the extended horizon fails to exceed expected move-cost multiple on >55% of triggers across a 90-day out-of-sample period",
+    "forbidden_changes": ["fees", "threshold sweep", "best-horizon selection", "post-outcome loss deletion"],
+    "why_distinct": "Alters only the native holding horizon compared to baseline, shifting to multi-hour/swing context — single-axis repair",
+    "candidate_sha256": "2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56",
+    "research_only": true
+  },
+  "primary_evidence": {
+    "supports": [
+      {
+        "kind": "PRIMARY",
+        "independent_key": "Wen-Bouri-Xu-Zhao",
+        "source_id": "F2:SSRN:4080253",
+        "supports_mechanism": true,
+        "repo_evidence": "backend/research/architecture_factory/a1_free_evidence_sweep_v1.json",
+        "limitation": "Supports regime-dependent intraday momentum/reversal, not this exact BingX executable rule."
+      },
+      {
+        "kind": "PRIMARY",
+        "independent_key": "Scaillet-Treccani-Trevisan",
+        "source_id": "F4:arXiv:1704.08175",
+        "supports_mechanism": true,
+        "repo_evidence": "backend/research/architecture_factory/a1_free_evidence_sweep_v1.json",
+        "limitation": "Supports jump/order-flow mechanism; current BingX transferability and swing-horizon economics require development evidence."
+      }
+    ]
+  },
+  "feature_causal_map": {
+    "ablation_plan_complete": true,
+    "features": [
+      {
+        "name": "volatility_spike_state",
+        "mechanism": "episodic large realized moves create a candidate reversion state when shock pressure is temporary",
+        "observable": "closed OHLCV returns and realized range/volatility on 15–60m aggregation",
+        "direction": "fade the spike only when exhaustion and regime conditions agree",
+        "invalidation": "continued expansion with trend persistence contradicts mean-reversion ownership",
+        "entry_time_observable": true
+      },
+      {
+        "name": "aggressive_flow_exhaustion",
+        "mechanism": "shrinking aggressive participation after a spike indicates marginal taker pressure is exhausting",
+        "observable": "entry-time trade-flow aggressive share/change",
+        "direction": "confirm reversion only when aggressive flow contracts after the spike",
+        "invalidation": "persistent or increasing aggressive flow indicates informed continuation rather than exhaustion",
+        "entry_time_observable": true
+      },
+      {
+        "name": "volume_context",
+        "mechanism": "volume distinguishes a material volatility event from ordinary range noise and provides context for exhaustion",
+        "observable": "closed-bar volume and its local history",
+        "direction": "use volume as event context, not as an outcome filter",
+        "invalidation": "no material event participation or inconsistent volume context removes the causal setup",
+        "entry_time_observable": true
+      }
+    ],
+    "redundant_pairs": []
+  },
+  "parameter_provenance": {
+    "numeric_parameter_inventory_complete": true,
+    "parameters": [
+      {
+        "name": "expected_move_cost_multiple_target",
+        "value": 2.0,
+        "provenance": "PURE_DESIGN_PRIOR",
+        "source_or_test_sha": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+        "development_justification_sha": "",
+        "selected_using_holdout": false
+      },
+      {
+        "name": "entry_aggregation_lower_minutes",
+        "value": 15,
+        "provenance": "PURE_DESIGN_PRIOR",
+        "source_or_test_sha": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+        "development_justification_sha": "",
+        "selected_using_holdout": false
+      },
+      {
+        "name": "entry_aggregation_upper_minutes",
+        "value": 60,
+        "provenance": "PURE_DESIGN_PRIOR",
+        "source_or_test_sha": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+        "development_justification_sha": "",
+        "selected_using_holdout": false
+      },
+      {
+        "name": "falsification_success_floor_pct",
+        "value": 55,
+        "provenance": "PURE_DESIGN_PRIOR",
+        "source_or_test_sha": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+        "development_justification_sha": "",
+        "selected_using_holdout": false
+      },
+      {
+        "name": "falsification_oos_days",
+        "value": 90,
+        "provenance": "PURE_DESIGN_PRIOR",
+        "source_or_test_sha": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+        "development_justification_sha": "",
+        "selected_using_holdout": false
+      }
+    ]
+  },
+  "development_feasibility": {
+    "separated_from_prospective_holdout": true,
+    "holdout_outcomes_used": false,
+    "development_data_sha": "",
+    "launch_gate_source": "",
+    "launch_gate_pass": false,
+    "metrics": {
+      "event_count": null,
+      "completed_trades": null,
+      "forward_move_bps_median": null,
+      "mfe_bps_median": null,
+      "mae_bps_median": null,
+      "gross_expectancy_bps": null,
+      "realistic_cost_bps": 14.0,
+      "event_rate_per_day": null
+    },
+    "repo_status": "No candidate-matched separated development receipt exists yet."
+  },
+  "negative_controls_and_ablation": {
+    "holdout_outcomes_used": false,
+    "controls": [
+      {"kind": "direction_flip", "applicable": true, "passed": false},
+      {"kind": "time_shift_placebo", "applicable": true, "passed": false},
+      {"kind": "delayed_entry", "applicable": true, "passed": false},
+      {"kind": "regime_permutation", "applicable": true, "passed": false}
+    ],
+    "feature_ablations": [
+      {"feature": "volatility_spike_state", "applicable": true, "passed": false},
+      {"feature": "aggressive_flow_exhaustion", "applicable": true, "passed": false},
+      {"feature": "volume_context", "applicable": true, "passed": false}
+    ],
+    "repo_status": "No candidate-matched development-only control/ablation receipt exists yet."
+  },
+  "multi_ai_adversarial_review": {
+    "controller_review_sha": "",
+    "provider_reviews": [
+      {
+        "provider": "openai",
+        "model": "gpt-5-mini",
+        "decision": "HOLD",
+        "successful": true,
+        "input_sha": "",
+        "prompt_sha": "",
+        "response_sha": "",
+        "resolved_by_evidence": false
+      },
+      {
+        "provider": "groq",
+        "model": "allam-2-7b",
+        "decision": "PASS_TO_REPLAY",
+        "successful": true,
+        "input_sha": "d409ca5500ec4915ad66ae9cc78d2377d58c78d00f7d42e32d3ce8b5e60b0fcf",
+        "prompt_sha": "ccbd5d57a56201e1a471276d8d60089c3748a6444ed535d146168115b1e15666",
+        "response_sha": "5db00785bfad1d3807fe31b8af0ab1f6f81b207a7c2bb86fd7ca796c47ec50f5",
+        "resolved_by_evidence": true
+      },
+      {
+        "provider": "workers_ai",
+        "model": "@cf/meta/llama-3.1-8b-instruct",
+        "decision": "PASS_TO_REPLAY",
+        "successful": true,
+        "input_sha": "d409ca5500ec4915ad66ae9cc78d2377d58c78d00f7d42e32d3ce8b5e60b0fcf",
+        "prompt_sha": "ff6a5ac2309b24896921466d745badde04991b21586c2496b428250140acbfb1",
+        "response_sha": "93cf073af04c7e121669b75e20f29019dd10f12e1df6965cebfb7ea617b9cee7",
+        "resolved_by_evidence": true
+      }
+    ]
+  },
+  "source_implementation_reality": {
+    "sources": [
+      {"name": "ohlcv", "available": true, "fresh": false, "proxy": false, "source_sha": ""},
+      {"name": "volume", "available": true, "fresh": false, "proxy": false, "source_sha": ""},
+      {"name": "trade_flow", "available": true, "fresh": false, "proxy": false, "source_sha": ""}
+    ],
+    "duplicate_count": 0,
+    "leakage_count": 0,
+    "timestamp_order_error_count": 0,
+    "integrity_defect_count": 0,
+    "verified_round_trip_cost_bps": 14.0,
+    "cost_authority_sha": "",
+    "repo_status": "Source owners exist, but candidate-matched same-run freshness/source SHA and cost-authority binding are not yet attached."
+  },
+  "selection_note": {
+    "terminal_swarm_run": 32147155160,
+    "terminal_swarm_artifact_id": 9328717479,
+    "terminal_swarm_artifact_digest": "sha256:1d55d3f05abf270d70daa45cfd70fe2ca906025fd6b22abd1d3002222f0de1f1",
+    "profit_first_reason": "BU-RC-002 is parked behind a multi-day basis/OI development-history deficit. This repair targets a shorter minutes-to-days mechanism with repository source owners already present and changes only the native horizon of a terminal strategy."
+  }
+}

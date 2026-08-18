@@ -17,12 +17,21 @@ _V1_TERMINAL_DISPOSITION = v1.terminal_disposition
 
 RULE_PATH = ROOT / "backend/research/rebuild/a1_exact25_resource_budget_v1.json"
 LEDGER_PATH = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
+HARDENING_POLICY_PATH = ROOT / "backend/research/zel_economic_hardening_policy_v1.json"
+PUBLIC_KLINE_FETCH_LIMIT = 1000
 
 
 def load_rule() -> dict[str, Any]:
     value = json.loads(RULE_PATH.read_text(encoding="utf-8"))
     if value.get("state") != "FROZEN_RESEARCH_RESOURCE_ALLOCATION_RULE":
         raise RuntimeError("RESOURCE_BUDGET_NOT_FROZEN")
+    return value
+
+
+def load_hardening_policy() -> dict[str, Any]:
+    value = json.loads(HARDENING_POLICY_PATH.read_text(encoding="utf-8"))
+    if value.get("schema_version") != "zel.economic_hardening.policy.v2":
+        raise RuntimeError("ECONOMIC_HARDENING_POLICY_INVALID")
     return value
 
 
@@ -59,9 +68,58 @@ def _timeframe_ms(receipt: dict[str, Any], symbols: list[dict[str, Any]]) -> int
     return int(estimates[len(estimates) // 2])
 
 
+def _finite_metric(metrics: dict[str, Any], key: str) -> float | None:
+    try:
+        value = float(metrics.get(key))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _max_budget_economic_failure(receipt: dict[str, Any]) -> tuple[bool, str]:
+    """Fail closed once the existing max observation budget is exhausted.
+
+    This does not add an alpha threshold. It reuses the already-installed
+    survivor economics SSOT so economically failed 3-14 trade samples cannot
+    remain nonterminal forever merely because an older cost-futility path has a
+    larger sample trigger.
+    """
+    policy = load_hardening_policy()
+    gate = policy.get("survivor_gate") or {}
+    metrics = receipt.get("metrics") if isinstance(receipt.get("metrics"), dict) else {}
+    rules = [
+        ("net_pnl_bps", _finite_metric(metrics, "net_pnl_bps"), ">", float(gate.get("minimum_net_R", 0.0))),
+        ("net_expectancy_bps", _finite_metric(metrics, "net_expectancy_bps"), ">", float(gate.get("minimum_expectancy_R", 0.0))),
+        ("net_profit_factor", _finite_metric(metrics, "net_profit_factor"), ">=", float(gate.get("minimum_profit_factor", 1.0))),
+        ("net_payoff", _finite_metric(metrics, "net_payoff"), ">=", float(gate.get("minimum_payoff_ratio", 1.0))),
+    ]
+    failed: list[str] = []
+    undefined: list[str] = []
+    for name, actual, op, required in rules:
+        if actual is None:
+            undefined.append(name)
+            continue
+        passed = actual > required if op == ">" else actual >= required
+        if not passed:
+            failed.append(f"{name}={actual:.8f}{op}{required:.8f}:FAIL")
+    if failed:
+        return True, "MAX_RESOURCE_BUDGET_ECONOMIC_GATE_FAIL:" + "|".join(failed)
+    # Undefined economics are not auto-failed here because a small all-win/all-loss
+    # sample can make PF/payoff undefined. The sparse/resource rule below still
+    # handles insufficient event count; otherwise the strategy may continue only
+    # if every defined economic survivor metric is non-failing.
+    return False, "MAX_RESOURCE_BUDGET_DEFINED_ECONOMICS_NONFAIL" + (":UNDEFINED=" + ",".join(undefined) if undefined else "")
+
+
 def resource_disposition(receipt: dict[str, Any], *, now: datetime | None = None) -> tuple[str | None, str | None]:
     rule = load_rule()
     budget = rule["budget"]
+
+    source_quality = receipt.get("source_quality_gate")
+    if isinstance(source_quality, dict) and source_quality.get("state") == "FAIL":
+        defects = source_quality.get("defects") or []
+        return "A1_DATA_BLOCKED", "SOURCE_QUALITY_GATE_FAIL:" + ";".join(str(x) for x in defects[:8])
+
     symbols = _source_symbols(receipt)
     if len(symbols) < int(budget["minimum_symbols_required"]):
         return "A1_DATA_BLOCKED", f"SOURCE_SYMBOL_COVERAGE_LT_REQUIRED:{len(symbols)}"
@@ -80,12 +138,13 @@ def resource_disposition(receipt: dict[str, Any], *, now: datetime | None = None
         current = now or datetime.now(timezone.utc)
         elapsed_ms = max(0.0, (current - parse_utc(str(boundary_raw))).total_seconds() * 1000.0)
         expected_bars = max(0, int(math.floor(elapsed_ms / timeframe_ms)))
+        expected_visible = min(expected_bars, PUBLIC_KLINE_FETCH_LIMIT)
         db = budget["data_blocked"]
         if expected_bars >= int(db["minimum_wallclock_equivalent_bars_before_check"]):
-            missing_fraction = max(0.0, (expected_bars - min_bars) / max(1, expected_bars))
+            missing_fraction = max(0.0, (expected_visible - min_bars) / max(1, expected_visible))
             if missing_fraction > float(db["maximum_missing_bar_fraction"]):
                 return "A1_DATA_BLOCKED", (
-                    f"SOURCE_CADENCE_MISSING:expected={expected_bars}:min_observed={min_bars}:"
+                    f"SOURCE_CADENCE_MISSING:expected_visible={expected_visible}:min_observed={min_bars}:"
                     f"missing_fraction={missing_fraction:.6f}"
                 )
 
@@ -99,6 +158,10 @@ def resource_disposition(receipt: dict[str, Any], *, now: datetime | None = None
             f"INADEQUATE_COMPLETED_TRADES_AT_MAX_RESOURCE_BUDGET:min_bars={min_bars}:"
             f"intents={intents}:trades={trades}:required={min_trades}"
         )
+    if min_bars >= max_sparse and trades >= min_trades:
+        economic_fail, reason = _max_budget_economic_failure(receipt)
+        if economic_fail:
+            return "A1_ECONOMIC_FAIL", reason
     return None, None
 
 

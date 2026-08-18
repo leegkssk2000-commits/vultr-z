@@ -1,0 +1,86 @@
+name: A1 Vol Spike History PR Probe Now
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-vol-spike-history-prprobe-now.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Read-only source-history audit
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" bash -se > out/receipt.json <<'REMOTE'
+          set -euo pipefail
+          ROOT=/home/z/zel-production-current
+          cd "$ROOT"
+          export PYTHONPATH="$ROOT"
+          base="$(python3 -m backend.production.zel_production_a1_jump_liquidity_history_gate_v1 --policy config/zel_production_a1_jump_liquidity_history_gate_v1.json)"
+          BASE="$base" python3 - <<'PY'
+          import hashlib,json,os
+          r=json.loads(os.environ['BASE'])
+          defects=list(r.get('integrity_defects') or [])
+          ready=bool(r.get('calibration_ready')) and not defects
+          out={
+            'schema_version':'zel.a1_vol_spike_flow_horizon_history_probe.v1',
+            'candidate_id':'repair_3_flow_to_horizon',
+            'candidate_sha256':'2bc6f543ab09fd1f1aaee0257b926dc8463a6aa4afc7bf4a9ab89fde88ec6e56',
+            'state':'PASS_VOL_SPIKE_DEVELOPMENT_SOURCE_HISTORY_READY' if ready else ('HOLD_VOL_SPIKE_SOURCE_INTEGRITY' if defects else 'HOLD_VOL_SPIKE_DEVELOPMENT_SOURCE_HISTORY_ACCUMULATING'),
+            'source_gate_state':r.get('state'),
+            'source_ready':bool(r.get('source_ready')),
+            'calibration_ready':bool(r.get('calibration_ready')),
+            'symbol_stats':r.get('symbol_stats') or {},
+            'malformed_row_count':int(r.get('malformed_row_count') or 0),
+            'duplicate_bucket_count':int(r.get('duplicate_bucket_count') or 0),
+            'integrity_defects':defects,
+            'heartbeat_age_ms':r.get('heartbeat_age_ms'),
+            'development_economics_inspected':False,
+            'holdout_outcomes_used':False,
+            'fresh_boundary_created':False,
+            'heavy_launch_allowed':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED',
+            'protected_mutations':0,
+          }
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          print(json.dumps(out,sort_keys=True))
+          PY
+          REMOTE
+      - name: Show receipt
+        run: cat out/receipt.json
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-vol-spike-history-prprobe-now-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/receipt.json
+          if-no-files-found: error
+          retention-days: 7

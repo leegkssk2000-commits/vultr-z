@@ -1,0 +1,130 @@
+name: A1 Terminal Repair Swarm V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v1.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v1.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-terminal-repair-swarm-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic guard test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v1.py
+          python backend/research/architecture_factory/a1_terminal_repair_swarm_v1.py --self-test
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'))
+          terminal={'A1_ECONOMIC_FAIL','A1_COST_FUTILITY','A1_CAUSAL_CONTROL_FAIL','A1_SPARSE_EVENT_FUTILITY'}
+          xs=[k for k,v in p['strategies'].items() if v.get('status') in terminal]
+          assert p['done_count']>=10, p['done_count']
+          assert len(xs)>=10, xs
+          assert p['survivor_count']==0
+          assert p['one_heavy_evaluator_at_a_time'] is True
+          print('PASS_A1_TERMINAL_LEDGER_GUARD done=',p['done_count'],'terminal=',len(xs))
+          PY
+
+  sweep:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run terminal repair/new-architecture generation and cross-review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+          A1_TERMINAL_SWARM_OUTPUT: out/a1_terminal_repair_swarm_v1.json
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/architecture_factory/a1_terminal_repair_swarm_v1.py
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v1.json'))
+          assert r['research_only'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          assert float(r['dedup_cosine_threshold'])==0.85
+          assert r['terminal_count']>=10
+          print(json.dumps({
+            'terminal_count':r['terminal_count'],
+            'queued_repair_count':r['queued_repair_count'],
+            'queued_new_arch_count':r['queued_new_arch_count'],
+            'eligible':sum(1 for x in r['global_queue'] if x.get('eligible_for_preregistration')),
+            'top':[{k:x.get(k) for k in ('candidate_id','strategy_id','mode','architecture_family','priority_score','eligible_for_preregistration')} for x in r['global_queue'][:5]],
+          },ensure_ascii=False,sort_keys=True))
+          PY
+      - name: Publish immutable state pointer to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          r=json.load(open('out/a1_terminal_repair_swarm_v1.json'))
+          marker='<!-- A1_TERMINAL_REPAIR_SWARM_V1 -->'
+          q=r.get('global_queue') or []
+          lines=[marker,'## A1 Terminal Repair Swarm V1',f"run={os.environ['RUN_ID']}",f"done={r['ledger_done_count']}/25|survivors={r['survivor_count']}|terminal_count={r['terminal_count']}",f"queued_repair_count={r['queued_repair_count']}|queued_new_arch_count={r['queued_new_arch_count']}|eligible={sum(1 for x in q if x.get('eligible_for_preregistration'))}"]
+          for i,x in enumerate(q[:5],1):
+              lines.append(f"Q{i}|strategy={x.get('strategy_id')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|sources={','.join(x.get('required_sources') or [])}|costx={x.get('expected_move_cost_multiple_target')}|workers={((x.get('workers_ai_review') or {}).get('decision'))}|eligible={x.get('eligible_for_preregistration')}|id={x.get('candidate_id')}")
+          lines.append('launch=DEFER_TO_GLOBAL_ONE_HEAVY_OWNER')
+          lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0')
+          body='\n'.join(lines)
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          existing=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_TERMINAL_REPAIR_SWARM_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/a1_terminal_repair_swarm_v1.json

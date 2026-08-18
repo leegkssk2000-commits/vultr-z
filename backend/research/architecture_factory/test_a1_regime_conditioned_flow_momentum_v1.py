@@ -10,7 +10,7 @@ def bars(n=120):
     return out
 
 def row(end,flow,book):
-    return {'symbol':'BTC-USDT','bucket_start_ms':end-5000,'bucket_end_ms':end,'trade_imbalance':flow,'imbalance_top20_mean':book,'mid_last':100,'trade_quote_notional':1000,'spread_bps_mean':1,'bid_qty_top20_last':10,'ask_qty_top20_last':9,'depth_messages':1}
+    return {'schema_version':'zel.production_bingx_ws_microstructure_row.v1','symbol':'BTC-USDT','bucket_start_ms':end-5000,'bucket_end_ms':end,'trade_imbalance':flow,'imbalance_top20_mean':book,'mid_last':100,'trade_quote_notional':1000,'spread_bps_mean':1,'bid_qty_top20_last':10,'ask_qty_top20_last':9,'depth_messages':1}
 
 class T(unittest.TestCase):
     def setUp(self):self.cfg={'momentum_lookback_bars':48,'participation_recent_bars':12,'participation_prior_bars':36,'range_lookback_bars':48,'expected_move_cost_multiple_floor':2.0,'micro_confirm_window_ms':60000,'minimum_complete_micro_buckets':6,'maximum_micro_staleness_ms':15000}

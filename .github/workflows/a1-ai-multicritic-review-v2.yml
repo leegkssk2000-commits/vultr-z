@@ -1,11 +1,12 @@
-name: A1 AI Multicritic Review V1
+name: A1 AI Multicritic Review V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/a1_ai_multicritic_review_v1.py'
-      - '.github/workflows/a1-ai-multicritic-review-v1.yml'
+      - 'backend/research/a1_ai_multicritic_review_v2.py'
+      - '.github/workflows/a1-ai-multicritic-review-v2.yml'
       - 'backend/research/early_ai_prep/**'
       - 'backend/production/zel_production_openai_critic_v1.py'
       - 'scripts/strategy11_groq_redteam.py'
@@ -14,7 +15,8 @@ on:
     branches: [master]
     paths:
       - 'backend/research/a1_ai_multicritic_review_v1.py'
-      - '.github/workflows/a1-ai-multicritic-review-v1.yml'
+      - 'backend/research/a1_ai_multicritic_review_v2.py'
+      - '.github/workflows/a1-ai-multicritic-review-v2.yml'
       - 'backend/research/early_ai_prep/**'
       - 'backend/production/zel_production_openai_critic_v1.py'
       - 'scripts/strategy11_groq_redteam.py'
@@ -28,7 +30,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-ai-multicritic-review-v1
+  group: a1-ai-multicritic-review-v2
   cancel-in-progress: false
 
 jobs:
@@ -43,11 +45,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and deterministic self-test
+      - name: Compile and deterministic semantic self-test
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/a1_ai_multicritic_review_v1.py
-          python -m backend.research.a1_ai_multicritic_review_v1 --self-test
+          python -m py_compile backend/research/a1_ai_multicritic_review_v1.py backend/research/a1_ai_multicritic_review_v2.py
+          python -m backend.research.a1_ai_multicritic_review_v2 --self-test
 
   review:
     if: github.event_name != 'pull_request'
@@ -65,7 +67,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir groq
-
       - name: Fetch existing Gemini external-evidence receipt without new quota pressure
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -80,8 +81,7 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
             "cat /home/z/z/ledger/production_external_evidence_v1.json 2>/dev/null || printf '%s' '{}'" \
             > out/gemini_external_evidence.json
-
-      - name: Review every current A1 EARLY_AI_PREP top axis with available independent AIs
+      - name: Review current A1 Top1 axes with baseline-aware semantics
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -92,31 +92,20 @@ jobs:
           WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
         run: |
           set -euo pipefail
-          python -m backend.research.a1_ai_multicritic_review_v1 \
+          python -m backend.research.a1_ai_multicritic_review_v2 \
             --gemini-receipt out/gemini_external_evidence.json \
             --output out/a1_ai_multicritic_review.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_ai_multicritic_review.json'))
-          assert r['selection_authority'] is False
-          assert r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE'
-          assert r['order_authority']=='BLOCKED'
-          assert r['live_trade_authority']=='BLOCKED'
-          assert r['exchange_order_submitted'] is False
-          assert int(r['protected_mutations'])==0
-          assert int(r['reviewed_strategy_count']) >= 1
-          # Provider outages are advisory blockers, not a CI failure. At least one live
-          # independent reviewer is expected; otherwise the receipt remains HOLD.
-          print(json.dumps({
-            'state':r['state'],
-            'reviewed':r['reviewed_strategy_count'],
-            'provider_success':r['provider_successful_strategy_counts'],
-            'bottlenecks':r['bottlenecks'],
-          },sort_keys=True))
+          assert r['schema_version']=='zel.a1_ai_multicritic_review.v2'
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0 and int(r['reviewed_strategy_count'])>=1
+          print(json.dumps({'state':r['state'],'reviewed':r['reviewed_strategy_count'],'provider_success':r['provider_successful_strategy_counts'],'bottlenecks':r['bottlenecks']},sort_keys=True))
           PY
-
-      - name: Publish latest A1 multicritic review to issue 566
+      - name: Publish latest baseline-aware multicritic review to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -126,43 +115,32 @@ jobs:
           python - <<'PY'
           import json, os, urllib.request
           r=json.load(open('out/a1_ai_multicritic_review.json'))
-          marker='<!-- A1_AI_MULTICRITIC_REVIEW_V1 -->'
-          lines=[marker,'## A1 AI Multicritic Review V1',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"reviewed_strategy_count={r['reviewed_strategy_count']}", 'provider_successful_strategy_counts='+json.dumps(r['provider_successful_strategy_counts'],sort_keys=True)]
+          marker='<!-- A1_AI_MULTICRITIC_REVIEW_V2 -->'
+          lines=[marker,'## A1 AI Multicritic Review V2',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"reviewed_strategy_count={r['reviewed_strategy_count']}",'provider_successful_strategy_counts='+json.dumps(r['provider_successful_strategy_counts'],sort_keys=True)]
           for row in r.get('reviews') or []:
-              if row.get('state')=='HOLD_PREP_INVALID':
-                  lines.append(f"{row.get('strategy_id')}|HOLD_PREP_INVALID")
-                  continue
-              ps=row.get('providers') or {}
-              compact=[]
+              ps=row.get('providers') or {}; compact=[]
               for name in ('gemini','openai','groq','workers_ai'):
-                  p=ps.get(name) or {}
-                  compact.append(f"{name}={'PASS' if p.get('successful') else 'HOLD'}:{p.get('decision') or p.get('quota_class') or p.get('state')}")
+                  p=ps.get(name) or {}; compact.append(f"{name}={'PASS' if p.get('successful') else 'HOLD'}:{p.get('decision') or p.get('quota_class') or p.get('state')}")
               lines.append(f"{row.get('strategy_id')}|axis={row.get('top1_axis')}|"+'|'.join(compact))
           lines.append('bottlenecks='+('NONE' if not r.get('bottlenecks') else ';'.join(r['bottlenecks'])))
-          lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
+          lines.append('baseline_metrics=failure_context_not_candidate_outcome|selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
           body='\n'.join(lines)
           token=os.environ['GH_TOKEN']; repo=os.environ['REPO']
           headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
-          base=f'https://api.github.com/repos/{repo}/issues/566/comments?per_page=100'
-          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp:
-              comments=json.load(resp)
+          with urllib.request.urlopen(urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/566/comments?per_page=100',headers=headers),timeout=20) as resp: comments=json.load(resp)
           existing=next((x for x in comments if marker in str(x.get('body') or '')),None)
           url=existing.get('url') if existing else f'https://api.github.com/repos/{repo}/issues/566/comments'
-          method='PATCH' if existing else 'POST'
-          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method=method)
-          with urllib.request.urlopen(req,timeout=20) as resp:
-              json.load(resp)
-          print('PASS_A1_AI_MULTICRITIC_PUBLISHED')
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
+          with urllib.request.urlopen(req,timeout=20) as resp: json.load(resp)
+          print('PASS_A1_AI_MULTICRITIC_V2_PUBLISHED')
           PY
-
       - name: Remove SSH key
         if: always()
         run: rm -f ~/.ssh/vps_key
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-ai-multicritic-review-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-ai-multicritic-review-v2-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           if-no-files-found: error
           path: |

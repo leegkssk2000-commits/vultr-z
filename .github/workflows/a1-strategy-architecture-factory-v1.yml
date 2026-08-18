@@ -1,0 +1,128 @@
+name: A1 Strategy Architecture Factory V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/**'
+      - '.github/workflows/a1-strategy-architecture-factory-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/**'
+      - '.github/workflows/a1-strategy-architecture-factory-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */2 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-strategy-architecture-factory-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v1 --self-test
+          python - <<'PY'
+          import json
+          p='backend/research/architecture_factory/a1_free_evidence_sweep_v1.json'
+          r=json.load(open(p))
+          assert r['state']=='EVIDENCE_SWEEP_READY'
+          assert r['research_only'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and int(r['protected_mutations'])==0
+          assert len(r['sources']) >= 8
+          assert r['policy']['youtube_requires_verified_view_snapshot_before_acceptance'] is True
+          print('PASS_A1_FREE_EVIDENCE_SWEEP_CONTRACT')
+          PY
+
+  factory:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Groq SDK
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - name: Generate and cross-review strategy architectures
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v1 --output out/a1_strategy_architecture_factory.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_strategy_architecture_factory.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          assert float(r['dedup_cosine_threshold'])==0.85
+          print(json.dumps({'state':r['state'],'generated':r['generated_after_dedup'],'top3':[{'id':x['candidate_id'],'mode':x['mode'],'family':x['architecture_family'],'score':x['score'],'eligible':x['eligible_for_preregistration']} for x in r['top3']],'generators':r['generators']},ensure_ascii=False,sort_keys=True))
+          PY
+      - name: Publish latest factory result to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          r=json.load(open('out/a1_strategy_architecture_factory.json'))
+          marker='<!-- A1_STRATEGY_ARCHITECTURE_FACTORY_V1 -->'
+          lines=[marker,'## A1 Strategy Architecture Factory V1',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"generated_after_dedup={r['generated_after_dedup']}",f"survivor_count_at_generation={r['survivor_count_at_generation']}"]
+          for i,x in enumerate(r.get('top3') or [],1):
+              cr=x.get('cross_reviews') or {}
+              lines.append(f"Top{i}|id={x.get('candidate_id')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|cost_multiple_target={x.get('expected_move_cost_multiple_target')}|score={x.get('score')}|eligible={x.get('eligible_for_preregistration')}|OpenAI={(cr.get('openai') or {}).get('decision')}|Groq={(cr.get('groq') or {}).get('decision')}|Workers={(cr.get('workers_ai') or {}).get('decision')}|evidence={','.join(x.get('evidence_ids') or [])}")
+          lines.append('generators='+json.dumps(r.get('generators') or {},sort_keys=True))
+          lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
+          body='\n'.join(lines)
+          token=os.environ['GH_TOKEN']; repo=os.environ['REPO']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f'https://api.github.com/repos/{repo}/issues/566/comments?per_page=100'
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          existing=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=existing.get('url') if existing else f'https://api.github.com/repos/{repo}/issues/566/comments'
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_ARCHITECTURE_FACTORY_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-strategy-architecture-factory-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/a1_strategy_architecture_factory.json

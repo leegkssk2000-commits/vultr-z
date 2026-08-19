@@ -57,6 +57,45 @@ class ParallelSchedulerTests(unittest.TestCase):
         self.assertEqual(clock["strategies"]["bb_revert"]["state"], "WAITING_EVIDENCE")
         self.assertEqual(ledger["strategies"]["bb_revert"]["prospective_boundary_utc"], "2026-08-16T07:06:00Z")
 
+    def test_newly_activated_heavy_consumes_one_real_evaluation_before_stale_ledger_can_route_it(self):
+        ledger = base_ledger()
+        clock = clock_for(ledger)
+        ledger["strategies"]["bb_revert"]["status"] = "UNTESTED"
+        ledger["active_strategy_id"] = None
+        clock["strategies"]["bb_revert"].update({
+            "state": "WAITING_EVIDENCE",
+            "next_probe_utc": "2026-08-17T18:40:00Z",
+        })
+        ledger["strategies"]["fast_a"].update({
+            "intent_count": 0,
+            "completed_trades": 0,
+            "last_evaluated_utc": "2026-08-16T17:00:00Z",
+        })
+        s._activate("fast_a", ledger, clock)
+        self.assertTrue(clock["strategies"]["fast_a"]["awaiting_heavy_evaluation"])
+        sid, changed = s.route_prepare(ledger, clock, now=datetime(2026, 8, 16, 18, 40, tzinfo=timezone.utc))
+        self.assertFalse(changed)
+        self.assertEqual(sid, "fast_a")
+        self.assertEqual(ledger["active_strategy_id"], "fast_a")
+        self.assertEqual(clock["strategies"]["fast_a"]["state"], "HEAVY_ACTIVE")
+
+    def test_after_receipt_clears_awaiting_heavy_evaluation(self):
+        ledger = base_ledger()
+        clock = clock_for(ledger)
+        ledger["strategies"]["bb_revert"]["status"] = "UNTESTED"
+        ledger["active_strategy_id"] = None
+        s._activate("fast_a", ledger, clock)
+        receipt = {
+            "strategy_id": "fast_a",
+            "state": "WAIT_FRESH_PROSPECTIVE_DATA",
+            "completed_trades": 0,
+            "receipt_sha256": "fresh",
+            "source": {"symbols": [{"bars_post_boundary": 12}, {"bars_post_boundary": 12}]},
+        }
+        s.route_after_receipt(ledger, clock, receipt, now=datetime(2026, 8, 16, 18, 40, tzinfo=timezone.utc))
+        self.assertFalse(clock["strategies"]["fast_a"]["awaiting_heavy_evaluation"])
+        self.assertEqual(clock["strategies"]["fast_a"]["last_observed_bars_per_symbol"], [12, 12])
+
     def test_one_heavy_invariant(self):
         ledger = base_ledger()
         clock = clock_for(ledger)
@@ -105,6 +144,7 @@ class ParallelSchedulerTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(sid, "fast_a")
         self.assertEqual(clock["strategies"]["fast_a"]["state"], "HEAVY_ACTIVE")
+        self.assertTrue(clock["strategies"]["fast_a"]["awaiting_heavy_evaluation"])
 
     def test_terminal_state_is_not_reactivated(self):
         ledger = base_ledger()

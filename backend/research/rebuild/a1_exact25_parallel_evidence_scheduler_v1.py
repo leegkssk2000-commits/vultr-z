@@ -180,6 +180,7 @@ def _rank(order: list[str], clock: dict[str, Any], *, now: datetime, exclude: se
 
 def _mark_waiting(sid: str, clock: dict[str, Any], *, now: datetime) -> None:
     row = clock["strategies"][sid]
+    row["awaiting_heavy_evaluation"] = False
     tf_ms = int(row.get("timeframe_ms") or 3_600_000)
     row.update({
         "state": "WAITING_EVIDENCE",
@@ -200,9 +201,11 @@ def _activate(sid: str, ledger: dict[str, Any], clock: dict[str, Any]) -> None:
     for other, row in clock["strategies"].items():
         if other != sid and row.get("state") == "HEAVY_ACTIVE":
             row["state"] = "READY_FOR_HEAVY" if row.get("source_ready") is True else "CLOCK_STARTED"
+            row["awaiting_heavy_evaluation"] = False
     ledger["active_strategy_id"] = sid
     ledger["strategies"][sid]["status"] = "ACTIVE"
     clock["strategies"][sid]["state"] = "HEAVY_ACTIVE"
+    clock["strategies"][sid]["awaiting_heavy_evaluation"] = True
 
 
 def route_prepare(ledger: dict[str, Any], clock: dict[str, Any], *, now: datetime) -> tuple[str | None, bool]:
@@ -221,6 +224,10 @@ def route_prepare(ledger: dict[str, Any], clock: dict[str, Any], *, now: datetim
             crow["state"] = "TERMINAL"
             ledger["active_strategy_id"] = None
             current = None
+        elif crow.get("state") == "HEAVY_ACTIVE" and crow.get("awaiting_heavy_evaluation") is True:
+            # A strategy activated by the previous routing step must consume one
+            # real evaluator receipt before stale ledger metrics can route it away.
+            return current, False
         elif int(drow.get("intent_count") or 0) == 0 and int(drow.get("completed_trades") or 0) == 0 and drow.get("last_evaluated_utc"):
             _mark_waiting(current, clock, now=now)
             drow["status"] = "UNTESTED"
@@ -242,6 +249,7 @@ def route_after_receipt(ledger: dict[str, Any], clock: dict[str, Any], receipt: 
     crow = clock["strategies"][sid]
     drow = ledger["strategies"][sid]
     status = str(drow.get("status") or "")
+    crow["awaiting_heavy_evaluation"] = False
     crow["last_receipt_sha"] = receipt.get("receipt_sha256")
     crow["last_observed_bars_per_symbol"] = [int(x.get("bars_post_boundary") or 0) for x in ((receipt.get("source") or {}).get("symbols") or [])]
     if status in TERMINAL:

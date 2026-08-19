@@ -21,10 +21,6 @@ permissions:
   contents: read
   issues: write
 
-concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: false
-
 jobs:
   verify:
     if: github.event_name == 'pull_request'
@@ -58,8 +54,40 @@ jobs:
           print('PASS_RCFM_BOUNDARY_LAUNCH_CONTRACT')
           PY
 
-  evaluate:
+  gen1_gate:
     if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exact25_complete: ${{ steps.gate.outputs.exact25_complete }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Yield heavy evaluator until GEN1 exact25 is complete
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          p=Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json')
+          d=json.loads(p.read_text())
+          done=int(d.get('done_count',0))
+          generation=int(d.get('generation',0))
+          complete=(generation == 1 and done == 25)
+          print('exact25_complete=' + ('true' if complete else 'false'))
+          print(f'GEN1_EXACT25_GATE generation={generation} done={done}/25 complete={complete}')
+          PY
+
+  evaluate:
+    needs: gen1_gate
+    if: needs.gen1_gate.outputs.exact25_complete == 'true'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

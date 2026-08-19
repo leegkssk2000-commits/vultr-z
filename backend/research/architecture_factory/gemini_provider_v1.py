@@ -113,7 +113,6 @@ def _loads_object(candidate: str) -> dict[str, Any] | None:
     try:
         value = json.loads(candidate)
     except json.JSONDecodeError:
-        # Deterministic syntax-only recovery: remove trailing commas before a close token.
         repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
         if repaired == candidate:
             return None
@@ -151,6 +150,31 @@ def _extract_text(payload: Mapping[str, Any]) -> str:
     if not text:
         raise RuntimeError("GEMINI_EMPTY_RESPONSE")
     return text
+
+
+def _finish_reason(payload: Mapping[str, Any]) -> str:
+    for candidate in payload.get("candidates") or []:
+        if isinstance(candidate, Mapping):
+            reason = str(candidate.get("finishReason") or "").strip()
+            if reason:
+                return reason
+    return "UNKNOWN"
+
+
+def _usage_meta(payload: Mapping[str, Any]) -> dict[str, str]:
+    usage = payload.get("usageMetadata")
+    if not isinstance(usage, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for src, dst in (
+        ("promptTokenCount", "prompt_tokens"),
+        ("candidatesTokenCount", "candidate_tokens"),
+        ("totalTokenCount", "total_tokens"),
+    ):
+        value = usage.get(src)
+        if isinstance(value, (int, float)):
+            out[dst] = str(int(value))
+    return out
 
 
 def _is_obsolete_model_404(detail: str) -> bool:
@@ -212,12 +236,16 @@ def _call(
         else:
             raise RuntimeError(f"GEMINI_HTTP_{exc.code}:{detail}") from exc
     text = _extract_text(payload)
+    finish_reason = _finish_reason(payload)
     lineage = {
         "prompt_sha": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "response_sha": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "requested_model": requested_model,
         "fallback_used": str(fallback_used).lower(),
         "structured_output": str(response_schema is not None).lower(),
+        "finish_reason": finish_reason,
+        "output_chars": str(len(text)),
+        **_usage_meta(payload),
     }
     return actual_model, text, lineage
 
@@ -226,14 +254,21 @@ def call_gemini_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
     model, text, lineage = _call(
         prompt,
         system_instruction=(
-            "Return only the requested strategy-architecture JSON. "
+            "Return only the requested strategy-architecture JSON. Keep every prose field concise (one or two sentences). "
             "Do not browse, do not infer sealed holdout outcomes, and do not tune parameters from outcomes."
         ),
-        max_output_tokens=5000,
-        temperature=0.15,
+        max_output_tokens=10000,
+        temperature=0.1,
         response_schema=GENERATOR_RESPONSE_SCHEMA,
     )
-    return model, _extract_json(text), lineage
+    try:
+        parsed = _extract_json(text)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"GEMINI_GENERATOR_JSON_INVALID:finish={lineage.get('finish_reason')}:chars={len(text)}:"
+            f"candidate_tokens={lineage.get('candidate_tokens','unknown')}:closed={str(text.rstrip().endswith('}')).lower()}"
+        ) from exc
+    return model, parsed, lineage
 
 
 def call_gemini_critic(candidate_payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -281,6 +316,8 @@ def self_test() -> int:
     assert trailing["reason"] == "ok"
     wrapped = _extract_json('prefix {"decision":"HOLD","reason":"x"} suffix')
     assert wrapped["decision"] == "HOLD"
+    assert _finish_reason({"candidates": [{"finishReason": "STOP"}]}) == "STOP"
+    assert _usage_meta({"usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}})["candidate_tokens"] == "4"
     assert economic_rebuild_enabled(24) is False
     assert _is_obsolete_model_404('{"error":{"message":"This model models/gemini-2.5-pro is no longer available to new users."}}') is True
     assert _is_obsolete_model_404('{"error":{"message":"quota exceeded"}}') is False

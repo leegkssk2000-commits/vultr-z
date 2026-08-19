@@ -250,6 +250,24 @@ def _call(
     return actual_model, text, lineage
 
 
+def _repair_generator_json(text: str) -> tuple[str, dict[str, Any], dict[str, str]]:
+    repair_prompt = (
+        "Repair ONLY the JSON syntax of the malformed strategy-architecture response below. "
+        "Do not add, remove, reinterpret, rank, tune, or change any candidate or semantic field value. "
+        "Preserve candidate order and every field value exactly; only fix JSON punctuation/quoting needed for parsing. "
+        "Return one JSON object matching the supplied schema and no prose.\nMALFORMED_JSON=\n" + text
+    )
+    model, repaired_text, repair_lineage = _call(
+        repair_prompt,
+        system_instruction="You are a syntax-only JSON repairer. Preserve semantics exactly. JSON only.",
+        max_output_tokens=10000,
+        temperature=0.0,
+        response_schema=GENERATOR_RESPONSE_SCHEMA,
+    )
+    parsed = _extract_json(repaired_text)
+    return model, parsed, repair_lineage
+
+
 def call_gemini_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, str]]:
     model, text, lineage = _call(
         prompt,
@@ -263,12 +281,25 @@ def call_gemini_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
     )
     try:
         parsed = _extract_json(text)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"GEMINI_GENERATOR_JSON_INVALID:finish={lineage.get('finish_reason')}:chars={len(text)}:"
-            f"candidate_tokens={lineage.get('candidate_tokens','unknown')}:closed={str(text.rstrip().endswith('}')).lower()}"
-        ) from exc
-    return model, parsed, lineage
+        lineage["json_repair_used"] = "false"
+        return model, parsed, lineage
+    except RuntimeError as first_exc:
+        try:
+            repair_model, parsed, repair_lineage = _repair_generator_json(text)
+        except Exception as repair_exc:
+            raise RuntimeError(
+                f"GEMINI_GENERATOR_JSON_INVALID_AFTER_REPAIR:finish={lineage.get('finish_reason')}:chars={len(text)}:"
+                f"candidate_tokens={lineage.get('candidate_tokens','unknown')}:closed={str(text.rstrip().endswith('}')).lower()}:"
+                f"repair_error={type(repair_exc).__name__}"
+            ) from repair_exc
+        lineage["json_repair_used"] = "true"
+        lineage["json_repair_model"] = repair_model
+        lineage["json_repair_prompt_sha"] = repair_lineage.get("prompt_sha", "")
+        lineage["json_repair_response_sha"] = repair_lineage.get("response_sha", "")
+        lineage["json_repair_finish_reason"] = repair_lineage.get("finish_reason", "")
+        lineage["json_repair_candidate_tokens"] = repair_lineage.get("candidate_tokens", "")
+        lineage["original_parse_error"] = type(first_exc).__name__
+        return model, parsed, lineage
 
 
 def call_gemini_critic(candidate_payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -10,13 +11,30 @@ from typing import Any, Mapping
 from backend.research.architecture_factory.a1_strategy_architecture_factory_v1 import run as run_v1, sha
 
 NATIVE_SOURCES = {"ohlcv", "volume", "funding", "basis", "open_interest", "l2_order_book", "trade_flow"}
+SOURCE_ALIASES = {"candles": "ohlcv", "candle": "ohlcv", "kline": "ohlcv", "klines": "ohlcv"}
+
+
+def normalize_required_sources(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = [str(x) for x in raw]
+    else:
+        values = []
+    out: list[str] = []
+    for value in values:
+        for token in re.split(r"[|,]", value):
+            source = SOURCE_ALIASES.get(token.strip().lower(), token.strip().lower())
+            if source and source not in out:
+                out.append(source)
+    return out
 
 
 def corrected_score(c: Mapping[str, Any]) -> float:
     passes = int(c.get("independent_passes") or 0)
     rejects = int(c.get("independent_rejects") or 0)
     evidence_count = len(c.get("evidence_ids") or [])
-    required = [str(x) for x in (c.get("required_sources") or [])]
+    required = normalize_required_sources(c.get("required_sources"))
     source_ready = bool(required) and set(required).issubset(NATIVE_SOURCES)
     weak_design_prior = min(max(float(c.get("expected_move_cost_multiple_target") or 0.0) - 1.0, 0.0), 3.0) * 0.25
     score = passes * 3.0 - rejects * 5.0
@@ -29,10 +47,11 @@ def corrected_score(c: Mapping[str, Any]) -> float:
 
 def harden_candidate(c: Mapping[str, Any]) -> dict[str, Any]:
     row = dict(c)
-    required = [str(x) for x in (row.get("required_sources") or [])]
+    required = normalize_required_sources(row.get("required_sources"))
     source_ready = bool(required) and set(required).issubset(NATIVE_SOURCES)
     passes = int(row.get("independent_passes") or 0)
     rejects = int(row.get("independent_rejects") or 0)
+    row["required_sources"] = required
     row["source_ready"] = source_ready
     row["score"] = corrected_score(row)
     row["alpha_proof_candidate_ready"] = source_ready and passes >= 2 and rejects == 0
@@ -85,6 +104,12 @@ def self_test() -> int:
     assert h["preregistration_blocker"] == "PASS_ALPHA_PROOF_RECEIPT_REQUIRED"
     c2 = dict(c); c2["independent_rejects"] = 1
     assert harden_candidate(c2)["alpha_proof_candidate_ready"] is False
+    c3 = dict(c); c3["required_sources"] = ["l2_order_book|trade_flow|open_interest"]
+    h3 = harden_candidate(c3)
+    assert h3["required_sources"] == ["l2_order_book", "trade_flow", "open_interest"]
+    assert h3["source_ready"] is True and h3["alpha_proof_candidate_ready"] is True
+    c4 = dict(c); c4["required_sources"] = ["candles|volume"]
+    assert harden_candidate(c4)["required_sources"] == ["ohlcv", "volume"]
     print("PASS_A1_STRATEGY_ARCHITECTURE_FACTORY_V2_SELF_TEST")
     return 0
 

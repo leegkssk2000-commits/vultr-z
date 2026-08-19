@@ -1,0 +1,53 @@
+name: A1 Alpha Proof N2 Basis Unwind V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/alpha_proof/bundles/a1_alpha_proof_n2_basis_unwind_v1.json'
+      - 'backend/research/alpha_proof/reviews/a1_n2_basis_unwind_controller_review_v1.json'
+      - '.github/workflows/a1-alpha-proof-n2-basis-unwind-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evaluate exact N2 candidate Alpha Proof V2
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          set +e
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v2 \
+            --bundle backend/research/alpha_proof/bundles/a1_alpha_proof_n2_basis_unwind_v1.json \
+            --output out/a1_alpha_proof_n2_basis_unwind_v1_receipt.json
+          rc=$?
+          set -e
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_alpha_proof_n2_basis_unwind_v1_receipt.json'))
+          assert r['candidate_sha256']=='277ea222b632118481d6376436b842ed4aafa3f2458ce725522020e519a2b6ba'
+          assert r['candidate_identity_sha256']==r['candidate_sha256']
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['protected_mutations'])==0
+          assert r['heavy_launch_allowed'] is False
+          print(json.dumps({'state':r['state'],'candidate':r['candidate_id'],'candidate_sha':r['candidate_sha256'],'failed_gates':[{'gate':g['gate'],'codes':[f['code'] for f in g['failures']]} for g in r['gates'] if not g['passed']],'receipt_sha':r['receipt_sha256']},sort_keys=True))
+          PY
+          # HOLD is the expected safe result while N2-separated P3/P4 evidence is absent.
+          test "$rc" -eq 0 -o "$rc" -eq 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-alpha-proof-n2-basis-unwind-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 180
+          if-no-files-found: error
+          path: out/a1_alpha_proof_n2_basis_unwind_v1_receipt.json

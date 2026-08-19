@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.research.rebuild import a1_exact25_controller_v2 as c
+from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ge1
 from backend.research.rebuild import a1_exact25_generic_evaluator_v2 as ge2
 from backend.research.rebuild import a1_exact25_hardening_evidence_adapter_v1 as ha
 
@@ -92,6 +93,12 @@ class Exact25ResourceBudgetTests(unittest.TestCase):
         }
         d, _ = c.terminal_disposition(r, {"survivor_gate": {}})
         self.assertNotEqual(d, "A1_SURVIVOR")
+
+    def test_all_win_profit_factor_is_json_finite(self):
+        self.assertIsNone(ge1.profit_factor(25.0, 0.0))
+        self.assertEqual(ge1.profit_factor(30.0, 10.0), 3.0)
+        digest = ge1.stable_sha({"metrics": {"net_profit_factor": ge1.profit_factor(25.0, 0.0)}})
+        self.assertEqual(len(digest), 64)
 
     def test_one_heavy_and_exact25_cannot_be_skipped(self):
         ledger = json.loads((ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json").read_text())

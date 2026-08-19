@@ -1,0 +1,139 @@
+name: A1 YouTube Evidence Sweep V1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_youtube_evidence_sweep_v1.py'
+      - 'backend/research/architecture_factory/gemini_provider_v1.py'
+      - '.github/workflows/a1-youtube-evidence-sweep-v1.yml'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-youtube-evidence-sweep-v1
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install YouTube metadata/subtitle extractor
+        run: python -m pip install --disable-pip-version-check --no-cache-dir yt-dlp
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_youtube_evidence_sweep_v1.py
+          python -m backend.research.architecture_factory.a1_youtube_evidence_sweep_v1 --self-test
+      - name: Discover high-view videos and summarize technical evidence with Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+          YOUTUBE_SEARCH_LIMIT: '4'
+          YOUTUBE_MAX_GEMINI_REVIEWS: '3'
+          YOUTUBE_MAX_ACCEPTED: '8'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_youtube_evidence_sweep_v1 \
+            --existing backend/research/architecture_factory/a1_youtube_evidence_latest.json \
+            --output out/a1_youtube_evidence_sweep_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_youtube_evidence_sweep_v1.json'))
+          assert r['research_only'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and int(r['protected_mutations'])==0
+          assert r['heavy_slot_consumed'] is False and r['gen1_boundary_mutated'] is False
+          assert r['sealed_holdout_outcomes_exposed'] is False
+          assert r['factory_blocking'] is False
+          assert all(int(x['view_count_snapshot']) >= 30000 for x in r.get('sources') or [])
+          assert all(x['view_snapshot_verified'] is True and x['accepted_for_hypothesis_only'] is True for x in r.get('sources') or [])
+          print(json.dumps({'state':r['state'],'accepted':r['accepted_count'],'preferred100k':r['preferred_100k_count'],'fallback30k':r['fallback_30k_count'],'discovery':r['discovery']},ensure_ascii=False,sort_keys=True))
+          PY
+      - name: Persist evidence ledger only when accepted/review content changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET: backend/research/architecture_factory/a1_youtube_evidence_latest.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          new=json.load(open('out/a1_youtube_evidence_sweep_v1.json'))
+          repo=os.environ['REPO']; target=os.environ['TARGET']; token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          url=f'https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(target, safe="/")}?ref=master'
+          old={}; sha=None
+          try:
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp:
+                  meta=json.load(resp)
+              sha=meta.get('sha')
+              raw=base64.b64decode(meta.get('content','')).decode('utf-8')
+              old=json.loads(raw)
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404: raise
+          def stable(x):
+              return {k:x.get(k) for k in ('state','policy','sources','reviews','accepted_count','preferred_100k_count','fallback_30k_count')}
+          if stable(old)==stable(new):
+              print('NO_YOUTUBE_LEDGER_CHANGE')
+              raise SystemExit(0)
+          payload={'message':'A1 YouTube evidence: refresh verified high-view ledger','content':base64.b64encode((json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2)+'\n').encode()).decode(),'branch':'master'}
+          if sha: payload['sha']=sha
+          put_url=f'https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(target, safe="/")}'
+          req=urllib.request.Request(put_url,data=json.dumps(payload).encode(),headers=headers,method='PUT')
+          with urllib.request.urlopen(req,timeout=30) as resp:
+              result=json.load(resp)
+          print('PERSISTED_YOUTUBE_LEDGER', result.get('commit',{}).get('sha'))
+          PY
+      - name: Publish non-blocking YouTube evidence status to issue 566
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, urllib.request
+          path=pathlib.Path('out/a1_youtube_evidence_sweep_v1.json')
+          marker='<!-- A1_YOUTUBE_EVIDENCE_V1 -->'
+          if path.exists():
+              r=json.load(open(path))
+              d=r.get('discovery') or {}
+              lines=[marker,'## A1 YouTube Evidence V1',f"state={r.get('state')}",f"run={os.environ['RUN_ID']}",f"accepted={r.get('accepted_count')}|preferred100k={r.get('preferred_100k_count')}|fallback30k={r.get('fallback_30k_count')}",f"eligible_unique={d.get('eligible_unique')}|reviewed_now={d.get('reviewed_now')}|search_errors={d.get('search_error_count')}",f"source_ids={','.join(str(x.get('id') or '') for x in r.get('sources') or [])}",'ROLE=hypothesis_only|view_snapshot_required=true|Gemini_summary_required=true','NON_BLOCKING=Gen1|factory|heavy_slot','selection=false|promotion=false|execution=NONE|order/live=BLOCKED']
+          else:
+              lines=[marker,'## A1 YouTube Evidence V1',f"state=WORKFLOW_FAILED_BEFORE_RECEIPT|run={os.environ['RUN_ID']}",'NON_BLOCKING=Gen1|factory|heavy_slot']
+          body='\n'.join(lines)
+          token=os.environ['GH_TOKEN']; repo=os.environ['REPO']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f'https://api.github.com/repos/{repo}/issues/566/comments?per_page=100'
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          existing=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=existing.get('url') if existing else f'https://api.github.com/repos/{repo}/issues/566/comments'
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_YOUTUBE_EVIDENCE_STATUS_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-youtube-evidence-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: out/a1_youtube_evidence_sweep_v1.json

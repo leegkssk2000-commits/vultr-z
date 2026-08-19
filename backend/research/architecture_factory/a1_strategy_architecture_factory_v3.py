@@ -82,6 +82,10 @@ def _add_gemini_review(c: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _parallel_g2_enabled() -> bool:
+    return os.environ.get("G2_PARALLEL_RESEARCH_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def run(output: Path) -> dict[str, Any]:
     from backend.research.architecture_factory.a1_strategy_architecture_factory_v2 import run as run_v2
 
@@ -91,14 +95,20 @@ def run(output: Path) -> dict[str, Any]:
 
     ledger = read_json(LEDGER)
     done_count = int(ledger.get("done_count") or 0)
-    gemini_enabled = economic_rebuild_enabled(done_count)
+    parallel_g2 = _parallel_g2_enabled()
+    gemini_enabled = economic_rebuild_enabled(done_count) or (
+        parallel_g2
+        and bool(os.environ.get("GEMINI_API_KEY", "").strip())
+        and os.environ.get("GEMINI_ECONOMIC_REBUILD_ENABLED", "").strip().lower() not in {"0", "false", "no", "off"}
+    )
     reviewed = [dict(x) for x in (base.get("all_reviewed_candidates") or [])]
     gemini_state: dict[str, Any] = {
         "enabled": gemini_enabled,
-        "activation_rule": "done_count>=25 AND GEMINI_API_KEY present AND GEMINI_ECONOMIC_REBUILD_ENABLED not false",
+        "activation_rule": "GEN1 done_count>=25 OR explicit G2 parallel research; GEMINI_API_KEY required",
         "done_count": done_count,
-        "purpose": "POST_25_ECONOMIC_REBUILD_ONLY",
-        "generator": {"successful": False, "state": "DEFERRED_PRE25" if done_count < 25 else "KEY_OR_ENABLEMENT_MISSING"},
+        "parallel_g2_research": parallel_g2,
+        "purpose": "G2_PARALLEL_ARCHITECTURE_RESEARCH_WITH_GEN1_PASSIVE_COMPLETION",
+        "generator": {"successful": False, "state": "KEY_OR_ENABLEMENT_MISSING" if not gemini_enabled else "READY"},
         "critic_reviewed_count": 0,
     }
 
@@ -109,18 +119,20 @@ def run(output: Path) -> dict[str, Any]:
         source_ids = {str(x.get("id")) for x in source_rows}
         target_ids = {str(x["strategy_id"]) for x in targets}
         context = {
-            "objective": "post-25 economic rebuild: find robust realistic-cost Net+ mechanisms, not structural completeness",
+            "objective": "G2 parallel economic architecture research: find robust realistic-cost Net+ mechanisms while Gen1 unfinished strategies continue passive evidence clocks",
             "verified_round_trip_cost_bps_reference": 14.0,
-            "available_source_vocabulary": ["ohlcv", "volume", "funding", "basis", "open_interest", "l2_order_book", "trade_flow"],
+            "available_source_vocabulary": ["ohlcv", "candles", "volume", "funding", "basis", "open_interest", "l2_order_book", "trade_flow", "derived_regime_features"],
             "current_failure_targets": targets,
             "external_evidence": source_rows,
             "constraints": {
+                "gen1_future_results_visible_for_g2_parameter_tuning": False,
                 "baseline_mutation": False,
                 "threshold_sweep": False,
                 "best_horizon_cherry_pick": False,
                 "fee_reduction": False,
                 "sealed_holdout_visibility": False,
                 "new_architecture_allowed": True,
+                "indicators_allowed_only_with_causal_role": True,
                 "economic_objective": "realistic-cost net profit first",
             },
         }
@@ -161,7 +173,9 @@ def run(output: Path) -> dict[str, Any]:
     result["top3"] = top3
     result["generated_after_dedup"] = len(hardened)
     result["gemini"] = gemini_state
-    result["gemini_economic_rebuild_only"] = True
+    result["gemini_economic_rebuild_only"] = False
+    result["g2_parallel_research_enabled"] = parallel_g2
+    result["gen1_completion_mode"] = "PASSIVE_UNCHANGED"
     result["alpha_proof_ready_count"] = sum(1 for x in hardened if x.get("alpha_proof_candidate_ready"))
     result["eligible_for_preregistration_count"] = 0
     result["state"] = (
@@ -194,6 +208,7 @@ def main() -> int:
     print(json.dumps({
         "state": result["state"],
         "done_count": result.get("gemini", {}).get("done_count"),
+        "g2_parallel_research_enabled": result.get("g2_parallel_research_enabled"),
         "gemini_enabled": result.get("gemini", {}).get("enabled"),
         "gemini_generator": result.get("gemini", {}).get("generator"),
         "alpha_proof_ready_count": result.get("alpha_proof_ready_count"),

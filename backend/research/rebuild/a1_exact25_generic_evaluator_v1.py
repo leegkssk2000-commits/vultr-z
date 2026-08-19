@@ -187,6 +187,13 @@ def max_drawdown(values: list[float]) -> float:
     return dd
 
 
+def profit_factor(gross_profit: float, gross_loss: float) -> float | None:
+    if gross_loss <= 0:
+        return None
+    value = gross_profit / gross_loss
+    return value if math.isfinite(value) else None
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--strategy-id")
@@ -293,7 +300,7 @@ def main() -> None:
         "cost_authority_sha256": stable_sha(authority), "source": {"endpoint": "/openApi/swap/v3/quote/klines", "interval": interval, "symbols": sources},
         "execution_snapshots": {k: {kk: vv for kk, vv in v.items() if kk != "funding_rows"} for k, v in snapshots.items()},
         "intent_count": intent_count, "completed_trades": len(trades),
-        "metrics": {"gross_pnl_bps": sum(gross_values), "gross_expectancy_bps": sum(gross_values) / len(gross_values) if gross_values else None, "net_pnl_bps": sum(net_values), "net_expectancy_bps": sum(net_values) / len(net_values) if net_values else None, "net_profit_factor": gp / gl if gl > 0 else (math.inf if gp > 0 else None), "net_payoff": avg_win / avg_loss if avg_win is not None and avg_loss not in (None, 0) else None, "win_rate": len(wins) / len(net_values) if net_values else None, "max_drawdown_bps": max_drawdown(net_values)},
+        "metrics": {"gross_pnl_bps": sum(gross_values), "gross_expectancy_bps": sum(gross_values) / len(gross_values) if gross_values else None, "net_pnl_bps": sum(net_values), "net_expectancy_bps": sum(net_values) / len(net_values) if net_values else None, "net_profit_factor": profit_factor(gp, gl), "net_payoff": avg_win / avg_loss if avg_win is not None and avg_loss not in (None, 0) else None, "win_rate": len(wins) / len(net_values) if net_values else None, "max_drawdown_bps": max_drawdown(net_values)},
         "required_negative_controls": ["same_count_random_entry", "one_bar_delay", "direction_inversion", "timestamp_shuffle", "indicator_removal"], "negative_control_gate": "PENDING_EXISTING_H4_CONTROL_EVALUATOR",
         "trades": trades, "integrity_defects": defects, "leakage_lookahead": 0, "duplicate_count": len([x for x in defects if x.startswith("DUPLICATE_INTENT:")]),
         "selection_authority": False, "promotion_authority": False, "execution_authority": "NONE", "order_authority": "BLOCKED", "live_trade_authority": "BLOCKED", "protected_mutations": 0,

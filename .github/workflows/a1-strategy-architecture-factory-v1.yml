@@ -93,6 +93,7 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
           GEMINI_ECONOMIC_REBUILD_ENABLED: 'true'
+          G2_PARALLEL_RESEARCH_ENABLED: 'true'
         run: |
           set -euo pipefail
           mkdir -p out
@@ -109,10 +110,10 @@ jobs:
           assert r['preregistration_blocked_without_receipt'] is True
           assert int(r['eligible_for_preregistration_count'])==0
           assert all(x['eligible_for_preregistration'] is False for x in r.get('all_reviewed_candidates') or [])
-          assert r['gemini_economic_rebuild_only'] is True
-          if int(r['gemini']['done_count']) < 25:
-              assert r['gemini']['enabled'] is False
-          print(json.dumps({'state':r['state'],'generated':r['generated_after_dedup'],'alpha_proof_ready_count':r['alpha_proof_ready_count'],'gemini':r['gemini'],'top3':[{'id':x['candidate_id'],'provider':x.get('provider'),'mode':x['mode'],'family':x['architecture_family'],'score':x['score'],'alpha_proof_ready':x['alpha_proof_candidate_ready']} for x in r['top3']]},ensure_ascii=False,sort_keys=True))
+          assert r['g2_parallel_research_enabled'] is True
+          assert r['gen1_completion_mode']=='PASSIVE_UNCHANGED'
+          assert r['gemini_economic_rebuild_only'] is False
+          print(json.dumps({'state':r['state'],'generated':r['generated_after_dedup'],'alpha_proof_ready_count':r['alpha_proof_ready_count'],'g2_parallel_research_enabled':r['g2_parallel_research_enabled'],'gemini':r['gemini'],'top3':[{'id':x['candidate_id'],'provider':x.get('provider'),'mode':x['mode'],'family':x['architecture_family'],'score':x['score'],'alpha_proof_ready':x['alpha_proof_candidate_ready']} for x in r['top3']]},ensure_ascii=False,sort_keys=True))
           PY
       - name: Publish latest factory result to issue 566
         env:
@@ -125,11 +126,12 @@ jobs:
           import json, os, urllib.request
           r=json.load(open('out/a1_strategy_architecture_factory_v3.json'))
           marker='<!-- A1_STRATEGY_ARCHITECTURE_FACTORY_V3 -->'
-          lines=[marker,'## A1 Strategy Architecture Factory V3',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"generated_after_dedup={r['generated_after_dedup']}",f"survivor_count_at_generation={r['survivor_count_at_generation']}",f"alpha_proof_ready_count={r['alpha_proof_ready_count']}|prereg_eligible=0",f"gemini_enabled={r['gemini']['enabled']}|gemini_purpose=POST_25_ECONOMIC_REBUILD_ONLY"]
+          lines=[marker,'## A1 Strategy Architecture Factory V3',f"state={r['state']}",f"run={os.environ['RUN_ID']}",f"generated_after_dedup={r['generated_after_dedup']}",f"survivor_count_at_generation={r['survivor_count_at_generation']}",f"alpha_proof_ready_count={r['alpha_proof_ready_count']}|prereg_eligible=0",f"g2_parallel_research={r['g2_parallel_research_enabled']}|gen1_completion={r['gen1_completion_mode']}",f"gemini_enabled={r['gemini']['enabled']}|gemini_purpose={r['gemini']['purpose']}"]
           for i,x in enumerate(r.get('top3') or [],1):
               cr=x.get('cross_reviews') or {}
               lines.append(f"Top{i}|id={x.get('candidate_id')}|provider={x.get('provider')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|score={x.get('score')}|alpha_proof_ready={x.get('alpha_proof_candidate_ready')}|OpenAI={(cr.get('openai') or {}).get('decision')}|Groq={(cr.get('groq') or {}).get('decision')}|Workers={(cr.get('workers_ai') or {}).get('decision')}|Gemini={(cr.get('gemini') or {}).get('decision')}|evidence={','.join(x.get('evidence_ids') or [])}")
           lines.append('ALPHA_PROOF=P0-P6_REQUIRED_BEFORE_PREREGISTRATION|fresh_boundary_after_PASS_only')
+          lines.append('GEN1_FUTURE_RESULTS_NOT_ALLOWED_FOR_G2_PARAMETER_TUNING')
           lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
           body='\n'.join(lines)
           token=os.environ['GH_TOKEN']; repo=os.environ['REPO']

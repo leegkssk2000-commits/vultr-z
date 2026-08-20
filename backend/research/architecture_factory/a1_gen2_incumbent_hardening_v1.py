@@ -10,28 +10,31 @@ SIDE_RULE="long if ret(1) < -0.02 else short"
 HOLD=12
 ACTIVATE_BPS=300.0
 LOCK_GROSS_BPS=14.0
+PEAK_RETAIN=0.50
 EXPECTED={"trades":227,"net_pnl_bps":32456.553693428767,"net_expectancy_bps":142.98041274638223,"profit_factor":1.7661077778815002,"drawdown_bps":3222.578836366174}
 
 def _metrics(gross,cost=14.0):
     net=[float(x)-cost for x in gross]; n=len(net)
     return {"trades":n,"cost_bps_per_trade":cost,"gross_expectancy_bps":sum(gross)/n if n else None,"net_expectancy_bps":sum(net)/n if n else None,"net_pnl_bps":sum(net),"profit_factor":econ._pf(net) if n else None,"payoff":econ._payoff(net) if n else None,"win_rate":sum(x>0 for x in net)/n if n else None,"drawdown_bps":econ._dd(net) if n else 0.0}
 
-def _lock_outcome(rs,side,ei,xi,ep):
-    activated=False; activation_day=None
-    lock_px=ep*(1+LOCK_GROSS_BPS/10000) if side=='long' else ep*(1-LOCK_GROSS_BPS/10000)
+def _lock_outcome(rs,side,ei,xi,ep,peak_floor=False):
+    activated=False; activation_day=None; peak_fav=0.0
     for d,j in enumerate(range(ei,xi+1),start=1):
         if activated:
-            if side=='long' and rs[j]['low']<=lock_px:
-                px=min(lock_px,rs[j]['open']); return (px/ep-1)*10000,d,activation_day
-            if side=='short' and rs[j]['high']>=lock_px:
-                px=max(lock_px,rs[j]['open']); return (1-px/ep)*10000,d,activation_day
+            floor_bps=max(LOCK_GROSS_BPS,peak_fav*PEAK_RETAIN) if peak_floor else LOCK_GROSS_BPS
+            floor_px=ep*(1+floor_bps/10000) if side=='long' else ep*(1-floor_bps/10000)
+            if side=='long' and rs[j]['low']<=floor_px:
+                px=min(floor_px,rs[j]['open']); return (px/ep-1)*10000,d,activation_day
+            if side=='short' and rs[j]['high']>=floor_px:
+                px=max(floor_px,rs[j]['open']); return (1-px/ep)*10000,d,activation_day
         fav=(rs[j]['high']/ep-1)*10000 if side=='long' else (1-rs[j]['low']/ep)*10000
+        peak_fav=max(peak_fav,fav)
         if not activated and fav>=ACTIVATE_BPS:
             activated=True; activation_day=d
     xp=rs[xi]['close']
     return (xp/ep-1)*10000*(1 if side=='long' else -1),None,activation_day
 
-def _trades(gap_confirm=False):
+def _trades(peak_floor=False):
     out=[]
     for symbol in econ.SYMBOLS:
         rs=econ.bars(symbol,'1d'); eng=econ.Expr(rs,{}); i=30
@@ -39,13 +42,8 @@ def _trades(gap_confirm=False):
             try: fire=bool(eng.eval(ENTRY_RULE,i))
             except Exception: fire=False
             if not fire: i+=1; continue
-            side=econ._side(SIDE_RULE,eng,i); ei=i+1
-            if gap_confirm:
-                sig_close=float(rs[i]['close']); entry_open=float(rs[ei]['open'])
-                if (side=='long' and entry_open<sig_close) or (side=='short' and entry_open>sig_close):
-                    i+=1; continue
-            xi=min(ei+HOLD-1,len(rs)-1); ep=rs[ei]['open']
-            gross,lock_exit_day,activation_day=_lock_outcome(rs,side,ei,xi,ep)
+            side=econ._side(SIDE_RULE,eng,i); ei=i+1; xi=min(ei+HOLD-1,len(rs)-1); ep=rs[ei]['open']
+            gross,lock_exit_day,activation_day=_lock_outcome(rs,side,ei,xi,ep,peak_floor)
             w=[x['close'] for x in rs[max(0,i-49):i+1]]; sma50=sum(w)/len(w)
             out.append({"symbol":symbol,"side":side,"gross_bps":gross,"signal_year":datetime.fromtimestamp(rs[i]['ts']/1000,tz=timezone.utc).year,"signal_regime50":"above_sma50" if rs[i]['close']>=sma50 else "below_sma50","activation_day":activation_day,"lock_exit_day":lock_exit_day})
             i=max(i+1,xi+1)
@@ -67,32 +65,9 @@ def run(output:Path):
         elif abs(float(base[k])-float(v))>1e-6: raise RuntimeError(f'PROMOTED_INCUMBENT_MISMATCH:{k}:{base[k]}:{v}')
     candidate_trades=_trades(True); cand=_metrics([t['gross_bps'] for t in candidate_trades],14.0)
     cand_costs={str(c):_metrics([t['gross_bps'] for t in candidate_trades],float(c)) for c in (14,28,40)}
-    cand_symbols=_group(candidate_trades,'symbol'); cand_years=_group(candidate_trades,'signal_year')
-    cand_flip=_metrics([-t['gross_bps'] for t in candidate_trades],14.0)
     accepted=_pareto(base,cand)
-    result={
-      "schema_version":"zel.a1_gen2_independent_axis_next_bar_gap_confirmation.v1",
-      "development_only":True,
-      "incumbent_id":"repair_short_above_sma50_veto_plus_mfe300_net_be_lock_v1",
-      "incumbent_metrics":base,
-      "independent_axis":{
-        "axis":"next_bar_open_not_adverse_vs_signal_close_only",
-        "threshold_sweep":False,
-        "profit_lock_unchanged":True,
-        "holding_horizon_unchanged":True,
-        "short_sma50_veto_unchanged":True,
-        "entry_timing_unchanged":"next_bar_open",
-        "new_metrics":cand,
-        "cost_stress":cand_costs,
-        "by_symbol":cand_symbols,
-        "by_year":cand_years,
-        "negative_control_side_flip":cand_flip,
-        "accepted_pareto":accepted,
-        "state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"
-      },
-      "selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0
-    }
+    result={"schema_version":"zel.a1_gen2_independent_axis_peak_mfe_floor.v1","development_only":True,"incumbent_id":"repair_short_above_sma50_veto_plus_mfe300_net_be_lock_v1","incumbent_metrics":base,"independent_axis":{"axis":"post_mfe300_retain_50pct_peak_favorable_excursion_floor_only","threshold_sweep":False,"activation_bps_unchanged":ACTIVATE_BPS,"peak_retain_fraction":PEAK_RETAIN,"minimum_floor_gross_bps":LOCK_GROSS_BPS,"entry_rule_unchanged":True,"holding_horizon_unchanged":True,"short_sma50_veto_unchanged":True,"new_metrics":cand,"cost_stress":cand_costs,"by_symbol":_group(candidate_trades,'symbol'),"by_year":_group(candidate_trades,'signal_year'),"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0}
     output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
-    print('INDEPENDENT_NEXT_BAR_GAP_AXIS='+json.dumps(result,sort_keys=True)); return result
+    print('INDEPENDENT_PEAK_MFE_FLOOR_AXIS='+json.dumps(result,sort_keys=True)); return result
 
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

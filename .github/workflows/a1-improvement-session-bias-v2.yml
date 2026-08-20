@@ -17,14 +17,41 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: false
-
 jobs:
+  gen1-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+      done_count: ${{ steps.gate.outputs.done_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - id: gate
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          done=int(d.get('done_count') or 0)
+          generation=int(d.get('generation') or 0)
+          allowed=(generation == 1 and done == 25)
+          print('allowed=' + ('true' if allowed else 'false'))
+          print('done_count=' + str(done))
+          print(f'GEN1_GATE generation={generation} done={done}/25 allowed={allowed}')
+          PY
+
   session-bias-v2:
+    needs: gen1-gate
+    if: needs.gen1-gate.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +73,7 @@ jobs:
           clock=json.loads(Path('backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json').read_text())
           prep=json.loads(Path('backend/research/rebuild/early_ai_prep/session_bias_v1.json').read_text())
           imp=json.loads(Path('backend/research/rebuild/a1_improvement_session_bias_v2_ledger.json').read_text())
+          assert int(base.get('done_count') or 0) == 25, base.get('done_count')
           b=base['strategies']['session_bias']
           assert b['status'] in ('A1_SPARSE_EVENT_FUTILITY','A1_ECONOMIC_FAIL'), b['status']
           assert b['receipt_sha'] == imp['strategies']['session_bias']['baseline_receipt_sha']

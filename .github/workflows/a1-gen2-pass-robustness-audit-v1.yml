@@ -30,13 +30,14 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json'))
-          a=r['actual_path_attribution']; f=r['sealed_failed_repair']
+          a=r['actual_path_attribution']; f=r['sealed_failed_repair']; s=r['second_axis_repair']
           assert r['schema_version']=='zel.a1_gen2_pass_robustness_audit.v2'
           assert r['development_only'] is True and a['actual_path_verified'] is True
           assert a['actual_trade_count']==256
           assert f['state']=='SEALED_FAIL_NO_REUSE' and f['accepted'] is False
+          assert s['axis']=='short_adverse_regime_veto_only' and s['threshold_changed'] is False and s['holding_horizon_changed'] is False
           assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'baseline':a['actual_metrics'],'by_side':a['by_side'],'by_symbol':a['by_symbol'],'by_year':a['by_year'],'by_regime50':a['by_regime50'],'loss_concentration':a['loss_concentration'],'sealed_failed_repair':f},sort_keys=True))
+          print(json.dumps({'baseline':a['actual_metrics'],'by_side':a['by_side'],'by_regime50':a['by_regime50'],'loss_concentration':a['loss_concentration'],'second_axis_repair':s},sort_keys=True))
           PY
       - name: Publish receipt
         env:
@@ -46,7 +47,7 @@ jobs:
         run: |
           python - <<'PY'
           import json,os,urllib.request
-          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json')); a=r['actual_path_attribution']; f=r['sealed_failed_repair']; marker='<!-- A1_GEN2_PASS_ROBUSTNESS_AUDIT_V2 -->'
+          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json')); a=r['actual_path_attribution']; f=r['sealed_failed_repair']; s=r['second_axis_repair']; marker='<!-- A1_GEN2_PASS_ROBUSTNESS_AUDIT_V2 -->'
           body='\n'.join([
             marker,'## A1 GEN2 PASS Robustness Audit V2',f"run={os.environ['RUN_ID']}",
             'mechanism_relabel='+r['mechanism_integrity']['relabel'],
@@ -57,6 +58,7 @@ jobs:
             'by_regime50='+json.dumps(a['by_regime50'],sort_keys=True),
             'loss_concentration='+json.dumps(a['loss_concentration'],sort_keys=True),
             'sealed_failed_repair='+json.dumps(f,sort_keys=True),
+            'second_axis_repair='+json.dumps(s,sort_keys=True),
             'next_repair_authority='+r['next_repair_authority'],
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}

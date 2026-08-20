@@ -104,3 +104,5 @@ def run(output:Path)->dict[str,Any]:
     return result
 
 if __name__=="__main__":run(Path("out/a1_gen2_incumbent_hardening_v1.json"))
+
+# trigger-only: verified robustness workflow owns hardening execution; economics unchanged

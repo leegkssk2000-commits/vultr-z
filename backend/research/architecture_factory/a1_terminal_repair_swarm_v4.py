@@ -37,6 +37,14 @@ from backend.research.architecture_factory.gemini_provider_v1 import (
 )
 
 
+def _gemini_parallel_prep_enabled() -> bool:
+    """Allow Gemini for GEN1 parallel GEN2 PREP only; never grants launch authority."""
+    explicit = os.environ.get("GEMINI_ECONOMIC_REBUILD_ENABLED", "").strip().lower()
+    if explicit in {"0", "false", "no", "off"}:
+        return False
+    return bool(os.environ.get("GEMINI_API_KEY", "").strip())
+
+
 def _review_candidate(c: Mapping[str, Any], work: Path, env: Mapping[str, str], include_gemini: bool) -> dict[str, Any]:
     reviews: dict[str, Any] = {}
     try:
@@ -78,7 +86,8 @@ def _review_candidate(c: Mapping[str, Any], work: Path, env: Mapping[str, str], 
 def run(output: Path) -> dict[str, Any]:
     ledger, evidence = read_json(LEDGER), read_json(EVIDENCE)
     done_count = int(ledger.get("done_count") or 0)
-    gemini_enabled = economic_rebuild_enabled(done_count)
+    gemini_prep_enabled = _gemini_parallel_prep_enabled()
+    post25_rebuild_enabled = economic_rebuild_enabled(done_count)
     source_rows = evidence_compact(evidence)
     source_ids = {str(x.get("id")) for x in source_rows}
     terminals = [
@@ -97,7 +106,7 @@ def run(output: Path) -> dict[str, Any]:
         prompt = prompt_for(fp, source_rows)
         providers[sid] = {}
         generator_fns = [("openai", call_openai_generator), ("groq", call_groq_generator)]
-        if gemini_enabled:
+        if gemini_prep_enabled:
             generator_fns.append(("gemini", call_gemini_generator))
         for provider, fn in generator_fns:
             try:
@@ -116,7 +125,7 @@ def run(output: Path) -> dict[str, Any]:
         for idx, candidate in enumerate(generated):
             work = root / str(idx)
             work.mkdir()
-            reviewed.append(_review_candidate(candidate, work, env, gemini_enabled))
+            reviewed.append(_review_candidate(candidate, work, env, gemini_prep_enabled))
     reviewed.sort(key=lambda x: (-float(x.get("score") or 0.0), str(x.get("candidate_id") or "")))
 
     by_strategy: dict[str, Any] = {}
@@ -145,15 +154,22 @@ def run(output: Path) -> dict[str, Any]:
         "provider_state": providers,
         "strategies": by_strategy,
         "global_queue": reviewed,
+        "phase": "GEN1_PARALLEL_GEN2_PREP" if done_count < 25 else "POST25_ECONOMIC_REBUILD",
+        "prep_only": done_count < 25,
         "gemini": {
-            "enabled": gemini_enabled,
-            "activation_rule": "done_count>=25 AND GEMINI_API_KEY present AND GEMINI_ECONOMIC_REBUILD_ENABLED not false",
-            "purpose": "POST_25_ECONOMIC_REBUILD_ONLY",
+            "enabled": gemini_prep_enabled,
+            "prep_activation_rule": "GEMINI_API_KEY present AND GEMINI_ECONOMIC_REBUILD_ENABLED not false",
+            "post25_economic_rebuild_enabled": post25_rebuild_enabled,
+            "purpose": "GEN1_PARALLEL_GEN2_PREP_GENERATION_AND_CRITIQUE_ONLY" if done_count < 25 else "POST25_ECONOMIC_REBUILD",
         },
         "launch": {
-            "state": "BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT",
+            "state": "BLOCKED_GEN1_INCOMPLETE" if done_count < 25 else "BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT",
             "candidate": None,
-            "reason": "Post-25 repair/replacement generation may use Gemini, OpenAI, Groq and Workers AI, but preregistration remains blocked until candidate-matched Alpha Proof PASS.",
+            "reason": (
+                "GEN1 done_count<25: AI may generate and red-team PREP candidates only; no preregistration, fresh prospective boundary, heavy launch or promotion."
+                if done_count < 25
+                else "Post-25 repair/replacement generation may use Gemini, OpenAI, Groq and Workers AI, but preregistration remains blocked until candidate-matched Alpha Proof PASS."
+            ),
         },
         "research_only": True,
         "selection_authority": False,
@@ -175,6 +191,8 @@ def run(output: Path) -> dict[str, Any]:
 
 def self_test() -> int:
     assert economic_rebuild_enabled(24) is False
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        assert _gemini_parallel_prep_enabled() is False
     print("PASS_A1_TERMINAL_REPAIR_SWARM_V4_SELF_TEST")
     return 0
 
@@ -195,6 +213,8 @@ def main() -> int:
         "queued_new_arch_count": result["queued_new_arch_count"],
         "alpha_proof_ready_count": result["alpha_proof_ready_count"],
         "eligible_count": result["eligible_count"],
+        "phase": result["phase"],
+        "prep_only": result["prep_only"],
     }))
     return 0
 

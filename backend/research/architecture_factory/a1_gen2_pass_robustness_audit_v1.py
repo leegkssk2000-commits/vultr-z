@@ -70,12 +70,24 @@ def _group(trades:list[dict[str,Any]],key:str)->dict[str,Any]:
     return {k:_stats(v) for k,v in sorted(vals.items())}
 
 
+def _delta(old:dict[str,Any], new:dict[str,Any])->dict[str,Any]:
+    return {
+      "net_expectancy_bps":(new.get("net_expectancy_bps") or 0)-(old.get("net_expectancy_bps") or 0),
+      "net_pnl_bps":(new.get("net_pnl_bps") or 0)-(old.get("net_pnl_bps") or 0),
+      "profit_factor":(new.get("profit_factor") or 0)-(old.get("profit_factor") or 0),
+      "payoff":(new.get("payoff") or 0)-(old.get("payoff") or 0),
+      "win_rate":(new.get("win_rate") or 0)-(old.get("win_rate") or 0),
+      "drawdown_bps":(new.get("drawdown_bps") or 0)-(old.get("drawdown_bps") or 0),
+      "trades":(new.get("trades") or 0)-(old.get("trades") or 0)
+    }
+
+
 def run(output:Path)->dict[str,Any]:
     baseline=_eval(BASE); bm=_m(baseline); actual=_actual_trades(); actual_stats=_stats(actual)
     if actual_stats["trades"]!=bm["trades"] or abs((actual_stats["net_pnl_bps"] or 0)-(bm["net_pnl_bps"] or 0))>1e-6:
         raise RuntimeError("ATTRIBUTION_PATH_MISMATCH")
 
-    # Previously predeclared repair; retained only as a sealed failed control.
+    # Sealed failed control: symmetric regime ownership. Never reuse.
     repaired=_variant("repair_regime_owned_large_move_reversion_v1","(ret(1) < -0.02 and close > sma('close',50)) or (ret(1) > 0.02 and close < sma('close',50))","long if ret(1) < -0.02 else short")
     repair=_eval(repaired); rm=_m(repair)
 
@@ -86,15 +98,35 @@ def run(output:Path)->dict[str,Any]:
       "by_side":_group(actual,"side"),"by_symbol":_group(actual,"symbol"),"by_year":_group(actual,"signal_year"),"by_regime50":_group(actual,"signal_regime50"),
       "loss_concentration":{"loss_trade_count":len(losses),"total_loss_bps":total_loss,"top10_loss_bps":top10_loss,"top10_share_of_loss":top10_loss/total_loss if total_loss else 0.0,"worst10":[{k:t[k] for k in ("symbol","side","net_bps","signal_ret1","signal_regime50","signal_year","entry_ts","exit_ts")} for t in losses[:10]]}
     }
+
+    # Second causal axis after path attribution: keep every long shock fade unchanged; veto only short fades while price is above SMA50.
+    short_veto=_variant(
+      "repair_short_above_sma50_veto_v1",
+      "ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))",
+      "long if ret(1) < -0.02 else short"
+    )
+    short_veto["evidence_ids"]=["F11","F16"]
+    short_veto["changed_axis"]="short_adverse_regime_veto_only"
+    short_veto_row=_eval(short_veto); svm=_m(short_veto_row); svd=_delta(bm,svm)
+    accepted=bool(
+      short_veto_row.get("economic_pass") and
+      (svm.get("net_expectancy_bps") or -1e99) > (bm.get("net_expectancy_bps") or -1e99) and
+      (svm.get("net_pnl_bps") or -1e99) > (bm.get("net_pnl_bps") or -1e99) and
+      (svm.get("profit_factor") or -1e99) > (bm.get("profit_factor") or -1e99) and
+      (svm.get("drawdown_bps") or 1e99) < (bm.get("drawdown_bps") or 1e99)
+    )
+
     result={
       "schema_version":"zel.a1_gen2_pass_robustness_audit.v2","development_only":True,"candidate_id":BASE["candidate_id"],
       "mechanism_integrity":{"claimed_basis_funding_mechanism":False,"actual_executable_mechanism":"1D large-move mean reversion after abs(ret1)>2%, next-open entry, 12D time stop","reason":"executed source/formula uses OHLCV only; no basis/funding/OI","relabel":"large_move_mean_reversion"},
       "baseline":baseline,"actual_path_attribution":attribution,
-      "sealed_failed_repair":{"axis":"regime_ownership_only","evidence_ids":["F2","F16"],"old_metrics":bm,"new_metrics":rm,"delta":{"net_expectancy_bps":(rm.get("net_expectancy_bps") or 0)-(bm.get("net_expectancy_bps") or 0),"net_pnl_bps":(rm.get("net_pnl_bps") or 0)-(bm.get("net_pnl_bps") or 0),"profit_factor":(rm.get("profit_factor") or 0)-(bm.get("profit_factor") or 0),"drawdown_bps":(rm.get("drawdown_bps") or 0)-(bm.get("drawdown_bps") or 0),"trades":(rm.get("trades") or 0)-(bm.get("trades") or 0)},"accepted":False,"state":"SEALED_FAIL_NO_REUSE"},
-      "next_repair_authority":"NONE_UNTIL_ATTRIBUTION_REVIEW","selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0
+      "sealed_failed_repair":{"axis":"regime_ownership_only","evidence_ids":["F2","F16"],"old_metrics":bm,"new_metrics":rm,"delta":_delta(bm,rm),"accepted":False,"state":"SEALED_FAIL_NO_REUSE"},
+      "second_axis_repair":{"axis":"short_adverse_regime_veto_only","evidence_ids":["F11","F16"],"threshold_changed":False,"holding_horizon_changed":False,"long_rule_changed":False,"short_rule_change":"veto_short_when_close_above_sma50","repair":short_veto_row,"old_metrics":bm,"new_metrics":svm,"delta":svd,"accepted_for_further_prep":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},
+      "next_repair_authority":"PRESERVE_IF_ACCEPTED_ELSE_DISTINCT_AXIS_ONLY",
+      "selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0
     }
     output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
-    print(json.dumps({"baseline":bm,"by_side":attribution["by_side"],"by_symbol":attribution["by_symbol"],"by_regime50":attribution["by_regime50"],"loss_concentration":attribution["loss_concentration"]},sort_keys=True))
+    print(json.dumps({"baseline":bm,"by_side":attribution["by_side"],"by_regime50":attribution["by_regime50"],"loss_concentration":attribution["loss_concentration"],"second_axis_repair":result["second_axis_repair"]},sort_keys=True))
     return result
 
 if __name__=="__main__": run(Path("out/a1_gen2_pass_robustness_audit_v1.json"))

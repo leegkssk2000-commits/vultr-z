@@ -31,7 +31,7 @@ def _lock_outcome(rs,side,ei,xi,ep):
     xp=rs[xi]['close']
     return (xp/ep-1)*10000*(1 if side=='long' else -1),None,activation_day
 
-def _trades():
+def _trades(volume_confirm=False):
     out=[]
     for symbol in econ.SYMBOLS:
         rs=econ.bars(symbol,'1d'); eng=econ.Expr(rs,{}); i=30
@@ -39,9 +39,13 @@ def _trades():
             try: fire=bool(eng.eval(ENTRY_RULE,i))
             except Exception: fire=False
             if not fire: i+=1; continue
+            if volume_confirm:
+                prior=[float(x['volume']) for x in rs[i-20:i] if float(x.get('volume') or 0)>0]
+                vol_mean=sum(prior)/len(prior) if prior else 0.0
+                if vol_mean<=0 or float(rs[i].get('volume') or 0)<vol_mean:
+                    i+=1; continue
             side=econ._side(SIDE_RULE,eng,i); ei=i+1; xi=min(ei+HOLD-1,len(rs)-1); ep=rs[ei]['open']
             gross,lock_exit_day,activation_day=_lock_outcome(rs,side,ei,xi,ep)
-            prev=rs[i-1]['close']; ret=rs[i]['close']/prev-1 if prev else 0.0
             w=[x['close'] for x in rs[max(0,i-49):i+1]]; sma50=sum(w)/len(w)
             out.append({"symbol":symbol,"side":side,"gross_bps":gross,"signal_year":datetime.fromtimestamp(rs[i]['ts']/1000,tz=timezone.utc).year,"signal_regime50":"above_sma50" if rs[i]['close']>=sma50 else "below_sma50","activation_day":activation_day,"lock_exit_day":lock_exit_day})
             i=max(i+1,xi+1)
@@ -52,29 +56,42 @@ def _group(rows,key,cost=14.0):
     for r in rows: d.setdefault(str(r[key]),[]).append(r)
     return {k:_metrics([x['gross_bps'] for x in v],cost) for k,v in sorted(d.items())}
 
+def _pareto(a,b):
+    return b['net_pnl_bps']>a['net_pnl_bps'] and b['net_expectancy_bps']>a['net_expectancy_bps'] and b['profit_factor']>a['profit_factor'] and b['drawdown_bps']<a['drawdown_bps']
+
 def run(output:Path):
-    trades=_trades(); base=_metrics([t['gross_bps'] for t in trades],14.0)
+    trades=_trades(False); base=_metrics([t['gross_bps'] for t in trades],14.0)
     for k,v in EXPECTED.items():
         if k=='trades':
             if int(base[k])!=v: raise RuntimeError(f'PROMOTED_INCUMBENT_MISMATCH:{k}')
         elif abs(float(base[k])-float(v))>1e-6: raise RuntimeError(f'PROMOTED_INCUMBENT_MISMATCH:{k}:{base[k]}:{v}')
-    costs={str(c):_metrics([t['gross_bps'] for t in trades],float(c)) for c in (14,20,28,40)}
-    by_symbol=_group(trades,'symbol'); by_side=_group(trades,'side'); by_year=_group(trades,'signal_year'); by_regime=_group(trades,'signal_regime50')
-    flipped=_metrics([-t['gross_bps'] for t in trades],14.0)
-    losses=sorted([t for t in trades if t['gross_bps']-14<0],key=lambda x:x['gross_bps']-14)
-    total_loss=-sum(t['gross_bps']-14 for t in losses); top10=-sum(t['gross_bps']-14 for t in losses[:10])
-    summary={
-      "robust_cost_28":costs['28']['net_expectancy_bps']>0 and costs['28']['profit_factor']>1,
-      "robust_cost_40":costs['40']['net_expectancy_bps']>0 and costs['40']['profit_factor']>1,
-      "both_symbols_positive":all(x['net_expectancy_bps']>0 and x['profit_factor']>1 for x in by_symbol.values()),
-      "negative_control_ok":flipped['net_expectancy_bps']<0 and flipped['profit_factor']<1,
-      "year_positive_count":sum(1 for x in by_year.values() if x['net_expectancy_bps']>0 and x['profit_factor']>1),
-      "year_total":len(by_year),
-      "all_hardening_pass":False
+    candidate_trades=_trades(True); cand=_metrics([t['gross_bps'] for t in candidate_trades],14.0)
+    cand_costs={str(c):_metrics([t['gross_bps'] for t in candidate_trades],float(c)) for c in (14,28,40)}
+    cand_symbols=_group(candidate_trades,'symbol'); cand_years=_group(candidate_trades,'signal_year')
+    cand_flip=_metrics([-t['gross_bps'] for t in candidate_trades],14.0)
+    accepted=_pareto(base,cand)
+    result={
+      "schema_version":"zel.a1_gen2_independent_axis_volume_confirmation.v1",
+      "development_only":True,
+      "incumbent_id":"repair_short_above_sma50_veto_plus_mfe300_net_be_lock_v1",
+      "incumbent_metrics":base,
+      "independent_axis":{
+        "axis":"shock_day_volume_ge_prior20_mean_only",
+        "threshold_sweep":False,
+        "profit_lock_unchanged":True,
+        "holding_horizon_unchanged":True,
+        "short_sma50_veto_unchanged":True,
+        "new_metrics":cand,
+        "cost_stress":cand_costs,
+        "by_symbol":cand_symbols,
+        "by_year":cand_years,
+        "negative_control_side_flip":cand_flip,
+        "accepted_pareto":accepted,
+        "state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"
+      },
+      "selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0
     }
-    summary['all_hardening_pass']=bool(summary['robust_cost_28'] and summary['robust_cost_40'] and summary['both_symbols_positive'] and summary['negative_control_ok'])
-    result={"schema_version":"zel.a1_gen2_profit_lock_incumbent_hardening.v1","development_only":True,"candidate_id":"repair_short_above_sma50_veto_plus_mfe300_net_be_lock_v1","promoted_from":"repair_short_above_sma50_veto_v1","mechanism":{"entry_rule":ENTRY_RULE,"side_rule":SIDE_RULE,"time_stop_bars":HOLD,"profit_lock_activation_bps":ACTIVATE_BPS,"profit_lock_gross_bps":LOCK_GROSS_BPS,"path_preserved_by_original_12d_slot_cooldown":True,"same_bar_activation_and_stop_forbidden_conservative":True,"gap_model":"worse_of_lock_or_next_bar_open"},"incumbent_metrics":base,"cost_stress":costs,"by_symbol":by_symbol,"by_side":by_side,"by_year":by_year,"by_regime50":by_regime,"negative_controls":{"side_flip_same_events":flipped},"loss_concentration":{"loss_trade_count":len(losses),"total_loss_bps":total_loss,"top10_loss_bps":top10,"top10_share_of_loss":top10/total_loss if total_loss else 0.0},"lock_usage":{"activated_trades":sum(t['activation_day'] is not None for t in trades),"lock_exit_trades":sum(t['lock_exit_day'] is not None for t in trades)},"hardening_summary":summary,"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0}
     output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
-    print('PROFIT_LOCK_INCUMBENT_HARDENING='+json.dumps(result,sort_keys=True)); return result
+    print('INDEPENDENT_VOLUME_AXIS='+json.dumps(result,sort_keys=True)); return result
 
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

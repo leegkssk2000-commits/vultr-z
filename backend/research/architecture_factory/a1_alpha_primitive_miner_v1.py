@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -86,11 +87,8 @@ def _events(rs:list[dict[str,float]], f:dict[str,list[Any]])->list[dict[str,Any]
         lower=(min(r["open"],r["close"])-r["low"])/r["close"]
         ret1=r["close"]/prev["close"]-1.0 if prev["close"] else 0.0
         hour=datetime.fromtimestamp(r["ts"]/1000,tz=timezone.utc).hour
-        high_vol=abs(ret1)>=1.5*rv
-        low_vol=abs(ret1)<=0.5*rv
-        london_us=6<=hour<18
-        asia=0<=hour<6
-        # Fixed design-prior library only. No threshold or horizon sweep based on outcomes.
+        high_vol=abs(ret1)>=1.5*rv; low_vol=abs(ret1)<=0.5*rv
+        london_us=6<=hour<18; asia=0<=hour<6
         defs=[
             ("P_VOL_SHOCK_CONT_LONG", vol_ratio>=2.0 and ret1>0, 1),
             ("P_VOL_SHOCK_CONT_SHORT", vol_ratio>=2.0 and ret1<0, -1),
@@ -125,8 +123,7 @@ def _events(rs:list[dict[str,float]], f:dict[str,list[Any]])->list[dict[str,Any]
 
 
 def mine()->dict[str,Any]:
-    buckets:dict[tuple[str,str,int],list[float]]={}; timestamps:dict[tuple[str,str,int],list[int]]={}
-    source={}
+    buckets:dict[tuple[str,str,int],list[float]]={}; timestamps:dict[tuple[str,str,int],list[int]]={}; source={}
     for interval in INTERVALS:
         source[interval]={}
         for symbol in SYMBOLS:
@@ -135,37 +132,26 @@ def mine()->dict[str,Any]:
                 i=int(ev["i"]); side=int(ev["side"]); pid=str(ev["primitive_id"]); entry=rs[i+1]["open"]
                 for h in HORIZONS:
                     if i+1+h>=len(rs): continue
-                    exit_px=rs[i+1+h]["close"]
-                    gross=(exit_px/entry-1.0)*10000*side
+                    exit_px=rs[i+1+h]["close"]; gross=(exit_px/entry-1.0)*10000*side
                     key=(interval,pid,h); buckets.setdefault(key,[]).append(gross); timestamps.setdefault(key,[]).append(int(rs[i+1]["ts"]))
     rows=[]
     for (interval,pid,h),gross in buckets.items():
-        net=[x-COST_BPS for x in gross]; n=len(net); pf=_pf(net)
-        g=sum(gross)/n if n else None; ne=sum(net)/n if n else None
-        ts=timestamps.get((interval,pid,h),[])
-        days=max(1.0,((max(ts)-min(ts))/86_400_000) if len(ts)>=2 else 1.0)
+        net=[x-COST_BPS for x in gross]; n=len(net); pf=_pf(net); g=sum(gross)/n if n else None; ne=sum(net)/n if n else None
+        ts=timestamps.get((interval,pid,h),[]); days=max(1.0,((max(ts)-min(ts))/86_400_000) if len(ts)>=2 else 1.0)
         usable=bool(n>=MIN_EVENTS and (ne or 0)>0 and (pf or 0)>1.0)
-        rows.append({
-            "primitive_id":pid,"interval":interval,"horizon_bars":h,"events":n,
-            "gross_expectancy_bps":g,"net_expectancy_bps":ne,"net_pnl_bps":sum(net),
-            "profit_factor":pf,"payoff":_payoff(net),"win_rate":sum(1 for x in net if x>0)/n if n else None,
-            "drawdown_bps":_dd(net),"cost_bps_per_trade":COST_BPS,
-            "events_per_day":n/days,"net_bps_per_calendar_day":sum(net)/days,
-            "gross_clears_cost":bool(n>=MIN_EVENTS and (g or 0)>COST_BPS),
-            "economically_usable":usable,
-        })
+        rows.append({"primitive_id":pid,"interval":interval,"horizon_bars":h,"events":n,"gross_expectancy_bps":g,"net_expectancy_bps":ne,"net_pnl_bps":sum(net),"profit_factor":pf,"payoff":_payoff(net),"win_rate":sum(1 for x in net if x>0)/n if n else None,"drawdown_bps":_dd(net),"cost_bps_per_trade":COST_BPS,"events_per_day":n/days,"net_bps_per_calendar_day":sum(net)/days,"gross_clears_cost":bool(n>=MIN_EVENTS and (g or 0)>COST_BPS),"economically_usable":usable})
     rows.sort(key=lambda x:(not x["economically_usable"],not x["gross_clears_cost"],-(x["net_expectancy_bps"] or -1e9),-x["events"]))
-    usable=[x for x in rows if x["economically_usable"]]
-    gross_clear=[x for x in rows if x["gross_clears_cost"]]
+    usable=[x for x in rows if x["economically_usable"]]; gross_clear=[x for x in rows if x["gross_clears_cost"]]
     near=sorted([x for x in rows if x["events"]>=MIN_EVENTS],key=lambda x:-(x["gross_expectancy_bps"] or -1e9))[:20]
-    return {
-        "schema_version":"zel.a1_alpha_primitive_miner.v2","boundary":BOUNDARY,"development_only":True,
-        "fixed_library":True,"threshold_sweep":False,"future_or_sealed_outcomes_used":False,
-        "cost_bps_per_trade":COST_BPS,"min_events":MIN_EVENTS,"source":source,
-        "primitive_count":len(rows),"economically_usable_count":len(usable),"gross_clears_cost_count":len(gross_clear),
-        "usable":usable[:30],"gross_clear":gross_clear[:30],"top_by_gross":near,"rows":rows,
-        "selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"
-    }
+    result={"schema_version":"zel.a1_alpha_primitive_miner.v2","boundary":BOUNDARY,"development_only":True,"fixed_library":True,"threshold_sweep":False,"future_or_sealed_outcomes_used":False,"cost_bps_per_trade":COST_BPS,"min_events":MIN_EVENTS,"source":source,"primitive_count":len(rows),"economically_usable_count":len(usable),"gross_clears_cost_count":len(gross_clear),"usable":usable[:30],"gross_clear":gross_clear[:30],"top_by_gross":near,"rows":rows,"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
+    os.environ["GEN2_PRIMITIVE_USABLE_COUNT"]=str(len(usable))
+    if not usable:
+        os.environ["OPENAI_API_KEY"]=""
+        os.environ["GEMINI_API_KEY"]=""
+        os.environ["GEN2_PAID_AI_GATE"]="BLOCKED_NO_COST_POSITIVE_PRIMITIVE"
+    else:
+        os.environ["GEN2_PAID_AI_GATE"]="OPEN_COST_POSITIVE_PRIMITIVE"
+    return result
 
 
 def compact(result:dict[str,Any])->list[dict[str,Any]]:

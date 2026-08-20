@@ -1,0 +1,59 @@
+name: A1 GEN2 PASS Robustness Audit V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py'
+      - '.github/workflows/a1-gen2-pass-robustness-audit-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: a1-gen2-pass-robustness-audit-v1
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Run deterministic robustness audit
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_gen2_pass_robustness_audit_v1
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json'))
+          assert r['development_only'] is True
+          assert r['mechanism_integrity']['claimed_basis_funding_mechanism'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print(json.dumps({'baseline':r['single_axis_repair']['old_metrics'],'repair':r['single_axis_repair']['new_metrics'],'delta':r['single_axis_repair']['delta'],'accept':r['single_axis_repair']['accept_for_further_prep'],'decomposition':{k:(v.get('metrics') or {}) for k,v in r['decomposition'].items()}},sort_keys=True))
+          PY
+      - name: Publish receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json')); s=r['single_axis_repair']; marker='<!-- A1_GEN2_PASS_ROBUSTNESS_AUDIT_V1 -->'
+          body='\n'.join([marker,'## A1 GEN2 PASS Robustness Audit V1',f"run={os.environ['RUN_ID']}",'mechanism_relabel='+r['mechanism_integrity']['relabel'],'baseline='+json.dumps(s['old_metrics'],sort_keys=True),'decomposition='+json.dumps({k:(v.get('metrics') or {}) for k,v in r['decomposition'].items()},sort_keys=True),'repair_axis='+s['axis'],'repair='+json.dumps(s['new_metrics'],sort_keys=True),'delta='+json.dumps(s['delta'],sort_keys=True),f"accept_for_further_prep={str(s['accept_for_further_prep']).lower()}",'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: cs=json.load(q)
+          e=next((c for c in cs if marker in str(c.get('body') or '')),None); url=e.get('url') if e else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if e else 'POST')): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-pass-robustness-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          path: out/a1_gen2_pass_robustness_audit_v1.json

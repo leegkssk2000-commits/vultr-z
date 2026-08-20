@@ -7,7 +7,7 @@ import backend.research.architecture_factory.a1_gen2_generic_dev_econ_v1 as econ
 ENTRY_RULE="ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))"
 SIDE_RULE="long if ret(1) < -0.02 else short"
 HOLD=12; ACTIVATE_BPS=300.0; LOCK_GROSS_BPS=14.0
-ETH_WINDOW=5; ETH_STRESS_WEIGHT=0.50
+ETH_WINDOW=5; CROSS_WEIGHT=0.50
 EXPECTED={"trades":227,"net_pnl_bps":32456.553693428767,"net_expectancy_bps":142.98041274638223,"profit_factor":1.7661077778815002,"drawdown_bps":3222.578836366174}
 
 def _metrics(net):
@@ -40,28 +40,45 @@ def _median(xs):
  if not n: return None
  return s[n//2] if n%2 else (s[n//2-1]+s[n//2])/2.0
 
-def _eth_loss_stress_throttle(t):
- # Causal only: BTC always stays 1.0. For each ETH trade, use completed prior ETH trades only.
- # Downside state = mean downside of the previous 5 ETH trades. Compare it with the median of
- # all earlier completed 5-trade downside windows. If current downside is above that own-history
- # median, ETH weight is fixed at 0.50; otherwise 1.0. No bps threshold and no sweep.
+def _side_advisory_by_trade(t):
+ # Build the advisory causally in true signal-time order, but do not alter the incumbent
+ # trade path used for economics/DD. At each signal, only prior completed negative trades
+ # are used. The side with the larger mean absolute loss is tagged adverse. Until both
+ # sides have at least one prior loss, no side is tagged adverse.
+ hist={'long':[],'short':[]}; out={}
+ ordered=sorted(enumerate(t),key=lambda z:(z[1]['signal_ts'],z[1]['symbol'],z[0]))
+ for idx,x in ordered:
+  adverse=None; avg={'long':None,'short':None}
+  if hist['long'] and hist['short']:
+   avg={s:sum(hist[s])/len(hist[s]) for s in ('long','short')}
+   if avg['long']>avg['short']: adverse='long'
+   elif avg['short']>avg['long']: adverse='short'
+  out[idx]={"adverse_side":adverse,"avg_abs_loss_bps":avg}
+  if x['net_bps']<0: hist[x['side']].append(abs(x['net_bps']))
+ return out
+
+def _cross_throttle(t):
+ advisory=_side_advisory_by_trade(t)
+ # ETH stress is causal and ETH-local: recent completed 5-trade downside versus the median
+ # of all earlier completed 5-trade ETH downside windows. Throttle only when that stress
+ # flag AND the causal side-risk advisory both point against the current trade side.
  eth_hist=[]; window_hist=[]; weighted=[]; trace=[]
- for x in t:
-  w=1.0; recent=None; benchmark=None; stressed=False
+ for idx,x in enumerate(t):
+  stressed=False; recent=None; benchmark=None; adverse=advisory[idx]['adverse_side']; w=1.0
   if x['symbol']=='ETH-USDT':
    if len(eth_hist)>=ETH_WINDOW:
     recent=sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW
     if window_hist:
-     benchmark=_median(window_hist)
-     stressed=recent>benchmark
-     if stressed: w=ETH_STRESS_WEIGHT
+     benchmark=_median(window_hist); stressed=recent>benchmark
+   cross=stressed and adverse==x['side']
+   if cross: w=CROSS_WEIGHT
    weighted.append(x['net_bps']*w)
-   trace.append({"symbol":x['symbol'],"side":x['side'],"weight":w,"recent_downside_bps":recent,"prior_window_median_bps":benchmark,"stressed":stressed})
+   trace.append({"symbol":x['symbol'],"side":x['side'],"weight":w,"eth_stressed":stressed,"adverse_side":adverse,"cross_trigger":cross,"recent_downside_bps":recent,"prior_window_median_bps":benchmark})
    eth_hist.append(x['net_bps'])
    if len(eth_hist)>=ETH_WINDOW:
     window_hist.append(sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW)
   else:
-   weighted.append(x['net_bps']); trace.append({"symbol":x['symbol'],"side":x['side'],"weight":1.0,"stressed":False})
+   weighted.append(x['net_bps']); trace.append({"symbol":x['symbol'],"side":x['side'],"weight":1.0,"eth_stressed":False,"adverse_side":adverse,"cross_trigger":False})
  return _metrics(weighted),trace
 
 def _pareto(a,b):
@@ -72,8 +89,9 @@ def run(output:Path):
  for k,v in EXPECTED.items():
   if k=='trades': assert base[k]==v,(k,base[k],v)
   else: assert abs(base[k]-v)<1e-6,(k,base[k],v)
- cand,trace=_eth_loss_stress_throttle(t); accepted=_pareto(base,cand)
- stress=[r for r in trace if r.get('symbol')=='ETH-USDT' and r.get('stressed')]
- r={"schema_version":"zel.a1_gen2_eth_prior_loss_volatility_throttle.v1","development_only":True,"incumbent_metrics":base,"side_parity_advisory":{"enabled_for_signal_assist_only":True,"sizing_authority":False,"order_authority":False,"note":"retain side-risk relation as advisory/confidence feature only; no direct exposure mutation"},"axis":{"name":"eth_prior_completed_loss_volatility_state_50pct_risk_throttle","future_information_used":False,"eth_window_trades":ETH_WINDOW,"eth_stress_weight":ETH_STRESS_WEIGHT,"threshold_sweep":False,"btc_weight":1.0,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"stress_trade_count":len(stress),"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
- output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('ETH_PRIOR_LOSS_VOL_THROTTLE='+json.dumps(r,sort_keys=True)); return r
+ cand,trace=_cross_throttle(t); accepted=_pareto(base,cand)
+ stress=sum(1 for r in trace if r.get('symbol')=='ETH-USDT' and r.get('eth_stressed'))
+ cross=sum(1 for r in trace if r.get('cross_trigger'))
+ r={"schema_version":"zel.a1_gen2_eth_stress_side_advisory_cross_throttle.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"eth_prior_loss_stress_AND_causal_adverse_side_advisory_50pct_throttle","future_information_used":False,"eth_window_trades":ETH_WINDOW,"cross_weight":CROSS_WEIGHT,"threshold_sweep":False,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"eth_stress_trade_count":stress,"cross_trigger_trade_count":cross,"side_parity_role":"signal_assist_only","side_parity_sizing_authority":False,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
+ output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('ETH_STRESS_SIDE_ADVISORY_CROSS='+json.dumps(r,sort_keys=True)); return r
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

@@ -1,0 +1,79 @@
+name: A1 GEN2 Grid Directional Regime Dev V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_grid_directional_regime_dev_v1.py'
+      - '.github/workflows/a1-gen2-grid-directional-regime-dev-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: a1-gen2-grid-directional-regime-dev-v1
+  cancel-in-progress: false
+jobs:
+  development-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Verify deterministic single-axis contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_gen2_grid_directional_regime_dev_v1.py
+          python -m backend.research.architecture_factory.a1_gen2_grid_directional_regime_dev_v1 --self-test
+      - name: Run frozen-control vs directional-regime repair
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_gen2_grid_directional_regime_dev_v1 --out out/a1_gen2_grid_directional_regime_dev_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_gen2_grid_directional_regime_dev_v1.json'))
+          assert r['development_only'] is True
+          assert r['prospective'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['protected_mutations']==0
+          print(json.dumps({'candidate':r['candidate_id'],'control':r['control'],'repair':r['repair'],'delta':r['delta'],'retention':r['retention'],'economic_candidate':r['economic_candidate'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Publish immutable economic receipt marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_gen2_grid_directional_regime_dev_v1.json'))
+          marker='<!-- A1_GEN2_GRID_DIRECTIONAL_REGIME_DEV_V1 -->'
+          body='\n'.join([
+            marker,'## A1 GEN2 Grid Directional Regime Dev V1',
+            f"run_id={os.environ['RUN_ID']}",f"candidate_id={r['candidate_id']}",f"boundary={r['boundary']}",
+            'control='+json.dumps(r['control'],sort_keys=True),
+            'repair='+json.dumps(r['repair'],sort_keys=True),
+            'delta='+json.dumps(r['delta'],sort_keys=True),
+            f"retention={r['retention']}",f"economic_candidate={str(r['economic_candidate']).lower()}",
+            f"receipt_sha256={r['receipt_sha256']}",
+            'development_only=true|prospective=false|selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: cs=json.load(q)
+          old=next((c for c in cs if marker in str(c.get('body') or '')),None)
+          url=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-grid-directional-regime-dev-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          path: out/a1_gen2_grid_directional_regime_dev_v1.json

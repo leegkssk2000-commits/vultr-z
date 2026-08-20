@@ -14,6 +14,7 @@ from backend.research.architecture_factory.a1_strategy_architecture_factory_v2 i
 
 BASE_EVIDENCE = Path("backend/research/architecture_factory/a1_free_evidence_sweep_v1.json")
 YOUTUBE_EVIDENCE_DEFAULT = Path("backend/research/architecture_factory/a1_youtube_evidence_latest.json")
+_BASE_TARGET_ROWS = factory_v1.target_rows
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -33,7 +34,7 @@ def _youtube_path() -> Path:
 
 def _terminal_only_targets(ledger: Mapping[str, Any], limit: int = 25) -> list[dict[str, Any]]:
     """Use all already-terminal GEN1 outcomes for GEN2 PREP; never unfinished outcomes."""
-    rows = factory_v1.target_rows(ledger, limit=25)
+    rows = _BASE_TARGET_ROWS(ledger, limit=25)
     terminal = [dict(x) for x in rows if bool(x.get("terminal"))]
     return terminal[: max(0, int(limit))]
 
@@ -106,7 +107,6 @@ def run(output: Path) -> dict[str, Any]:
         try:
             factory_v1.EVIDENCE = merged_path
             factory_v3.EVIDENCE = merged_path
-            # All generators see the same complete terminal-only GEN1 distribution.
             factory_v1.target_rows = _terminal_only_targets
             factory_v3.target_rows = _terminal_only_targets
             inner_path = Path(td) / "v3.json"

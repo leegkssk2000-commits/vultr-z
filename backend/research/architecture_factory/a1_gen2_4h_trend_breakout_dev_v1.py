@@ -25,21 +25,22 @@ def atr_prev(rs,i,n=14):
  return sum(v)/len(v) if v else 0.0
 def signal(mode,rs,i):
  c=float(rs[i]['close']); o=float(rs[i]['open']); s50=sma(rs,i); prev=float(rs[i-1]['close'])
- if mode in ('vol_cont','vol_cont_slope'):
+ if mode in ('vol_cont','vol_cont_slope','vol_cont_break'):
   a=atr_prev(rs,i); tr=max(float(rs[i]['high'])-float(rs[i]['low']),abs(float(rs[i]['high'])-prev),abs(float(rs[i]['low'])-prev))
   if not (a>0 and tr>=1.5*a): return None
-  rising=s50>sma(rs,i-1); falling=s50<sma(rs,i-1)
-  if c>o and c>s50 and (mode=='vol_cont' or rising): return 'long'
-  if c<o and c<s50 and (mode=='vol_cont' or falling): return 'short'
+  rising=s50>sma(rs,i-1); falling=s50<sma(rs,i-1); ph=float(rs[i-1]['high']); pl=float(rs[i-1]['low'])
+  if c>o and c>s50:
+   if mode=='vol_cont_slope' and not rising:return None
+   if mode=='vol_cont_break' and not c>ph:return None
+   return 'long'
+  if c<o and c<s50:
+   if mode=='vol_cont_slope' and not falling:return None
+   if mode=='vol_cont_break' and not c<pl:return None
+   return 'short'
   return None
  r=c/prev-1 if prev else 0.0
  if abs(r)<SCALED_SHOCK:return None
- if mode=='basis_hf_short_only':
-  return 'short' if r>0 and c<s50 else None
- if r<0:
-  if c>=s50 and abs(c-prev)>=atr_prev(rs,i):return None
-  return 'long'
- if r>0 and c<s50:return 'short'
+ if mode=='basis_hf_short_only': return 'short' if r>0 and c<s50 else None
  return None
 def run_one(mode):
  rows=[]; src={}
@@ -57,10 +58,10 @@ def run_one(mode):
  econ=bool(m['trades']>=40 and (m['net_expectancy_bps'] or 0)>0 and (m['profit_factor'] or 0)>1 and (m['payoff'] or 0)>=1)
  return {'metrics':m,'economic_candidate':econ,'source_summary':src,'by_symbol':by_symbol,'by_side':by_side,'cost_stress':costs}
 def run():
- configs=[('vol_cont','newarch_4h_vol_expansion_continuation_v1','4H_TR_GE_1P5_ATR14_SMA50_CONTINUATION'),('vol_cont_slope','newarch_4h_vol_expansion_sma50_slope_v1','4H_TR_GE_1P5_ATR14_SMA50_SLOPE_ALIGNED_CONTINUATION'),('basis_hf_short_only','basis_premium_collector_4h_scaled_short_only_v1','4H_TIME_SCALED_MEAN_REVERSION_SHORT_SIDE_OWNERSHIP')]
+ configs=[('vol_cont','newarch_4h_vol_expansion_continuation_v1','4H_TR_GE_1P5_ATR14_SMA50_CONTINUATION'),('vol_cont_slope','newarch_4h_vol_expansion_sma50_slope_v1','4H_TR_GE_1P5_ATR14_SMA50_SLOPE_ALIGNED_CONTINUATION'),('vol_cont_break','newarch_4h_vol_expansion_priorbar_break_v1','4H_TR_GE_1P5_ATR14_PRIOR_BAR_BREAK_CONTINUATION'),('basis_hf_short_only','basis_premium_collector_4h_scaled_short_only_v1','4H_TIME_SCALED_MEAN_REVERSION_SHORT_SIDE_OWNERSHIP')]
  cand={}
  for mode,cid,arch in configs:cand[cid]={'architecture':arch,**run_one(mode)}
- r={'schema_version':'zel.a1_gen2_highfreq_dual_dev.v5','boundary':BOUNDARY,'development_only':True,'prospective':False,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':SCALED_SHOCK,'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
+ r={'schema_version':'zel.a1_gen2_highfreq_dual_dev.v6','boundary':BOUNDARY,'development_only':True,'prospective':False,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':SCALED_SHOCK,'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest(); return r
 if __name__=='__main__':
  r=run(); Path('out').mkdir(exist_ok=True); Path('out/a1_gen2_4h_trend_breakout_dev_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n'); print('A1_GEN2_HIGH_FREQ_DUAL='+json.dumps(r,sort_keys=True))

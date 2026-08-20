@@ -14,6 +14,37 @@ GEMINI_FALLBACK_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 PASS_DECISIONS = {"PASS", "PASS_TO_REPLAY", "PASS_TO_PREREGISTER"}
 
+EXECUTABLE_SPEC_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "bar_interval": {"type": "STRING", "enum": ["5m", "15m", "30m", "1h", "4h", "1d"]},
+        "features": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "name": {"type": "STRING"},
+                    "formula": {"type": "STRING"},
+                },
+                "required": ["name", "formula"],
+            },
+        },
+        "entry_rule": {"type": "STRING"},
+        "side_rule": {"type": "STRING"},
+        "exit_rule": {"type": "STRING"},
+        "max_hold_bars": {"type": "INTEGER"},
+        "entry_timing": {"type": "STRING"},
+        "cost_model": {"type": "STRING"},
+        "development_data_rule": {"type": "STRING"},
+        "parameter_provenance": {"type": "STRING"},
+    },
+    "required": [
+        "bar_interval", "features", "entry_rule", "side_rule", "exit_rule",
+        "max_hold_bars", "entry_timing", "cost_model", "development_data_rule",
+        "parameter_provenance",
+    ],
+}
+
 GENERATOR_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
@@ -43,6 +74,7 @@ GENERATOR_RESPONSE_SCHEMA: dict[str, Any] = {
                     "falsification": {"type": "STRING"},
                     "forbidden_changes": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "why_distinct": {"type": "STRING"},
+                    "executable_spec": EXECUTABLE_SPEC_SCHEMA,
                 },
                 "required": [
                     "candidate_id", "mode", "strategy_id", "architecture_family", "changed_axis",
@@ -50,7 +82,7 @@ GENERATOR_RESPONSE_SCHEMA: dict[str, Any] = {
                     "regime_owner", "invalidation", "exit_logic", "time_stop_rationale",
                     "turnover_cost_budget", "required_sources", "evidence_ids",
                     "expected_move_cost_multiple_target", "falsification", "forbidden_changes",
-                    "why_distinct",
+                    "why_distinct", "executable_spec",
                 ],
             },
         }
@@ -273,6 +305,7 @@ def call_gemini_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
         prompt,
         system_instruction=(
             "Return only the requested strategy-architecture JSON. Keep every prose field concise (one or two sentences). "
+            "Every candidate must include the complete executable_spec requested by the schema. "
             "Do not browse, do not infer sealed holdout outcomes, and do not tune parameters from outcomes."
         ),
         max_output_tokens=10000,
@@ -353,6 +386,8 @@ def self_test() -> int:
     assert _is_obsolete_model_404('{"error":{"message":"This model models/gemini-2.5-pro is no longer available to new users."}}') is True
     assert _is_obsolete_model_404('{"error":{"message":"quota exceeded"}}') is False
     assert GENERATOR_RESPONSE_SCHEMA["required"] == ["candidates"]
+    item_schema = GENERATOR_RESPONSE_SCHEMA["properties"]["candidates"]["items"]
+    assert "executable_spec" in item_schema["properties"] and "executable_spec" in item_schema["required"]
     print("PASS_GEMINI_PROVIDER_V1_SELF_TEST")
     return 0
 

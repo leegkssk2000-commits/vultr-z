@@ -46,7 +46,7 @@ def _trades()->list[dict[str,Any]]:
     out=[]; spec=INCUMBENT["executable_spec"]; hold=int(spec["max_hold_bars"])
     for symbol in econ.SYMBOLS:
         rs=econ.bars(symbol,"1d"); eng=econ.Expr(rs,{})
-        i=50
+        i=30
         while i<len(rs)-1:
             try: fire=bool(eng.eval(spec["entry_rule"],i))
             except Exception: fire=False
@@ -104,5 +104,3 @@ def run(output:Path)->dict[str,Any]:
     return result
 
 if __name__=="__main__":run(Path("out/a1_gen2_incumbent_hardening_v1.json"))
-
-# trigger-only: verified robustness workflow owns hardening execution; economics unchanged

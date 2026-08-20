@@ -31,6 +31,13 @@ def _youtube_path() -> Path:
     return Path(raw) if raw else YOUTUBE_EVIDENCE_DEFAULT
 
 
+def _terminal_only_targets(ledger: Mapping[str, Any], limit: int = 25) -> list[dict[str, Any]]:
+    """Use all already-terminal GEN1 outcomes for GEN2 PREP; never unfinished outcomes."""
+    rows = factory_v1.target_rows(ledger, limit=25)
+    terminal = [dict(x) for x in rows if bool(x.get("terminal"))]
+    return terminal[: max(0, int(limit))]
+
+
 def merge_evidence(base: Mapping[str, Any], youtube: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     merged = dict(base)
     base_sources = [dict(x) for x in (base.get("sources") or []) if isinstance(x, Mapping)]
@@ -85,19 +92,30 @@ def run(output: Path) -> dict[str, Any]:
     youtube = _read(youtube_path)
     merged, youtube_summary = merge_evidence(base, youtube)
 
+    ledger = factory_v1.read_json(factory_v1.LEDGER)
+    terminal_targets = _terminal_only_targets(ledger, limit=25)
+    done_count = int(ledger.get("done_count") or 0)
+
     with tempfile.TemporaryDirectory(prefix="a1-factory-v4-evidence-") as td:
         merged_path = Path(td) / "merged_evidence.json"
         merged_path.write_text(json.dumps(merged, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         old_v1_evidence = factory_v1.EVIDENCE
         old_v3_evidence = factory_v3.EVIDENCE
+        old_v1_targets = factory_v1.target_rows
+        old_v3_targets = factory_v3.target_rows
         try:
             factory_v1.EVIDENCE = merged_path
             factory_v3.EVIDENCE = merged_path
+            # All generators see the same complete terminal-only GEN1 distribution.
+            factory_v1.target_rows = _terminal_only_targets
+            factory_v3.target_rows = _terminal_only_targets
             inner_path = Path(td) / "v3.json"
             result = factory_v3.run(inner_path)
         finally:
             factory_v1.EVIDENCE = old_v1_evidence
             factory_v3.EVIDENCE = old_v3_evidence
+            factory_v1.target_rows = old_v1_targets
+            factory_v3.target_rows = old_v3_targets
 
     result = dict(result)
     result["schema_version"] = "zel.a1_strategy_architecture_factory.v4"
@@ -105,6 +123,18 @@ def run(output: Path) -> dict[str, Any]:
     result["external_evidence_count"] = len(merged.get("sources") or [])
     result["youtube_evidence_factory_blocking"] = False
     result["youtube_can_promote_candidate"] = False
+    result["gen2_prep_failure_distribution"] = {
+        "generation": int(ledger.get("generation") or 0),
+        "done_count": done_count,
+        "terminal_count_used": len(terminal_targets),
+        "terminal_strategy_ids": [str(x.get("strategy_id")) for x in terminal_targets],
+        "unfinished_outcomes_used": False,
+        "all_terminal_outcomes_used": len(terminal_targets) == done_count,
+        "purpose": "GEN2_PREP_ONLY",
+    }
+    result["prep_only"] = done_count < 25
+    result["fresh_prospective_boundary_created"] = False
+    result["heavy_gen2_launch_started"] = False
     result.pop("receipt_sha256", None)
     result["receipt_sha256"] = sha(result)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +161,14 @@ def self_test() -> int:
     assert merged["coverage"]["verified_youtube"] == 1
     assert merged["policy"]["youtube_verified_items_accepted"] == 1
     assert summary["accepted_count"] == 1 and summary["factory_blocking"] is False
+    fake = {
+        "strategies": {
+            "done": {"status": "A1_ECONOMIC_FAIL", "completed_trades": 3, "net_expectancy_bps": -1.0},
+            "open": {"status": "UNTESTED", "completed_trades": 9, "net_expectancy_bps": 99.0},
+        }
+    }
+    targets = _terminal_only_targets(fake, 25)
+    assert [x["strategy_id"] for x in targets] == ["done"]
     print("PASS_A1_STRATEGY_ARCHITECTURE_FACTORY_V4_SELF_TEST")
     return 0
 
@@ -146,6 +184,7 @@ def main() -> int:
     print(json.dumps({
         "state": result["state"],
         "done_count": result.get("gemini", {}).get("done_count"),
+        "terminal_count_used": result.get("gen2_prep_failure_distribution", {}).get("terminal_count_used"),
         "generated_after_dedup": result.get("generated_after_dedup"),
         "alpha_proof_ready_count": result.get("alpha_proof_ready_count"),
         "youtube_evidence": result.get("youtube_evidence"),

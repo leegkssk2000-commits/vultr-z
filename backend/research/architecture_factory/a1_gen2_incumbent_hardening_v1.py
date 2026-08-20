@@ -31,14 +31,7 @@ def _lock_outcome(rs,side,ei,xi,ep):
     xp=rs[xi]['close']
     return (xp/ep-1)*10000*(1 if side=='long' else -1),None,activation_day
 
-def _rejection_ok(r,side):
-    o=float(r['open']); c=float(r['close']); h=float(r['high']); l=float(r['low'])
-    body=abs(c-o)
-    lower=max(0.0,min(o,c)-l)
-    upper=max(0.0,h-max(o,c))
-    return lower>=body if side=='long' else upper>=body
-
-def _trades(rejection_confirm=False):
+def _trades(gap_confirm=False):
     out=[]
     for symbol in econ.SYMBOLS:
         rs=econ.bars(symbol,'1d'); eng=econ.Expr(rs,{}); i=30
@@ -46,10 +39,12 @@ def _trades(rejection_confirm=False):
             try: fire=bool(eng.eval(ENTRY_RULE,i))
             except Exception: fire=False
             if not fire: i+=1; continue
-            side=econ._side(SIDE_RULE,eng,i)
-            if rejection_confirm and not _rejection_ok(rs[i],side):
-                i+=1; continue
-            ei=i+1; xi=min(ei+HOLD-1,len(rs)-1); ep=rs[ei]['open']
+            side=econ._side(SIDE_RULE,eng,i); ei=i+1
+            if gap_confirm:
+                sig_close=float(rs[i]['close']); entry_open=float(rs[ei]['open'])
+                if (side=='long' and entry_open<sig_close) or (side=='short' and entry_open>sig_close):
+                    i+=1; continue
+            xi=min(ei+HOLD-1,len(rs)-1); ep=rs[ei]['open']
             gross,lock_exit_day,activation_day=_lock_outcome(rs,side,ei,xi,ep)
             w=[x['close'] for x in rs[max(0,i-49):i+1]]; sma50=sum(w)/len(w)
             out.append({"symbol":symbol,"side":side,"gross_bps":gross,"signal_year":datetime.fromtimestamp(rs[i]['ts']/1000,tz=timezone.utc).year,"signal_regime50":"above_sma50" if rs[i]['close']>=sma50 else "below_sma50","activation_day":activation_day,"lock_exit_day":lock_exit_day})
@@ -76,16 +71,17 @@ def run(output:Path):
     cand_flip=_metrics([-t['gross_bps'] for t in candidate_trades],14.0)
     accepted=_pareto(base,cand)
     result={
-      "schema_version":"zel.a1_gen2_independent_axis_candle_rejection.v1",
+      "schema_version":"zel.a1_gen2_independent_axis_next_bar_gap_confirmation.v1",
       "development_only":True,
       "incumbent_id":"repair_short_above_sma50_veto_plus_mfe300_net_be_lock_v1",
       "incumbent_metrics":base,
       "independent_axis":{
-        "axis":"shock_day_directional_rejection_wick_ge_real_body_only",
+        "axis":"next_bar_open_not_adverse_vs_signal_close_only",
         "threshold_sweep":False,
         "profit_lock_unchanged":True,
         "holding_horizon_unchanged":True,
         "short_sma50_veto_unchanged":True,
+        "entry_timing_unchanged":"next_bar_open",
         "new_metrics":cand,
         "cost_stress":cand_costs,
         "by_symbol":cand_symbols,
@@ -97,6 +93,6 @@ def run(output:Path):
       "selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0
     }
     output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
-    print('INDEPENDENT_CANDLE_REJECTION_AXIS='+json.dumps(result,sort_keys=True)); return result
+    print('INDEPENDENT_NEXT_BAR_GAP_AXIS='+json.dumps(result,sort_keys=True)); return result
 
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

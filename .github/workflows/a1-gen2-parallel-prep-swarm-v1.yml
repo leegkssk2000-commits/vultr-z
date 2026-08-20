@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: a1-gen2-parallel-prep-swarm-v1
@@ -88,6 +89,47 @@ jobs:
             'alpha_proof_ready_count': r['alpha_proof_ready_count'],
             'launch_state': r['launch']['state'],
           }, sort_keys=True))
+          PY
+
+      - name: Publish PREP runtime receipt to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          r=json.load(open('out/a1_terminal_repair_swarm_v4.json'))
+          marker='<!-- A1_GEN2_PARALLEL_PREP_SWARM_V1 -->'
+          providers={}
+          for sid,row in (r.get('provider_state') or {}).items():
+              for name,p in (row or {}).items():
+                  x=providers.setdefault(name, {'success':0,'fail':0,'candidates':0})
+                  if p.get('successful'):
+                      x['success']+=1
+                      x['candidates']+=int(p.get('candidate_count') or 0)
+                  else:
+                      x['fail']+=1
+          body='\n'.join([
+              marker,
+              '## A1 GEN2 Parallel PREP Swarm V1',
+              f"run={os.environ['RUN_ID']}",
+              f"done_count={r['ledger_done_count']}/25|terminal_count={r['terminal_count']}|phase={r['phase']}|prep_only={str(r['prep_only']).lower()}",
+              f"repairs={r['queued_repair_count']}|new_arch={r['queued_new_arch_count']}|alpha_proof_ready={r['alpha_proof_ready_count']}|eligible={r['eligible_count']}",
+              'providers='+json.dumps(providers,sort_keys=True),
+              f"gemini_enabled={str(r['gemini']['enabled']).lower()}|launch={r['launch']['state']}",
+              f"receipt={r['receipt_sha256']}",
+              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0',
+          ])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          existing=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_GEN2_PREP_RUNTIME_RECEIPT_PUBLISHED')
           PY
 
       - uses: actions/upload-artifact@v4

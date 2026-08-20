@@ -72,7 +72,7 @@ class Expr:
     ALLOWED_CMP = (ast.Gt, ast.GtE, ast.Lt, ast.LtE, ast.Eq, ast.NotEq)
     ALLOWED_BOOL = (ast.And, ast.Or)
     ALLOWED_UNARY = (ast.USub, ast.UAdd, ast.Not)
-    FUNCS = {"abs", "min", "max", "sma", "std", "lag", "ret", "atr", "vwap", "zscore", "highest", "lowest"}
+    FUNCS = {"abs", "min", "max", "sma", "ema", "std", "lag", "ret", "atr", "vwap", "zscore", "highest", "lowest"}
 
     def __init__(self, rows: list[dict[str, float]], features: dict[str, list[float | None]]):
         self.rows = rows
@@ -85,6 +85,9 @@ class Expr:
         replacements = {
             "rolling_mean":"sma", "rolling_sma":"sma", "rolling_std":"std",
             "rolling_max":"highest", "rolling_min":"lowest", "returns":"ret",
+            "EMA":"ema", "SMA":"sma", "STDEV":"std", "STD":"std",
+            "LOWEST":"lowest", "HIGHEST":"highest", "VWAP":"vwap", "ATR":"atr",
+            "ZSCORE":"zscore", "LAG":"lag", "RET":"ret",
             "AND":"and", "OR":"or", "&&":"and", "||":"or",
         }
         for a,b in replacements.items():
@@ -94,8 +97,13 @@ class Expr:
 
     def validate(self, s: str) -> ast.Expression:
         tree = ast.parse(self.normalize(s), mode="eval")
+        allowed_names={"open","high","low","close","volume",*self.features.keys(),*self.FUNCS}
         for n in ast.walk(tree):
-            if isinstance(n, ast.Expression | ast.Load | ast.Constant | ast.Name):
+            if isinstance(n, ast.Name):
+                if n.id not in allowed_names:
+                    raise ValueError(f"UNKNOWN_NAME:{n.id}")
+                continue
+            if isinstance(n, ast.Expression | ast.Load | ast.Constant):
                 continue
             if isinstance(n, ast.BinOp) and isinstance(n.op, self.ALLOWED_BIN):
                 continue
@@ -135,6 +143,15 @@ class Expr:
         def lag(name: Any, n: Any=1): return self._series_value(_name(name), i-int(n))
         def sma(name: Any, n: Any):
             x=self._window(_name(name),int(n)); return sum(x)/len(x) if x else None
+        def ema(name: Any, n: Any):
+            n=max(1,int(n)); vals=[]
+            for j in range(max(0,i-max(n*4,n)+1),i+1):
+                v=self._series_value(_name(name),j)
+                if isinstance(v,(int,float)) and math.isfinite(float(v)): vals.append(float(v))
+            if not vals: return None
+            a=2.0/(n+1.0); out=vals[0]
+            for v in vals[1:]: out=a*v+(1.0-a)*out
+            return out
         def std(name: Any, n: Any):
             x=self._window(_name(name),int(n));
             if len(x)<2: return 0.0
@@ -163,7 +180,7 @@ class Expr:
             x=self._window(_name(name),int(n)); return max(x) if x else None
         def lowest(name: Any,n: Any):
             x=self._window(_name(name),int(n)); return min(x) if x else None
-        env.update({"lag":lag,"sma":sma,"std":std,"ret":ret,"atr":atr,"vwap":vwap,"zscore":zscore,"highest":highest,"lowest":lowest,"abs":abs,"min":min,"max":max})
+        env.update({"lag":lag,"sma":sma,"ema":ema,"std":std,"ret":ret,"atr":atr,"vwap":vwap,"zscore":zscore,"highest":highest,"lowest":lowest,"abs":abs,"min":min,"max":max})
         return env
 
     def eval(self, s: str, i: int) -> Any:
@@ -172,9 +189,11 @@ class Expr:
 
 
 def _feature_formula(s: str) -> str:
-    # AI often writes SMA(close,20); function API expects series name strings.
     s=Expr.normalize(s)
-    for fn in ("sma","std","lag","zscore","highest","lowest"):
+    # Common harmless AI syntax: "feature = expression". Strip one leading assignment only.
+    if "==" not in s and "!=" not in s and ">=" not in s and "<=" not in s:
+        s=re.sub(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*", "", s)
+    for fn in ("sma","ema","std","lag","zscore","highest","lowest"):
         s=re.sub(rf"\b{fn}\(\s*(open|high|low|close|volume|[A-Za-z_][A-Za-z0-9_]*)\s*,", rf"{fn}('\1',", s)
     return s
 
@@ -188,6 +207,15 @@ def _side(rule: str, engine: Expr, i: int) -> str | None:
     m=re.fullmatch(r"short\s+if\s+(.+)\s+else\s+long", text)
     if m: return "short" if bool(engine.eval(m.group(1),i)) else "long"
     return None
+
+
+def _validate_side(rule:str, engine:Expr)->None:
+    text=str(rule or "").strip().lower()
+    if text in {"long","long_only","always_long","short","short_only","always_short"}: return
+    for pat in (r"long\s+if\s+(.+)\s+else\s+short",r"short\s+if\s+(.+)\s+else\s+long"):
+        m=re.fullmatch(pat,text)
+        if m: engine.validate(m.group(1)); return
+    raise ValueError("SIDE_RULE_UNSUPPORTED")
 
 
 def _pf(xs:list[float])->float|None:
@@ -224,20 +252,24 @@ def evaluate_candidate(candidate: Mapping[str,Any]) -> dict[str,Any]:
             for f in spec.get("features") or []:
                 name=str(f.get("name") or "").strip(); formula=_feature_formula(str(f.get("formula") or ""))
                 if not name or not formula: raise ValueError("FEATURE_EMPTY")
+                # Compile before evaluating; malformed specs must never masquerade as zero-event economics.
+                eng.validate(formula)
                 arr=[]; features[name]=arr
                 for i in range(len(rs)):
                     try:
                         v=eng.eval(formula,i); arr.append(float(v) if isinstance(v,(int,float)) and math.isfinite(float(v)) else None)
-                    except Exception: arr.append(None)
+                    except (TypeError,ZeroDivisionError,ValueError): arr.append(None)
             eng=Expr(rs,features)
-            # pre-validate rules to fail closed rather than silently alter semantics.
             eng.validate(entry)
+            _validate_side(side_rule,eng)
             time_only=exit_rule.strip().lower() in {"time_stop","time stop","max_hold","max_hold_bars"}
             if not time_only: eng.validate(exit_rule)
             i=max(30,1)
+            entry_eval_errors=0
             while i < len(rs)-1:
                 try: fire=bool(eng.eval(entry,i))
-                except Exception: fire=False
+                except (TypeError,ZeroDivisionError,ValueError):
+                    entry_eval_errors+=1; fire=False
                 if not fire: i+=1; continue
                 side=_side(side_rule,eng,i)
                 if side not in {"long","short"}: raise ValueError("SIDE_RULE_UNSUPPORTED")
@@ -246,14 +278,18 @@ def evaluate_candidate(candidate: Mapping[str,Any]) -> dict[str,Any]:
                     for j in range(entry_i,min(entry_i+hold,len(rs))):
                         try:
                             if bool(eng.eval(exit_rule,j)): exit_i=j; break
-                        except Exception: raise ValueError("EXIT_RULE_UNSUPPORTED")
+                        except (TypeError,ZeroDivisionError,ValueError): raise ValueError("EXIT_RULE_UNSUPPORTED")
                 exit_px=rs[exit_i]["close"]; gross=(exit_px/entry_px-1.0)*10000*(1 if side=="long" else -1); net=gross-COST_BPS
                 alltr.append({"symbol":symbol,"side":side,"gross_bps":gross,"net_bps":net,"entry_ts":int(rs[entry_i]["ts"]),"exit_ts":int(rs[exit_i]["ts"])})
                 i=max(i+1,exit_i+1)
+            if entry_eval_errors > max(50,len(rs)//2):
+                raise ValueError(f"ENTRY_RUNTIME_ERRORS:{entry_eval_errors}")
     except Exception as exc:
         return {"candidate_id":cid,"state":"REJECT_UNEXECUTABLE_SPEC","error":f"{type(exc).__name__}:{str(exc)[:240]}","economic_pass":False}
     net=[x["net_bps"] for x in alltr]; gross=[x["gross_bps"] for x in alltr]
     metrics={"trades":len(net),"gross_expectancy_bps":sum(gross)/len(gross) if gross else None,"net_expectancy_bps":sum(net)/len(net) if net else None,"net_pnl_bps":sum(net),"profit_factor":_pf(net),"payoff":_payoff(net),"win_rate":sum(1 for x in net if x>0)/len(net) if net else None,"drawdown_bps":_dd(net),"cost_bps_per_trade":COST_BPS}
+    if not net:
+        return {"candidate_id":cid,"strategy_id":candidate.get("strategy_id"),"provider":candidate.get("provider"),"state":"FAIL_INSUFFICIENT_EVENTS","economic_pass":False,"metrics":metrics,"source_summary":source,"development_only":True,"prospective":False,"uses_data_strictly_before_gen1_boundary":True,"boundary":BOUNDARY}
     passed=bool(len(net)>=12 and (metrics["net_expectancy_bps"] or 0)>0 and (metrics["profit_factor"] or 0)>1.0)
     return {"candidate_id":cid,"strategy_id":candidate.get("strategy_id"),"provider":candidate.get("provider"),"state":"PASS_DEVELOPMENT_ECONOMICS" if passed else "FAIL_DEVELOPMENT_ECONOMICS","economic_pass":passed,"metrics":metrics,"source_summary":source,"development_only":True,"prospective":False,"uses_data_strictly_before_gen1_boundary":True,"boundary":BOUNDARY}
 
@@ -262,6 +298,7 @@ def evaluate_queue(queue:list[Mapping[str,Any]])->dict[str,Any]:
     rows=[evaluate_candidate(c) for c in queue]
     passed=[x for x in rows if x.get("economic_pass")]
     failed=[x for x in rows if x.get("state")=="FAIL_DEVELOPMENT_ECONOMICS"]
+    insufficient=[x for x in rows if x.get("state")=="FAIL_INSUFFICIENT_EVENTS"]
     skipped=[x for x in rows if str(x.get("state") or "").startswith("SKIP_")]
     rejected=[x for x in rows if str(x.get("state") or "").startswith("REJECT_")]
-    return {"schema_version":"zel.a1_gen2_generic_dev_econ.v1","development_only":True,"prospective":False,"cost_bps_per_trade":COST_BPS,"boundary":BOUNDARY,"candidate_count":len(rows),"economic_pass_count":len(passed),"economic_fail_count":len(failed),"source_skip_count":len(skipped),"spec_reject_count":len(rejected),"passes":passed,"rows":rows,"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0}
+    return {"schema_version":"zel.a1_gen2_generic_dev_econ.v1","development_only":True,"prospective":False,"cost_bps_per_trade":COST_BPS,"boundary":BOUNDARY,"candidate_count":len(rows),"economic_pass_count":len(passed),"economic_fail_count":len(failed),"insufficient_event_count":len(insufficient),"source_skip_count":len(skipped),"spec_reject_count":len(rejected),"passes":passed,"rows":rows,"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED","exchange_order_submitted":False,"protected_mutations":0}

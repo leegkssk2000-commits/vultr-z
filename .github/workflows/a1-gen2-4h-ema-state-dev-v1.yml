@@ -1,0 +1,35 @@
+name: A1 GEN2 4H EMA State Dev V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_4h_ema_state_dev_v1.py'
+      - '.github/workflows/a1-gen2-4h-ema-state-dev-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  development:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Verify EMA contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_gen2_4h_ema_state_dev_v1.py
+      - name: Run EMA development economics
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_gen2_4h_ema_state_dev_v1
+          cat out/a1_gen2_4h_ema_state_dev_v1.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-4h-ema-state-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          path: out/a1_gen2_4h_ema_state_dev_v1.json

@@ -5,6 +5,7 @@ on:
     paths:
       - 'backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py'
       - 'backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py'
       - '.github/workflows/a1-gen2-pass-robustness-audit-v1.yml'
   workflow_dispatch:
 permissions:
@@ -26,10 +27,11 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p out
-          python -m py_compile backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py
+          python -m py_compile backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py
           python -m backend.research.architecture_factory.a1_gen2_pass_robustness_audit_v1
           python -m backend.research.architecture_factory.a1_gen2_incumbent_hardening_v1
-      - name: Economic milestone alert only
+          python -m backend.research.architecture_factory.a1_gen2_fresh_boundary_replay_v1
+      - name: Fresh gate milestone only
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,23 +39,17 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib,json,os,pathlib,urllib.request
-          p=pathlib.Path('out/a1_gen2_incumbent_hardening_v1.json')
-          if not p.exists():
-              raise SystemExit(0)
-          x=json.load(open(p))
-          axis=x.get('axis',{})
-          if not bool(axis.get('accepted_pareto')):
-              raise SystemExit(0)
-          m=axis.get('new_metrics') or {}
-          signature=json.dumps({k:m.get(k) for k in ('trades','net_pnl_bps','net_expectancy_bps','profit_factor','drawdown_bps')},sort_keys=True)
-          sig=hashlib.sha256(signature.encode()).hexdigest()[:16]
-          marker=f'<!-- A1_ECONOMIC_MILESTONE_{sig} -->'
+          p=pathlib.Path('out/a1_gen2_fresh_boundary_replay_v1.json')
+          if not p.exists(): raise SystemExit(0)
+          x=json.load(open(p)); state=x.get('state')
+          if state not in ('PASS_PROSPECTIVE_REPLAY','FAIL_PROSPECTIVE_REPLAY'): raise SystemExit(0)
+          signature=json.dumps({'state':state,'fresh_trade_count':x.get('fresh_trade_count'),'fresh_metrics':x.get('fresh_metrics')},sort_keys=True)
+          sig=hashlib.sha256(signature.encode()).hexdigest()[:16]; marker=f'<!-- A1_FRESH_GATE_{sig} -->'
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as q: cs=json.load(q)
-          if any(marker in str(c.get('body') or '') for c in cs):
-              raise SystemExit(0)
-          body='\n'.join([marker,'## ZEL ECONOMIC MILESTONE','state=PASS_PARETO_IMPROVEMENT','schema='+str(x.get('schema_version')),'metrics='+signature,'single_alert=true|fail_alert=false|repeat_alert=false'])
+          if any(marker in str(c.get('body') or '') for c in cs): raise SystemExit(0)
+          body='\n'.join([marker,'## A1 GEN2 FRESH PROSPECTIVE GATE','state='+state,'boundary='+str(x.get('boundary_iso')),'fresh_trade_count='+str(x.get('fresh_trade_count')),'metrics='+json.dumps(x.get('fresh_metrics'),sort_keys=True),'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
           post=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           with urllib.request.urlopen(urllib.request.Request(post,data=json.dumps({'body':body}).encode(),headers=h,method='POST')): pass
           PY
@@ -65,4 +61,5 @@ jobs:
           path: |
             out/a1_gen2_pass_robustness_audit_v1.json
             out/a1_gen2_incumbent_hardening_v1.json
+            out/a1_gen2_fresh_boundary_replay_v1.json
           if-no-files-found: ignore

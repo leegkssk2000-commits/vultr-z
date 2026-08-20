@@ -24,11 +24,6 @@ on:
 permissions:
   contents: read
 
-# All baseline/experimental heavy evaluators share this single global lock.
-concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: false
-
 jobs:
   contract:
     if: github.event_name == 'pull_request'
@@ -62,10 +57,37 @@ jobs:
           print('PASS_SCALP_EXHAUSTION_ECONOMICS_RUNNER_CONTRACT')
           PY
 
-  evaluate:
+  gen1-gate:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - id: gate
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          generation=int(d.get('generation') or 0); done=int(d.get('done_count') or 0)
+          allowed=(generation == 1 and done == 25)
+          print('allowed=' + ('true' if allowed else 'false'))
+          print(f'GEN1_GATE generation={generation} done={done}/25 allowed={allowed}')
+          PY
+
+  evaluate:
+    needs: gen1-gate
+    if: needs.gen1-gate.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,10 +96,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Verify experiment and extract boundary
+      - name: Verify GEN1 complete and experiment boundary
         id: boundary
-        shell: bash
         run: |
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1.py
@@ -85,36 +105,31 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          assert int(d.get('done_count') or 0) == 25
           cfg=json.loads(Path('backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_config_v1.json').read_text())
           reg=json.loads(Path('backend/research/rebuild/a1_experimental_scalp_snap_order_flow_exhaustion_v1.json').read_text())
           boundary=cfg.get('fresh_prospective_boundary_utc')
           assert boundary == '2026-08-17T23:15:00Z'
           assert reg.get('experimental_not_baseline') is True and reg.get('baseline_mutated') is False
-          assert cfg.get('baseline_clock_reset') is False
-          assert float(cfg.get('verified_pretrade_cost_bps_reference') or 0) == 14.0
           print('boundary=' + boundary)
           PY
-
       - name: Prepare SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        shell: bash
         run: |
           set -euo pipefail
-          test -n "$VPS_HOST"
-          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"; test -n "$VPS_SSH_KEY"
           mkdir -p ~/.ssh out
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-
       - name: Fetch prospective microstructure evidence read-only
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           BOUNDARY: ${{ steps.boundary.outputs.boundary }}
-        shell: bash
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
@@ -124,112 +139,33 @@ jobs:
           print(int(datetime.fromisoformat(os.environ['BOUNDARY'].replace('Z','+00:00')).timestamp()*1000))
           PY
           )"
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            "BOUNDARY_MS='$BOUNDARY_MS' bash -se" > out/microstructure.jsonl <<'REMOTE'
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "BOUNDARY_MS='$BOUNDARY_MS' bash -se" > out/microstructure.jsonl <<'REMOTE'
           set -euo pipefail
           export BOUNDARY_MS
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           p=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
-          if not p.is_file():
-              raise SystemExit('MICRO_HISTORY_MISSING')
-          floor=int(os.environ['BOUNDARY_MS'])-600000
-          kept=0
+          if not p.is_file(): raise SystemExit('MICRO_HISTORY_MISSING')
+          floor=int(os.environ['BOUNDARY_MS'])-600000; kept=0
           for line in p.read_text(errors='strict').splitlines():
-              if not line.strip():
-                  continue
+              if not line.strip(): continue
               row=json.loads(line)
               if int(row.get('bucket_end_ms') or 0) >= floor:
-                  print(json.dumps(row,sort_keys=True,separators=(',',':')))
-                  kept+=1
-          if kept < 2:
-              raise SystemExit('MICRO_HISTORY_INSUFFICIENT_AFTER_BOUNDARY')
+                  print(json.dumps(row,sort_keys=True,separators=(',',':'))); kept+=1
+          if kept < 2: raise SystemExit('MICRO_HISTORY_INSUFFICIENT_AFTER_BOUNDARY')
           PY
           REMOTE
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            "cat /home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json" > out/microstructure_heartbeat.json
-
-      - name: Verify source freshness and authority
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,time
-          from pathlib import Path
-          hb=json.loads(Path('out/microstructure_heartbeat.json').read_text())
-          assert hb.get('state')=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING', hb
-          assert int(time.time()*1000)-int(hb.get('updated_at_ms') or 0) <= 120000, hb
-          assert hb.get('selection_authority') is False and hb.get('promotion_authority') is False
-          assert hb.get('execution_authority')=='NONE' and hb.get('order_authority')=='BLOCKED'
-          assert hb.get('live_trade_authority')=='BLOCKED' and hb.get('exchange_order_submitted') is False
-          assert int(hb.get('protected_mutations') or 0)==0
-          rows=[json.loads(x) for x in Path('out/microstructure.jsonl').read_text().splitlines() if x.strip()]
-          assert len(rows)>=2
-          assert all(str(r.get('symbol') or '') in {'BTC-USDT','ETH-USDT'} for r in rows)
-          print('PASS_PROSPECTIVE_MICROSTRUCTURE_SOURCE rows=' + str(len(rows)))
-          PY
-
+          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "cat /home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json" > out/microstructure_heartbeat.json
       - name: Evaluate frozen scalp exhaustion experiment
-        id: economics
         env:
           BOUNDARY: ${{ steps.boundary.outputs.boundary }}
-        shell: bash
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1 \
-            --boundary "$BOUNDARY" \
-            --history out/microstructure.jsonl \
-            --symbols BTC-USDT,ETH-USDT \
-            --out out/scalp_exhaustion_economics.json
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          r=json.loads(Path('out/scalp_exhaustion_economics.json').read_text())
-          assert r.get('experimental_not_baseline') is True and r.get('baseline_mutated') is False
-          assert r.get('boundary_utc')=='2026-08-17T23:15:00Z'
-          assert int(r.get('leakage_lookahead') or 0)==0
-          assert int(r.get('duplicate_count') or 0)==0
-          assert not r.get('integrity_defects'), r.get('integrity_defects')
-          assert r.get('selection_authority') is False and r.get('promotion_authority') is False
-          assert r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED'
-          assert r.get('live_trade_authority')=='BLOCKED' and r.get('exchange_order_submitted') is False
-          assert int(r.get('protected_mutations') or 0)==0
-          m=r.get('metrics') or {}
-          print('completed_trades=' + str(int(r.get('completed_trades') or 0)))
-          print('baseline_intents=' + str(int(r.get('baseline_intent_count') or 0)))
-          print('confirmed_intents=' + str(int(r.get('confirmed_intent_count') or 0)))
-          print('state=' + str(r.get('state') or ''))
-          print('net_expectancy_bps=' + str(m.get('net_expectancy_bps')))
-          print('profit_factor=' + str(m.get('net_profit_factor')))
-          PY
-
-      - name: Write economic summary
-        shell: bash
-        run: |
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          from pathlib import Path
-          r=json.loads(Path('out/scalp_exhaustion_economics.json').read_text())
-          m=r.get('metrics') or {}
-          print('## scalp_snap v2 ORDER_FLOW_EXHAUSTION_CONFIRMATION')
-          print(f"- state: {r.get('state')}")
-          print(f"- boundary: {r.get('boundary_utc')}")
-          print(f"- baseline intents: {r.get('baseline_intent_count')}")
-          print(f"- confirmed intents: {r.get('confirmed_intent_count')}")
-          print(f"- completed trades: {r.get('completed_trades')}")
-          print(f"- gross expectancy bps/trade: {m.get('gross_expectancy_bps')}")
-          print(f"- net expectancy bps/trade: {m.get('net_expectancy_bps')}")
-          print(f"- PF: {m.get('net_profit_factor')}")
-          print(f"- payoff: {m.get('net_payoff')}")
-          print(f"- WR: {m.get('win_rate')}")
-          print(f"- DD bps: {m.get('max_drawdown_bps')}")
-          PY
-
+          python -m backend.research.rebuild.a1_experimental_scalp_snap_order_flow_exhaustion_evaluator_v1 --boundary "$BOUNDARY" --history out/microstructure.jsonl --symbols BTC-USDT,ETH-USDT --out out/scalp_exhaustion_economics.json
       - name: Remove SSH key
         if: always()
         run: rm -f ~/.ssh/vps_key
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,0 +1,99 @@
+name: A1 GEN2 Parallel PREP Swarm V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py'
+      - 'backend/research/architecture_factory/gemini_provider_v1.py'
+      - '.github/workflows/a1-gen2-parallel-prep-swarm-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-gen2-parallel-prep-swarm-v1
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install lightweight provider dependency
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir groq
+
+      - name: Verify PREP-only swarm contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py \
+            backend/research/architecture_factory/gemini_provider_v1.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          assert int(d['generation']) == 1, d
+          assert int(d['done_count']) < 25, d
+          print(f"GEN1_PREP_ONLY done={d['done_count']}/25")
+          PY
+
+      - name: Generate and adversarially review terminal repair/replacement PREP
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 \
+            --output out/a1_terminal_repair_swarm_v4.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v4.json'))
+          assert r['ledger_done_count'] < 25, r
+          assert r['phase'] == 'GEN1_PARALLEL_GEN2_PREP', r
+          assert r['prep_only'] is True, r
+          assert r['launch']['state'] == 'BLOCKED_GEN1_INCOMPLETE', r
+          assert r['eligible_count'] == 0, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority'] == 'NONE', r
+          assert r['order_authority'] == 'BLOCKED' and r['live_trade_authority'] == 'BLOCKED', r
+          assert r['exchange_order_submitted'] is False and int(r['protected_mutations']) == 0, r
+          print(json.dumps({
+            'done_count': r['ledger_done_count'],
+            'terminal_count': r['terminal_count'],
+            'gemini_enabled': r['gemini']['enabled'],
+            'queued_repair_count': r['queued_repair_count'],
+            'queued_new_arch_count': r['queued_new_arch_count'],
+            'alpha_proof_ready_count': r['alpha_proof_ready_count'],
+            'launch_state': r['launch']['state'],
+          }, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-parallel-prep-swarm-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/a1_terminal_repair_swarm_v4.json

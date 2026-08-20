@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
     paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py'
       - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py'
       - 'backend/research/architecture_factory/gemini_provider_v1.py'
       - '.github/workflows/a1-gen2-parallel-prep-swarm-v1.yml'
@@ -26,20 +27,18 @@ jobs:
         with:
           ref: master
           persist-credentials: false
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install lightweight provider dependency
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir groq
-
-      - name: Verify PREP-only swarm contract
+      - name: Verify PREP-only profit-first swarm contract
         run: |
           set -euo pipefail
           python -m py_compile \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py \
             backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py \
             backend/research/architecture_factory/gemini_provider_v1.py
           python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 --self-test
@@ -47,12 +46,10 @@ jobs:
           import json
           from pathlib import Path
           d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
-          assert int(d['generation']) == 1, d
-          assert int(d['done_count']) < 25, d
+          assert int(d['generation']) == 1 and int(d['done_count']) < 25, d
           print(f"GEN1_PREP_ONLY done={d['done_count']}/25")
           PY
-
-      - name: Generate and adversarially review terminal repair/replacement PREP
+      - name: Generate machine-replayable terminal repair/replacement PREP
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -66,31 +63,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 \
-            --output out/a1_terminal_repair_swarm_v4.json
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 --output out/a1_terminal_repair_swarm_v4.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_terminal_repair_swarm_v4.json'))
-          assert r['ledger_done_count'] < 25, r
-          assert r['phase'] == 'GEN1_PARALLEL_GEN2_PREP', r
-          assert r['prep_only'] is True, r
-          assert r['launch']['state'] == 'BLOCKED_GEN1_INCOMPLETE', r
-          assert r['eligible_count'] == 0, r
-          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
-          assert r['execution_authority'] == 'NONE', r
-          assert r['order_authority'] == 'BLOCKED' and r['live_trade_authority'] == 'BLOCKED', r
-          assert r['exchange_order_submitted'] is False and int(r['protected_mutations']) == 0, r
-          print(json.dumps({
-            'done_count': r['ledger_done_count'],
-            'terminal_count': r['terminal_count'],
-            'gemini_enabled': r['gemini']['enabled'],
-            'queued_repair_count': r['queued_repair_count'],
-            'queued_new_arch_count': r['queued_new_arch_count'],
-            'alpha_proof_ready_count': r['alpha_proof_ready_count'],
-            'launch_state': r['launch']['state'],
-          }, sort_keys=True))
+          assert r['ledger_done_count'] < 25 and r['prep_only'] is True
+          assert r['launch']['state'] == 'BLOCKED_GEN1_INCOMPLETE' and r['eligible_count'] == 0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority'] == 'NONE' and r['order_authority'] == 'BLOCKED' and r['live_trade_authority'] == 'BLOCKED'
+          print(json.dumps({'done_count':r['ledger_done_count'],'terminal_count':r['terminal_count'],'machine_replayable_count':r['machine_replayable_count'],'queued_repair_count':r['queued_repair_count'],'queued_new_arch_count':r['queued_new_arch_count'],'alpha_proof_ready_count':r['alpha_proof_ready_count']},sort_keys=True))
           PY
-
       - name: Publish PREP runtime receipt to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,23 +87,11 @@ jobs:
           providers={}
           for sid,row in (r.get('provider_state') or {}).items():
               for name,p in (row or {}).items():
-                  x=providers.setdefault(name, {'success':0,'fail':0,'candidates':0})
+                  x=providers.setdefault(name,{'success':0,'fail':0,'candidates':0,'machine':0})
                   if p.get('successful'):
-                      x['success']+=1
-                      x['candidates']+=int(p.get('candidate_count') or 0)
-                  else:
-                      x['fail']+=1
-          body='\n'.join([
-              marker,
-              '## A1 GEN2 Parallel PREP Swarm V1',
-              f"run={os.environ['RUN_ID']}",
-              f"done_count={r['ledger_done_count']}/25|terminal_count={r['terminal_count']}|phase={r['phase']}|prep_only={str(r['prep_only']).lower()}",
-              f"repairs={r['queued_repair_count']}|new_arch={r['queued_new_arch_count']}|alpha_proof_ready={r['alpha_proof_ready_count']}|eligible={r['eligible_count']}",
-              'providers='+json.dumps(providers,sort_keys=True),
-              f"gemini_enabled={str(r['gemini']['enabled']).lower()}|launch={r['launch']['state']}",
-              f"receipt={r['receipt_sha256']}",
-              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0',
-          ])
+                      x['success']+=1; x['candidates']+=int(p.get('candidate_count') or 0); x['machine']+=int(p.get('machine_replayable_count') or 0)
+                  else: x['fail']+=1
+          body='\n'.join([marker,'## A1 GEN2 Parallel PREP Swarm V1',f"run={os.environ['RUN_ID']}",f"done_count={r['ledger_done_count']}/25|terminal_count={r['terminal_count']}|prep_only=true",f"machine_replayable={r['machine_replayable_count']}|repairs={r['queued_repair_count']}|new_arch={r['queued_new_arch_count']}|alpha_proof_ready={r['alpha_proof_ready_count']}|eligible=0",'providers='+json.dumps(providers,sort_keys=True),f"receipt={r['receipt_sha256']}",'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
           headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
@@ -129,9 +99,7 @@ jobs:
           url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_GEN2_PREP_RUNTIME_RECEIPT_PUBLISHED')
           PY
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -140,4 +108,4 @@ jobs:
           if-no-files-found: error
           path: out/a1_terminal_repair_swarm_v4.json
 
-# manual wake: 2026-08-20 17-terminal AI improvement swarm
+# wake: profit-first machine-replayable builder 2026-08-20

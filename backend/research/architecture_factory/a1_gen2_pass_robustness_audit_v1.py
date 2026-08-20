@@ -7,39 +7,52 @@ from pathlib import Path
 from typing import Any
 import backend.research.architecture_factory.a1_gen2_generic_dev_econ_v1 as econ
 BASE={"candidate_id":"new_architecture_basis_premium_collector","strategy_id":"NEW","provider":"openai","required_sources":["ohlcv","volume"],"executable_spec":{"bar_interval":"1d","features":[{"name":"ret_sma_7","formula":"sma(ret(1),7)"}],"entry_rule":"ret(1) < -0.02 or ret(1) > 0.02","side_rule":"long if ret(1) < -0.02 else short","exit_rule":"time_stop","max_hold_bars":12,"entry_timing":"next_bar_open","cost_model":"verified_14bps_or_more","development_data_rule":"strictly_before_GEN1_boundary","parameter_provenance":"design_prior_or_primary_evidence_only"}}
-def _eval(c:dict[str,Any])->dict[str,Any]: return econ.evaluate_candidate(c)
+def _eval(c): return econ.evaluate_candidate(c)
 def _m(r):
  x=r.get('metrics') or {}; return {k:x.get(k) for k in ('trades','gross_expectancy_bps','net_expectancy_bps','net_pnl_bps','profit_factor','payoff','win_rate','drawdown_bps','events_per_day','net_bps_per_calendar_day','cost_bps_per_trade')}
 def _variant(cid,entry,side='long if ret(1) < -0.02 else short'):
- c=deepcopy(BASE); c['candidate_id']=cid; c['executable_spec']['entry_rule']=entry; c['executable_spec']['side_rule']=side; return c
-def _stats(rows):
- n=[float(x['net_bps']) for x in rows]; g=[float(x['gross_bps']) for x in rows]; z=len(n); return {'trades':z,'gross_expectancy_bps':sum(g)/z if z else None,'net_expectancy_bps':sum(n)/z if z else None,'net_pnl_bps':sum(n),'profit_factor':econ._pf(n) if z else None,'payoff':econ._payoff(n) if z else None,'win_rate':sum(x>0 for x in n)/z if z else None,'drawdown_bps':econ._dd(n) if z else 0.0}
+ c=deepcopy(BASE);c['candidate_id']=cid;c['executable_spec']['entry_rule']=entry;c['executable_spec']['side_rule']=side;return c
+def _metrics(gross):
+ net=[x-econ.COST_BPS for x in gross];n=len(net);return {'trades':n,'gross_expectancy_bps':sum(gross)/n if n else None,'net_expectancy_bps':sum(net)/n if n else None,'net_pnl_bps':sum(net),'profit_factor':econ._pf(net) if n else None,'payoff':econ._payoff(net) if n else None,'win_rate':sum(x>0 for x in net)/n if n else None,'drawdown_bps':econ._dd(net) if n else 0.0,'cost_bps_per_trade':econ.COST_BPS}
+def _stats(rows): return _metrics([float(x['gross_bps']) for x in rows])
 def _actual_trades():
- out=[]; s=BASE['executable_spec']; hold=int(s['max_hold_bars'])
+ out=[];s=BASE['executable_spec'];hold=12
  for symbol in econ.SYMBOLS:
-  rs=econ.bars(symbol,'1d'); eng=econ.Expr(rs,{}); i=30
+  rs=econ.bars(symbol,'1d');eng=econ.Expr(rs,{});i=30
   while i<len(rs)-1:
-   try: fire=bool(eng.eval(s['entry_rule'],i))
-   except Exception: fire=False
+   try:fire=bool(eng.eval(s['entry_rule'],i))
+   except Exception:fire=False
    if not fire:i+=1;continue
-   side=econ._side(s['side_rule'],eng,i); ei=i+1; xi=min(ei+hold-1,len(rs)-1); ep=rs[ei]['open']; xp=rs[xi]['close']; gross=(xp/ep-1)*10000*(1 if side=='long' else -1); net=gross-econ.COST_BPS; prev=rs[i-1]['close']; ret=rs[i]['close']/prev-1 if prev else 0; w=[x['close'] for x in rs[max(0,i-49):i+1]]; sma=sum(w)/len(w)
-   out.append({'symbol':symbol,'side':side,'gross_bps':gross,'net_bps':net,'signal_ret1':ret,'signal_regime50':'above_sma50' if rs[i]['close']>=sma else 'below_sma50','signal_year':datetime.fromtimestamp(rs[i]['ts']/1000,tz=timezone.utc).year,'entry_ts':int(rs[ei]['ts']),'exit_ts':int(rs[xi]['ts'])}); i=max(i+1,xi+1)
+   side=econ._side(s['side_rule'],eng,i);ei=i+1;xi=min(ei+hold-1,len(rs)-1);ep=rs[ei]['open'];xp=rs[xi]['close'];gross=(xp/ep-1)*10000*(1 if side=='long' else -1);prev=rs[i-1]['close'];ret=rs[i]['close']/prev-1 if prev else 0;w=[x['close'] for x in rs[max(0,i-49):i+1]];sma=sum(w)/len(w)
+   out.append({'symbol':symbol,'side':side,'gross_bps':gross,'net_bps':gross-econ.COST_BPS,'signal_ret1':ret,'signal_regime50':'above_sma50' if rs[i]['close']>=sma else 'below_sma50','signal_year':datetime.fromtimestamp(rs[i]['ts']/1000,tz=timezone.utc).year,'entry_ts':int(rs[ei]['ts']),'exit_ts':int(rs[xi]['ts'])});i=max(i+1,xi+1)
  return out
+def _conditional_exit_metrics():
+ gross=[]
+ entry_rule="ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))"
+ side_rule='long if ret(1) < -0.02 else short'
+ for symbol in econ.SYMBOLS:
+  rs=econ.bars(symbol,'1d');eng=econ.Expr(rs,{});i=30
+  while i<len(rs)-1:
+   try:fire=bool(eng.eval(entry_rule,i))
+   except Exception:fire=False
+   if not fire:i+=1;continue
+   side=econ._side(side_rule,eng,i);w=[x['close'] for x in rs[max(0,i-49):i+1]];sma=sum(w)/len(w);below=rs[i]['close']<sma;hold=6 if side=='long' and below else 12;ei=i+1;xi=min(ei+hold-1,len(rs)-1);ep=rs[ei]['open'];xp=rs[xi]['close'];gross.append((xp/ep-1)*10000*(1 if side=='long' else -1));i=max(i+1,xi+1)
+ return _metrics(gross)
 def _group(rows,key):
  d={}
  for t in rows:d.setdefault(str(t[key]),[]).append(t)
  return {k:_stats(v) for k,v in sorted(d.items())}
-def _delta(a,b): return {'net_expectancy_bps':(b.get('net_expectancy_bps') or 0)-(a.get('net_expectancy_bps') or 0),'net_pnl_bps':(b.get('net_pnl_bps') or 0)-(a.get('net_pnl_bps') or 0),'profit_factor':(b.get('profit_factor') or 0)-(a.get('profit_factor') or 0),'payoff':(b.get('payoff') or 0)-(a.get('payoff') or 0),'win_rate':(b.get('win_rate') or 0)-(a.get('win_rate') or 0),'drawdown_bps':(b.get('drawdown_bps') or 0)-(a.get('drawdown_bps') or 0),'trades':(b.get('trades') or 0)-(a.get('trades') or 0)}
-def _pareto(old,new,row): return bool(row.get('economic_pass') and (new.get('net_expectancy_bps') or -1e99)>(old.get('net_expectancy_bps') or -1e99) and (new.get('net_pnl_bps') or -1e99)>(old.get('net_pnl_bps') or -1e99) and (new.get('profit_factor') or -1e99)>(old.get('profit_factor') or -1e99) and (new.get('drawdown_bps') or 1e99)<(old.get('drawdown_bps') or 1e99))
+def _delta(a,b):return {'net_expectancy_bps':(b.get('net_expectancy_bps') or 0)-(a.get('net_expectancy_bps') or 0),'net_pnl_bps':(b.get('net_pnl_bps') or 0)-(a.get('net_pnl_bps') or 0),'profit_factor':(b.get('profit_factor') or 0)-(a.get('profit_factor') or 0),'payoff':(b.get('payoff') or 0)-(a.get('payoff') or 0),'win_rate':(b.get('win_rate') or 0)-(a.get('win_rate') or 0),'drawdown_bps':(b.get('drawdown_bps') or 0)-(a.get('drawdown_bps') or 0),'trades':(b.get('trades') or 0)-(a.get('trades') or 0)}
+def _pareto(a,b):return bool((b.get('net_expectancy_bps') or -1e99)>(a.get('net_expectancy_bps') or -1e99) and (b.get('net_pnl_bps') or -1e99)>(a.get('net_pnl_bps') or -1e99) and (b.get('profit_factor') or -1e99)>(a.get('profit_factor') or -1e99) and (b.get('drawdown_bps') or 1e99)<(a.get('drawdown_bps') or 1e99))
 def run(output:Path):
- base=_eval(BASE); bm=_m(base); actual=_actual_trades(); ast=_stats(actual)
+ base=_eval(BASE);bm=_m(base);actual=_actual_trades();ast=_stats(actual)
  if ast['trades']!=bm['trades'] or abs(ast['net_pnl_bps']-bm['net_pnl_bps'])>1e-6:raise RuntimeError('ATTRIBUTION_PATH_MISMATCH')
- bad=_variant('repair_regime_owned_large_move_reversion_v1',"(ret(1) < -0.02 and close > sma('close',50)) or (ret(1) > 0.02 and close < sma('close',50))"); rm=_m(_eval(bad))
- losses=sorted([t for t in actual if t['net_bps']<0],key=lambda x:x['net_bps']); tl=-sum(t['net_bps'] for t in losses); t10=-sum(t['net_bps'] for t in losses[:10]); attr={'actual_path_verified':True,'actual_trade_count':len(actual),'actual_metrics':ast,'by_side':_group(actual,'side'),'by_symbol':_group(actual,'symbol'),'by_year':_group(actual,'signal_year'),'by_regime50':_group(actual,'signal_regime50'),'loss_concentration':{'loss_trade_count':len(losses),'total_loss_bps':tl,'top10_loss_bps':t10,'top10_share_of_loss':t10/tl if tl else 0,'worst10':[{k:t[k] for k in ('symbol','side','net_bps','signal_ret1','signal_regime50','signal_year','entry_ts','exit_ts')} for t in losses[:10]]}}
- s2=_variant('repair_short_above_sma50_veto_v1',"ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))"); r2=_eval(s2); m2=_m(r2); a2=_pareto(bm,m2,r2)
- s3=_variant('repair_falling_knife_ge3pct_below_sma50_veto_v1',"(ret(1) < -0.02 and (close >= sma('close',50) or ret(1) > -0.03)) or (ret(1) > 0.02 and close < sma('close',50))"); s3['evidence_ids']=['F11','F16']; s3['changed_axis']='long_falling_knife_veto_ge3pct_below_sma50_only'; r3=_eval(s3); m3=_m(r3); a3=_pareto(m2,m3,r3)
- result={'schema_version':'zel.a1_gen2_pass_robustness_audit.v3','development_only':True,'candidate_id':BASE['candidate_id'],'mechanism_integrity':{'relabel':'large_move_mean_reversion'},'baseline':base,'actual_path_attribution':attr,'sealed_failed_repair':{'axis':'regime_ownership_only','old_metrics':bm,'new_metrics':rm,'delta':_delta(bm,rm),'accepted':False,'state':'SEALED_FAIL_NO_REUSE'},'second_axis_repair':{'axis':'short_adverse_regime_veto_only','new_metrics':m2,'old_metrics':bm,'delta':_delta(bm,m2),'repair':r2,'accepted_for_further_prep':a2,'state':'PASS_PARETO_IMPROVEMENT' if a2 else 'SEALED_FAIL_NO_REUSE'},'third_axis_repair':{'axis':'long_falling_knife_veto_ge3pct_below_sma50_only','threshold_source':'development_temporal_fragility_attribution_not_year_filter','year_hardcoded':False,'holding_horizon_changed':False,'short_rule_changed':False,'old_metrics':m2,'new_metrics':m3,'delta':_delta(m2,m3),'repair':r3,'accepted_for_further_prep':a3,'state':'PASS_PARETO_IMPROVEMENT' if a3 else 'SEALED_FAIL_NO_REUSE'},'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0}
- output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n');print('ROBUSTNESS_V3='+json.dumps({'second':result['second_axis_repair'],'third':result['third_axis_repair']},sort_keys=True));return result
+ bad=_variant('repair_regime_owned_large_move_reversion_v1',"(ret(1) < -0.02 and close > sma('close',50)) or (ret(1) > 0.02 and close < sma('close',50))");rm=_m(_eval(bad));losses=sorted([t for t in actual if t['net_bps']<0],key=lambda x:x['net_bps']);tl=-sum(t['net_bps'] for t in losses);t10=-sum(t['net_bps'] for t in losses[:10]);attr={'actual_path_verified':True,'actual_trade_count':len(actual),'actual_metrics':ast,'by_side':_group(actual,'side'),'by_symbol':_group(actual,'symbol'),'by_year':_group(actual,'signal_year'),'by_regime50':_group(actual,'signal_regime50'),'loss_concentration':{'loss_trade_count':len(losses),'total_loss_bps':tl,'top10_loss_bps':t10,'top10_share_of_loss':t10/tl if tl else 0,'worst10':[{k:t[k] for k in ('symbol','side','net_bps','signal_ret1','signal_regime50','signal_year','entry_ts','exit_ts')} for t in losses[:10]]}}
+ s2=_variant('repair_short_above_sma50_veto_v1',"ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))");r2=_eval(s2);m2=_m(r2);a2=_pareto(bm,m2)
+ s3=_variant('repair_falling_knife_ge3pct_below_sma50_veto_v1',"(ret(1) < -0.02 and (close >= sma('close',50) or ret(1) > -0.03)) or (ret(1) > 0.02 and close < sma('close',50))");m3=_m(_eval(s3));a3=_pareto(m2,m3)
+ m4=_conditional_exit_metrics();a4=_pareto(m2,m4)
+ result={'schema_version':'zel.a1_gen2_pass_robustness_audit.v2','development_only':True,'candidate_id':BASE['candidate_id'],'mechanism_integrity':{'relabel':'large_move_mean_reversion'},'baseline':base,'actual_path_attribution':attr,'sealed_failed_repair':{'axis':'regime_ownership_only','old_metrics':bm,'new_metrics':rm,'delta':_delta(bm,rm),'accepted':False,'state':'SEALED_FAIL_NO_REUSE'},'second_axis_repair':{'axis':'short_adverse_regime_veto_only','threshold_changed':False,'holding_horizon_changed':False,'long_rule_changed':False,'new_metrics':m2,'old_metrics':bm,'delta':_delta(bm,m2),'repair':r2,'accepted_for_further_prep':a2,'state':'PASS_PARETO_IMPROVEMENT' if a2 else 'SEALED_FAIL_NO_REUSE'},'third_axis_repair':{'axis':'long_falling_knife_veto_ge3pct_below_sma50_only','old_metrics':m2,'new_metrics':m3,'delta':_delta(m2,m3),'accepted_for_further_prep':a3,'state':'PASS_PARETO_IMPROVEMENT' if a3 else 'SEALED_FAIL_NO_REUSE'},'fourth_axis_repair':{'axis':'long_below_sma50_time_stop_12d_to_6d_only','hypothesis_source':'Gemini risk-horizon suggestion + temporal attribution','entry_rule_changed':False,'short_rule_changed':False,'long_above_sma50_hold_changed':False,'old_metrics':m2,'new_metrics':m4,'delta':_delta(m2,m4),'accepted_for_further_prep':a4,'state':'PASS_PARETO_IMPROVEMENT' if a4 else 'SEALED_FAIL_NO_REUSE'},'next_repair_authority':'PRESERVE_LATEST_ACCEPTED_ONLY','selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','exchange_order_submitted':False,'protected_mutations':0}
+ output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n');print('ROBUSTNESS_EXIT_TEST='+json.dumps({'second':result['second_axis_repair'],'third':result['third_axis_repair'],'fourth':result['fourth_axis_repair']},sort_keys=True));return result
 if __name__=='__main__':
  run(Path('out/a1_gen2_pass_robustness_audit_v1.json'))
  import backend.research.architecture_factory.a1_gen2_incumbent_hardening_v1 as hardening

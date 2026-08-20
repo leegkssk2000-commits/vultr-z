@@ -1,0 +1,70 @@
+name: A1 GEN2 Dev Econ VWAP Signal V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_dev_econ_vwap_signal_v1.py'
+      - '.github/workflows/a1-gen2-dev-econ-vwap-signal-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  dev-econ:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify development-only boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_gen2_dev_econ_vwap_signal_v1.py
+          python - <<'PY'
+          import json
+          d=json.load(open('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'))
+          assert int(d['done_count']) < 25
+          print('PASS_PRE25_DEVELOPMENT_ONLY')
+          PY
+      - name: Run deterministic development economics
+        run: |
+          set -euo pipefail
+          python backend/research/architecture_factory/a1_gen2_dev_econ_vwap_signal_v1.py --out out/a1_gen2_dev_econ_vwap_signal_v1.json
+      - name: Publish economics receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_gen2_dev_econ_vwap_signal_v1.json')); n=r['new']
+          marker='<!-- A1_GEN2_DEV_ECON_VWAP_SIGNAL_V1 -->'
+          body='\n'.join([marker,'## A1 GEN2 Development Economics — VWAP Signal Repair',
+            f"run={os.environ['RUN_ID']}|candidate={r['candidate_id']}|development_only=true|prospective=false|heavy=false",
+            f"old_trades={r['old']['trades']}|old_net={r['old']['net_pnl_bps']}bps|old_status={r['old']['status']}",
+            f"new_trades={n['trades']}|gross_exp={n['gross_expectancy_bps']}bps|net_exp={n['net_expectancy_bps']}bps|net_pnl={n['net_pnl_bps']}bps|PF={n['profit_factor']}|payoff={n['payoff']}|WR={n['win_rate']}|DD={n['drawdown_bps']}bps|cost={n['cost_bps_per_trade']}bps",
+            f"economic_pass={str(r['economic_pass']).lower()}|receipt={r['receipt_sha256']}",
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-gen2-dev-econ-vwap-signal-${{ github.run_id }}
+          path: out/a1_gen2_dev_econ_vwap_signal_v1.json
+          retention-days: 90

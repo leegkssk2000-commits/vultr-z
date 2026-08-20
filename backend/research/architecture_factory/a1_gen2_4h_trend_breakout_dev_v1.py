@@ -36,7 +36,7 @@ def run_one(mode):
   while i<len(rs)-HOLD-1:
    c=float(rs[i]['close']); o=float(rs[i]['open']); s50=sma(rs,i); side=None
    if mode=='breakout':
-    prev=rs[i-LOOKBACK:i]; hi=max(float(x['high']) for x in prev); lo=min(float(x['low']) for x in prev)
+    prev20=rs[i-LOOKBACK:i]; hi=max(float(x['high']) for x in prev20); lo=min(float(x['low']) for x in prev20)
     if c>hi and c>s50: side='long'
     elif c<lo and c<s50: side='short'
    elif mode=='vol_cont':
@@ -47,18 +47,20 @@ def run_one(mode):
    else:
     prev=float(rs[i-1]['close']); r=c/prev-1 if prev else 0.0
     if abs(r)>=scaled_shock:
-     if r<0: side='long'
+     if r<0:
+      adverse_long=(mode=='basis_hf_repaired2' and c>=s50 and abs(c-prev)>=atr_prev(rs,i))
+      if not adverse_long: side='long'
      elif r>0 and (mode=='basis_hf_raw' or c<s50): side='short'
    if side is None: i+=1; continue
    j=add_trade(out,rs,i,side); out[-1]['symbol']=sym; i=j
  m=metrics(out)
  return {'metrics':m,'economic_candidate':econ_flag(m),'source_summary':src}
 def run():
- configs=[('breakout','newarch_4h_trend_breakout_v1','4H_20BAR_BREAKOUT_WITH_SMA50_REGIME'),('vol_cont','newarch_4h_vol_expansion_continuation_v1','4H_TR_GE_1P5_ATR14_SMA50_CONTINUATION'),('basis_hf_raw','basis_premium_collector_4h_scaled_raw_v1','4H_TIME_SCALED_LARGE_MOVE_MEAN_REVERSION_RAW'),('basis_hf_repaired','basis_premium_collector_4h_scaled_short_veto_v1','4H_TIME_SCALED_LARGE_MOVE_MEAN_REVERSION_SHORT_ADVERSE_REGIME_VETO')]
+ configs=[('breakout','newarch_4h_trend_breakout_v1','4H_20BAR_BREAKOUT_WITH_SMA50_REGIME'),('vol_cont','newarch_4h_vol_expansion_continuation_v1','4H_TR_GE_1P5_ATR14_SMA50_CONTINUATION'),('basis_hf_raw','basis_premium_collector_4h_scaled_raw_v1','4H_TIME_SCALED_LARGE_MOVE_MEAN_REVERSION_RAW'),('basis_hf_repaired','basis_premium_collector_4h_scaled_short_veto_v1','4H_TIME_SCALED_LARGE_MOVE_MEAN_REVERSION_SHORT_ADVERSE_REGIME_VETO'),('basis_hf_repaired2','basis_premium_collector_4h_scaled_proven_vetoes_v1','4H_TIME_SCALED_MEAN_REVERSION_SHORT_VETO_PLUS_ATR_LONG_VETO')]
  cand={}
  for mode,cid,arch in configs:
   z=run_one(mode); cand[cid]={'architecture':arch,**z}
- r={'schema_version':'zel.a1_gen2_highfreq_dual_dev.v2','boundary':BOUNDARY,'development_only':True,'prospective':False,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':0.02*math.sqrt(4/24),'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
+ r={'schema_version':'zel.a1_gen2_highfreq_dual_dev.v3','boundary':BOUNDARY,'development_only':True,'prospective':False,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':0.02*math.sqrt(4/24),'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest(); return r
 if __name__=='__main__':
  r=run(); Path('out').mkdir(exist_ok=True); Path('out/a1_gen2_4h_trend_breakout_dev_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n'); print('A1_GEN2_HIGH_FREQ_DUAL='+json.dumps(r,sort_keys=True))

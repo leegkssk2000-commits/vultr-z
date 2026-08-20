@@ -57,4 +57,7 @@ def run(output:Path):
  flags={'cost40':costs['40']['net_pnl_bps']>0 and costs['40']['profit_factor']>1,'symbols':all(v['net_pnl_bps']>0 and v['profit_factor']>1 for v in sy.values()),'negative_control':neg['net_pnl_bps']<0 and neg['profit_factor']<1}; ok=all(flags.values())
  r={'schema_version':'zel.a1_gen2_strict_pareto_hardening.v1','candidate_id':'atr_long_veto_eth_stress075','metrics':s,'cost_stress':costs,'by_symbol':sy,'by_side':sd,'by_year':yr,'negative_control':neg,'loss_concentration':lc,'flags':flags,'hardening_pass':ok,'state':'PASS_HARDENING' if ok else 'HOLD_HARDENING','future_information_used':False,'threshold_sweep':False}
  output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n');print('STRICT_PASS_HARDENING='+json.dumps(r,sort_keys=True));return r
-if __name__=='__main__':run(Path('out/a1_gen2_incumbent_hardening_v1.json'))
+if __name__=='__main__':
+ run(Path('out/a1_gen2_incumbent_hardening_v1.json'))
+ import backend.research.architecture_factory.a1_gen2_fresh_boundary_replay_v1 as fresh
+ fresh.run(Path('out/a1_gen2_fresh_boundary_replay_v1.json'))

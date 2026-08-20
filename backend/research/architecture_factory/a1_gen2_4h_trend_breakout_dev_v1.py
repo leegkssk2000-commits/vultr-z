@@ -42,22 +42,7 @@ def penetration_base(rs,i):
  return None
 def signal(mode,rs,i):
  c=float(rs[i]['close']); o=float(rs[i]['open']); h=float(rs[i]['high']); l=float(rs[i]['low']); s50=sma(rs,i,50); prev=float(rs[i-1]['close'])
- if mode in ('vol_cont','vol_cont_break','vol_cont_break_body','vol_cont_break_close','vol_cont_break_penetration'):
-  a=atr_prev(rs,i); tr=max(h-l,abs(h-prev),abs(l-prev))
-  if not (s50 is not None and a>0 and tr>=1.5*a): return None
-  ph=float(rs[i-1]['high']); pl=float(rs[i-1]['low']); mid=(h+l)/2.0
-  if mode=='vol_cont_break_body':
-   body=abs(c-o); total_range=h-l
-   if total_range<=0 or not (body > total_range-body): return None
-  if c>o and c>s50 and (mode=='vol_cont' or c>ph):
-   if mode=='vol_cont_break_close' and not c>mid:return None
-   if mode=='vol_cont_break_penetration' and not (c-ph > h-c):return None
-   return 'long'
-  if c<o and c<s50 and (mode=='vol_cont' or c<pl):
-   if mode=='vol_cont_break_close' and not c<mid:return None
-   if mode=='vol_cont_break_penetration' and not (pl-c > c-l):return None
-   return 'short'
-  return None
+ if mode=='vol_cont_break_penetration': return penetration_base(rs,i)
  if mode.startswith('penetration_'):
   side=penetration_base(rs,i)
   if side is None:return None
@@ -71,6 +56,21 @@ def signal(mode,rs,i):
    if s200 is None:return None
    if side=='long' and not s50>s200:return None
    if side=='short' and not s50<s200:return None
+  elif mode=='penetration_ma50_100_state':
+   s100=sma(rs,i,100)
+   if s100 is None:return None
+   if side=='long' and not s50>s100:return None
+   if side=='short' and not s50<s100:return None
+  elif mode=='penetration_ma100_200_state':
+   s100=sma(rs,i,100); s200=sma(rs,i,200)
+   if s100 is None or s200 is None:return None
+   if side=='long' and not s100>s200:return None
+   if side=='short' and not s100<s200:return None
+  elif mode=='penetration_ma100_slope':
+   s100=sma(rs,i,100); p100=sma(rs,i-1,100)
+   if s100 is None or p100 is None:return None
+   if side=='long' and not (s50>s100 and s100>p100):return None
+   if side=='short' and not (s50<s100 and s100<p100):return None
   elif mode=='penetration_rsi50':
    rv=rsi(rs,i,14)
    if rv is None:return None
@@ -106,14 +106,17 @@ def run_one(mode):
 def run():
  configs=[
   ('vol_cont_break_penetration','newarch_4h_vol_expansion_priorbar_break_penetration_v1','4H_TR_GE_1P5_ATR14_PRIOR_BAR_BREAK_PENETRATION_GT_DIRECTIONAL_WICK'),
-  ('penetration_ma_stack','diag_penetration_ma50_100_200_stack_v1','DIAG_PENETRATION_MA50_100_200_STACK'),
   ('penetration_cross_state','diag_penetration_golden_dead_state_v1','DIAG_PENETRATION_SMA50_VS_SMA200_CROSS_STATE'),
+  ('penetration_ma50_100_state','diag_penetration_ma50_100_state_v1','DIAG_PENETRATION_SMA50_VS_SMA100_STATE'),
+  ('penetration_ma100_200_state','diag_penetration_ma100_200_state_v1','DIAG_PENETRATION_SMA100_VS_SMA200_STATE'),
+  ('penetration_ma100_slope','diag_penetration_ma50_100_slope_v1','DIAG_PENETRATION_SMA50_100_WITH_SMA100_SLOPE'),
+  ('penetration_ma_stack','diag_penetration_ma50_100_200_stack_v1','DIAG_PENETRATION_MA50_100_200_STACK'),
   ('penetration_rsi50','diag_penetration_rsi50_center_v1','DIAG_PENETRATION_RSI14_CENTERLINE_CONFIRMATION'),
   ('penetration_fib','diag_penetration_fib_618_382_v1','DIAG_PENETRATION_50BAR_FIB_618_382_LOCATION'),
   ('basis_hf_short_only','basis_premium_collector_4h_scaled_short_only_v1','4H_TIME_SCALED_MEAN_REVERSION_SHORT_SIDE_OWNERSHIP')]
  cand={}
  for mode,cid,arch in configs:cand[cid]={'architecture':arch,**run_one(mode)}
- r={'schema_version':'zel.a1_gen2_highfreq_indicator_matrix.v10','boundary':BOUNDARY,'development_only':True,'prospective':False,'exploratory_matrix':True,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':SCALED_SHOCK,'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
+ r={'schema_version':'zel.a1_gen2_highfreq_indicator_matrix.v11','boundary':BOUNDARY,'development_only':True,'prospective':False,'exploratory_matrix':True,'uses_data_strictly_before_gen1_boundary':True,'parameter_sweep':False,'tuned_thresholds':0,'scaled_basis_shock_abs_return':SCALED_SHOCK,'hold_bars':HOLD,'candidates':cand,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest(); return r
 if __name__=='__main__':
  r=run(); Path('out').mkdir(exist_ok=True); Path('out/a1_gen2_4h_trend_breakout_dev_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n'); print('A1_GEN2_HIGH_FREQ_DUAL='+json.dumps(r,sort_keys=True))

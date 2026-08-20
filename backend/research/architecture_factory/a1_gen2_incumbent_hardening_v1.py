@@ -7,7 +7,7 @@ import backend.research.architecture_factory.a1_gen2_generic_dev_econ_v1 as econ
 ENTRY_RULE="ret(1) < -0.02 or (ret(1) > 0.02 and close < sma('close',50))"
 SIDE_RULE="long if ret(1) < -0.02 else short"
 HOLD=12; ACTIVATE_BPS=300.0; LOCK_GROSS_BPS=14.0
-ETH_WINDOW=5; CROSS_WEIGHT=0.50
+WINDOW=5; MIN_WEIGHT=0.50
 EXPECTED={"trades":227,"net_pnl_bps":32456.553693428767,"net_expectancy_bps":142.98041274638223,"profit_factor":1.7661077778815002,"drawdown_bps":3222.578836366174}
 
 def _metrics(net):
@@ -40,41 +40,20 @@ def _median(xs):
  if not n: return None
  return s[n//2] if n%2 else (s[n//2-1]+s[n//2])/2.0
 
-def _side_advisory_by_trade(t):
- hist={'long':[],'short':[]}; out={}
- ordered=sorted(enumerate(t),key=lambda z:(z[1]['signal_ts'],z[1]['symbol'],z[0]))
- for idx,x in ordered:
-  adverse=None; avg={'long':None,'short':None}
-  if hist['long'] and hist['short']:
-   avg={s:sum(hist[s])/len(hist[s]) for s in ('long','short')}
-   if avg['long']>avg['short']: adverse='long'
-   elif avg['short']>avg['long']: adverse='short'
-  out[idx]={"adverse_side":adverse,"avg_abs_loss_bps":avg}
-  if x['net_bps']<0: hist[x['side']].append(abs(x['net_bps']))
- return out
-
-def _accelerating_cross_throttle(t):
- advisory=_side_advisory_by_trade(t)
- eth_hist=[]; window_hist=[]; weighted=[]; trace=[]
- for idx,x in enumerate(t):
-  stressed=False; accelerating=False; recent=None; previous=None; benchmark=None; adverse=advisory[idx]['adverse_side']; w=1.0
-  if x['symbol']=='ETH-USDT':
-   if len(eth_hist)>=ETH_WINDOW:
-    recent=sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW
-    if len(eth_hist)>=ETH_WINDOW+1:
-     previous=sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW-1:-1])/ETH_WINDOW
-     accelerating=recent>previous
-    if window_hist:
-     benchmark=_median(window_hist); stressed=recent>benchmark
-   cross=stressed and accelerating and adverse==x['side']
-   if cross: w=CROSS_WEIGHT
-   weighted.append(x['net_bps']*w)
-   trace.append({"symbol":x['symbol'],"side":x['side'],"weight":w,"eth_stressed":stressed,"stress_accelerating":accelerating,"adverse_side":adverse,"cross_trigger":cross,"recent_downside_bps":recent,"previous_downside_bps":previous,"prior_window_median_bps":benchmark})
-   eth_hist.append(x['net_bps'])
-   if len(eth_hist)>=ETH_WINDOW:
-    window_hist.append(sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW)
-  else:
-   weighted.append(x['net_bps']); trace.append({"symbol":x['symbol'],"side":x['side'],"weight":1.0,"eth_stressed":False,"stress_accelerating":False,"adverse_side":adverse,"cross_trigger":False})
+def _proportional_symbol_downside_throttle(t):
+ hist={s:[] for s in econ.SYMBOLS}; wh={s:[] for s in econ.SYMBOLS}; weighted=[]; trace=[]
+ for x in t:
+  s=x['symbol']; h=hist[s]; windows=wh[s]; recent=None; benchmark=None; stressed=False; w=1.0
+  if len(h)>=WINDOW:
+   recent=sum(max(-v,0.0) for v in h[-WINDOW:])/WINDOW
+   if windows:
+    benchmark=_median(windows)
+    stressed=recent>benchmark and recent>0
+    if stressed: w=max(MIN_WEIGHT,min(1.0,benchmark/recent))
+  weighted.append(x['net_bps']*w)
+  trace.append({"symbol":s,"side":x['side'],"weight":w,"recent_downside_bps":recent,"prior_window_median_bps":benchmark,"stressed":stressed})
+  h.append(x['net_bps'])
+  if len(h)>=WINDOW: windows.append(sum(max(-v,0.0) for v in h[-WINDOW:])/WINDOW)
  return _metrics(weighted),trace
 
 def _pareto(a,b):
@@ -85,10 +64,11 @@ def run(output:Path):
  for k,v in EXPECTED.items():
   if k=='trades': assert base[k]==v,(k,base[k],v)
   else: assert abs(base[k]-v)<1e-6,(k,base[k],v)
- cand,trace=_accelerating_cross_throttle(t); accepted=_pareto(base,cand)
- stress=sum(1 for r in trace if r.get('symbol')=='ETH-USDT' and r.get('eth_stressed'))
- accelerating=sum(1 for r in trace if r.get('symbol')=='ETH-USDT' and r.get('stress_accelerating'))
- cross=sum(1 for r in trace if r.get('cross_trigger'))
- r={"schema_version":"zel.a1_gen2_eth_accelerating_stress_side_advisory_cross.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"eth_stress_AND_downside_acceleration_AND_causal_adverse_side_advisory_50pct_throttle","future_information_used":False,"eth_window_trades":ETH_WINDOW,"cross_weight":CROSS_WEIGHT,"threshold_sweep":False,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"eth_stress_trade_count":stress,"eth_accelerating_trade_count":accelerating,"cross_trigger_trade_count":cross,"side_parity_role":"signal_assist_only","side_parity_sizing_authority":False,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
- output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('ETH_ACCEL_STRESS_SIDE_ADVISORY_CROSS='+json.dumps(r,sort_keys=True)); return r
+ cand,trace=_proportional_symbol_downside_throttle(t); accepted=_pareto(base,cand)
+ weights=[r['weight'] for r in trace]
+ by_symbol={}
+ for s in econ.SYMBOLS:
+  rs=[r for r in trace if r['symbol']==s]; by_symbol[s]={"stress_trades":sum(1 for r in rs if r['stressed']),"min_weight":min(r['weight'] for r in rs),"avg_weight":sum(r['weight'] for r in rs)/len(rs)}
+ r={"schema_version":"zel.a1_gen2_proportional_symbol_downside_throttle.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"causal_same_symbol_prior_downside_ratio_proportional_risk_throttle","future_information_used":False,"window_trades":WINDOW,"min_weight":MIN_WEIGHT,"threshold_sweep":False,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"weight_summary":{"min":min(weights),"avg":sum(weights)/len(weights)},"by_symbol":by_symbol,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"side_parity_role":"advisory_only","selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
+ output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('PROPORTIONAL_SYMBOL_DOWNSIDE_THROTTLE='+json.dumps(r,sort_keys=True)); return r
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

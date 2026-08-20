@@ -41,10 +41,6 @@ def _median(xs):
  return s[n//2] if n%2 else (s[n//2-1]+s[n//2])/2.0
 
 def _side_advisory_by_trade(t):
- # Build the advisory causally in true signal-time order, but do not alter the incumbent
- # trade path used for economics/DD. At each signal, only prior completed negative trades
- # are used. The side with the larger mean absolute loss is tagged adverse. Until both
- # sides have at least one prior loss, no side is tagged adverse.
  hist={'long':[],'short':[]}; out={}
  ordered=sorted(enumerate(t),key=lambda z:(z[1]['signal_ts'],z[1]['symbol'],z[0]))
  for idx,x in ordered:
@@ -57,28 +53,28 @@ def _side_advisory_by_trade(t):
   if x['net_bps']<0: hist[x['side']].append(abs(x['net_bps']))
  return out
 
-def _cross_throttle(t):
+def _accelerating_cross_throttle(t):
  advisory=_side_advisory_by_trade(t)
- # ETH stress is causal and ETH-local: recent completed 5-trade downside versus the median
- # of all earlier completed 5-trade ETH downside windows. Throttle only when that stress
- # flag AND the causal side-risk advisory both point against the current trade side.
  eth_hist=[]; window_hist=[]; weighted=[]; trace=[]
  for idx,x in enumerate(t):
-  stressed=False; recent=None; benchmark=None; adverse=advisory[idx]['adverse_side']; w=1.0
+  stressed=False; accelerating=False; recent=None; previous=None; benchmark=None; adverse=advisory[idx]['adverse_side']; w=1.0
   if x['symbol']=='ETH-USDT':
    if len(eth_hist)>=ETH_WINDOW:
     recent=sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW
+    if len(eth_hist)>=ETH_WINDOW+1:
+     previous=sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW-1:-1])/ETH_WINDOW
+     accelerating=recent>previous
     if window_hist:
      benchmark=_median(window_hist); stressed=recent>benchmark
-   cross=stressed and adverse==x['side']
+   cross=stressed and accelerating and adverse==x['side']
    if cross: w=CROSS_WEIGHT
    weighted.append(x['net_bps']*w)
-   trace.append({"symbol":x['symbol'],"side":x['side'],"weight":w,"eth_stressed":stressed,"adverse_side":adverse,"cross_trigger":cross,"recent_downside_bps":recent,"prior_window_median_bps":benchmark})
+   trace.append({"symbol":x['symbol'],"side":x['side'],"weight":w,"eth_stressed":stressed,"stress_accelerating":accelerating,"adverse_side":adverse,"cross_trigger":cross,"recent_downside_bps":recent,"previous_downside_bps":previous,"prior_window_median_bps":benchmark})
    eth_hist.append(x['net_bps'])
    if len(eth_hist)>=ETH_WINDOW:
     window_hist.append(sum(max(-v,0.0) for v in eth_hist[-ETH_WINDOW:])/ETH_WINDOW)
   else:
-   weighted.append(x['net_bps']); trace.append({"symbol":x['symbol'],"side":x['side'],"weight":1.0,"eth_stressed":False,"adverse_side":adverse,"cross_trigger":False})
+   weighted.append(x['net_bps']); trace.append({"symbol":x['symbol'],"side":x['side'],"weight":1.0,"eth_stressed":False,"stress_accelerating":False,"adverse_side":adverse,"cross_trigger":False})
  return _metrics(weighted),trace
 
 def _pareto(a,b):
@@ -89,9 +85,10 @@ def run(output:Path):
  for k,v in EXPECTED.items():
   if k=='trades': assert base[k]==v,(k,base[k],v)
   else: assert abs(base[k]-v)<1e-6,(k,base[k],v)
- cand,trace=_cross_throttle(t); accepted=_pareto(base,cand)
+ cand,trace=_accelerating_cross_throttle(t); accepted=_pareto(base,cand)
  stress=sum(1 for r in trace if r.get('symbol')=='ETH-USDT' and r.get('eth_stressed'))
+ accelerating=sum(1 for r in trace if r.get('symbol')=='ETH-USDT' and r.get('stress_accelerating'))
  cross=sum(1 for r in trace if r.get('cross_trigger'))
- r={"schema_version":"zel.a1_gen2_eth_stress_side_advisory_cross_throttle.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"eth_prior_loss_stress_AND_causal_adverse_side_advisory_50pct_throttle","future_information_used":False,"eth_window_trades":ETH_WINDOW,"cross_weight":CROSS_WEIGHT,"threshold_sweep":False,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"eth_stress_trade_count":stress,"cross_trigger_trade_count":cross,"side_parity_role":"signal_assist_only","side_parity_sizing_authority":False,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
- output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('ETH_STRESS_SIDE_ADVISORY_CROSS='+json.dumps(r,sort_keys=True)); return r
+ r={"schema_version":"zel.a1_gen2_eth_accelerating_stress_side_advisory_cross.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"eth_stress_AND_downside_acceleration_AND_causal_adverse_side_advisory_50pct_throttle","future_information_used":False,"eth_window_trades":ETH_WINDOW,"cross_weight":CROSS_WEIGHT,"threshold_sweep":False,"signal_rule_changed":False,"exit_rule_changed":False,"trade_path_changed":False,"eth_stress_trade_count":stress,"eth_accelerating_trade_count":accelerating,"cross_trigger_trade_count":cross,"side_parity_role":"signal_assist_only","side_parity_sizing_authority":False,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
+ output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('ETH_ACCEL_STRESS_SIDE_ADVISORY_CROSS='+json.dumps(r,sort_keys=True)); return r
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

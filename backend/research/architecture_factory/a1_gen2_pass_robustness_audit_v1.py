@@ -68,3 +68,5 @@ if __name__=='__main__':
  run(Path('out/a1_gen2_pass_robustness_audit_v1.json'))
  import backend.research.architecture_factory.a1_gen2_incumbent_hardening_v1 as hardening
  hardening.run(Path('out/a1_gen2_incumbent_hardening_v1.json'))
+ import backend.research.architecture_factory.a1_gen2_4h_trend_breakout_dev_v1 as hf
+ print('HIGH_FREQ_MAIN_CANDIDATE='+json.dumps(hf.run(),sort_keys=True))

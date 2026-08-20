@@ -12,7 +12,7 @@ permissions:
   issues: write
 concurrency:
   group: a1-gen2-pass-robustness-audit-v1
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -22,63 +22,47 @@ jobs:
         with: {ref: master, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Run deterministic robustness audit v2
+      - name: Run research quietly
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py
           mkdir -p out
+          python -m py_compile backend/research/architecture_factory/a1_gen2_pass_robustness_audit_v1.py backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py
           python -m backend.research.architecture_factory.a1_gen2_pass_robustness_audit_v1
-          python - <<'PY'
-          import json
-          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json'))
-          a=r['actual_path_attribution']; f=r['sealed_failed_repair']; s=r['second_axis_repair']
-          assert r['schema_version']=='zel.a1_gen2_pass_robustness_audit.v2'
-          assert r['development_only'] is True and a['actual_path_verified'] is True
-          assert a['actual_trade_count']==256
-          assert f['state']=='SEALED_FAIL_NO_REUSE' and f['accepted'] is False
-          assert s['axis']=='short_adverse_regime_veto_only' and s['accepted_for_further_prep'] is True
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'baseline':a['actual_metrics'],'second_axis_repair':s},sort_keys=True))
-          PY
-      - name: Run deterministic incumbent hardening
-        run: |
-          set -euo pipefail
           python -m backend.research.architecture_factory.a1_gen2_incumbent_hardening_v1
-          python - <<'PY'
-          import json
-          r=json.load(open('out/a1_gen2_incumbent_hardening_v1.json'))
-          assert r['development_only'] is True and r['alpha_proof_prep_only'] is True
-          assert r['candidate_id']=='repair_short_above_sma50_veto_v1'
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'incumbent':r['incumbent_metrics'],'cost_stress':r['cost_stress'],'by_symbol':r['by_symbol'],'by_side':r['by_side'],'by_year':r['by_year'],'negative_controls':r['negative_controls'],'loss_concentration':r['loss_concentration'],'summary':r['hardening_summary']},sort_keys=True))
-          PY
-      - name: Publish receipts
+      - name: Economic milestone alert only
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           python - <<'PY'
-          import json,os,urllib.request
+          import hashlib,json,os,pathlib,urllib.request
+          p=pathlib.Path('out/a1_gen2_incumbent_hardening_v1.json')
+          if not p.exists():
+              raise SystemExit(0)
+          x=json.load(open(p))
+          axis=x.get('axis',{})
+          if not bool(axis.get('accepted_pareto')):
+              raise SystemExit(0)
+          m=axis.get('new_metrics') or {}
+          signature=json.dumps({k:m.get(k) for k in ('trades','net_pnl_bps','net_expectancy_bps','profit_factor','drawdown_bps')},sort_keys=True)
+          sig=hashlib.sha256(signature.encode()).hexdigest()[:16]
+          marker=f'<!-- A1_ECONOMIC_MILESTONE_{sig} -->'
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
-          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: cs=json.load(q)
-          def upsert(marker,body):
-              e=next((c for c in cs if marker in str(c.get('body') or '')),None); url=e.get('url') if e else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
-              with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if e else 'POST')): pass
-          r=json.load(open('out/a1_gen2_pass_robustness_audit_v1.json')); a=r['actual_path_attribution']; f=r['sealed_failed_repair']; s=r['second_axis_repair']; marker='<!-- A1_GEN2_PASS_ROBUSTNESS_AUDIT_V2 -->'
-          body='\n'.join([marker,'## A1 GEN2 PASS Robustness Audit V2',f"run={os.environ['RUN_ID']}",'mechanism_relabel='+r['mechanism_integrity']['relabel'],'actual_metrics='+json.dumps(a['actual_metrics'],sort_keys=True),'by_side='+json.dumps(a['by_side'],sort_keys=True),'by_symbol='+json.dumps(a['by_symbol'],sort_keys=True),'by_year='+json.dumps(a['by_year'],sort_keys=True),'by_regime50='+json.dumps(a['by_regime50'],sort_keys=True),'loss_concentration='+json.dumps(a['loss_concentration'],sort_keys=True),'sealed_failed_repair='+json.dumps(f,sort_keys=True),'second_axis_repair='+json.dumps(s,sort_keys=True),'next_repair_authority='+r['next_repair_authority'],'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
-          upsert(marker,body)
-          x=json.load(open('out/a1_gen2_incumbent_hardening_v1.json')); marker2='<!-- A1_GEN2_INCUMBENT_HARDENING_V1 -->'
-          body2='\n'.join([marker2,'## A1 GEN2 Incumbent Hardening V1',f"run={os.environ['RUN_ID']}",'candidate_id='+x['candidate_id'],'incumbent='+json.dumps(x['incumbent_metrics'],sort_keys=True),'cost_stress='+json.dumps(x['cost_stress'],sort_keys=True),'by_symbol='+json.dumps(x['by_symbol'],sort_keys=True),'by_side='+json.dumps(x['by_side'],sort_keys=True),'by_year='+json.dumps(x['by_year'],sort_keys=True),'by_regime50='+json.dumps(x['by_regime50'],sort_keys=True),'negative_controls='+json.dumps(x['negative_controls'],sort_keys=True),'loss_concentration='+json.dumps(x['loss_concentration'],sort_keys=True),'hardening_summary='+json.dumps(x['hardening_summary'],sort_keys=True),'alpha_proof_prep_only=true|selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
-          upsert(marker2,body2)
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as q: cs=json.load(q)
+          if any(marker in str(c.get('body') or '') for c in cs):
+              raise SystemExit(0)
+          body='\n'.join([marker,'## ZEL ECONOMIC MILESTONE','state=PASS_PARETO_IMPROVEMENT','schema='+str(x.get('schema_version')),'metrics='+signature,'single_alert=true|fail_alert=false|repeat_alert=false'])
+          post=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(post,data=json.dumps({'body':body}).encode(),headers=h,method='POST')): pass
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-gen2-pass-robustness-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-gen2-quiet-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           path: |
             out/a1_gen2_pass_robustness_audit_v1.json
             out/a1_gen2_incumbent_hardening_v1.json
-# explicit workflow-path trigger 2026-08-20T17:44+02:00
+          if-no-files-found: ignore

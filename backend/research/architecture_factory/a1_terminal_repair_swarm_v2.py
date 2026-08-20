@@ -35,23 +35,21 @@ def prompt_for(fp: Mapping[str, Any], evidence: list[dict[str, Any]]) -> str:
         "executable_spec":{"bar_interval":"5m|15m|30m|1h|4h|1d","features":[{"name":"feature_name","formula":"ONE DSL expression only"}],"entry_rule":"ONE DSL boolean expression only","side_rule":"long OR short OR 'long if <DSL boolean> else short'","exit_rule":"time_stop OR ONE DSL boolean expression only","max_hold_bars":12,"entry_timing":"next_bar_open","cost_model":"verified_14bps_or_more","development_data_rule":"strictly_before_GEN1_boundary","parameter_provenance":"design_prior_or_primary_evidence_only"}
     }]}
     dsl=(
-      "EXECUTABLE_DSL_V1 HARD CONTRACT: expressions are Python-like scalar expressions only. "
+      "EXECUTABLE_DSL_V1 HARD CONTRACT: scalar Python-like expressions only. "
       "Allowed raw names: open,high,low,close,volume and previously defined feature names. "
-      "Allowed functions ONLY: abs(x),min(a,b),max(a,b),sma(series,n),ema(series,n),std(series,n),lag(series,n),ret(n),atr(n),vwap(n),zscore(series,n),highest(series,n),lowest(series,n). "
-      "For series arguments use bare names, e.g. ema(close,20), sma(volume,20), lowest(low,20). "
+      "Allowed functions ONLY: abs,min,max,sma(series,n),ema(series,n),std(series,n),lag(series,n),ret(n),roc(n),atr(n),vwap(n),zscore(series,n),highest(series,n),lowest(series,n),percentile(series,n,p),pct_rank(series,n),vol_ratio(n),range_pct(),body_pct(),upper_wick_pct(),lower_wick_pct(),breakout_dist(series,n),hour(),dow(). "
+      "For series arguments use bare names, e.g. ema(close,20), percentile(volume,96,90), pct_rank(close,96). "
       "Allowed operators: + - * / **, > >= < <= == !=, and/or/not. "
-      "FORBIDDEN: assignment '=' inside formulas, prose, SQL, array indexing like close[-1], subscripts, attributes, comprehensions, strings/regime labels, position, entry_price, hold_bars, bar_index, return_since_entry, numpy/pandas, custom functions, cumulative_sum, sqrt, if-then prose. "
-      "Feature formula examples: ema(close,20); volume/sma(volume,20); (close-lag(close,1))/lag(close,1); zscore(close,20). "
-      "Entry example: close > ema20 and volume_ratio > 1.8. Side examples: long ; short ; long if close > ema20 else short. "
-      "Prefer exit_rule=time_stop for the first development test. If using a causal exit, it may reference ONLY current OHLCV and named features. "
+      "FORBIDDEN: assignment '=' inside formulas, prose, SQL, array indexing, subscripts, attributes, comprehensions, strings/regime labels, position, entry_price, hold_bars, bar_index, return_since_entry, numpy/pandas, custom functions, cumulative_sum, sqrt, future values. "
+      "Examples: vol_ratio(20); body_pct(); pct_rank(volume,96); close > highest(close,20); hour()>=12 and hour()<20. "
+      "Prefer exit_rule=time_stop for first development test. A causal exit may reference ONLY current OHLCV/named features. "
     )
     return (
       "You are an ECONOMIC strategy builder, not an idea writer. For THIS terminal strategy return exactly 4 candidates: exactly 3 REPAIR and exactly 1 NEW_ARCHITECTURE. "
-      "Every candidate MUST include executable_spec that a deterministic Python replay can implement without interpretation. If you cannot express a candidate under EXECUTABLE_DSL_V1, do not emit it. "
+      "Every candidate MUST include executable_spec that deterministic replay can implement without interpretation. If you cannot express it under EXECUTABLE_DSL_V1, do not emit it. "
       "Each REPAIR changes exactly one causal axis. NEW_ARCHITECTURE replaces payer/mechanism. Never loosen thresholds, sweep parameters, reduce fees, delete losers, inspect future outcomes, or choose best horizon after outcomes. "
-      "Use only sources explicitly permitted by the caller's source-history contract. The next gate is development economics; prose quality and AI consensus have zero value without Net>0 and PF>1 after realistic cost. Return JSON only. "
-      +dsl+
-      f"SCHEMA={canonical(shape)}\nFAILURE={canonical(fp)}\nEVIDENCE={canonical(evidence[:20])}"
+      "Use only sources explicitly permitted by caller source-history contract. Next gate is development economics; prose and AI consensus have zero value without Net>0, PF>1 and positive calendar-time Net after realistic cost. Return JSON only. "
+      +dsl+f"SCHEMA={canonical(shape)}\nFAILURE={canonical(fp)}\nEVIDENCE={canonical(evidence[:20])}"
     )
 
 def review_candidates(candidates:list[dict[str,Any]])->list[dict[str,Any]]:

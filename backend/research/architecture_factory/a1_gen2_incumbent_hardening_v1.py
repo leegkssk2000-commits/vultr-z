@@ -38,14 +38,13 @@ def run(output:Path):
  for k,v in EXPECTED.items():
   if k=='trades': assert base[k]==v
   else: assert abs(base[k]-v)<1e-6,(k,base[k],v)
- # Independent risk axis: no signal/exit deletion. Scale only the historically higher-loss side
- # to equalize average absolute losing-trade risk with the lower-loss side; normalize weights
- # back to mean 1.0 so aggregate gross exposure is unchanged.
- loss={s:[abs(x['net_bps']) for x in t if x['side']==s and x['net_bps']<0] for s in ('long','short')}
+ loss={s:[abs(x['net_bps']) for x in t if x['symbol']==s and x['net_bps']<0] for s in econ.SYMBOLS}
  avg={s:sum(v)/len(v) for s,v in loss.items()}
- raw={s:min(avg.values())/avg[s] for s in avg}; mean=sum(raw[x['side']] for x in t)/len(t); w={s:raw[s]/mean for s in raw}
- weighted=[x['net_bps']*w[x['side']] for x in t]; cand=_metrics(weighted)
+ raw={s:min(avg.values())/avg[s] for s in avg}
+ mean=sum(raw[x['symbol']] for x in t)/len(t)
+ w={s:raw[s]/mean for s in raw}
+ weighted=[x['net_bps']*w[x['symbol']] for x in t]; cand=_metrics(weighted)
  accepted=cand['net_pnl_bps']>base['net_pnl_bps'] and cand['net_expectancy_bps']>base['net_expectancy_bps'] and cand['profit_factor']>base['profit_factor'] and cand['drawdown_bps']<base['drawdown_bps']
- r={"schema_version":"zel.a1_gen2_independent_axis_side_loss_risk_parity.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"side_loss_risk_parity_mean_exposure_normalized","signal_rule_changed":False,"exit_rule_changed":False,"mean_weight":sum(w[x['side']] for x in t)/len(t),"average_abs_loss_bps":avg,"side_weights":w,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
- output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('INDEPENDENT_SIDE_RISK_PARITY='+json.dumps(r,sort_keys=True)); return r
+ r={"schema_version":"zel.a1_gen2_independent_axis_symbol_loss_risk_parity.v1","development_only":True,"incumbent_metrics":base,"axis":{"name":"symbol_loss_risk_parity_mean_exposure_normalized","signal_rule_changed":False,"exit_rule_changed":False,"mean_weight":sum(w[x['symbol']] for x in t)/len(t),"average_abs_loss_bps":avg,"symbol_weights":w,"new_metrics":cand,"accepted_pareto":accepted,"state":"PASS_PARETO_IMPROVEMENT" if accepted else "SEALED_FAIL_NO_REUSE"},"selection_authority":False,"promotion_authority":False,"execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}
+ output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('INDEPENDENT_SYMBOL_RISK_PARITY='+json.dumps(r,sort_keys=True)); return r
 if __name__=='__main__': run(Path('out/a1_gen2_incumbent_hardening_v1.json'))

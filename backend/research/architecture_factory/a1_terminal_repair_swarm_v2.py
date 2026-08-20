@@ -31,15 +31,26 @@ def fingerprint(sid: str, raw: Mapping[str, Any]) -> dict[str, Any]:
 
 def prompt_for(fp: Mapping[str, Any], evidence: list[dict[str, Any]]) -> str:
     shape={"candidates":[{
-        "candidate_id":"string","mode":"REPAIR|NEW_ARCHITECTURE","strategy_id":fp["strategy_id"],"architecture_family":"string","changed_axis":"exactly_one_axis","mechanism":"why money exists/who pays","payer":"participant/inefficiency","entry_event":"entry-time observable event","direction_rule":"long|short|both","native_horizon":"natural holding horizon","regime_owner":"when it should/should not trade","invalidation":"causal invalidation","exit_logic":"exit rationale","time_stop_rationale":"why horizon fits mechanism","turnover_cost_budget":"why expected move can dominate cost","required_sources":["ohlcv|volume|funding|basis|open_interest|l2_order_book|trade_flow"],"evidence_ids":["F1"],"expected_move_cost_multiple_target":2.0,"falsification":"bounded prospective kill test","forbidden_changes":["fees","threshold sweep","best-horizon selection","post-outcome loss deletion"],"why_distinct":"why distinct",
-        "executable_spec":{"bar_interval":"5m|15m|30m|1h|4h|1d","features":[{"name":"feature_name","formula":"deterministic formula using only required_sources and closed observations"}],"entry_rule":"deterministic boolean expression over named features; no prose","side_rule":"deterministic long/short expression","exit_rule":"deterministic causal exit expression; no best-horizon selection","max_hold_bars":12,"entry_timing":"next_bar_open","cost_model":"verified_14bps_or_more","development_data_rule":"strictly_before_GEN1_boundary","parameter_provenance":"design_prior_or_primary_evidence_only"}
+        "candidate_id":"string","mode":"REPAIR|NEW_ARCHITECTURE","strategy_id":fp["strategy_id"],"architecture_family":"string","changed_axis":"exactly_one_axis","mechanism":"why money exists/who pays","payer":"participant/inefficiency","entry_event":"entry-time observable event","direction_rule":"long|short|both","native_horizon":"natural holding horizon","regime_owner":"when it should/should not trade","invalidation":"causal invalidation","exit_logic":"exit rationale","time_stop_rationale":"why horizon fits mechanism","turnover_cost_budget":"why expected move can dominate cost","required_sources":["ohlcv|volume"],"evidence_ids":["F1"],"expected_move_cost_multiple_target":2.0,"falsification":"bounded prospective kill test","forbidden_changes":["fees","threshold sweep","best-horizon selection","post-outcome loss deletion"],"why_distinct":"why distinct",
+        "executable_spec":{"bar_interval":"5m|15m|30m|1h|4h|1d","features":[{"name":"feature_name","formula":"ONE DSL expression only"}],"entry_rule":"ONE DSL boolean expression only","side_rule":"long OR short OR 'long if <DSL boolean> else short'","exit_rule":"time_stop OR ONE DSL boolean expression only","max_hold_bars":12,"entry_timing":"next_bar_open","cost_model":"verified_14bps_or_more","development_data_rule":"strictly_before_GEN1_boundary","parameter_provenance":"design_prior_or_primary_evidence_only"}
     }]}
+    dsl=(
+      "EXECUTABLE_DSL_V1 HARD CONTRACT: expressions are Python-like scalar expressions only. "
+      "Allowed raw names: open,high,low,close,volume and previously defined feature names. "
+      "Allowed functions ONLY: abs(x),min(a,b),max(a,b),sma(series,n),ema(series,n),std(series,n),lag(series,n),ret(n),atr(n),vwap(n),zscore(series,n),highest(series,n),lowest(series,n). "
+      "For series arguments use bare names, e.g. ema(close,20), sma(volume,20), lowest(low,20). "
+      "Allowed operators: + - * / **, > >= < <= == !=, and/or/not. "
+      "FORBIDDEN: assignment '=' inside formulas, prose, SQL, array indexing like close[-1], subscripts, attributes, comprehensions, strings/regime labels, position, entry_price, hold_bars, bar_index, return_since_entry, numpy/pandas, custom functions, cumulative_sum, sqrt, if-then prose. "
+      "Feature formula examples: ema(close,20); volume/sma(volume,20); (close-lag(close,1))/lag(close,1); zscore(close,20). "
+      "Entry example: close > ema20 and volume_ratio > 1.8. Side examples: long ; short ; long if close > ema20 else short. "
+      "Prefer exit_rule=time_stop for the first development test. If using a causal exit, it may reference ONLY current OHLCV and named features. "
+    )
     return (
       "You are an ECONOMIC strategy builder, not an idea writer. For THIS terminal strategy return exactly 4 candidates: exactly 3 REPAIR and exactly 1 NEW_ARCHITECTURE. "
-      "Every candidate MUST include executable_spec that a deterministic Python replay can implement without interpretation. If you cannot express a candidate with closed-observation formulas and a deterministic entry/exit/hold rule, do not emit it. "
+      "Every candidate MUST include executable_spec that a deterministic Python replay can implement without interpretation. If you cannot express a candidate under EXECUTABLE_DSL_V1, do not emit it. "
       "Each REPAIR changes exactly one causal axis. NEW_ARCHITECTURE replaces payer/mechanism. Never loosen thresholds, sweep parameters, reduce fees, delete losers, inspect future outcomes, or choose best horizon after outcomes. "
-      "Use only native sources ohlcv, volume, funding, basis, open_interest, l2_order_book, trade_flow. Prefer candidates whose required historical data is realistically available now. "
-      "The next gate is development economics; prose quality and AI consensus have zero value without Net>0 and PF>1 after realistic cost. Return JSON only. "
+      "Use only sources explicitly permitted by the caller's source-history contract. The next gate is development economics; prose quality and AI consensus have zero value without Net>0 and PF>1 after realistic cost. Return JSON only. "
+      +dsl+
       f"SCHEMA={canonical(shape)}\nFAILURE={canonical(fp)}\nEVIDENCE={canonical(evidence[:20])}"
     )
 

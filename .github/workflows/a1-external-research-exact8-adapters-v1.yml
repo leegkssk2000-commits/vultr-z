@@ -1,0 +1,59 @@
+name: A1 External Research Exact8 Adapters V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_exact8_*_adapter_v1.py'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_adapter_manifest_v1.json'
+      - 'backend/research/architecture_factory/test_a1_external_research_exact8_adapters_v1.py'
+      - '.github/workflows/a1-external-research-exact8-adapters-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_exact8_*_adapter_v1.py'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_adapter_manifest_v1.json'
+      - 'backend/research/architecture_factory/test_a1_external_research_exact8_adapters_v1.py'
+      - '.github/workflows/a1-external-research-exact8-adapters-v1.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-external-research-exact8-adapters-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fixture-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify Exact8 child adapters without assigning a research boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_exact8_break_and_continue_adapter_v1.py \
+            backend/research/architecture_factory/a1_exact8_bb_revert_adapter_v1.py \
+            backend/research/architecture_factory/test_a1_external_research_exact8_adapters_v1.py
+          python -m json.tool \
+            backend/research/architecture_factory/a1_external_research_exact8_adapter_manifest_v1.json >/dev/null
+          python -m unittest \
+            backend.research.architecture_factory.test_a1_external_research_exact8_adapters_v1
+          python - <<'PY'
+          import json
+          p='backend/research/architecture_factory/a1_external_research_exact8_adapter_manifest_v1.json'
+          d=json.load(open(p))
+          assert d['implemented_count']==2 and d['total_preregistered_count']==8,d
+          assert d['fixture_is_alpha_evidence'] is False,d
+          assert d['fresh_boundary_assigned'] is False,d
+          assert d['effect_verified_count']==0,d
+          assert d['threshold_search'] is False and d['holdout_outcomes_accessed'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY

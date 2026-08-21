@@ -143,6 +143,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: a1-external-research-exact25-shard-*-${{ github.run_id }}
@@ -155,6 +159,10 @@ jobs:
           import hashlib,json
           from pathlib import Path
           reviews=[]; providers={"gemini":0,"openai":0,"groq":0,"workers_ai":0}; blockers=[]
+          mapping=json.load(open('backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'))
+          code_audit=mapping.get('parent_code_dedup_audit') or {}
+          code_novel={str(x) for x in (code_audit.get('novel_strategy_ids') or [])}
+          code_duplicates={str(x) for x in (code_audit.get('duplicate_parent_axis') or {})}
           paths=sorted(Path('out').glob('review_shard_*.json'))
           for p in paths:
               d=json.loads(p.read_text())
@@ -163,16 +171,20 @@ jobs:
               blockers.extend(d.get('bottlenecks') or [])
           ids=[str(x.get('strategy_id') or '') for x in reviews]
           complete=len(paths)==5 and len(ids)==25 and len(set(ids))==25
-          consensus=[]; revise=[]; rejected=[]
+          consensus=[]; revise=[]; rejected=[]; duplicates=[]
           for row in reviews:
+              strategy_id=str(row.get('strategy_id') or '')
               decisions=list((row.get('review_decisions') or {}).values())
               pass_count=sum(x=='PASS_TO_REPLAY' for x in decisions)
               reject_count=sum(x=='REJECT' for x in decisions)
               row['critic_pass_count']=pass_count
               row['critic_reject_count']=reject_count
-              if pass_count >= 2 and reject_count == 0:
+              if strategy_id in code_duplicates:
+                  row['triage']='DUPLICATE_PARENT_AXIS_NO_CHILD'
+                  duplicates.append(strategy_id)
+              elif pass_count >= 2 and reject_count == 0 and strategy_id in code_novel:
                   row['triage']='SPEC_READY_NOT_EFFECT_VERIFIED'
-                  consensus.append(row.get('strategy_id'))
+                  consensus.append(strategy_id)
               elif reject_count > 0:
                   row['triage']='REJECTED_BY_CRITIC'
                   rejected.append(row.get('strategy_id'))
@@ -187,6 +199,7 @@ jobs:
               'spec_ready_strategy_ids':sorted(str(x) for x in consensus),
               'spec_revision_strategy_ids':sorted(str(x) for x in revise),
               'critic_rejected_strategy_ids':sorted(str(x) for x in rejected),
+              'code_duplicate_strategy_ids':sorted(str(x) for x in duplicates),
               'effect_verified_strategy_ids':[],
               'effect_verified_count':0,
               'reviews':reviews,'selection_authority':False,'promotion_authority':False,
@@ -217,6 +230,7 @@ jobs:
               'spec_ready='+json.dumps(d['spec_ready_strategy_ids'],sort_keys=True),
               'spec_revision='+json.dumps(d['spec_revision_strategy_ids'],sort_keys=True),
               'critic_rejected='+json.dumps(d['critic_rejected_strategy_ids'],sort_keys=True),
+              'code_duplicate='+json.dumps(d['code_duplicate_strategy_ids'],sort_keys=True),
               f"effect_verified={d['effect_verified_count']}",
               'bottlenecks='+json.dumps(d['bottlenecks'],sort_keys=True),
               'policy=one-axis; primary-evidence-required; YouTube/forum hypothesis-only; no threshold adoption; no holdout outcomes',

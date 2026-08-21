@@ -42,7 +42,7 @@ jobs:
           PY
       - name: Run H4 and H5 on exact candidate
         run: python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 --receipt out/trend_rider_candidate.json --out out/trend_rider_hardening_evidence.json
-      - name: Validate and stage candidate-matched evidence
+      - name: Stage candidate-matched evidence
         id: gate
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -53,18 +53,15 @@ jobs:
           print('h5='+e['h5_receipt']['state'])
           print('retention='+str(e['retention_pct']))
           print('oos_net='+str(e['oos']['net_pnl_bps']))
-          if e['state']=='PASS_HARDENING_EVIDENCE':
-              p=pathlib.Path('backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json')
-              p.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile('out/trend_rider_hardening_evidence.json',p)
+          p=pathlib.Path('backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json')
+          p.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile('out/trend_rider_hardening_evidence.json',p)
           PY
-      - name: Persist PASS evidence only
-        if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
+      - name: Persist immutable disposition evidence
         run: |
           git config user.name 'a1-hardening'; git config user.email 'actions@users.noreply.github.com'
           git add backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
-          if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: persist verified H4 H5 evidence [skip ci]'; git push origin HEAD:master; fi
-      - name: Verify survivor gate with attached evidence
-        if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
+          if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: persist H4 H5 disposition evidence [skip ci]'; git push origin HEAD:master; fi
+      - name: Verify attached gate fail-closed or PASS
         env:
           A1_HARDENING_RECEIPT_PATH: backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
         run: |
@@ -73,7 +70,9 @@ jobs:
           import json
           r=json.load(open('out/trend_rider_hardened.json'))
           print('SURVIVOR_GATE',json.dumps(r['survivor_gate'],sort_keys=True))
-          assert r['survivor_gate']['passed'] is True,r['survivor_gate']
+          e=json.load(open('out/trend_rider_hardening_evidence.json'))
+          if e['state']=='PASS_HARDENING_EVIDENCE': assert r['survivor_gate']['passed'] is True,r['survivor_gate']
+          else: assert r['survivor_gate']['passed'] is False,r['survivor_gate']
           PY
       - name: Report hardening result
         uses: actions/github-script@v7

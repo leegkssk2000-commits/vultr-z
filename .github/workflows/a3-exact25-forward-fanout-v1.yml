@@ -6,13 +6,19 @@ on:
     paths:
       - 'backend/research/rebuild/a1_exact25_generic_evaluator_v2.py'
       - 'backend/research/rebuild/a1_exact25_v3_universal_controls_v1.py'
+      - 'backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py'
       - 'backend/research/rebuild/a1_exact25_v3_forward_transition_v1.py'
+      - 'backend/research/rebuild/a1_exact25_v3_causal_registry_updater_v1.py'
       - 'backend/research/rebuild/a1_exact25_mechanism_ownership_v1.json'
       - 'backend/research/prep/a2_forward_cost_turnover_v1.py'
       - 'backend/research/prep/a3_forward_context_collector_v1.py'
       - 'backend/research/prep/a3_forward_context_collector_v2.py'
+      - 'backend/research/prep/a3_durability_contract_v1.json'
       - 'backend/research/prep/a3_exact25_forward_durability_v1.py'
+      - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
+      - 'backend/research/prep/a3_exact25_forward_fanout_driver_v2.py'
       - 'backend/research/prep/strategy_material_grade_v1.py'
+      - 'backend/research/prep/strategy_material_causal_router_v1.py'
       - 'backend/research/prep/strategy_synthesis_material_ssot_v1.json'
       - '.github/workflows/a3-exact25-forward-fanout-v1.yml'
   schedule:
@@ -45,17 +51,23 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/research/rebuild/a1_exact25_generic_evaluator_v2.py \
-            backend/research/rebuild/a1_exact25_v3_universal_controls_v1.py \
+            backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py \
             backend/research/rebuild/a1_exact25_v3_forward_transition_v1.py \
+            backend/research/rebuild/a1_exact25_v3_causal_registry_updater_v1.py \
             backend/research/prep/a2_forward_cost_turnover_v1.py \
             backend/research/prep/a3_forward_context_collector_v2.py \
-            backend/research/prep/a3_exact25_forward_durability_v1.py \
+            backend/research/prep/a3_exact25_forward_durability_v3.py \
+            backend/research/prep/a3_exact25_forward_fanout_driver_v2.py \
+            backend/research/prep/strategy_material_causal_router_v1.py \
             backend/research/prep/strategy_material_grade_v1.py
           python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v1 --self-test
           python -m backend.research.rebuild.a1_exact25_v3_forward_transition_v1 --self-test
+          python -m backend.research.rebuild.a1_exact25_v3_causal_registry_updater_v1 --self-test
           python -m backend.research.prep.a2_forward_cost_turnover_v1 --self-test
           python -m backend.research.prep.a3_forward_context_collector_v2 --self-test
           python -m backend.research.prep.a3_exact25_forward_durability_v1 --self-test
+          python -m backend.research.prep.a3_exact25_forward_fanout_driver_v2 --self-test
+          python -m backend.research.prep.strategy_material_causal_router_v1 --self-test
           python -m backend.research.prep.strategy_material_grade_v1 --self-test
 
       - name: Capture causal A3 market context
@@ -69,137 +81,26 @@ jobs:
             python -m backend.research.prep.a3_forward_context_collector_v2 --output out/a3_forward_context_ledger_v2.json
           fi
 
-      - name: Build current A3 promotion queue
+      - name: Run causal Exact25 fanout driver
         run: |
           set -euo pipefail
-          python -m backend.research.prep.strategy_material_grade_v1 --output out/strategy_material_grade_v1.json
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          x=json.loads(Path('out/strategy_material_grade_v1.json').read_text())
-          q=list((x.get('buckets') or {}).get('A3_PROMOTION_QUEUE') or [])
-          Path('out/a3_queue.txt').write_text('\n'.join(q)+'\n')
-          print('A3_PROMOTION_QUEUE='+json.dumps(q,sort_keys=True))
-          PY
+          python -m backend.research.prep.a3_exact25_forward_fanout_driver_v2 \
+            --context out/a3_forward_context_ledger_v2.json \
+            --output-dir out \
+            --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$GITHUB_SHA"
 
-      - name: Push every A3 queue candidate to current evidence ceiling
+      - name: Persist causal context and terminal control registry
         run: |
           set -euo pipefail
-          mkdir -p out/a3_candidates
-          : > out/a3_stage_lines.jsonl
-          while IFS= read -r SID; do
-            test -n "$SID" || continue
-            D="out/a3_candidates/$SID"; mkdir -p "$D"
-            echo "=== $SID ==="
-            python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
-              --terminal-replay --strategy-id "$SID" --out "$D/receipt.json"
-            python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v1 \
-              --receipt "$D/receipt.json" --output "$D/controls.json"
-            SID="$SID" D="$D" python - <<'PY'
-          import json,os
-          from pathlib import Path
-          sid=os.environ['SID']; d=Path(os.environ['D'])
-          r=json.loads((d/'receipt.json').read_text()); c=json.loads((d/'controls.json').read_text())
-          stage={'candidate_id':sid,'trades':r.get('completed_trades'),'receipt_state':r.get('state'),'control_state':c.get('state'),'control_blockers':c.get('blockers') or [],'a1_state':'NOT_RUN','a2_state':'NOT_RUN','a3_state':'NOT_RUN'}
-          (d/'stage.json').write_text(json.dumps(stage,sort_keys=True,indent=2)+'\n')
-          PY
-            CTRL_STATE="$(python -c "import json;print(json.load(open('$D/controls.json'))['state'])")"
-            if [ "$CTRL_STATE" != "PASS_V3_UNIVERSAL_HARD_CONTROLS" ]; then
-              python -c "import json; p='$D/stage.json';x=json.load(open(p));open('out/a3_stage_lines.jsonl','a').write(json.dumps(x,sort_keys=True)+'\n')"
-              continue
-            fi
-            set +e
-            python -m backend.research.rebuild.a1_exact25_v3_forward_transition_v1 \
-              --receipt "$D/receipt.json" --controls "$D/controls.json" --output "$D/a1.json"
-            A1_RC=$?
-            set -e
-            if [ "$A1_RC" -ne 0 ]; then
-              SID="$SID" D="$D" python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=Path(os.environ['D'])/'stage.json';x=json.loads(p.read_text());x['a1_state']='HOLD_OR_ERROR';p.write_text(json.dumps(x,sort_keys=True,indent=2)+'\n')
-          PY
-              python -c "import json; p='$D/stage.json';x=json.load(open(p));open('out/a3_stage_lines.jsonl','a').write(json.dumps(x,sort_keys=True)+'\n')"
-              continue
-            fi
-            A1_STATE="$(python -c "import json;print(json.load(open('$D/a1.json'))['state'])")"
-            SID="$SID" D="$D" A1_STATE="$A1_STATE" python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=Path(os.environ['D'])/'stage.json';x=json.loads(p.read_text());x['a1_state']=os.environ['A1_STATE'];p.write_text(json.dumps(x,sort_keys=True,indent=2)+'\n')
-          PY
-            if [ "$A1_STATE" != "PASS_A1_CAUSAL_READY_FOR_A2" ]; then
-              python -c "import json; p='$D/stage.json';x=json.load(open(p));open('out/a3_stage_lines.jsonl','a').write(json.dumps(x,sort_keys=True)+'\n')"
-              continue
-            fi
-            set +e
-            python -m backend.research.prep.a2_forward_cost_turnover_v1 \
-              --transition "$D/a1.json" --receipt "$D/receipt.json" --output "$D/a2.json"
-            A2_RC=$?
-            set -e
-            A2_STATE="$(python -c "import json,os;p='$D/a2.json';print(json.load(open(p)).get('state') if os.path.exists(p) else 'HOLD_OR_ERROR')")"
-            SID="$SID" D="$D" A2_STATE="$A2_STATE" python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=Path(os.environ['D'])/'stage.json';x=json.loads(p.read_text());x['a2_state']=os.environ['A2_STATE'];p.write_text(json.dumps(x,sort_keys=True,indent=2)+'\n')
-          PY
-            if [ "$A2_RC" -ne 0 ] || [ "$A2_STATE" != "PASS_A2_COST_TURNOVER" ]; then
-              python -c "import json; p='$D/stage.json';x=json.load(open(p));open('out/a3_stage_lines.jsonl','a').write(json.dumps(x,sort_keys=True)+'\n')"
-              continue
-            fi
-            python -m backend.research.prep.a3_exact25_forward_durability_v1 \
-              --receipt "$D/receipt.json" --a2 "$D/a2.json" \
-              --context out/a3_forward_context_ledger_v2.json --output "$D/a3.json"
-            A3_STATE="$(python -c "import json;print(json.load(open('$D/a3.json'))['state'])")"
-            SID="$SID" D="$D" A3_STATE="$A3_STATE" python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=Path(os.environ['D'])/'stage.json';x=json.loads(p.read_text());x['a3_state']=os.environ['A3_STATE'];a3=json.loads((Path(os.environ['D'])/'a3.json').read_text());x['a3_coverage']=a3.get('coverage');x['a3_blockers']=a3.get('blockers');p.write_text(json.dumps(x,sort_keys=True,indent=2)+'\n')
-          with open('out/a3_stage_lines.jsonl','a') as f:f.write(json.dumps(x,sort_keys=True)+'\n')
-          PY
-          done < out/a3_queue.txt
-
-      - name: Seal fanout receipt
-        if: always()
-        run: |
-          python - <<'PY'
-          import hashlib,json
-          from pathlib import Path
-          rows=[]
-          p=Path('out/a3_stage_lines.jsonl')
-          if p.exists():
-              for line in p.read_text().splitlines():
-                  if line.strip(): rows.append(json.loads(line))
-          context={}
-          cp=Path('out/a3_forward_context_ledger_v2.json')
-          if cp.exists(): context=json.loads(cp.read_text())
-          out={
-              'schema_version':'zel.a3_exact25.forward_fanout.v1',
-              'state':'PASS_A3_FANOUT_EVIDENCE_CEILING_EVALUATED',
-              'candidate_count':len(rows),
-              'rows':rows,
-              'context_state':context.get('state'),
-              'context_valid_row_count':context.get('valid_row_count'),
-              'context_legacy_causal_ineligible_count':context.get('legacy_causal_ineligible_count'),
-              'a3_pass_count':sum(1 for x in rows if x.get('a3_state') in ('PASS_A3_GLOBAL_DURABILITY','PASS_A3_EXPLICIT_REGIME_OWNER')),
-              'a3_contract_unsealed_count':sum(1 for x in rows if x.get('a3_state')=='HOLD_A3_DURABILITY_CONTRACT_UNSEALED'),
-              'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold',
-          }
-          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-          Path('out/a3_fanout_receipt_v1.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          print(json.dumps(out,sort_keys=True))
-          PY
-
-      - name: Persist causal A3 context ledger
-        if: always()
-        run: |
-          set -euo pipefail
-          test -f out/a3_forward_context_ledger_v2.json || exit 0
           cp out/a3_forward_context_ledger_v2.json backend/research/prep/a3_forward_context_ledger_v2.json
-          git config user.name 'a3-forward-fanout'; git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/prep/a3_forward_context_ledger_v2.json
+          cp out/a1_exact25_v3_causal_registry_v1.json backend/research/rebuild/a1_exact25_v3_causal_registry_v1.json
+          git config user.name 'a3-forward-fanout'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/prep/a3_forward_context_ledger_v2.json backend/research/rebuild/a1_exact25_v3_causal_registry_v1.json
           if ! git diff --cached --quiet; then
-            git commit -m 'A3: persist causal forward context [skip ci]'
+            git commit -m 'A3: persist causal context and terminal controls [skip ci]'
+            git pull --rebase origin master
             git push origin HEAD:master
           fi
 
@@ -215,30 +116,33 @@ jobs:
           import json,os,urllib.request
           from pathlib import Path
           marker='<!-- A3_EXACT25_FORWARD_FANOUT_V1 -->'
-          try:r=json.loads(Path('out/a3_fanout_receipt_v1.json').read_text())
-          except Exception:r={'state':'HOLD_A3_FANOUT_NO_RECEIPT','rows':[]}
-          compact=[{k:x.get(k) for k in ('candidate_id','trades','control_state','a1_state','a2_state','a3_state','a3_coverage','a3_blockers')} for x in r.get('rows') or []]
+          try:r=json.loads(Path('out/a3_fanout_receipt_v2.json').read_text())
+          except Exception:r={'state':'HOLD_A3_FANOUT_NO_RECEIPT','rows':[],'current_queue':[],'next_queue':[]}
+          compact=[{k:x.get(k) for k in ('candidate_id','trades','frozen_control_trade_count','control_state','hard_control_states','a1_state','a2_state','a3_state','a3_coverage','a3_blockers','a3_failures','errors')} for x in r.get('rows') or []]
           body='\n'.join([
               marker,'## A3 Exact25 Forward Fanout V1',
               f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
-              f"state={r.get('state')}|candidates={r.get('candidate_count',0)}|a3_pass={r.get('a3_pass_count',0)}|contract_unsealed={r.get('a3_contract_unsealed_count',0)}",
+              f"state={r.get('state')}|current={len(r.get('current_queue') or [])}|next={len(r.get('next_queue') or [])}|a3_pass={r.get('a3_pass_count',0)}|registry_pass={r.get('causal_registry_pass_count')}|registry_fail={r.get('causal_registry_fail_count')}",
               f"context={r.get('context_state')}|valid={r.get('context_valid_row_count')}|legacy_ineligible={r.get('context_legacy_causal_ineligible_count')}",
+              'current_queue='+json.dumps(r.get('current_queue') or [],sort_keys=True),
+              'next_queue='+json.dumps(r.get('next_queue') or [],sort_keys=True),
+              'causal_merge='+json.dumps(r.get('causal_registry_last_merge') or {},sort_keys=True,separators=(',',':')),
               'rows='+json.dumps(compact,sort_keys=True,separators=(',',':')),
               f"receipt={r.get('receipt_sha256')}",
-              'policy=push every A-grade candidate to current evidence ceiling; no synthetic A3 pass; causal context only',
+              'policy=first25 causal controls immutable per policy/config/boundary; terminal FAIL exits A3 queue and routes to new-identity redesign; no synthetic A3 pass',
               'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0',
           ])
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'}
           comments=[]
           for page in range(1,60):
               url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100&page={page}"
-              with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as resp: batch=json.load(resp)
+              with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as resp:batch=json.load(resp)
               comments.extend(batch)
-              if len(batch)<100: break
+              if len(batch)<100:break
           prior=next((x for x in reversed(comments) if marker in str(x.get('body') or '')),None)
           url=prior.get('url') if prior else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           method='PATCH' if prior else 'POST'
-          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method=method)): pass
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method=method)):pass
           PY
 
       - uses: actions/upload-artifact@v4

@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from backend.research.architecture_factory import a1_terminal_repair_swarm_v4 as v4
-from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v2 as econ
+from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v3 as econ
 
 CONTRACT=Path('backend/research/contracts/p3_carry_flow_prospective_native_v1.json')
+SUBAXIS_CONTRACT=Path('backend/research/contracts/a1_basis_funding_oi_subaxis_replay_v1.json')
 P3_COVERAGE_URL=v4.P3_COVERAGE_URL
 
 
@@ -29,22 +30,44 @@ def _history_readiness()->dict[str,Any]:
         out['funding']={'ready':fready,'reason':'P3_CONTRACT_HISTORICAL_W1_W2_BOUND' if fready else 'P3_FUNDING_HISTORY_NOT_BOUND','endpoint':funding.get('endpoint')}
     except Exception as exc:
         out['funding']={'ready':False,'reason':'P3_CONTRACT_READ_FAILED','error':f'{type(exc).__name__}:{str(exc)[:160]}'}
+        fready=False
+    try:
+        s=json.loads(SUBAXIS_CONTRACT.read_text(encoding='utf-8'))
+        inv=s.get('separation_invariant') or {}
+        subaxis_ok=(s.get('schema_version')=='zel.a1.basis_funding_oi_subaxis_replay.v1' and s.get('state')=='FROZEN_SUBAXIS_REPLAY_CONTRACT' and inv.get('duration_gate_lowered') is False and inv.get('historical_backfill_fabricated') is False and inv.get('basis_funding_oi_subaxis_does_not_require_flow') is True)
+    except Exception as exc:
+        subaxis_ok=False
+        out['basis']={'ready':False,'reason':'P3_SUBAXIS_CONTRACT_READ_FAILED','error':f'{type(exc).__name__}:{str(exc)[:160]}'}
+        out['open_interest']=dict(out['basis'])
     try:
         with urllib.request.urlopen(P3_COVERAGE_URL,timeout=15) as r: cov=json.loads(r.read().decode('utf-8'))
-        gate=bool(cov.get('basis_oi_duration_gate_pass')) and bool(cov.get('historical_coverage_claim'))
+        # historical_coverage_claim is intentionally false for prospective P3 records.
+        # The distinct basis/funding/OI subaxis becomes source-ready on the unchanged
+        # frozen 21d duration gate plus bound historical funding. Full carry_flow
+        # remains separately blocked by native flow under the parent contract.
+        duration_gate=bool(cov.get('basis_oi_duration_gate_pass'))
+        gate=bool(duration_gate and subaxis_ok and fready)
         ratio=float(cov.get('minimum_coverage_progress_ratio') or 0.0); state=str(cov.get('state') or '')
         required=int(cov.get('required_capture_span_ms') or 0)
         spans=[int(x.get('capture_span_ms') or 0) for x in cov.get('results') or [] if isinstance(x,dict)]
         captured=min(spans) if spans else int(required*ratio)
         remaining=max(0,required-captured)
-        common={'coverage_progress_ratio':ratio,'coverage_state':state,'coverage_receipt':cov.get('receipt_sha256'),'required_capture_span_ms':required,'captured_min_span_ms':captured,'remaining_span_ms':remaining,'remaining_days':remaining/86_400_000 if required else None,'prospective_only':True,'historical_backfill_allowed':False}
-        for s in ('basis','open_interest'):
-            out[s]={'ready':gate,'reason':'P3_FROZEN_21D_HISTORY_GATE_PASS' if gate else 'P3_FROZEN_21D_HISTORY_GATE_PENDING',**common}
-        out['basis_oi_combined_gate']={'ready':gate,'reason':'ALL_BASIS_OI_STREAMS_21D_REQUIRED','coverage_progress_ratio':ratio,'remaining_days':common['remaining_days']}
+        common={
+          'coverage_progress_ratio':ratio,'coverage_state':state,'coverage_receipt':cov.get('receipt_sha256'),
+          'required_capture_span_ms':required,'captured_min_span_ms':captured,'remaining_span_ms':remaining,
+          'remaining_days':remaining/86_400_000 if required else None,'prospective_only':True,
+          'historical_coverage_claim':bool(cov.get('historical_coverage_claim')),
+          'historical_coverage_claim_required':False,'historical_backfill_allowed':False,
+          'full_carry_flow_replay_allowed':bool(cov.get('replay_allowed')),
+          'flow_source_bound':bool(cov.get('flow_source_bound')),'subaxis_contract_verified':subaxis_ok,
+        }
+        for source in ('basis','open_interest'):
+            out[source]={'ready':gate,'reason':'P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PASS' if gate else 'P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING',**common}
+        out['basis_oi_combined_gate']={'source_ready':gate,'reason':'BASIS_FUNDING_OI_SUBAXIS_21D_PLUS_FUNDING_REQUIRED','coverage_progress_ratio':ratio,'remaining_days':common['remaining_days'],'duration_gate_pass':duration_gate,'subaxis_contract_verified':subaxis_ok}
     except Exception as exc:
         err=f'{type(exc).__name__}:{str(exc)[:160]}'
-        for s in ('basis','open_interest'): out[s]={'ready':False,'reason':'P3_COVERAGE_FETCH_FAILED','error':err}
-        out['basis_oi_combined_gate']={'ready':False,'reason':'P3_COVERAGE_FETCH_FAILED','error':err}
+        for source in ('basis','open_interest'): out[source]={'ready':False,'reason':'P3_COVERAGE_FETCH_FAILED','error':err}
+        out['basis_oi_combined_gate']={'source_ready':False,'reason':'P3_COVERAGE_FETCH_FAILED','error':err}
     return out
 
 
@@ -72,6 +95,10 @@ def run(output:Path)->dict[str,Any]:
       'funding_replay_supported':True,
       'basis_oi_gate_lowered':False,
       'basis_oi_backfill_fabricated':False,
+      'historical_coverage_claim_required_for_subaxis':False,
+      'basis_funding_oi_subaxis_flow_required':False,
+      'full_carry_flow_contract_unchanged':True,
+      'basis_oi_prospective_replay_supported_after_gate':True,
       'combined_basis_funding_oi_ready':bool((result.get('source_history_readiness') or {}).get('basis',{}).get('ready') and (result.get('source_history_readiness') or {}).get('funding',{}).get('ready') and (result.get('source_history_readiness') or {}).get('open_interest',{}).get('ready')),
     }
     result['schema_version']='zel.a1_terminal_repair_swarm.v5'
@@ -81,8 +108,9 @@ def run(output:Path)->dict[str,Any]:
 
 
 def self_test()->int:
-    assert 'funding' in econ.SUPPORTED_SOURCES
+    assert {'basis','funding','open_interest'}.issubset(econ.SUPPORTED_SOURCES)
     probe=_funding_probe(); assert probe['required_sources']==['funding','ohlcv'] and probe['executable_spec']['max_hold_bars']==8
+    s=json.loads(SUBAXIS_CONTRACT.read_text(encoding='utf-8')); assert (s.get('separation_invariant') or {}).get('duration_gate_lowered') is False
     print('PASS_A1_TERMINAL_REPAIR_SWARM_V5_SELF_TEST'); return 0
 
 

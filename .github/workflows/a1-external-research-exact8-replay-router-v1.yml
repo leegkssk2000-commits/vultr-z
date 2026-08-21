@@ -1,0 +1,45 @@
+name: A1 External Research Exact8 Replay Router V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/research/architecture_factory/a1_external_research_exact8_replay_router_v1.py'
+      - 'backend/research/architecture_factory/test_a1_external_research_exact8_replay_router_v1.py'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_adapter_manifest_v1.json'
+      - '.github/workflows/a1-external-research-exact8-replay-router-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  replay-lane-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify Exact8 replay lanes without assigning a boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_external_research_exact8_replay_router_v1.py \
+            backend/research/architecture_factory/test_a1_external_research_exact8_replay_router_v1.py
+          python -m unittest \
+            backend.research.architecture_factory.test_a1_external_research_exact8_replay_router_v1
+          python -m backend.research.architecture_factory.a1_external_research_exact8_replay_router_v1 \
+            --self-test \
+            --output out/a1_external_research_exact8_replay_plan_v1.json
+          python - <<'PY'
+          import json
+          d=json.load(open('out/a1_external_research_exact8_replay_plan_v1.json'))
+          assert d['counts']=={'post_merge_source_audit':6,'hold_history_8640_returns':1,'hold_preentry_l2_trades_history':1},d
+          assert d['fresh_boundary_assigned'] is False and d['replay_performed'] is False,d
+          assert d['effect_verified_count']==0 and d['synthetic_market_evidence_used'] is False,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          PY

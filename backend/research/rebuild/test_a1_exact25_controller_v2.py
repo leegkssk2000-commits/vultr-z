@@ -45,7 +45,7 @@ class Exact25ResourceBudgetTests(unittest.TestCase):
         self.assertIn("ZERO_INTENT", reason)
 
     def test_nonzero_incomplete_trades_do_not_disappear_early(self):
-        r = receipt(bars=100, intents=2, trades=0)
+        r = receipt(bars=95, intents=2, trades=0)
         d, _ = c.resource_disposition(r, now=datetime(2026, 8, 5, tzinfo=timezone.utc))
         self.assertIsNone(d)
         self.assertEqual(r["intent_count"], 2)
@@ -72,7 +72,7 @@ class Exact25ResourceBudgetTests(unittest.TestCase):
             "net_profit_factor": 1.4,
             "net_payoff": 1.2,
         }
-        d, reason = c.resource_disposition(r, now=datetime(2026, 8, 8, tzinfo=timezone.utc))
+        d, reason = c.resource_disposition(r, now=datetime(2026, 8, 5, tzinfo=timezone.utc))
         self.assertEqual(d, "A1_FINALIST_PARKED")
         self.assertIn("SCREENING_RESOURCE_BUDGET_COMPLETE", reason)
 

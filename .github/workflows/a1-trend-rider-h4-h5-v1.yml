@@ -46,50 +46,75 @@ jobs:
       - name: Run H4 and H5 on all accumulated frozen prospective trades
         run: python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 --receipt out/trend_rider_candidate.json --out out/trend_rider_hardening_evidence.json
       - name: Diagnose Liquid6 universe without changing official gate
-        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          mkdir -p out
+          LOG=out/trend_rider_liquid6_run.log
+          : > "$LOG"
+          set +e
           python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
             --strategy-id trend_rider \
             --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT \
-            --out out/trend_rider_liquid6_candidate.json
-          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
-            --receipt out/trend_rider_liquid6_candidate.json \
-            --out out/trend_rider_liquid6_hardening.json
-          python - <<'PY'
-          import hashlib,json
-          c=json.load(open('out/trend_rider_liquid6_candidate.json'))
-          e=json.load(open('out/trend_rider_liquid6_hardening.json'))
-          h4=e['h4_receipt']; h5=e['h5_receipt']
-          summary={
+            --out out/trend_rider_liquid6_candidate.json >> "$LOG" 2>&1
+          EVAL_RC=$?
+          HARD_RC=99
+          if [ "$EVAL_RC" -eq 0 ]; then
+            python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
+              --receipt out/trend_rider_liquid6_candidate.json \
+              --out out/trend_rider_liquid6_hardening.json >> "$LOG" 2>&1
+            HARD_RC=$?
+          fi
+          set -e
+          EVAL_RC="$EVAL_RC" HARD_RC="$HARD_RC" python - <<'PY'
+          import hashlib,json,os
+          erc=int(os.environ['EVAL_RC']); hrc=int(os.environ['HARD_RC'])
+          base={
             'schema_version':'zel.a1_trend_rider_liquid6_rescue.v1',
             'strategy_id':'trend_rider',
             'symbol_universe':['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],
             'parameter_sweep':False,
             'policy_changed':False,
             'thresholds_changed':False,
-            'candidate_trade_count':c['completed_trades'],
-            'metrics':c['metrics'],
-            'retention_pct':e['retention_pct'],
-            'oos':e['oos'],
-            'h4_state':h4['state'],
-            'h4_passed':h4['passed_control_count'],
-            'h4_results':h4['control_results'],
-            'h5_state':h5['state'],
-            'h5_blockers':h5['blockers'],
-            'h5_max_shares':h5['maximum_profit_share_by_dimension'],
-            'top10_trade_profit_share':h5['top10_trade_profit_share'],
-            'survivor_ready':e['state']=='PASS_HARDENING_EVIDENCE',
             'selection_authority':False,
             'promotion_authority':False,
             'execution_authority':'NONE',
             'order_authority':'BLOCKED',
             'protected_mutations':0,
           }
-          summary['receipt_sha256']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-          open('out/trend_rider_liquid6_summary.json','w').write(json.dumps(summary,indent=2,sort_keys=True)+'\n')
-          print('A1_TREND_RIDER_LIQUID6_RESCUE='+json.dumps(summary,sort_keys=True))
+          if erc==0 and hrc==0:
+            c=json.load(open('out/trend_rider_liquid6_candidate.json'))
+            e=json.load(open('out/trend_rider_liquid6_hardening.json'))
+            h4=e['h4_receipt']; h5=e['h5_receipt']
+            base.update({
+              'state':'PASS_DIAGNOSTIC_EXECUTION',
+              'candidate_trade_count':c['completed_trades'],
+              'metrics':c['metrics'],
+              'retention_pct':e['retention_pct'],
+              'oos':e['oos'],
+              'h4_state':h4['state'],
+              'h4_passed':h4['passed_control_count'],
+              'h4_results':h4['control_results'],
+              'h5_state':h5['state'],
+              'h5_blockers':h5['blockers'],
+              'h5_max_shares':h5['maximum_profit_share_by_dimension'],
+              'top10_trade_profit_share':h5['top10_trade_profit_share'],
+              'survivor_ready':e['state']=='PASS_HARDENING_EVIDENCE',
+            })
+          else:
+            lines=open('out/trend_rider_liquid6_run.log',errors='replace').read().splitlines()
+            base.update({
+              'state':'HOLD_DIAGNOSTIC_EXECUTION',
+              'failed_stage':'evaluator' if erc else 'hardening',
+              'evaluator_rc':erc,
+              'hardening_rc':hrc,
+              'error_tail':lines[-20:],
+              'survivor_ready':False,
+            })
+          base['receipt_sha256']=hashlib.sha256(json.dumps(base,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          open('out/trend_rider_liquid6_summary.json','w').write(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          print('A1_TREND_RIDER_LIQUID6_RESCUE='+json.dumps(base,sort_keys=True))
           PY
+          cat "$LOG"
       - name: Read hardening gate
         id: gate
         run: |

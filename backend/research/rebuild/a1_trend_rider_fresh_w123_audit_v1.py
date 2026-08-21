@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,json,hashlib,math
-from datetime import datetime,timezone
+import argparse,json,hashlib
+from datetime import datetime
 from pathlib import Path
 
 def metrics(rows):
@@ -22,3 +22,4 @@ def run(receipt):
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest();return r
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('--receipt',required=True);p.add_argument('--out',default='out/a1_trend_rider_fresh_w123_audit_v1.json');a=p.parse_args();r=run(json.load(open(a.receipt)));Path(a.out).parent.mkdir(exist_ok=True);Path(a.out).write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');print('A1_TREND_RIDER_FRESH_W123_AUDIT_V1='+json.dumps(r,sort_keys=True))
+# trigger

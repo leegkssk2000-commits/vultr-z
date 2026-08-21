@@ -59,5 +59,3 @@ def run(output:Path):
  output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n');print('STRICT_PASS_HARDENING='+json.dumps(r,sort_keys=True));return r
 if __name__=='__main__':
  run(Path('out/a1_gen2_incumbent_hardening_v1.json'))
- import backend.research.architecture_factory.a1_gen2_fresh_boundary_replay_v1 as fresh
- fresh.run(Path('out/a1_gen2_fresh_boundary_replay_v1.json'))

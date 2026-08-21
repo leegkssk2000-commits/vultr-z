@@ -1,0 +1,38 @@
+name: a1-gen2-4h-range-atr-w2w3-features-v1
+on:
+  push:
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_4h_range_atr_w2w3_features_v1.py'
+      - '.github/workflows/a1_gen2_4h_range_atr_w2w3_features_v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Run diagnose
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_gen2_4h_range_atr_w2w3_features_v1.py
+          python -m backend.research.architecture_factory.a1_gen2_4h_range_atr_w2w3_features_v1
+      - name: Publish receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_gen2_4h_range_atr_w2w3_features_v1.json')); marker='<!-- A1_GEN2_4H_RANGE_ATR_W2W3_FEATURES_V1 -->'
+          body='\n'.join([marker,'## A1 GEN2 4H Range ATR W2W3 Features V1',f"run_id={os.environ['RUN_ID']}",'W2='+json.dumps(r['W2'],sort_keys=True),'W3='+json.dumps(r['W3'],sort_keys=True),f"receipt_sha256={r['receipt_sha256']}",'diagnostic_only=true|selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}; base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: cs=json.load(q)
+          old=next((c for c in cs if marker in str(c.get('body') or '')),None); url=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if old else 'POST')): pass
+          PY

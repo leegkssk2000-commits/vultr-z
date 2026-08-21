@@ -36,7 +36,7 @@ concurrency:
 jobs:
   exact25-controller:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,12 +72,37 @@ jobs:
       - name: Release waiting heavy slot and route opportunistically
         id: route
         run: python -m backend.research.rebuild.a1_exact25_parallel_evidence_scheduler_v2 --mode after-receipt --receipt a1_exact25_current_receipt.json
+      - name: Drain bounded terminal-ready screening queue in same cycle
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 7); do
+            SID="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          print(str(d.get('active_strategy_id') or ''))
+          PY
+            )"
+            if [ -z "$SID" ]; then break; fi
+            RECEIPT="a1_exact25_drain_${i}_receipt.json"
+            EVENT="a1_exact25_drain_${i}_event.json"
+            if [ "$SID" = "bb_revert" ]; then
+              python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out "$RECEIPT"
+            else
+              python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id "$SID" --out "$RECEIPT"
+            fi
+            python backend/research/rebuild/a1_exact25_controller_v2.py --receipt "$RECEIPT" --out-event "$EVENT"
+            python -m backend.research.rebuild.a1_exact25_parallel_evidence_scheduler_v2 --mode after-receipt --receipt "$RECEIPT"
+          done
       - name: Validate research-only authority and one-heavy invariant
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          for name in ['a1_exact25_current_receipt.json','a1_exact25_controller_event.json','backend/research/rebuild/a1_exact25_disposition_ledger_v1.json','backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json']:
+          names=['a1_exact25_current_receipt.json','a1_exact25_controller_event.json','backend/research/rebuild/a1_exact25_disposition_ledger_v1.json','backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json']
+          names += [str(x) for x in sorted(Path('.').glob('a1_exact25_drain_*_receipt.json'))]
+          names += [str(x) for x in sorted(Path('.').glob('a1_exact25_drain_*_event.json'))]
+          for name in names:
               x=json.loads(Path(name).read_text()); a=x.get('authority',x)
               assert a.get('selection_authority') is False and a.get('promotion_authority') is False
               assert a.get('execution_authority')=='NONE' and a.get('order_authority')=='BLOCKED' and a.get('live_trade_authority')=='BLOCKED'
@@ -101,13 +126,6 @@ jobs:
           EVIDENCE_LINE: ${{ steps.controller.outputs.evidence_line }}
         with:
           script: await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:566,body:`${process.env.REPORT_LINE}\n${process.env.EVIDENCE_LINE}`})
-      - name: Launch next ready strategy in same cycle
-        if: steps.route.outputs.next_strategy_id != ''
-        run: |
-          set -euo pipefail
-          SID='${{ steps.route.outputs.next_strategy_id }}'
-          if [ "$SID" = '${{ steps.active.outputs.strategy_id }}' ]; then exit 0; fi
-          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id "$SID" --out a1_exact25_next_launch_receipt.json
       - name: Upload exact25 evidence
         uses: actions/upload-artifact@v4
         with:
@@ -117,7 +135,8 @@ jobs:
           path: |
             a1_exact25_current_receipt.json
             a1_exact25_controller_event.json
-            a1_exact25_next_launch_receipt.json
+            a1_exact25_drain_*_receipt.json
+            a1_exact25_drain_*_event.json
             backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
             backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json
             backend/research/rebuild/a1_exact25_resource_budget_v1.json

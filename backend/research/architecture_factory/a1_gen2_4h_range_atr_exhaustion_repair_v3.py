@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json,hashlib
 from pathlib import Path
-from backend.research.architecture_factory.a1_gen2_4h_range_breakout_dev_v1 import range_signal, HOLD
+from backend.research.architecture_factory.a1_gen2_4h_range_breakout_dev_v1 import signal as range_signal, HOLD
 from backend.research.architecture_factory.a1_gen2_4h_range_atr_regime_dev_v1 import atr, metrics
 from backend.research.architecture_factory.a1_gen2_generic_dev_econ_v1 import SYMBOLS,bars
 from backend.research.architecture_factory.a1_gen2_4h_range_atr_oos_v1 import prior_bars

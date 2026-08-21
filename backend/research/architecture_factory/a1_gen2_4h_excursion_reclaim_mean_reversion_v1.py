@@ -17,7 +17,6 @@ def setup(rs,i):
  if i<50:return None
  m,sd=mean_std(rs,i,20);a=atr(rs,i,14)
  if not a or sd<=0:return None
- # explicit non-trend gate: MA separation must be inside one ATR
  if abs(sma(rs,i,20)-sma(rs,i,50))>=a:return None
  c=float(rs[i]['close'])
  if c<m-2*sd:return ('long',m,float(rs[i]['low']))
@@ -30,12 +29,10 @@ def collect(rs,sym):
   st=setup(rs,i)
   if st is None:i+=1;continue
   side,target,extreme=st
-  # next bar must reclaim back inside the 2-sigma boundary; decision only after that bar closes
   j=i+1;m1,sd1=mean_std(rs,j,20);c1=float(rs[j]['close'])
   if side=='long' and not c1>m1-2*sd1:i+=1;continue
   if side=='short' and not c1<m1+2*sd1:i+=1;continue
   ei=j+1;ep=float(rs[ei]['open']);exit_px=None;xi=None
-  # excursion invalidation at original extreme, local-mean target, then 8-bar time stop
   for k in range(ei,min(len(rs),ei+MAX_HOLD)):
    mk,_=mean_std(rs,k,20);lo=float(rs[k]['low']);hi=float(rs[k]['high'])
    if side=='long':
@@ -62,3 +59,4 @@ def run():
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest();return r
 if __name__=='__main__':
  r=run();Path('out').mkdir(exist_ok=True);Path('out/a1_gen2_4h_excursion_reclaim_mean_reversion_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');print('A1_GEN2_4H_EXCURSION_RECLAIM_MEAN_REVERSION_V1='+json.dumps(r,sort_keys=True))
+# trigger

@@ -1,0 +1,114 @@
+name: A1 Trend Rider Liquid12 Rescue V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-trend-rider-liquid12-rescue-v1.yml'
+      - 'backend/research/contracts/a1_trend_rider_liquid12_rescue_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_multisource_attribution_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  liquid12-rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build frozen Liquid12 receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --strategy-id trend_rider \
+            --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT \
+            --out out/trend_rider_liquid12_candidate.json
+      - name: Run unchanged H4 H5
+        run: |
+          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
+            --receipt out/trend_rider_liquid12_candidate.json \
+            --out out/trend_rider_liquid12_hardening.json
+      - name: Attribute volume ATR funding and session states
+        run: |
+          python -m backend.research.rebuild.a1_trend_rider_multisource_attribution_v1 \
+            --receipt out/trend_rider_liquid12_candidate.json \
+            --contract backend/research/contracts/a1_trend_rider_liquid12_rescue_v1.json \
+            --out out/trend_rider_liquid12_attribution.json
+      - name: Emit fail-closed immutable summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          def load(path):
+              try:
+                  return json.load(open(path))
+              except Exception as exc:
+                  return {'state':'FAILED_OR_MISSING','error':repr(exc)}
+          c=load('out/trend_rider_liquid12_candidate.json')
+          h=load('out/trend_rider_liquid12_hardening.json')
+          a=load('out/trend_rider_liquid12_attribution.json')
+          summary={
+            'schema_version':'zel.a1.trend_rider.liquid12_rescue_summary.v1',
+            'strategy_id':'trend_rider',
+            'contract':'backend/research/contracts/a1_trend_rider_liquid12_rescue_v1.json',
+            'candidate_state':c.get('state'),
+            'candidate_trade_count':c.get('completed_trades'),
+            'metrics':c.get('metrics'),
+            'retention_pct':h.get('retention_pct'),
+            'oos':h.get('oos'),
+            'h4_state':(h.get('h4_receipt') or {}).get('state'),
+            'h4_passed':(h.get('h4_receipt') or {}).get('passed_control_count'),
+            'h4_results':(h.get('h4_receipt') or {}).get('control_results'),
+            'h5_state':(h.get('h5_receipt') or {}).get('state'),
+            'h5_blockers':(h.get('h5_receipt') or {}).get('blockers'),
+            'h5_max_shares':(h.get('h5_receipt') or {}).get('maximum_profit_share_by_dimension'),
+            'top10_trade_profit_share':(h.get('h5_receipt') or {}).get('top10_trade_profit_share'),
+            'attribution_state':a.get('state'),
+            'attribution_dimensions':a.get('dimensions'),
+            'survivor_ready':h.get('state')=='PASS_HARDENING_EVIDENCE',
+            'parameter_sweep':False,
+            'thresholds_changed':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED'
+          }
+          summary['receipt_sha256']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
+          os.makedirs('out',exist_ok=True)
+          open('out/trend_rider_liquid12_summary.json','w').write(json.dumps(summary,indent=2,sort_keys=True,default=str)+'\n')
+          print('A1_TREND_RIDER_LIQUID12='+json.dumps(summary,sort_keys=True,default=str))
+          PY
+      - name: Persist latest diagnostic
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p backend/research/rebuild/diagnostics
+          cp out/trend_rider_liquid12_summary.json backend/research/rebuild/diagnostics/trend_rider_liquid12_latest.json
+          git config user.name 'a1-trend-rider-rescue'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/diagnostics/trend_rider_liquid12_latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'A1 trend_rider: persist Liquid12 multisource diagnostic [skip ci]'
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-liquid12-${{ github.run_id }}
+          path: out
+          retention-days: 90

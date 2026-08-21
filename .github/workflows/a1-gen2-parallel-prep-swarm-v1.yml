@@ -167,9 +167,13 @@ jobs:
             f"receipt={r['receipt_sha256']}|alpha_e2e_receipt={e2e.get('receipt_sha256')}",
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
           hds={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
-          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          with urllib.request.urlopen(urllib.request.Request(base,headers=hds)) as q: cs=json.load(q)
-          e=next((c for c in cs if marker in str(c.get('body') or '')),None)
+          comments=[]
+          for page in range(1,60):
+              base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100&page={page}"
+              with urllib.request.urlopen(urllib.request.Request(base,headers=hds)) as q: batch=json.load(q)
+              comments.extend(batch)
+              if len(batch)<100: break
+          e=next((c for c in reversed(comments) if marker in str(c.get('body') or '')),None)
           url=e.get('url') if e else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=hds,method='PATCH' if e else 'POST')): pass
           PY

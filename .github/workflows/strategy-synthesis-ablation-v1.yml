@@ -1,0 +1,180 @@
+name: Strategy Synthesis Ablation V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/strategy_synthesis_material_ssot_v1.json'
+      - 'backend/research/prep/strategy_material_grade_v1.py'
+      - 'backend/research/prep/strategy_synthesis_ablation_v1.py'
+      - 'backend/research/prep/strategy_synthesis_ablation_v2.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v2.py'
+      - '.github/workflows/strategy-synthesis-ablation-v1.yml'
+  schedule:
+    - cron: '47 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  ablation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate synthesis engines
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/prep/strategy_material_grade_v1.py \
+            backend/research/prep/strategy_synthesis_ablation_v1.py \
+            backend/research/prep/strategy_synthesis_ablation_v2.py \
+            backend/research/rebuild/a1_exact25_generic_evaluator_v2.py
+          python -m backend.research.prep.strategy_material_grade_v1 --self-test
+          python -m backend.research.prep.strategy_synthesis_ablation_v1 --self-test
+          python -m backend.research.prep.strategy_synthesis_ablation_v2 --self-test
+
+      - name: Build sealed base material classification
+        run: |
+          set -euo pipefail
+          mkdir -p out/receipts
+          python -m backend.research.prep.strategy_material_grade_v1 --output out/material_base.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('out/material_base.json').read_text())
+          ids=[str(r['strategy_id']) for r in x.get('rows') or []]
+          Path('out/all25.txt').write_text('\n'.join(ids)+'\n')
+          assert len(ids)==25 and len(set(ids))==25,ids
+          print('PASS_SYNTHESIS_EXACT25_QUEUE',json.dumps(ids))
+          PY
+
+      - name: Replay immutable trade paths for all materials
+        run: |
+          set -uo pipefail
+          : > out/replay_status.jsonl
+          while IFS= read -r SID; do
+            test -n "$SID" || continue
+            OUT="out/receipts/$SID.json"
+            set +e
+            python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+              --terminal-replay --strategy-id "$SID" --out "$OUT" > "out/$SID.log" 2>&1
+            RC=$?
+            set -e
+            SID="$SID" OUT="$OUT" RC="$RC" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          sid=os.environ['SID']; p=Path(os.environ['OUT']); rc=int(os.environ['RC'])
+          row={'strategy_id':sid,'rc':rc,'receipt_present':p.exists()}
+          if p.exists():
+              try:
+                  r=json.loads(p.read_text()); row.update({'state':r.get('state'),'trades':r.get('completed_trades'),'receipt_sha256':r.get('receipt_sha256'),'canonical_mutated':(r.get('terminal_replay') or {}).get('canonical_ledger_mutated')})
+              except Exception as e: row['parse_error']=str(e)
+          with open('out/replay_status.jsonl','a') as f:f.write(json.dumps(row,sort_keys=True)+'\n')
+          PY
+          done < out/all25.txt
+
+      - name: Run outcome-independent-reference synthesis ablation
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.strategy_synthesis_ablation_v2 \
+            --material out/material_base.json \
+            --receipts-dir out/receipts \
+            --output out/synthesis_ablation_v2.json
+          python -m backend.research.prep.strategy_material_grade_v1 \
+            --synthesis-evidence out/synthesis_ablation_v2.json \
+            --output out/material_after_ablation.json
+
+      - name: Seal synthesis classification receipt
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          base=json.loads(Path('out/material_base.json').read_text())
+          abl=json.loads(Path('out/synthesis_ablation_v2.json').read_text())
+          final=json.loads(Path('out/material_after_ablation.json').read_text())
+          replay=[json.loads(x) for x in Path('out/replay_status.jsonl').read_text().splitlines() if x.strip()]
+          bgrade={r['strategy_id']:r['material_grade'] for r in base['rows']}
+          fgrade={r['strategy_id']:r['material_grade'] for r in final['rows']}
+          changes=[{'strategy_id':k,'from':bgrade[k],'to':fgrade[k]} for k in sorted(bgrade) if bgrade[k]!=fgrade[k]]
+          out={
+            'schema_version':'zel.strategy_synthesis_ablation_cycle.v1',
+            'state':'PASS_SYNTHESIS_ABLATION_CYCLE',
+            'replay_success_count':sum(1 for x in replay if x.get('receipt_present') and x.get('rc')==0),
+            'replay_total_count':len(replay),
+            'base_grade_counts':{k:len(v) for k,v in base['grades'].items()},
+            'final_grade_counts':{k:len(v) for k,v in final['grades'].items()},
+            'grade_changes':changes,
+            'positive_marginal_count':abl.get('positive_marginal_count'),
+            'discard_ablation_evidence_count':abl.get('discard_ablation_evidence_count'),
+            'discard_confirmed':(final.get('buckets') or {}).get('DISCARD_CONFIRMED') or [],
+            'synthesis_core':(final.get('buckets') or {}).get('SYNTHESIS_CORE') or [],
+            'synthesis_upgrade':(final.get('buckets') or {}).get('SYNTHESIS_UPGRADE') or [],
+            'synthesis_experimental':(final.get('buckets') or {}).get('SYNTHESIS_EXPERIMENTAL') or [],
+            'one_ablation_receipt_maximum_one_grade_step':True,
+            'same_evidence_multi_round_promotion_forbidden':True,
+            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold',
+          }
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          Path('out/synthesis_cycle_receipt.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - name: Publish stable synthesis receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          from pathlib import Path
+          marker='<!-- STRATEGY_SYNTHESIS_ABLATION_V1 -->'
+          try:r=json.loads(Path('out/synthesis_cycle_receipt.json').read_text())
+          except Exception:r={'state':'HOLD_SYNTHESIS_CYCLE_NO_RECEIPT'}
+          body='\n'.join([
+              marker,'## Strategy Synthesis Ablation V1',
+              f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
+              f"state={r.get('state')}|replay={r.get('replay_success_count')}/{r.get('replay_total_count')}|positive_marginal={r.get('positive_marginal_count')}|discard_evidence={r.get('discard_ablation_evidence_count')}",
+              'base_grades='+json.dumps(r.get('base_grade_counts') or {},sort_keys=True),
+              'final_grades='+json.dumps(r.get('final_grade_counts') or {},sort_keys=True),
+              'grade_changes='+json.dumps(r.get('grade_changes') or [],sort_keys=True,separators=(',',':')),
+              'discard_confirmed='+json.dumps(r.get('discard_confirmed') or [],sort_keys=True),
+              'synthesis_core='+json.dumps(r.get('synthesis_core') or [],sort_keys=True),
+              f"receipt={r.get('receipt_sha256')}",
+              'policy=reference chosen structurally before outcomes; fixed 50/50 ablation; one receipt <= one grade step; same-evidence multi-round forbidden',
+              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0',
+          ])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'}
+          comments=[]
+          for page in range(1,60):
+              url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100&page={page}"
+              with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as resp: batch=json.load(resp)
+              comments.extend(batch)
+              if len(batch)<100: break
+          prior=next((x for x in reversed(comments) if marker in str(x.get('body') or '')),None)
+          url=prior.get('url') if prior else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method='PATCH' if prior else 'POST')): pass
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy-synthesis-ablation-${{ github.run_id }}
+          retention-days: 90
+          path: out

@@ -40,3 +40,4 @@ def run():
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest();return r
 if __name__=='__main__':
  r=run();Path('out').mkdir(exist_ok=True);Path('out/a1_gen2_trend_persistence_runstate_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');print('A1_GEN2_TREND_PERSISTENCE_RUNSTATE_V1='+json.dumps(r,sort_keys=True))
+# trigger

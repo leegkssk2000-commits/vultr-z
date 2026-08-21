@@ -125,16 +125,18 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--registry", type=Path, required=True)
-    ap.add_argument("--candidates-dir", type=Path, required=True)
-    ap.add_argument("--run-id", required=True)
-    ap.add_argument("--head-sha", required=True)
-    ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--registry", type=Path)
+    ap.add_argument("--candidates-dir", type=Path)
+    ap.add_argument("--run-id")
+    ap.add_argument("--head-sha")
+    ap.add_argument("--output", type=Path)
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    result = evaluate(read(args.registry), args.candidates_dir, args.run_id, args.head_sha)
+    if not all((args.registry, args.candidates_dir, args.run_id, args.head_sha, args.output)):
+        raise SystemExit("--registry --candidates-dir --run-id --head-sha --output required")
+    result = evaluate(read(args.registry), args.candidates_dir, str(args.run_id), str(args.head_sha))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"terminal_count": result["terminal_count"], "pass_count": result["pass_count"], "fail_count": result["fail_count"], "last_merge": result["last_merge"], "receipt_sha256": result["receipt_sha256"]}, sort_keys=True))

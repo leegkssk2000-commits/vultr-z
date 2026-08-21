@@ -1,0 +1,66 @@
+name: ZEL Survivor Tiering and Authority V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_component_authority_contract_v1.json'
+      - 'backend/research/zel_survivor_tiering_policy_v3.json'
+      - 'backend/tools/zel_survivor_tiering_gate_v3.py'
+      - 'backend/research/zel_pre_shadow_gate_matrix_v1.json'
+      - 'backend/research/zel_trade_methods_rebuild_v2.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/zel-survivor-tiering-authority-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/zel_component_authority_contract_v1.json'
+      - 'backend/research/zel_survivor_tiering_policy_v3.json'
+      - 'backend/tools/zel_survivor_tiering_gate_v3.py'
+      - 'backend/research/zel_pre_shadow_gate_matrix_v1.json'
+      - 'backend/research/zel_trade_methods_rebuild_v2.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/zel-survivor-tiering-authority-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: zel-survivor-tiering-authority-v1
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Validate prospective tiering and authority ownership
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/tools/zel_survivor_tiering_gate_v3.py
+          python -m backend.tools.zel_survivor_tiering_gate_v3 --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path('backend/research/zel_component_authority_contract_v1.json').read_text())
+          v3=json.loads(Path('backend/research/zel_survivor_tiering_policy_v3.json').read_text())
+          m=json.loads(Path('backend/research/zel_pre_shadow_gate_matrix_v1.json').read_text())
+          tm=json.loads(Path('backend/research/zel_trade_methods_rebuild_v2.json').read_text())
+          v2=json.loads(Path('backend/research/zel_economic_hardening_policy_v1.json').read_text())
+          assert a['state']=='PASS_COMPONENT_AUTHORITY_CONTRACT_INSTALLED'
+          assert a['ownership']['risk']['precedence']=='ABOVE_STRATEGY_TRADE_METHOD_SKILL'
+          assert a['conflict_policy']['multiple_writers']=='BLOCK'
+          assert a['authority']['execution_authority']=='NONE' and a['authority']['order_authority']=='BLOCKED'
+          assert v3['activation']['retroactive_reclassification_forbidden'] is True
+          assert v3['activation']['new_fresh_boundary_required_for_promotion'] is True
+          assert set(v3['a1_causal_alpha_gate']['hard_negative_controls'])=={'same_count_random_entry','direction_inversion','timestamp_shuffle'}
+          assert set(v3['a1_causal_alpha_gate']['diagnostic_controls'])=={'one_bar_delay','indicator_removal'}
+          assert v3['final_tiers']['CONDITIONAL_SURVIVOR']['must_fail_closed_outside_owned_regime'] is True
+          assert 'COMPONENT_AUTHORITY_COMPATIBILITY' in m['gates'] and 'SURVIVOR_TIERING_V3' in m['gates']
+          assert m['gates'].index('COMPONENT_AUTHORITY_COMPATIBILITY') < m['gates'].index('TRADE_METHOD_COVERAGE')
+          assert tm['safety']['runtime_binding'] is False and tm['safety']['canonical_mutation'] is False
+          assert v2['version']=='ZEL_ECONOMIC_HARDENING_POLICY_V2'
+          assert set(v2['h4_placebo_negative_controls']['required_controls'])=={'same_count_random_entry','one_bar_delay','direction_inversion','timestamp_shuffle','indicator_removal'}
+          print(json.dumps({'state':'PASS_SURVIVOR_V3_AUTHORITY_CONTRACT','v2_preserved':True,'v3_prospective_only':True,'component_authority_gate':True,'shadow_start_allowed':m['safety']['shadow_start_allowed']},sort_keys=True))
+          PY

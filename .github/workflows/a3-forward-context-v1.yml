@@ -8,6 +8,7 @@ on:
     paths:
       - 'backend/research/prep/a3_regime_taxonomy_v1.json'
       - 'backend/research/prep/a3_forward_context_collector_v1.py'
+      - 'backend/research/prep/a3_trend_rider_forward_durability_v1.py'
       - '.github/workflows/a3-forward-context-v1.yml'
 permissions:
   contents: read
@@ -18,7 +19,7 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,10 +28,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate collector
+      - name: Validate A3 forward lane
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/prep/a3_forward_context_collector_v1.py backend/research/prep/a3_regime_labeler_v1.py
+          python -m py_compile backend/research/prep/a3_forward_context_collector_v1.py backend/research/prep/a3_regime_labeler_v1.py backend/research/prep/a3_trend_rider_forward_durability_v1.py
       - name: Recover prior prospective state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,7 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m backend.research.prep.a3_forward_context_collector_v1 --prior out/a3_forward_prior.json --output out/a3_forward_context_v1.json
-      - name: Publish prospective context state
+      - name: Replay trend rider forward durability
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.a3_trend_rider_forward_durability_v1 --context out/a3_forward_context_v1.json --output out/a3_forward_durability_v1.json
+      - name: Publish prospective A3 state
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,10 +81,13 @@ jobs:
           import json,os,urllib.request
           from pathlib import Path
           marker='<!-- A3_FORWARD_CONTEXT_V1 -->'
-          try: state=json.loads(Path('out/a3_forward_context_v1.json').read_text())
-          except Exception: state={'state':'HOLD_A3_FORWARD_CONTEXT_RUNTIME_NO_RECEIPT','rows':[],'blockers':['NO_RECEIPT']}
+          def load(path,default):
+              try:return json.loads(Path(path).read_text())
+              except Exception:return default
+          state=load('out/a3_forward_context_v1.json',{'state':'HOLD_A3_FORWARD_CONTEXT_RUNTIME_NO_RECEIPT','rows':[],'blockers':['NO_RECEIPT']})
+          dur=load('out/a3_forward_durability_v1.json',{'state':'HOLD_A3_FORWARD_DURABILITY_RUNTIME_NO_RECEIPT','blockers':['NO_RECEIPT']})
           compact=json.dumps(state,sort_keys=True,separators=(',',':'))
-          lines=[marker,'## A3 Forward Context V1',f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",f"state={state.get('state')}|rows={state.get('row_count',len(state.get('rows') or []))}|valid={state.get('valid_row_count',0)}|current_valid={state.get('current_valid_count',0)}|receipt={state.get('receipt_sha256')}",'newest='+json.dumps(state.get('new_rows') or [],sort_keys=True,separators=(',',':')),'blockers='+json.dumps(state.get('blockers') or [],sort_keys=True),'other_A1_GEN2_candidates=PARALLEL_UNCHANGED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0','STATE_JSON='+compact]
+          lines=[marker,'## A3 Forward Context + Durability V1',f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",f"context_state={state.get('state')}|rows={state.get('row_count',len(state.get('rows') or []))}|valid={state.get('valid_row_count',0)}|current_valid={state.get('current_valid_count',0)}|receipt={state.get('receipt_sha256')}",'newest='+json.dumps(state.get('new_rows') or [],sort_keys=True,separators=(',',':')),'context_blockers='+json.dumps(state.get('blockers') or [],sort_keys=True),f"durability_state={dur.get('state')}|valid_context={dur.get('valid_context_count',0)}|signals={dur.get('signal_count',0)}|completed={dur.get('completed_trade_count',0)}|pending={dur.get('pending_trade_count',0)}|receipt={dur.get('receipt_sha256')}",'durability_global='+json.dumps(dur.get('global_metrics') or {},sort_keys=True),'durability_regimes='+json.dumps(dur.get('regime_metrics') or {},sort_keys=True),'durability_blockers='+json.dumps(dur.get('blockers') or [],sort_keys=True),'other_A1_GEN2_candidates=PARALLEL_UNCHANGED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0','STATE_JSON='+compact]
           body='\n'.join(lines)
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
           comments=[]
@@ -96,6 +104,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a3-forward-context-${{ github.run_id }}
-          path: out/a3_forward_context_v1.json
+          name: a3-forward-${{ github.run_id }}
+          path: |
+            out/a3_forward_context_v1.json
+            out/a3_forward_durability_v1.json
           retention-days: 30

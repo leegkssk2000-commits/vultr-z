@@ -58,12 +58,18 @@ jobs:
           print('retention='+str(e['retention_pct']))
           print('oos_net='+str(e['oos']['net_pnl_bps']))
           PY
+      - name: Persist silent latest diagnostic
+        run: |
+          mkdir -p backend/research/rebuild/diagnostics
+          cp out/trend_rider_hardening_evidence.json backend/research/rebuild/diagnostics/trend_rider_hardening_latest.json
+          git config user.name 'a1-hardening'; git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/diagnostics/trend_rider_hardening_latest.json
+          if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: refresh hardening diagnostic [skip ci]'; fi
       - name: Persist PASS evidence only
         if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
         run: |
           mkdir -p backend/research/rebuild/hardening_evidence
           cp out/trend_rider_hardening_evidence.json backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
-          git config user.name 'a1-hardening'; git config user.email 'actions@users.noreply.github.com'
           git add backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
           if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: persist verified H4 H5 evidence [skip ci]'; fi
       - name: Verify official survivor gate
@@ -84,9 +90,12 @@ jobs:
       - name: Persist Survivor seal atomically
         if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
         run: |
-          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
+          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json backend/research/rebuild/diagnostics/trend_rider_hardening_latest.json
           if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: seal Survivor [skip ci]'; fi
           git push origin HEAD:master
+      - name: Push diagnostic when not yet Survivor
+        if: steps.gate.outputs.state != 'PASS_HARDENING_EVIDENCE'
+        run: git push origin HEAD:master
       - name: Report Survivor once
         if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
         uses: actions/github-script@v7

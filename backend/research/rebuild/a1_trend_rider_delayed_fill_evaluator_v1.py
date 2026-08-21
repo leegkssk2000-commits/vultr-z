@@ -59,6 +59,58 @@ def metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def enforce_policy_execution(
+    rows: list[dict[str, Any]], config: policy.TrendPolicyConfig
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply the frozen intent's per-symbol transition, pyramiding and cooldown rules."""
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_symbol.setdefault(str(row["symbol"]), []).append(row)
+    cooldown_bars = 2
+    for symbol, symbol_rows in sorted(by_symbol.items()):
+        last_signal_ts: int | None = None
+        last_side: str | None = None
+        transition_consumed = False
+        cooldown_until = -1
+        for row in sorted(symbol_rows, key=lambda x: (int(x["signal_ts"]), int(x["entry_ts"]))):
+            signal_ts = int(row["signal_ts"])
+            side = str(row["side"])
+            new_transition = (
+                last_signal_ts is None
+                or side != last_side
+                or signal_ts - last_signal_ts != config.timeframe_ms
+            )
+            if new_transition:
+                transition_consumed = False
+            last_signal_ts, last_side = signal_ts, side
+            if transition_consumed:
+                rejected.append({
+                    "symbol": symbol,
+                    "signal_ts": signal_ts,
+                    "side": side,
+                    "reason": "DUPLICATE_TRANSITION_FORBIDDEN",
+                })
+                continue
+            # The first actionable observation owns the transition even when a
+            # prior position/cooldown prevents entry. Later bars are persistence,
+            # not a new transition.
+            transition_consumed = True
+            if int(row["entry_ts"]) <= cooldown_until:
+                rejected.append({
+                    "symbol": symbol,
+                    "signal_ts": signal_ts,
+                    "side": side,
+                    "reason": "PYRAMIDING_OR_COOLDOWN_BLOCKED",
+                })
+                continue
+            accepted.append(row)
+            cooldown_until = int(row["exit_ts"]) + cooldown_bars * config.timeframe_ms
+    accepted.sort(key=lambda row: (int(row["entry_ts"]), str(row["symbol"])))
+    return accepted, rejected
+
+
 def transform(parent: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
     config = policy.TrendPolicyConfig()
     symbols = sorted({str(x["symbol"]) for x in parent.get("trades") or []})
@@ -123,6 +175,8 @@ def transform(parent: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any
         })
         delayed.append(row)
     delayed.sort(key=lambda row: (int(row["entry_ts"]), str(row["symbol"])))
+    raw_delayed_count = len(delayed)
+    delayed, execution_dropped = enforce_policy_execution(delayed, config)
     receipt = dict(parent)
     receipt.update({
         "schema_version": "zel.a1.trend_rider.delayed_fill_economics.v1",
@@ -139,14 +193,24 @@ def transform(parent: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any
             "entry_delay_bars": 1,
             "stop_geometry_changed": False,
             "timeout_bars_changed": False,
+            "one_entry_per_transition_enforced": True,
+            "pyramiding_disabled_enforced": True,
+            "cooldown_bars_enforced": 2,
         }),
         "delayed_fill_integrity": {
             "state": "PASS",
             "parent_completed_trades": int(parent.get("completed_trades") or 0),
+            "raw_delayed_completed_trades": raw_delayed_count,
             "delayed_completed_trades": len(delayed),
             "not_closed_after_delay_count": len(dropped),
-            "dropped_sha256": stable_sha(dropped),
+            "policy_execution_rejected_count": len(execution_dropped),
+            "duplicate_transition_rejected_count": sum(1 for x in execution_dropped if x["reason"] == "DUPLICATE_TRANSITION_FORBIDDEN"),
+            "pyramiding_or_cooldown_rejected_count": sum(1 for x in execution_dropped if x["reason"] == "PYRAMIDING_OR_COOLDOWN_BLOCKED"),
+            "dropped_sha256": stable_sha({"unclosed": dropped, "policy_execution": execution_dropped}),
             "entry_delay_bars": 1,
+            "one_entry_per_transition_enforced": True,
+            "pyramiding_disabled_enforced": True,
+            "cooldown_bars_enforced": 2,
             "signal_policy_changed": False,
             "cost_model_changed": False,
             "fail_closed": True,

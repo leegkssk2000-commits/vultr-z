@@ -39,6 +39,11 @@ def build(mapping: Mapping[str, Any], ledger: Mapping[str, Any], inventory: Mapp
     inventory_rows = inventory.get("strategies") or {}
     proposals = mapping.get("strategies") or {}
     sources = mapping.get("sources") or {}
+    code_audit = mapping.get("parent_code_dedup_audit") or {}
+    code_novel = {str(x) for x in (code_audit.get("novel_strategy_ids") or [])}
+    code_duplicates = {str(x) for x in (code_audit.get("duplicate_parent_axis") or {})}
+    if code_novel & code_duplicates:
+        raise RuntimeError("PARENT_CODE_AUDIT_OVERLAP")
     if len(strategy_order) != 25 or len(set(strategy_order)) != 25:
         raise RuntimeError("EXACT25_LEDGER_REQUIRED")
     if set(strategy_order) != set(proposals):
@@ -85,6 +90,11 @@ def build(mapping: Mapping[str, Any], ledger: Mapping[str, Any], inventory: Mapp
             "source_lineage_complete": True,
             "primary_evidence_ids": primary_ids,
             "youtube_hypothesis_only": any(str(sources[source_id].get("tier")) == "youtube_hypothesis_only" for source_id in source_ids),
+            "parent_code_dedup_state": (
+                "CODE_NOVELTY_CONFIRMED" if strategy_id in code_novel else
+                "DUPLICATE_PARENT_AXIS_NO_CHILD" if strategy_id in code_duplicates else
+                "PENDING_MULTICRITIC_OR_CODE_AUDIT"
+            ),
             "selection_authority": False,
             "promotion_authority": False,
             "execution_authority": "NONE",
@@ -120,7 +130,7 @@ def build(mapping: Mapping[str, Any], ledger: Mapping[str, Any], inventory: Mapp
 
 
 def self_test() -> int:
-    mapping = {"sources": {"P": {"tier": "peer_reviewed"}}, "strategies": {f"s{i}": {"axis": f"A{i}", "mechanism": "m", "source_ids": ["P"], "required_data": ["ohlcv"]} for i in range(25)}}
+    mapping = {"parent_code_dedup_audit": {"novel_strategy_ids": ["s0"], "duplicate_parent_axis": {"s1": "already owned"}}, "sources": {"P": {"tier": "peer_reviewed"}}, "strategies": {f"s{i}": {"axis": f"A{i}", "mechanism": "m", "source_ids": ["P"], "required_data": ["ohlcv"]} for i in range(25)}}
     order = [f"s{i}" for i in range(25)]
     ledger = {"strategy_order": order, "strategies": {sid: {"status": "TEST", "completed_trades": 1} for sid in order}}
     inventory = {"strategies": {sid: {"policy_owner": "x.py", "evidence_packet": "x.json"} for sid in order}}
@@ -128,6 +138,8 @@ def self_test() -> int:
     assert receipt["state"] == "PASS_EXACT25_EXTERNAL_RESEARCH_PREREG_READY"
     assert receipt["strategy_count"] == 25 and len(packets) == 25
     assert all(len(row["top3_axes"]) == 1 for row in packets)
+    assert packets[0]["parent_code_dedup_state"] == "CODE_NOVELTY_CONFIRMED"
+    assert packets[1]["parent_code_dedup_state"] == "DUPLICATE_PARENT_AXIS_NO_CHILD"
     print("PASS_A1_EXTERNAL_RESEARCH_EXACT25_ROUTER_V1_SELF_TEST")
     return 0
 

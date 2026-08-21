@@ -88,6 +88,7 @@ def audit_oi(rows: list[dict[str, Any]], symbol: str, required_span_ms: int) -> 
     collected: list[int] = []
     source: list[int] = []
     payload_hashes: set[str] = set()
+    repeated_payload_hashes = 0
     for index, row in enumerate(rows):
         prefix = f"row_{index}"
         values = row.get("values") if isinstance(row.get("values"), Mapping) else {}
@@ -120,7 +121,9 @@ def audit_oi(rows: list[dict[str, Any]], symbol: str, required_span_ms: int) -> 
         if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest.lower()):
             errors.append(prefix + ":PAYLOAD_SHA_INVALID")
         if digest in payload_hashes:
-            errors.append(prefix + ":PAYLOAD_SHA_DUPLICATE")
+            # A native value may remain unchanged at a later valid source timestamp.
+            # Timestamp duplication is blocked separately; equal payloads are diagnostic.
+            repeated_payload_hashes += 1
         payload_hashes.add(digest)
     if not rows:
         errors.append("EMPTY")
@@ -139,6 +142,7 @@ def audit_oi(rows: list[dict[str, Any]], symbol: str, required_span_ms: int) -> 
         "source_first_ms": source[0] if source else None,
         "source_last_ms": source[-1] if source else None,
         "source_span_ms": source_span,
+        "repeated_payload_hash_count": repeated_payload_hashes,
         "coverage_progress_ratio": min(1.0, collected_span / required_span_ms) if required_span_ms else 0.0,
         "remaining_span_ms": max(0, required_span_ms - collected_span),
         "duration_gate_pass": collected_span >= required_span_ms,

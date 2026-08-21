@@ -1,0 +1,38 @@
+name: A1 GEN2 4H Range ATR Exhaustion Repair V3
+on:
+  push:
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_4h_range_atr_exhaustion_repair_v3.py'
+      - '.github/workflows/a1_gen2_4h_range_atr_exhaustion_repair_v3.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run repair
+        run: python -m backend.research.architecture_factory.a1_gen2_4h_range_atr_exhaustion_repair_v3
+      - name: Report immutable result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY' > /tmp/body.md
+          import json,os
+          r=json.load(open('out/a1_gen2_4h_range_atr_exhaustion_repair_v3.json'))
+          print('<!-- A1_GEN2_4H_RANGE_ATR_EXHAUSTION_REPAIR_V3 -->')
+          print('## A1 GEN2 4H Range ATR Exhaustion Repair V3')
+          print('run_id='+os.environ['RUN_ID'])
+          for k in ('dev','prior_all','W2','W3','cost_dev','cost_prior','by_symbol_prior','by_side_prior'):
+              print(k+'='+json.dumps(r[k],sort_keys=True))
+          print('repair_promising='+str(r['repair_promising']).lower())
+          print('receipt_sha256='+r['receipt_sha256'])
+          print('selection=false|promotion=false|execution=NONE|order/live=BLOCKED')
+          PY
+          gh issue comment 566 --repo "$GITHUB_REPOSITORY" --body-file /tmp/body.md

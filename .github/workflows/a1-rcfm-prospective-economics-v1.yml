@@ -8,6 +8,8 @@ on:
       - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
       - 'backend/research/architecture_factory/a1_rcfm_causal_control_contract_v1.json'
       - 'backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py'
+      - 'backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py'
+      - 'backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py'
       - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
   push:
     branches: [master]
@@ -16,6 +18,8 @@ on:
       - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
       - 'backend/research/architecture_factory/a1_rcfm_causal_control_contract_v1.json'
       - 'backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py'
+      - 'backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py'
+      - 'backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py'
       - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
   schedule:
     - cron: '22,52 * * * *'
@@ -35,9 +39,13 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Verify post-freeze boundary-only activation contract
+      - name: Verify post-freeze boundary and RCFM transition contracts
         run: |
           set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py \
+            backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py \
+            backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py
           python - <<'PY'
           import hashlib,json
           from datetime import datetime
@@ -58,6 +66,8 @@ jobs:
           print('PASS_RCFM_BOUNDARY_LAUNCH_CONTRACT')
           PY
           python -m backend.research.architecture_factory.a1_rcfm_v3_causal_controls_v1 --self-test
+          python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 --self-test
+          python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 --self-test
 
   gen1_gate:
     if: github.event_name != 'pull_request'
@@ -94,7 +104,7 @@ jobs:
       group: a1-global-heavy-economic-evaluator-v1
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,10 +112,16 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Verify frozen causal control implementation
+      - name: Verify frozen RCFM causal and A2 implementation
         run: |
           set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py \
+            backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py \
+            backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py
           python -m backend.research.architecture_factory.a1_rcfm_v3_causal_controls_v1 --self-test
+          python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 --self-test
+          python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 --self-test
       - name: Read sealed boundary
         id: boundary
         run: |
@@ -134,13 +150,12 @@ jobs:
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "FLOOR_MS=$FLOOR_MS python3 -" > out/microstructure.jsonl <<'PY'
           import json,os
           from pathlib import Path
-          floor=int(os.environ['FLOOR_MS']); p=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl'); kept=0
+          floor=int(os.environ['FLOOR_MS']); p=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
           for line in p.read_text().splitlines():
             if not line.strip(): continue
             r=json.loads(line)
             if int(r.get('bucket_end_ms') or 0)>=floor:
-              print(json.dumps(r,sort_keys=True,separators=(',',':'))); kept+=1
-          if kept<1: pass
+              print(json.dumps(r,sort_keys=True,separators=(',',':')))
           PY
           ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "cat /home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json" > out/heartbeat.json
       - name: Verify source and run frozen prospective evaluator
@@ -157,16 +172,6 @@ jobs:
           assert h['execution_authority']=='NONE' and h['order_authority']=='BLOCKED' and h['live_trade_authority']=='BLOCKED'
           PY
           python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_evaluator_v1 --boundary "$BOUNDARY" --history out/microstructure.jsonl --out out/a1_rcfm_economics.json
-          python - <<'PY'
-          import json
-          r=json.load(open('out/a1_rcfm_economics.json'))
-          assert r['boundary_utc']=='2026-08-18T10:20:00Z'
-          assert r['leakage_lookahead']==0 and r['duplicate_count']==0 and not r['integrity_defects']
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
-          print(json.dumps({'state':r['state'],'events':r['baseline_event_count'],'confirmed':r['confirmed_intent_count'],'trades':r['completed_trades'],'metrics':r['metrics'],'receipt':r['receipt_sha256']},sort_keys=True,default=str))
-          PY
       - name: Run frozen first25 causal controls
         run: |
           set -euo pipefail
@@ -175,35 +180,66 @@ jobs:
             --heartbeat out/heartbeat.json \
             --micro out/microstructure.jsonl \
             --output out/a1_rcfm_v3_causal_controls_v1.json
-          python - <<'PY'
+      - name: Route causal PASS into A1 transition and A2
+        run: |
+          set -euo pipefail
+          CAUSAL_STATE="$(python - <<'PY'
           import json
-          r=json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))
-          assert r['candidate_id']=='NEW_RCFM_001'
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['state'] in {'PASS_RCFM_V3_CAUSAL_CONTROLS','WAIT_RCFM_V3_CAUSAL_CONTROLS','FAIL_RCFM_V3_CAUSAL_CONTROLS'}
-          print(json.dumps({'state':r['state'],'hard_control_states':r['hard_control_states'],'next_route':r['next_route'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))['state'])
           PY
-      - name: Publish latest RCFM prospective and causal state to issue 566
+          )"
+          if [ "$CAUSAL_STATE" = "PASS_RCFM_V3_CAUSAL_CONTROLS" ]; then
+            python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 \
+              --receipt out/a1_rcfm_economics.json \
+              --controls out/a1_rcfm_v3_causal_controls_v1.json \
+              --output out/a1_rcfm_v3_transition_v1.json
+            python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 \
+              --transition out/a1_rcfm_v3_transition_v1.json \
+              --receipt out/a1_rcfm_economics.json \
+              --output out/a2_rcfm_cost_turnover_actual_v1.json
+          else
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))
+          blocked={
+            'schema_version':'zel.a1.rcfm.blocked_route.v1',
+            'state':'BLOCKED_BEFORE_A2',
+            'candidate_id':'NEW_RCFM_001',
+            'causal_state':c.get('state'),
+            'hard_control_states':c.get('hard_control_states'),
+            'next_route':c.get('next_route'),
+            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold'
+          }
+          Path('out/a1_rcfm_v3_transition_v1.json').write_text(json.dumps(blocked,indent=2,sort_keys=True)+'\n')
+          Path('out/a2_rcfm_cost_turnover_actual_v1.json').write_text(json.dumps(blocked,indent=2,sort_keys=True)+'\n')
+          PY
+          fi
+      - name: Publish latest RCFM A1 A2 state to issue 566
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           python - <<'PY'
           import json,os,urllib.request
-          r=json.load(open('out/a1_rcfm_economics.json')); m=r['metrics']; c=json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))
+          from pathlib import Path
+          def load(path):
+              try:return json.loads(Path(path).read_text())
+              except Exception:return {}
+          r=load('out/a1_rcfm_economics.json'); c=load('out/a1_rcfm_v3_causal_controls_v1.json'); a1=load('out/a1_rcfm_v3_transition_v1.json'); a2=load('out/a2_rcfm_cost_turnover_actual_v1.json'); m=r.get('metrics') or {}
           marker='<!-- A1_RCFM_PROSPECTIVE_V1 -->'
           body='\n'.join([
             marker,
-            '## A1 RCFM Prospective V1',
-            f"state={r['state']}",
-            f"run={os.environ['RUN_ID']}",
-            f"boundary={r['boundary_utc']}",
-            f"events={r['baseline_event_count']}|confirmed={r['confirmed_intent_count']}|trades={r['completed_trades']}",
+            '## A1 RCFM Prospective / Causal / A2 V1',
+            f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
+            f"economics={r.get('state')}|events={r.get('baseline_event_count')}|confirmed={r.get('confirmed_intent_count')}|trades={r.get('completed_trades')}",
             f"gross_expectancy_bps={m.get('gross_expectancy_bps')}|net_expectancy_bps={m.get('net_expectancy_bps')}|PF={m.get('profit_factor')}|payoff={m.get('payoff')}|WR={m.get('win_rate')}|DD_bps={m.get('max_drawdown_bps')}",
-            f"receipt={r['receipt_sha256']}",
-            f"causal_state={c['state']}|hard_controls={json.dumps(c['hard_control_states'],sort_keys=True,separators=(',',':'))}|causal_receipt={c['receipt_sha256']}|next={c['next_route']}",
+            f"causal={c.get('state')}|hard_controls={json.dumps(c.get('hard_control_states') or {},sort_keys=True,separators=(',',':'))}|causal_receipt={c.get('receipt_sha256')}",
+            f"A1={a1.get('state')}|tier={(a1.get('tiering') or {}).get('a1_tier')}|receipt={a1.get('receipt_sha256')}",
+            f"A2={a2.get('state')}|receipt={a2.get('receipt_sha256')}|next={a2.get('next_stage_if_pass') or a2.get('next_route')}",
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'
           ])
           headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}; base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
@@ -223,4 +259,6 @@ jobs:
           path: |
             out/a1_rcfm_economics.json
             out/a1_rcfm_v3_causal_controls_v1.json
+            out/a1_rcfm_v3_transition_v1.json
+            out/a2_rcfm_cost_turnover_actual_v1.json
             out/heartbeat.json

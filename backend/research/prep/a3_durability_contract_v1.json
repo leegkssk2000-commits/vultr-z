@@ -1,0 +1,74 @@
+{
+  "schema_version": "zel.a3_durability_contract.v1",
+  "state": "PASS_A3_DURABILITY_CONTRACT_SEALED",
+  "stage": "A3",
+  "sealed_before_activation": true,
+  "activation_boundary_utc": "2026-08-21T17:00:00Z",
+  "activation_boundary_reason": "Next clean UTC hour after contract installation; prevents pre-contract A3 outcomes from entering durability decisions.",
+  "derivation": {
+    "outcomes_used_to_choose_thresholds": false,
+    "candidate_pnl_used_to_choose_thresholds": false,
+    "candidate_win_rate_used_to_choose_thresholds": false,
+    "candidate_regime_results_used_to_choose_thresholds": false,
+    "new_alpha_thresholds_created": false,
+    "sources": {
+      "tier_a_sample_contract": "backend/research/rebuild/a1_exact25_v3_forward_transition_v1.py: len(trades)>=25",
+      "sealed_oos_contract": "backend/research/rebuild/a1_exact25_v3_forward_transition_v1.py: sealed OOS trades>=20",
+      "economic_gate": "backend/research/zel_economic_hardening_policy_v1.json.survivor_gate",
+      "concentration_gate": "backend/research/zel_economic_hardening_policy_v1.json.h5_concentration_fragility",
+      "context_staleness": "backend/research/prep/a3_regime_taxonomy_v1.json.input_contract.stale_after_ms"
+    }
+  },
+  "prospective_cohort": {
+    "entry_rule": "trade.entry_ts >= activation_boundary_utc",
+    "minimum_causally_matched_trades": 25,
+    "minimum_match_fraction": 1.0,
+    "pre_activation_trades_excluded": true,
+    "historical_context_backfill_forbidden": true,
+    "future_snapshot_attachment_forbidden": true,
+    "outcome_defined_regime_forbidden": true
+  },
+  "global_economic_gate": {
+    "minimum_net_R": 0.0,
+    "minimum_expectancy_R": 0.0,
+    "minimum_profit_factor": 1.0,
+    "minimum_payoff_ratio": 1.0,
+    "comparison": {
+      "net_R": ">",
+      "expectancy_R": ">",
+      "profit_factor": ">=",
+      "payoff_ratio": ">="
+    },
+    "source": "backend/research/zel_economic_hardening_policy_v1.json.survivor_gate"
+  },
+  "concentration_fragility_gate": {
+    "maximum_single_regime_profit_share": 0.7,
+    "maximum_single_symbol_profit_share": 0.7,
+    "maximum_top10_trade_profit_share": 0.8,
+    "minimum_leave_one_group_out_net_R": 0.0,
+    "required_dimensions": ["symbol", "regime", "side", "session", "window"],
+    "window_definition": "fixed UTC calendar day YYYY-MM-DD from entry_ts; no outcome-dependent bucketing",
+    "regime_definition": "deterministic composite of pre-sealed trend_state|vol_state|liquidity_state|funding_oi_state; session remains a separate dimension",
+    "source": "backend/research/zel_economic_hardening_policy_v1.json.h5_concentration_fragility"
+  },
+  "pass_states": {
+    "global": "PASS_A3_GLOBAL_DURABILITY",
+    "explicit_regime_owner": "NOT_ENABLED_UNTIL_OWNER_IS_PREDECLARED_BEFORE_ITS_PROSPECTIVE_COHORT"
+  },
+  "fail_closed_states": {
+    "sample_lt_minimum": "WAIT_A3_PROSPECTIVE_SAMPLE",
+    "causal_coverage_incomplete": "HOLD_A3_CAUSAL_COVERAGE",
+    "source_or_integrity_failure": "HOLD_A3_INTEGRITY",
+    "economics_or_fragility_failure_after_minimum_sample": "FAIL_A3_GLOBAL_DURABILITY"
+  },
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "exchange_order_submitted": false,
+    "protected_mutations": 0,
+    "action": "hold"
+  }
+}

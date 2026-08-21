@@ -1,0 +1,170 @@
+name: A1 Trend Rider Transition Repair V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_prereg_v1.json'
+      - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_evaluator_v1.py'
+      - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_v3_transition_v1.py'
+      - 'backend/research/prep/a2_trend_rider_transition_repair_v1.py'
+      - 'backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py'
+      - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
+      - '.github/workflows/a1-trend-rider-transition-repair-v1.yml'
+  schedule:
+    - cron: '50 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  repair-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate repair lifecycle engines
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_trend_rider_transition_repair_evaluator_v1.py \
+            backend/research/architecture_factory/a1_trend_rider_transition_repair_v3_transition_v1.py \
+            backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py \
+            backend/research/prep/a2_trend_rider_transition_repair_v1.py \
+            backend/research/prep/a3_exact25_forward_durability_v3.py
+          python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 --self-test
+          python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_v3_transition_v1 --self-test
+          python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v2 --self-test
+          python -m backend.research.prep.a2_trend_rider_transition_repair_v1 --self-test
+          python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
+
+      - name: Evaluate prospective transition repair
+        run: |
+          set -euo pipefail
+          mkdir -p out/transition_repair
+          python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 \
+            --output out/transition_repair/receipt.json
+          python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v2 \
+            --receipt out/transition_repair/receipt.json \
+            --output out/transition_repair/controls.json
+
+      - name: Route repair through A1 A2 A3 evidence ceiling
+        run: |
+          set -euo pipefail
+          D=out/transition_repair
+          CTRL="$(python -c "import json;print(json.load(open('$D/controls.json')).get('state'))")"
+          if [ "$CTRL" = "PASS_V3_UNIVERSAL_HARD_CONTROLS" ]; then
+            set +e
+            python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_v3_transition_v1 \
+              --receipt "$D/receipt.json" --controls "$D/controls.json" --output "$D/a1.json"
+            A1RC=$?
+            set -e
+            A1STATE="$(python -c "import json,os;print(json.load(open('$D/a1.json')).get('state') if os.path.exists('$D/a1.json') else 'NOT_RUN')")"
+            if [ "$A1RC" -eq 0 ] && [ "$A1STATE" = "PASS_A1_CAUSAL_READY_FOR_A2" ]; then
+              set +e
+              python -m backend.research.prep.a2_trend_rider_transition_repair_v1 \
+                --transition "$D/a1.json" --receipt "$D/receipt.json" --output "$D/a2.json"
+              A2RC=$?
+              set -e
+              A2STATE="$(python -c "import json,os;print(json.load(open('$D/a2.json')).get('state') if os.path.exists('$D/a2.json') else 'NOT_RUN')")"
+              if [ "$A2RC" -eq 0 ] && [ "$A2STATE" = "PASS_A2_COST_TURNOVER" ]; then
+                python -m backend.research.prep.a3_exact25_forward_durability_v3 \
+                  --receipt "$D/receipt.json" --a2 "$D/a2.json" \
+                  --context backend/research/prep/a3_forward_context_ledger_v2.json \
+                  --output "$D/a3.json"
+              fi
+            fi
+          fi
+
+      - name: Seal repair lifecycle receipt
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          d=Path('out/transition_repair')
+          def load(name, default):
+              try:return json.loads((d/name).read_text())
+              except Exception:return default
+          r=load('receipt.json',{}); c=load('controls.json',{}); a1=load('a1.json',{}); a2=load('a2.json',{}); a3=load('a3.json',{})
+          out={
+              'schema_version':'zel.a1.trend_rider_transition_repair.lifecycle.v1',
+              'candidate_id':'trend_rider_confirm_transition_v1',
+              'state':'PASS_REPAIR_LIFECYCLE_EVIDENCE_CEILING_EVALUATED',
+              'run_id':os.environ.get('GITHUB_RUN_ID'), 'head_sha':os.environ.get('GITHUB_SHA'),
+              'receipt_state':r.get('state'), 'completed_trades':r.get('completed_trades',0),
+              'source_quality_state':(r.get('source_quality_gate') or {}).get('state'),
+              'metrics':r.get('metrics'),
+              'control_state':c.get('state'), 'frozen_control_trade_count':c.get('frozen_control_trade_count',0),
+              'hard_control_states':c.get('hard_control_states'),
+              'a1_state':a1.get('state','NOT_RUN'), 'a1_tier':(a1.get('tiering') or {}).get('a1_tier'),
+              'a2_state':a2.get('state','NOT_RUN'),
+              'a2_stress':{k:v.get('pass') for k,v in (a2.get('stress') or {}).items()},
+              'a3_state':a3.get('state','NOT_RUN'), 'a3_coverage':a3.get('coverage'), 'a3_blockers':a3.get('blockers'), 'a3_failures':a3.get('failures'),
+              'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold',
+          }
+          out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
+          (d/'lifecycle.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(out,sort_keys=True,default=str))
+          PY
+
+      - name: Publish repair lifecycle receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          from pathlib import Path
+          marker='<!-- A1_TREND_RIDER_TRANSITION_REPAIR_V1 -->'
+          try:r=json.loads(Path('out/transition_repair/lifecycle.json').read_text())
+          except Exception:r={'state':'HOLD_REPAIR_LIFECYCLE_NO_RECEIPT','candidate_id':'trend_rider_confirm_transition_v1'}
+          body='\n'.join([
+              marker,
+              '## A1 Trend Rider Transition Repair V1',
+              f"run={r.get('run_id')}|head={r.get('head_sha')}",
+              f"state={r.get('state')}|receipt={r.get('receipt_state')}|trades={r.get('completed_trades',0)}|source={r.get('source_quality_state')}",
+              f"controls={r.get('control_state')}|frozen25={r.get('frozen_control_trade_count',0)}|hard={json.dumps(r.get('hard_control_states'),sort_keys=True)}",
+              f"A1={r.get('a1_state')}|tier={r.get('a1_tier')}|A2={r.get('a2_state')}|A3={r.get('a3_state')}",
+              'a2_stress='+json.dumps(r.get('a2_stress') or {},sort_keys=True,separators=(',',':')),
+              'a3_coverage='+json.dumps(r.get('a3_coverage'),sort_keys=True,separators=(',',':')),
+              'a3_blockers='+json.dumps(r.get('a3_blockers'),sort_keys=True,separators=(',',':')),
+              'a3_failures='+json.dumps(r.get('a3_failures'),sort_keys=True,separators=(',',':')),
+              'metrics='+json.dumps(r.get('metrics'),sort_keys=True,separators=(',',':')),
+              f"receipt_sha256={r.get('receipt_sha256')}",
+              'policy=prospective new identity only; parent thresholds/risk/timeout frozen; no preboundary outcomes; no parent A2 inheritance',
+              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0',
+          ])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          comments=[]
+          for page in range(1,60):
+              url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100&page={page}"
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers)) as resp: batch=json.load(resp)
+              comments.extend(batch)
+              if len(batch)<100:break
+          prior=next((x for x in reversed(comments) if marker in str(x.get('body') or '')),None)
+          url=prior.get('url') if prior else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          method='PATCH' if prior else 'POST'
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method=method)):pass
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trend-rider-transition-repair-${{ github.run_id }}
+          retention-days: 90
+          path: out/transition_repair/

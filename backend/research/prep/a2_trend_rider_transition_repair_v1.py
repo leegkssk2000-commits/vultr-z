@@ -11,6 +11,7 @@ from backend.research.rebuild import trend_policy_batch_v1 as trend
 from backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 import _eligible
 from backend.tools.zel_survivor_tiering_gate_v3 import sha
 
+WORKFLOW_WAKE = "PROSPECTIVE_REPAIR_LANE_BOUND"
 ROOT = Path(__file__).resolve().parents[3]
 SSOT = ROOT / "backend/research/prep/a2_cost_turnover_ssot_v1.json"
 COST = ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
@@ -176,6 +177,7 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
 
 def self_test() -> int:
     ssot = read(SSOT)
+    assert WORKFLOW_WAKE == "PROSPECTIVE_REPAIR_LANE_BOUND"
     assert set(ssot.get("stress_contract") or []) >= {"1X_COST","2X_COST","P95_FUNDING","PLUS_ONE_BAR"}
     print("PASS_A2_TREND_RIDER_TRANSITION_REPAIR_V1_SELF_TEST")
     return 0

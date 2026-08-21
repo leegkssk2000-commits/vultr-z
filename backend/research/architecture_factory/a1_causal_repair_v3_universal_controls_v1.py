@@ -48,6 +48,19 @@ def evaluate(receipt: dict[str, Any]) -> dict[str, Any]:
     result["mechanism_features"] = list(MECHANISM_FEATURES)
     result["ownership_source"] = "FROZEN_CAUSAL_REPAIR_PREREG"
     result["prereg_path"] = str(PREREG.relative_to(ROOT))
+
+    blockers = [str(x) for x in result.get("blockers") or []]
+    normal_wait = bool(blockers) and all(
+        x.startswith("HARD_CONTROL_SAMPLE_LT25:") or x == "SOURCE_QUALITY_NOT_PASS:PENDING"
+        for x in blockers
+    )
+    if normal_wait:
+        result["state"] = "WAIT_REPAIR_CONTROL_EVIDENCE"
+        result["normal_wait"] = True
+        result["wait_reason"] = "FROZEN_FIRST25_AND_24BAR_SOURCE_QUALITY_NOT_YET_AVAILABLE"
+    else:
+        result["normal_wait"] = False
+
     result["receipt_sha256"] = base.stable_sha({k:v for k,v in result.items() if k != "receipt_sha256"})
     return result
 
@@ -56,6 +69,8 @@ def self_test() -> int:
     prereg = read(PREREG)
     assert prereg["candidate_id"] == CANDIDATE_ID
     assert not ({"timestamp", "session", "calendar", "time_of_day", "day_of_week"} & set(MECHANISM_FEATURES))
+    pending = ["SOURCE_QUALITY_NOT_PASS:PENDING", "HARD_CONTROL_SAMPLE_LT25:0"]
+    assert all(x.startswith("HARD_CONTROL_SAMPLE_LT25:") or x == "SOURCE_QUALITY_NOT_PASS:PENDING" for x in pending)
     print("PASS_A1_CAUSAL_REPAIR_V3_UNIVERSAL_CONTROLS_V1_SELF_TEST")
     return 0
 
@@ -65,7 +80,7 @@ def main() -> int:
     if args.self_test:return self_test()
     if not args.receipt:raise SystemExit("--receipt required")
     result=evaluate(read(args.receipt)); args.output.parent.mkdir(parents=True,exist_ok=True); args.output.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-    print(json.dumps({"state":result["state"],"candidate_id":result["candidate_id"],"completed_trades":result["completed_trades"],"frozen_control_trade_count":result["frozen_control_trade_count"],"hard_control_states":result["hard_control_states"],"mechanism_features":result["mechanism_features"],"receipt_sha256":result["receipt_sha256"]},sort_keys=True))
+    print(json.dumps({"state":result["state"],"candidate_id":result["candidate_id"],"completed_trades":result["completed_trades"],"frozen_control_trade_count":result["frozen_control_trade_count"],"hard_control_states":result["hard_control_states"],"mechanism_features":result["mechanism_features"],"normal_wait":result.get("normal_wait"),"receipt_sha256":result["receipt_sha256"]},sort_keys=True))
     return 0
 
 

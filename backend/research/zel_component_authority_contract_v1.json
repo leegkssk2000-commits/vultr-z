@@ -1,0 +1,89 @@
+{
+  "schema_version": "zel.component_authority_contract.v1",
+  "state": "PASS_COMPONENT_AUTHORITY_CONTRACT_INSTALLED",
+  "research_only": true,
+  "purpose": "Prevent Strategy, Trade Method, Skill, Risk, Advisor and Execution layers from silently owning the same decision.",
+  "ownership": {
+    "strategy": {
+      "owns": [
+        "economic_mechanism",
+        "entry_signal_semantics",
+        "signal_source_timeframe",
+        "direction_rule",
+        "regime_hypothesis",
+        "native_horizon",
+        "native_invalidation",
+        "entry_time_features"
+      ],
+      "may_declare_defaults": ["initial_stop_geometry", "timeout_ceiling", "native_trailing_eligibility", "native_runner_eligibility"],
+      "forbidden": ["portfolio_leverage_authority", "portfolio_exposure_authority", "live_order_submission", "post_outcome_method_selection"]
+    },
+    "trade_method": {
+      "owns": [
+        "execution_style",
+        "entry_confirmation_style",
+        "position_management_sequence",
+        "exit_management_sequence",
+        "time_stop_within_strategy_ceiling",
+        "compatible_execution_timeframes"
+      ],
+      "must_preserve": ["strategy_entry_semantics", "strategy_direction_rule", "strategy_native_invalidation", "strategy_native_horizon"],
+      "forbidden": ["alpha_redefinition", "widen_native_invalidation", "adverse_add", "unbounded_dca", "live_order_submission"]
+    },
+    "skill": {
+      "owns": ["optional_partial", "optional_trailing", "optional_runner", "profitable_scale_in_modifier", "profit_lock_modifier"],
+      "constraints": [
+        "cannot_create_entry_without_strategy_and_trade_method",
+        "cannot_widen_strategy_native_invalidation",
+        "cannot increase initial risk budget",
+        "adverse_add_and_live_dca_forbidden_until dedicated final DCA gate"
+      ]
+    },
+    "risk": {
+      "owns": ["position_size", "leverage", "gross_exposure", "joint_exposure", "drawdown_budget", "liquidation_buffer", "risk_capacity"],
+      "precedence": "ABOVE_STRATEGY_TRADE_METHOD_SKILL"
+    },
+    "bot_advisor": {
+      "owns": ["candidate_ranking", "routing", "hold_reduce_recommendation", "decision_trace"],
+      "forbidden": ["mutate_strategy_policy", "mutate_trade_method_policy", "bypass_risk", "submit_order"]
+    },
+    "execution": {
+      "owns": ["order_type", "routing_to_exchange", "fill_handling", "partial_fill_handling", "reject_handling", "latency_and_slippage_measurement"],
+      "forbidden": ["change_alpha", "change_risk_budget", "rescue_failed_signal"]
+    }
+  },
+  "precedence": [
+    "integrity_and_fail_closed",
+    "risk",
+    "strategy_native_invalidation",
+    "trade_method",
+    "skill",
+    "bot_advisor",
+    "execution_fill_realization"
+  ],
+  "conflict_policy": {
+    "unknown_owner": "BLOCK",
+    "multiple_writers": "BLOCK",
+    "strategy_method_timeframe_mismatch": "BLOCK",
+    "method_widens_native_stop": "BLOCK",
+    "skill_increases_initial_risk": "BLOCK",
+    "advisor_bypasses_risk": "BLOCK",
+    "resolution": "FAIL_CLOSED_AND_REQUIRE_EXPLICIT_COMPATIBILITY_RECEIPT"
+  },
+  "compatibility_receipt_required_before": [
+    "TRADE_METHOD_COVERAGE",
+    "SKILL_SINGLE_MAIN_EFFECT",
+    "SELECTED_INTERACTIONS",
+    "STRATEGY_TOP3_BUNDLES",
+    "PRE_SHADOW_RELEASE"
+  ],
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "protected_mutations": 0,
+    "action": "hold"
+  }
+}

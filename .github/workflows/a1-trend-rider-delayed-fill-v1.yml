@@ -5,6 +5,7 @@ on:
       - 'backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
       - 'backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_side_timing_attribution_v1.py'
+      - 'backend/research/rebuild/test_a1_trend_rider_delayed_fill_policy_execution_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_survivor_seal_v1.py'
       - '.github/workflows/a1-trend-rider-delayed-fill-v1.yml'
@@ -14,6 +15,7 @@ on:
       - 'backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
       - 'backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_side_timing_attribution_v1.py'
+      - 'backend/research/rebuild/test_a1_trend_rider_delayed_fill_policy_execution_v1.py'
       - '.github/workflows/a1-trend-rider-delayed-fill-v1.yml'
   schedule:
     - cron: '53 2,8,14,20 * * *'
@@ -21,7 +23,7 @@ on:
 permissions:
   contents: write
   issues: write
-# Side timing attribution shares the serialized heavy evaluator lane.
+# Side timing attribution and policy execution fidelity share the serialized heavy evaluator lane.
 concurrency:
   group: a1-global-heavy-economic-evaluator-v1
   cancel-in-progress: false
@@ -37,19 +39,30 @@ jobs:
       - name: Evaluate frozen development and prospective child
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py backend/research/rebuild/a1_trend_rider_side_timing_attribution_v1.py
+          python -m py_compile backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py backend/research/rebuild/a1_trend_rider_side_timing_attribution_v1.py backend/research/rebuild/test_a1_trend_rider_delayed_fill_policy_execution_v1.py
+          python -m unittest backend.research.rebuild.test_a1_trend_rider_delayed_fill_policy_execution_v1
           mkdir -p out
           SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
           CONTRACT='backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
           python -m backend.research.rebuild.a1_trend_rider_delayed_fill_evaluator_v1 \
             --symbols "$SYMBOLS" --mode development --contract "$CONTRACT" \
             --out out/trend_rider_delayed_fill_development.json
-          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
-            --receipt out/trend_rider_delayed_fill_development.json \
-            --out out/trend_rider_delayed_fill_development_hardening.json
-          python -m backend.research.rebuild.a1_trend_rider_side_timing_attribution_v1 \
-            --receipt out/trend_rider_delayed_fill_development.json \
-            --out out/trend_rider_delayed_fill_side_timing_attribution.json
+          python - <<'PY'
+          import json,subprocess
+          receipt=json.load(open('out/trend_rider_delayed_fill_development.json'))
+          symbols={x['symbol'] for x in receipt.get('trades') or []}
+          if int(receipt.get('completed_trades') or 0)>=25 and len(symbols)>=2:
+              subprocess.run([
+                  'python','-m','backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1',
+                  '--receipt','out/trend_rider_delayed_fill_development.json',
+                  '--out','out/trend_rider_delayed_fill_development_hardening.json'],check=True)
+              subprocess.run([
+                  'python','-m','backend.research.rebuild.a1_trend_rider_side_timing_attribution_v1',
+                  '--receipt','out/trend_rider_delayed_fill_development.json',
+                  '--out','out/trend_rider_delayed_fill_side_timing_attribution.json'],check=True)
+          else:
+              print('WAIT_AUTHENTIC_POLICY_EXECUTION_SAMPLE')
+          PY
           BOUNDARY="$(python -c "import json;print(json.load(open('$CONTRACT'))['frozen_at_utc'])")"
           python -m backend.research.rebuild.a1_trend_rider_delayed_fill_evaluator_v1 \
             --symbols "$SYMBOLS" --mode prospective --boundary-utc "$BOUNDARY" --contract "$CONTRACT" \

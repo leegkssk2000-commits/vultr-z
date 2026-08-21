@@ -1,0 +1,34 @@
+name: A1 GEN2 4H Range ATR Exhaustion TRCap V6
+on:
+  push:
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_4h_range_atr_exhaustion_trcap_v6.py'
+      - '.github/workflows/a1_gen2_4h_range_atr_exhaustion_trcap_v6.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m backend.research.architecture_factory.a1_gen2_4h_range_atr_exhaustion_trcap_v6
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY' > /tmp/body.md
+          import json,os
+          r=json.load(open('out/a1_gen2_4h_range_atr_exhaustion_trcap_v6.json'))
+          print('<!-- A1_GEN2_4H_RANGE_ATR_EXHAUSTION_TRCAP_V6 -->')
+          print('run_id='+os.environ['RUN_ID'])
+          for k in ('dev','prior_all','W2','W3','cost_dev','cost_prior'): print(k+'='+json.dumps(r[k],sort_keys=True))
+          print('retention_vs_v5_prior='+str(r['retention_vs_v5_prior']))
+          print('survivor_candidate='+str(r['survivor_candidate']).lower())
+          print('receipt_sha256='+r['receipt_sha256'])
+          PY
+          gh issue comment 566 --repo "$GITHUB_REPOSITORY" --body-file /tmp/body.md

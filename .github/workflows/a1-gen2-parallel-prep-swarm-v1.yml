@@ -173,6 +173,37 @@ jobs:
           url=e.get('url') if e else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=hds,method='PATCH' if e else 'POST')): pass
           PY
+      - name: Publish fail-closed runtime receipt
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          marker='<!-- A1_GEN2_PARALLEL_PREP_SWARM_V1 -->'
+          body='\n'.join([
+            marker,
+            '## A1 GEN2 Parallel PREP Swarm V1',
+            f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
+            'state=HOLD_GEN2_RUNTIME_FAILURE',
+            'reason=UPSTREAM_STEP_FAILED_BEFORE_NORMAL_RECEIPT',
+            'next=FETCH_FAILED_JOB_LOG_AND_MINIMAL_REPAIR',
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          comments=[]
+          for page in range(1,60):
+              base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100&page={page}"
+              with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: batch=json.load(q)
+              comments.extend(batch)
+              if len(batch)<100: break
+          e=next((c for c in reversed(comments) if marker in str(c.get('body') or '')),None)
+          url=e.get('url') if e else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          method='PATCH' if e else 'POST'
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method=method)): pass
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

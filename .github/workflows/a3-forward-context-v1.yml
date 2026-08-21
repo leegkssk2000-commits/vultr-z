@@ -1,0 +1,95 @@
+name: A3 Forward Context V1
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/a3_regime_taxonomy_v1.json'
+      - 'backend/research/prep/a3_forward_context_collector_v1.py'
+      - '.github/workflows/a3-forward-context-v1.yml'
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: a3-forward-context-v1
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate collector
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/prep/a3_forward_context_collector_v1.py backend/research/prep/a3_regime_labeler_v1.py
+      - name: Recover prior prospective state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p out
+          python - <<'PY'
+          import json,os,urllib.request
+          from pathlib import Path
+          marker='<!-- A3_FORWARD_CONTEXT_V1 -->'
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json'}
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=h)) as r: comments=json.load(r)
+          prior={}
+          for item in comments:
+              body=str(item.get('body') or '')
+              if marker not in body: continue
+              for line in body.splitlines():
+                  if line.startswith('STATE_JSON='):
+                      try: prior=json.loads(line[len('STATE_JSON='):])
+                      except Exception: prior={}
+              break
+          Path('out/a3_forward_prior.json').write_text(json.dumps(prior,sort_keys=True)+'\n')
+          print(json.dumps({'prior_rows':len(prior.get('rows') or [])},sort_keys=True))
+          PY
+      - name: Capture entry-time context
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.a3_forward_context_collector_v1 --prior out/a3_forward_prior.json --output out/a3_forward_context_v1.json
+      - name: Publish prospective context state
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          from pathlib import Path
+          marker='<!-- A3_FORWARD_CONTEXT_V1 -->'
+          try: state=json.loads(Path('out/a3_forward_context_v1.json').read_text())
+          except Exception:
+              state={'state':'HOLD_A3_FORWARD_CONTEXT_RUNTIME_NO_RECEIPT','rows':[],'blockers':['NO_RECEIPT']}
+          compact=json.dumps(state,sort_keys=True,separators=(',',':'))
+          newest=state.get('new_rows') or []
+          lines=[marker,'## A3 Forward Context V1',f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",f"state={state.get('state')}|rows={state.get('row_count',len(state.get('rows') or []))}|valid={state.get('valid_row_count',0)}|current_valid={state.get('current_valid_count',0)}|receipt={state.get('receipt_sha256')}",'newest='+json.dumps(newest,sort_keys=True,separators=(',',':')),'blockers='+json.dumps(state.get('blockers') or [],sort_keys=True),'other_A1_GEN2_candidates=PARALLEL_UNCHANGED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0','STATE_JSON='+compact]
+          body='\n'.join(lines)
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as r: comments=json.load(r)
+          existing=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          method='PATCH' if existing else 'POST'
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=h,method=method)): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a3-forward-context-${{ github.run_id }}
+          path: out/a3_forward_context_v1.json
+          retention-days: 30

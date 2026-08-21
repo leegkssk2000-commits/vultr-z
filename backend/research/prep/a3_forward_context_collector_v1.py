@@ -37,7 +37,7 @@ def stable_sha(value: Any) -> str:
 
 
 def request_json(url: str, params: dict[str, Any]) -> Any:
-    req = urllib.request.Request(url + "?" + urllib.parse.urlencode(params), headers={"User-Agent": "zel-a3-research/1"})
+    req = urllib.request.Request(url + "?" + urllib.parse.urlencode(params), headers={"User-Agent": "zel-a3-research/2"})
     with urllib.request.urlopen(req, timeout=25) as response:
         payload = json.loads(response.read().decode())
     if isinstance(payload, dict) and payload.get("code") not in (None, 0):
@@ -141,11 +141,27 @@ def iso_ms(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def previous_oi(prior_rows: list[dict[str, Any]], symbol: str, closed_bar_ts: str) -> float | None:
-    eligible = [x for x in prior_rows if x.get("symbol") == symbol and str(x.get("closed_bar_ts_utc") or "") < closed_bar_ts and x.get("open_interest") is not None]
+def _capture_ms(row: dict[str, Any]) -> int | None:
+    raw = row.get("snapshot_capture_completed_at_ms")
+    try:
+        return int(raw) if raw is not None else None
+    except Exception:
+        return None
+
+
+def previous_oi(prior_rows: list[dict[str, Any]], symbol: str, capture_started_ms: int) -> float | None:
+    # Legacy V1 rows have no actual snapshot-capture timestamp and are not
+    # admissible for causal OI change. Use only a strictly earlier real capture.
+    eligible = [
+        x for x in prior_rows
+        if x.get("symbol") == symbol
+        and _capture_ms(x) is not None
+        and int(_capture_ms(x) or 0) < capture_started_ms
+        and x.get("open_interest") is not None
+    ]
     if not eligible:
         return None
-    eligible.sort(key=lambda x: str(x.get("closed_bar_ts_utc") or ""))
+    eligible.sort(key=lambda x: int(_capture_ms(x) or 0))
     try:
         return float(eligible[-1]["open_interest"])
     except Exception:
@@ -167,17 +183,31 @@ def collect_symbol(symbol: str, prior_rows: list[dict[str, Any]], now: datetime)
     if len(log_returns) < 12:
         raise RuntimeError("REALIZED_VOL_WARMUP")
     realized_vol_pct = statistics.pstdev(log_returns) * 100.0
+
+    capture_started = datetime.now(timezone.utc)
+    capture_started_ms = int(capture_started.timestamp() * 1000)
     spread_bps, depth_usdt = fetch_depth(symbol)
     funding_pct = fetch_funding_pct(symbol)
     oi = fetch_open_interest(symbol)
-    closed_ts = iso_ms(int(closed[-1]["ts_ms"]))
-    prev = previous_oi(prior_rows, symbol, closed_ts)
+    capture_completed = datetime.now(timezone.utc)
+    capture_completed_ms = int(capture_completed.timestamp() * 1000)
+
+    bar_open_ms = int(closed[-1]["ts_ms"])
+    bar_close_ms = bar_open_ms + HOUR_MS
+    prev = previous_oi(prior_rows, symbol, capture_started_ms)
     oi_change = None if prev in (None, 0.0) else 100.0 * (oi / prev - 1.0)
-    event_ts = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     valid = oi_change is not None and all(math.isfinite(float(x)) for x in (trend_strength, realized_vol_pct, spread_bps, depth_usdt, funding_pct, oi_change))
     return {
-        "ts_utc": event_ts,
-        "closed_bar_ts_utc": closed_ts,
+        "ts_utc": capture_completed.isoformat().replace("+00:00", "Z"),
+        "captured_at_utc": capture_completed.isoformat().replace("+00:00", "Z"),
+        "snapshot_capture_started_at_ms": capture_started_ms,
+        "snapshot_capture_completed_at_ms": capture_completed_ms,
+        "snapshot_capture_duration_ms": max(0, capture_completed_ms - capture_started_ms),
+        "closed_bar_ts_utc": iso_ms(bar_open_ms),
+        "bar_open_ts_ms": bar_open_ms,
+        "bar_close_ts_ms": bar_close_ms,
+        "bar_feature_cutoff_ts_ms": bar_close_ms,
+        "causal_eligible_from_ms": capture_completed_ms,
         "symbol": symbol,
         "trend_strength": trend_strength,
         "realized_vol_pct": realized_vol_pct,
@@ -186,16 +216,41 @@ def collect_symbol(symbol: str, prior_rows: list[dict[str, Any]], now: datetime)
         "funding_8h_pct": funding_pct,
         "oi_change_pct": oi_change,
         "open_interest": oi,
-        "session_utc_hour": datetime.fromisoformat(closed_ts.replace("Z", "+00:00")).hour,
+        "session_utc_hour": datetime.fromtimestamp(bar_close_ms / 1000, tz=timezone.utc).hour,
         "valid_for_a3": valid,
-        "invalid_reason": None if valid else "OI_CHANGE_WARMUP_FIRST_OBSERVATION",
+        "causal_snapshot_eligible": valid,
+        "invalid_reason": None if valid else "OI_CHANGE_WARMUP_FIRST_CAUSAL_CAPTURE",
+        "field_lineage": {
+            "trend_strength": "CLOSED_1H_BARS_THROUGH_bar_feature_cutoff_ts_ms",
+            "realized_vol_pct": "CLOSED_1H_BARS_THROUGH_bar_feature_cutoff_ts_ms",
+            "spread_bps": "PUBLIC_DEPTH_SNAPSHOT_DURING_CAPTURE_WINDOW",
+            "depth_usdt": "PUBLIC_DEPTH_SNAPSHOT_DURING_CAPTURE_WINDOW",
+            "funding_8h_pct": "PUBLIC_FUNDING_ENDPOINT_DURING_CAPTURE_WINDOW",
+            "oi_change_pct": "DIFF_OF_STRICTLY_ORDERED_PUBLIC_OI_CAPTURES",
+        },
+        "future_signal_attachment_forbidden": True,
+        "historical_snapshot_backfill_forbidden": True,
         "outcome_fields_used": [],
     }
 
 
 def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    prior_rows = [x for x in (prior.get("rows") or []) if isinstance(x, dict)]
+    raw_prior = [x for x in (prior.get("rows") or []) if isinstance(x, dict)]
+    # Retain legacy rows for audit only; mark them causally ineligible rather than
+    # silently treating their collector runtime snapshot as an old closed-bar fact.
+    prior_rows: list[dict[str, Any]] = []
+    legacy_count = 0
+    for raw in raw_prior:
+        row = dict(raw)
+        if _capture_ms(row) is None:
+            legacy_count += 1
+            row["causal_snapshot_eligible"] = False
+            row["valid_for_a3"] = False
+            row["legacy_causal_ineligible"] = True
+            row["invalid_reason"] = "LEGACY_ROW_MISSING_ACTUAL_SNAPSHOT_CAPTURE_TIMESTAMP"
+        prior_rows.append(row)
+
     new_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     for symbol in SYMBOLS:
@@ -203,13 +258,23 @@ def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, An
             new_rows.append(collect_symbol(symbol, prior_rows + new_rows, current))
         except Exception as exc:
             blockers.append(f"{symbol}:{type(exc).__name__}:{exc}")
-    merged = prior_rows[:]
-    by_key = {(str(x.get("symbol")), str(x.get("closed_bar_ts_utc"))): x for x in merged}
-    for row in new_rows:
-        by_key[(str(row.get("symbol")), str(row.get("closed_bar_ts_utc")))] = row
-    merged = sorted(by_key.values(), key=lambda x: (str(x.get("closed_bar_ts_utc")), str(x.get("symbol"))))[-HISTORY_CAP:]
-    valid_count = sum(1 for x in merged if x.get("valid_for_a3") is True)
-    current_valid = sum(1 for x in new_rows if x.get("valid_for_a3") is True)
+
+    # Snapshot observations are unique by actual capture time, not by the latest
+    # closed 1h bar. Multiple captures inside one bar are legitimate evidence.
+    by_key: dict[tuple[str, int | str], dict[str, Any]] = {}
+    for row in prior_rows + new_rows:
+        key_capture = _capture_ms(row)
+        key: tuple[str, int | str] = (
+            str(row.get("symbol")),
+            key_capture if key_capture is not None else "legacy:" + str(row.get("closed_bar_ts_utc") or row.get("ts_utc") or stable_sha(row)[:16]),
+        )
+        by_key[key] = row
+    merged = sorted(
+        by_key.values(),
+        key=lambda x: (int(_capture_ms(x) or -1), str(x.get("symbol")), str(x.get("closed_bar_ts_utc") or "")),
+    )[-HISTORY_CAP:]
+    valid_count = sum(1 for x in merged if x.get("valid_for_a3") is True and x.get("causal_snapshot_eligible") is True)
+    current_valid = sum(1 for x in new_rows if x.get("valid_for_a3") is True and x.get("causal_snapshot_eligible") is True)
     if blockers:
         state = "HOLD_A3_FORWARD_CONTEXT_SOURCE"
     elif len(new_rows) != len(SYMBOLS):
@@ -219,7 +284,7 @@ def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, An
     else:
         state = "PASS_A3_FORWARD_CONTEXT_CAPTURE"
     result = {
-        "schema_version": "zel.a3.forward_context.v1",
+        "schema_version": "zel.a3.forward_context.v2",
         "state": state,
         "captured_at_utc": current.isoformat().replace("+00:00", "Z"),
         "symbols": list(SYMBOLS),
@@ -228,7 +293,15 @@ def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, An
         "row_count": len(merged),
         "valid_row_count": valid_count,
         "current_valid_count": current_valid,
+        "legacy_causal_ineligible_count": legacy_count,
         "blockers": blockers,
+        "causal_contract": {
+            "snapshot_fields_may_match_signal_only_if_capture_completed_at_ms_lte_signal_ts": True,
+            "legacy_rows_without_actual_capture_timestamp_are_ineligible": True,
+            "current_snapshot_backfill_to_historical_signal_forbidden": True,
+            "maximum_snapshot_age_ms": None,
+            "maximum_snapshot_age_rule_state": "UNSEALED_DO_NOT_INVENT",
+        },
         "source_endpoints": {"kline": KLINE_API, "depth": DEPTH_API, "funding": FUNDING_API, "open_interest": OI_API},
         "strategy_mutated": False,
         "outcome_fields_used": False,
@@ -249,7 +322,12 @@ def main() -> int:
     result = evaluate(prior)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"state": result["state"], "row_count": result["row_count"], "valid_row_count": result["valid_row_count"], "current_valid_count": result["current_valid_count"], "blockers": result["blockers"], "receipt_sha256": result["receipt_sha256"]}, sort_keys=True))
+    print(json.dumps({
+        "state": result["state"], "row_count": result["row_count"],
+        "valid_row_count": result["valid_row_count"], "current_valid_count": result["current_valid_count"],
+        "legacy_causal_ineligible_count": result["legacy_causal_ineligible_count"],
+        "blockers": result["blockers"], "receipt_sha256": result["receipt_sha256"],
+    }, sort_keys=True))
     return 0
 
 

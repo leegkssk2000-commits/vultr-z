@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# fanout wake 2026-08-21: workflow now exists on master
+
 import argparse
 import json
 from pathlib import Path

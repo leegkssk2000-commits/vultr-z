@@ -1,6 +1,13 @@
 name: A1 Trend Rider Liquid12 Rescue V1
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/a1-trend-rider-liquid12-rescue-v1.yml'
+      - 'backend/research/contracts/a1_trend_rider_liquid12_rescue_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_multisource_attribution_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_survivor_seal_v1.py'
   schedule:
     - cron: '37 1,7,13,19 * * *'
   push:
@@ -9,6 +16,8 @@ on:
       - '.github/workflows/a1-trend-rider-liquid12-rescue-v1.yml'
       - 'backend/research/contracts/a1_trend_rider_liquid12_rescue_v1.json'
       - 'backend/research/rebuild/a1_trend_rider_multisource_attribution_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_survivor_seal_v1.py'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +34,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -79,8 +87,17 @@ jobs:
             'h5_max_shares':(h.get('h5_receipt') or {}).get('maximum_profit_share_by_dimension'),
             'top10_trade_profit_share':(h.get('h5_receipt') or {}).get('top10_trade_profit_share'),
             'attribution_state':a.get('state'),
+            'source_quality_state':(c.get('source_quality_gate') or {}).get('state'),
+            'candidate_integrity':h.get('candidate_integrity'),
+            'attribution_source_integrity':a.get('source_integrity'),
             'attribution_dimensions':a.get('dimensions'),
-            'survivor_ready':h.get('state')=='PASS_HARDENING_EVIDENCE',
+            'survivor_ready':(
+              h.get('state')=='PASS_HARDENING_EVIDENCE'
+              and (h.get('candidate_integrity') or {}).get('state')=='PASS'
+              and (h.get('candidate_integrity') or {}).get('source_quality_state')=='PASS'
+              and a.get('state')=='PASS_DIAGNOSTIC_ATTRIBUTION'
+              and (a.get('source_integrity') or {}).get('state')=='PASS'
+            ),
             'parameter_sweep':False,
             'thresholds_changed':False,
             'selection_authority':False,
@@ -95,7 +112,7 @@ jobs:
           print('A1_TREND_RIDER_LIQUID12='+json.dumps(summary,sort_keys=True,default=str))
           PY
       - name: Persist latest diagnostic
-        if: always()
+        if: ${{ always() && github.event_name != 'pull_request' }}
         run: |
           set -euo pipefail
           mkdir -p backend/research/rebuild/diagnostics

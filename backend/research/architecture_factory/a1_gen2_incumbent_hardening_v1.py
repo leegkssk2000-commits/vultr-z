@@ -26,10 +26,10 @@ def outcome(rs,s,ei,xi,ep):
   fav=(rs[j]['high']/ep-1)*10000 if s=='long' else (1-rs[j]['low']/ep)*10000
   if fav>=ACT:on=True
  return gross(s,ep,rs[xi]['close'])-14
-def trades():
+def trades(bars_loader=econ.bars):
  out=[]
  for sym in econ.SYMBOLS:
-  rs=econ.bars(sym,'1d'); e=econ.Expr(rs,{}); i=30
+  rs=bars_loader(sym,'1d'); e=econ.Expr(rs,{}); i=30
   while i<len(rs)-1:
    try:fire=bool(e.eval(ENTRY_RULE,i))
    except Exception:fire=False

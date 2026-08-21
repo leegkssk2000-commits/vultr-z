@@ -1,9 +1,17 @@
 name: A1 GEN2 Incumbent Hardening V1
 on:
+  pull_request:
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_prospective_data_v1.py'
+      - '.github/workflows/a1-gen2-incumbent-hardening-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_prospective_data_v1.py'
       - '.github/workflows/a1-gen2-incumbent-hardening-v1.yml'
   workflow_dispatch:
 permissions:
@@ -18,7 +26,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with: {ref: master, persist-credentials: false}
+        with: {persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - name: Run deterministic incumbent hardening
@@ -30,12 +38,18 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/a1_gen2_incumbent_hardening_v1.json'))
-          assert r['development_only'] is True and r['alpha_proof_prep_only'] is True
-          assert r['candidate_id']=='repair_short_above_sma50_veto_v1'
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'incumbent':r['incumbent_metrics'],'cost_stress':r['cost_stress'],'by_symbol':r['by_symbol'],'by_side':r['by_side'],'by_year':r['by_year'],'negative_controls':r['negative_controls'],'loss_concentration':r['loss_concentration'],'summary':r['hardening_summary']},sort_keys=True))
+          f=json.load(open('out/a1_gen2_fresh_boundary_replay_v1.json'))
+          assert r['schema_version']=='zel.a1_gen2_strict_pareto_hardening.v1'
+          assert r['candidate_id']=='atr_long_veto_eth_stress075'
+          assert r['hardening_pass'] is True
+          assert f['candidate_id']==r['candidate_id']
+          assert f['data_plane']=='PROSPECTIVE_CLOSED_BARS'
+          assert f['development_cutoff_reused'] is False
+          assert f['selection_authority'] is False and f['promotion_authority'] is False
+          print(json.dumps({'candidate':r['metrics'],'cost_stress':r['cost_stress'],'by_symbol':r['by_symbol'],'by_side':r['by_side'],'by_year':r['by_year'],'negative_control':r['negative_control'],'loss_concentration':r['loss_concentration'],'fresh':f},sort_keys=True))
           PY
       - name: Publish receipt
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -43,20 +57,20 @@ jobs:
         run: |
           python - <<'PY'
           import json,os,urllib.request
-          r=json.load(open('out/a1_gen2_incumbent_hardening_v1.json')); marker='<!-- A1_GEN2_INCUMBENT_HARDENING_V1 -->'
+          r=json.load(open('out/a1_gen2_incumbent_hardening_v1.json')); f=json.load(open('out/a1_gen2_fresh_boundary_replay_v1.json')); marker='<!-- A1_GEN2_INCUMBENT_HARDENING_V1 -->'
           body='\n'.join([
             marker,'## A1 GEN2 Incumbent Hardening V1',f"run={os.environ['RUN_ID']}",
             'candidate_id='+r['candidate_id'],
-            'incumbent='+json.dumps(r['incumbent_metrics'],sort_keys=True),
+            'metrics='+json.dumps(r['metrics'],sort_keys=True),
             'cost_stress='+json.dumps(r['cost_stress'],sort_keys=True),
             'by_symbol='+json.dumps(r['by_symbol'],sort_keys=True),
             'by_side='+json.dumps(r['by_side'],sort_keys=True),
             'by_year='+json.dumps(r['by_year'],sort_keys=True),
-            'by_regime50='+json.dumps(r['by_regime50'],sort_keys=True),
-            'negative_controls='+json.dumps(r['negative_controls'],sort_keys=True),
+            'negative_control='+json.dumps(r['negative_control'],sort_keys=True),
             'loss_concentration='+json.dumps(r['loss_concentration'],sort_keys=True),
-            'hardening_summary='+json.dumps(r['hardening_summary'],sort_keys=True),
-            'alpha_proof_prep_only=true|selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
+            'flags='+json.dumps(r['flags'],sort_keys=True),
+            'fresh='+json.dumps(f,sort_keys=True),
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|exchange_order=false|protected_mutations=0'])
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
           base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(base,headers=h)) as q: cs=json.load(q)
@@ -68,5 +82,7 @@ jobs:
         with:
           name: a1-gen2-incumbent-hardening-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
-          path: out/a1_gen2_incumbent_hardening_v1.json
+          path: |
+            out/a1_gen2_incumbent_hardening_v1.json
+            out/a1_gen2_fresh_boundary_replay_v1.json
 # trigger 2026-08-20T17:27+02:00

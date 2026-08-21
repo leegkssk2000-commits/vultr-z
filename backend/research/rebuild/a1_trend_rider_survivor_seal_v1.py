@@ -15,6 +15,11 @@ def main():
     r=json.loads(Path(args.receipt).read_text()); e=json.loads(Path(args.evidence).read_text())
     if r.get('strategy_id')!='trend_rider' or e.get('strategy_id')!='trend_rider': raise RuntimeError('TREND_RIDER_ID_REQUIRED')
     if e.get('state')!='PASS_HARDENING_EVIDENCE': raise RuntimeError('PASS_HARDENING_EVIDENCE_REQUIRED')
+    integrity=e.get('candidate_integrity') if isinstance(e.get('candidate_integrity'),dict) else {}
+    if integrity.get('state')!='PASS' or integrity.get('source_quality_state')!='PASS':
+        raise RuntimeError('PASS_CANDIDATE_INTEGRITY_REQUIRED')
+    if list(integrity.get('integrity_defects') or []) or int(integrity.get('leakage_lookahead') or 0)!=0:
+        raise RuntimeError('CANDIDATE_INTEGRITY_DEFECT')
     hardened=attach_survivor_gate(r,hardening_evidence=e)
     gate=hardened.get('survivor_gate') or {}
     if gate.get('state')!='PASS' or gate.get('passed') is not True: raise RuntimeError('SURVIVOR_GATE_NOT_PASS:'+json.dumps(gate,sort_keys=True))

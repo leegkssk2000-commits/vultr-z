@@ -4,6 +4,7 @@ import json, statistics
 from datetime import datetime, timezone
 from pathlib import Path
 import backend.research.architecture_factory.a1_gen2_incumbent_hardening_v1 as inc
+import backend.research.architecture_factory.a1_gen2_prospective_data_v1 as prospective
 
 BOUNDARY_ISO='2026-08-20T19:49:13Z'
 BOUNDARY_MS=int(datetime.fromisoformat(BOUNDARY_ISO.replace('Z','+00:00')).timestamp()*1000)
@@ -19,7 +20,7 @@ def metrics(a):
 
 
 def run(output:Path):
- t=inc.trades()
+ t=inc.trades(prospective.bars)
  veto={id(x) for x in t if x['side']=='long' and x['above'] and x['shock_atr']>=1.0}
  kept=[x for x in t if id(x) not in veto]
  stress=set()
@@ -40,7 +41,7 @@ def run(output:Path):
  if not mature: state='WAIT_FRESH_SAMPLE'
  elif econ_pass: state='PASS_PROSPECTIVE_REPLAY'
  else: state='FAIL_PROSPECTIVE_REPLAY'
- r={'schema_version':'zel.a1_gen2_fresh_boundary_replay.v1','candidate_id':'atr_long_veto_eth_stress075','boundary_iso':BOUNDARY_ISO,'boundary_ms':BOUNDARY_MS,'frozen_rule':True,'threshold_sweep':False,'future_information_used':False,'fresh_trade_count':fm['trades'],'fresh_symbols':symbols,'minimum_gate':{'trades':MIN_TRADES,'symbols':MIN_SYMBOLS,'max_dd_multiple_vs_dev':MAX_DD_MULTIPLE_VS_DEV},'fresh_metrics':fm,'mature':mature,'prospective_pass':econ_pass,'state':state,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
+ r={'schema_version':'zel.a1_gen2_fresh_boundary_replay.v1','data_plane':'PROSPECTIVE_CLOSED_BARS','development_cutoff_reused':False,'candidate_id':'atr_long_veto_eth_stress075','boundary_iso':BOUNDARY_ISO,'boundary_ms':BOUNDARY_MS,'frozen_rule':True,'threshold_sweep':False,'future_information_used':False,'fresh_trade_count':fm['trades'],'fresh_symbols':symbols,'minimum_gate':{'trades':MIN_TRADES,'symbols':MIN_SYMBOLS,'max_dd_multiple_vs_dev':MAX_DD_MULTIPLE_VS_DEV},'fresh_metrics':fm,'mature':mature,'prospective_pass':econ_pass,'state':state,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
  output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('FRESH_BOUNDARY_REPLAY='+json.dumps(r,sort_keys=True)); return r
 
 if __name__=='__main__': run(Path('out/a1_gen2_fresh_boundary_replay_v1.json'))

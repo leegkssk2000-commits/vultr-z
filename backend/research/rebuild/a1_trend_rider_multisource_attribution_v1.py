@@ -46,9 +46,9 @@ def group_stats(rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], str]
     return result
 
 
-def latest_funding(rows: list[dict[str, float | int]], entry_ts: int) -> float:
+def latest_funding(rows: list[dict[str, float | int]], entry_ts: int) -> float | None:
     eligible = [float(x["rate"]) for x in rows if int(x["ts_ms"]) <= entry_ts]
-    return eligible[-1] if eligible else 0.0
+    return eligible[-1] if eligible else None
 
 
 def main() -> None:
@@ -65,8 +65,14 @@ def main() -> None:
     if contract.get("state") != "FROZEN_PROSPECTIVE_DIAGNOSTIC_CONTRACT":
         raise RuntimeError("FROZEN_ATTRIBUTION_CONTRACT_REQUIRED")
     symbols = list((contract.get("universe_selection") or {}).get("symbols") or [])
-    if sorted(symbols) != sorted({str(x["symbol"]) for x in receipt.get("trades") or []}):
-        raise RuntimeError("RECEIPT_UNIVERSE_DOES_NOT_MATCH_FROZEN_CONTRACT")
+    source = receipt.get("source") if isinstance(receipt.get("source"), dict) else {}
+    source_rows = [x for x in (source.get("symbols") or []) if isinstance(x, dict)]
+    source_symbols = [str(x.get("symbol") or "") for x in source_rows]
+    if sorted(symbols) != sorted(source_symbols):
+        raise RuntimeError("RECEIPT_SOURCE_UNIVERSE_DOES_NOT_MATCH_FROZEN_CONTRACT")
+    trade_symbols = {str(x["symbol"]) for x in receipt.get("trades") or []}
+    if not trade_symbols.issubset(set(symbols)):
+        raise RuntimeError("TRADE_OUTSIDE_FROZEN_CONTRACT_UNIVERSE")
 
     bars_by: dict[str, list[dict[str, float | int]]] = {}
     maps: dict[str, dict[int, int]] = {}
@@ -93,7 +99,9 @@ def main() -> None:
         funding_rate = latest_funding(funding_by[symbol], int(trade["entry_ts"]))
         hour = datetime.fromtimestamp(signal_ts / 1000, tz=timezone.utc).hour
         side = str(trade["side"])
-        aligned = (side == "long" and funding_rate > 0) or (side == "short" and funding_rate < 0)
+        aligned = funding_rate is not None and (
+            (side == "long" and funding_rate > 0) or (side == "short" and funding_rate < 0)
+        )
         enriched.append({
             **trade,
             "volume_ratio_24h_median": volume_ratio,
@@ -101,7 +109,11 @@ def main() -> None:
             "funding_rate": funding_rate,
             "volume_participation": "ABOVE_PRIOR_24H_MEDIAN" if volume_ratio >= 1.0 else "BELOW_PRIOR_24H_MEDIAN",
             "atr_regime": "ATR_EXPANDING" if atr_ratio >= 1.0 else "ATR_CONTRACTING",
-            "funding_alignment": "ALIGNED_CROWDING" if aligned else "CONTRA_OR_ZERO",
+            "funding_alignment": (
+                "UNKNOWN_NO_ENTRY_OBSERVABLE"
+                if funding_rate is None
+                else "ALIGNED_CROWDING" if aligned else "CONTRA_OR_ZERO"
+            ),
             "session": "APAC" if hour < 8 else "EU" if hour < 16 else "US",
         })
 
@@ -113,13 +125,23 @@ def main() -> None:
         "atr_regime": lambda x: str(x["atr_regime"]),
         "funding_alignment": lambda x: str(x["funding_alignment"]),
     }
+    missing_funding = sum(x["funding_rate"] is None for x in enriched)
+    source_integrity_state = "PASS" if missing_funding == 0 else "HOLD"
     output = {
         "schema_version": "zel.a1.trend_rider.multisource_attribution.v1",
-        "state": "PASS_DIAGNOSTIC_ATTRIBUTION",
+        "state": "PASS_DIAGNOSTIC_ATTRIBUTION" if source_integrity_state == "PASS" else "HOLD_DIAGNOSTIC_SOURCE_INCOMPLETE",
         "strategy_id": "trend_rider",
         "candidate_receipt_sha256": receipt.get("receipt_sha256"),
         "contract_sha256": stable(contract),
         "trade_count": len(enriched),
+        "source_integrity": {
+            "state": source_integrity_state,
+            "frozen_symbol_count": len(symbols),
+            "source_symbol_count": len(source_symbols),
+            "completed_trade_symbol_count": len(trade_symbols),
+            "missing_entry_observable_funding_count": missing_funding,
+            "fail_closed": True,
+        },
         "dimensions": {name: group_stats(enriched, key) for name, key in groupers.items()},
         "feature_definitions": {
             "volume_participation": "signal_bar_volume / median(previous_24_closed_bar_volumes), fixed split at 1.0",

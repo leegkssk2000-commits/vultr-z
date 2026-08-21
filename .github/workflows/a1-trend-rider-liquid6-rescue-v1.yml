@@ -1,0 +1,97 @@
+name: A1 Trend Rider Liquid6 Rescue V1
+
+on:
+  push:
+    branches:
+      - codex/trend-rider-rescue-liquid6-v1
+    paths:
+      - '.github/workflows/a1-trend-rider-liquid6-rescue-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-trend-rider-liquid6-rescue-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  liquid6-rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build frozen prospective Liquid6 receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --strategy-id trend_rider \
+            --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT \
+            --out out/trend_rider_liquid6_candidate.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/trend_rider_liquid6_candidate.json'))
+          assert r['strategy_id']=='trend_rider'
+          assert not r.get('integrity_defects')
+          assert int(r.get('leakage_lookahead') or 0)==0
+          assert int(r['completed_trades'])>=25,r['completed_trades']
+          assert (r.get('source_quality_gate') or {}).get('state') in ('PASS','PENDING')
+          print('PASS_TREND_RIDER_LIQUID6_INPUT',r['completed_trades'])
+          PY
+      - name: Run unchanged H4 H5 on Liquid6
+        run: |
+          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
+            --receipt out/trend_rider_liquid6_candidate.json \
+            --out out/trend_rider_liquid6_hardening.json
+      - name: Emit immutable diagnostic summary
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          c=json.load(open('out/trend_rider_liquid6_candidate.json'))
+          e=json.load(open('out/trend_rider_liquid6_hardening.json'))
+          h4=e['h4_receipt']; h5=e['h5_receipt']; m=c['metrics']
+          summary={
+            'schema_version':'zel.a1_trend_rider_liquid6_rescue.v1',
+            'strategy_id':'trend_rider',
+            'symbol_universe':['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],
+            'parameter_sweep':False,
+            'policy_changed':False,
+            'thresholds_changed':False,
+            'candidate_trade_count':c['completed_trades'],
+            'metrics':m,
+            'retention_pct':e['retention_pct'],
+            'oos':e['oos'],
+            'h4_state':h4['state'],
+            'h4_passed':h4['passed_control_count'],
+            'h4_results':h4['control_results'],
+            'h5_state':h5['state'],
+            'h5_blockers':h5['blockers'],
+            'h5_max_shares':h5['maximum_profit_share_by_dimension'],
+            'top10_trade_profit_share':h5['top10_trade_profit_share'],
+            'survivor_ready':e['state']=='PASS_HARDENING_EVIDENCE',
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'protected_mutations':0,
+          }
+          summary['receipt_sha256']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          open('out/trend_rider_liquid6_summary.json','w').write(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print('A1_TREND_RIDER_LIQUID6_RESCUE='+json.dumps(summary,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-liquid6-${{ github.run_id }}
+          path: out
+          retention-days: 90

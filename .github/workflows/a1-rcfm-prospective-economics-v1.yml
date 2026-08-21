@@ -1,110 +1,27 @@
-name: A1 RCFM Prospective Economics V1
+name: A1 RCFM Terminal Guard V1
 
 on:
-  pull_request:
-    branches: [master]
-    paths:
-      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
-      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
-      - 'backend/research/architecture_factory/a1_rcfm_causal_control_contract_v1.json'
-      - 'backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py'
-      - 'backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py'
-      - 'backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py'
-      - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
-      - 'backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
-      - 'backend/research/architecture_factory/a1_rcfm_causal_control_contract_v1.json'
+      - 'backend/research/architecture_factory/a1_rcfm_causal_terminal_v1.json'
       - 'backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py'
-      - 'backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py'
-      - 'backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py'
       - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
-  schedule:
-    - cron: '22,52 * * * *'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_rcfm_causal_terminal_v1.json'
+      - 'backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py'
+      - '.github/workflows/a1-rcfm-prospective-economics-v1.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
-  verify:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with: {persist-credentials: false}
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - name: Verify post-freeze boundary and RCFM transition contracts
-        run: |
-          set -euo pipefail
-          python -m py_compile \
-            backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py \
-            backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py \
-            backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py
-          python - <<'PY'
-          import hashlib,json
-          from datetime import datetime
-          E='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_evaluator_v1.py'
-          P='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'
-          R='backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json'
-          p=json.load(open(P)); r=json.load(open(R))
-          assert hashlib.sha256(open(E,'rb').read()).hexdigest()=='e5b67e57c60b073dc67b26297faf7de00635736662d01d28f37941350a65864c'
-          b=datetime.fromisoformat(p['fresh_prospective_boundary_utc'].replace('Z','+00:00'))
-          freeze=datetime.fromisoformat('2026-08-18T10:08:05+00:00')
-          assert b>freeze and p['fresh_prospective_boundary_utc']==r['fresh_prospective_boundary_utc']=='2026-08-18T10:20:00Z'
-          assert r['h2_intake']['state']=='PASS_ARCHETYPE_INTAKE' and r['h2_intake']['maximum_structural_similarity']<=0.85
-          assert p['parameter_search'] is False and p['threshold_tuning'] is False and p['best_horizon_selection'] is False
-          assert p['baseline_mutated'] is False and r['baseline_mutated'] is False
-          for x in (p,r):
-            assert x['selection_authority'] is False and x['promotion_authority'] is False
-            assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED' and x['live_trade_authority']=='BLOCKED'
-          print('PASS_RCFM_BOUNDARY_LAUNCH_CONTRACT')
-          PY
-          python -m backend.research.architecture_factory.a1_rcfm_v3_causal_controls_v1 --self-test
-          python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 --self-test
-          python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 --self-test
-
-  gen1_gate:
-    if: github.event_name != 'pull_request'
+  terminal_guard:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    outputs:
-      exact25_complete: ${{ steps.gate.outputs.exact25_complete }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master
-          persist-credentials: false
-      - name: Yield heavy evaluator until GEN1 exact25 is complete
-        id: gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          p=Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json')
-          d=json.loads(p.read_text())
-          done=int(d.get('done_count',0))
-          generation=int(d.get('generation',0))
-          complete=(generation == 1 and done == 25)
-          print('exact25_complete=' + ('true' if complete else 'false'))
-          print(f'GEN1_EXACT25_GATE generation={generation} done={done}/25 complete={complete}')
-          PY
-
-  evaluate:
-    needs: gen1_gate
-    if: needs.gen1_gate.outputs.exact25_complete == 'true'
-    concurrency:
-      group: a1-global-heavy-economic-evaluator-v1
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -112,153 +29,31 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - name: Verify frozen RCFM causal and A2 implementation
+      - name: Verify immutable RCFM terminal disposition
         run: |
           set -euo pipefail
-          python -m py_compile \
-            backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py \
-            backend/research/architecture_factory/a1_rcfm_v3_transition_v1.py \
-            backend/research/prep/a2_rcfm_cost_turnover_actual_v1.py
+          python -m py_compile backend/research/architecture_factory/a1_rcfm_v3_causal_controls_v1.py
           python -m backend.research.architecture_factory.a1_rcfm_v3_causal_controls_v1 --self-test
-          python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 --self-test
-          python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 --self-test
-      - name: Read sealed boundary
-        id: boundary
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          p=json.load(open('backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json'))
-          print('boundary='+p['fresh_prospective_boundary_utc'])
-          PY
-      - name: Fetch only prospective WS-v2 evidence read-only
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          BOUNDARY: ${{ steps.boundary.outputs.boundary }}
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh out
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key; chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          FLOOR_MS="$(python - <<'PY'
-          import os
-          from datetime import datetime
-          print(int(datetime.fromisoformat(os.environ['BOUNDARY'].replace('Z','+00:00')).timestamp()*1000)-120000)
-          PY
-          )"
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "FLOOR_MS=$FLOOR_MS python3 -" > out/microstructure.jsonl <<'PY'
-          import json,os
-          from pathlib import Path
-          floor=int(os.environ['FLOOR_MS']); p=Path('/home/z/z/ledger/production_bingx_ws_microstructure_v2.jsonl')
-          for line in p.read_text().splitlines():
-            if not line.strip(): continue
-            r=json.loads(line)
-            if int(r.get('bucket_end_ms') or 0)>=floor:
-              print(json.dumps(r,sort_keys=True,separators=(',',':')))
-          PY
-          ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" "cat /home/z/z/ledger/production_bingx_ws_microstructure_heartbeat_v2.json" > out/heartbeat.json
-      - name: Verify source and run frozen prospective evaluator
-        env:
-          BOUNDARY: ${{ steps.boundary.outputs.boundary }}
-        run: |
-          set -euo pipefail
           python - <<'PY'
-          import json,time
-          h=json.load(open('out/heartbeat.json'))
-          assert h['state']=='PASS_BINGX_WS_MICROSTRUCTURE_V2_ACCUMULATING',h
-          assert int(time.time()*1000)-int(h['updated_at_ms'])<=120000,h
-          assert h['selection_authority'] is False and h['promotion_authority'] is False
-          assert h['execution_authority']=='NONE' and h['order_authority']=='BLOCKED' and h['live_trade_authority']=='BLOCKED'
-          PY
-          python -m backend.research.architecture_factory.a1_regime_conditioned_flow_momentum_evaluator_v1 --boundary "$BOUNDARY" --history out/microstructure.jsonl --out out/a1_rcfm_economics.json
-      - name: Run frozen first25 causal controls
-        run: |
-          set -euo pipefail
-          python -m backend.research.architecture_factory.a1_rcfm_v3_causal_controls_v1 \
-            --receipt out/a1_rcfm_economics.json \
-            --heartbeat out/heartbeat.json \
-            --micro out/microstructure.jsonl \
-            --output out/a1_rcfm_v3_causal_controls_v1.json
-      - name: Route causal PASS into A1 transition and A2
-        run: |
-          set -euo pipefail
-          CAUSAL_STATE="$(python - <<'PY'
-          import json
-          print(json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))['state'])
-          PY
-          )"
-          if [ "$CAUSAL_STATE" = "PASS_RCFM_V3_CAUSAL_CONTROLS" ]; then
-            python -m backend.research.architecture_factory.a1_rcfm_v3_transition_v1 \
-              --receipt out/a1_rcfm_economics.json \
-              --controls out/a1_rcfm_v3_causal_controls_v1.json \
-              --output out/a1_rcfm_v3_transition_v1.json
-            python -m backend.research.prep.a2_rcfm_cost_turnover_actual_v1 \
-              --transition out/a1_rcfm_v3_transition_v1.json \
-              --receipt out/a1_rcfm_economics.json \
-              --output out/a2_rcfm_cost_turnover_actual_v1.json
-          else
-            python - <<'PY'
           import json
           from pathlib import Path
-          c=json.load(open('out/a1_rcfm_v3_causal_controls_v1.json'))
-          blocked={
-            'schema_version':'zel.a1.rcfm.blocked_route.v1',
-            'state':'BLOCKED_BEFORE_A2',
-            'candidate_id':'NEW_RCFM_001',
-            'causal_state':c.get('state'),
-            'hard_control_states':c.get('hard_control_states'),
-            'next_route':c.get('next_route'),
-            'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold'
+          p=Path('backend/research/architecture_factory/a1_rcfm_causal_terminal_v1.json')
+          d=json.loads(p.read_text())
+          assert d['terminal'] is True
+          assert d['candidate_id']=='NEW_RCFM_001'
+          assert d['state']=='FAIL_RCFM_V3_CAUSAL_CONTROLS'
+          assert d['disposition']=='TERMINAL_CAUSAL_FAIL_SAME_IDENTITY_RETEST_FORBIDDEN'
+          assert d['same_identity_retest_forbidden'] is True
+          assert d['threshold_rescue_forbidden'] is True
+          assert d['later_sample_rescue_forbidden'] is True
+          assert d['hard_control_states']=={
+            'same_count_random_entry':'FAIL',
+            'direction_inversion':'FAIL',
+            'micro_sign_permutation':'FAIL',
           }
-          Path('out/a1_rcfm_v3_transition_v1.json').write_text(json.dumps(blocked,indent=2,sort_keys=True)+'\n')
-          Path('out/a2_rcfm_cost_turnover_actual_v1.json').write_text(json.dumps(blocked,indent=2,sort_keys=True)+'\n')
+          assert d['next_route']=='WRSR_NEW_002_NEW_ARCHITECTURE_FRESH_PREREG_AND_BOUNDARY'
+          assert d['selection_authority'] is False and d['promotion_authority'] is False
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED' and d['live_trade_authority']=='BLOCKED'
+          assert int(d['protected_mutations'])==0
+          print('PASS_RCFM_TERMINAL_GUARD_HEAVY_EVALUATOR_RETIRED')
           PY
-          fi
-      - name: Publish latest RCFM A1 A2 state to issue 566
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          python - <<'PY'
-          import json,os,urllib.request
-          from pathlib import Path
-          def load(path):
-              try:return json.loads(Path(path).read_text())
-              except Exception:return {}
-          r=load('out/a1_rcfm_economics.json'); c=load('out/a1_rcfm_v3_causal_controls_v1.json'); a1=load('out/a1_rcfm_v3_transition_v1.json'); a2=load('out/a2_rcfm_cost_turnover_actual_v1.json'); m=r.get('metrics') or {}
-          marker='<!-- A1_RCFM_PROSPECTIVE_V1 -->'
-          body='\n'.join([
-            marker,
-            '## A1 RCFM Prospective / Causal / A2 V1',
-            f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
-            f"economics={r.get('state')}|events={r.get('baseline_event_count')}|confirmed={r.get('confirmed_intent_count')}|trades={r.get('completed_trades')}",
-            f"gross_expectancy_bps={m.get('gross_expectancy_bps')}|net_expectancy_bps={m.get('net_expectancy_bps')}|PF={m.get('profit_factor')}|payoff={m.get('payoff')}|WR={m.get('win_rate')}|DD_bps={m.get('max_drawdown_bps')}",
-            f"causal={c.get('state')}|hard_controls={json.dumps(c.get('hard_control_states') or {},sort_keys=True,separators=(',',':'))}|causal_receipt={c.get('receipt_sha256')}",
-            f"A1={a1.get('state')}|tier={(a1.get('tiering') or {}).get('a1_tier')}|receipt={a1.get('receipt_sha256')}",
-            f"A2={a2.get('state')}|receipt={a2.get('receipt_sha256')}|next={a2.get('next_stage_if_pass') or a2.get('next_route')}",
-            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'
-          ])
-          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}; base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: cs=json.load(resp)
-          ex=next((x for x in cs if marker in str(x.get('body') or '')),None); url=ex.get('url') if ex else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
-          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if ex else 'POST'),timeout=20): pass
-          PY
-      - name: Remove SSH key
-        if: always()
-        run: rm -f ~/.ssh/vps_key
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: a1-rcfm-prospective-${{ github.run_id }}-${{ github.run_attempt }}
-          retention-days: 90
-          if-no-files-found: error
-          path: |
-            out/a1_rcfm_economics.json
-            out/a1_rcfm_v3_causal_controls_v1.json
-            out/a1_rcfm_v3_transition_v1.json
-            out/a2_rcfm_cost_turnover_actual_v1.json
-            out/heartbeat.json

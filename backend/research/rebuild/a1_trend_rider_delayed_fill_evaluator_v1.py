@@ -88,12 +88,14 @@ def transform(parent: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any
         stop = signal_close - 1.5 * signal_atr if side == "long" else signal_close + 1.5 * signal_atr
         entry = float(bars[delayed_entry_index]["open"])
         exit_price: float | None = None
+        exit_reason = "TIMEOUT"
         exit_index = last
         for index in range(delayed_entry_index, last + 1):
             low = float(bars[index]["low"])
             high = float(bars[index]["high"])
             if (side == "long" and low <= stop) or (side == "short" and high >= stop):
                 exit_price = float(stop)
+                exit_reason = "SL"
                 exit_index = index
                 break
         if exit_price is None:
@@ -106,6 +108,7 @@ def transform(parent: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any
             "exit": exit_price,
             "entry_ts": int(bars[delayed_entry_index]["ts_ms"]),
             "exit_ts": int(bars[exit_index]["ts_ms"]),
+            "reason": exit_reason,
             "gross_bps": gross,
             "net_bps": gross - cost,
             "entry_delay_bars": 1,

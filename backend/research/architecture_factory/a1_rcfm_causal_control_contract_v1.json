@@ -1,0 +1,69 @@
+{
+  "schema_version": "zel.a1.rcfm.causal_control_contract.v1",
+  "state": "FROZEN_BEFORE_RCFM_CAUSAL_CONTROL_OUTCOME",
+  "candidate_id": "NEW_RCFM_001",
+  "parent_policy_schema": "zel.a1.rcfm.policy.v1",
+  "prospective_boundary_utc": "2026-08-18T10:20:00Z",
+  "cohort": {
+    "trade_count": 25,
+    "rule": "FIRST_25_BY_ENTRY_TS_SYMBOL_INTENT_SHA",
+    "same_identity_retest_forbidden": true,
+    "later_trades_cannot_change_first25_result": true
+  },
+  "universal_hard_controls": {
+    "same_count_random_entry": {
+      "source": "ZEL_SURVIVOR_TIERING_V3_UNIVERSAL_CONTROL",
+      "same_symbol_and_side_budget": true,
+      "same_realized_cost_per_candidate_pair": true,
+      "same_duration_bars_per_candidate_pair": true,
+      "pass": "one_sided_p_value<=0.05 AND bootstrap_ci_low_R>0"
+    },
+    "direction_inversion": {
+      "source": "ZEL_SURVIVOR_TIERING_V3_UNIVERSAL_CONTROL",
+      "same_entry_exit_and_cost": true,
+      "side_only_inverted": true,
+      "pass": "one_sided_p_value<=0.05 AND bootstrap_ci_low_R>0"
+    }
+  },
+  "mechanism_specific_hard_control": {
+    "micro_sign_permutation": {
+      "source": "PREEXISTING_RCFM_POLICY_CONTROLS",
+      "reason": "RCFM explicitly claims L2 and aggressive-flow sign alignment adds causal selection value beyond the closed-bar momentum/participation baseline.",
+      "permutation_unit": "within_symbol_complete_micro_rows",
+      "fields_permuted_together": ["trade_imbalance", "imbalance_top20_mean"],
+      "timestamps_and_source_completeness_frozen": true,
+      "seed": "SHA256(candidate_id,policy_sha,prereg_sha,boundary,control_name)[:16]",
+      "control_trade_budget": 25,
+      "control_cohort_rule": "FIRST_25_COMPLETED_TRADES_FROM_SINGLE_FROZEN_PERMUTATION",
+      "minimum_control_trades": 25,
+      "statistic": "one-sided independent permutation test of mean net_R plus independent bootstrap 95pct lower CI of candidate-minus-control mean_R",
+      "pass": "one_sided_p_value<=0.05 AND bootstrap_ci_low_R>0",
+      "insufficient_control_trades": "HOLD_MICRO_PERMUTATION_SAMPLE"
+    }
+  },
+  "diagnostic_only_controls": {
+    "one_bar_delay": "A2_EXECUTION_STRESS_OWNER",
+    "indicator_removal": "NOT_APPLICABLE_TO_RCFM_ARCHITECTURE"
+  },
+  "anti_tuning": {
+    "parameter_search": false,
+    "control_seed_sweep": false,
+    "best_permutation_selection": false,
+    "cohort_extension_to_rescue_pvalue": false,
+    "threshold_relaxation": false,
+    "outcome_based_control_redefinition": false
+  },
+  "route": {
+    "all_hard_controls_pass": "A1_V3_CAUSAL_READY_EVALUATION",
+    "any_hard_control_fail": "TERMINAL_FOR_THIS_POLICY_CONFIG_BOUNDARY_IDENTITY__ROUTE_BOUNDED_REDESIGN_OR_SYNTHESIS",
+    "sample_incomplete": "WAIT_ONLY"
+  },
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "exchange_order_submitted": false,
+  "protected_mutations": 0,
+  "action": "hold"
+}

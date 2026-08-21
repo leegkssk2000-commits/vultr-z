@@ -37,9 +37,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Initialize fail-closed receipt directory
+        run: |
+          mkdir -p out/transition_repair
+          echo INITIALIZED > out/transition_repair/progress.txt
+
       - name: Validate repair lifecycle engines
         run: |
           set -euo pipefail
+          echo VALIDATING > out/transition_repair/progress.txt
           python -m py_compile \
             backend/research/architecture_factory/a1_trend_rider_transition_repair_evaluator_v1.py \
             backend/research/architecture_factory/a1_trend_rider_transition_repair_v3_transition_v1.py \
@@ -51,20 +57,24 @@ jobs:
           python -m backend.research.architecture_factory.a1_causal_repair_v3_universal_controls_v1 --self-test
           python -m backend.research.prep.a2_trend_rider_transition_repair_v1 --self-test
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
+          echo VALIDATION_PASS > out/transition_repair/progress.txt
 
       - name: Evaluate prospective transition repair
         run: |
           set -euo pipefail
-          mkdir -p out/transition_repair
+          echo EVALUATING_REPAIR > out/transition_repair/progress.txt
           python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 \
             --output out/transition_repair/receipt.json
+          echo EVALUATING_CONTROLS > out/transition_repair/progress.txt
           python -m backend.research.architecture_factory.a1_causal_repair_v3_universal_controls_v1 \
             --receipt out/transition_repair/receipt.json \
             --output out/transition_repair/controls.json
+          echo REPAIR_AND_CONTROLS_PASS_EXECUTION > out/transition_repair/progress.txt
 
       - name: Route repair through A1 A2 A3 evidence ceiling
         run: |
           set -euo pipefail
+          echo ROUTING_LIFECYCLE > out/transition_repair/progress.txt
           D=out/transition_repair
           CTRL="$(python -c "import json;print(json.load(open('$D/controls.json')).get('state'))")"
           if [ "$CTRL" = "PASS_V3_UNIVERSAL_HARD_CONTROLS" ]; then
@@ -89,6 +99,7 @@ jobs:
               fi
             fi
           fi
+          echo ROUTING_COMPLETE > out/transition_repair/progress.txt
 
       - name: Seal repair lifecycle receipt
         if: always()
@@ -96,15 +107,18 @@ jobs:
           python - <<'PY'
           import hashlib,json,os
           from pathlib import Path
-          d=Path('out/transition_repair')
+          d=Path('out/transition_repair'); d.mkdir(parents=True,exist_ok=True)
           def load(name, default):
               try:return json.loads((d/name).read_text())
               except Exception:return default
+          try:progress=(d/'progress.txt').read_text().strip()
+          except Exception:progress='NO_PROGRESS_MARKER'
           r=load('receipt.json',{}); c=load('controls.json',{}); a1=load('a1.json',{}); a2=load('a2.json',{}); a3=load('a3.json',{})
           out={
               'schema_version':'zel.a1.trend_rider_transition_repair.lifecycle.v1',
               'candidate_id':'trend_rider_confirm_transition_v1',
-              'state':'PASS_REPAIR_LIFECYCLE_EVIDENCE_CEILING_EVALUATED',
+              'state':'PASS_REPAIR_LIFECYCLE_EVIDENCE_CEILING_EVALUATED' if r else 'HOLD_REPAIR_LIFECYCLE_RUNTIME_FAILURE',
+              'progress':progress,
               'run_id':os.environ.get('GITHUB_RUN_ID'), 'head_sha':os.environ.get('GITHUB_SHA'),
               'receipt_state':r.get('state'), 'completed_trades':r.get('completed_trades',0),
               'source_quality_state':(r.get('source_quality_gate') or {}).get('state'),
@@ -133,11 +147,11 @@ jobs:
           from pathlib import Path
           marker='<!-- A1_TREND_RIDER_TRANSITION_REPAIR_V1 -->'
           try:r=json.loads(Path('out/transition_repair/lifecycle.json').read_text())
-          except Exception:r={'state':'HOLD_REPAIR_LIFECYCLE_NO_RECEIPT','candidate_id':'trend_rider_confirm_transition_v1'}
+          except Exception:r={'state':'HOLD_REPAIR_LIFECYCLE_NO_RECEIPT','candidate_id':'trend_rider_confirm_transition_v1','progress':'NO_LIFECYCLE_JSON'}
           body='\n'.join([
               marker,
               '## A1 Trend Rider Transition Repair V1',
-              f"run={r.get('run_id')}|head={r.get('head_sha')}",
+              f"run={r.get('run_id')}|head={r.get('head_sha')}|progress={r.get('progress')}",
               f"state={r.get('state')}|receipt={r.get('receipt_state')}|trades={r.get('completed_trades',0)}|source={r.get('source_quality_state')}",
               f"controls={r.get('control_state')}|frozen25={r.get('frozen_control_trade_count',0)}|hard={json.dumps(r.get('hard_control_states'),sort_keys=True)}",
               'mechanism_features='+json.dumps(r.get('mechanism_features') or [],sort_keys=True),

@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Publish one-shot READY marker only after frozen gate passes
+      - name: Publish one-shot READY marker only after frozen duration gate passes
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -41,15 +41,20 @@ jobs:
           with urllib.request.urlopen(coverage_url, timeout=20) as resp:
               cov = json.load(resp)
 
-          ready = bool(cov.get('basis_oi_duration_gate_pass')) and bool(cov.get('historical_coverage_claim'))
+          # P3 data are intentionally prospective, so historical_coverage_claim stays false.
+          # For the separate basis/funding/OI subaxis, readiness is the frozen 21d duration
+          # gate; native flow remains required only by the untouched full carry_flow contract.
+          ready = bool(cov.get('basis_oi_duration_gate_pass'))
           print(json.dumps({
               'state': cov.get('state'),
-              'ready': ready,
+              'basis_funding_oi_subaxis_ready': ready,
+              'historical_coverage_claim': cov.get('historical_coverage_claim'),
+              'full_carry_flow_replay_allowed': cov.get('replay_allowed'),
               'progress': cov.get('minimum_coverage_progress_ratio'),
               'receipt': cov.get('receipt_sha256'),
           }, sort_keys=True))
           if not ready:
-              print('HOLD_P3_BASIS_OI_HISTORY_NOT_READY_NO_MASTER_WRITE')
+              print('HOLD_P3_BASIS_OI_DURATION_NOT_READY_NO_MASTER_WRITE')
               raise SystemExit(0)
 
           token = os.environ['GH_TOKEN']; repo = os.environ['REPO']; target = os.environ['TARGET']
@@ -76,10 +81,13 @@ jobs:
 
           marker = {
               'schema_version': 'zel.a1_p3_history_readiness_wakeup.v1',
-              'state': 'P3_BASIS_OI_HISTORY_READY',
+              'state': 'P3_BASIS_FUNDING_OI_SUBAXIS_HISTORY_READY',
               'basis_oi_history_ready': True,
               'basis_oi_duration_gate_pass': True,
-              'historical_coverage_claim': True,
+              'prospective_history_duration_ready': True,
+              'historical_coverage_claim': bool(cov.get('historical_coverage_claim')),
+              'full_carry_flow_replay_allowed': bool(cov.get('replay_allowed')),
+              'full_carry_flow_flow_source_bound': bool(cov.get('flow_source_bound')),
               'source_branch': 'zel-p3-prospective-data',
               'coverage_receipt': cov.get('receipt_sha256'),
               'coverage_progress_ratio': cov.get('minimum_coverage_progress_ratio'),
@@ -91,7 +99,7 @@ jobs:
               'live_trade_authority': 'BLOCKED',
           }
           payload = {
-              'message': 'A1 P3: publish frozen history readiness wakeup',
+              'message': 'A1 P3: publish basis funding OI duration readiness wakeup',
               'content': base64.b64encode((json.dumps(marker, sort_keys=True, indent=2) + '\n').encode()).decode(),
               'branch': 'master',
           }
@@ -100,5 +108,5 @@ jobs:
           put = f'https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(target, safe="/")}'
           with urllib.request.urlopen(urllib.request.Request(put, data=json.dumps(payload).encode(), headers=headers, method='PUT'), timeout=30) as resp:
               result = json.load(resp)
-          print('PUBLISHED_P3_BASIS_OI_READY_WAKEUP', result.get('commit', {}).get('sha'))
+          print('PUBLISHED_P3_BASIS_FUNDING_OI_READY_WAKEUP', result.get('commit', {}).get('sha'))
           PY

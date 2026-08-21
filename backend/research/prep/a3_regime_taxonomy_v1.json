@@ -2,13 +2,48 @@
   "schema_version": "zel.a3_regime_taxonomy.v1",
   "stage": "A3_PREP",
   "purpose": "entry-time-only regime labeling; no survivor scoring",
-  "prohibitions": ["pnl_based_thresholds", "future_bar_inputs", "survivor_selection", "strategy_retuning"],
+  "prohibitions": [
+    "pnl_based_thresholds",
+    "future_bar_inputs",
+    "survivor_selection",
+    "strategy_retuning",
+    "historical_backfill_from_current_snapshot"
+  ],
   "input_contract": {
-    "required": ["ts_utc", "closed_bar_ts_utc", "symbol", "trend_strength", "realized_vol_pct", "spread_bps", "depth_usdt", "funding_8h_pct", "oi_change_pct"],
+    "required": [
+      "ts_utc",
+      "closed_bar_ts_utc",
+      "symbol",
+      "trend_strength",
+      "realized_vol_pct",
+      "spread_bps",
+      "depth_usdt",
+      "funding_8h_pct",
+      "oi_change_pct"
+    ],
     "optional": ["session_utc_hour"],
     "stale_after_ms": 7200000,
     "closed_bar_only": true,
     "missing_policy": "FAIL_CLOSED"
+  },
+  "feature_definitions": {
+    "trend_strength": "(EMA50_t - EMA50_t_minus_3_closed_1h_bars) / ATR14_t; signed and dimensionless",
+    "realized_vol_pct": "population_stddev(last_24_closed_1h_log_returns) * 100",
+    "spread_bps": "(best_ask-best_bid)/mid * 10000 from contemporaneous BingX public depth",
+    "depth_usdt": "min(sum(top50_bid_price*qty), sum(top50_ask_price*qty)); conservative two-sided quote depth",
+    "funding_8h_pct": "contemporaneous BingX public funding rate * 100",
+    "oi_change_pct": "100*(current_open_interest/previous_hourly_open_interest-1); first observation is unavailable and fails closed",
+    "context_timestamp": "capture after the latest 1h bar is closed and before any outcome data from the next bar is used"
+  },
+  "forward_capture": {
+    "mode": "PROSPECTIVE_SIDECAR_ONLY",
+    "symbols": ["BTC-USDT", "ETH-USDT"],
+    "cadence": "HOURLY",
+    "history_cap_rows": 480,
+    "join_key": ["symbol", "closed_bar_ts_utc"],
+    "first_oi_observation_valid_for_a3": false,
+    "strategy_files_mutated": false,
+    "outcome_fields_captured": false
   },
   "taxonomy": {
     "trend_state": {"TREND": "abs(trend_strength)>=0.35", "RANGE": "abs(trend_strength)<0.35"},
@@ -19,5 +54,12 @@
   },
   "symbol_scaling": {"mode": "NORMALIZED_INPUTS_ONLY", "raw_price_level_used": false},
   "coverage_manifest_required": true,
-  "authority": {"selection_authority": false, "promotion_authority": false, "execution_authority": "NONE", "order_authority": "BLOCKED", "live_trade_authority": "BLOCKED", "protected_mutations": 0}
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "protected_mutations": 0
+  }
 }

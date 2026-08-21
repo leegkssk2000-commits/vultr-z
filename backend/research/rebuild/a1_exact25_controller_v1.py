@@ -223,7 +223,13 @@ def main() -> None:
 
         wr = finite(metrics.get("win_rate"))
         progress = int(ledger["done_count"])
-        short = "SURVIVOR" if disposition == "A1_SURVIVOR" else "BLOCKED" if disposition in {"A1_DATA_BLOCKED", "HOLD_USER_AUTHORITY"} else "FUTILITY" if "FUTILITY" in disposition else "FAIL"
+        short = (
+            "SURVIVOR" if disposition == "A1_SURVIVOR"
+            else "PARK" if disposition == "A1_FINALIST_PARKED"
+            else "BLOCKED" if disposition in {"A1_DATA_BLOCKED", "HOLD_USER_AUTHORITY"}
+            else "FUTILITY" if "FUTILITY" in disposition
+            else "FAIL"
+        )
         report_line = (
             f"A1:{sid}|{short}|trades={int(receipt.get('completed_trades') or 0)}|WR={'-' if wr is None else f'{100*wr:.2f}%'}|"
             f"Net={format_metric(metrics.get('net_pnl_bps'),'bps')}|Exp={format_metric(metrics.get('net_expectancy_bps'),'bps/trade')}|"

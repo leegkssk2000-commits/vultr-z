@@ -17,6 +17,7 @@ CLOCK_PATH = ROOT / "backend/research/rebuild/a1_exact25_parallel_evidence_clock
 
 TERMINAL = {
     "A1_SURVIVOR",
+    "A1_FINALIST_PARKED",
     "A1_ECONOMIC_FAIL",
     "A1_COST_FUTILITY",
     "A1_CAUSAL_CONTROL_FAIL",

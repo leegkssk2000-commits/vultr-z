@@ -64,16 +64,17 @@ class Exact25ResourceBudgetTests(unittest.TestCase):
         self.assertIn("MAX_RESOURCE_BUDGET_ECONOMIC_GATE_FAIL", reason)
         self.assertIn("net_expectancy_bps", reason)
 
-    def test_max_budget_defined_positive_economics_not_auto_failed(self):
-        r = receipt(bars=168, intents=20, trades=10)
+    def test_screening_budget_defined_positive_economics_parks_for_finalist_lane(self):
+        r = receipt(bars=96, intents=20, trades=10)
         r["metrics"] = {
             "net_pnl_bps": 80.0,
             "net_expectancy_bps": 8.0,
             "net_profit_factor": 1.4,
             "net_payoff": 1.2,
         }
-        d, _ = c.resource_disposition(r, now=datetime(2026, 8, 8, tzinfo=timezone.utc))
-        self.assertIsNone(d)
+        d, reason = c.resource_disposition(r, now=datetime(2026, 8, 8, tzinfo=timezone.utc))
+        self.assertEqual(d, "A1_FINALIST_PARKED")
+        self.assertIn("SCREENING_RESOURCE_BUDGET_COMPLETE", reason)
 
     def test_explicit_source_quality_failure_routes_data_blocked(self):
         r = receipt(bars=168, intents=10, trades=4)

@@ -38,6 +38,11 @@ jobs:
             --mode development \
             --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT \
             --out out/trend_rider_first_confirmation_dev.json
+      - name: Development H4 H5 diagnostic only
+        run: |
+          python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 \
+            --receipt out/trend_rider_first_confirmation_dev.json \
+            --out out/trend_rider_first_confirmation_dev_hardening.json
       - name: Frozen prospective replay
         run: |
           python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
@@ -69,12 +74,13 @@ jobs:
               except Exception as exc: return {'state':'FAILED_OR_MISSING','error':repr(exc)}
           d=load('out/trend_rider_first_confirmation_dev.json')
           f=load('out/trend_rider_first_confirmation_fresh.json')
+          dh=load('out/trend_rider_first_confirmation_dev_hardening.json')
           h=load('out/trend_rider_first_confirmation_hardening.json')
           summary={
             'schema_version':'zel.a1.trend_rider.first_confirmation_summary.v1',
             'challenger_id':'trend_rider_first_confirmation_v1',
             'changed_axis':'signal_transition_timing',
-            'development':{'trade_count':d.get('completed_trades'),'metrics':d.get('metrics'),'state':d.get('state'),'promotion_authority':False},
+            'development':{'trade_count':d.get('completed_trades'),'metrics':d.get('metrics'),'state':d.get('state'),'h4_state':(dh.get('h4_receipt') or {}).get('state'),'h4_passed':(dh.get('h4_receipt') or {}).get('passed_control_count'),'h4_results':(dh.get('h4_receipt') or {}).get('control_results'),'h5_state':(dh.get('h5_receipt') or {}).get('state'),'h5_blockers':(dh.get('h5_receipt') or {}).get('blockers'),'promotion_authority':False},
             'prospective':{'boundary_utc':'2026-08-21T09:29:50Z','trade_count':f.get('completed_trades'),'metrics':f.get('metrics'),'state':f.get('state')},
             'hardening_state':h.get('state'),
             'h4_state':(h.get('h4_receipt') or {}).get('state'),

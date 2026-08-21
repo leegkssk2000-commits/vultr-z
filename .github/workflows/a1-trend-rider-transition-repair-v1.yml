@@ -7,6 +7,7 @@ on:
       - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_prereg_v1.json'
       - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_evaluator_v1.py'
       - 'backend/research/architecture_factory/a1_trend_rider_transition_repair_v3_transition_v1.py'
+      - 'backend/research/architecture_factory/a1_causal_repair_v3_universal_controls_v1.py'
       - 'backend/research/prep/a2_trend_rider_transition_repair_v1.py'
       - 'backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py'
       - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
@@ -42,12 +43,12 @@ jobs:
           python -m py_compile \
             backend/research/architecture_factory/a1_trend_rider_transition_repair_evaluator_v1.py \
             backend/research/architecture_factory/a1_trend_rider_transition_repair_v3_transition_v1.py \
-            backend/research/rebuild/a1_exact25_v3_universal_controls_v2.py \
+            backend/research/architecture_factory/a1_causal_repair_v3_universal_controls_v1.py \
             backend/research/prep/a2_trend_rider_transition_repair_v1.py \
             backend/research/prep/a3_exact25_forward_durability_v3.py
           python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 --self-test
           python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_v3_transition_v1 --self-test
-          python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v2 --self-test
+          python -m backend.research.architecture_factory.a1_causal_repair_v3_universal_controls_v1 --self-test
           python -m backend.research.prep.a2_trend_rider_transition_repair_v1 --self-test
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
 
@@ -57,7 +58,7 @@ jobs:
           mkdir -p out/transition_repair
           python -m backend.research.architecture_factory.a1_trend_rider_transition_repair_evaluator_v1 \
             --output out/transition_repair/receipt.json
-          python -m backend.research.rebuild.a1_exact25_v3_universal_controls_v2 \
+          python -m backend.research.architecture_factory.a1_causal_repair_v3_universal_controls_v1 \
             --receipt out/transition_repair/receipt.json \
             --output out/transition_repair/controls.json
 
@@ -109,7 +110,7 @@ jobs:
               'source_quality_state':(r.get('source_quality_gate') or {}).get('state'),
               'metrics':r.get('metrics'),
               'control_state':c.get('state'), 'frozen_control_trade_count':c.get('frozen_control_trade_count',0),
-              'hard_control_states':c.get('hard_control_states'),
+              'hard_control_states':c.get('hard_control_states'), 'mechanism_features':c.get('mechanism_features'),
               'a1_state':a1.get('state','NOT_RUN'), 'a1_tier':(a1.get('tiering') or {}).get('a1_tier'),
               'a2_state':a2.get('state','NOT_RUN'),
               'a2_stress':{k:v.get('pass') for k,v in (a2.get('stress') or {}).items()},
@@ -139,6 +140,7 @@ jobs:
               f"run={r.get('run_id')}|head={r.get('head_sha')}",
               f"state={r.get('state')}|receipt={r.get('receipt_state')}|trades={r.get('completed_trades',0)}|source={r.get('source_quality_state')}",
               f"controls={r.get('control_state')}|frozen25={r.get('frozen_control_trade_count',0)}|hard={json.dumps(r.get('hard_control_states'),sort_keys=True)}",
+              'mechanism_features='+json.dumps(r.get('mechanism_features') or [],sort_keys=True),
               f"A1={r.get('a1_state')}|tier={r.get('a1_tier')}|A2={r.get('a2_state')}|A3={r.get('a3_state')}",
               'a2_stress='+json.dumps(r.get('a2_stress') or {},sort_keys=True,separators=(',',':')),
               'a3_coverage='+json.dumps(r.get('a3_coverage'),sort_keys=True,separators=(',',':')),
@@ -146,7 +148,7 @@ jobs:
               'a3_failures='+json.dumps(r.get('a3_failures'),sort_keys=True,separators=(',',':')),
               'metrics='+json.dumps(r.get('metrics'),sort_keys=True,separators=(',',':')),
               f"receipt_sha256={r.get('receipt_sha256')}",
-              'policy=prospective new identity only; parent thresholds/risk/timeout frozen; no preboundary outcomes; no parent A2 inheritance',
+              'policy=prospective new identity only; prereg-owned mechanism features; parent thresholds/risk/timeout frozen; no preboundary outcomes; no parent A2 inheritance',
               'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0',
           ])
           headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}

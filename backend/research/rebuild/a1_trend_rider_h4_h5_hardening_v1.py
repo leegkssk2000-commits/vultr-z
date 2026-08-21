@@ -109,9 +109,9 @@ def main():
     random_vals=[]; used=set()
     for i,x in enumerate(trades):
         bs=bars_by[x['symbol']]; mp=maps[x['symbol']]; dur=duration_bars(x,mp)
-        pool=[j for j,b in enumerate(bs) if boundary_ms<=int(b['ts_ms'])<=latest and j+1+dur<len(bs) and int(b['ts_ms']) not in used]
+        pool=[j for j,b in enumerate(bs) if boundary_ms<=int(b['ts_ms'])<=latest and j+1+dur<len(bs) and (x['symbol'], int(b['ts_ms'])) not in used]
         if not pool: raise RuntimeError('RANDOM_ENTRY_POOL_EXHAUSTED')
-        j=pool[rng.randrange(len(pool))]; used.add(int(bs[j]['ts_ms'])); ep=float(bs[j+1]['open']); xp=float(bs[j+1+dur]['close'])
+        j=pool[rng.randrange(len(pool))]; used.add((x['symbol'], int(bs[j]['ts_ms']))); ep=float(bs[j+1]['open']); xp=float(bs[j+1+dur]['close'])
         random_vals.append(net_for(x['side'],ep,xp,float(x['realized_cost_bps']))/100.0)
     controls['same_count_random_entry']=random_vals
     ir=[]; candidates=[]

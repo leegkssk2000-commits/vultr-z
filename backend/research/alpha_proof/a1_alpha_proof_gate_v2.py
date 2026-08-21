@@ -60,6 +60,109 @@ def identity_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
     return {k: candidate[k] for k in CANDIDATE_IDENTITY_FIELDS}
 
 
+def _use_prospective_v3_p4(bundle: Mapping[str, Any]) -> bool:
+    dev = bundle.get("development_feasibility")
+    return isinstance(dev, Mapping) and str(dev.get("launch_gate_source") or "") == "SSOT:GEN2_E2E_ENRICHMENT_V1"
+
+
+def _evaluate_p4_prospective_v3(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Prospective-only P4 semantics for new GEN2 E2E candidates.
+
+    Hard at A1: direction inversion + timestamp/time-shift placebo.
+    Diagnostic/deferred: one-bar delay, regime permutation, feature ablation.
+    The final Survivor V3 gate still owns same-count random-entry and A3/H5 durability.
+    Existing V2 bundles continue to use the original v1 P4 evaluator unchanged.
+    """
+    failures: list[dict[str, str]] = []
+    controls = bundle.get("negative_controls_and_ablation")
+    if not isinstance(controls, Mapping):
+        return v1._gate("P4_NEGATIVE_CONTROLS_ABLATION", False, [v1._fail("P4_CONTROLS_MISSING", "negative_controls_and_ablation object is required")])
+
+    rows = controls.get("controls")
+    if not isinstance(rows, list):
+        rows = []
+        failures.append(v1._fail("P4_CONTROL_LIST_MISSING", "controls list required"))
+
+    seen = set()
+    hard_seen = set()
+    diagnostics: list[dict[str, Any]] = []
+    hard_kinds = {"direction_flip", "time_shift_placebo"}
+    diagnostic_kinds = {"delayed_entry", "regime_permutation"}
+
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        kind = str(row.get("kind") or "")
+        if kind:
+            seen.add(kind)
+        applicable = row.get("applicable") is not False
+        if kind in hard_kinds:
+            hard_seen.add(kind)
+            if applicable and row.get("passed") is not True:
+                failures.append(v1._fail("P4_CONTROL_FAIL", kind or "<unknown>"))
+            if not applicable:
+                failures.append(v1._fail("P4_HARD_CONTROL_NOT_APPLICABLE", kind or "<unknown>"))
+        elif kind in diagnostic_kinds:
+            diagnostics.append({
+                "kind": kind,
+                "applicable": applicable,
+                "passed": row.get("passed"),
+                "not_applicable_reason": row.get("not_applicable_reason"),
+            })
+        elif applicable and row.get("passed") is not True:
+            failures.append(v1._fail("P4_CONTROL_FAIL", kind or "<unknown>"))
+        elif not applicable and not str(row.get("not_applicable_reason") or "").strip():
+            failures.append(v1._fail("P4_NOT_APPLICABLE_UNJUSTIFIED", kind or "<unknown>"))
+
+    missing = sorted(v1.REQUIRED_CONTROL_KINDS - seen)
+    if missing:
+        failures.append(v1._fail("P4_REQUIRED_CONTROL_MISSING", ",".join(missing)))
+    missing_hard = sorted(hard_kinds - hard_seen)
+    if missing_hard:
+        failures.append(v1._fail("P4_HARD_CONTROL_MISSING", ",".join(missing_hard)))
+
+    feature_map = bundle.get("feature_causal_map") or {}
+    feature_names = {str(x.get("name")) for x in (feature_map.get("features") or []) if isinstance(x, Mapping) and x.get("name")}
+    ablations = controls.get("feature_ablations")
+    if not isinstance(ablations, list):
+        ablations = []
+    ablated = set()
+    ablation_diagnostics: list[dict[str, Any]] = []
+    for row in ablations:
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("feature") or "")
+        if name:
+            ablated.add(name)
+        ablation_diagnostics.append({
+            "feature": name,
+            "applicable": row.get("applicable") is not False,
+            "passed": row.get("passed"),
+            "candidate_net_expectancy_bps": row.get("candidate_net_expectancy_bps"),
+            "ablated_net_expectancy_bps": row.get("ablated_net_expectancy_bps"),
+        })
+    if feature_names - ablated:
+        failures.append(v1._fail("P4_FEATURE_ABLATION_MISSING", ",".join(sorted(feature_names - ablated))))
+    if controls.get("holdout_outcomes_used") is not False:
+        failures.append(v1._fail("P4_HOLDOUT_LEAKAGE", "controls/ablations must use development-only data"))
+
+    return v1._gate(
+        "P4_NEGATIVE_CONTROLS_ABLATION",
+        not failures,
+        failures,
+        {
+            "policy": "SURVIVOR_V3_PROSPECTIVE_ONLY",
+            "hard_controls": sorted(hard_kinds),
+            "controls_seen": sorted(seen),
+            "diagnostic_controls": diagnostics,
+            "ablated_features": sorted(ablated),
+            "ablation_diagnostics": ablation_diagnostics,
+            "final_same_count_random_entry_owner": "SURVIVOR_TIERING_V3",
+            "final_regime_fragility_owner": "A3_TO_FINAL_SURVIVOR",
+        },
+    )
+
+
 def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     candidate = bundle.get("candidate")
     if not isinstance(candidate, Mapping):
@@ -78,13 +181,14 @@ def evaluate_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         identity_failures.append(v1._fail("CANDIDATE_SHA_MISMATCH", f"declared={candidate_sha} computed={computed_candidate_sha}"))
     if candidate.get("research_only") is False:
         identity_failures.append(v1._fail("CANDIDATE_AUTHORITY_INVALID", "research_only cannot be false"))
+    p4 = _evaluate_p4_prospective_v3(bundle) if _use_prospective_v3_p4(bundle) else v1.evaluate_p4(bundle)
     gates = [
         v1._gate("P-IDENTITY", not identity_failures, identity_failures, {"candidate_sha256": candidate_sha, "computed_candidate_sha256": computed_candidate_sha}),
         v1.evaluate_p0(bundle),
         v1.evaluate_p1(bundle),
         v1.evaluate_p2(bundle),
         v1.evaluate_p3(bundle),
-        v1.evaluate_p4(bundle),
+        p4,
         v1.evaluate_p5(bundle),
         v1.evaluate_p6(bundle),
     ]
@@ -170,6 +274,25 @@ def self_test() -> int:
     held = evaluate_bundle(bad2)
     assert held["state"] == HOLD_STATE
     assert any(f["code"] == "CANDIDATE_SHA_MISMATCH" for g in held["gates"] for f in g["failures"])
+
+    prospective = json.loads(json.dumps(good))
+    prospective["development_feasibility"]["launch_gate_source"] = "SSOT:GEN2_E2E_ENRICHMENT_V1"
+    for row in prospective["negative_controls_and_ablation"]["controls"]:
+        if row.get("kind") == "delayed_entry":
+            row["passed"] = False
+    for row in prospective["negative_controls_and_ablation"].get("feature_ablations") or []:
+        row["passed"] = False
+    prospective_result = evaluate_bundle(prospective)
+    assert prospective_result["state"] == PASS_STATE, prospective_result
+    p4 = next(x for x in prospective_result["gates"] if x["gate"] == "P4_NEGATIVE_CONTROLS_ABLATION")
+    assert p4["evidence"].get("policy") == "SURVIVOR_V3_PROSPECTIVE_ONLY"
+
+    hard_fail = json.loads(json.dumps(prospective))
+    for row in hard_fail["negative_controls_and_ablation"]["controls"]:
+        if row.get("kind") == "direction_flip":
+            row["passed"] = False
+    hard_result = evaluate_bundle(hard_fail)
+    assert hard_result["state"] == HOLD_STATE
     print("PASS_A1_ALPHA_PROOF_GATE_V2_SELF_TEST")
     return 0
 

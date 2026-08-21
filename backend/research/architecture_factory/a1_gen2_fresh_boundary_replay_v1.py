@@ -12,6 +12,14 @@ MIN_TRADES=20
 MIN_SYMBOLS=2
 MAX_DD_MULTIPLE_VS_DEV=1.50
 DEV_DD_BPS=3149.2984443634814
+DAY_MS=86_400_000
+
+
+def split_mature_fresh(rows, boundary_ms=BOUNDARY_MS, hold_days=inc.HOLD):
+ candidates=[x for x in rows if int(x['signal_ts'])>int(boundary_ms)]
+ mature=[x for x in candidates if int(x['exit_ts'])-int(x['signal_ts'])>=int(hold_days)*DAY_MS]
+ immature=[x for x in candidates if x not in mature]
+ return mature,immature
 
 
 def metrics(a):
@@ -33,7 +41,7 @@ def run(output:Path):
    if sum(losses[-5:])/5.0>statistics.median(losses):
     stress.add(id(x))
  def val(x): return x['n']*(inc.W if id(x) in stress else 1.0)
- fresh=[x for x in kept if x['signal_ts']>BOUNDARY_MS]
+ fresh,immature=split_mature_fresh(kept)
  fm=metrics([val(x) for x in fresh])
  symbols=sorted({x['symbol'] for x in fresh})
  mature=fm['trades']>=MIN_TRADES and len(symbols)>=MIN_SYMBOLS
@@ -41,7 +49,9 @@ def run(output:Path):
  if not mature: state='WAIT_FRESH_SAMPLE'
  elif econ_pass: state='PASS_PROSPECTIVE_REPLAY'
  else: state='FAIL_PROSPECTIVE_REPLAY'
- r={'schema_version':'zel.a1_gen2_fresh_boundary_replay.v1','data_plane':'PROSPECTIVE_CLOSED_BARS','development_cutoff_reused':False,'candidate_id':'atr_long_veto_eth_stress075','boundary_iso':BOUNDARY_ISO,'boundary_ms':BOUNDARY_MS,'frozen_rule':True,'threshold_sweep':False,'future_information_used':False,'fresh_trade_count':fm['trades'],'fresh_symbols':symbols,'minimum_gate':{'trades':MIN_TRADES,'symbols':MIN_SYMBOLS,'max_dd_multiple_vs_dev':MAX_DD_MULTIPLE_VS_DEV},'fresh_metrics':fm,'mature':mature,'prospective_pass':econ_pass,'state':state,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
+ earliest=min((int(x['signal_ts'])+inc.HOLD*DAY_MS for x in immature),default=None)
+ earliest_iso=datetime.fromtimestamp(earliest/1000,tz=timezone.utc).isoformat().replace('+00:00','Z') if earliest else None
+ r={'schema_version':'zel.a1_gen2_fresh_boundary_replay.v1','data_plane':'PROSPECTIVE_CLOSED_BARS','development_cutoff_reused':False,'candidate_id':'atr_long_veto_eth_stress075','boundary_iso':BOUNDARY_ISO,'boundary_ms':BOUNDARY_MS,'frozen_rule':True,'threshold_sweep':False,'future_information_used':False,'fresh_signal_count':len(fresh)+len(immature),'immature_signal_count':len(immature),'earliest_pending_maturity_utc':earliest_iso,'fresh_trade_count':fm['trades'],'fresh_symbols':symbols,'minimum_gate':{'trades':MIN_TRADES,'symbols':MIN_SYMBOLS,'max_dd_multiple_vs_dev':MAX_DD_MULTIPLE_VS_DEV},'fresh_metrics':fm,'mature':mature,'prospective_pass':econ_pass,'state':state,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED'}
  output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n'); print('FRESH_BOUNDARY_REPLAY='+json.dumps(r,sort_keys=True)); return r
 
 if __name__=='__main__': run(Path('out/a1_gen2_fresh_boundary_replay_v1.json'))

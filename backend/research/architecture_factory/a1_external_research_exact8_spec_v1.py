@@ -26,6 +26,11 @@ def digest(value: Any) -> str:
 def validate(spec: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
     rows = spec.get("specs") or {}
     audit = mapping.get("parent_code_dedup_audit") or {}
+    multicritic = audit.get("multicritic_evidence") or {}
+    if int(multicritic.get("run_id") or 0) <= 0 or int(multicritic.get("reviewed_strategy_count") or 0) != 25:
+        raise RuntimeError("IMMUTABLE_MULTICRITIC_EVIDENCE_REQUIRED")
+    if not str(multicritic.get("artifact_digest") or "").startswith("sha256:"):
+        raise RuntimeError("MULTICRITIC_ARTIFACT_DIGEST_REQUIRED")
     expected = {str(x) for x in (audit.get("novel_strategy_ids") or [])}
     if set(rows) != expected or len(rows) != 8:
         raise RuntimeError("EXACT8_CODE_NOVEL_SET_REQUIRED")
@@ -56,6 +61,8 @@ def validate(spec: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
         "strategy_count": len(rows),
         "strategy_ids": sorted(rows),
         "child_ids": sorted(children),
+        "multicritic_evidence_run_id": int(multicritic["run_id"]),
+        "multicritic_artifact_digest": str(multicritic["artifact_digest"]),
         "one_axis_all": True,
         "effect_verified_count": 0,
         "selection_authority": False,

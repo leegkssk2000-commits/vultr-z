@@ -116,7 +116,13 @@ def run(output: Path) -> dict[str, Any]:
         datetime.fromisoformat(contract["frozen_at_utc"].replace("Z", "+00:00")).timestamp() * 1000
     )
     all_parent = parent_trades(prospective.bars)
-    fresh_parent_rows = [row for row in all_parent if int(row["signal_ts"]) > boundary_ms]
+    parent_candidates = [row for row in all_parent if int(row["signal_ts"]) > boundary_ms]
+    hold_ms = 12 * 86_400_000
+    fresh_parent_rows = [
+        row for row in parent_candidates
+        if int(row["exit_ts"]) - int(row["signal_ts"]) >= hold_ms
+    ]
+    immature_parent_rows = [row for row in parent_candidates if row not in fresh_parent_rows]
     fresh_parent = metrics(fresh_parent_rows)
     fresh_symbols = sorted({str(row["symbol"]) for row in fresh_parent_rows})
     parent_mature = (
@@ -161,6 +167,15 @@ def run(output: Path) -> dict[str, Any]:
             "fresh": {
                 "boundary_utc": contract["frozen_at_utc"],
                 "metrics": fresh_parent,
+                "signal_count": len(parent_candidates),
+                "immature_signal_count": len(immature_parent_rows),
+                "earliest_pending_maturity_utc": (
+                    datetime.fromtimestamp(
+                        min(int(row["signal_ts"]) + hold_ms for row in immature_parent_rows) / 1000,
+                        tz=timezone.utc,
+                    ).isoformat().replace("+00:00", "Z")
+                    if immature_parent_rows else None
+                ),
                 "symbols": fresh_symbols,
                 "mature": parent_mature,
                 "prospective_pass": parent_fresh_pass,

@@ -1,0 +1,85 @@
+{
+  "schema_version": "zel.a1_external_research_exact8_spec.v1",
+  "state": "PASS_OUTCOME_BLIND_EXACT8_OPERATIONAL_SPECS_SEALED",
+  "boundary_policy": "Assign a fresh boundary only after the child adapter and deterministic fixture pass.",
+  "common_frozen_fields": ["parent_entry_geometry_except_named_axis", "fees", "slippage", "stop", "target", "timeout", "position_size", "symbol_universe", "cost_model"],
+  "common_falsification": "Reject if development economics fail, fixed-first25 random-entry or direction-inversion hard control fails, required source lineage is not timestamp-safe, or sealed OOS/stress gates fail.",
+  "threshold_search": false,
+  "holdout_outcomes_accessed": false,
+  "effect_verified_count": 0,
+  "specs": {
+    "anchor_vwap_trend": {
+      "child_id": "anchor_vwap_trend__lny_overlap_owner_v1",
+      "parent_policy": "backend/research/rebuild/vwap_bb_policy_batch_v1.py",
+      "timeframe_ms": 3600000,
+      "changed_axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+      "operational_definition": "Keep the closed-bar anchored-VWAP reclaim and EMA alignment unchanged; permit a signal only when signal_ts UTC hour is 13, 14, or 15.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R8", "R9"]
+    },
+    "bb_revert": {
+      "child_id": "bb_revert__liquid_nontrend_owner_v1",
+      "parent_policy": "backend/research/rebuild/bb_revert_policy_v2.py",
+      "timeframe_ms": 3600000,
+      "changed_axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+      "operational_definition": "Keep the Bollinger reclaim and existing EMA55 slope non-trend rule unchanged; require the completed signal-bar volume to be at least the median of the preceding 20 completed bars.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R2", "R12"]
+    },
+    "break_and_continue": {
+      "child_id": "break_and_continue__relative_volume_confirm_v1",
+      "parent_policy": "backend/research/rebuild/breakout_policy_batch_v1.py",
+      "timeframe_ms": 3600000,
+      "changed_axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY",
+      "operational_definition": "Keep the 20-bar breakout, 8-bar box, EMA21/55 alignment and anti-chase rules unchanged; require signal-bar volume divided by mean volume of the preceding 20 completed bars to be at least 1.0.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R3", "R4"]
+    },
+    "fvg_revert": {
+      "child_id": "fvg_revert__liquid_reclaim_confirm_v1",
+      "parent_policy": "backend/research/rebuild/reversal_range_policy_batch_v1.py",
+      "timeframe_ms": 300000,
+      "changed_axis": "LIQUIDITY_RECLAIM_CONFIRMATION_ONLY",
+      "operational_definition": "Keep the three-bar gap, direction, ATR stop, target and timeout unchanged; require completed signal-bar volume to be at least the median of the preceding 20 completed bars.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R2", "R12"]
+    },
+    "range_fade": {
+      "child_id": "range_fade__liquidity_regime_owner_v1",
+      "parent_policy": "backend/research/rebuild/reversal_range_policy_batch_v1.py",
+      "timeframe_ms": 300000,
+      "changed_axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+      "operational_definition": "Keep range position, RSI reclaim and exits unchanged; compute completed-bar Amihud proxy abs(log(close/prev_close))/(close*volume) and require it not to exceed the median of the preceding 20 completed bars.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R2", "R12"]
+    },
+    "rsi_swing_fail": {
+      "child_id": "rsi_swing_fail__jump_regime_exclusion_v1",
+      "parent_policy": "backend/research/rebuild/reversal_range_policy_batch_v1.py",
+      "timeframe_ms": 300000,
+      "changed_axis": "JUMP_REGIME_EXCLUSION_ONLY",
+      "operational_definition": "Keep 20-bar swing failure, RSI and exits unchanged; exclude a signal when its absolute completed-bar log return exceeds the outcome-blind 99th percentile of the preceding 8640 completed 5-minute bars, computed without the signal bar.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R2", "R7"]
+    },
+    "scalp_snap": {
+      "child_id": "scalp_snap__depth_normalized_ofi_owner_v1",
+      "parent_policy": "backend/research/rebuild/microstructure_policy_batch_v1.py",
+      "timeframe_ms": 300000,
+      "changed_axis": "DEPTH_NORMALIZED_OFI_OWNER_ONLY",
+      "operational_definition": "Keep the 5-minute impulse/reversal geometry and exits unchanged; compute Cont-style best-level order-flow imbalance from timestamped pre-entry book events over the signal bar, divide by mean contemporaneous bid-plus-ask depth, and require positive sign for long or negative sign for short.",
+      "required_data": ["ohlcv", "trades", "orderbook_depth"],
+      "source_ids": ["R6", "R7"]
+    },
+    "session_bias": {
+      "child_id": "session_bias__lny_overlap_owner_v1",
+      "parent_policy": "backend/research/rebuild/final_four_policy_batch_v1.py",
+      "timeframe_ms": 300000,
+      "changed_axis": "LONDON_NEWYORK_OVERLAP_OWNER_ONLY",
+      "operational_definition": "Keep the 24-bar range expansion, EMA21/55, ATR regime, anti-chase and exits unchanged; permit a completed signal only when signal_ts UTC hour is 13, 14, or 15.",
+      "required_data": ["ohlcv", "volume"],
+      "source_ids": ["R8", "R9"]
+    }
+  },
+  "authority": {"selection_authority": false, "promotion_authority": false, "execution_authority": "NONE", "order_authority": "BLOCKED", "live_trade_authority": "BLOCKED", "protected_mutations": 0, "action": "hold"}
+}

@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.research.architecture_factory import a1_terminal_repair_swarm_v4 as v4
 from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v3 as econ
+from backend.research.architecture_factory import a1_gen2_post_econ_alpha_intake_v1 as alpha_intake
 
 CONTRACT=Path('backend/research/contracts/p3_carry_flow_prospective_native_v1.json')
 SUBAXIS_CONTRACT=Path('backend/research/contracts/a1_basis_funding_oi_subaxis_replay_v1.json')
@@ -41,10 +42,6 @@ def _history_readiness()->dict[str,Any]:
         out['open_interest']=dict(out['basis'])
     try:
         with urllib.request.urlopen(P3_COVERAGE_URL,timeout=15) as r: cov=json.loads(r.read().decode('utf-8'))
-        # historical_coverage_claim is intentionally false for prospective P3 records.
-        # The distinct basis/funding/OI subaxis becomes source-ready on the unchanged
-        # frozen 21d duration gate plus bound historical funding. Full carry_flow
-        # remains separately blocked by native flow under the parent contract.
         duration_gate=bool(cov.get('basis_oi_duration_gate_pass'))
         gate=bool(duration_gate and subaxis_ok and fready)
         ratio=float(cov.get('minimum_coverage_progress_ratio') or 0.0); state=str(cov.get('state') or '')
@@ -101,6 +98,23 @@ def run(output:Path)->dict[str,Any]:
       'basis_oi_prospective_replay_supported_after_gate':True,
       'combined_basis_funding_oi_ready':bool((result.get('source_history_readiness') or {}).get('basis',{}).get('ready') and (result.get('source_history_readiness') or {}).get('funding',{}).get('ready') and (result.get('source_history_readiness') or {}).get('open_interest',{}).get('ready')),
     }
+    if int(result.get('ledger_done_count') or 0) == 25 and result.get('prep_only') is False:
+        result['post_econ_alpha_intake']=alpha_intake.build(result)
+    else:
+        result['post_econ_alpha_intake']={
+          'schema_version':alpha_intake.SCHEMA_VERSION,
+          'state':'BLOCKED_UNTIL_EXACT25_COMPLETE',
+          'ledger_done_count':int(result.get('ledger_done_count') or 0),
+          'prep_only':result.get('prep_only'),
+          'development_pass_count':0,
+          'intake_count':0,
+          'intake_ready_count':0,
+          'top_ready_candidate_ids':[],
+          'rows':[],
+          'failures':['EXACT25_NOT_COMPLETE'],
+          **alpha_intake.AUTHORITY,
+        }
+        result['post_econ_alpha_intake']['receipt_sha256']=v4.sha(result['post_econ_alpha_intake'])
     result['schema_version']='zel.a1_terminal_repair_swarm.v5'
     result.pop('receipt_sha256',None); result['receipt_sha256']=v4.sha(result)
     output.write_text(json.dumps(result,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8')
@@ -111,12 +125,13 @@ def self_test()->int:
     assert {'basis','funding','open_interest'}.issubset(econ.SUPPORTED_SOURCES)
     probe=_funding_probe(); assert probe['required_sources']==['funding','ohlcv'] and probe['executable_spec']['max_hold_bars']==8
     s=json.loads(SUBAXIS_CONTRACT.read_text(encoding='utf-8')); assert (s.get('separation_invariant') or {}).get('duration_gate_lowered') is False
+    assert alpha_intake.self_test()==0
     print('PASS_A1_TERMINAL_REPAIR_SWARM_V5_SELF_TEST'); return 0
 
 
 def main()->int:
     ap=argparse.ArgumentParser(); ap.add_argument('--output',type=Path,default=Path('out/a1_terminal_repair_swarm_v5.json')); ap.add_argument('--self-test',action='store_true'); a=ap.parse_args()
     if a.self_test:return self_test()
-    r=run(a.output); print(json.dumps({'done':r['ledger_done_count'],'ready_sources':r['replay_ready_sources'],'history':r['source_history_readiness'],'funding_probe':r['funding_axis_probe'],'evidence':r['evidence_summary'],'receipt':r['receipt_sha256']},sort_keys=True)); return 0
+    r=run(a.output); print(json.dumps({'done':r['ledger_done_count'],'ready_sources':r['replay_ready_sources'],'history':r['source_history_readiness'],'funding_probe':r['funding_axis_probe'],'alpha_intake':r['post_econ_alpha_intake'],'evidence':r['evidence_summary'],'receipt':r['receipt_sha256']},sort_keys=True)); return 0
 
 if __name__=='__main__': raise SystemExit(main())

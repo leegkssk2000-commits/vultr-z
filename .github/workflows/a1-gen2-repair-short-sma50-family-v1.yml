@@ -1,0 +1,97 @@
+name: A1 GEN2 Repair Short SMA50 Family V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_gen2_repair_short_sma50_family_v1.json'
+      - 'backend/research/architecture_factory/a1_gen2_repair_short_sma50_family_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_prospective_data_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py'
+      - '.github/workflows/a1-gen2-repair-short-sma50-family-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_gen2_repair_short_sma50_family_v1.json'
+      - 'backend/research/architecture_factory/a1_gen2_repair_short_sma50_family_v1.py'
+      - 'backend/research/architecture_factory/a1_gen2_prospective_data_v1.py'
+      - '.github/workflows/a1-gen2-repair-short-sma50-family-v1.yml'
+  schedule:
+    - cron: '23 0,6,12,18 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: a1-gen2-repair-short-sma50-family-v1
+  cancel-in-progress: false
+jobs:
+  validate-family:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Run frozen parent and strict child lanes
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_gen2_prospective_data_v1.py \
+            backend/research/architecture_factory/a1_gen2_incumbent_hardening_v1.py \
+            backend/research/architecture_factory/a1_gen2_fresh_boundary_replay_v1.py \
+            backend/research/architecture_factory/a1_gen2_repair_short_sma50_family_v1.py
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_gen2_repair_short_sma50_family_v1
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_gen2_repair_short_sma50_family_v1.json'))
+          assert r['family_id']=='repair_short_above_sma50_veto'
+          assert r['parent']['candidate_id']=='repair_short_above_sma50_veto_v1'
+          assert r['parent']['pareto_state']=='PASS_PARETO_IMPROVEMENT'
+          assert r['strict_child']['candidate_id']=='atr_long_veto_eth_stress075'
+          assert r['strict_child']['development_hardening']['hardening_pass'] is True
+          assert r['strict_child']['prospective']['data_plane']=='PROSPECTIVE_CLOSED_BARS'
+          assert r['strict_child']['prospective']['development_cutoff_reused'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print(json.dumps({'state':r['state'],'parent':r['parent']['development_metrics'],'parent_fresh':r['parent']['fresh'],'strict':r['strict_child']['development_hardening']['metrics'],'strict_fresh':r['strict_child']['prospective']['fresh_metrics'],'gen1_gate':r['gen1_gate']},sort_keys=True))
+          PY
+      - name: Publish latest family receipt
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_gen2_repair_short_sma50_family_v1.json'))
+          marker='<!-- A1_GEN2_REPAIR_SHORT_SMA50_FAMILY_V1 -->'
+          body='\n'.join([
+            marker,
+            '## A1 GEN2 repair_short_above_sma50_veto family',
+            f"run={os.environ['RUN_ID']}",
+            'state='+r['state'],
+            'parent='+json.dumps(r['parent']['development_metrics'],sort_keys=True),
+            'parent_fresh='+json.dumps(r['parent']['fresh'],sort_keys=True),
+            'strict_child='+json.dumps(r['strict_child']['development_hardening']['metrics'],sort_keys=True),
+            'strict_fresh='+json.dumps(r['strict_child']['prospective'],sort_keys=True),
+            'gen1_gate='+json.dumps(r['gen1_gate'],sort_keys=True),
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers)) as response:
+              comments=json.load(response)
+          existing=next((item for item in comments if marker in str(item.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          method='PATCH' if existing else 'POST'
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method=method)):
+              pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-repair-short-sma50-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          path: out
+

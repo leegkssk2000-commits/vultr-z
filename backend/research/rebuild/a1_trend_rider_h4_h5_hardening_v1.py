@@ -181,11 +181,17 @@ def main():
 
     oos_start=boundary_ms+24*3600_000; oos=[x for x in trades if int(x['entry_ts'])>=oos_start]
     oos_vals=[float(x['net_bps']) for x in oos]
+    source_quality=r.get('source_quality_gate') if isinstance(r.get('source_quality_gate'),dict) else {}
+    integrity_defects=list(r.get('integrity_defects') or [])
+    leakage=int(r.get('leakage_lookahead') or 0)
+    integrity_ok=source_quality.get('state')=='PASS' and not integrity_defects and leakage==0
+    hardening_ok=h4['state']=='PASS_PLACEBO_NEGATIVE_CONTROLS' and h5['state']=='PASS_CONCENTRATION_FRAGILITY'
     evidence={
-      'schema_version':'zel.a1_trend_rider_hardening_evidence.v1','state':'PASS_HARDENING_EVIDENCE' if h4['state']=='PASS_PLACEBO_NEGATIVE_CONTROLS' and h5['state']=='PASS_CONCENTRATION_FRAGILITY' else 'HOLD_HARDENING_EVIDENCE',
+      'schema_version':'zel.a1_trend_rider_hardening_evidence.v1','state':'PASS_HARDENING_EVIDENCE' if hardening_ok and integrity_ok else 'HOLD_HARDENING_EVIDENCE',
       'strategy_id':'trend_rider','policy_sha':r['policy_sha'],'config_sha':r['config_sha'],'boundary_utc':r['boundary_utc'],'cost_authority_sha256':cost_sha,
       'candidate_receipt_sha256':r['receipt_sha256'],'candidate_trade_count':len(trades),'retention_pct':100.0*len(oos)/len(trades),'retention_definition':'completed_trades_after_fixed_first_24h_W1_divided_by_full_current_tierA_sample',
       'oos':{'trade_count':len(oos),'net_pnl_bps':sum(oos_vals),'net_expectancy_bps':sum(oos_vals)/len(oos_vals) if oos_vals else None,'window_rule':'strictly_after_preexisting_boundary_plus_24h'},
+      'candidate_integrity':{'state':'PASS' if integrity_ok else 'HOLD','source_quality_state':source_quality.get('state'),'integrity_defects':integrity_defects,'leakage_lookahead':leakage,'fail_closed':True},
       'h4_receipt':h4,'h5_receipt':h5,'fixture':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,
     }
     evidence['receipt_sha256']=hard.stable_sha(evidence)

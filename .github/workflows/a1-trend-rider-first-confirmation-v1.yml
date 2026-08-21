@@ -1,0 +1,107 @@
+name: A1 Trend Rider First Confirmation V1
+
+on:
+  schedule:
+    - cron: '52 2,8,14,20 * * *'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-trend-rider-first-confirmation-v1.yml'
+      - 'backend/research/contracts/a1_trend_rider_first_confirmation_v1.json'
+      - 'backend/research/rebuild/trend_rider_first_confirmation_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_challenger_evaluator_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  first-confirmation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Development diagnostic only
+        run: |
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
+            --mode development \
+            --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT \
+            --out out/trend_rider_first_confirmation_dev.json
+      - name: Frozen prospective replay
+        run: |
+          python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
+            --mode prospective \
+            --boundary-utc 2026-08-21T09:29:50Z \
+            --symbols BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT \
+            --out out/trend_rider_first_confirmation_fresh.json
+      - name: Hardening only after fresh Tier-A sample
+        run: |
+          python - <<'PY'
+          import json,subprocess
+          r=json.load(open('out/trend_rider_first_confirmation_fresh.json'))
+          if int(r.get('completed_trades') or 0) < 25:
+              print('WAIT_FIRST_CONFIRMATION_FRESH_TIER_A',r.get('completed_trades'))
+              raise SystemExit(0)
+          subprocess.run([
+              'python','-m','backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1',
+              '--receipt','out/trend_rider_first_confirmation_fresh.json',
+              '--out','out/trend_rider_first_confirmation_hardening.json'
+          ],check=True)
+          PY
+      - name: Persist fail-closed summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          def load(path):
+              try: return json.load(open(path))
+              except Exception as exc: return {'state':'FAILED_OR_MISSING','error':repr(exc)}
+          d=load('out/trend_rider_first_confirmation_dev.json')
+          f=load('out/trend_rider_first_confirmation_fresh.json')
+          h=load('out/trend_rider_first_confirmation_hardening.json')
+          summary={
+            'schema_version':'zel.a1.trend_rider.first_confirmation_summary.v1',
+            'challenger_id':'trend_rider_first_confirmation_v1',
+            'changed_axis':'signal_transition_timing',
+            'development':{'trade_count':d.get('completed_trades'),'metrics':d.get('metrics'),'state':d.get('state'),'promotion_authority':False},
+            'prospective':{'boundary_utc':'2026-08-21T09:29:50Z','trade_count':f.get('completed_trades'),'metrics':f.get('metrics'),'state':f.get('state')},
+            'hardening_state':h.get('state'),
+            'h4_state':(h.get('h4_receipt') or {}).get('state'),
+            'h5_state':(h.get('h5_receipt') or {}).get('state'),
+            'parameter_sweep':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED'
+          }
+          summary['receipt_sha256']=hashlib.sha256(json.dumps(summary,sort_keys=True,separators=(',',':'),default=str).encode()).hexdigest()
+          os.makedirs('backend/research/rebuild/diagnostics',exist_ok=True)
+          open('backend/research/rebuild/diagnostics/trend_rider_first_confirmation_latest.json','w').write(json.dumps(summary,indent=2,sort_keys=True,default=str)+'\n')
+          print('A1_TREND_RIDER_FIRST_CONFIRMATION_SUMMARY='+json.dumps(summary,sort_keys=True,default=str))
+          PY
+          git config user.name 'a1-trend-rider-rescue'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/diagnostics/trend_rider_first_confirmation_latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'A1 trend_rider: persist first-confirmation diagnostic [skip ci]'
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-first-confirmation-${{ github.run_id }}
+          path: out
+          retention-days: 90

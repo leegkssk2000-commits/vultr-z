@@ -162,6 +162,13 @@ def resource_disposition(receipt: dict[str, Any], *, now: datetime | None = None
         economic_fail, reason = _max_budget_economic_failure(receipt)
         if economic_fail:
             return "A1_ECONOMIC_FAIL", reason
+        # Screening completion is not Survivor promotion. Preserve a
+        # non-failing identity for the later finalist H4/H5 lane instead of
+        # holding the exact25 sweep open indefinitely.
+        return "A1_FINALIST_PARKED", (
+            f"SCREENING_RESOURCE_BUDGET_COMPLETE:min_bars={min_bars}:"
+            f"intents={intents}:trades={trades}:{reason}"
+        )
     return None, None
 
 

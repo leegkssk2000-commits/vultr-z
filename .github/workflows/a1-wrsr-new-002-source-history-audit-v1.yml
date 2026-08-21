@@ -1,0 +1,104 @@
+name: A1 WRSR NEW 002 Source History Audit V1
+
+on:
+  push:
+    branches: [master, codex/wrsr-source-history-audit-v1]
+    paths:
+      - 'backend/research/contracts/a1_wrsr_new_002_source_contract_v1.json'
+      - 'backend/research/architecture_factory/a1_wrsr_new_002_source_history_audit_v1.py'
+      - 'backend/research/architecture_factory/a1_p3_history_readiness_latest.json'
+      - '.github/workflows/a1-wrsr-new-002-source-history-audit-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_wrsr_new_002_source_contract_v1.json'
+      - 'backend/research/architecture_factory/a1_wrsr_new_002_source_history_audit_v1.py'
+      - 'backend/research/architecture_factory/a1_p3_history_readiness_latest.json'
+      - '.github/workflows/a1-wrsr-new-002-source-history-audit-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-wrsr-new-002-source-history-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_wrsr_new_002_source_history_audit_v1.py
+          python backend/research/architecture_factory/a1_wrsr_new_002_source_history_audit_v1.py --self-test
+      - name: Audit WRSR native source history
+        run: |
+          set -euo pipefail
+          python backend/research/architecture_factory/a1_wrsr_new_002_source_history_audit_v1.py \
+            --contract backend/research/contracts/a1_wrsr_new_002_source_contract_v1.json \
+            --output out/a1_wrsr_new_002_source_history_audit_v1.json
+      - name: Publish immutable audit marker
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          marker='<!-- A1_WRSR_NEW_002_SOURCE_HISTORY_AUDIT_V1 -->'
+          python - <<'PY'
+          import json, os, pathlib
+          marker='<!-- A1_WRSR_NEW_002_SOURCE_HISTORY_AUDIT_V1 -->'
+          path=pathlib.Path('out/a1_wrsr_new_002_source_history_audit_v1.json')
+          if path.exists():
+              x=json.loads(path.read_text())
+              streams={key:{field:value for field,value in row.items() if field in {
+                  'records','collected_span_ms','source_span_ms','repeated_payload_hash_count','coverage_progress_ratio',
+                  'remaining_span_ms','duration_gate_pass','integrity_pass','errors'}}
+                  for key,row in x.get('streams',{}).items()}
+              history={key:{field:value for field,value in row.items() if field in {
+                  'funding_rows','funding_span_ms','funding_attachable_to_oi_pass',
+                  'ohlcv_daily_rows','ohlcv_covers_oi_window_pass','ready'}}
+                  for key,row in x.get('market_history',{}).items()}
+              lines=[marker,'## A1 WRSR NEW 002 Source History Audit V1',
+                  f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
+                  f"state={x.get('state')}|history_ready={x.get('history_ready')}|integrity={x.get('source_integrity_pass')}|oi_duration={x.get('open_interest_duration_ready')}|funding_ohlcv={x.get('funding_and_ohlcv_ready')}",
+                  f"progress={x.get('oi_coverage_progress_ratio')}|remaining_days={x.get('remaining_days')}|collector={x.get('collector_action')}|new_collector={x.get('new_collector_installed')}",
+                  'streams='+json.dumps(streams,sort_keys=True),
+                  'market_history='+json.dumps(history,sort_keys=True),
+                  f"next={x.get('next_permitted_action')}|receipt={x.get('receipt_sha256')}",
+                  'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          else:
+              lines=[marker,'## A1 WRSR NEW 002 Source History Audit V1',
+                  f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
+                  'state=HOLD_WRSR_SOURCE_AUDIT_RUNTIME_FAILURE',
+                  'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          pathlib.Path('out/wrsr_issue_body.md').write_text('\n'.join(lines)+'\n')
+          PY
+          comment_id=$(gh api --paginate "/repos/$REPO/issues/566/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"$marker\")) | .id" | tail -n 1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "/repos/$REPO/issues/comments/$comment_id" -F body=@out/wrsr_issue_body.md >/dev/null
+          else
+            gh api --method POST "/repos/$REPO/issues/566/comments" -F body=@out/wrsr_issue_body.md >/dev/null
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-wrsr-new-002-source-history-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            out/a1_wrsr_new_002_source_history_audit_v1.json
+            out/wrsr_issue_body.md

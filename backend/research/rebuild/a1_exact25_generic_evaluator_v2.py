@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +17,16 @@ from backend.research.rebuild.a1_exact25_survivor_gate_v1 import attach_survivor
 
 ROOT = Path(__file__).resolve().parents[3]
 RESOURCE_RULE_PATH = ROOT / "backend/research/rebuild/a1_exact25_resource_budget_v1.json"
+CANONICAL_LEDGER_PATH = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
 PUBLIC_KLINE_FETCH_LIMIT = 1000
 INTERVAL_MS = {
     "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
     "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000,
     "6h": 21_600_000, "12h": 43_200_000, "1d": 86_400_000,
+}
+TERMINAL_REPLAY_ALLOWED = {
+    "A1_SURVIVOR", "A1_FINALIST_PARKED", "A1_ECONOMIC_FAIL", "A1_COST_FUTILITY",
+    "A1_CAUSAL_CONTROL_FAIL", "A1_SPARSE_EVENT_FUTILITY", "A1_DATA_BLOCKED", "HOLD_USER_AUTHORITY",
 }
 
 v1.policy_functions = policy_functions
@@ -51,6 +58,15 @@ def _output_path(argv: list[str]) -> Path:
     return Path("a1_exact25_receipt.json")
 
 
+def _arg_value(argv: list[str], name: str) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def _finite_json(value: Any) -> Any:
     if isinstance(value, float) and not math.isfinite(value):
         return None
@@ -73,12 +89,7 @@ def _resource_data_block_rule() -> dict[str, Any]:
 
 
 def source_quality_gate(receipt: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
-    """Verify post-boundary cadence and recency using only the frozen resource SSOT.
-
-    `source_ready` in the scheduler proves that policy/source adapters exist; it
-    does not prove that the runtime receipt contains the expected closed bars.
-    This gate closes that distinction without changing strategy economics.
-    """
+    """Verify post-boundary cadence and recency using only the frozen resource SSOT."""
     source = receipt.get("source") if isinstance(receipt.get("source"), dict) else {}
     interval = str(source.get("interval") or "")
     tf_ms = INTERVAL_MS.get(interval)
@@ -106,13 +117,9 @@ def source_quality_gate(receipt: dict[str, Any], *, now: datetime | None = None)
 
     if expected_total < minimum_before_check:
         return {
-            "state": "PENDING",
-            "defects": [],
-            "checks": [],
-            "expected_total_bars": expected_total,
-            "expected_visible_bars": expected_visible,
-            "minimum_before_check": minimum_before_check,
-            "ssot": str(RESOURCE_RULE_PATH.relative_to(ROOT)),
+            "state": "PENDING", "defects": [], "checks": [],
+            "expected_total_bars": expected_total, "expected_visible_bars": expected_visible,
+            "minimum_before_check": minimum_before_check, "ssot": str(RESOURCE_RULE_PATH.relative_to(ROOT)),
         }
 
     latest_closed_open_ms = (current_ms // tf_ms) * tf_ms - tf_ms
@@ -123,9 +130,7 @@ def source_quality_gate(receipt: dict[str, Any], *, now: datetime | None = None)
         last_ts = row.get("last_post_boundary_ts")
         missing_fraction = max(0.0, (expected_visible - observed) / max(1, expected_visible))
         if missing_fraction > maximum_missing:
-            defects.append(
-                f"SOURCE_CADENCE_MISSING:{symbol}:expected_visible={expected_visible}:observed={observed}:missing_fraction={missing_fraction:.6f}"
-            )
+            defects.append(f"SOURCE_CADENCE_MISSING:{symbol}:expected_visible={expected_visible}:observed={observed}:missing_fraction={missing_fraction:.6f}")
         lag_bars: int | None = None
         lag_fraction: float | None = None
         if observed <= 0 or last_ts is None:
@@ -137,39 +142,84 @@ def source_quality_gate(receipt: dict[str, Any], *, now: datetime | None = None)
             lag_bars = max(0, int((latest_closed_open_ms - last_ms) // tf_ms))
             lag_fraction = lag_bars / max(1, expected_visible)
             if lag_fraction > maximum_missing:
-                defects.append(
-                    f"SOURCE_RECENCY_STALE:{symbol}:lag_bars={lag_bars}:lag_fraction={lag_fraction:.6f}"
-                )
+                defects.append(f"SOURCE_RECENCY_STALE:{symbol}:lag_bars={lag_bars}:lag_fraction={lag_fraction:.6f}")
         if first_ts is not None and int(first_ts) < boundary_ms - tf_ms:
             defects.append(f"SOURCE_PREBOUNDARY_LEAK:{symbol}:first={int(first_ts)}:boundary={boundary_ms}")
         checks.append({
-            "symbol": symbol,
-            "observed_bars": observed,
-            "expected_visible_bars": expected_visible,
-            "missing_fraction": missing_fraction,
-            "last_post_boundary_ts": last_ts,
-            "lag_bars": lag_bars,
-            "lag_fraction": lag_fraction,
+            "symbol": symbol, "observed_bars": observed, "expected_visible_bars": expected_visible,
+            "missing_fraction": missing_fraction, "last_post_boundary_ts": last_ts,
+            "lag_bars": lag_bars, "lag_fraction": lag_fraction,
         })
 
     return {
-        "state": "FAIL" if defects else "PASS",
-        "defects": defects,
-        "checks": checks,
-        "expected_total_bars": expected_total,
-        "expected_visible_bars": expected_visible,
-        "api_visibility_cap_bars": PUBLIC_KLINE_FETCH_LIMIT,
-        "maximum_missing_fraction": maximum_missing,
+        "state": "FAIL" if defects else "PASS", "defects": defects, "checks": checks,
+        "expected_total_bars": expected_total, "expected_visible_bars": expected_visible,
+        "api_visibility_cap_bars": PUBLIC_KLINE_FETCH_LIMIT, "maximum_missing_fraction": maximum_missing,
         "ssot": str(RESOURCE_RULE_PATH.relative_to(ROOT)),
     }
 
 
+def _run_v1_with_optional_terminal_replay(argv: list[str]) -> dict[str, Any] | None:
+    terminal_replay = "--terminal-replay" in argv
+    if not terminal_replay:
+        v1.main()
+        return None
+
+    cleaned = [x for x in argv if x != "--terminal-replay"]
+    candidate_id = _arg_value(cleaned, "--strategy-id")
+    if not candidate_id:
+        raise RuntimeError("TERMINAL_REPLAY_REQUIRES_STRATEGY_ID")
+    canonical_bytes = CANONICAL_LEDGER_PATH.read_bytes()
+    canonical_sha256 = hashlib.sha256(canonical_bytes).hexdigest()
+    ledger = json.loads(canonical_bytes.decode("utf-8"))
+    row = (ledger.get("strategies") or {}).get(candidate_id)
+    if not isinstance(row, dict):
+        raise RuntimeError(f"TERMINAL_REPLAY_UNKNOWN_STRATEGY:{candidate_id}")
+    original_status = str(row.get("status") or "")
+    if original_status not in TERMINAL_REPLAY_ALLOWED and original_status not in {"ACTIVE", "UNTESTED"}:
+        raise RuntimeError(f"TERMINAL_REPLAY_STATUS_NOT_ALLOWED:{original_status}")
+
+    with tempfile.TemporaryDirectory(prefix="zel_terminal_replay_") as td:
+        tmp = Path(td) / "ledger.json"
+        shadow = json.loads(json.dumps(ledger))
+        shadow["strategies"][candidate_id]["status"] = "ACTIVE"
+        shadow["active_strategy_id"] = candidate_id
+        tmp.write_text(json.dumps(shadow, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        old_ledger_path = v1.LEDGER_PATH
+        old_argv = sys.argv[:]
+        try:
+            v1.LEDGER_PATH = tmp
+            sys.argv = [old_argv[0]] + cleaned
+            v1.main()
+        finally:
+            v1.LEDGER_PATH = old_ledger_path
+            sys.argv = old_argv
+
+    if hashlib.sha256(CANONICAL_LEDGER_PATH.read_bytes()).hexdigest() != canonical_sha256:
+        raise RuntimeError("TERMINAL_REPLAY_CANONICAL_LEDGER_MUTATED")
+    return {
+        "enabled": True,
+        "candidate_id": candidate_id,
+        "canonical_status": original_status,
+        "canonical_ledger_sha256": canonical_sha256,
+        "temporary_active_view_only": True,
+        "canonical_ledger_mutated": False,
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "protected_mutations": 0,
+    }
+
+
 def main() -> None:
-    # Preserve v1 economics exactly. V2 adds only source-integrity and survivor
-    # evidence attachment; neither path changes entries, exits, costs, or PnL.
-    v1.main()
-    out_path = _output_path(sys.argv[1:])
+    argv = sys.argv[1:]
+    replay_meta = _run_v1_with_optional_terminal_replay(argv)
+    out_path = _output_path(argv)
     receipt = _finite_json(json.loads(out_path.read_text(encoding="utf-8")))
+    if replay_meta is not None:
+        receipt["terminal_replay"] = replay_meta
     receipt["source_quality_gate"] = source_quality_gate(receipt)
     if receipt["source_quality_gate"]["state"] == "FAIL":
         receipt["state"] = "A1_DATA_BLOCKED"
@@ -177,22 +227,14 @@ def main() -> None:
 
     hardening_evidence = load_verified_hardening_evidence(receipt)
     receipt = attach_survivor_gate(receipt, hardening_evidence=hardening_evidence)
-
-    # Keep the legacy/public field required by downstream ledgers, but derive it
-    # strictly from the attached H4 gate. Missing H4 remains PENDING; nothing is
-    # inferred or auto-passed.
-    receipt["negative_control_state"] = str(
-        receipt.get("negative_control_gate") or "PENDING_H4_NEGATIVE_CONTROL_SUPERIORITY"
-    )
-    receipt["receipt_sha256"] = stable_sha(
-        {k: v for k, v in receipt.items() if k != "receipt_sha256"}
-    )
-
+    receipt["negative_control_state"] = str(receipt.get("negative_control_gate") or "PENDING_H4_NEGATIVE_CONTROL_SUPERIORITY")
+    receipt["receipt_sha256"] = stable_sha({k: v for k, v in receipt.items() if k != "receipt_sha256"})
     out_path.write_text(json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False, default=str), encoding="utf-8")
     print(json.dumps({
-        "state": receipt.get("state"),
-        "strategy_id": receipt.get("strategy_id"),
+        "state": receipt.get("state"), "strategy_id": receipt.get("strategy_id"),
         "completed_trades": receipt.get("completed_trades"),
+        "terminal_replay": bool(replay_meta),
+        "canonical_status": (replay_meta or {}).get("canonical_status"),
         "source_quality_state": (receipt.get("source_quality_gate") or {}).get("state"),
         "negative_control_state": receipt.get("negative_control_state"),
         "survivor_gate_state": (receipt.get("survivor_gate") or {}).get("state"),

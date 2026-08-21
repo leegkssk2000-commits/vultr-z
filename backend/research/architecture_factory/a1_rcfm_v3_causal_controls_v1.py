@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / "backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_policy_v1.json"
 PREREG = ROOT / "backend/research/architecture_factory/a1_regime_conditioned_flow_momentum_prereg_v1.json"
 CONTRACT = ROOT / "backend/research/architecture_factory/a1_rcfm_causal_control_contract_v1.json"
+TERMINAL = ROOT / "backend/research/architecture_factory/a1_rcfm_causal_terminal_v1.json"
 CANDIDATE_ID = "NEW_RCFM_001"
 MECHANISM_FEATURES = ["price", "volume", "multi_hour_momentum", "trade_flow", "l2_order_book", "source_freshness"]
 AUTH = {
@@ -35,6 +36,39 @@ def read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"OBJECT_REQUIRED:{path}")
     return value
+
+
+def _terminal_result() -> dict[str, Any] | None:
+    if not TERMINAL.is_file():
+        return None
+    terminal = read(TERMINAL)
+    if terminal.get("terminal") is not True or terminal.get("candidate_id") != CANDIDATE_ID:
+        raise RuntimeError("RCFM_TERMINAL_RECEIPT_INVALID")
+    if terminal.get("state") != "FAIL_RCFM_V3_CAUSAL_CONTROLS":
+        raise RuntimeError("RCFM_TERMINAL_STATE_INVALID")
+    result = dict(terminal)
+    result["schema_version"] = "zel.a1.rcfm.v3_causal_controls.v1.terminal_replay_block"
+    result["receipt_sha256"] = terminal.get("causal_receipt_sha256")
+    result["candidate_receipt_sha256"] = (terminal.get("economics_at_terminal") or {}).get("candidate_economics_receipt_sha256")
+    result["micro_sign_permutation"] = dict((terminal.get("hard_controls") or {}).get("micro_sign_permutation") or {})
+    result["universal_controls"] = {
+        "state": "HOLD_V3_UNIVERSAL_HARD_CONTROLS",
+        "hard_control_states": {
+            "same_count_random_entry": "FAIL",
+            "direction_inversion": "FAIL",
+        },
+        "negative_controls": {
+            "same_count_random_entry": dict((terminal.get("hard_controls") or {}).get("same_count_random_entry") or {}),
+            "direction_inversion": dict((terminal.get("hard_controls") or {}).get("direction_inversion") or {}),
+        },
+        "receipt_sha256": terminal.get("universal_controls_receipt_sha256"),
+    }
+    result["same_identity_retest_forbidden"] = True
+    result["next_route"] = "BOUNDED_REDESIGN_OR_SYNTHESIS_NEW_IDENTITY"
+    result["terminal_replay_block"] = True
+    result.update(AUTH)
+    result["action"] = "route_change"
+    return result
 
 
 def _heartbeat_pass(heartbeat: Mapping[str, Any]) -> None:
@@ -239,6 +273,9 @@ def _micro_control(receipt: Mapping[str, Any], micro_path: Path, policy: Mapping
 
 
 def evaluate(receipt: Mapping[str, Any], heartbeat: Mapping[str, Any], micro_path: Path) -> dict[str, Any]:
+    terminal = _terminal_result()
+    if terminal is not None:
+        return terminal
     policy, prereg, contract = _validate(receipt, heartbeat)
     canonical = _canonical(receipt, heartbeat)
     universal_result = _run_universal(canonical)
@@ -279,6 +316,14 @@ def self_test() -> int:
     assert int(contract["cohort"]["trade_count"]) == 25
     assert "MICRO_SIGN_PERMUTATION" in set(policy["controls"])
     assert contract["anti_tuning"]["control_seed_sweep"] is False
+    if TERMINAL.is_file():
+        terminal = _terminal_result()
+        assert terminal is not None and terminal["same_identity_retest_forbidden"] is True
+        assert terminal["hard_control_states"] == {
+            "same_count_random_entry": "FAIL",
+            "direction_inversion": "FAIL",
+            "micro_sign_permutation": "FAIL",
+        }
     print("PASS_A1_RCFM_V3_CAUSAL_CONTROLS_V1_SELF_TEST")
     return 0
 
@@ -293,17 +338,22 @@ def main() -> int:
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    if not args.receipt or not args.heartbeat or not args.micro:
-        raise SystemExit("--receipt --heartbeat --micro required")
-    result = evaluate(read(args.receipt), read(args.heartbeat), args.micro)
+    terminal = _terminal_result()
+    if terminal is not None:
+        result = terminal
+    else:
+        if not args.receipt or not args.heartbeat or not args.micro:
+            raise SystemExit("--receipt --heartbeat --micro required")
+        result = evaluate(read(args.receipt), read(args.heartbeat), args.micro)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({
         "state": result["state"],
         "candidate_id": result["candidate_id"],
         "hard_control_states": result["hard_control_states"],
-        "universal": result["universal_controls"].get("hard_control_states"),
-        "micro": result["micro_sign_permutation"],
+        "universal": (result.get("universal_controls") or {}).get("hard_control_states"),
+        "micro": result.get("micro_sign_permutation"),
+        "terminal_replay_block": result.get("terminal_replay_block", False),
         "receipt_sha256": result["receipt_sha256"],
     }, sort_keys=True))
     return 0

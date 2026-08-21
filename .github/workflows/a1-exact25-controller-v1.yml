@@ -134,6 +134,26 @@ jobs:
           with urllib.request.urlopen(req,timeout=20) as r: assert r.status in (204,201)
           print('PASS_DISPATCHED_GEN2_PREP')
           PY
+      - name: Dispatch trend_rider Liquid6 rescue once
+        if: ${{ hashFiles('backend/research/rebuild/diagnostics/trend_rider_liquid6_latest.json') == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/a1-trend-rider-h4-h5-v1.yml/dispatches"
+          headers={
+            'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+            'Accept':'application/vnd.github+json',
+            'Content-Type':'application/json',
+            'X-GitHub-Api-Version':'2022-11-28',
+          }
+          req=urllib.request.Request(url,data=json.dumps({'ref':'master'}).encode(),headers=headers,method='POST')
+          with urllib.request.urlopen(req,timeout=20) as response:
+              assert response.status in (204,201)
+          print('PASS_DISPATCHED_TREND_RIDER_LIQUID6_RESCUE')
+          PY
       - name: Seal sweep-complete state marker
         if: steps.controller.outputs.sweep_complete == 'true'
         run: echo 'A1_EXACT25_BASELINE_SWEEP_COMPLETE'

@@ -80,8 +80,15 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/a1_terminal_repair_swarm_v5.json')); p=r['alpha_primitive_mining']; h=r['source_history_readiness']; fp=r['funding_axis_probe']; fix=r['source_gate_fix']
-          assert r['ledger_done_count'] < 25 and r['prep_only'] is True
-          assert r['launch']['state']=='BLOCKED_GEN1_INCOMPLETE'
+          done=int(r['ledger_done_count'])
+          assert done <= 25
+          if done < 25:
+              assert r['prep_only'] is True
+              assert r['launch']['state']=='BLOCKED_GEN1_INCOMPLETE'
+          else:
+              assert done == 25
+              assert r['prep_only'] is False
+              assert r['launch']['state']=='BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT'
           assert r['api_economics_policy']['all_pre_economics_critics']=='DISABLED'
           assert r['api_economics_policy']['development_economics']=='AUTOMATIC_SAME_RUN'
           assert r['api_economics_policy']['failure_economics']=='MANDATORY_BEFORE_REPAIR_API'
@@ -93,7 +100,7 @@ jobs:
           assert fix['full_carry_flow_contract_unchanged'] is True
           assert fix['basis_oi_prospective_replay_supported_after_gate'] is True
           assert r['evidence_summary']['youtube_preferred_100k_plus'] >= 1
-          print(json.dumps({'done':r['ledger_done_count'],'terminal':r['terminal_count'],'primitive_usable':p['economically_usable_count'],'primitive_top':p['usable'][:5],'machine':r['machine_replayable_count'],'dev_pass':r['development_economic_pass_count'],'funding_probe':fp,'source_history':h,'source_gate_fix':fix,'failure_economics':r['failure_economics'],'causal_repair_dev':r['causal_repair_development_economics'],'gemini_batch':r['gemini_batch'],'evidence':r['evidence_summary']},sort_keys=True))
+          print(json.dumps({'done':r['ledger_done_count'],'terminal':r['terminal_count'],'prep_only':r['prep_only'],'launch':r['launch'],'primitive_usable':p['economically_usable_count'],'primitive_top':p['usable'][:5],'machine':r['machine_replayable_count'],'dev_pass':r['development_economic_pass_count'],'funding_probe':fp,'source_history':h,'source_gate_fix':fix,'failure_economics':r['failure_economics'],'causal_repair_dev':r['causal_repair_development_economics'],'gemini_batch':r['gemini_batch'],'evidence':r['evidence_summary']},sort_keys=True))
           PY
       - name: Publish receipt
         env:
@@ -115,7 +122,7 @@ jobs:
           basis=h.get('basis') or {}; funding=h.get('funding') or {}; oi=h.get('open_interest') or {}
           body='\n'.join([
             marker,'## A1 GEN2 Parallel PREP Swarm V1',f"run={os.environ['RUN_ID']}",
-            f"done_count={r['ledger_done_count']}/25|terminal_count={r['terminal_count']}|prep_only=true",
+            f"done_count={r['ledger_done_count']}/25|terminal_count={r['terminal_count']}|prep_only={str(bool(r['prep_only'])).lower()}",
             f"primitive_usable={p.get('economically_usable_count',0)}|primitive_total={p.get('primitive_count',0)}|primitive_threshold_sweep=false",
             'primitive_top='+json.dumps((p.get('usable') or [])[:5],sort_keys=True),
             f"machine_replayable={r['machine_replayable_count']}|repairs={r['queued_repair_count']}|new_arch={r['queued_new_arch_count']}",

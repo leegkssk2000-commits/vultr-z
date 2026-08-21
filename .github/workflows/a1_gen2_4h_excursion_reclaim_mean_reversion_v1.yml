@@ -1,0 +1,33 @@
+name: A1 GEN2 4H Excursion Reclaim Mean Reversion V1
+on:
+  push:
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_4h_excursion_reclaim_mean_reversion_v1.py'
+      - '.github/workflows/a1_gen2_4h_excursion_reclaim_mean_reversion_v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m backend.research.architecture_factory.a1_gen2_4h_excursion_reclaim_mean_reversion_v1
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY' > /tmp/body.md
+          import json,os
+          r=json.load(open('out/a1_gen2_4h_excursion_reclaim_mean_reversion_v1.json'))
+          print('<!-- A1_GEN2_4H_EXCURSION_RECLAIM_MEAN_REVERSION_V1 -->')
+          print('run_id='+os.environ['RUN_ID'])
+          for k in ('dev','prior_all','W2','W3','cost_dev','cost_prior','by_symbol_prior','by_side_prior'): print(k+'='+json.dumps(r[k],sort_keys=True))
+          print('survivor_candidate='+str(r['survivor_candidate']).lower())
+          print('receipt_sha256='+r['receipt_sha256'])
+          PY
+          gh issue comment 566 --repo "$GITHUB_REPOSITORY" --body-file /tmp/body.md

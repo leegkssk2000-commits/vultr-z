@@ -163,11 +163,32 @@ jobs:
               blockers.extend(d.get('bottlenecks') or [])
           ids=[str(x.get('strategy_id') or '') for x in reviews]
           complete=len(paths)==5 and len(ids)==25 and len(set(ids))==25
+          consensus=[]; revise=[]; rejected=[]
+          for row in reviews:
+              decisions=list((row.get('review_decisions') or {}).values())
+              pass_count=sum(x=='PASS_TO_REPLAY' for x in decisions)
+              reject_count=sum(x=='REJECT' for x in decisions)
+              row['critic_pass_count']=pass_count
+              row['critic_reject_count']=reject_count
+              if pass_count >= 2 and reject_count == 0:
+                  row['triage']='SPEC_READY_NOT_EFFECT_VERIFIED'
+                  consensus.append(row.get('strategy_id'))
+              elif reject_count > 0:
+                  row['triage']='REJECTED_BY_CRITIC'
+                  rejected.append(row.get('strategy_id'))
+              else:
+                  row['triage']='SPEC_REVISION_REQUIRED'
+                  revise.append(row.get('strategy_id'))
           out={
               'schema_version':'zel.a1_external_research_exact25_multicritic.v1',
-              'state':'PASS_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_READY' if complete and all(x.get('state')=='AI_REVIEW_READY' for x in reviews) else 'HOLD_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_GAPS',
+              'state':'PASS_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_TRIAGED' if complete and all(x.get('state')=='AI_REVIEW_READY' for x in reviews) else 'HOLD_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_GAPS',
               'reviewed_strategy_count':len(ids),'unique_strategy_count':len(set(ids)),
               'provider_successful_strategy_counts':providers,'bottlenecks':sorted(set(blockers)),
+              'spec_ready_strategy_ids':sorted(str(x) for x in consensus),
+              'spec_revision_strategy_ids':sorted(str(x) for x in revise),
+              'critic_rejected_strategy_ids':sorted(str(x) for x in rejected),
+              'effect_verified_strategy_ids':[],
+              'effect_verified_count':0,
               'reviews':reviews,'selection_authority':False,'promotion_authority':False,
               'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED',
               'protected_mutations':0,'action':'hold'
@@ -193,6 +214,10 @@ jobs:
               f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
               f"state={d['state']}|reviewed={d['reviewed_strategy_count']}|unique={d['unique_strategy_count']}",
               'providers='+json.dumps(d['provider_successful_strategy_counts'],sort_keys=True),
+              'spec_ready='+json.dumps(d['spec_ready_strategy_ids'],sort_keys=True),
+              'spec_revision='+json.dumps(d['spec_revision_strategy_ids'],sort_keys=True),
+              'critic_rejected='+json.dumps(d['critic_rejected_strategy_ids'],sort_keys=True),
+              f"effect_verified={d['effect_verified_count']}",
               'bottlenecks='+json.dumps(d['bottlenecks'],sort_keys=True),
               'policy=one-axis; primary-evidence-required; YouTube/forum hypothesis-only; no threshold adoption; no holdout outcomes',
               'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'

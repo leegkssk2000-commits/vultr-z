@@ -1,0 +1,45 @@
+name: A1 External Evidence Sync V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_sync_external_evidence_v1.py'
+      - 'backend/research/architecture_factory/a1_youtube_evidence_latest.json'
+      - '.github/workflows/a1-external-evidence-sync-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: a1-external-evidence-sync-v1
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Synchronize direct verified YouTube evidence
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_sync_external_evidence_v1 --write backend/research/architecture_factory/a1_free_evidence_sweep_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('backend/research/architecture_factory/a1_free_evidence_sweep_v1.json')); c=r['coverage']
+          assert int(c['youtube_preferred_100k_plus']) >= 1
+          assert int(c['verified_youtube']) >= 5
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print('PASS_EXTERNAL_EVIDENCE_SYNC',c)
+          PY
+      - name: Persist synchronized evidence
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/research/architecture_factory/a1_free_evidence_sweep_v1.json; then exit 0; fi
+          git config user.name 'a1-evidence-sync'; git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/architecture_factory/a1_free_evidence_sweep_v1.json
+          git commit -m 'A1 evidence: synchronize verified YouTube ledger'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 2; done
+          exit 1

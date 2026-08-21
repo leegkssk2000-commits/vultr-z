@@ -64,11 +64,11 @@ def _intake_row(candidate: Mapping[str, Any], dev: Mapping[str, Any]) -> dict[st
         metrics = {}
 
     state = str(dev.get("state") or "")
-    if state != "PASS_DEVELOPMENT_ECONOMICS":
+    if state != "PASS_DEVELOPMENT_ECONOMICS" or dev.get("economic_pass") is not True:
         blockers.append(f"DEVELOPMENT_NOT_PASS:{state or 'MISSING'}")
 
-    if candidate.get("development_economic_pass") is not True:
-        blockers.append("CANDIDATE_PASS_FLAG_MISSING")
+    if dev.get("development_only") is not True:
+        blockers.append("DEVELOPMENT_ONLY_RECEIPT_REQUIRED")
 
     return {
         "candidate_id": candidate.get("candidate_id"),
@@ -81,6 +81,7 @@ def _intake_row(candidate: Mapping[str, Any], dev: Mapping[str, Any]) -> dict[st
         "development_state": state,
         "development_boundary": dev.get("boundary"),
         "development_metrics": dict(metrics),
+        "development_receipt": dict(dev),
         "development_only": dev.get("development_only") is True,
         "uses_data_strictly_before_gen1_boundary": dev.get("uses_data_strictly_before_gen1_boundary") is True,
         "alpha_proof_bundle_state": "REQUIRED_NOT_BUILT",
@@ -142,8 +143,8 @@ def build(swarm: Mapping[str, Any]) -> dict[str, Any]:
         "rows": rows,
         "failures": failures,
         "note": (
-            "Intake only. This receipt does not assert Alpha-Proof PASS and does not create "
-            "selection, promotion, execution, order, or live authority."
+            "The PASS_DEVELOPMENT_ECONOMICS receipt is the sole development-pass authority. "
+            "No duplicate candidate boolean is required. Intake does not assert Alpha-Proof PASS."
         ),
         **AUTHORITY,
     }
@@ -173,8 +174,7 @@ def self_test() -> int:
         "expected_move_cost_multiple_target": 2.0,
         "falsification": "f",
         "forbidden_changes": ["fees"],
-        "why_distinct": "d",
-        "development_economic_pass": True,
+        "why_distinct": "d"
     }
     swarm = {
         "ledger_done_count": 25,
@@ -185,6 +185,7 @@ def self_test() -> int:
             "passes": [{
                 "candidate_id": "c1",
                 "state": "PASS_DEVELOPMENT_ECONOMICS",
+                "economic_pass": True,
                 "development_only": True,
                 "uses_data_strictly_before_gen1_boundary": True,
                 "boundary": "2026-08-16T18:45:01Z",
@@ -198,6 +199,7 @@ def self_test() -> int:
     assert r["intake_ready_count"] == 1
     assert r["selection_authority"] is False
     assert set(CANDIDATE_IDENTITY_FIELDS).issubset(r["rows"][0]["candidate_identity_payload"])
+    assert r["rows"][0]["development_receipt"]["economic_pass"] is True
     print("PASS_A1_GEN2_POST_ECON_ALPHA_INTAKE_V1_SELF_TEST")
     return 0
 

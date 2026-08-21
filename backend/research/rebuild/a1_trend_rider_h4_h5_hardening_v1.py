@@ -78,6 +78,18 @@ def simulate_stop_timeout(bars, signal_i, side, stop, timeout, cost):
     return net_for(side,ep,xp,cost)
 
 
+def one_bar_delay_net_R(trade, bars, timestamp_index, cfg):
+    entry_i=timestamp_index[int(trade['entry_ts'])]; signal_i=entry_i-1
+    if signal_i < 0: raise RuntimeError('ONE_BAR_DELAY_SIGNAL_BAR_MISSING')
+    a=atr(bars[:signal_i+1],cfg.atr_len); signal_close=float(bars[signal_i]['close'])
+    stop=signal_close-1.5*a if trade['side']=='long' else signal_close+1.5*a
+    # Passing entry_i as the synthetic signal index moves the fill from the
+    # candidate's entry_i to entry_i+1 while retaining SL and timeout.
+    value=simulate_stop_timeout(bars,entry_i,trade['side'],stop,cfg.timeout_bars,float(trade['realized_cost_bps']))
+    if value is None: raise RuntimeError('ONE_BAR_DELAY_OPEN_TRADE')
+    return value/100.0
+
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--receipt',required=True); ap.add_argument('--out',default='out/a1_trend_rider_h4_h5_hardening_v1.json'); args=ap.parse_args()
     r=json.load(open(args.receipt)); assert r['strategy_id']=='trend_rider' and int(r['completed_trades'])>=25
@@ -103,8 +115,11 @@ def main():
     controls['timestamp_shuffle']=[net_for(shuffled[i],float(x['entry']),float(x['exit']),float(x['realized_cost_bps']))/100.0 for i,x in enumerate(trades)]
     delayed=[]
     for x in trades:
-        bs=bars_by[x['symbol']]; mp=maps[x['symbol']]; ei=mp[int(x['entry_ts'])]; dur=duration_bars(x,mp); dei=ei+1; dxi=min(len(bs)-1,dei+dur)
-        delayed.append(net_for(x['side'],float(bs[dei]['open']),float(bs[dxi]['close']),float(x['realized_cost_bps']))/100.0)
+        bs=bars_by[x['symbol']]; mp=maps[x['symbol']]
+        # Delay only the fill by one closed bar. Keep the candidate's frozen
+        # stop/timeout geometry and realized cost; otherwise this becomes an
+        # un-stopped time-return strategy rather than a causal delay control.
+        delayed.append(one_bar_delay_net_R(x,bs,mp,cfg))
     controls['one_bar_delay']=delayed
     random_vals=[]; used=set()
     for i,x in enumerate(trades):

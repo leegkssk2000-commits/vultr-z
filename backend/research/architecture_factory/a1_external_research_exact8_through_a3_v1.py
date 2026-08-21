@@ -5,7 +5,6 @@ import hashlib
 import importlib
 import importlib.util
 import json
-import math
 import random
 import sys
 from dataclasses import asdict, is_dataclass
@@ -126,6 +125,8 @@ def _state_template(boundary: Mapping[str, Any]) -> dict[str, Any]:
         "streams": {},
         "cost_snapshot_by_symbol": {},
         "source_audit_receipt_sha256": None,
+        "preboundary_bars_are_feature_warmup_only": True,
+        "preboundary_outcomes_counted": False,
         "integrity_defects": [],
         **AUTH,
     }
@@ -180,8 +181,9 @@ def collect_live(state_path: Path) -> dict[str, Any]:
             audited, closed = source_audit.audit_stream(raw_streams[(symbol, timeframe_ms)], symbol=symbol, timeframe_ms=timeframe_ms, now_ms=now_ms)
             if audited["state"] != "PASS_SOURCE_STREAM_INTEGRITY":
                 defects.append(f"STREAM_INTEGRITY:{symbol}:{timeframe_ms}:{audited['state']}")
-            post = [x for x in closed if int(x["ts_ms"]) >= int(boundary["boundary_ms"])]
-            defects.extend(merge_completed_bars(state, _stream_key(symbol, timeframe_ms), post))
+            # Pre-boundary completed bars are retained only to compute causal indicator warmup.
+            # All signal/outcome counting is separately clamped to boundary_ms in replay_child.
+            defects.extend(merge_completed_bars(state, _stream_key(symbol, timeframe_ms), closed))
 
     frozen_costs = state.setdefault("cost_snapshot_by_symbol", {})
     for symbol in SYMBOLS:
@@ -300,7 +302,13 @@ def replay_child(parent_id: str, state: Mapping[str, Any], spec: Mapping[str, An
     timeframe_ms = int(row["timeframe_ms"])
     child_module = importlib.import_module(CHILD_MODULES[parent_id])
     cfg = ev.config_instance(child_module)
-    child_compute, child_build = ev.policy_functions(child_module, parent_id)
+    # Exact8 adapters intentionally expose their changed-axis implementation under
+    # these generic names. Do not use ev.policy_functions here: some adapters also
+    # import a parent-specific compute_* symbol, which would bypass the child axis.
+    child_compute = getattr(child_module, "compute_feature_snapshot", None)
+    child_build = getattr(child_module, "build_decision_intent", None)
+    if not callable(child_compute) or not callable(child_build):
+        raise RuntimeError(f"CHILD_ADAPTER_ENTRYPOINT_MISSING:{parent_id}")
     parent_path = ROOT / str(row["parent_policy"])
     parent_module = _load_parent(parent_path, parent_id)
     parent_compute, parent_build = ev.policy_functions(parent_module, parent_id)
@@ -393,7 +401,6 @@ def _random_entry_control(cohort: Sequence[Mapping[str, Any]], state: Mapping[st
     for trade in cohort:
         symbol = str(trade["symbol"])
         bars = _candidate_bars(state, symbol, timeframe_ms)
-        by_ts = {int(x["ts_ms"]): i for i, x in enumerate(bars)}
         duration = max(1, int(trade.get("duration_bars") or 1))
         pool = [j for j, bar in enumerate(bars) if int(bar["ts_ms"]) >= boundary_ms and j + duration < len(bars) and (symbol, int(bar["ts_ms"])) not in used]
         if not pool:
@@ -577,7 +584,9 @@ def evaluate_a3(a2_result: Mapping[str, Any], replay: Mapping[str, Any]) -> dict
         "trades": trades,
     }
     if receipt["integrity_defects"]:
-        return {"schema_version": "zel.a1_external_research_exact8_a3_route.v1", "stage": "A3", "candidate_id": child_id, "state": "HOLD_A3_INTEGRITY", "integrity_defects": receipt["integrity_defects"], **AUTH}
+        result = {"schema_version": "zel.a1_external_research_exact8_a3_route.v1", "stage": "A3", "candidate_id": child_id, "state": "HOLD_A3_INTEGRITY", "integrity_defects": receipt["integrity_defects"], **AUTH}
+        result["receipt_sha256"] = stable_sha(result)
+        return result
     context = normalize_a3_context(read(A3_CONTEXT_PATH))
     result = a3.evaluate(receipt, a2_result, context)
     result["exact8_boundary_utc"] = read(BOUNDARY_PATH)["boundary_utc"]
@@ -650,6 +659,8 @@ def self_test() -> int:
             raise RuntimeError(f"TIMEFRAME_DRIFT:{parent_id}")
         if str(getattr(module, "CHILD_ID")) != str(spec["specs"][parent_id]["child_id"]):
             raise RuntimeError(f"CHILD_ID_DRIFT:{parent_id}")
+        if not callable(getattr(module, "compute_feature_snapshot", None)) or not callable(getattr(module, "build_decision_intent", None)):
+            raise RuntimeError(f"CHILD_GENERIC_ENTRYPOINT_MISSING:{parent_id}")
     test_context = {"rows": [{"symbol": "BTC-USDT", "valid_for_a3": True, "snapshot_capture_completed_at_ms": 123, "bar_feature_cutoff_ts_ms": 100}]}
     normalized = normalize_a3_context(test_context)
     assert normalized["rows"][0]["capture_completed_at_ms"] == 123

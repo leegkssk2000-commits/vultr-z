@@ -1,0 +1,99 @@
+name: A1 GEN2 Funding History Probe V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_gen2_generic_dev_econ_v2.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py'
+      - 'backend/research/contracts/p3_carry_flow_prospective_native_v1.json'
+      - '.github/workflows/a1-gen2-funding-history-probe-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-gen2-funding-history-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run fixed pre-boundary funding replay
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/research/architecture_factory/a1_gen2_generic_dev_econ_v2.py \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py
+          python - <<'PY'
+          import json
+          from backend.research.architecture_factory import a1_terminal_repair_swarm_v5 as v5
+          from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v2 as econ
+          h=v5._history_readiness(); assert h['funding']['ready'] is True
+          r=econ.evaluate_candidate(v5._funding_probe())
+          out={
+            'schema_version':'zel.a1_gen2_funding_history_probe.v1',
+            'funding_ready':True,
+            'funding_reason':h['funding']['reason'],
+            'basis_ready':bool(h['basis']['ready']),
+            'oi_ready':bool(h['open_interest']['ready']),
+            'basis_oi_progress':h['basis'].get('coverage_progress_ratio'),
+            'basis_oi_remaining_days':h['basis'].get('remaining_days'),
+            'probe':r,
+            'cost_bps_per_trade':14.0,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED',
+          }
+          open('out/a1_gen2_funding_history_probe_v1.json','w').write(json.dumps(out,sort_keys=True,indent=2)+'\n')
+          assert r.get('state') not in {'SKIP_HISTORY_SOURCE_NOT_READY','REJECT_SPEC_MISSING','REJECT_INTERVAL','REJECT_HOLD','REJECT_UNEXECUTABLE_SPEC'}, r
+          print(json.dumps(out,sort_keys=True))
+          PY
+      - name: Publish funding probe receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, urllib.request
+          p=pathlib.Path('out/a1_gen2_funding_history_probe_v1.json'); marker='<!-- A1_GEN2_FUNDING_HISTORY_PROBE_V1 -->'
+          if p.exists():
+              x=json.load(open(p)); r=x.get('probe') or {}; m=r.get('metrics') or {}; s=r.get('source_summary') or {}
+              body='\n'.join([
+                marker,'## A1 GEN2 Funding History Probe V1',f"run={os.environ['RUN_ID']}",
+                f"funding_ready={x.get('funding_ready')}|reason={x.get('funding_reason')}|basis={x.get('basis_ready')}|oi={x.get('oi_ready')}|basis_oi_progress={x.get('basis_oi_progress')}|remaining_days={x.get('basis_oi_remaining_days')}",
+                f"probe_state={r.get('state')}|economic_pass={r.get('economic_pass')}|trades={m.get('trades')}|gross_exp_bps={m.get('gross_expectancy_bps')}|net_exp_bps={m.get('net_expectancy_bps')}|net_pnl_bps={m.get('net_pnl_bps')}|PF={m.get('profit_factor')}|WR={m.get('win_rate')}|DD_bps={m.get('drawdown_bps')}|cost_bps={m.get('cost_bps_per_trade')}",
+                'source_summary='+json.dumps(s,sort_keys=True),
+                'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          else:
+              body='\n'.join([marker,'## A1 GEN2 Funding History Probe V1',f"run={os.environ['RUN_ID']}",'probe_state=WORKFLOW_FAILED_BEFORE_RECEIPT','selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          existing=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST'),timeout=20): pass
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-gen2-funding-history-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: out/a1_gen2_funding_history_probe_v1.json

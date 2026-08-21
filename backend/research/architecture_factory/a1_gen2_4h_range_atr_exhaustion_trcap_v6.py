@@ -37,3 +37,4 @@ def run():
  r['receipt_sha256']=hashlib.sha256(json.dumps(r,sort_keys=True,separators=(',',':')).encode()).hexdigest();return r
 if __name__=='__main__':
  r=run();Path('out').mkdir(exist_ok=True);Path('out/a1_gen2_4h_range_atr_exhaustion_trcap_v6.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');print('A1_GEN2_4H_RANGE_ATR_EXHAUSTION_TRCAP_V6='+json.dumps(r,sort_keys=True))
+# trigger

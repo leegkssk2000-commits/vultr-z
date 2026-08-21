@@ -16,10 +16,10 @@ class ExpandedDslTest(unittest.TestCase):
 
     def test_core_extensions(self):
         i=100
-        self.assertIsInstance(self.e.eval("ema(close,20)",i),float)
-        self.assertGreaterEqual(self.e.eval("pct_rank(volume,50)",i),0.0)
-        self.assertLessEqual(self.e.eval("pct_rank(volume,50)",i),1.0)
-        self.assertIsInstance(self.e.eval("percentile(close,50,90)",i),float)
+        self.assertIsInstance(self.e.eval(_feature_formula("ema(close,20)"),i),float)
+        self.assertGreaterEqual(self.e.eval(_feature_formula("pct_rank(volume,50)"),i),0.0)
+        self.assertLessEqual(self.e.eval(_feature_formula("pct_rank(volume,50)"),i),1.0)
+        self.assertIsInstance(self.e.eval(_feature_formula("percentile(close,50,90)"),i),float)
         self.assertGreaterEqual(self.e.eval("range_pct()",i),0.0)
         self.assertGreaterEqual(self.e.eval("body_pct()",i),0.0)
         self.assertTrue(0 <= self.e.eval("hour()",i) <= 23)

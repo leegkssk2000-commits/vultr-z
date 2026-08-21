@@ -40,19 +40,26 @@ def parse_utc(value: str) -> datetime:
 
 
 def evaluate(transition: dict[str, Any]) -> dict[str, Any]:
-    if transition.get("state") != "PASS_A1_CAUSAL_READY_FOR_A2":
-        raise RuntimeError("A1_CAUSAL_READY_RECEIPT_REQUIRED")
-    tiering = transition.get("tiering") or {}
-    if tiering.get("a2_entry_allowed") is not True or tiering.get("a1_tier") not in {"A1_CAUSAL_CORE_READY", "A1_CAUSAL_CONDITIONAL_READY"}:
-        raise RuntimeError("A1_TIER_NOT_ELIGIBLE_FOR_A2")
-    if transition.get("execution_authority") != "NONE" or transition.get("order_authority") != "BLOCKED":
-        raise RuntimeError("A1_TRANSITION_AUTHORITY_INVALID")
-
     ssot, authority, ledger, hardening = read(SSOT), read(COST), read(LEDGER), read(HARDENING)
     if ssot.get("state") != "A2_PREP_READY":
         raise RuntimeError("A2_SSOT_NOT_READY")
+    activation = ssot.get("activation") or {}
+    if activation.get("actual_survivor_evaluation_allowed") is not True or activation.get("actual_evaluation_requires_a1_receipt") is not True:
+        raise RuntimeError("A2_ACTUAL_EVALUATION_NOT_ACTIVATED")
+    required_state = str(activation.get("required_a1_receipt_state") or "")
+    allowed_tiers = set(str(x) for x in activation.get("allowed_a1_tiers") or [])
+    if transition.get("state") != required_state:
+        raise RuntimeError("A1_CAUSAL_READY_RECEIPT_REQUIRED")
+    tiering = transition.get("tiering") or {}
+    if tiering.get("a2_entry_allowed") is not True or tiering.get("a1_tier") not in allowed_tiers:
+        raise RuntimeError("A1_TIER_NOT_ELIGIBLE_FOR_A2")
+    if transition.get("execution_authority") != "NONE" or transition.get("order_authority") != "BLOCKED":
+        raise RuntimeError("A1_TRANSITION_AUTHORITY_INVALID")
+    if tiering.get("activation", {}).get("mode") == "SEALED_INDEPENDENT_OOS" and activation.get("sealed_independent_oos_may_authorize_a2_entry") is not True:
+        raise RuntimeError("SEALED_OOS_A2_ENTRY_NOT_ALLOWED")
     if authority.get("state") != "FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY":
         raise RuntimeError("COST_AUTHORITY_INVALID")
+
     row = (ledger.get("strategies") or {}).get("trend_rider") or {}
     if row.get("status") != "A1_FINALIST_PARKED":
         raise RuntimeError("TREND_RIDER_SCREENING_LINEAGE_INVALID")
@@ -69,7 +76,7 @@ def evaluate(transition: dict[str, Any]) -> dict[str, Any]:
     screening_realized_cost = gross_exp - float(row["net_expectancy_bps"])
     one_x_net_exp = gross_exp - one_x_cost
     two_x_net_exp = gross_exp - two_x_cost
-    p95_net_exp = one_x_net_exp  # one_x explicitly contains the P95 one-settlement reserve.
+    p95_net_exp = one_x_net_exp
 
     h4 = hardening.get("h4_receipt") or {}
     delay = (h4.get("control_results") or {}).get("one_bar_delay") or {}
@@ -98,10 +105,12 @@ def evaluate(transition: dict[str, Any]) -> dict[str, Any]:
         "depth_full_fill_verified_by_snapshot": True,
         "partial_fill_cost_observed_from_live_orders": False,
         "reject_rate_observed_from_live_orders": False,
+        "partial_fill_cost_field": "UNOBSERVED_LIVE_RESEARCH_ONLY",
+        "reject_rate_field": "UNOBSERVED_LIVE_RESEARCH_ONLY",
         "unverified_improvement_assumed": False,
         "maker_rescue_used": False,
         "deferred_execution_fields": ["live_order_partial_fill_distribution", "live_order_reject_rate"],
-        "deferred_to": "G10_BINGX_EXECUTION_COST_CALIBRATION",
+        "deferred_to": str((ssot.get("partial_fill_reject") or {}).get("live_distribution_calibration_deferred_to") or "G10_BINGX_EXECUTION_COST_CALIBRATION"),
         "note": "A2 is a research cost/turnover gate. No order authority is granted and no synthetic zero reject-rate is inserted."
     }
 
@@ -112,6 +121,7 @@ def evaluate(transition: dict[str, Any]) -> dict[str, Any]:
         "candidate_id": "trend_rider",
         "a1_transition_receipt_sha256": transition.get("receipt_sha256"),
         "a1_tier": tiering.get("a1_tier"),
+        "a1_activation_mode": tiering.get("activation", {}).get("mode"),
         "cost_authority": {
             "ssot_sha256": sha(ssot),
             "cost_authority_sha256": sha(authority),
@@ -125,6 +135,7 @@ def evaluate(transition: dict[str, Any]) -> dict[str, Any]:
         "stress": stress,
         "stress_contract": list(ssot.get("stress_contract") or []) + ["TURNOVER"],
         "execution_observation": execution_observation,
+        "promotion_authority_note": "PASS_A2_COST_TURNOVER does not promote a final Survivor. New post-V3 fresh + A3 remain required.",
         "next_stage_if_pass": "A3_ACTUAL_REGIME_DURABILITY",
         **AUTHORITY,
     }

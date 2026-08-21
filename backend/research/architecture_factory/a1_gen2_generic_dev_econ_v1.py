@@ -70,6 +70,7 @@ class Expr:
     ALLOWED_BOOL = (ast.And, ast.Or)
     ALLOWED_UNARY = (ast.USub, ast.UAdd, ast.Not)
     FUNCS = {"abs","min","max","sma","ema","std","lag","ret","roc","atr","vwap","zscore","highest","lowest","percentile","pct_rank","vol_ratio","range_pct","body_pct","upper_wick_pct","lower_wick_pct","breakout_dist","hour","dow"}
+    SERIES_FUNCS = ("sma","ema","std","lag","zscore","highest","lowest","percentile","pct_rank","breakout_dist")
 
     def __init__(self, rows: list[dict[str, float]], features: dict[str, list[float | None]]):
         self.rows = rows; self.features = features; self.i = 0
@@ -86,8 +87,22 @@ class Expr:
         for a,b in replacements.items(): s=s.replace(a,b)
         return s.replace("^","**")
 
+    def _normalized(self, s: str) -> str:
+        s = self.normalize(s)
+        names = ["open","high","low","close","volume",*self.features.keys()]
+        if not names:
+            return s
+        alternation = "|".join(sorted((re.escape(x) for x in names), key=len, reverse=True))
+        for fn in self.SERIES_FUNCS:
+            s = re.sub(
+                rf"\b{fn}\(\s*({alternation})\s*,",
+                lambda m, fn=fn: f"{fn}({m.group(1)!r},",
+                s,
+            )
+        return s
+
     def validate(self, s: str) -> ast.Expression:
-        tree=ast.parse(self.normalize(s),mode="eval")
+        tree=ast.parse(self._normalized(s),mode="eval")
         allowed_names={"open","high","low","close","volume",*self.features.keys(),*self.FUNCS}
         for n in ast.walk(tree):
             if isinstance(n,ast.Name):

@@ -1,0 +1,95 @@
+name: A1 Trend Rider H4 H5 V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-trend-rider-h4-h5-v1.yml'
+      - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild exact frozen prospective receipt
+        run: |
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id trend_rider --out out/trend_rider_candidate.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/trend_rider_candidate.json'))
+          assert r['strategy_id']=='trend_rider'
+          assert int(r['completed_trades'])>=25,r['completed_trades']
+          assert not r.get('integrity_defects') and int(r.get('leakage_lookahead') or 0)==0
+          print('PASS_TREND_RIDER_TIER_A_INPUT',r['completed_trades'])
+          PY
+      - name: Run H4 and H5 on exact candidate
+        run: python -m backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1 --receipt out/trend_rider_candidate.json --out out/trend_rider_hardening_evidence.json
+      - name: Validate and stage candidate-matched evidence
+        id: gate
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, shutil
+          e=json.load(open('out/trend_rider_hardening_evidence.json'))
+          print('state='+e['state'])
+          print('h4='+e['h4_receipt']['state'])
+          print('h5='+e['h5_receipt']['state'])
+          print('retention='+str(e['retention_pct']))
+          print('oos_net='+str(e['oos']['net_pnl_bps']))
+          if e['state']=='PASS_HARDENING_EVIDENCE':
+              p=pathlib.Path('backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json')
+              p.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile('out/trend_rider_hardening_evidence.json',p)
+          PY
+      - name: Persist PASS evidence only
+        if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
+        run: |
+          git config user.name 'a1-hardening'; git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
+          if ! git diff --cached --quiet; then git commit -m 'A1 trend_rider: persist verified H4 H5 evidence [skip ci]'; git push origin HEAD:master; fi
+      - name: Verify survivor gate with attached evidence
+        if: steps.gate.outputs.state == 'PASS_HARDENING_EVIDENCE'
+        env:
+          A1_HARDENING_RECEIPT_PATH: backend/research/rebuild/hardening_evidence/trend_rider_hardening_evidence_v1.json
+        run: |
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id trend_rider --out out/trend_rider_hardened.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/trend_rider_hardened.json'))
+          print('SURVIVOR_GATE',json.dumps(r['survivor_gate'],sort_keys=True))
+          assert r['survivor_gate']['passed'] is True,r['survivor_gate']
+          PY
+      - name: Report hardening result
+        uses: actions/github-script@v7
+        env:
+          STATE: ${{ steps.gate.outputs.state }}
+          H4: ${{ steps.gate.outputs.h4 }}
+          H5: ${{ steps.gate.outputs.h5 }}
+          RET: ${{ steps.gate.outputs.retention }}
+          OOS: ${{ steps.gate.outputs.oos_net }}
+        with:
+          script: |
+            const fs=require('fs'); const e=JSON.parse(fs.readFileSync('out/trend_rider_hardening_evidence.json','utf8'));
+            const b=`A1_TREND_RIDER_HARDENING|state=${process.env.STATE}|H4=${process.env.H4}|H5=${process.env.H5}|retention=${process.env.RET}%|OOS_Net=${process.env.OOS}bps|H4_passed=${e.h4_receipt.passed_control_count}/${e.h4_receipt.required_control_count}|H5_blockers=${JSON.stringify(e.h5_receipt.blockers)}|receipt=${e.receipt_sha256}`;
+            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:566,body:b});
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-h4-h5-${{ github.run_id }}
+          path: out
+          retention-days: 90

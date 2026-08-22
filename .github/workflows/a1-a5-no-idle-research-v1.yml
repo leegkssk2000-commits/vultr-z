@@ -1,29 +1,23 @@
-name: A1 A5 No-Idle Research V8
+name: A1 Mechanism-First Research V9
 
 on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/contracts/a1_high_value_evidence_supplement_v1.json'
       - 'backend/research/contracts/a1_research_mistake_blacklist_v1.json'
-      - 'backend/research/contracts/a1_a5_evidence_backed_roadmap_v1.json'
-      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
-      - 'backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'
       - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
-      - 'backend/research/architecture_factory/a1_research_factory_v8.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/a1_mechanism_first_research_v1.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/contracts/a1_high_value_evidence_supplement_v1.json'
       - 'backend/research/contracts/a1_research_mistake_blacklist_v1.json'
-      - 'backend/research/contracts/a1_a5_evidence_backed_roadmap_v1.json'
-      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
-      - 'backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'
       - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
-      - 'backend/research/architecture_factory/a1_research_factory_v8.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/a1_mechanism_first_research_v1.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   workflow_dispatch:
   schedule:
@@ -34,7 +28,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-a5-no-idle-research-v8
+  group: a1-mechanism-first-research-v9
   cancel-in-progress: false
 
 jobs:
@@ -51,34 +45,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile depth/retry guard and V8
+      - name: Compile mechanism-first research path
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py
-          python -m py_compile backend/research/architecture_factory/a1_research_factory_v8.py
-      - name: Verify permanent research mistake/depth guard
+          python -m py_compile \
+            backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py \
+            backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py \
+            backend/research/architecture_factory/a1_mechanism_first_research_v1.py
+      - name: Verify research-direction guards
         run: |
           set -euo pipefail
           python -m backend.research.architecture_factory.a1_research_depth_retry_guard_v1 --self-test
-          python -m backend.research.architecture_factory.a1_research_factory_v8 --self-test
-      - name: Verify outcome-blind V8 static path
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v8 --no-network --no-ai --ai-strategy-limit 5 --output out/a1_research_factory_v8.json
-          python - <<'PY'
-          import json
-          r=json.load(open('out/a1_research_factory_v8.json'))
-          d=r['depth_retry_guard']
-          assert d['state']=='PASS_RESEARCH_DEPTH_RETRY_GUARD', d
-          c=d['evidence_counts']
-          for k,v in c.items(): assert v['observed']>=v['required'], (k,v)
-          assert r['high_value_supplement_bound'] is True
-          assert r['terminal_retry_guard_bound'] is True
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_V8_DEPTH_RETRY_STATIC')
-          PY
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v1 --self-test
+          python -m backend.research.architecture_factory.a1_mechanism_first_research_v1 --self-test
 
   research:
     if: github.event_name != 'pull_request'
@@ -96,53 +75,52 @@ jobs:
           python-version: '3.12'
       - name: Install review dependencies
         run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Run evidence-depth and retry-safe A5 research
+      - name: Run mechanism-first architecture research
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-          GROQ_REVIEW_MODEL: ${{ vars.GROQ_REVIEW_MODEL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
           WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v8 --ai-strategy-limit 5 --output out/a1_research_factory_v8.json
+          python -m backend.research.architecture_factory.a1_mechanism_first_research_v1 \
+            --output out/a1_mechanism_first_research_v1.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v8.json')); d=r['depth_retry_guard']
-          assert d['state']=='PASS_RESEARCH_DEPTH_RETRY_GUARD', d
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          r=json.load(open('out/a1_mechanism_first_research_v1.json'))
+          assert r['research_direction']=='NEW_ARCHITECTURE_PRIMARY',r
+          assert r['automatic_legacy_a5_repair_primary'] is False,r
+          assert r['legacy_repair_lane']=='SECONDARY_MANUAL_OR_FALLBACK_ONLY',r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['protected_mutations'])==0 and r['exchange_order_submitted'] is False,r
           print(json.dumps({
-            'state':r.get('state'),'sources':r.get('external_source_count'),'new':r.get('new_discovered_source_count'),
-            'depth':d.get('evidence_counts'),'guarded_queue':r.get('experiment_queue_count'),
-            'aligned_queue':r.get('roadmap_aligned_queue_count'),'next':r.get('next_experiment_candidate'),
+            'state':r.get('state'),'direction':r.get('research_direction'),
+            'new_ready':r.get('new_architecture_ready_count'),'new_source_wait':r.get('new_architecture_source_wait_count'),
+            'legacy_backlog':r.get('legacy_repair_backlog_count'),'next':r.get('next_experiment_candidate'),
             'receipt':r.get('receipt_sha256')
           },sort_keys=True))
           PY
-      - name: Persist V8 A5 research receipt
+      - name: Persist mechanism-first receipt
         run: |
           set -euo pipefail
-          target=backend/research/architecture_factory/a1_research_factory_a5_latest.json
-          cp out/a1_research_factory_v8.json "$target"
-          git config user.name 'a1-a5-no-idle-research-v8'
+          target=backend/research/architecture_factory/a1_mechanism_first_research_latest.json
+          cp out/a1_mechanism_first_research_v1.json "$target"
+          git config user.name 'a1-mechanism-first-research-v9'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist depth/retry-safe research V8 receipt [skip ci]'
+          git commit -m 'A1: persist mechanism-first research receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
           done
           exit 1
-      - name: Publish V8 research state to issue 566
+      - name: Publish mechanism-first state to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -151,17 +129,15 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_research_factory_v8.json')); d=r['depth_retry_guard']; n=r.get('next_experiment_candidate') or {}
-          marker='<!-- A1_A5_NO_IDLE_RESEARCH_V8 -->'
-          c=d.get('evidence_counts') or {}
-          lines=[marker,'## A1 A5 No-Idle Research V8',
+          r=json.load(open('out/a1_mechanism_first_research_v1.json')); n=r.get('next_experiment_candidate') or {}
+          marker='<!-- A1_MECHANISM_FIRST_RESEARCH_V9 -->'
+          lines=[marker,'## A1 Mechanism-First Research V9',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
-            f"sources={r.get('external_source_count')}|new={r.get('new_discovered_source_count')}|depth_guard={d.get('state')}",
-            'depth='+';'.join(f"{k}:{v.get('observed')}/{v.get('required')}" for k,v in c.items()),
-            f"guarded_queue={r.get('experiment_queue_count')}|roadmap_aligned={r.get('roadmap_aligned_queue_count')}",
-            f"next={n.get('strategy_id')}|candidate={n.get('candidate_id')}|axis={n.get('changed_axis') or n.get('axis')}",
-            'NO_REPEAT=terminal same-identity retry blocked; technical/provider failures are not economic failures; no-op axes route next; source granularity and payer logic are fail-closed',
-            'A1_A2_A3=fresh gate order preserved; parent PASS/historical substitution forbidden',
+            f"direction={r.get('research_direction')}|legacy_repair_primary={r.get('automatic_legacy_a5_repair_primary')}",
+            f"new_ready={r.get('new_architecture_ready_count')}|new_source_wait={r.get('new_architecture_source_wait_count')}|legacy_backlog={r.get('legacy_repair_backlog_count')}",
+            f"next={n.get('candidate_id')}|family={n.get('architecture_family')}|horizon={n.get('native_horizon')}|sources={n.get('required_sources')}",
+            'POLICY=new architecture first; explicit mechanism+payer+horizon+cost budget; >=2 independent PASS/0 reject; >=3 evidence docs; source preflight fail-closed',
+            'LEGACY=repair-only A5 loop is no longer the automatic primary research lane',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
@@ -171,12 +147,12 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_V8_PUBLISHED')
+          print('PASS_A1_MECHANISM_FIRST_RESEARCH_V9_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-a5-no-idle-research-v8-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_research_factory_v8.json
+          name: a1-mechanism-first-research-v9-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_mechanism_first_research_v1.json
           if-no-files-found: error
           retention-days: 90

@@ -21,7 +21,6 @@ SCHEMA = "zel.a1.trend_ma_macd.ablation_child.v1"
 VARIANTS = (
     "ABLATE_PRICE_OVER_FAST_FILTER_ONLY",
     "ABLATE_SLOW_EMA_ALIGNMENT_ONLY",
-    "ABLATE_MACD_CONFIRMATION_FIRST_ALIGNMENT_OWNER",
 )
 
 
@@ -68,12 +67,6 @@ def _side_for_variant(bars: list[dict[str, Any]], i: int, variant: str, symbol: 
     elif variant == "ABLATE_SLOW_EMA_ALIGNMENT_ONLY":
         long_ok = bool(close > fast[-1] and hist[-2] <= 0 < hist[-1] and chase_ok)
         short_ok = bool(close < fast[-1] and hist[-2] >= 0 > hist[-1] and chase_ok)
-    elif variant == "ABLATE_MACD_CONFIRMATION_FIRST_ALIGNMENT_OWNER":
-        prev_close = closes[-2]
-        prev_long = prev_close > fast[-2] > slow[-2]
-        prev_short = prev_close < fast[-2] < slow[-2]
-        long_ok = bool(close > fast[-1] > slow[-1] and not prev_long and chase_ok)
-        short_ok = bool(close < fast[-1] < slow[-1] and not prev_short and chase_ok)
     else:
         raise RuntimeError(f"UNKNOWN_VARIANT:{variant}")
     if long_ok == short_ok:
@@ -158,6 +151,9 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
     axes = {str(x["axis"]) for x in a5["strategies"]["trend_ma_macd"]["repair_axes"]}
     if "REDUNDANT_COMPONENT_ABLATION_ONLY" not in axes:
         raise RuntimeError("ABLATION_AXIS_NOT_FROZEN")
+    h1_max = int(hard["h1_strategy_family_kill_gate"]["maximum_generations_per_axis_data_sha"])
+    if len(VARIANTS) > h1_max:
+        raise RuntimeError(f"H1_GENERATION_CAP_EXCEEDED:{len(VARIANTS)}>{h1_max}")
 
     bars_by, maps, snapshots = load_shared_inputs(symbols, authority)
     boundary_ms = parse_boundary(boundary)
@@ -167,7 +163,7 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
     base_ids = identity_set(baseline)
     candidates: list[dict[str, Any]] = []
 
-    for variant in VARIANTS:
+    for generation_index, variant in enumerate(VARIANTS, start=1):
         child = simulate(variant=variant, symbols=symbols, boundary_ms=boundary_ms, bars_by=bars_by, snapshots=snapshots)
         child_ids = identity_set(child)
         retained = 100.0 * len(base_ids & child_ids) / max(1, len(base_ids))
@@ -178,6 +174,8 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
         row = {
             "candidate_id": "trend_ma_macd__ablation_child__" + variant.lower(),
             "changed_axis": "REDUNDANT_COMPONENT_ABLATION_ONLY", "changed_variant": variant, "changed_axis_count": 1,
+            "generation_index_within_axis_data_sha": generation_index,
+            "h1_maximum_generations_per_axis_data_sha": h1_max,
             "parameter_sweep": False, "post_outcome_threshold_rescue": False, "parent_thresholds_changed": False,
             "parent_cost_model_changed": False, "shared_bar_snapshot": True, "shared_execution_cost_snapshot": True,
             "development_comparator_rebuilt_same_boundary": True, "fresh_prospective_validation_required": True,
@@ -208,6 +206,9 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
             "one_redundant_component_ablated_per_variant": True, "no_numeric_threshold_sweep": True,
             "parent_chase_and_risk_thresholds_frozen": True, "shared_bar_snapshot": True,
             "shared_execution_cost_snapshot": True, "same_boundary_required": True,
+            "h1_generation_cap_enforced": True,
+            "h1_maximum_generations_per_axis_data_sha": h1_max,
+            "generation_count": len(VARIANTS),
             "development_only": True, "fresh_prospective_validation_required": True,
         },
         "selection_authority": False, "promotion_authority": False, "execution_authority": "NONE",
@@ -221,10 +222,12 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
 
 
 def self_test() -> int:
+    hard = read(HARD)
     axes = {x["axis"] for x in read(A5)["strategies"]["trend_ma_macd"]["repair_axes"]}
     assert "REDUNDANT_COMPONENT_ABLATION_ONLY" in axes
-    assert len(VARIANTS) == 3
-    assert read(HARD)["survivor_gate"]["minimum_retention_pct"] == 60.0
+    assert len(VARIANTS) == 2
+    assert len(VARIANTS) <= int(hard["h1_strategy_family_kill_gate"]["maximum_generations_per_axis_data_sha"])
+    assert hard["survivor_gate"]["minimum_retention_pct"] == 60.0
     print("PASS_A1_TREND_MA_MACD_ABLATION_CHILD_V1_SELF_TEST")
     return 0
 

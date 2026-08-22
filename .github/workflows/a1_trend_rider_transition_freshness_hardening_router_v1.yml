@@ -1,4 +1,4 @@
-name: A1 Trend Rider Transition Freshness Hardening Router V1
+name: A1 Trend Rider Transition Freshness Hardening Router V2
 
 on:
   pull_request:
@@ -20,7 +20,11 @@ on:
     - cron: '17 * * * *'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: a1-trend-rider-transition-hardening-v2
+  cancel-in-progress: false
 
 jobs:
   route:
@@ -28,6 +32,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -51,7 +57,25 @@ jobs:
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({k:r.get(k) for k in ['state','completed_trades','minimum_hardening_trades','sample_gap','h4_state','h5_state','next']},sort_keys=True))
           PY
+      - name: Persist latest router receipt
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_rider_transition_freshness_hardening_router_latest.json
+          cp out/a1_trend_rider_transition_freshness_hardening_router_latest.json "$target"
+          git config user.name 'a1-trend-rider-transition-hardening-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_rider: persist transition hardening progress [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: a1-trend-rider-transition-hardening-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_trend_rider_transition_freshness_hardening_router_latest.json

@@ -1,0 +1,73 @@
+name: A1 Pre Shadow Qualification V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_pre_shadow_qualification_v1.json'
+      - 'backend/research/rebuild/a1_pre_shadow_qualification_v1.py'
+      - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-pre-shadow-qualification-v1.yml'
+  schedule:
+    - cron: '23 4,10,16,22 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-pre-shadow-qualification-v1
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify stage-separation gate
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_pre_shadow_qualification_v1.py
+          python -m backend.research.rebuild.a1_pre_shadow_qualification_v1 --self-test
+      - name: Qualify current trend_rider long-only challenger for Shadow only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_pre_shadow_qualification_v1 \
+            --candidate backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json \
+            --stage-policy backend/research/contracts/a1_pre_shadow_qualification_v1.json \
+            --hardening-policy backend/research/zel_economic_hardening_policy_v1.json \
+            --out out/a1_pre_shadow_qualification_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_pre_shadow_qualification_v1.json'))
+          assert r['candidate_id']=='trend_rider_delayed_fill_long_only_v1', r
+          assert r['state'] in ('SHADOW_CHALLENGER_READY','HOLD_PRE_SHADOW_QUALIFICATION'), r
+          assert r['paper_entry_granted'] is False and r['full_survivor_seal_granted'] is False, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          print(json.dumps(r,sort_keys=True))
+          PY
+      - name: Persist latest pre-shadow qualification receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_pre_shadow_qualification_latest.json
+          cp out/a1_pre_shadow_qualification_v1.json "$target"
+          git config user.name 'a1-pre-shadow-qualification'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist pre-shadow qualification receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

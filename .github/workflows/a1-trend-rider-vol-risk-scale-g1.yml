@@ -1,0 +1,148 @@
+name: A1 Trend Rider Volatility Risk Scaling G1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_volatility_risk_scaling_g1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-trend-rider-vol-risk-scale-g1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_volatility_risk_scaling_g1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-trend-rider-vol-risk-scale-g1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify volatility risk scaling generation 1
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trend_rider_volatility_risk_scaling_g1.py
+          python -m backend.research.rebuild.a1_trend_rider_volatility_risk_scaling_g1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild frozen delayed-fill and long-only exact parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          DELAYED='backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
+          LONG='backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
+          python -m backend.research.rebuild.a1_trend_rider_delayed_fill_evaluator_v1 \
+            --symbols "$SYMBOLS" --mode development --contract "$DELAYED" \
+            --out out/trend_rider_delayed_fill_development.json
+          python -m backend.research.rebuild.a1_trend_rider_long_only_exact_parent_evaluator_v1 \
+            --parent out/trend_rider_delayed_fill_development.json --contract "$LONG" --mode development \
+            --out out/trend_rider_long_only_development.json
+      - name: Evaluate causal inverse-volatility portfolio scaling
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trend_rider_volatility_risk_scaling_g1 \
+            --parent out/trend_rider_long_only_development.json \
+            --out out/a1_trend_rider_volatility_risk_scaling_g1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_volatility_risk_scaling_g1.json')); c=r['candidate']
+          assert c['generation_index_within_axis_data_sha']==1
+          assert c['generation_index_within_axis_data_sha']<=c['h1_maximum_generations_per_axis_data_sha']
+          assert c['trade_retention_pct']==100.0
+          assert c['parent_trade_identity_preserved'] is True
+          assert c['signal_geometry_changed'] is False and c['entry_exit_geometry_changed'] is False
+          assert c['parameter_sweep'] is False and c['numeric_threshold_sweep'] is False
+          assert c['post_outcome_threshold_rescue'] is False and c['post_outcome_trade_deletion'] is False
+          assert c['risk_management_gain_must_not_be_labeled_signal_alpha'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          print(json.dumps({'state':r['state'],'candidate':c,'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist volatility-risk-scaling receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_rider_volatility_risk_scaling_g1_latest.json
+          cp out/a1_trend_rider_volatility_risk_scaling_g1.json "$target"
+          git config user.name 'a1-trend-rider-vol-risk-scaling'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_rider: persist volatility risk scaling G1 receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish volatility-risk-scaling state to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_trend_rider_volatility_risk_scaling_g1.json')); c=r['candidate']; u=c['unscaled_signal_metrics']; s=c['scaled_portfolio_metrics']
+          marker='<!-- A1_TREND_RIDER_VOLATILITY_RISK_SCALING_G1 -->'
+          body='\n'.join([
+              marker,
+              '## A1 trend_rider Volatility Risk Scaling G1',
+              f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}|ready={c['development_candidate_ready']}",
+              f"unscaled_signal:trades={u['trades']}|net_exp={u['net_expectancy_bps']}|pf={u['profit_factor']}|payoff={u['payoff']}|wr={u['win_rate']}|dd={u['drawdown_bps']}|h5={','.join(c['parent_concentration']['blockers'])}",
+              f"scaled_portfolio:trades={s['trades']}|net_exp={s['net_expectancy_bps']}|pf={s['profit_factor']}|payoff={s['payoff']}|wr={s['win_rate']}|dd={s['drawdown_bps']}|h5={','.join(c['scaled_concentration']['blockers'])}",
+              f"risk_scale:min={c['risk_scale_min']}|mean={c['risk_scale_mean']}|max={c['risk_scale_max']}|ret={c['trade_retention_pct']}",
+              'G1/2; scale=ATR50/ATR14 on completed signal bar; no fitted target, clipping, parameter sweep, trade deletion, or threshold rescue',
+              'risk-management attribution only; signal alpha remains unscaled parent edge',
+              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'])
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_TREND_RIDER_VOLATILITY_RISK_SCALING_G1_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-volatility-risk-scaling-g1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_trend_rider_volatility_risk_scaling_g1.json
+            out/trend_rider_long_only_development.json
+            out/trend_rider_delayed_fill_development.json
+          if-no-files-found: error
+          retention-days: 90

@@ -7,6 +7,13 @@
     "trend_ma_macd"
   ],
   "action": "hold",
+  "active_strategy_ids": [
+    "trend_rider",
+    "break_and_continue",
+    "supertrend_pullback",
+    "keltner_trend",
+    "trend_ma_macd"
+  ],
   "allowed_axes_by_strategy": {
     "break_and_continue": [
       {
@@ -306,38 +313,61 @@
     "break_and_continue": {
       "attempt_count": 0,
       "attempted_axes": [],
+      "cumulative_attempted_axes": [],
       "development_economic_pass_count": 0,
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
-      "pass_candidate_ids": []
+      "pass_candidate_ids": [],
+      "remaining_axis_count": 5
     },
     "keltner_trend": {
       "attempt_count": 0,
       "attempted_axes": [],
+      "cumulative_attempted_axes": [],
       "development_economic_pass_count": 0,
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
-      "pass_candidate_ids": []
+      "pass_candidate_ids": [],
+      "remaining_axis_count": 5
     },
     "supertrend_pullback": {
       "attempt_count": 0,
       "attempted_axes": [],
+      "cumulative_attempted_axes": [],
       "development_economic_pass_count": 0,
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
-      "pass_candidate_ids": []
+      "pass_candidate_ids": [],
+      "remaining_axis_count": 5
     },
     "trend_ma_macd": {
       "attempt_count": 0,
       "attempted_axes": [],
+      "cumulative_attempted_axes": [],
       "development_economic_pass_count": 0,
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
-      "pass_candidate_ids": []
+      "pass_candidate_ids": [],
+      "remaining_axis_count": 5
     },
     "trend_rider": {
-      "attempt_count": 0,
-      "attempted_axes": [],
+      "attempt_count": 1,
+      "attempted_axes": [
+        "VOLATILITY_RISK_SCALING_ONLY"
+      ],
+      "cumulative_attempted_axes": [
+        "VOLATILITY_RISK_SCALING_ONLY"
+      ],
       "development_economic_pass_count": 0,
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
-      "pass_candidate_ids": []
+      "pass_candidate_ids": [],
+      "remaining_axis_count": 9
     }
+  },
+  "cumulative_attempted_axes": {
+    "break_and_continue": [],
+    "keltner_trend": [],
+    "supertrend_pullback": [],
+    "trend_ma_macd": [],
+    "trend_rider": [
+      "VOLATILITY_RISK_SCALING_ONLY"
+    ]
   },
   "development_economic_pass_count": 0,
   "exchange_order_submitted": false,
@@ -350,16 +380,117 @@
     "A5E5"
   ],
   "failure_decomposition": {
-    "selected_for_single_repair": []
+    "cost_dominated_count": 0,
+    "economic_fail_count": 0,
+    "no_gross_edge_count": 0,
+    "rows": [],
+    "rule": "Gross<=0 => no repair API; replace architecture. Gross>0 but Net<=0/PF<=1 => at most one causal repair, ranked by smallest break-even gap.",
+    "schema_version": "zel.a1_failure_economics.v1",
+    "selected_for_single_repair": [],
+    "single_repair_budget": 3,
+    "tail_or_payoff_failure_count": 0
   },
-  "initial_candidates": [],
+  "initial_candidates": [
+    {
+      "alpha_proof_candidate_ready": false,
+      "architecture_family": "trend",
+      "candidate_id": "trend_rider__volatility_risk_scaling_only__repair_v1",
+      "candidate_sha256": "66aad81a1eb8b754542ddfc04841eb9763dbe0fbdf978187ce1147dfdc84bf6f",
+      "changed_axis": "VOLATILITY_RISK_SCALING_ONLY",
+      "direction_rule": "both",
+      "economic_next": "AUTO_DEVELOPMENT_REPLAY",
+      "entry_event": "completed bar close that meets frozen parent entry geometry",
+      "evidence_ids": [
+        "F1",
+        "A5E1"
+      ],
+      "executable_spec": {
+        "bar_interval": "1h",
+        "cost_model": "14bps verified round trip",
+        "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
+        "entry_rule": "When parent trend_rider completed-bar entry geometry signals (sealed) AND compute historical 20-bar realized volatility on the same symbol; set target notional scaling factor = 1.0 / max(1.0, realized_volatility / baseline_volatility), where baseline_volatility is the median 20-bar realized volatility computed across development universe (pre-gen1). Translate scaling factor deterministically to position size multiplier applied to parent aggressor size.",
+        "entry_timing": "completed-bar timing",
+        "exit_rule": "Use frozen parent exit logic unchanged; when exit triggers, close full scaled position at next completed-bar open",
+        "features": [
+          {
+            "formula": "realized_vol_20 = sqrt( sum_{i=1..20} (log(price_i/price_{i-1}))^2 )",
+            "name": "realized_vol_20"
+          },
+          {
+            "formula": "baseline_vol = median_symbol_universe(realized_vol_20) computed pre-gen1",
+            "name": "baseline_vol"
+          },
+          {
+            "formula": "scale = 1.0 / max(1.0, realized_vol_20 / baseline_vol)",
+            "name": "volatility_scale"
+          }
+        ],
+        "max_hold_bars": 1,
+        "parameter_provenance": "causal/mechanism prior, never outcome sweep",
+        "side_rule": "both"
+      },
+      "exit_logic": "Preserve parent exit to avoid re-tuning; exit rationale: scaled position maintains same exit timing and economics while reducing exposure during high-volatility regimes to protect after-cost edge without altering decision geometry.",
+      "expected_move_cost_multiple_target": 2.0,
+      "falsification": "Prospective bounded kill if cumulative net PnL per-symbol over a rolling 50-trade window falls below -X (mechanistic kill: volatility scaling misallocates size consistently) — kill uses fixed trade-count window rather than tuned thresholds.",
+      "forbidden_changes": [
+        "fees",
+        "best-horizon selection",
+        "post-outcome loss deletion"
+      ],
+      "invalidation": "If realized_vol_20 no longer correlates with intra-bar adverse slippage or post-entry loss magnitude, causal invalidation; also if baseline_vol measurement pipeline is corrupted.",
+      "machine_replayable": true,
+      "mechanism": "Volatility-managed exposure: money arises because investors demand a premium for taking realized-volatility-driven tail risk; payer is marginal liquidity providers and volatility risk-takers; scaling compresses turnover during expensive regimes so expected move dominates verified costs.",
+      "mode": "REPAIR",
+      "native_horizon": "single completed-bar (1h) natural holding horizon of parent",
+      "payer": "market participant/inefficiency",
+      "provider": "openai",
+      "regime_owner": "Apply only when realized_vol_20 computed from completed bars is available; do not trade if baseline_vol missing",
+      "required_sources": [
+        "ohlcv",
+        "volume"
+      ],
+      "score": 7.6,
+      "source_ready": true,
+      "strategy_id": "trend_rider",
+      "time_stop_rationale": "Stop trading this repair if realized_vol_20 data feed fails or baseline_vol cannot be computed from pre-gen1 universe; time-stop fits mechanism by preventing blind scaling during missing volatility context.",
+      "turnover_cost_budget": "Volatility_scale reduces notional in high-volatility regimes so that expected move (unscaled signal edge) can dominate verified 14bps costs; scaling rationale preserves turnover budget and avoids cost-driven edge erosion.",
+      "why_distinct": "Differs from parent by changing only exposure ownership across lagged volatility states while preserving parent entry and exit geometry; not duplicate because parent had unscaled symmetric sizing and no volatility-managed exposure."
+    }
+  ],
   "initial_development_economics": {
+    "candidate_count": 1,
+    "cost_bps_per_trade": 14.0,
+    "development_only": true,
     "economic_fail_count": 0,
     "economic_pass_count": 0,
+    "exchange_order_submitted": false,
+    "execution_authority": "NONE",
+    "insufficient_event_count": 0,
+    "live_trade_authority": "BLOCKED",
+    "mixed_scope": true,
+    "order_authority": "BLOCKED",
     "passes": [],
-    "rows": [],
+    "promotion_authority": false,
+    "protected_mutations": 0,
+    "rows": [
+      {
+        "candidate_id": "trend_rider__volatility_risk_scaling_only__repair_v1",
+        "economic_pass": false,
+        "error": "SyntaxError:invalid syntax. Maybe you meant '==' or ':=' instead of '='? (<unknown>, line 1)",
+        "state": "REJECT_UNEXECUTABLE_SPEC"
+      }
+    ],
+    "schema_version": "zel.a1_gen2_generic_dev_econ.v3",
+    "selection_authority": false,
     "source_skip_count": 0,
-    "spec_reject_count": 0
+    "spec_reject_count": 1,
+    "supported_sources": [
+      "basis",
+      "funding",
+      "ohlcv",
+      "open_interest",
+      "volume"
+    ]
   },
   "live_trade_authority": "BLOCKED",
   "order_authority": "BLOCKED",
@@ -367,15 +498,27 @@
   "paid_request_count": 2,
   "policy": {
     "a5_only": true,
+    "cumulative_axis_memory": true,
     "development_pass_is_not_survivor": true,
     "fresh_validation_wait_does_not_block_development_research": true,
+    "gemini_prompt_compaction": true,
     "independent_oos_walk_forward_stress_still_required": true,
     "no_holdout_access": true,
     "no_post_outcome_trade_deletion": true,
     "no_threshold_sweep": true,
-    "one_best_initial_axis_per_strategy": true,
+    "one_best_initial_axis_per_active_strategy": true,
+    "previously_attempted_axis_reuse_forbidden": true,
     "sealed_axis_reuse_forbidden": true,
-    "second_step_must_use_distinct_axis": true
+    "second_step_must_use_distinct_axis": true,
+    "stop_paid_calls_when_all_axes_exhausted": true,
+    "strict_openai_structured_output": true
+  },
+  "prior_attempted_axes": {
+    "break_and_continue": [],
+    "keltner_trend": [],
+    "supertrend_pullback": [],
+    "trend_ma_macd": [],
+    "trend_rider": []
   },
   "promotion_authority": false,
   "protected_mutations": 0,
@@ -387,10 +530,14 @@
       "successful": false
     },
     "openai_initial": {
-      "candidate_count": 0,
-      "error": "JSONDecodeError:Expecting ':' delimiter: line 4 column 5 (char 1717)",
+      "candidate_count": 1,
+      "model": "gpt-5-mini",
+      "prompt_sha": "4fb04089aedcbe8d21cf1e116365c26a4f34baea0a6421a2719758a3d94dfd69",
+      "provider_contract": "A5_ECONOMIC_V2",
       "request_count": 1,
-      "successful": false
+      "response_sha": "e88fd6b802c2b2c4fea0fb1efc42b470fcc9e4240e6c1b90fd82df87083724d6",
+      "structured_output": "strict",
+      "successful": true
     },
     "openai_second_step": {
       "reason": "NO_SELECTED_FAILURE_OR_REQUEST_BUDGET",
@@ -399,8 +546,8 @@
       "successful": false
     }
   },
-  "receipt_sha256": "e16eb270cd620a392c022aa6a42f885a0c11ef71386fb7f14178ca2ae68b58cf",
-  "schema_version": "zel.a1_a5_economic_improvement.v1",
+  "receipt_sha256": "24a6492aa6ad5d518d405dfeab31ee68d0e394dab37340130a7cebd7fc8a72ea",
+  "schema_version": "zel.a1_a5_economic_improvement.v2",
   "second_step_candidates": [],
   "second_step_development_economics": {
     "economic_fail_count": 0,
@@ -478,5 +625,300 @@
       "reason": "BINGX_KLINE_PRE_BOUNDARY_PULL_AVAILABLE"
     }
   },
-  "state": "HOLD_A5_NO_DEVELOPMENT_ECONOMIC_PASS_YET"
+  "state": "HOLD_A5_V2_CONTINUE_DISTINCT_AXIS_RESEARCH",
+  "untried_axes_this_run": {
+    "break_and_continue": [
+      {
+        "axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only breakout ownership across completed-bar liquidity states.",
+        "priority": 90.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "VOLATILITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only ownership across lagged volatility states.",
+        "priority": 88.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "mechanism": "Change only deterministic session ownership.",
+        "priority": 86.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "BREAKOUT_PERSISTENCE_OWNER_ONLY",
+        "mechanism": "Change only post-break continuation-state ownership without altering the sealed breakout geometry.",
+        "priority": 84.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "COST_TURNOVER_COMPRESSION_ONLY",
+        "mechanism": "Change only marginal re-entry eligibility under the frozen verified cost model.",
+        "priority": 82.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      }
+    ],
+    "keltner_trend": [
+      {
+        "axis": "BAND_EXPANSION_TRANSITION_ONLY",
+        "mechanism": "Change only completed-bar band-expansion transition ownership; preserve Keltner geometry.",
+        "priority": 90.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY",
+        "mechanism": "Change only entry-time relative-volume confirmation.",
+        "priority": 88.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only entry ownership across liquidity states.",
+        "priority": 86.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "mechanism": "Change only deterministic session ownership.",
+        "priority": 84.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "COST_TURNOVER_COMPRESSION_ONLY",
+        "mechanism": "Change only marginal turnover/re-entry ownership under the frozen verified cost model.",
+        "priority": 82.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      }
+    ],
+    "supertrend_pullback": [
+      {
+        "axis": "TREND_PERSISTENCE_OWNER_ONLY",
+        "mechanism": "Change only ownership according to completed-bar trend persistence after the sealed pullback transition.",
+        "priority": 90.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "VOLATILITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only ownership across lagged volatility states.",
+        "priority": 88.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only entry ownership across source-ready liquidity states.",
+        "priority": 86.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "EXIT_TRAILING_ONLY",
+        "mechanism": "Exit-only trailing repair; entry and risk geometry remain frozen.",
+        "priority": 84.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "mechanism": "Change only deterministic session ownership.",
+        "priority": 82.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      }
+    ],
+    "trend_ma_macd": [
+      {
+        "axis": "REDUNDANT_COMPONENT_ABLATION_ONLY",
+        "mechanism": "Ablate only one redundant confirmation component at a time; preserve the remaining parent geometry and reject code-duplicate identities.",
+        "priority": 90.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "MULTISPEED_TREND_OWNER_ONLY",
+        "mechanism": "Change only ownership across completed-bar trend speeds.",
+        "priority": 88.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "VOLATILITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only ownership across lagged volatility states.",
+        "priority": 86.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "COST_TURNOVER_COMPRESSION_ONLY",
+        "mechanism": "Change only marginal re-entry eligibility under the frozen verified cost model.",
+        "priority": 84.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "mechanism": "Change only deterministic session ownership.",
+        "priority": 82.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      }
+    ],
+    "trend_rider": [
+      {
+        "axis": "MULTISPEED_TREND_OWNER_ONLY",
+        "mechanism": "Change only ownership across completed-bar fast/medium/slow trend states; require leave-one-speed-out diagnostics.",
+        "priority": 100.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "VOLATILITY_RISK_SCALING_ONLY",
+        "mechanism": "Change only lagged volatility-managed exposure; preserve signal geometry and report unscaled versus scaled attribution separately.",
+        "priority": 98.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "LIQUIDITY_REGIME_OWNER_ONLY",
+        "mechanism": "Change only entry ownership across completed-bar liquidity states derived from source-ready price/volume features.",
+        "priority": 96.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY",
+        "mechanism": "Preserve parent trend geometry and change only entry-time relative-volume confirmation.",
+        "priority": 94.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "mechanism": "Change only deterministic session ownership from completed bars; test concentration by session.",
+        "priority": 92.0,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "COST_TURNOVER_COMPRESSION_ONLY",
+        "mechanism": "Change only structurally marginal re-entry eligibility while the verified cost model and parent exits remain frozen.",
+        "priority": 90.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "LONG_SHORT_ASYMMETRY_ONLY",
+        "mechanism": "Change only side ownership; evaluate long and short separately rather than assuming symmetric edge.",
+        "priority": 88.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "VOL_PERSISTENCE_EXIT_ONLY",
+        "mechanism": "Exit-only repair using completed-bar volatility persistence; entry rule remains frozen.",
+        "priority": 86.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "CROSS_SYMBOL_CONCENTRATION_HARDENING_ONLY",
+        "mechanism": "Change only research acceptance/risk ownership across symbols; require leave-one-symbol and contribution-concentration diagnostics.",
+        "priority": 84.0,
+        "required_sources": [
+          "ohlcv"
+        ],
+        "source_lane": "READY_COMMON"
+      },
+      {
+        "axis": "FUNDING_STATE_OWNER_ONLY",
+        "mechanism": "Change only ownership across timestamp-safe funding states; funding is context, never a standalone direction oracle.",
+        "priority": 82.0,
+        "required_sources": [
+          "funding",
+          "ohlcv"
+        ],
+        "source_lane": "FUNDING_NATIVE"
+      }
+    ]
+  }
 }

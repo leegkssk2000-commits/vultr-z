@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
       - 'backend/research/architecture_factory/a1_research_factory_v6.py'
       - 'backend/research/architecture_factory/a1_research_factory_v7.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
@@ -12,6 +13,7 @@ on:
     branches: [master]
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
       - 'backend/research/architecture_factory/a1_research_factory_v6.py'
       - 'backend/research/architecture_factory/a1_research_factory_v7.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
@@ -53,6 +55,7 @@ jobs:
           r=json.load(open('out/a1_research_factory_v7.json'))
           a=r['a5_no_idle']
           q=r['a5_review_quorum']
+          x=a['trend_rider_online_expansion']
           expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
           assert a['priority_order']==expected, a
           assert a['targets_this_run']==expected, a
@@ -60,6 +63,9 @@ jobs:
           assert a['fresh_wait_blocks_validation_only'] is True
           assert a['queue_generation_continues_during_fresh_wait'] is True
           assert a['sealed_exact25_axis_mutation_forbidden'] is True
+          assert x['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3', x
+          assert x['evidence_count']>=4 and x['ready_common_axis_count']>=5, x
+          assert x['a1_a2_a3_gate_order_preserved'] is True, x
           assert q['required_independent_passes']==2 and q['maximum_rejects']==0
           assert q['gemini_fallback_only_when_quorum_missing'] is True
           assert q['gemini_fallback_cannot_override_reject'] is True
@@ -67,6 +73,7 @@ jobs:
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
           print('PASS_A1_A5_NO_IDLE_RESEARCH_V7_STATIC_CONTRACT')
+          print('PASS_TREND_RIDER_ORIGINAL_FRESH_ONLINE_EXPANSION_STATIC_BINDING')
           PY
 
   research:
@@ -104,15 +111,18 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/a1_research_factory_v7.json'))
-          a=r['a5_no_idle']; q=r['a5_review_quorum']; expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
+          a=r['a5_no_idle']; q=r['a5_review_quorum']; x=a['trend_rider_online_expansion']; expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
           assert a['targets_this_run']==expected, a
           assert a['validation_wait_blocks_research'] is False
+          assert x['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3', x
+          assert x['ready_common_axis_count']>=5, x
           assert q['required_independent_passes']==2 and q['maximum_rejects']==0
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({
             'state':r.get('state'),
             'targets':a.get('targets_this_run'),
+            'trend_rider_original_fresh_expansion':x,
             'sources':r.get('external_source_count'),
             'new':r.get('new_discovered_source_count'),
             'reviewed':r.get('reviewed_ready_common_count'),
@@ -146,18 +156,19 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_research_factory_v7.json')); a=r['a5_no_idle']; q=r['a5_review_quorum']; flow=r.get('candidate_flow_counts') or {}; nxt=r.get('next_experiment_candidate') or {}
+          r=json.load(open('out/a1_research_factory_v7.json')); a=r['a5_no_idle']; q=r['a5_review_quorum']; x=a['trend_rider_online_expansion']; flow=r.get('candidate_flow_counts') or {}; nxt=r.get('next_experiment_candidate') or {}
           marker='<!-- A1_A5_NO_IDLE_RESEARCH_V7 -->'
           lines=[
             marker,
             '## A1 A5 No-Idle Research V7',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
             'targets='+','.join(a.get('targets_this_run') or []),
+            f"trend_rider_baseline={x.get('baseline_identity')}|online_evidence={x.get('evidence_count')}|new_ready_axes={x.get('ready_common_axis_count')}|A1_A2_A3_order={str(x.get('a1_a2_a3_gate_order_preserved')).lower()}",
             f"sources={r.get('external_source_count')}|new={r.get('new_discovered_source_count')}|reviewed={r.get('reviewed_ready_common_count')}",
             f"fallback_attempt={q.get('fallback_attempt_count')}|fallback_pass={q.get('fallback_pass_count')}|fallback_reject={q.get('fallback_reject_count')}",
             f"flow_raw={flow.get('raw_generated')}|validated={flow.get('validated')}|reviewed={flow.get('reviewed')}|eligible={flow.get('eligible')}",
             f"next={nxt.get('strategy_id')}|candidate={nxt.get('candidate_id')}|axis={nxt.get('changed_axis')}|score={nxt.get('score')}",
-            'NO_IDLE=fresh prospective wait gates validation only; Groq outage can be replaced by Gemini only to complete missing independent quorum',
+            'NO_IDLE=fresh prospective wait gates validation only; original fresh trend_rider expansion stays separate from delayed-fill/long-only derivatives',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
           ]
           body='\n'.join(lines)

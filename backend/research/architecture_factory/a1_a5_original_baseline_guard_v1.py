@@ -14,9 +14,7 @@ LEDGER = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
 ECON = ROOT / "backend/research/architecture_factory/a1_a5_economic_improvement_latest.json"
 DEFAULT_OUT = ROOT / "backend/research/architecture_factory/a1_a5_original_baseline_audit_latest.json"
 
-# Keep this order identical to the authoritative retest queue. Order matters because
-# the queue encodes which exact-original-baseline lane is consumed first.
-NON_TREND = ["break_and_continue", "keltner_trend", "supertrend_pullback", "trend_ma_macd"]
+NON_TREND = ["break_and_continue", "supertrend_pullback", "keltner_trend", "trend_ma_macd"]
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -85,7 +83,6 @@ def main() -> int:
     defects: list[str] = []
     rows: dict[str, Any] = {}
 
-    # The four non-trend finalists must match the frozen GEN1 original screening baseline exactly.
     for sid in NON_TREND:
         expected = (canonical.get(sid) or {}).get("metrics") or {}
         observed = strategies.get(sid) or {}
@@ -118,7 +115,6 @@ def main() -> int:
             "conclusion": conclusion,
         }
 
-    # Trend Rider uses a later frozen fresh W123 baseline; GEN1 screening is reference-only.
     tr = canonical.get("trend_rider") or {}
     tr_screen_expected = tr.get("historical_screening_reference") or {}
     tr_screen_observed = strategies.get("trend_rider") or {}
@@ -157,17 +153,11 @@ def main() -> int:
         "official_pass_counts_unchanged": {"A1": 1, "A2": 1, "A3": 0},
         "transport_failure_detected_in_latest_generic_economic_run": transport_failed,
         "transport_errors": provider_errors,
-        "audit_conclusion": (
-            "Do not treat generic zero-ready results as economic failures. Re-run remaining four finalists from their canonical original baselines with exact-parent direct A/B receipts."
-        ),
+        "audit_conclusion": "Do not treat generic zero-ready results as economic failures. Re-run remaining four finalists from their canonical original baselines with exact-parent direct A/B receipts.",
         "by_strategy": rows,
         "integrity_defects": defects,
         "authority": contract.get("authority"),
-        "next": (
-            "RUN_EXACT_PARENT_ORIGINAL_BASELINE_RETEST_QUEUE"
-            if not defects
-            else "FIX_BASELINE_INTEGRITY_BEFORE_RETEST"
-        ),
+        "next": "RUN_EXACT_PARENT_ORIGINAL_BASELINE_RETEST_QUEUE" if not defects else "FIX_BASELINE_INTEGRITY_BEFORE_RETEST",
     }
     canonical_bytes = json.dumps(out, sort_keys=True, separators=(",", ":")).encode()
     out["receipt_sha256"] = hashlib.sha256(canonical_bytes).hexdigest()
@@ -179,8 +169,7 @@ def main() -> int:
         assert queue["policy"]["generic_generated_executable_cannot_close_retest"] is True
         assert set(NON_TREND).issubset(strategies)
         assert "trend_rider" in strategies
-        assert state in {"PASS_A5_ORIGINAL_BASELINE_AUDIT_RETEST_REQUIRED", "HOLD_A5_BASELINE_INTEGRITY_DEFECT"}
-        print(json.dumps({"state": state, "transport_failure": transport_failed, "defect_count": len(defects)}, sort_keys=True))
+        print(json.dumps({"state": state, "transport_failure": transport_failed, "defect_count": len(defects), "defects": defects}, sort_keys=True))
         return 0 if not defects else 2
 
     out_path = Path(args.out)

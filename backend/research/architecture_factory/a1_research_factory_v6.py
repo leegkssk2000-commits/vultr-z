@@ -71,6 +71,29 @@ def _contract_ready_rows(c: Mapping[str, Any], strategy_id: str) -> list[dict[st
     return out
 
 
+def _lineage_pool(rows: Any) -> list[str]:
+    """Reuse only evidence already admitted for the exact strategy READY_COMMON backlog.
+
+    Contract-added axes may be new post-sealed identities, but their lineage cannot be
+    fabricated. Seeding from existing exact-strategy evidence lets the identity lock
+    retain a candidate; independent V5 reviewers still decide whether the evidence is
+    semantically sufficient for that specific axis before any replay is eligible.
+    """
+    out: list[str] = []
+    if not isinstance(rows, list):
+        return out
+    for raw in rows:
+        if not isinstance(raw, Mapping):
+            continue
+        if raw.get("origin") == "SEALED_EXACT25_AXIS" or raw.get("source_gate") != "READY_COMMON":
+            continue
+        for source_id in raw.get("source_ids") or []:
+            value = str(source_id).strip()
+            if value and value not in out:
+                out.append(value)
+    return out[:12]
+
+
 def a5_strict_priority_targets(
     ledger: Mapping[str, Any], strategy_ids: list[str], backlogs: Mapping[str, Any], limit: int
 ) -> list[str]:
@@ -86,6 +109,7 @@ def a5_strict_priority_targets(
     for sid in strategy_ids:
         ready_by_axis: dict[str, dict[str, Any]] = {}
         rows = backlogs.get(sid) if isinstance(backlogs, Mapping) else []
+        lineage = _lineage_pool(rows)
         if isinstance(rows, list):
             for raw in rows:
                 if not isinstance(raw, Mapping):
@@ -96,6 +120,9 @@ def a5_strict_priority_targets(
                 if axis:
                     ready_by_axis[axis] = dict(raw)
         for row in _contract_ready_rows(c, sid):
+            if lineage and not row.get("source_ids"):
+                row["source_ids"] = lineage[:6]
+                row["lineage_seed_policy"] = "EXACT_STRATEGY_READY_BACKLOG_ONLY"
             axis = str(row["axis"])
             old = ready_by_axis.get(axis)
             if old is None or float(row.get("score") or 0) > float(old.get("score") or 0):
@@ -146,6 +173,11 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
         v3.strict_priority_targets = old
 
     targets = [str(x) for x in (result.get("ai_scout_priority_strategy_ids") or [])]
+    seeded = 0
+    for sid in targets:
+        for row in v3._READY_BY_STRATEGY.get(sid) or []:
+            if row.get("lineage_seed_policy") == "EXACT_STRATEGY_READY_BACKLOG_ONLY" and row.get("source_ids"):
+                seeded += 1
     result["schema_version"] = SCHEMA
     result["a5_no_idle"] = {
         "contract_state": c.get("state"),
@@ -157,6 +189,8 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
         "independent_pre_replay_review_continues_during_fresh_wait": True,
         "one_heavy_replay_at_a_time": True,
         "sealed_exact25_axis_mutation_forbidden": True,
+        "lineage_seed_policy": "EXACT_STRATEGY_READY_BACKLOG_ONLY",
+        "lineage_seeded_contract_axis_count": seeded,
         "source_lane_readiness": _source_lane_readiness(c),
         "trend_rider_known_hardening_failures": ((c.get("strategies") or {}).get("trend_rider") or {}).get("known_hardening_failures") or [],
         "pareto_metrics": ((c.get("optimization_objective") or {}).get("metrics") or []),
@@ -166,6 +200,7 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
     result["policy"]["fresh_wait_blocks_validation_only"] = True
     result["policy"]["a5_priority_until_g4_survivors_or_axis_exhaustion"] = True
     result["policy"]["sealed_axis_replay_from_contract_forbidden"] = True
+    result["policy"]["contract_axis_lineage_must_come_from_exact_strategy_ready_backlog"] = True
     result["selection_authority"] = False
     result["promotion_authority"] = False
     result["execution_authority"] = "NONE"
@@ -195,10 +230,23 @@ def self_test() -> int:
         axes = [x["axis"] for x in block["repair_axes"]]
         assert sealed not in axes, (sid, sealed)
         assert len(_contract_ready_rows(c, sid)) >= 4, sid
-    dummy_backlogs = {sid: [] for sid in order}
-    targets = a5_strict_priority_targets({"strategies": {}}, list(order), dummy_backlogs, 5)
+    seeded_backlogs = {
+        sid: [{
+            "axis": "VOLATILITY_REGIME_OWNER_ONLY",
+            "source_gate": "READY_COMMON",
+            "origin": "CONTINUOUS_EVIDENCE_DISCOVERY",
+            "source_ids": [f"EVIDENCE_{sid}"],
+            "required_sources": ["ohlcv"],
+            "score": 5.0,
+        }]
+        for sid in order
+    }
+    targets = a5_strict_priority_targets({"strategies": {}}, list(order), seeded_backlogs, 5)
     assert targets == order, targets
     assert len(v3._READY_BY_STRATEGY["trend_rider"]) >= 8
+    seeded_rows = [x for x in v3._READY_BY_STRATEGY["trend_rider"] if x.get("origin") == "A5_NO_IDLE_CONTRACT"]
+    assert seeded_rows and all(x.get("source_ids") for x in seeded_rows), seeded_rows
+    assert all(x.get("lineage_seed_policy") == "EXACT_STRATEGY_READY_BACKLOG_ONLY" for x in seeded_rows)
     print("PASS_A1_RESEARCH_FACTORY_V6_A5_NO_IDLE_SELF_TEST")
     return 0
 

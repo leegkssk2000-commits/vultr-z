@@ -44,13 +44,13 @@ def _macd_hist(closes: list[float]) -> list[float]:
     fast = ema(closes, 12)
     slow = ema(closes, 26)
     macd = [a - b for a, b in zip(fast, slow)]
-    sig = ema(macd, 9)
-    return [a - b for a, b in zip(macd, sig)]
+    signal = ema(macd, 9)
+    return [a - b for a, b in zip(macd, signal)]
 
 
-def _side_for_variant(bars: list[dict[str, Any]], i: int, variant: str) -> tuple[str | None, dict[str, Any]]:
+def _side_for_variant(bars: list[dict[str, Any]], i: int, variant: str, symbol: str) -> tuple[str | None, dict[str, Any], float]:
     cfg = TrendPolicyConfig()
-    feature = compute_trend_ma_macd_feature(bars[: i + 1], symbol="_", now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
+    feature = compute_trend_ma_macd_feature(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg)
     v = dict(feature.values)
     closes = [float(x["close"]) for x in bars[: i + 1]]
     fast = ema(closes, cfg.ema_fast_len)
@@ -69,43 +69,43 @@ def _side_for_variant(bars: list[dict[str, Any]], i: int, variant: str) -> tuple
         long_ok = bool(close > fast[-1] and hist[-2] <= 0 < hist[-1] and chase_ok)
         short_ok = bool(close < fast[-1] and hist[-2] >= 0 > hist[-1] and chase_ok)
     elif variant == "ABLATE_MACD_CONFIRMATION_FIRST_ALIGNMENT_OWNER":
-        if i < 1:
-            return None, v
         prev_close = closes[-2]
-        prev_aligned_long = prev_close > fast[-2] > slow[-2]
-        prev_aligned_short = prev_close < fast[-2] < slow[-2]
-        long_ok = bool(close > fast[-1] > slow[-1] and not prev_aligned_long and chase_ok)
-        short_ok = bool(close < fast[-1] < slow[-1] and not prev_aligned_short and chase_ok)
+        prev_long = prev_close > fast[-2] > slow[-2]
+        prev_short = prev_close < fast[-2] < slow[-2]
+        long_ok = bool(close > fast[-1] > slow[-1] and not prev_long and chase_ok)
+        short_ok = bool(close < fast[-1] < slow[-1] and not prev_short and chase_ok)
     else:
         raise RuntimeError(f"UNKNOWN_VARIANT:{variant}")
     if long_ok == short_ok:
-        return None, v
-    return ("long" if long_ok else "short"), v
+        return None, v, float(feature.atr)
+    return ("long" if long_ok else "short"), v, float(feature.atr)
 
 
-def simulate(
-    *, variant: str, symbols: list[str], boundary_ms: int, authority: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, dict[int, int]], dict[str, Any]]:
-    cfg = TrendPolicyConfig()
-    trades: list[dict[str, Any]] = []
+def load_shared_inputs(symbols: list[str], authority: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[int, int]], dict[str, Any]]:
     bars_by: dict[str, list[dict[str, Any]]] = {}
     maps: dict[str, dict[int, int]] = {}
     snapshots: dict[str, Any] = {}
     for symbol in symbols:
         bars = ev.fetch_bars(symbol, "1h", 1000)
         bars_by[symbol] = bars
-        maps[symbol] = {int(x["ts_ms"]): j for j, x in enumerate(bars)}
-        snap = ev.fetch_execution_snapshot(symbol, dict(authority))
-        snapshots[symbol] = snap
-        warmup = 64
-        for i in range(warmup, len(bars) - 1):
+        maps[symbol] = {int(x["ts_ms"]): i for i, x in enumerate(bars)}
+        snapshots[symbol] = ev.fetch_execution_snapshot(symbol, dict(authority))
+    return bars_by, maps, snapshots
+
+
+def simulate(*, variant: str, symbols: list[str], boundary_ms: int, bars_by: Mapping[str, list[dict[str, Any]]], snapshots: Mapping[str, Any]) -> list[dict[str, Any]]:
+    cfg = TrendPolicyConfig()
+    trades: list[dict[str, Any]] = []
+    for symbol in symbols:
+        bars = list(bars_by[symbol])
+        snap = snapshots[symbol]
+        for i in range(64, len(bars) - 1):
             if int(bars[i]["ts_ms"]) < boundary_ms:
                 continue
-            side, values = _side_for_variant(bars, i, variant)
+            side, values, a = _side_for_variant(bars, i, variant, symbol)
             if side is None:
                 continue
             signal_close = float(bars[i]["close"])
-            a = float(compute_trend_ma_macd_feature(bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg).atr)
             stop = signal_close - 1.5 * a if side == "long" else signal_close + 1.5 * a
             risk_distance_bps = abs(signal_close - stop) / max(signal_close, 1e-12) * 10_000
             move_budget_bps = risk_distance_bps * 2.0
@@ -131,21 +131,12 @@ def simulate(
             cost = float(snap["fee_bps"]) + float(snap["spread_bps"]) + float(snap["impact_bps"]) + ev.funding_cost(int(entry_bar["ts_ms"]), int(exit_ts), list(snap["funding_rows"]))
             gross = (float(exit_px) - entry) / entry * 10_000 if side == "long" else (entry - float(exit_px)) / entry * 10_000
             trades.append({
-                "symbol": symbol,
-                "signal_ts": int(bars[i]["ts_ms"]),
-                "entry_ts": int(entry_bar["ts_ms"]),
-                "exit_ts": int(exit_ts),
-                "side": side,
-                "entry": entry,
-                "exit": float(exit_px),
-                "reason": reason,
-                "gross_bps": gross,
-                "realized_cost_bps": cost,
-                "net_bps": gross - cost,
-                "variant": variant,
+                "symbol": symbol, "signal_ts": int(bars[i]["ts_ms"]), "entry_ts": int(entry_bar["ts_ms"]),
+                "exit_ts": int(exit_ts), "side": side, "entry": entry, "exit": float(exit_px), "reason": reason,
+                "gross_bps": gross, "realized_cost_bps": cost, "net_bps": gross - cost, "variant": variant,
                 "feature_state_sha256": stable({"values": values, "signal_ts": int(bars[i]["ts_ms"]), "symbol": symbol}),
             })
-    return trades, bars_by, maps, snapshots
+    return trades
 
 
 def identity_set(trades: list[dict[str, Any]]) -> set[tuple[str, int, str]]:
@@ -164,46 +155,34 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
     a5, hard, authority = read(A5), read(HARD), read(COST)
     if authority.get("state") != "FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY":
         raise RuntimeError("COST_AUTHORITY_NOT_FROZEN")
-    contract_axes = {str(x["axis"]) for x in a5["strategies"]["trend_ma_macd"]["repair_axes"]}
-    if "REDUNDANT_COMPONENT_ABLATION_ONLY" not in contract_axes:
+    axes = {str(x["axis"]) for x in a5["strategies"]["trend_ma_macd"]["repair_axes"]}
+    if "REDUNDANT_COMPONENT_ABLATION_ONLY" not in axes:
         raise RuntimeError("ABLATION_AXIS_NOT_FROZEN")
 
-    baseline, bars_by, maps, snapshots = simulate(variant="BASELINE", symbols=symbols, boundary_ms=parse_boundary(boundary), authority=authority)
+    bars_by, maps, snapshots = load_shared_inputs(symbols, authority)
+    boundary_ms = parse_boundary(boundary)
+    baseline = simulate(variant="BASELINE", symbols=symbols, boundary_ms=boundary_ms, bars_by=bars_by, snapshots=snapshots)
     base_metrics = metrics(baseline)
     base_h5 = concentration(baseline, bars_by, maps, hard)
     base_ids = identity_set(baseline)
     candidates: list[dict[str, Any]] = []
 
     for variant in VARIANTS:
-        child, child_bars, child_maps, _ = simulate(variant=variant, symbols=symbols, boundary_ms=parse_boundary(boundary), authority=authority)
-        # Fetching bars/snapshots again is intentionally avoided for ranking lineage by requiring identical bar timestamps;
-        # metrics remain development-only and cannot promote without fresh prospective replay.
-        for symbol in symbols:
-            if [int(x["ts_ms"]) for x in child_bars[symbol]] != [int(x["ts_ms"]) for x in bars_by[symbol]]:
-                raise RuntimeError(f"BAR_LINEAGE_CHANGED:{symbol}")
+        child = simulate(variant=variant, symbols=symbols, boundary_ms=boundary_ms, bars_by=bars_by, snapshots=snapshots)
         child_ids = identity_set(child)
         retained = 100.0 * len(base_ids & child_ids) / max(1, len(base_ids))
         m = metrics(child)
-        h5 = concentration(child, child_bars, child_maps, hard)
+        h5 = concentration(child, bars_by, maps, hard)
         econ_ok, blockers = economic_gate(m, retained, hard)
         h5_improved = int(h5["blocker_count"]) < int(base_h5["blocker_count"])
         row = {
             "candidate_id": "trend_ma_macd__ablation_child__" + variant.lower(),
-            "changed_axis": "REDUNDANT_COMPONENT_ABLATION_ONLY",
-            "changed_variant": variant,
-            "changed_axis_count": 1,
-            "parameter_sweep": False,
-            "post_outcome_threshold_rescue": False,
-            "parent_thresholds_changed": False,
-            "parent_cost_model_changed": False,
-            "development_comparator_rebuilt_same_boundary": True,
-            "fresh_prospective_validation_required": True,
-            "completed_trades": len(child),
-            "trade_retention_pct": retained,
-            "metrics": m,
-            "concentration": h5,
-            "economic_gate_pass": econ_ok,
-            "economic_gate_blockers": blockers,
+            "changed_axis": "REDUNDANT_COMPONENT_ABLATION_ONLY", "changed_variant": variant, "changed_axis_count": 1,
+            "parameter_sweep": False, "post_outcome_threshold_rescue": False, "parent_thresholds_changed": False,
+            "parent_cost_model_changed": False, "shared_bar_snapshot": True, "shared_execution_cost_snapshot": True,
+            "development_comparator_rebuilt_same_boundary": True, "fresh_prospective_validation_required": True,
+            "completed_trades": len(child), "trade_retention_pct": retained, "metrics": m, "concentration": h5,
+            "economic_gate_pass": econ_ok, "economic_gate_blockers": blockers,
             "h5_blocker_count_improved_vs_baseline": h5_improved,
             "development_candidate_ready": bool(econ_ok and h5_improved),
             "trade_identity_sha256": stable(sorted(child_ids)),
@@ -212,43 +191,28 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
         candidates.append(row)
 
     candidates.sort(key=lambda x: (
-        not bool(x["development_candidate_ready"]),
-        int(x["concentration"]["blocker_count"]),
-        -float(x["metrics"].get("net_expectancy_bps") or -1e18),
-        -float(x["metrics"].get("profit_factor") or 0.0),
-        float(x["metrics"].get("drawdown_bps") or 1e18),
-        -float(x["trade_retention_pct"]),
-        str(x["candidate_id"]),
+        not bool(x["development_candidate_ready"]), int(x["concentration"]["blocker_count"]),
+        -float(x["metrics"].get("net_expectancy_bps") or -1e18), -float(x["metrics"].get("profit_factor") or 0.0),
+        float(x["metrics"].get("drawdown_bps") or 1e18), -float(x["trade_retention_pct"]), str(x["candidate_id"]),
     ))
     ready = [x for x in candidates if x["development_candidate_ready"]]
     result = {
         "schema_version": SCHEMA,
         "state": "PASS_TREND_MA_MACD_ABLATION_CHILD_READY" if ready else "HOLD_TREND_MA_MACD_NEXT_DISTINCT_AXIS_REQUIRED",
-        "strategy_id": "trend_ma_macd",
-        "parent_receipt_sha256": parent.get("receipt_sha256"),
-        "boundary_utc": boundary,
+        "strategy_id": "trend_ma_macd", "parent_receipt_sha256": parent.get("receipt_sha256"), "boundary_utc": boundary,
         "symbols": symbols,
         "baseline": {"completed_trades": len(baseline), "metrics": base_metrics, "concentration": base_h5, "trade_identity_sha256": stable(sorted(base_ids))},
-        "candidates": candidates,
-        "development_ready_count": len(ready),
-        "next_candidate": ready[0] if ready else None,
+        "candidates": candidates, "development_ready_count": len(ready), "next_candidate": ready[0] if ready else None,
         "cost_snapshot_sha256_by_symbol": {k: str(v["snapshot_sha256"]) for k, v in snapshots.items()},
         "policy": {
-            "one_redundant_component_ablated_per_variant": True,
-            "no_numeric_threshold_sweep": True,
-            "parent_chase_and_risk_thresholds_frozen": True,
-            "same_boundary_required": True,
-            "development_only": True,
-            "fresh_prospective_validation_required": True,
+            "one_redundant_component_ablated_per_variant": True, "no_numeric_threshold_sweep": True,
+            "parent_chase_and_risk_thresholds_frozen": True, "shared_bar_snapshot": True,
+            "shared_execution_cost_snapshot": True, "same_boundary_required": True,
+            "development_only": True, "fresh_prospective_validation_required": True,
         },
-        "selection_authority": False,
-        "promotion_authority": False,
-        "execution_authority": "NONE",
-        "order_authority": "BLOCKED",
-        "live_trade_authority": "BLOCKED",
-        "exchange_order_submitted": False,
-        "protected_mutations": 0,
-        "action": "hold",
+        "selection_authority": False, "promotion_authority": False, "execution_authority": "NONE",
+        "order_authority": "BLOCKED", "live_trade_authority": "BLOCKED", "exchange_order_submitted": False,
+        "protected_mutations": 0, "action": "hold",
     }
     result["receipt_sha256"] = stable(result)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -257,8 +221,7 @@ def run(parent_path: Path, symbols: list[str], output: Path) -> dict[str, Any]:
 
 
 def self_test() -> int:
-    a5 = read(A5)
-    axes = {x["axis"] for x in a5["strategies"]["trend_ma_macd"]["repair_axes"]}
+    axes = {x["axis"] for x in read(A5)["strategies"]["trend_ma_macd"]["repair_axes"]}
     assert "REDUNDANT_COMPONENT_ABLATION_ONLY" in axes
     assert len(VARIANTS) == 3
     assert read(HARD)["survivor_gate"]["minimum_retention_pct"] == 60.0
@@ -277,8 +240,8 @@ def main() -> int:
         return self_test()
     if args.parent is None:
         raise SystemExit("--parent required")
-    r = run(args.parent, [x.strip() for x in args.symbols.split(",") if x.strip()], args.out)
-    print("A1_TREND_MA_MACD_ABLATION_CHILD=" + json.dumps({"state": r["state"], "ready": r["development_ready_count"], "next": (r.get("next_candidate") or {}).get("candidate_id"), "receipt": r["receipt_sha256"]}, sort_keys=True))
+    result = run(args.parent, [x.strip() for x in args.symbols.split(",") if x.strip()], args.out)
+    print("A1_TREND_MA_MACD_ABLATION_CHILD=" + json.dumps({"state": result["state"], "ready": result["development_ready_count"], "next": (result.get("next_candidate") or {}).get("candidate_id"), "receipt": result["receipt_sha256"]}, sort_keys=True))
     return 0
 
 

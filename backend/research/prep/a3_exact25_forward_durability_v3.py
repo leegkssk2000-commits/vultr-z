@@ -47,13 +47,19 @@ def classify(ctx:Mapping[str,Any])->dict[str,str]:
     session_state="ASIA" if 0<=hour<8 else "EU" if 8<=hour<16 else "US"
     return {"trend_state":trend_state,"vol_state":vol_state,"liquidity_state":liquidity_state,"funding_oi_state":funding_oi_state,"session_state":session_state,"regime":"|".join((trend_state,vol_state,liquidity_state,funding_oi_state))}
 
+def _capture_completed_ms(row:Mapping[str,Any])->int:
+    raw=row.get("capture_completed_at_ms")
+    if raw is None: raw=row.get("snapshot_capture_completed_at_ms")
+    try:return int(raw or 0)
+    except Exception:return 0
+
 def _context_index(context:Mapping[str,Any])->dict[str,list[dict[str,Any]]]:
     rows=[]
     for row in context.get("rows") or []:
         if not isinstance(row,Mapping) or row.get("valid_for_a3") is not True: continue
-        cap=int(row.get("capture_completed_at_ms") or 0);cut=int(row.get("bar_feature_cutoff_ts_ms") or 0);sym=str(row.get("symbol") or "")
+        cap=_capture_completed_ms(row);cut=int(row.get("bar_feature_cutoff_ts_ms") or 0);sym=str(row.get("symbol") or "")
         if cap<=0 or cut<=0 or not sym: continue
-        x=dict(row);x["labels"]=classify(x);rows.append(x)
+        x=dict(row);x["capture_completed_at_ms"]=cap;x["labels"]=classify(x);rows.append(x)
     by=defaultdict(list)
     for x in sorted(rows,key=lambda r:(str(r["symbol"]),int(r["capture_completed_at_ms"]))):by[str(x["symbol"])].append(x)
     return dict(by)
@@ -139,6 +145,11 @@ def self_test()->int:
     assert contract["prospective_cohort"]["minimum_causally_matched_trades"]==25
     assert _group_key({"entry_ts":1787331600000},"window")=="2026-08-21"
     assert classify({"trend_strength":0.4,"realized_vol_pct":1.2,"spread_bps":9,"depth_usdt":200000,"funding_8h_pct":0.04,"oi_change_pct":4,"session_utc_hour":17})["session_state"]=="US"
+    collector_row={"valid_for_a3":True,"snapshot_capture_completed_at_ms":1000000,"bar_feature_cutoff_ts_ms":900000,"symbol":"BTC-USDT","trend_strength":0.4,"realized_vol_pct":1.2,"spread_bps":1.5,"depth_usdt":1500000,"funding_8h_pct":0.0,"oi_change_pct":0.1,"session_utc_hour":12}
+    idx=_context_index({"rows":[collector_row]})
+    assert idx["BTC-USDT"][0]["capture_completed_at_ms"]==1000000
+    joined,reason=join_trade({"entry_ts":1000100,"symbol":"BTC-USDT"},idx,1000)
+    assert reason is None and joined is not None and joined["context_capture_completed_at_ms"]==1000000
     print("PASS_A3_EXACT25_FORWARD_DURABILITY_V3_SELF_TEST");return 0
 
 def main()->int:

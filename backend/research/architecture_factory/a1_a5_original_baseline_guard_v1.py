@@ -14,7 +14,9 @@ LEDGER = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
 ECON = ROOT / "backend/research/architecture_factory/a1_a5_economic_improvement_latest.json"
 DEFAULT_OUT = ROOT / "backend/research/architecture_factory/a1_a5_original_baseline_audit_latest.json"
 
-NON_TREND = ["break_and_continue", "supertrend_pullback", "keltner_trend", "trend_ma_macd"]
+# Keep this order identical to the authoritative retest queue. Order matters because
+# the queue encodes which exact-original-baseline lane is consumed first.
+NON_TREND = ["break_and_continue", "keltner_trend", "supertrend_pullback", "trend_ma_macd"]
 
 
 def load(path: Path) -> dict[str, Any]:

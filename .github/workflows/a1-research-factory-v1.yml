@@ -1,4 +1,4 @@
-name: A1 Research Factory V3
+name: A1 Research Factory V4
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'backend/research/architecture_factory/a1_research_factory_v1.py'
       - 'backend/research/architecture_factory/a1_research_factory_v2.py'
       - 'backend/research/architecture_factory/a1_research_factory_v3.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v4.py'
       - '.github/workflows/a1-research-factory-v1.yml'
   push:
     branches: [master]
@@ -14,6 +15,7 @@ on:
       - 'backend/research/architecture_factory/a1_research_factory_v1.py'
       - 'backend/research/architecture_factory/a1_research_factory_v2.py'
       - 'backend/research/architecture_factory/a1_research_factory_v3.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v4.py'
       - '.github/workflows/a1-research-factory-v1.yml'
   workflow_dispatch:
   schedule:
@@ -24,7 +26,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-research-factory-v3
+  group: a1-research-factory-v4
   cancel-in-progress: false
 
 jobs:
@@ -48,18 +50,21 @@ jobs:
           python -m backend.research.architecture_factory.a1_research_factory_v2 --self-test
           python -m py_compile backend/research/architecture_factory/a1_research_factory_v3.py
           python -m backend.research.architecture_factory.a1_research_factory_v3 --self-test
+          python -m py_compile backend/research/architecture_factory/a1_research_factory_v4.py
+          python -m backend.research.architecture_factory.a1_research_factory_v4 --self-test
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v3 --no-network --no-ai --output out/a1_research_factory_v3.json
+          python -m backend.research.architecture_factory.a1_research_factory_v4 --no-network --no-ai --output out/a1_research_factory_v4.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v3.json'))
-          assert r['state'] in {'PASS_RESEARCH_FACTORY_V3_STRICT_REPAIR_READY','HOLD_RESEARCH_FACTORY_V3_NO_STRICT_REPAIR_PASS'}, r
+          r=json.load(open('out/a1_research_factory_v4.json'))
+          assert r['state'] in {'PASS_RESEARCH_FACTORY_V4_IDENTITY_LOCK_REPAIR_READY','HOLD_RESEARCH_FACTORY_V4_NO_REVIEWED_REPAIR'}, r
           assert r['exact25_strategy_count']==25, r
           assert len(r['strategy_backlogs'])==25, r
           assert r['dedup_cosine_threshold']==0.85, r
           assert r['backlog_top_k']==5, r
           assert r['queue_bridge']['ready_common_first'] is True, r
           assert r['queue_bridge']['strict_exact_strategy_repair'] is True, r
+          assert r['queue_bridge']['deterministic_identity_lock_before_validator'] is True, r
           assert r['queue_bridge']['new_architecture_separated_from_repair_queue'] is True, r
           assert r['queue_bridge']['reviewed_candidate_survives_backlog_top5_truncation'] is True, r
           assert r['policy']['one_axis_per_experiment'] is True, r
@@ -67,7 +72,8 @@ jobs:
           assert r['selection_authority'] is False and r['promotion_authority'] is False, r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
           assert r['exchange_order_submitted'] is False and r['protected_mutations']==0, r
-          print('PASS_A1_RESEARCH_FACTORY_V3_STATIC_CONTRACT')
+          assert set(r['candidate_flow_counts'])=={'raw_generated','identity_locked','validated','reviewed','eligible'}, r
+          print('PASS_A1_RESEARCH_FACTORY_V4_STATIC_CONTRACT')
           PY
 
   factory:
@@ -84,7 +90,7 @@ jobs:
           python-version: '3.12'
       - name: Install Groq SDK
         run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Discover evidence and bridge READY_COMMON backlog to strict exact-strategy repair
+      - name: Discover evidence and bridge READY_COMMON backlog through deterministic identity lock
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -96,16 +102,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v3 \
+          python -m backend.research.architecture_factory.a1_research_factory_v4 \
             --ai-strategy-limit 3 \
-            --output out/a1_research_factory_v3.json
+            --output out/a1_research_factory_v4.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v3.json'))
+          r=json.load(open('out/a1_research_factory_v4.json'))
           assert r['exact25_strategy_count']==25 and len(r['strategy_backlogs'])==25, r
           assert r['dedup_cosine_threshold']==0.85 and r['backlog_top_k']==5, r
           assert r['queue_bridge']['ready_common_first'] is True, r
           assert r['queue_bridge']['strict_exact_strategy_repair'] is True, r
+          assert r['queue_bridge']['deterministic_identity_lock_before_validator'] is True, r
           assert r['queue_bridge']['new_architecture_separated_from_repair_queue'] is True, r
           assert r['selection_authority'] is False and r['promotion_authority'] is False, r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
@@ -118,6 +125,7 @@ jobs:
             'queue':r['experiment_queue_count'],
             'ready_common_queue':r['ready_common_queue_count'],
             'reviewed_ready_common':r['reviewed_ready_common_count'],
+            'flow':r['candidate_flow_counts'],
             'ai_targets':r['ai_scout_priority_strategy_ids'],
             'next':r['next_experiment_candidate'],
           },ensure_ascii=False,sort_keys=True))
@@ -126,12 +134,12 @@ jobs:
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_research_factory_latest.json
-          cp out/a1_research_factory_v3.json "$target"
+          cp out/a1_research_factory_v4.json "$target"
           git config user.name 'a1-research-factory'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Research Factory V3: persist latest backlog [skip ci]'
+          git commit -m 'A1 Research Factory V4: persist latest identity-lock receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -146,20 +154,22 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_research_factory_v3.json'))
-          marker='<!-- A1_RESEARCH_FACTORY_V3 -->'
+          r=json.load(open('out/a1_research_factory_v4.json'))
+          marker='<!-- A1_RESEARCH_FACTORY_V4 -->'
           nxt=r.get('next_experiment_candidate') or {}
           axis=nxt.get('changed_axis') or nxt.get('axis')
+          flow=r.get('candidate_flow_counts') or {}
           lines=[
             marker,
-            '## A1 Research Factory V3',
+            '## A1 Research Factory V4',
             f"state={r['state']}|run={os.environ['RUN_ID']}",
             f"exact25={r['exact25_strategy_count']}|sources={r['external_source_count']}|new_discovered={r['new_discovered_source_count']}|primary_abstracts={r['discovered_primary_abstract_count']}",
             f"backlog_top_k={r['backlog_top_k']}|queue={r['experiment_queue_count']}|ready_common={r['ready_common_queue_count']}|reviewed_ready={r['reviewed_ready_common_count']}|dedup_cosine={r['dedup_cosine_threshold']}",
+            f"flow_raw={flow.get('raw_generated')}|flow_locked={flow.get('identity_locked')}|flow_validated={flow.get('validated')}|flow_reviewed={flow.get('reviewed')}|flow_eligible={flow.get('eligible')}",
             f"ai_scout_targets={','.join(r.get('ai_scout_priority_strategy_ids') or [])}",
             f"next_candidate={nxt.get('strategy_id')}|axis={axis}|candidate={nxt.get('candidate_id')}|score={nxt.get('score')}|source_gate={nxt.get('source_gate')}",
             f"discovery_errors={len(r.get('discovery_errors') or [])}|groq_max_tokens={r['queue_bridge']['groq_max_tokens']}",
-            'POLICY=READY_COMMON first -> exact-strategy REPAIR only -> independent multi-AI review -> one-axis experiment; NEW_ARCHITECTURE separated',
+            'POLICY=READY_COMMON first -> deterministic identity lock -> generic validator -> independent multi-AI review -> one-axis experiment',
             'FAILURE=advance to next backlog candidate; no threshold rescue or holdout tuning',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED',
           ]
@@ -172,12 +182,12 @@ jobs:
           target=existing.get('url') if existing else f'https://api.github.com/repos/{repo}/issues/566/comments'
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_RESEARCH_FACTORY_V3_PUBLISHED')
+          print('PASS_A1_RESEARCH_FACTORY_V4_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-research-factory-v3-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_research_factory_v3.json
+          name: a1-research-factory-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_research_factory_v4.json
           if-no-files-found: error
           retention-days: 90

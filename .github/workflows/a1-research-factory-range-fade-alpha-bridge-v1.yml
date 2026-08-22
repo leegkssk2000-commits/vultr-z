@@ -1,0 +1,117 @@
+name: A1 Research Factory Range Fade Alpha Bridge V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_research_factory_exact8_alpha_bridge_v1.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v5.py'
+      - 'backend/research/architecture_factory/a1_research_factory_latest.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py'
+      - 'backend/research/prep/a1_external_research_exact8_forward_state_v1.json'
+      - '.github/workflows/a1-research-factory-range-fade-alpha-bridge-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_research_factory_exact8_alpha_bridge_v1.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v5.py'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py'
+      - '.github/workflows/a1-research-factory-range-fade-alpha-bridge-v1.yml'
+  schedule:
+    - cron: '12 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-research-factory-range-fade-alpha-bridge-v1
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: ${{ github.event_name != 'pull_request' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic bridge self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_research_factory_exact8_alpha_bridge_v1.py \
+            backend/research/architecture_factory/a1_external_research_exact8_through_a3_v1.py
+          python -m backend.research.architecture_factory.a1_research_factory_exact8_alpha_bridge_v1 --self-test
+      - name: Route reviewed range_fade repair through frozen bounded replay and Alpha gates
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_research_factory_exact8_alpha_bridge_v1 \
+            --factory backend/research/architecture_factory/a1_research_factory_latest.json \
+            --state backend/research/prep/a1_external_research_exact8_forward_state_v1.json \
+            --spec backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json \
+            --output out/a1_research_factory_exact8_alpha_bridge_v1.json
+      - name: Verify immutable identity, causal routing, and blocked authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/a1_research_factory_exact8_alpha_bridge_v1.json').read_text())
+          assert r['candidate_id']=='range_fade_repair_1', r
+          assert r['strategy_id']=='range_fade', r
+          assert r['child_id']=='range_fade__liquidity_regime_owner_v1', r
+          assert r['changed_axis']=='LIQUIDITY_REGIME_OWNER_ONLY', r
+          assert r['source_gate']=='READY_COMMON', r
+          assert int(r['independent_passes']) >= 2 and int(r['independent_rejects']) == 0, r
+          lock=r['identity_lock']
+          assert lock['research_candidate_matches_existing_frozen_adapter'] is True, r
+          assert lock['ai_prose_translated_into_thresholds'] is False, r
+          assert lock['new_strategy_logic_created'] is False, r
+          assert lock['threshold_search'] is False and lock['holdout_outcomes_accessed'] is False, r
+          assert lock['synthetic_market_evidence_used'] is False and lock['parent_pass_inherited'] is False, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          assert r['exchange_order_submitted'] is False and int(r['protected_mutations']) == 0, r
+          assert isinstance(r['a1_state'], str) and isinstance(r['a2_state'], str) and isinstance(r['a3_state'], str), r
+          print(json.dumps({
+              'state': r['state'],
+              'candidate': r['candidate_id'],
+              'child': r['child_id'],
+              'trades': r['bounded_replay']['completed_child_trades'],
+              'a1': r['a1_state'],
+              'a2': r['a2_state'],
+              'a3': r['a3_state'],
+              'handoff': r['alpha_proof_handoff'],
+          }, sort_keys=True))
+          PY
+      - name: Persist latest bridge receipt
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_research_factory_exact8_alpha_bridge_latest.json
+          cp out/a1_research_factory_exact8_alpha_bridge_v1.json "$target"
+          git config user.name 'a1-range-fade-alpha-bridge'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 range_fade bridge: persist bounded Alpha receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-range-fade-alpha-bridge-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_research_factory_exact8_alpha_bridge_v1.json
+          if-no-files-found: error
+          retention-days: 90

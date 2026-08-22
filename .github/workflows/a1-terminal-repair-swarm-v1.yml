@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 concurrency:
@@ -37,17 +37,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and deterministic guard test
+      - name: Compile and deterministic API ROI guard tests
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/gemini_provider_v1.py
           python -m backend.research.architecture_factory.gemini_provider_v1
-          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v2.py
-          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v2 --self-test
-          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v3.py
-          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v3 --self-test
           python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py
           python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 --self-test
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v5 --self-test
           python -m py_compile backend/research/alpha_proof/a1_alpha_proof_gate_v1.py
           python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python - <<'PY'
@@ -70,21 +68,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install verified Groq SDK path
-        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Run terminal repair/new-architecture generation and cross-review
+      - name: Run API-ROI guarded economic builder
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
-          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
@@ -92,10 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v4 --output out/a1_terminal_repair_swarm_v4.json
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v5 --output out/a1_terminal_repair_swarm_v5.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_terminal_repair_swarm_v4.json'))
+          r=json.load(open('out/a1_terminal_repair_swarm_v5.json'))
+          roi=r.get('api_roi') or {}
+          calls=roi.get('request_counts') or {}
           assert r['research_only'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
@@ -106,21 +99,41 @@ jobs:
           assert r['alpha_proof_required'] is True
           assert r['preregistration_blocked_without_receipt'] is True
           assert int(r['eligible_count'])==0
-          assert all(x['eligible_for_preregistration'] is False for x in r.get('global_queue') or [])
           assert r['launch']['state']=='BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT'
-          if int(r['ledger_done_count']) < 25:
-              assert r['gemini']['enabled'] is False
+          assert int(roi.get('paid_request_count') or 0) <= 3, roi
+          assert int(calls.get('openai_batch') or 0) <= 1, calls
+          assert int(calls.get('gemini_rescue_batch') or 0) <= 1, calls
+          assert int(calls.get('openai_repair_batch') or 0) <= 1, calls
+          if roi.get('cache_hit') is True:
+              assert int(roi.get('paid_request_count') or 0)==0, roi
+          policy=r.get('api_economics_policy') or {}
+          assert policy.get('all_pre_economics_critics')=='DISABLED', policy
           print(json.dumps({
-            'done':r['ledger_done_count'],
-            'gemini':r['gemini'],
-            'terminal_count':r['terminal_count'],
-            'queued_repair_count':r['queued_repair_count'],
-            'queued_new_arch_count':r['queued_new_arch_count'],
-            'alpha_proof_ready_count':r['alpha_proof_ready_count'],
-            'eligible':r['eligible_count'],
+            'run_mode':r.get('run_mode'),
+            'cache_hit':roi.get('cache_hit'),
+            'paid_requests':roi.get('paid_request_count'),
+            'calls':calls,
+            'machine':r['machine_replayable_count'],
+            'economic_pass':r['development_economic_pass_count'],
+            'alpha_intake':(r.get('post_econ_alpha_intake') or {}).get('state'),
           },ensure_ascii=False,sort_keys=True))
           PY
-      - name: Publish immutable state pointer to issue 566
+      - name: Persist identical-input cache receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v5_latest.json
+          cp out/a1_terminal_repair_swarm_v5.json "$target"
+          git config user.name 'a1-api-roi-guard'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 terminal swarm: persist API ROI cache [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish API ROI state pointer to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -129,16 +142,9 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_terminal_repair_swarm_v4.json'))
-          marker='<!-- A1_TERMINAL_REPAIR_SWARM_V4 -->'
-          q=r.get('global_queue') or []
-          lines=[marker,'## A1 Terminal Repair Swarm V4',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"done={r['ledger_done_count']}/25|survivors={r['survivor_count']}|terminal_count={r['terminal_count']}",f"queued_repair_count={r['queued_repair_count']}|queued_new_arch_count={r['queued_new_arch_count']}|alpha_proof_ready={r['alpha_proof_ready_count']}|prereg_eligible=0",f"gemini_enabled={r['gemini']['enabled']}|gemini_purpose=POST_25_ECONOMIC_REBUILD_ONLY"]
-          for i,x in enumerate(q[:8],1):
-              cr=x.get('cross_reviews') or {}
-              lines.append(f"Q{i}|strategy={x.get('strategy_id')}|provider={x.get('provider')}|mode={x.get('mode')}|family={x.get('architecture_family')}|axis={x.get('changed_axis')}|score={x.get('score')}|alpha_proof_ready={x.get('alpha_proof_candidate_ready')}|OpenAI={(cr.get('openai') or {}).get('decision')}|Groq={(cr.get('groq') or {}).get('decision')}|Workers={(cr.get('workers_ai') or {}).get('decision')}|Gemini={(cr.get('gemini') or {}).get('decision')}|id={x.get('candidate_id')}")
-          lines.append('launch=BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT')
-          lines.append('ALPHA_PROOF=P0-P6_REQUIRED_BEFORE_PREREGISTRATION|fresh_boundary_after_PASS_only')
-          lines.append('selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0')
+          r=json.load(open('out/a1_terminal_repair_swarm_v5.json')); roi=r.get('api_roi') or {}; calls=roi.get('request_counts') or {}
+          marker='<!-- A1_TERMINAL_REPAIR_SWARM_V5_API_ROI -->'
+          lines=[marker,'## A1 Terminal Repair Swarm V5 — API ROI',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"mode={r.get('run_mode')}|cache_hit={roi.get('cache_hit')}|paid_requests={roi.get('paid_request_count')}/3",f"calls=openai_batch:{calls.get('openai_batch',0)},gemini_rescue:{calls.get('gemini_rescue_batch',0)},openai_repair_batch:{calls.get('openai_repair_batch',0)}",f"done={r['ledger_done_count']}/25|terminal={r['terminal_count']}|machine={r['machine_replayable_count']}|development_economic_pass={r['development_economic_pass_count']}",f"alpha_intake={(r.get('post_econ_alpha_intake') or {}).get('state')}|alpha_proof_ready={r['alpha_proof_ready_count']}|prereg_eligible=0",'policy=deterministic economics before Gemini rescue; no pre-economics critics; identical input signature => zero paid AI','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
@@ -147,12 +153,12 @@ jobs:
           url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_TERMINAL_REPAIR_SWARM_V4_PUBLISHED')
+          print('PASS_A1_TERMINAL_REPAIR_SWARM_V5_API_ROI_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-terminal-repair-swarm-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-terminal-repair-swarm-v5-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           if-no-files-found: error
-          path: out/a1_terminal_repair_swarm_v4.json
+          path: out/a1_terminal_repair_swarm_v5.json

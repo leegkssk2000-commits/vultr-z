@@ -1,28 +1,28 @@
-name: A1 G4 Trend Rider Prospective Observer V1
+name: A1 Trend Rider Prospective Observer V1
 
 on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/rebuild/a1_g4_trend_rider_prospective_observer_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_prospective_observer_v1.py'
       - 'backend/research/rebuild/a1_pre_shadow_qualification_latest.json'
       - 'backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_long_only_exact_parent_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
       - 'backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
       - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
-      - '.github/workflows/a1-g4-trend-rider-prospective-observer-v1.yml'
+      - '.github/workflows/a1-trend-rider-prospective-observer-v1.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/rebuild/a1_g4_trend_rider_prospective_observer_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_prospective_observer_v1.py'
       - 'backend/research/rebuild/a1_pre_shadow_qualification_latest.json'
       - 'backend/research/rebuild/a1_trend_rider_delayed_fill_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_long_only_exact_parent_evaluator_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_h4_h5_hardening_v1.py'
       - 'backend/research/contracts/a1_trend_rider_delayed_fill_v1.json'
       - 'backend/research/contracts/a1_trend_rider_long_only_exact_parent_v1.json'
-      - '.github/workflows/a1-g4-trend-rider-prospective-observer-v1.yml'
+      - '.github/workflows/a1-trend-rider-prospective-observer-v1.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 2,6,10,14,18,22 * * *'
@@ -32,7 +32,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-g4-trend-rider-prospective-observer-v1
+  group: a1-trend-rider-prospective-observer-v1
   cancel-in-progress: false
 
 jobs:
@@ -47,11 +47,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify G4 observer is stage-safe and read-only
+      - name: Verify observer is A1-stage-safe and read-only
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_g4_trend_rider_prospective_observer_v1.py
-          python -m backend.research.rebuild.a1_g4_trend_rider_prospective_observer_v1 --self-test
+          python -m py_compile backend/research/rebuild/a1_trend_rider_prospective_observer_v1.py
+          python -m backend.research.rebuild.a1_trend_rider_prospective_observer_v1 --self-test
 
   observe:
     if: github.event_name != 'pull_request'
@@ -98,25 +98,26 @@ jobs:
               --receipt out/long_only_prospective.json \
               --out out/long_only_prospective_hardening.json
           fi
-      - name: Produce G4 read-only prospective observer receipt
+      - name: Produce A1 read-only prospective observer receipt
         run: |
           set -euo pipefail
           HARDENING_ARGS=()
           if [ -f out/long_only_prospective_hardening.json ]; then
             HARDENING_ARGS=(--hardening out/long_only_prospective_hardening.json)
           fi
-          python -m backend.research.rebuild.a1_g4_trend_rider_prospective_observer_v1 \
+          python -m backend.research.rebuild.a1_trend_rider_prospective_observer_v1 \
             --legacy-pre-shadow backend/research/rebuild/a1_pre_shadow_qualification_latest.json \
             --fresh out/long_only_prospective.json \
             "${HARDENING_ARGS[@]}" \
-            --out out/a1_g4_trend_rider_prospective_observer_v1.json
+            --out out/a1_trend_rider_prospective_observer_v1.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_g4_trend_rider_prospective_observer_v1.json'))
-          assert r['current_fsm_stage']=='G4', r
-          assert r['canonical_shadow_stage']=='G12', r
+          r=json.load(open('out/a1_trend_rider_prospective_observer_v1.json'))
+          assert r['roadmap_position']=='A1_RESEARCH', r
+          assert r['gate_stage_claimed'] is None, r
+          assert r['generation_progress_is_separate_from_roadmap_gate'] is True, r
           assert r['observer_mode']=='READ_ONLY_RESEARCH_FORWARD_OBSERVER', r
-          assert r['legacy_name_does_not_grant_g12_shadow'] is True, r
+          assert r['legacy_name_does_not_grant_canonical_shadow'] is True, r
           assert r['canonical_shadow_entry_granted'] is False and r['canonical_shadow_mutation'] is False, r
           assert r['paper_entry_granted'] is False and r['full_survivor_seal_granted'] is False, r
           assert r['selection_authority'] is False and r['promotion_authority'] is False, r
@@ -124,31 +125,33 @@ jobs:
           assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0, r
           print(json.dumps({
               'state':r['state'],
+              'roadmap_position':r['roadmap_position'],
+              'gate_stage_claimed':r['gate_stage_claimed'],
               'fresh_trades':r['fresh_trade_count'],
               'fresh_symbols':r['fresh_symbol_count'],
               'source_quality':r['fresh_source_quality_state'],
               'h4':r['h4_state'],
               'h5':r['h5_state'],
-              'g12_shadow_entry':r['canonical_shadow_entry_granted'],
+              'shadow_entry':r['canonical_shadow_entry_granted'],
               'receipt':r['receipt_sha256'],
           },sort_keys=True))
           PY
-      - name: Persist latest G4 observer receipt
+      - name: Persist latest A1 observer receipt
         run: |
           set -euo pipefail
-          target=backend/research/rebuild/a1_g4_trend_rider_prospective_observer_latest.json
-          cp out/a1_g4_trend_rider_prospective_observer_v1.json "$target"
-          git config user.name 'a1-g4-trend-rider-observer'
+          target=backend/research/rebuild/a1_trend_rider_prospective_observer_latest.json
+          cp out/a1_trend_rider_prospective_observer_v1.json "$target"
+          git config user.name 'a1-trend-rider-observer'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 G4: persist trend_rider prospective observer [skip ci]'
+          git commit -m 'A1: persist trend_rider prospective observer [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
           done
           exit 1
-      - name: Publish G4 observer state to issue 566
+      - name: Publish A1 observer state to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -157,15 +160,16 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json,os,urllib.request
-          r=json.load(open('out/a1_g4_trend_rider_prospective_observer_v1.json'))
-          marker='<!-- A1_G4_TREND_RIDER_PROSPECTIVE_OBSERVER_V1 -->'
+          r=json.load(open('out/a1_trend_rider_prospective_observer_v1.json'))
+          marker='<!-- A1_TREND_RIDER_PROSPECTIVE_OBSERVER_V1 -->'
           body='\n'.join([
               marker,
-              '## A1 G4 trend_rider prospective observer',
+              '## A1 trend_rider prospective observer',
               f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",
-              f"stage={r['current_fsm_stage']}|canonical_shadow={r['canonical_shadow_stage']}|shadow_entry={str(r['canonical_shadow_entry_granted']).lower()}|shadow_mutation={str(r['canonical_shadow_mutation']).lower()}",
+              f"roadmap={r['roadmap_position']}|gate_stage_claimed={r['gate_stage_claimed']}|shadow_entry={str(r['canonical_shadow_entry_granted']).lower()}|shadow_mutation={str(r['canonical_shadow_mutation']).lower()}",
               f"fresh_trades={r['fresh_trade_count']}|fresh_symbols={r['fresh_symbol_count']}|source={r['fresh_source_quality_state']}|h4={r['h4_state']}|h5={r['h5_state']}",
-              'legacy pre-shadow naming is readiness metadata only and does not grant G12 Shadow',
+              'generation labels are separate from roadmap gate labels; no G4 progression is claimed',
+              'legacy pre-shadow naming is readiness metadata only and does not grant canonical Shadow',
               'research continues in parallel; selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'])
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
@@ -174,12 +178,12 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_G4_TREND_RIDER_PROSPECTIVE_OBSERVER_V1_PUBLISHED')
+          print('PASS_A1_TREND_RIDER_PROSPECTIVE_OBSERVER_V1_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-g4-trend-rider-prospective-observer-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-trend-rider-prospective-observer-${{ github.run_id }}-${{ github.run_attempt }}
           path: out
           if-no-files-found: error
           retention-days: 90

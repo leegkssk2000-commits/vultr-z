@@ -7,11 +7,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-SCHEMA = "zel.a1.g4.trend_rider.prospective_observer.v1"
+SCHEMA = "zel.a1.trend_rider.prospective_observer.v1"
 CANDIDATE = "trend_rider_delayed_fill_long_only_v1"
 PARENT = "trend_rider_one_bar_delayed_fill_v1"
-CURRENT_STAGE = "G4"
-CANONICAL_SHADOW_STAGE = "G12"
+ROADMAP_POSITION = "A1_RESEARCH"
 
 
 def read(path: Path) -> dict[str, Any]:
@@ -102,9 +101,10 @@ def build(legacy: Mapping[str, Any], fresh: Mapping[str, Any], hardening: Mappin
 
     result: dict[str, Any] = {
         "schema_version": SCHEMA,
-        "state": "G4_PROSPECTIVE_EVIDENCE_READY" if evidence_ready else "G4_PROSPECTIVE_OBSERVING",
-        "current_fsm_stage": CURRENT_STAGE,
-        "canonical_shadow_stage": CANONICAL_SHADOW_STAGE,
+        "state": "A1_PROSPECTIVE_EVIDENCE_READY" if evidence_ready else "A1_PROSPECTIVE_OBSERVING",
+        "roadmap_position": ROADMAP_POSITION,
+        "gate_stage_claimed": None,
+        "generation_progress_is_separate_from_roadmap_gate": True,
         "observer_mode": "READ_ONLY_RESEARCH_FORWARD_OBSERVER",
         "candidate_id": CANDIDATE,
         "parent_challenger_id": PARENT,
@@ -123,7 +123,7 @@ def build(legacy: Mapping[str, Any], fresh: Mapping[str, Any], hardening: Mappin
         "full_h4_h5_evidence_ready": evidence_ready,
         "legacy_pre_shadow_ready": bool(legacy.get("pre_shadow_ready")),
         "legacy_pre_shadow_state": legacy.get("state"),
-        "legacy_name_does_not_grant_g12_shadow": True,
+        "legacy_name_does_not_grant_canonical_shadow": True,
         "canonical_shadow_entry_granted": False,
         "canonical_shadow_mutation": False,
         "paper_entry_granted": False,
@@ -175,14 +175,15 @@ def self_test() -> int:
         "protected_mutations": 0,
     }
     out = build(legacy, fresh, None)
-    assert out["current_fsm_stage"] == "G4"
-    assert out["canonical_shadow_stage"] == "G12"
+    assert out["roadmap_position"] == "A1_RESEARCH"
+    assert out["gate_stage_claimed"] is None
+    assert out["generation_progress_is_separate_from_roadmap_gate"] is True
     assert out["canonical_shadow_entry_granted"] is False
     assert out["canonical_shadow_mutation"] is False
-    assert out["legacy_name_does_not_grant_g12_shadow"] is True
-    assert out["state"] == "G4_PROSPECTIVE_OBSERVING"
+    assert out["legacy_name_does_not_grant_canonical_shadow"] is True
+    assert out["state"] == "A1_PROSPECTIVE_OBSERVING"
     assert out["execution_authority"] == "NONE" and out["order_authority"] == "BLOCKED"
-    print("PASS_A1_G4_TREND_RIDER_PROSPECTIVE_OBSERVER_V1_SELF_TEST")
+    print("PASS_A1_TREND_RIDER_PROSPECTIVE_OBSERVER_V1_SELF_TEST")
     return 0
 
 
@@ -191,7 +192,7 @@ def main() -> int:
     ap.add_argument("--legacy-pre-shadow", type=Path)
     ap.add_argument("--fresh", type=Path)
     ap.add_argument("--hardening", type=Path)
-    ap.add_argument("--out", type=Path, default=Path("out/a1_g4_trend_rider_prospective_observer_v1.json"))
+    ap.add_argument("--out", type=Path, default=Path("out/a1_trend_rider_prospective_observer_v1.json"))
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
@@ -202,7 +203,7 @@ def main() -> int:
     result = build(read(args.legacy_pre_shadow), read(args.fresh), hardening)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-    print("A1_G4_TREND_RIDER_PROSPECTIVE_OBSERVER=" + json.dumps({
+    print("A1_TREND_RIDER_PROSPECTIVE_OBSERVER=" + json.dumps({
         "state": result["state"],
         "fresh_trade_count": result["fresh_trade_count"],
         "fresh_symbol_count": result["fresh_symbol_count"],

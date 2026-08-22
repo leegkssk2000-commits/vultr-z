@@ -40,6 +40,10 @@ def evaluate(transition: Mapping[str, Any], hardening: Mapping[str, Any]) -> dic
     activation = ssot.get("activation") or {}
     required_state = str(activation.get("required_a1_receipt_state") or "")
     allowed_tiers = {str(x) for x in activation.get("allowed_a1_tiers") or []}
+    min_completed = int(activation.get("minimum_completed_trades_for_actual_a2_pass") or 0)
+    min_h4 = int(activation.get("minimum_h4_control_trades_for_actual_a2_pass") or 0)
+    if min_completed < 25 or min_h4 < 25:
+        raise RuntimeError("A2_SAMPLE_FLOOR_NOT_SEALED")
     if transition.get("state") != required_state:
         raise RuntimeError("A1_CAUSAL_READY_RECEIPT_REQUIRED")
     candidate_id = str(transition.get("candidate_id") or "")
@@ -62,6 +66,14 @@ def evaluate(transition: Mapping[str, Any], hardening: Mapping[str, Any]) -> dic
     if hardening.get("boundary_utc") != row.get("prospective_boundary_utc"):
         raise RuntimeError("HARDENING_BOUNDARY_MISMATCH")
 
+    completed_trades = int(row.get("completed_trades") or 0)
+    hardening_trades = int(hardening.get("candidate_trade_count") or 0)
+    sample_blockers: list[str] = []
+    if completed_trades < min_completed:
+        sample_blockers.append(f"COMPLETED_TRADES:{completed_trades}<{min_completed}")
+    if hardening_trades < min_h4:
+        sample_blockers.append(f"H4_CONTROL_TRADES:{hardening_trades}<{min_h4}")
+
     symbols = ["BTC-USDT", "ETH-USDT"]
     snapshots = {symbol: ev.fetch_execution_snapshot(symbol, cost_authority) for symbol in symbols}
     worst_symbol = max(symbols, key=lambda s: float(snapshots[s]["pretrade_verified_cost_bps"]))
@@ -83,31 +95,59 @@ def evaluate(transition: Mapping[str, Any], hardening: Mapping[str, Any]) -> dic
 
     start = parse_utc(str(row["prospective_boundary_utc"])); end = parse_utc(str(row["terminal_at_utc"]))
     elapsed_days = max((end - start).total_seconds() / 86400.0, 1e-9)
-    round_trips = int(row["completed_trades"])
+    round_trips = completed_trades
     turnover_per_day = round_trips / elapsed_days
+    screening_realized_average_cost = gross_exp - screening_net_exp
+    expected_move_cost_ratio = gross_exp / one_x_cost if one_x_cost > 0 else None
 
     stress = {
         "1X_COST": {"pass": one_x_net_exp > 0.0, "gross_expectancy_bps": gross_exp, "cost_bps_per_trade": one_x_cost, "net_expectancy_bps": one_x_net_exp},
         "2X_COST": {"pass": two_x_net_exp > 0.0, "gross_expectancy_bps": gross_exp, "cost_bps_per_trade": two_x_cost, "net_expectancy_bps": two_x_net_exp},
         "P95_FUNDING": {"pass": p95_net_exp > 0.0, "p95_funding_abs_bps": p95_funding, "cost_bps_per_trade": one_x_cost, "net_expectancy_bps": p95_net_exp},
-        "PLUS_ONE_BAR": {"pass": plus_one_bar_exp_r is not None and plus_one_bar_exp_r > 0.0, "source": f"{candidate_id} H4 one_bar_delay deterministic replay", "net_R": delay_net_r, "trade_count": delay_trades, "expectancy_R": plus_one_bar_exp_r, "superiority_to_parent_required": False},
-        "TURNOVER": {"pass": round_trips > 0 and turnover_per_day > 0.0, "round_trips": round_trips, "elapsed_days": elapsed_days, "round_trips_per_day": turnover_per_day, "cost_bps_total_at_1x": one_x_cost * round_trips, "cost_bps_per_trade": one_x_cost, "duplicate_transition_forbidden": True, "integrity_defects": list(row.get("integrity_defects") or [])},
+        "PLUS_ONE_BAR": {"pass": plus_one_bar_exp_r is not None and plus_one_bar_exp_r > 0.0 and delay_trades >= min_h4, "source": f"{candidate_id} H4 one_bar_delay deterministic replay", "net_R": delay_net_r, "trade_count": delay_trades, "minimum_trade_count": min_h4, "expectancy_R": plus_one_bar_exp_r, "superiority_to_parent_required": False},
+        "TURNOVER": {"pass": None, "gate_role": "DIAGNOSTIC_ONLY", "positive_turnover_is_not_economic_edge": True, "round_trips": round_trips, "elapsed_days": elapsed_days, "round_trips_per_day": turnover_per_day, "cost_bps_total_at_1x": one_x_cost * round_trips, "cost_bps_per_trade": one_x_cost, "duplicate_transition_forbidden": True, "integrity_defects": list(row.get("integrity_defects") or [])},
     }
-    stress_pass = all(x.get("pass") is True for x in stress.values()) and not list(row.get("integrity_defects") or [])
+    required_stress = [str(x) for x in (ssot.get("stress_contract") or [])]
+    if set(required_stress) != {"1X_COST", "2X_COST", "P95_FUNDING", "PLUS_ONE_BAR"}:
+        raise RuntimeError("A2_REQUIRED_STRESS_CONTRACT_DRIFT")
+    integrity_defects = list(row.get("integrity_defects") or [])
+    stress_pass = all((stress.get(name) or {}).get("pass") is True for name in required_stress)
+    pass_allowed = stress_pass and not integrity_defects and not sample_blockers
     result = {
         "schema_version": "zel.a2.cost_turnover_actual.v2",
-        "state": "PASS_A2_COST_TURNOVER" if stress_pass else "HOLD_A2_COST_TURNOVER",
+        "hardening_revision": "SAMPLE25_AND_TURNOVER_DIAGNOSTIC_V1",
+        "state": "PASS_A2_COST_TURNOVER" if pass_allowed else "HOLD_A2_COST_TURNOVER",
         "stage": "A2", "candidate_id": candidate_id,
         "a1_transition_receipt_sha256": transition.get("receipt_sha256"),
         "a1_tier": tiering.get("a1_tier"), "a1_activation_mode": tiering.get("activation", {}).get("mode"),
+        "sample_integrity": {
+            "pass": not sample_blockers,
+            "completed_trades": completed_trades,
+            "minimum_completed_trades": min_completed,
+            "h4_control_trades": hardening_trades,
+            "minimum_h4_control_trades": min_h4,
+            "blockers": sample_blockers,
+            "singleton_or_sparse_a2_pass_forbidden": True,
+        },
         "cost_authority": {
             "ssot_sha256": sha(ssot), "cost_authority_sha256": sha(cost_authority),
             "worst_current_symbol": worst_symbol, "one_x_cost_bps": one_x_cost, "two_x_cost_bps": two_x_cost,
-            "screening_realized_average_cost_bps": gross_exp - screening_net_exp,
+            "screening_realized_average_cost_bps": screening_realized_average_cost,
             "funding_p95_abs_bps": p95_funding,
             "snapshots": {s: {k:v for k,v in snapshots[s].items() if k != "funding_rows"} for s in symbols},
         },
-        "stress": stress, "stress_contract": list(ssot.get("stress_contract") or []) + ["TURNOVER"],
+        "economic_geometry": {
+            "gross_expectancy_bps": gross_exp,
+            "screening_net_expectancy_bps": screening_net_exp,
+            "one_x_net_expectancy_bps": one_x_net_exp,
+            "two_x_net_expectancy_bps": two_x_net_exp,
+            "expected_gross_move_to_one_x_cost_ratio": expected_move_cost_ratio,
+            "ratio_is_diagnostic_not_new_threshold": True,
+        },
+        "stress": stress,
+        "stress_contract": required_stress,
+        "diagnostic_only_metrics": ["TURNOVER", "expected_gross_move_to_one_x_cost_ratio"],
+        "integrity_defects": integrity_defects,
         "execution_observation": {
             "reference_notional_usdt": float(ssot["depth_vwap_impact"]["reference_notional_usdt"]),
             "depth_full_fill_verified_by_snapshot": True,
@@ -125,8 +165,12 @@ def evaluate(transition: Mapping[str, Any], hardening: Mapping[str, Any]) -> dic
 
 def self_test() -> int:
     ssot = read(SSOT)
-    assert set(ssot.get("stress_contract") or []) >= {"1X_COST", "2X_COST", "P95_FUNDING", "PLUS_ONE_BAR"}
-    assert ssot.get("activation", {}).get("actual_evaluation_requires_a1_receipt") is True
+    assert set(ssot.get("stress_contract") or []) == {"1X_COST", "2X_COST", "P95_FUNDING", "PLUS_ONE_BAR"}
+    activation = ssot.get("activation", {})
+    assert activation.get("actual_evaluation_requires_a1_receipt") is True
+    assert int(activation.get("minimum_completed_trades_for_actual_a2_pass") or 0) >= 25
+    assert int(activation.get("minimum_h4_control_trades_for_actual_a2_pass") or 0) >= 25
+    assert ssot.get("turnover", {}).get("pass_role") == "DIAGNOSTIC_ONLY"
     print("PASS_A2_COST_TURNOVER_ACTUAL_V2_SELF_TEST")
     return 0
 
@@ -145,7 +189,7 @@ def main() -> int:
     result = evaluate(read(args.transition), read(args.hardening))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"state":result["state"],"candidate_id":result["candidate_id"],"stress":{k:v.get("pass") for k,v in result["stress"].items()},"next":result["next_stage_if_pass"],"receipt_sha256":result["receipt_sha256"]},sort_keys=True))
+    print(json.dumps({"state":result["state"],"candidate_id":result["candidate_id"],"sample":result["sample_integrity"],"stress":{k:v.get("pass") for k,v in result["stress"].items()},"next":result["next_stage_if_pass"],"receipt_sha256":result["receipt_sha256"]},sort_keys=True))
     return 0 if result["state"] == "PASS_A2_COST_TURNOVER" else 2
 
 

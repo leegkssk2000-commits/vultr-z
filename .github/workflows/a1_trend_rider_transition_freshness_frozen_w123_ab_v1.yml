@@ -1,0 +1,60 @@
+name: A1 Trend Rider Transition Freshness Frozen W123 AB V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_transition_freshness_frozen_w123_ab_v1.py'
+      - '.github/workflows/a1_trend_rider_transition_freshness_frozen_w123_ab_v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen transition freshness A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile \
+            backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py \
+            backend/research/rebuild/a1_trend_rider_transition_freshness_frozen_w123_ab_v1.py
+          python -m backend.research.rebuild.trend_rider_transition_freshness_child_policy_v1
+          python -m backend.research.rebuild.a1_trend_rider_transition_freshness_frozen_w123_ab_v1 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_transition_freshness_frozen_w123_ab_v1 \
+            --out out/a1_trend_rider_transition_freshness_frozen_w123_ab_latest.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_trend_rider_transition_freshness_frozen_w123_ab_latest.json'))
+          p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
+          assert r['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3'
+          assert r['changed_axis']=='TRANSITION_FRESHNESS_REENTRY_SUPPRESSION_ONLY'
+          assert int(p['trades'])==22
+          assert math.isclose(float(p['win_rate']),13/22,rel_tol=0,abs_tol=1e-12)
+          assert math.isclose(float(p['net_pnl_bps']),16509.276493685335,rel_tol=0,abs_tol=1e-9)
+          assert int(c['trades']) <= 22
+          assert r['direct_same_frozen_original_fresh_w123_parent_child_ab_receipt_present'] is True
+          assert r['direct_integrity']['numeric_threshold_sweep'] is False
+          assert r['direct_integrity']['uses_post_outcome_data'] is False
+          assert r['direct_integrity']['existing_parent_one_entry_per_transition'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],'parent':p,'child':c,'deltas':r['metric_deltas'],
+            'retention_pct':r['trade_retention_pct'],'screen_pass':r['development_screen']['pass'],
+            'next_if_fail':r['next_if_fail'],'receipt':r['receipt_sha256']
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-transition-freshness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_transition_freshness_frozen_w123_ab_latest.json
+          retention-days: 30

@@ -1,0 +1,93 @@
+name: A1 Trend Rider Runtime Diagnostic PR V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-trend-rider-runtime-diagnostic-pr-v1.yml'
+      - 'backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py'
+      - 'backend/research/rebuild/trend_rider_momentum_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py'
+      - 'backend/research/contracts/a1_trend_rider_original_fresh_direct_ab_runner_v1.json'
+      - 'backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-trend-rider-runtime-diagnostic-pr-v1-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify canonical guard
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py --out out/guard.json
+          python -m backend.research.rebuild.a1_trend_rider_momentum_ab_v1 --self-test
+      - name: Run heavy direct A/B and capture runtime failure without masking evidence
+        id: heavy
+        shell: bash
+        run: |
+          set +e
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trend_rider_momentum_ab_v1 --out out/a1_trend_rider_momentum_ab_latest.json >out/runtime.log 2>&1
+          rc=$?
+          echo "$rc" > out/exit_code.txt
+          cat out/runtime.log
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Summarize receipt if produced
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "heavy_exit_code=${{ steps.heavy.outputs.exit_code }}"
+          if [ -f out/a1_trend_rider_momentum_ab_latest.json ]; then
+            python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_momentum_ab_latest.json'))
+          p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
+          print(json.dumps({
+            'state':r['state'],
+            'baseline':r['baseline_identity'],
+            'axis':r['changed_axis'],
+            'direct_ab':r['direct_same_original_fresh_w123_parent_child_ab_receipt_present'],
+            'parent':p,
+            'child':c,
+            'deltas':r['metric_deltas'],
+            'retention_pct':r['trade_retention_pct'],
+            'screen_pass':r['development_screen']['pass'],
+            'next_if_pass':r['next_if_pass'],
+            'next_if_fail':r['next_if_fail'],
+            'receipt':r['receipt_sha256'],
+            'selection_authority':r['selection_authority'],
+            'promotion_authority':r['promotion_authority'],
+            'execution_authority':r['execution_authority'],
+            'order_authority':r['order_authority'],
+            'live_trade_authority':r['live_trade_authority'],
+          },sort_keys=True))
+          PY
+          else
+            echo 'RECEIPT_NOT_PRODUCED'
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-runtime-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/guard.json
+            out/runtime.log
+            out/exit_code.txt
+            out/a1_trend_rider_momentum_ab_latest.json
+          if-no-files-found: warn
+          retention-days: 30

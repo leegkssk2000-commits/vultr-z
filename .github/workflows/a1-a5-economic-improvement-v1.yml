@@ -1,28 +1,30 @@
-name: A1 A5 Economic Improvement V1
+name: A1 A5 Economic Improvement V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v1.py'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v2.py'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - '.github/workflows/a1-a5-economic-improvement-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v1.py'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v2.py'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - '.github/workflows/a1-a5-economic-improvement-v1.yml'
   workflow_dispatch:
   schedule:
-    - cron: '47 2 * * *'
+    - cron: '47 */6 * * *'
 
 permissions:
   contents: write
   issues: write
 
 concurrency:
-  group: a1-a5-economic-improvement-v1
+  group: a1-a5-economic-improvement-v2
   cancel-in-progress: false
 
 jobs:
@@ -37,11 +39,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test bounded A5 economic engine
+      - name: Compile and self-test strict cumulative A5 economic engine
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v1.py
+          python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v2.py
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v1 --self-test
+          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v2 --self-test
 
   improve:
     if: github.event_name != 'pull_request'
@@ -55,7 +59,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run A5 one-axis economic improvement cascade
+      - name: Run A5 strict cumulative one-axis economic improvement cascade
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -65,29 +69,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v1 --output out/a1_a5_economic_improvement_v1.json
+          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v2 --output out/a1_a5_economic_improvement_v2.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_a5_economic_improvement_v1.json'))
-          assert r['a5_order']==['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
+          r=json.load(open('out/a1_a5_economic_improvement_v2.json'))
+          expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
+          assert r['a5_order']==expected
           assert int(r['paid_request_count']) <= 3
           assert r['policy']['fresh_validation_wait_does_not_block_development_research'] is True
+          assert r['policy']['strict_openai_structured_output'] is True
+          assert r['policy']['cumulative_axis_memory'] is True
+          assert r['policy']['previously_attempted_axis_reuse_forbidden'] is True
           assert r['policy']['second_step_must_use_distinct_axis'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
-          print(json.dumps({'state':r['state'],'development_pass':r['development_economic_pass_count'],'paid':r['paid_request_count'],'by_strategy':r['by_strategy'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'state':r['state'],'development_pass':r['development_economic_pass_count'],'paid':r['paid_request_count'],'active':r['active_strategy_ids'],'by_strategy':r['by_strategy'],'providers':r['providers'],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
       - name: Persist A5 economic improvement receipt
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
-          cp out/a1_a5_economic_improvement_v1.json "$target"
+          cp out/a1_a5_economic_improvement_v2.json "$target"
           git config user.name 'a1-a5-economic-improvement'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist economic improvement receipt [skip ci]'
+          git commit -m 'A1 A5: persist economic improvement V2 receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -102,13 +110,13 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_a5_economic_improvement_v1.json'))
-          marker='<!-- A1_A5_ECONOMIC_IMPROVEMENT_V1 -->'
+          r=json.load(open('out/a1_a5_economic_improvement_v2.json'))
+          marker='<!-- A1_A5_ECONOMIC_IMPROVEMENT_V2 -->'
           rows=[]
           for sid in r['a5_order']:
               x=r['by_strategy'][sid]
-              rows.append(f"{sid}:attempts={x['attempt_count']},dev_pass={x['development_economic_pass_count']},axes={','.join(x['attempted_axes'])},next={x['next']}")
-          lines=[marker,'## A1 A5 Economic Improvement V1',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",f"development_economic_pass={r['development_economic_pass_count']}|paid_requests={r['paid_request_count']}/{r['paid_request_cap']}",*rows,'NO_IDLE=fresh validation wait does not block development research','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+              rows.append(f"{sid}:attempts={x['attempt_count']},dev_pass={x['development_economic_pass_count']},current_axes={','.join(x['attempted_axes'])},cumulative_axes={','.join(x['cumulative_attempted_axes'])},remaining={x['remaining_axis_count']},next={x['next']}")
+          lines=[marker,'## A1 A5 Economic Improvement V2',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",f"development_economic_pass={r['development_economic_pass_count']}|paid_requests={r['paid_request_count']}/{r['paid_request_cap']}|active={','.join(r['active_strategy_ids'])}",*rows,'NO_IDLE=fresh validation wait does not block development research; attempted axes persist and are not repeated','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
@@ -117,12 +125,12 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_A5_ECONOMIC_IMPROVEMENT_PUBLISHED')
+          print('PASS_A1_A5_ECONOMIC_IMPROVEMENT_V2_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-a5-economic-improvement-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_a5_economic_improvement_v1.json
+          name: a1-a5-economic-improvement-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_a5_economic_improvement_v2.json
           if-no-files-found: error
           retention-days: 90

@@ -1,0 +1,52 @@
+name: A1 Trend Rider Failure Attribution V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_failure_attribution_v1.py'
+      - '.github/workflows/a1_trend_rider_failure_attribution_v1.yml'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen W123 momentum failure attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/research/rebuild/a1_trend_rider_failure_attribution_v1.py
+          python -m backend.research.rebuild.a1_trend_rider_failure_attribution_v1 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_failure_attribution_v1 --out out/a1_trend_rider_failure_attribution_latest.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_trend_rider_failure_attribution_latest.json'))
+          assert r['state']=='PASS_FROZEN_W123_MOMENTUM_FAILURE_ATTRIBUTION'
+          assert r['parent_anchor_match'] is True
+          assert r['partition_integrity'] is True
+          assert r['contribution_identity'] is True
+          assert int(r['parent']['trades'])==22
+          assert int(r['momentum_retained']['trades'])==10
+          assert int(r['momentum_removed']['trades'])==12
+          assert int(r['diagnosis']['momentum_removes_losses_count'])==7
+          assert int(r['diagnosis']['momentum_removes_winners_count'])==5
+          assert float(r['momentum_removed']['net_pnl_bps']) > 0.0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'parent':r['parent'],'retained':r['momentum_retained'],'removed':r['momentum_removed'],'by_gate_window':r['by_gate_window'],'by_gate_symbol':r['by_gate_symbol'],'by_gate_side':r['by_gate_side'],'by_gate_exit_reason':r['by_gate_exit_reason'],'top_removed_winners':r['top_removed_winners'],'top_removed_losses':r['top_removed_losses'],'diagnosis':r['diagnosis']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-failure-attribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_failure_attribution_latest.json
+          retention-days: 30

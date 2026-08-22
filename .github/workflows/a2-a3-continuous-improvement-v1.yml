@@ -1,0 +1,43 @@
+name: A2 A3 Continuous Improvement V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a2_a3_continuous_improvement_loop_v1.json'
+      - 'backend/research/architecture_factory/a2_a3_continuous_improvement_guard_v1.py'
+      - '.github/workflows/a2-a3-continuous-improvement-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a2_a3_continuous_improvement_loop_v1.json'
+      - 'backend/research/architecture_factory/a2_a3_continuous_improvement_guard_v1.py'
+      - '.github/workflows/a2-a3-continuous-improvement-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/architecture_factory/a2_a3_continuous_improvement_guard_v1.py
+      - name: Validate policy
+        run: |
+          python backend/research/architecture_factory/a2_a3_continuous_improvement_guard_v1.py \
+            --out /tmp/a2_a3_continuous_improvement_latest.json
+          cat /tmp/a2_a3_continuous_improvement_latest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a2-a3-continuous-improvement-${{ github.run_id }}
+          path: /tmp/a2_a3_continuous_improvement_latest.json
+          if-no-files-found: warn

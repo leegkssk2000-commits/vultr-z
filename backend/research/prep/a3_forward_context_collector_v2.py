@@ -20,6 +20,15 @@ def read(path: Path) -> dict[str, Any]:
     return value
 
 
+def _normalize_capture_timestamp_fields(row: dict[str, Any]) -> None:
+    """Expose the V2 canonical capture key while preserving the V1 audit alias."""
+    raw = row.get("capture_completed_at_ms")
+    if raw is None:
+        raw = row.get("snapshot_capture_completed_at_ms")
+    if raw is not None:
+        row["capture_completed_at_ms"] = int(raw)
+
+
 def evaluate(prior: dict[str, Any]) -> dict[str, Any]:
     result = v1.evaluate(prior)
     taxonomy = read(TAXONOMY)
@@ -34,6 +43,7 @@ def evaluate(prior: dict[str, Any]) -> dict[str, Any]:
             "entry_ts": "NEXT_BAR_OPEN_AND_FIRST_EXECUTION_DECISION_TIME",
         },
         "snapshot_match_rule": "same symbol; capture_completed_at_ms <= candidate.entry_ts; choose latest eligible capture",
+        "capture_completed_at_ms_source": "canonical V2 key; derived losslessly from legacy snapshot_capture_completed_at_ms when present",
         "bar_feature_rule": "bar_feature_cutoff_ts_ms <= candidate.entry_ts",
         "maximum_snapshot_age_ms": stale_after_ms,
         "maximum_snapshot_age_source": "backend/research/prep/a3_regime_taxonomy_v1.json.input_contract.stale_after_ms",
@@ -42,12 +52,15 @@ def evaluate(prior: dict[str, Any]) -> dict[str, Any]:
         "future_snapshot_attachment_forbidden": True,
         "outcome_defined_matching_forbidden": True,
     }
-    # V1 rows may contain an older descriptive contract. The actual timestamps
-    # remain valid; V2 is the authoritative interpretation for matching them.
-    for row in result.get("new_rows") or []:
-        if isinstance(row, dict):
-            row["causal_match_contract_version"] = "A3_FORWARD_CONTEXT_V2"
-            row["maximum_snapshot_age_ms"] = stale_after_ms
+    # V1 rows carry snapshot_capture_completed_at_ms. V2 exposes the canonical
+    # capture_completed_at_ms key on both retained and newly captured rows while
+    # preserving the original field for audit/backward compatibility.
+    for collection_name in ("rows", "new_rows"):
+        for row in result.get(collection_name) or []:
+            if isinstance(row, dict):
+                _normalize_capture_timestamp_fields(row)
+                row["causal_match_contract_version"] = "A3_FORWARD_CONTEXT_V2"
+                row["maximum_snapshot_age_ms"] = stale_after_ms
     result["receipt_sha256"] = v1.stable_sha({k: v for k, v in result.items() if k != "receipt_sha256"})
     return result
 
@@ -55,6 +68,12 @@ def evaluate(prior: dict[str, Any]) -> dict[str, Any]:
 def self_test() -> int:
     taxonomy = read(TAXONOMY)
     assert int((taxonomy.get("input_contract") or {}).get("stale_after_ms") or 0) == 7_200_000
+    legacy = {"snapshot_capture_completed_at_ms": 1_787_371_485_020}
+    _normalize_capture_timestamp_fields(legacy)
+    assert legacy["capture_completed_at_ms"] == 1_787_371_485_020
+    canonical = {"capture_completed_at_ms": 1_787_371_486_008, "snapshot_capture_completed_at_ms": 1}
+    _normalize_capture_timestamp_fields(canonical)
+    assert canonical["capture_completed_at_ms"] == 1_787_371_486_008
     print("PASS_A3_FORWARD_CONTEXT_COLLECTOR_V2_SELF_TEST")
     return 0
 

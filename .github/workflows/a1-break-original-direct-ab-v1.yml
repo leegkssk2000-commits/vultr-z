@@ -1,0 +1,43 @@
+name: A1 Break Original Direct AB V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_break_and_continue_original_gen1_snapshot_v1.json'
+      - 'backend/research/architecture_factory/a1_break_and_continue_original_relative_volume_ab_v1.py'
+      - '.github/workflows/a1-break-original-direct-ab-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_break_and_continue_original_gen1_snapshot_v1.json'
+      - 'backend/research/architecture_factory/a1_break_and_continue_original_relative_volume_ab_v1.py'
+      - '.github/workflows/a1-break-original-direct-ab-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  direct-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/architecture_factory/a1_break_and_continue_original_relative_volume_ab_v1.py
+      - name: Verify frozen original cohort
+        run: python backend/research/architecture_factory/a1_break_and_continue_original_relative_volume_ab_v1.py --self-test
+      - name: Run direct same-original-cohort A/B
+        run: |
+          python backend/research/architecture_factory/a1_break_and_continue_original_relative_volume_ab_v1.py \
+            --out /tmp/a1_break_and_continue_original_relative_volume_ab_latest.json
+          cat /tmp/a1_break_and_continue_original_relative_volume_ab_latest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-original-direct-ab-${{ github.run_id }}
+          path: /tmp/a1_break_and_continue_original_relative_volume_ab_latest.json
+          if-no-files-found: warn

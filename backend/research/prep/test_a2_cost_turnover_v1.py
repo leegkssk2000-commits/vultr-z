@@ -26,14 +26,23 @@ class A2CostTurnoverPrepTests(unittest.TestCase):
             reference_notional_usdt=10000.0,
         )
 
-    def test_contract_is_prep_only_and_authority_blocked(self):
+    def test_contract_is_research_only_receipt_gated_and_authority_blocked(self):
         s = json.loads((ROOT / "backend/research/prep/a2_cost_turnover_ssot_v1.json").read_text())
         self.assertEqual(s["state"], "A2_PREP_READY")
-        self.assertFalse(s["gates"]["actual_survivor_evaluation_allowed"])
+        self.assertTrue(s["research_only"])
+        self.assertTrue(s["gates"]["actual_survivor_evaluation_allowed"])
+        self.assertTrue(s["gates"]["actual_evaluation_requires_a1_receipt"])
         self.assertFalse(s["gates"]["old_or_pre_rebuild_pnl_used"])
+        self.assertFalse(s["gates"]["selection_allowed"])
+        self.assertFalse(s["gates"]["promotion_allowed"])
         self.assertTrue(s["fee"]["maker_reference_only"])
         self.assertFalse(s["fee"]["maker_fill_model_verified"])
         self.assertFalse(s["fee"]["maker_may_reduce_cost"])
+        activation = s["activation"]
+        self.assertGreaterEqual(int(activation["minimum_completed_trades_for_actual_a2_pass"]), 25)
+        self.assertGreaterEqual(int(activation["minimum_h4_control_trades_for_actual_a2_pass"]), 25)
+        self.assertEqual(s["turnover"]["pass_role"], "DIAGNOSTIC_ONLY")
+        self.assertTrue(s["turnover"]["positive_turnover_is_not_economic_edge"])
         a = s["authority"]
         self.assertFalse(a["selection_authority"])
         self.assertFalse(a["promotion_authority"])
@@ -79,7 +88,8 @@ class A2CostTurnoverPrepTests(unittest.TestCase):
             reference_notional_usdt=10000.0,
         )
         with self.assertRaisesRegex(ValueError, "DEPTH_REFERENCE_NOTIONAL_UNFILLED"):
-            compute_cost(broken)
+            compute_cost(broken
+            )
 
     def test_expected_move_cost_ratio_has_no_selection_authority(self):
         result = compute_cost(self.fixture())

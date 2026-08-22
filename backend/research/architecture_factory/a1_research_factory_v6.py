@@ -13,6 +13,7 @@ import backend.research.architecture_factory.a1_research_factory_v5 as v5
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = ROOT / "backend/research/contracts/a1_a5_no_idle_research_v1.json"
+TREND_RIDER_EXPANSION = ROOT / "backend/research/contracts/a1_trend_rider_online_expansion_v1.json"
 P3_CONTRACT = ROOT / "backend/research/contracts/p3_carry_flow_prospective_native_v1.json"
 SCHEMA = "zel.a1_research_factory.v6"
 COMMON_READY = {"ohlcv", "volume"}
@@ -29,6 +30,17 @@ def _contract() -> dict[str, Any]:
     c = _read(CONTRACT)
     if c.get("schema_version") != "zel.a1.a5_no_idle_research.v1":
         raise RuntimeError("A5_NO_IDLE_CONTRACT_SCHEMA_MISMATCH")
+    return c
+
+
+def _trend_rider_expansion() -> dict[str, Any]:
+    c = _read(TREND_RIDER_EXPANSION)
+    if c.get("schema_version") != "zel.a1.trend_rider.online_expansion.v1":
+        raise RuntimeError("TREND_RIDER_ONLINE_EXPANSION_SCHEMA_MISMATCH")
+    if c.get("strategy_id") != "trend_rider":
+        raise RuntimeError("TREND_RIDER_ONLINE_EXPANSION_IDENTITY_MISMATCH")
+    if c.get("baseline_identity") != "ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3":
+        raise RuntimeError("TREND_RIDER_ONLINE_EXPANSION_BASELINE_MISMATCH")
     return c
 
 
@@ -71,13 +83,46 @@ def _contract_ready_rows(c: Mapping[str, Any], strategy_id: str) -> list[dict[st
     return out
 
 
+def _supplemental_ready_rows(strategy_id: str) -> list[dict[str, Any]]:
+    if strategy_id != "trend_rider":
+        return []
+    c = _trend_rider_expansion()
+    out: list[dict[str, Any]] = []
+    for raw in c.get("repair_axes") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        axis = str(raw.get("axis") or "").strip()
+        required = [str(x) for x in (raw.get("required_sources") or [])]
+        if not axis:
+            continue
+        if raw.get("source_lane") != "READY_COMMON" or not set(required).issubset(COMMON_READY):
+            continue
+        out.append({
+            "strategy_id": "trend_rider",
+            "axis": axis,
+            "mechanism": str(raw.get("mechanism") or ""),
+            "falsification": str(raw.get("falsification") or ""),
+            "required_sources": required,
+            "source_ids": [],
+            "external_evidence_ids": [str(x) for x in (raw.get("evidence_ids") or [])],
+            "baseline_identity": c.get("baseline_identity"),
+            "score": 20000.0 + float(raw.get("priority") or 0),
+            "origin": "TREND_RIDER_ONLINE_EXPANSION",
+            "status": "FROZEN_EXTERNAL_EVIDENCE_AXIS",
+            "source_gate": "READY_COMMON",
+            "eligible_for_experiment_queue": False,
+        })
+    out.sort(key=lambda x: (-float(x.get("score") or 0), str(x.get("axis") or "")))
+    return out
+
+
 def _lineage_pool(rows: Any) -> list[str]:
     """Reuse only evidence already admitted for the exact strategy READY_COMMON backlog.
 
-    Contract-added axes may be new post-sealed identities, but their lineage cannot be
-    fabricated. Seeding from existing exact-strategy evidence lets the identity lock
-    retain a candidate; independent V5 reviewers still decide whether the evidence is
-    semantically sufficient for that specific axis before any replay is eligible.
+    Contract-added axes may be new post-sealed identities, but their executable lineage
+    cannot be fabricated. Supplemental online-evidence IDs remain hypothesis metadata;
+    source_ids are still seeded only from the exact strategy READY backlog and then
+    independently reviewed before any replay can become eligible.
     """
     out: list[str] = []
     if not isinstance(rows, list):
@@ -119,7 +164,8 @@ def a5_strict_priority_targets(
                 axis = str(raw.get("axis") or "").strip()
                 if axis:
                     ready_by_axis[axis] = dict(raw)
-        for row in _contract_ready_rows(c, sid):
+        candidates = _contract_ready_rows(c, sid) + _supplemental_ready_rows(sid)
+        for row in candidates:
             if lineage and not row.get("source_ids"):
                 row["source_ids"] = lineage[:6]
                 row["lineage_seed_policy"] = "EXACT_STRATEGY_READY_BACKLOG_ONLY"
@@ -163,6 +209,20 @@ def _source_lane_readiness(c: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _trend_rider_expansion_summary() -> dict[str, Any]:
+    c = _trend_rider_expansion()
+    ready = _supplemental_ready_rows("trend_rider")
+    return {
+        "state": c.get("state"),
+        "baseline_identity": c.get("baseline_identity"),
+        "evidence_count": len(c.get("external_evidence") or []),
+        "total_axis_count": len(c.get("repair_axes") or []),
+        "ready_common_axis_count": len(ready),
+        "ready_common_axes": [x["axis"] for x in ready],
+        "a1_a2_a3_gate_order_preserved": bool((c.get("acceptance_contract") or {}).get("a1_a2_a3_gate_order_preserved")),
+    }
+
+
 def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limit: int = 5) -> dict[str, Any]:
     c = _contract()
     old = v3.strict_priority_targets
@@ -174,10 +234,13 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
 
     targets = [str(x) for x in (result.get("ai_scout_priority_strategy_ids") or [])]
     seeded = 0
+    supplemental_seeded = 0
     for sid in targets:
         for row in v3._READY_BY_STRATEGY.get(sid) or []:
             if row.get("lineage_seed_policy") == "EXACT_STRATEGY_READY_BACKLOG_ONLY" and row.get("source_ids"):
                 seeded += 1
+                if row.get("origin") == "TREND_RIDER_ONLINE_EXPANSION":
+                    supplemental_seeded += 1
     result["schema_version"] = SCHEMA
     result["a5_no_idle"] = {
         "contract_state": c.get("state"),
@@ -191,6 +254,8 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
         "sealed_exact25_axis_mutation_forbidden": True,
         "lineage_seed_policy": "EXACT_STRATEGY_READY_BACKLOG_ONLY",
         "lineage_seeded_contract_axis_count": seeded,
+        "trend_rider_online_expansion_seeded_axis_count": supplemental_seeded,
+        "trend_rider_online_expansion": _trend_rider_expansion_summary(),
         "source_lane_readiness": _source_lane_readiness(c),
         "trend_rider_known_hardening_failures": ((c.get("strategies") or {}).get("trend_rider") or {}).get("known_hardening_failures") or [],
         "pareto_metrics": ((c.get("optimization_objective") or {}).get("metrics") or []),
@@ -201,6 +266,7 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
     result["policy"]["a5_priority_until_g4_survivors_or_axis_exhaustion"] = True
     result["policy"]["sealed_axis_replay_from_contract_forbidden"] = True
     result["policy"]["contract_axis_lineage_must_come_from_exact_strategy_ready_backlog"] = True
+    result["policy"]["trend_rider_original_fresh_online_expansion"] = True
     result["selection_authority"] = False
     result["promotion_authority"] = False
     result["execution_authority"] = "NONE"
@@ -218,11 +284,20 @@ def run(output: Path, *, network: bool = True, ai: bool = True, ai_strategy_limi
 def self_test() -> int:
     c = _contract()
     order = _a5_order(c)
+    expansion = _trend_rider_expansion()
+    supplemental = _supplemental_ready_rows("trend_rider")
     assert order == ["trend_rider", "break_and_continue", "supertrend_pullback", "keltner_trend", "trend_ma_macd"]
     assert c["global_invariants"]["fresh_wait_blocks_validation_only"] is True
     assert c["global_invariants"]["research_queue_must_continue_during_fresh_wait"] is True
     assert c["selection_authority"] is False and c["promotion_authority"] is False
     assert c["execution_authority"] == "NONE" and c["order_authority"] == "BLOCKED" and c["live_trade_authority"] == "BLOCKED"
+    assert expansion["baseline_identity"] == "ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3"
+    assert expansion["acceptance_contract"]["same_original_fresh_baseline_required"] is True
+    assert expansion["acceptance_contract"]["a1_a2_a3_gate_order_preserved"] is True
+    assert len(expansion.get("external_evidence") or []) >= 4
+    assert len(supplemental) >= 5
+    assert all(x.get("external_evidence_ids") for x in supplemental)
+    assert all(x.get("source_ids") == [] for x in supplemental)
     strategies = c.get("strategies") or {}
     for sid in order:
         block = strategies[sid]
@@ -243,11 +318,17 @@ def self_test() -> int:
     }
     targets = a5_strict_priority_targets({"strategies": {}}, list(order), seeded_backlogs, 5)
     assert targets == order, targets
-    assert len(v3._READY_BY_STRATEGY["trend_rider"]) >= 8
-    seeded_rows = [x for x in v3._READY_BY_STRATEGY["trend_rider"] if x.get("origin") == "A5_NO_IDLE_CONTRACT"]
+    trend_ready = v3._READY_BY_STRATEGY["trend_rider"]
+    assert len(trend_ready) == 12
+    supplemental_rows = [x for x in trend_ready if x.get("origin") == "TREND_RIDER_ONLINE_EXPANSION"]
+    assert len(supplemental_rows) >= 5
+    assert all(x.get("source_ids") == ["EVIDENCE_trend_rider"] for x in supplemental_rows)
+    assert all(x.get("lineage_seed_policy") == "EXACT_STRATEGY_READY_BACKLOG_ONLY" for x in supplemental_rows)
+    seeded_rows = [x for x in trend_ready if x.get("origin") == "A5_NO_IDLE_CONTRACT"]
     assert seeded_rows and all(x.get("source_ids") for x in seeded_rows), seeded_rows
     assert all(x.get("lineage_seed_policy") == "EXACT_STRATEGY_READY_BACKLOG_ONLY" for x in seeded_rows)
     print("PASS_A1_RESEARCH_FACTORY_V6_A5_NO_IDLE_SELF_TEST")
+    print("PASS_TREND_RIDER_ORIGINAL_FRESH_ONLINE_EXPANSION_BINDING")
     return 0
 
 
@@ -268,6 +349,7 @@ def main() -> int:
         "sources": r.get("external_source_count"),
         "new_discovered": r.get("new_discovered_source_count"),
         "reviewed_ready_common": r.get("reviewed_ready_common_count"),
+        "trend_rider_online_expansion": (r.get("a5_no_idle") or {}).get("trend_rider_online_expansion"),
         "next": r.get("next_experiment_candidate"),
         "receipt": r.get("receipt_sha256"),
     }, ensure_ascii=False, sort_keys=True))

@@ -1,0 +1,140 @@
+name: A1 A4 Distinct Child Repair Batch V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-a4-distinct-child-repair-batch-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-a4-distinct-child-repair-batch-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '7 2,8,14,20 * * *'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify distinct-child contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py
+          python -m backend.research.rebuild.a1_a4_distinct_child_repair_batch_v1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild sealed A4 parents
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          for SID in break_and_continue supertrend_pullback keltner_trend trend_ma_macd; do
+            python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+              --terminal-replay --strategy-id "$SID" --symbols "$SYMBOLS" \
+              --out "out/${SID}_exact_parent.json"
+          done
+      - name: Evaluate distinct children
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_a4_distinct_child_repair_batch_v1 \
+            --break-parent out/break_and_continue_exact_parent.json \
+            --supertrend-parent out/supertrend_pullback_exact_parent.json \
+            --keltner-parent out/keltner_trend_exact_parent.json \
+            --macd-parent out/trend_ma_macd_exact_parent.json \
+            --out out/a1_a4_distinct_child_repair_batch_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_a4_distinct_child_repair_batch_v1.json'))
+          assert r['policy']['one_axis_only'] is True
+          assert r['policy']['post_outcome_threshold_rescue_forbidden'] is True
+          assert r['policy']['parameter_sweep_forbidden'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          print(json.dumps({'state':r['state'],'ready':r['development_ready_count'],'next':r['next_distinct_child_candidate'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist distinct-child receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_a4_distinct_child_repair_latest.json
+          cp out/a1_a4_distinct_child_repair_batch_v1.json "$target"
+          git config user.name 'a1-a4-distinct-child-repair'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 A4: persist distinct-child repair receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish distinct-child state to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_a4_distinct_child_repair_batch_v1.json'))
+          marker='<!-- A1_A4_DISTINCT_CHILD_REPAIR_BATCH_V1 -->'
+          lines=[marker,'## A1 A4 Distinct Child Repair Batch V1',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}|ready={r['development_ready_count']}"]
+          for sid,row in r['strategies'].items():
+              p=row['parent_metrics']; lines.append(f"{sid}:parent_trades={p['trades']}|net_exp={p['net_expectancy_bps']}|pf={p['profit_factor']}|wr={p['win_rate']}|dd={p['drawdown_bps']}|parent_h5={','.join(row['parent_concentration']['blockers'])}|ready={row['development_ready_count']}")
+              for x in row['candidates']:
+                  m=x['metrics']; lines.append(f"  {x['changed_axis']}/{x['changed_variant']}:trades={m['trades']}|ret={x['trade_retention_pct']:.2f}|net_exp={m['net_expectancy_bps']}|pf={m['profit_factor']}|payoff={m['payoff']}|wr={m['win_rate']}|dd={m['drawdown_bps']}|h5={','.join(x['concentration']['blockers'])}|econ={x['economic_gate_pass']}|ready={x['development_candidate_ready']}")
+          n=r.get('next_distinct_child_candidate') or {}; lines += [f"next={n.get('candidate_id')}|axis={n.get('changed_axis')}|variant={n.get('changed_variant')}",'one-axis distinct-child research; no threshold rescue, sweep, selection, promotion, execution, order, or live authority','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          body='\n'.join(lines)
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_A4_DISTINCT_CHILD_REPAIR_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-a4-distinct-child-repair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_a4_distinct_child_repair_batch_v1.json
+            out/*_exact_parent.json
+          if-no-files-found: error
+          retention-days: 90

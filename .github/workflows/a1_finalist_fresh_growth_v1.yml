@@ -1,0 +1,96 @@
+name: A1 Finalist Fresh Growth V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_finalist_fresh_growth_v1.py'
+      - '.github/workflows/a1_finalist_fresh_growth_v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_finalist_fresh_growth_v1.py'
+      - '.github/workflows/a1_finalist_fresh_growth_v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '43 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-finalist-fresh-growth-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify finalist fresh-growth collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_finalist_fresh_growth_v1.py
+          python -m backend.research.rebuild.a1_finalist_fresh_growth_v1 --self-test
+
+  research:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sequentially replay parked finalists on their sealed prospective boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_fresh_growth_v1 \
+            --out out/a1_finalist_fresh_growth_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_finalist_fresh_growth_latest.json'))
+          assert r['terminal_replay_only'] is True
+          assert r['canonical_ledger_mutation'] is False
+          assert r['thresholds_changed'] is False
+          assert r['strategy_parameters_changed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['target_count']) == 4
+          print(json.dumps({
+            'state':r['state'],'growth':r['growth_target_count'],'ready25':r['ready_25_count'],
+            'targets':[{'id':x.get('strategy_id'),'trades':x.get('completed_trades'),'growth':x.get('trade_growth_vs_terminal_receipt'),'state':x.get('state')} for x in r['targets']],
+            'receipt':r['receipt_sha256']
+          },sort_keys=True))
+          PY
+      - name: Persist latest fresh-growth receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_finalist_fresh_growth_latest.json
+          cp out/a1_finalist_fresh_growth_latest.json "$target"
+          git config user.name 'a1-finalist-fresh-growth-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 finalists: persist fresh-growth receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-fresh-growth-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_finalist_fresh_growth_latest.json
+          if-no-files-found: error
+          retention-days: 90

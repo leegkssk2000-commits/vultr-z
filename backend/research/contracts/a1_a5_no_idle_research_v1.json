@@ -1,0 +1,170 @@
+{
+  "schema_version": "zel.a1.a5_no_idle_research.v1",
+  "state": "FROZEN_A5_NO_IDLE_CONTINUOUS_IMPROVEMENT",
+  "research_only": true,
+  "objective": "Continue external-evidence-driven one-axis improvement of the A-grade five while any frozen candidate is accumulating prospective validation evidence; validation wait must never idle research generation or pre-replay review.",
+  "a5_priority_order": [
+    "trend_rider",
+    "break_and_continue",
+    "supertrend_pullback",
+    "keltner_trend",
+    "trend_ma_macd"
+  ],
+  "global_invariants": {
+    "fresh_wait_blocks_validation_only": true,
+    "research_queue_must_continue_during_fresh_wait": true,
+    "one_heavy_replay_at_a_time": true,
+    "queue_generation_and_review_may_continue_while_heavy_replay_waits": true,
+    "sealed_exact25_axis_mutation_forbidden": true,
+    "post_outcome_threshold_rescue_forbidden": true,
+    "holdout_outcome_tuning_forbidden": true,
+    "best_horizon_selection_forbidden": true,
+    "post_outcome_trade_deletion_forbidden": true,
+    "failed_axis_advances_to_next_distinct_axis": true,
+    "passed_repair_becomes_new_research_incumbent": true,
+    "restart_from_zero_after_pass_forbidden": true,
+    "dedup_cosine_threshold": 0.85
+  },
+  "optimization_objective": {
+    "mode": "PARETO_MULTI_METRIC",
+    "metrics": [
+      "net_expectancy_bps",
+      "net_pnl_bps",
+      "profit_factor",
+      "payoff",
+      "win_rate",
+      "drawdown_bps",
+      "trade_retention_pct",
+      "cost_turnover_bps",
+      "symbol_robustness",
+      "regime_robustness",
+      "side_robustness",
+      "leave_one_group_out_robustness",
+      "top_trade_contribution_concentration"
+    ],
+    "headline_pf_or_payoff_is_never_a_stop_condition": true,
+    "risk_scaling_requires_dual_attribution": {
+      "unscaled_signal_edge": true,
+      "scaled_portfolio_edge": true,
+      "risk_management_gain_must_not_be_labeled_signal_alpha": true
+    }
+  },
+  "external_evidence": [
+    {
+      "id": "A5E1",
+      "tier": "peer_reviewed",
+      "identifier": "DOI:10.1016/j.finmar.2016.05.003",
+      "title": "Time series momentum and volatility scaling",
+      "use": "VOLATILITY_RISK_SCALING_ONLY attribution guard; compare unscaled signal edge with scaled portfolio edge."
+    },
+    {
+      "id": "A5E2",
+      "tier": "peer_reviewed",
+      "identifier": "DOI:10.1016/j.finmar.2021.100619",
+      "title": "Intraday time series momentum in cryptocurrency markets",
+      "use": "Liquidity, volatility and discrete-information regime ownership for crypto intraday momentum."
+    },
+    {
+      "id": "A5E3",
+      "tier": "peer_reviewed",
+      "identifier": "DOI:10.1016/j.najef.2022.101733",
+      "title": "Intraday momentum and reversal in cryptocurrency markets",
+      "use": "Regime-dependent momentum/reversal hypotheses; no paper threshold may be copied into the strategy."
+    },
+    {
+      "id": "A5E4",
+      "tier": "peer_reviewed",
+      "identifier": "DOI:10.1016/j.mulfin.2022.100729",
+      "title": "Liquidity shocks, price volatilities, and risk-managed strategy: Evidence from Bitcoin and beyond",
+      "use": "Liquidity/volatility state and risk-managed exposure hypotheses."
+    },
+    {
+      "id": "A5E5",
+      "tier": "official_exchange_documentation",
+      "identifier": "BINGX:FUNDING_FREQUENCY_NOTICE",
+      "title": "BingX funding fee settlement frequency adjustment notices",
+      "use": "Funding cadence is instrument/time specific; never hardcode a universal 8h settlement interval."
+    }
+  ],
+  "community_evidence_policy": {
+    "youtube_tradingview_reddit_github_forums": "HYPOTHESIS_ONLY",
+    "numeric_threshold_adoption": "FORBIDDEN",
+    "promotion_authority": false
+  },
+  "strategies": {
+    "trend_rider": {
+      "sealed_exact25_axis": "CONFIRMED_TREND_TRANSITION_ONLY",
+      "known_hardening_failures": [
+        "LEAVE_ONE_GROUP_OUT_NON_POSITIVE",
+        "SINGLE_REGIME_CONCENTRATION",
+        "SINGLE_SYMBOL_CONCENTRATION",
+        "TOP10_TRADE_CONCENTRATION"
+      ],
+      "repair_axes": [
+        {"axis": "MULTISPEED_TREND_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 100, "mechanism": "Change only ownership across completed-bar fast/medium/slow trend states; require leave-one-speed-out diagnostics."},
+        {"axis": "VOLATILITY_RISK_SCALING_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 98, "mechanism": "Change only lagged volatility-managed exposure; preserve signal geometry and report unscaled versus scaled attribution separately."},
+        {"axis": "LIQUIDITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 96, "mechanism": "Change only entry ownership across completed-bar liquidity states derived from source-ready price/volume features."},
+        {"axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 94, "mechanism": "Preserve parent trend geometry and change only entry-time relative-volume confirmation."},
+        {"axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 92, "mechanism": "Change only deterministic session ownership from completed bars; test concentration by session."},
+        {"axis": "COST_TURNOVER_COMPRESSION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 90, "mechanism": "Change only structurally marginal re-entry eligibility while the verified cost model and parent exits remain frozen."},
+        {"axis": "LONG_SHORT_ASYMMETRY_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 88, "mechanism": "Change only side ownership; evaluate long and short separately rather than assuming symmetric edge."},
+        {"axis": "VOL_PERSISTENCE_EXIT_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 86, "mechanism": "Exit-only repair using completed-bar volatility persistence; entry rule remains frozen."},
+        {"axis": "CROSS_SYMBOL_CONCENTRATION_HARDENING_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 84, "mechanism": "Change only research acceptance/risk ownership across symbols; require leave-one-symbol and contribution-concentration diagnostics."},
+        {"axis": "FUNDING_STATE_OWNER_ONLY", "required_sources": ["ohlcv", "funding"], "source_lane": "FUNDING_NATIVE", "priority": 82, "mechanism": "Change only ownership across timestamp-safe funding states; funding is context, never a standalone direction oracle."}
+      ]
+    },
+    "break_and_continue": {
+      "sealed_exact25_axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY",
+      "repair_axes": [
+        {"axis": "LIQUIDITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 90, "mechanism": "Change only breakout ownership across completed-bar liquidity states."},
+        {"axis": "VOLATILITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 88, "mechanism": "Change only ownership across lagged volatility states."},
+        {"axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 86, "mechanism": "Change only deterministic session ownership."},
+        {"axis": "BREAKOUT_PERSISTENCE_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 84, "mechanism": "Change only post-break continuation-state ownership without altering the sealed breakout geometry."},
+        {"axis": "COST_TURNOVER_COMPRESSION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 82, "mechanism": "Change only marginal re-entry eligibility under the frozen verified cost model."}
+      ]
+    },
+    "supertrend_pullback": {
+      "sealed_exact25_axis": "PULLBACK_COMPLETION_TRANSITION_ONLY",
+      "repair_axes": [
+        {"axis": "TREND_PERSISTENCE_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 90, "mechanism": "Change only ownership according to completed-bar trend persistence after the sealed pullback transition."},
+        {"axis": "VOLATILITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 88, "mechanism": "Change only ownership across lagged volatility states."},
+        {"axis": "LIQUIDITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 86, "mechanism": "Change only entry ownership across source-ready liquidity states."},
+        {"axis": "EXIT_TRAILING_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 84, "mechanism": "Exit-only trailing repair; entry and risk geometry remain frozen."},
+        {"axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 82, "mechanism": "Change only deterministic session ownership."}
+      ]
+    },
+    "keltner_trend": {
+      "sealed_exact25_axis": "VOLATILITY_TARGETED_RISK_SCALING_ONLY",
+      "repair_axes": [
+        {"axis": "BAND_EXPANSION_TRANSITION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 90, "mechanism": "Change only completed-bar band-expansion transition ownership; preserve Keltner geometry."},
+        {"axis": "RELATIVE_VOLUME_CONFIRMATION_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 88, "mechanism": "Change only entry-time relative-volume confirmation."},
+        {"axis": "LIQUIDITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 86, "mechanism": "Change only entry ownership across liquidity states."},
+        {"axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 84, "mechanism": "Change only deterministic session ownership."},
+        {"axis": "COST_TURNOVER_COMPRESSION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 82, "mechanism": "Change only marginal turnover/re-entry ownership under the frozen verified cost model."}
+      ]
+    },
+    "trend_ma_macd": {
+      "sealed_exact25_axis": "FIRST_ALIGNMENT_TRANSITION_ONLY",
+      "repair_axes": [
+        {"axis": "REDUNDANT_COMPONENT_ABLATION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 90, "mechanism": "Ablate only one redundant confirmation component at a time; preserve the remaining parent geometry and reject code-duplicate identities."},
+        {"axis": "MULTISPEED_TREND_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 88, "mechanism": "Change only ownership across completed-bar trend speeds."},
+        {"axis": "VOLATILITY_REGIME_OWNER_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 86, "mechanism": "Change only ownership across lagged volatility states."},
+        {"axis": "COST_TURNOVER_COMPRESSION_ONLY", "required_sources": ["ohlcv"], "source_lane": "READY_COMMON", "priority": 84, "mechanism": "Change only marginal re-entry eligibility under the frozen verified cost model."},
+        {"axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY", "required_sources": ["ohlcv", "volume"], "source_lane": "READY_COMMON", "priority": 82, "mechanism": "Change only deterministic session ownership."}
+      ]
+    }
+  },
+  "source_lane_policy": {
+    "READY_COMMON": {"ready": true, "sources": ["ohlcv", "volume"]},
+    "FUNDING_NATIVE": {"ready_if": "p3_carry_flow_prospective_native_v1.native_sources.funding.status == HISTORICAL_W1_W2_BOUND"},
+    "BASIS_OI_NATIVE": {"ready_if": "frozen prospective duration gate passes; no fabricated backfill"},
+    "L2_FLOW_NATIVE": {"ready_if": "separately verified native flow endpoint is bound"}
+  },
+  "selection_authority": false,
+  "promotion_authority": false,
+  "execution_authority": "NONE",
+  "order_authority": "BLOCKED",
+  "live_trade_authority": "BLOCKED",
+  "exchange_order_submitted": false,
+  "protected_mutations": 0
+}

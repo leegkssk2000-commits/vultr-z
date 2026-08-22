@@ -1,10 +1,11 @@
-name: A1 Trend Rider Original Fresh Direct AB V1
+name: A1 Trend Rider Original Fresh Direct AB V2
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [master]
     paths:
+      - 'backend/research/rebuild/a1_trend_rider_momentum_frozen_w123_ab_v2.py'
       - 'backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py'
       - 'backend/research/rebuild/trend_rider_momentum_child_policy_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py'
@@ -14,6 +15,7 @@ on:
   push:
     branches: [master]
     paths:
+      - 'backend/research/rebuild/a1_trend_rider_momentum_frozen_w123_ab_v2.py'
       - 'backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py'
       - 'backend/research/rebuild/trend_rider_momentum_child_policy_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py'
@@ -26,14 +28,14 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-trend-rider-original-fresh-direct-ab-v1
+  group: a1-trend-rider-original-fresh-direct-ab-v2
   cancel-in-progress: false
 
 jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,16 +43,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify canonical direct A/B lane
+      - name: Verify and run frozen canonical W123 direct A/B before merge
         run: |
           set -euo pipefail
+          mkdir -p out
           python -m py_compile \
+            backend/research/rebuild/a1_trend_rider_momentum_frozen_w123_ab_v2.py \
             backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py \
             backend/research/rebuild/trend_rider_momentum_child_policy_v1.py \
             backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py \
             backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py
-          python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py --out /tmp/guard.json
-          python -m backend.research.rebuild.a1_trend_rider_momentum_ab_v1 --self-test
+          python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py --out out/guard.json
+          python -m backend.research.rebuild.a1_trend_rider_momentum_frozen_w123_ab_v2 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_momentum_frozen_w123_ab_v2 --out out/a1_trend_rider_momentum_frozen_w123_ab_latest.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_trend_rider_momentum_frozen_w123_ab_latest.json'))
+          p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
+          assert r['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3'
+          assert int(p['trades'])==22
+          assert math.isclose(float(p['win_rate']),13/22,rel_tol=0,abs_tol=1e-12)
+          assert math.isclose(float(p['net_pnl_bps']),16509.276493685335,rel_tol=0,abs_tol=1e-9)
+          assert r['direct_same_frozen_original_fresh_w123_parent_child_ab_receipt_present'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'parent':p,'child':c,'deltas':r['metric_deltas'],'retention_pct':r['trade_retention_pct'],'screen_pass':r['development_screen']['pass'],'next_if_pass':r['next_if_pass'],'next_if_fail':r['next_if_fail'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-frozen-w123-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_trend_rider_momentum_frozen_w123_ab_latest.json
+            out/guard.json
+          if-no-files-found: warn
+          retention-days: 30
 
   evaluate:
     if: github.event_name != 'pull_request'
@@ -64,34 +91,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run canonical same-original-fresh W123 A/B
+      - name: Run frozen canonical W123 direct A/B
         run: |
           set -euo pipefail
           mkdir -p out
           python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py --out out/guard.json
-          python -m backend.research.rebuild.a1_trend_rider_momentum_ab_v1 --out out/a1_trend_rider_momentum_ab_latest.json
+          python -m backend.research.rebuild.a1_trend_rider_momentum_frozen_w123_ab_v2 --out out/a1_trend_rider_momentum_frozen_w123_ab_latest.json
           python - <<'PY'
           import json, math
-          r=json.load(open('out/a1_trend_rider_momentum_ab_latest.json'))
+          r=json.load(open('out/a1_trend_rider_momentum_frozen_w123_ab_latest.json'))
           p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
-          assert r['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3'
           assert int(p['trades'])==22
           assert math.isclose(float(p['win_rate']),13/22,rel_tol=0,abs_tol=1e-12)
-          assert r['direct_same_original_fresh_w123_parent_child_ab_receipt_present'] is True
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['direct_same_frozen_original_fresh_w123_parent_child_ab_receipt_present'] is True
           print(json.dumps({'state':r['state'],'parent':p,'child':c,'deltas':r['metric_deltas'],'retention_pct':r['trade_retention_pct'],'screen_pass':r['development_screen']['pass'],'next_if_pass':r['next_if_pass'],'next_if_fail':r['next_if_fail'],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
-      - name: Persist canonical direct A/B receipt
+      - name: Persist frozen canonical direct A/B receipt
         run: |
           set -euo pipefail
-          target=backend/research/rebuild/a1_trend_rider_momentum_ab_latest.json
-          cp out/a1_trend_rider_momentum_ab_latest.json "$target"
+          target=backend/research/rebuild/a1_trend_rider_momentum_frozen_w123_ab_latest.json
+          cp out/a1_trend_rider_momentum_frozen_w123_ab_latest.json "$target"
           git config user.name 'a1-trend-rider-direct-ab'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 trend_rider: persist original-fresh direct A/B [skip ci]'
+          git commit -m 'A1 trend_rider: persist frozen original-fresh direct A/B [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -106,9 +130,9 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_trend_rider_momentum_ab_latest.json')); p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
-          marker='<!-- A1_TREND_RIDER_ORIGINAL_FRESH_DIRECT_AB_V1 -->'
-          body='\n'.join([marker,'## A1 Trend Rider Original Fresh Direct A/B V1',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",f"baseline={r['baseline_identity']}|axis={r['changed_axis']}|direct_ab={str(r['direct_same_original_fresh_w123_parent_child_ab_receipt_present']).lower()}",f"parent trades={p['trades']}|WR={p['win_rate']}|Net={p['net_pnl_bps']}bps|Exp={p['net_expectancy_bps']}bps|PF={p['profit_factor']}|payoff={p['payoff']}|DD={p['drawdown_bps']}bps",f"child trades={c['trades']}|WR={c['win_rate']}|Net={c['net_pnl_bps']}bps|Exp={c['net_expectancy_bps']}bps|PF={c['profit_factor']}|payoff={c['payoff']}|DD={c['drawdown_bps']}bps|retention={r['trade_retention_pct']}%",f"screen_pass={str(r['development_screen']['pass']).lower()}|next_if_pass={r['next_if_pass']}|next_if_fail={r['next_if_fail']}",'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
+          r=json.load(open('out/a1_trend_rider_momentum_frozen_w123_ab_latest.json')); p=r['parent_w123']['aggregate']; c=r['child_w123']['aggregate']
+          marker='<!-- A1_TREND_RIDER_FROZEN_W123_DIRECT_AB_V2 -->'
+          body='\n'.join([marker,'## A1 Trend Rider Frozen Original-Fresh Direct A/B V2',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",f"baseline={r['baseline_identity']}|axis={r['changed_axis']}|direct_ab={str(r['direct_same_frozen_original_fresh_w123_parent_child_ab_receipt_present']).lower()}",f"parent trades={p['trades']}|WR={p['win_rate']}|Net={p['net_pnl_bps']}bps|Exp={p['net_expectancy_bps']}bps|PF={p['profit_factor']}|payoff={p['payoff']}|DD={p['drawdown_bps']}bps",f"child trades={c['trades']}|WR={c['win_rate']}|Net={c['net_pnl_bps']}bps|Exp={c['net_expectancy_bps']}bps|PF={c['profit_factor']}|payoff={c['payoff']}|DD={c['drawdown_bps']}bps|retention={r['trade_retention_pct']}%",f"screen_pass={str(r['development_screen']['pass']).lower()}|next_if_pass={r['next_if_pass']}|next_if_fail={r['next_if_fail']}",'selection=false|promotion=false|execution=NONE|order/live=BLOCKED'])
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
@@ -120,9 +144,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-trend-rider-original-fresh-direct-ab-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-trend-rider-frozen-w123-direct-ab-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/a1_trend_rider_momentum_ab_latest.json
+            out/a1_trend_rider_momentum_frozen_w123_ab_latest.json
             out/guard.json
           if-no-files-found: error
           retention-days: 90

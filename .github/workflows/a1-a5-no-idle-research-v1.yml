@@ -1,4 +1,4 @@
-name: A1 Mechanism-First Research V10
+name: A1 Mechanism-First Research V12
 
 on:
   pull_request:
@@ -9,6 +9,7 @@ on:
       - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
       - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
       - 'backend/research/architecture_factory/a1_mechanism_first_research_v1.py'
+      - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   push:
     branches: [master]
@@ -18,6 +19,7 @@ on:
       - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
       - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
       - 'backend/research/architecture_factory/a1_mechanism_first_research_v1.py'
+      - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   workflow_dispatch:
   schedule:
@@ -28,7 +30,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-mechanism-first-research-v10
+  group: a1-mechanism-first-research-v12
   cancel-in-progress: false
 
 jobs:
@@ -51,13 +53,15 @@ jobs:
           python -m py_compile \
             backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py \
             backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py \
-            backend/research/architecture_factory/a1_mechanism_first_research_v1.py
+            backend/research/architecture_factory/a1_mechanism_first_research_v1.py \
+            backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py
       - name: Verify research-direction guards
         run: |
           set -euo pipefail
           python -m backend.research.architecture_factory.a1_research_depth_retry_guard_v1 --self-test
           python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v1 --self-test
           python -m backend.research.architecture_factory.a1_mechanism_first_research_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
 
   research:
     if: github.event_name != 'pull_request'
@@ -88,6 +92,9 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_mechanism_first_research_v1 \
+            --output out/a1_mechanism_first_research_raw.json
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 \
+            --input out/a1_mechanism_first_research_raw.json \
             --output out/a1_mechanism_first_research_v1.json
           python - <<'PY'
           import json
@@ -100,7 +107,8 @@ jobs:
           assert int(r['protected_mutations'])==0 and r['exchange_order_submitted'] is False,r
           print(json.dumps({
             'state':r.get('state'),'direction':r.get('research_direction'),
-            'new_ready':r.get('new_architecture_ready_count'),'new_source_wait':r.get('new_architecture_source_wait_count'),
+            'new_ready':r.get('new_architecture_ready_count'),'semantic_hold':r.get('new_architecture_semantic_hold_count'),
+            'new_source_wait':r.get('new_architecture_source_wait_count'),
             'legacy_backlog':r.get('legacy_repair_backlog_count'),'next':r.get('next_experiment_candidate'),
             'receipt':r.get('receipt_sha256')
           },sort_keys=True))
@@ -110,7 +118,7 @@ jobs:
           set -euo pipefail
           target=backend/research/architecture_factory/a1_mechanism_first_research_latest.json
           cp out/a1_mechanism_first_research_v1.json "$target"
-          git config user.name 'a1-mechanism-first-research-v10'
+          git config user.name 'a1-mechanism-first-research-v12'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
@@ -130,13 +138,13 @@ jobs:
           python - <<'PY'
           import json, os, urllib.request
           r=json.load(open('out/a1_mechanism_first_research_v1.json')); n=r.get('next_experiment_candidate') or {}
-          marker='<!-- A1_MECHANISM_FIRST_RESEARCH_V10 -->'
-          lines=[marker,'## A1 Mechanism-First Research V10',
+          marker='<!-- A1_MECHANISM_FIRST_RESEARCH_V12 -->'
+          lines=[marker,'## A1 Mechanism-First Research V12',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
             f"direction={r.get('research_direction')}|legacy_repair_primary={r.get('automatic_legacy_a5_repair_primary')}",
-            f"new_ready={r.get('new_architecture_ready_count')}|new_source_wait={r.get('new_architecture_source_wait_count')}|legacy_backlog={r.get('legacy_repair_backlog_count')}",
+            f"new_ready={r.get('new_architecture_ready_count')}|semantic_hold={r.get('new_architecture_semantic_hold_count',0)}|new_source_wait={r.get('new_architecture_source_wait_count')}|legacy_backlog={r.get('legacy_repair_backlog_count')}",
             f"next={n.get('candidate_id')}|family={n.get('architecture_family')}|horizon={n.get('native_horizon')}|sources={n.get('required_sources')}",
-            'POLICY=new architecture first; explicit mechanism+payer+horizon+cost budget; >=2 independent PASS/0 reject; >=3 evidence docs; source preflight fail-closed',
+            'POLICY=new architecture first; explicit mechanism+payer+horizon+cost budget; >=2 independent PASS/0 reject; >=3 evidence docs; source vocabulary+semantic observability fail-closed',
             'LEGACY=repair-only A5 loop is no longer the automatic primary research lane',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
@@ -147,12 +155,14 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_MECHANISM_FIRST_RESEARCH_V10_PUBLISHED')
+          print('PASS_A1_MECHANISM_FIRST_RESEARCH_V12_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-mechanism-first-research-v10-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_mechanism_first_research_v1.json
+          name: a1-mechanism-first-research-v12-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_mechanism_first_research_raw.json
+            out/a1_mechanism_first_research_v1.json
           if-no-files-found: error
           retention-days: 90

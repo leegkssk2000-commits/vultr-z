@@ -1,0 +1,183 @@
+{
+  "schema_version": "zel.a2_a3_continuous_improvement_loop.v1",
+  "purpose": "Prevent A2/A3 from becoming passive evaluation-only stages. Every material weakness must produce a bounded causal repair candidate, which is revalidated through the required upstream gates before any new improvement claim.",
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED"
+  },
+  "global_policy": {
+    "a2_a3_are_not_leave_unchanged_stages": true,
+    "improvement_search_runs_in_parallel_with_validation": true,
+    "canonical_parent_required": true,
+    "same_baseline_direct_ab_required_for_numeric_claim": true,
+    "transport_or_parser_failure_is_not_strategy_failure": true,
+    "no_threshold_rescue": true,
+    "no_post_outcome_trade_deletion": true,
+    "no_best_horizon_cherry_pick": true,
+    "no_repeating_terminal_tuple": true,
+    "one_causal_axis_per_child": true,
+    "entry_or_exit_identity_change_routes_back_through_A1": true,
+    "pure_cost_execution_overlay_may_remain_in_A2_only_if_trade_identity_is_unchanged": true,
+    "regime_or_sizing_change_routes_back_through_A1_then_A2_before_A3": true,
+    "fresh_forward_validation_required": true,
+    "official_pass_counts_do_not_change_from_research_only_children": true
+  },
+  "objective": {
+    "primary": [
+      "net_pnl_bps",
+      "net_expectancy_bps",
+      "profit_factor",
+      "payoff",
+      "win_rate",
+      "max_drawdown_bps"
+    ],
+    "secondary": [
+      "trade_retention_pct",
+      "turnover_round_trips_per_day",
+      "cost_bps_per_trade",
+      "top10_profit_share",
+      "max_symbol_profit_share",
+      "max_regime_profit_share",
+      "max_session_profit_share",
+      "leave_one_group_out_min_net"
+    ],
+    "selection_rule": "Prefer strict Pareto improvement. A child that improves one cosmetic metric while degrading expectancy/PF/DD materially is rejected. Improvements must survive realistic costs and fresh validation."
+  },
+  "A2_improvement_axes": [
+    {
+      "axis": "TURNOVER_CLUSTER_COMPRESSION",
+      "mechanism": "Suppress redundant same-direction re-entry clusters without deleting trades after outcomes are known.",
+      "target": ["net_pnl_bps", "net_expectancy_bps", "turnover_round_trips_per_day", "cost_bps_per_trade"],
+      "route": "A1_DIRECT_AB_THEN_A2"
+    },
+    {
+      "axis": "COST_AWARE_NO_TRADE_BAND",
+      "mechanism": "Require forecast/gross edge margin to exceed frozen round-trip cost plus a preregistered safety buffer using only entry-time observable information.",
+      "target": ["net_expectancy_bps", "profit_factor", "win_rate", "turnover_round_trips_per_day"],
+      "route": "A1_DIRECT_AB_THEN_A2"
+    },
+    {
+      "axis": "VOLATILITY_NORMALIZED_RISK",
+      "mechanism": "Scale exposure by ex-ante realized volatility while preserving signal identity; do not optimize after observing outcomes.",
+      "target": ["max_drawdown_bps", "net_pnl_bps", "profit_factor"],
+      "route": "A1_DIRECT_AB_THEN_A2"
+    },
+    {
+      "axis": "FUNDING_BASIS_CARRY_ALIGNMENT",
+      "mechanism": "Use native, source-quality-verified funding/basis/OI only when the holding horizon crosses funding or leverage demand materially changes expected net edge.",
+      "target": ["net_expectancy_bps", "net_pnl_bps", "max_drawdown_bps"],
+      "route": "A1_DIRECT_AB_THEN_A2",
+      "source_readiness_required": true
+    },
+    {
+      "axis": "ENTRY_PERSISTENCE_CONFIRMATION",
+      "mechanism": "Use a preregistered persistence/continuation confirmation only when evidence indicates false-break/reversal cost dominates; any delayed entry is a new child and must restart A1 controls.",
+      "target": ["win_rate", "profit_factor", "max_drawdown_bps"],
+      "route": "A1_DIRECT_AB_THEN_A2"
+    },
+    {
+      "axis": "EXIT_HORIZON_EFFICIENCY",
+      "mechanism": "Compare frozen causal exits such as volatility trail, state-transition exit, or time-decay exit against the canonical parent without parameter sweeps.",
+      "target": ["net_pnl_bps", "payoff", "profit_factor", "max_drawdown_bps"],
+      "route": "A1_DIRECT_AB_THEN_A2"
+    }
+  ],
+  "A3_improvement_axes": [
+    {
+      "axis": "REGIME_CONDITIONAL_RISK_SCALING",
+      "mechanism": "Reduce risk in empirically fragile high-vol/panic states using ex-ante volatility; do not delete historical losing trades post hoc.",
+      "target": ["max_drawdown_bps", "profit_factor", "leave_one_group_out_min_net"],
+      "route": "A1_THEN_A2_THEN_A3"
+    },
+    {
+      "axis": "SIDE_ASYMMETRY",
+      "mechanism": "If long/short payoffs are structurally asymmetric, test explicit long-only or asymmetric-risk children on the exact canonical parent rather than silently mixing derived lineages.",
+      "target": ["win_rate", "net_expectancy_bps", "profit_factor", "max_drawdown_bps"],
+      "route": "A1_THEN_A2_THEN_A3"
+    },
+    {
+      "axis": "SYMBOL_EQUAL_RISK",
+      "mechanism": "Normalize risk across BTC/ETH or other admitted symbols so one symbol cannot dominate profit merely because of volatility/notional scale.",
+      "target": ["max_symbol_profit_share", "max_drawdown_bps", "leave_one_group_out_min_net"],
+      "route": "A1_THEN_A2_THEN_A3"
+    },
+    {
+      "axis": "SESSION_CLOCK_REGIME",
+      "mechanism": "Test documented crypto hour/session liquidity-volatility periodicity with fixed entry-time observable clock states; no post-hoc best-session selection.",
+      "target": ["win_rate", "net_expectancy_bps", "max_session_profit_share"],
+      "route": "A1_THEN_A2_THEN_A3"
+    },
+    {
+      "axis": "LIQUIDITY_ORDER_FLOW_CONFIRMATION",
+      "mechanism": "When source readiness exists, use spread/depth/order-flow information to distinguish durable continuation from adverse-selection entries.",
+      "target": ["win_rate", "net_expectancy_bps", "profit_factor", "max_drawdown_bps"],
+      "route": "A1_THEN_A2_THEN_A3",
+      "source_readiness_required": true
+    },
+    {
+      "axis": "MULTIHORIZON_TREND_CONSENSUS",
+      "mechanism": "Require agreement between preregistered fast/slow trend states rather than optimizing a single lookback; test as a new exact-parent child.",
+      "target": ["win_rate", "profit_factor", "regime_durability"],
+      "route": "A1_THEN_A2_THEN_A3"
+    }
+  ],
+  "validation_hardening": {
+    "A2": [
+      "1X and 2X frozen cost stress",
+      "turnover clustering and duplicate-entry audit",
+      "unit/range sanity checks on bps, R, percentage and notional",
+      "funding cadence/source-quality verification when funding is used",
+      "forward coverage beyond one short calendar segment",
+      "maker/taker rescue cannot be assumed without observed execution evidence"
+    ],
+    "A3": [
+      "entry-time trend_strength",
+      "entry-time realized_vol_pct",
+      "entry-time spread_bps",
+      "entry-time depth_usdt",
+      "entry-time funding source and cadence",
+      "entry-time OI change when used",
+      "symbol/regime/side/session/window decomposition",
+      "top10 concentration",
+      "leave-one-group-out for every admitted group",
+      "CPCV or equivalent purged time-series validation when enough data exists",
+      "PBO/Deflated-Sharpe multiple-testing penalty across attempted repairs",
+      "fresh prospective confirmation before final survivor tiering"
+    ]
+  },
+  "research_evidence": [
+    {"id":"MOP2012","claim":"time-series momentum persists across horizons and benefits from diversification","source":"Moskowitz-Ooi-Pedersen, Journal of Financial Economics 2012"},
+    {"id":"HOP2017","claim":"trend following is robust across long historical regimes","source":"Hurst-Ooi-Pedersen, Journal of Portfolio Management 2017"},
+    {"id":"BSC2015","claim":"volatility-managed momentum can materially reduce crash risk and improve risk-adjusted performance","source":"Barroso-Santa-Clara, Journal of Financial Economics 2015"},
+    {"id":"DM2016","claim":"momentum crashes cluster in panic/high-volatility rebound states; dynamic risk management can improve outcomes","source":"Daniel-Moskowitz, Journal of Financial Economics 2016"},
+    {"id":"HANSEN2021","claim":"BTC/ETH volatility and liquidity have recurring hour/day periodicity","source":"Hansen-Kim-Kimbrough, arXiv 2109.12142"},
+    {"id":"BEGUSIC2019","claim":"crypto momentum strength interacts with liquidity","source":"Begušić-Kostanjčar, arXiv 1904.00890"},
+    {"id":"OFLOW2026","claim":"order flow has explanatory and predictive information for cryptocurrency returns","source":"Anastasopoulos et al., Journal of Financial Markets 2026"},
+    {"id":"FUNDING2026","claim":"funding is an endogenous feedback mechanism; cadence/caps affect basis and tails","source":"Zhang, SSRN 6185958, 2026"},
+    {"id":"DSR2014","claim":"multiple testing inflates backtest performance and requires deflation","source":"Bailey-Lopez de Prado, Journal of Portfolio Management 2014"},
+    {"id":"CPCV2024","claim":"purged combinatorial validation reduces financial backtest overfitting relative to ordinary splits","source":"Arian-Norouzi Mobarekeh-Seco, Knowledge-Based Systems 2024"}
+  ],
+  "current_trend_rider_snapshot_reference": {
+    "A1_state": "PASS_A1_CAUSAL_READY_FOR_A2",
+    "A2_state": "PASS_A2_COST_TURNOVER",
+    "A3_state": "HOLD_A3_ENTRY_CONTEXT_INCOMPLETE",
+    "known_A3_fragility": {
+      "long_profit_share": 1.0,
+      "ETH_profit_share": 0.7868197304721107,
+      "VOL_HIGH_profit_share": 0.8642386562408667,
+      "leave_one_group_out_failure": "side/long"
+    },
+    "priority_repair_order": [
+      "SIDE_ASYMMETRY on ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3",
+      "REGIME_CONDITIONAL_RISK_SCALING",
+      "SYMBOL_EQUAL_RISK",
+      "MULTIHORIZON_TREND_CONSENSUS",
+      "LIQUIDITY_ORDER_FLOW_CONFIRMATION if source-ready",
+      "EXIT_HORIZON_EFFICIENCY"
+    ],
+    "note": "This diagnostic snapshot is not a survivor claim and must not replace fresh/current receipts."
+  }
+}

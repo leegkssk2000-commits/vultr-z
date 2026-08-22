@@ -1,0 +1,129 @@
+name: A1 Trend MA MACD Ablation Child V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_ma_macd_ablation_child_v1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-trend-ma-macd-ablation-child-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_ma_macd_ablation_child_v1.py'
+      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-trend-ma-macd-ablation-child-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4,10,16,22 * * *'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify ablation-child contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trend_ma_macd_ablation_child_v1.py
+          python -m backend.research.rebuild.a1_trend_ma_macd_ablation_child_v1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild frozen trend_ma_macd parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay --strategy-id trend_ma_macd --symbols "$SYMBOLS" \
+            --out out/trend_ma_macd_exact_parent.json
+      - name: Evaluate frozen one-component ablations
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trend_ma_macd_ablation_child_v1 \
+            --parent out/trend_ma_macd_exact_parent.json \
+            --out out/a1_trend_ma_macd_ablation_child_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_ma_macd_ablation_child_v1.json'))
+          assert r['policy']['one_redundant_component_ablated_per_variant'] is True
+          assert r['policy']['no_numeric_threshold_sweep'] is True
+          assert r['policy']['shared_bar_snapshot'] is True
+          assert r['policy']['shared_execution_cost_snapshot'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          print(json.dumps({'state':r['state'],'baseline':r['baseline'],'ready':r['development_ready_count'],'next':r['next_candidate'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist ablation-child receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_ma_macd_ablation_child_latest.json
+          cp out/a1_trend_ma_macd_ablation_child_v1.json "$target"
+          git config user.name 'a1-trend-ma-macd-ablation-child'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_ma_macd: persist ablation-child receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish ablation-child state to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_trend_ma_macd_ablation_child_v1.json'))
+          marker='<!-- A1_TREND_MA_MACD_ABLATION_CHILD_V1 -->'
+          b=r['baseline']; m=b['metrics']; lines=[marker,'## A1 trend_ma_macd Ablation Child V1',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}|ready={r['development_ready_count']}",f"baseline:trades={b['completed_trades']}|net_exp={m['net_expectancy_bps']}|pf={m['profit_factor']}|payoff={m['payoff']}|wr={m['win_rate']}|dd={m['drawdown_bps']}|h5={','.join(b['concentration']['blockers'])}"]
+          for x in r['candidates']:
+              m=x['metrics']; lines.append(f"{x['changed_variant']}:trades={m['trades']}|ret={x['trade_retention_pct']:.2f}|net_exp={m['net_expectancy_bps']}|pf={m['profit_factor']}|payoff={m['payoff']}|wr={m['win_rate']}|dd={m['drawdown_bps']}|h5={','.join(x['concentration']['blockers'])}|econ={x['economic_gate_pass']}|ready={x['development_candidate_ready']}")
+          n=r.get('next_candidate') or {}; lines += [f"next={n.get('candidate_id')}|variant={n.get('changed_variant')}",'one-component ablation only; same bars/cost snapshots; no threshold sweep or rescue','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          body='\n'.join(lines); headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}; url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((c for c in comments if marker in str(c.get('body') or '')),None); target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"; req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_TREND_MA_MACD_ABLATION_CHILD_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-ma-macd-ablation-child-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_trend_ma_macd_ablation_child_v1.json
+            out/trend_ma_macd_exact_parent.json
+          if-no-files-found: error
+          retention-days: 90

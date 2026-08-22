@@ -1,21 +1,29 @@
-name: A1 A5 No-Idle Research V7
+name: A1 A5 No-Idle Research V8
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
-      - 'backend/research/architecture_factory/a1_research_factory_v6.py'
-      - 'backend/research/architecture_factory/a1_research_factory_v7.py'
+      - 'backend/research/contracts/a1_high_value_evidence_supplement_v1.json'
+      - 'backend/research/contracts/a1_research_mistake_blacklist_v1.json'
+      - 'backend/research/contracts/a1_a5_evidence_backed_roadmap_v1.json'
+      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'
+      - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v8.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
-      - 'backend/research/architecture_factory/a1_research_factory_v6.py'
-      - 'backend/research/architecture_factory/a1_research_factory_v7.py'
+      - 'backend/research/contracts/a1_high_value_evidence_supplement_v1.json'
+      - 'backend/research/contracts/a1_research_mistake_blacklist_v1.json'
+      - 'backend/research/contracts/a1_a5_evidence_backed_roadmap_v1.json'
+      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
+      - 'backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'
+      - 'backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v8.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   workflow_dispatch:
   schedule:
@@ -26,14 +34,16 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-a5-no-idle-research-v7
+  group: a1-a5-no-idle-research-v8
   cancel-in-progress: false
 
 jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,45 +51,41 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify A5 no-idle V7 review quorum contract
+      - name: Compile depth/retry guard and V8
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_research_factory_v6.py
-          python -m py_compile backend/research/architecture_factory/a1_research_factory_v7.py
-          python -m backend.research.architecture_factory.a1_research_factory_v6 --self-test
-          python -m backend.research.architecture_factory.a1_research_factory_v7 --self-test
+          python -m py_compile backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py
+          python -m py_compile backend/research/architecture_factory/a1_research_factory_v8.py
+      - name: Verify permanent research mistake/depth guard
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_research_depth_retry_guard_v1 --self-test
+          python -m backend.research.architecture_factory.a1_research_factory_v8 --self-test
+      - name: Verify outcome-blind V8 static path
+        run: |
+          set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v7 --no-network --no-ai --ai-strategy-limit 5 --output out/a1_research_factory_v7.json
+          python -m backend.research.architecture_factory.a1_research_factory_v8 --no-network --no-ai --ai-strategy-limit 5 --output out/a1_research_factory_v8.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v7.json'))
-          a=r['a5_no_idle']
-          q=r['a5_review_quorum']
-          x=a['trend_rider_online_expansion']
-          expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
-          assert a['priority_order']==expected, a
-          assert a['targets_this_run']==expected, a
-          assert a['validation_wait_blocks_research'] is False
-          assert a['fresh_wait_blocks_validation_only'] is True
-          assert a['queue_generation_continues_during_fresh_wait'] is True
-          assert a['sealed_exact25_axis_mutation_forbidden'] is True
-          assert x['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3', x
-          assert x['evidence_count']>=4 and x['ready_common_axis_count']>=5, x
-          assert x['a1_a2_a3_gate_order_preserved'] is True, x
-          assert q['required_independent_passes']==2 and q['maximum_rejects']==0
-          assert q['gemini_fallback_only_when_quorum_missing'] is True
-          assert q['gemini_fallback_cannot_override_reject'] is True
+          r=json.load(open('out/a1_research_factory_v8.json'))
+          d=r['depth_retry_guard']
+          assert d['state']=='PASS_RESEARCH_DEPTH_RETRY_GUARD', d
+          c=d['evidence_counts']
+          for k,v in c.items(): assert v['observed']>=v['required'], (k,v)
+          assert r['high_value_supplement_bound'] is True
+          assert r['terminal_retry_guard_bound'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_V7_STATIC_CONTRACT')
-          print('PASS_TREND_RIDER_ORIGINAL_FRESH_ONLINE_EXPANSION_STATIC_BINDING')
+          print('PASS_A1_A5_NO_IDLE_RESEARCH_V8_DEPTH_RETRY_STATIC')
           PY
 
   research:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +96,7 @@ jobs:
           python-version: '3.12'
       - name: Install review dependencies
         run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Discover internet evidence and review all A-grade five with fallback quorum
+      - name: Run evidence-depth and retry-safe A5 research
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -107,47 +113,36 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v7 --ai-strategy-limit 5 --output out/a1_research_factory_v7.json
+          python -m backend.research.architecture_factory.a1_research_factory_v8 --ai-strategy-limit 5 --output out/a1_research_factory_v8.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v7.json'))
-          a=r['a5_no_idle']; q=r['a5_review_quorum']; x=a['trend_rider_online_expansion']; expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
-          assert a['targets_this_run']==expected, a
-          assert a['validation_wait_blocks_research'] is False
-          assert x['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3', x
-          assert x['ready_common_axis_count']>=5, x
-          assert q['required_independent_passes']==2 and q['maximum_rejects']==0
+          r=json.load(open('out/a1_research_factory_v8.json')); d=r['depth_retry_guard']
+          assert d['state']=='PASS_RESEARCH_DEPTH_RETRY_GUARD', d
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({
-            'state':r.get('state'),
-            'targets':a.get('targets_this_run'),
-            'trend_rider_original_fresh_expansion':x,
-            'sources':r.get('external_source_count'),
-            'new':r.get('new_discovered_source_count'),
-            'reviewed':r.get('reviewed_ready_common_count'),
-            'quorum':q,
-            'flow':r.get('candidate_flow_counts'),
-            'next':r.get('next_experiment_candidate'),
+            'state':r.get('state'),'sources':r.get('external_source_count'),'new':r.get('new_discovered_source_count'),
+            'depth':d.get('evidence_counts'),'guarded_queue':r.get('experiment_queue_count'),
+            'aligned_queue':r.get('roadmap_aligned_queue_count'),'next':r.get('next_experiment_candidate'),
             'receipt':r.get('receipt_sha256')
           },sort_keys=True))
           PY
-      - name: Persist A5 research receipt
+      - name: Persist V8 A5 research receipt
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_research_factory_a5_latest.json
-          cp out/a1_research_factory_v7.json "$target"
-          git config user.name 'a1-a5-no-idle-research'
+          cp out/a1_research_factory_v8.json "$target"
+          git config user.name 'a1-a5-no-idle-research-v8'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist no-idle research V7 receipt [skip ci]'
+          git commit -m 'A1 A5: persist depth/retry-safe research V8 receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
           done
           exit 1
-      - name: Publish A5 no-idle state to issue 566
+      - name: Publish V8 research state to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -156,35 +151,32 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_research_factory_v7.json')); a=r['a5_no_idle']; q=r['a5_review_quorum']; x=a['trend_rider_online_expansion']; flow=r.get('candidate_flow_counts') or {}; nxt=r.get('next_experiment_candidate') or {}
-          marker='<!-- A1_A5_NO_IDLE_RESEARCH_V7 -->'
-          lines=[
-            marker,
-            '## A1 A5 No-Idle Research V7',
+          r=json.load(open('out/a1_research_factory_v8.json')); d=r['depth_retry_guard']; n=r.get('next_experiment_candidate') or {}
+          marker='<!-- A1_A5_NO_IDLE_RESEARCH_V8 -->'
+          c=d.get('evidence_counts') or {}
+          lines=[marker,'## A1 A5 No-Idle Research V8',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
-            'targets='+','.join(a.get('targets_this_run') or []),
-            f"trend_rider_baseline={x.get('baseline_identity')}|online_evidence={x.get('evidence_count')}|new_ready_axes={x.get('ready_common_axis_count')}|A1_A2_A3_order={str(x.get('a1_a2_a3_gate_order_preserved')).lower()}",
-            f"sources={r.get('external_source_count')}|new={r.get('new_discovered_source_count')}|reviewed={r.get('reviewed_ready_common_count')}",
-            f"fallback_attempt={q.get('fallback_attempt_count')}|fallback_pass={q.get('fallback_pass_count')}|fallback_reject={q.get('fallback_reject_count')}",
-            f"flow_raw={flow.get('raw_generated')}|validated={flow.get('validated')}|reviewed={flow.get('reviewed')}|eligible={flow.get('eligible')}",
-            f"next={nxt.get('strategy_id')}|candidate={nxt.get('candidate_id')}|axis={nxt.get('changed_axis')}|score={nxt.get('score')}",
-            'NO_IDLE=fresh prospective wait gates validation only; original fresh trend_rider expansion stays separate from delayed-fill/long-only derivatives',
-            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
-          ]
+            f"sources={r.get('external_source_count')}|new={r.get('new_discovered_source_count')}|depth_guard={d.get('state')}",
+            'depth='+';'.join(f"{k}:{v.get('observed')}/{v.get('required')}" for k,v in c.items()),
+            f"guarded_queue={r.get('experiment_queue_count')}|roadmap_aligned={r.get('roadmap_aligned_queue_count')}",
+            f"next={n.get('strategy_id')}|candidate={n.get('candidate_id')}|axis={n.get('changed_axis') or n.get('axis')}",
+            'NO_REPEAT=terminal same-identity retry blocked; technical/provider failures are not economic failures; no-op axes route next; source granularity and payer logic are fail-closed',
+            'A1_A2_A3=fresh gate order preserved; parent PASS/historical substitution forbidden',
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
-          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          old=next((x for x in comments if marker in str(x.get('body') or '')),None)
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_V7_PUBLISHED')
+          print('PASS_A1_A5_NO_IDLE_RESEARCH_V8_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-a5-no-idle-research-v7-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_research_factory_v7.json
+          name: a1-a5-no-idle-research-v8-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_research_factory_v8.json
           if-no-files-found: error
           retention-days: 90

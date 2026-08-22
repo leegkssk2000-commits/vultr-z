@@ -1,0 +1,112 @@
+{
+  "schema_version": "zel.a1.research_mistake_blacklist.v1",
+  "state": "FROZEN_FAIL_CLOSED_RESEARCH_MISTAKE_GUARD",
+  "purpose": "Prevent known lineage, provider, source-readiness, comparison, microstructure, and retry errors from being repeated while A1-A3 and A5 research continue.",
+  "global_block_rules": [
+    {
+      "code": "DERIVED_LINEAGE_AS_CANONICAL_BASELINE",
+      "rule": "A derived delayed-fill, side-restricted, generic-generated or otherwise modified lineage may never replace the canonical original baseline for an improvement claim.",
+      "on_violation": "HOLD"
+    },
+    {
+      "code": "TECHNICAL_FAILURE_RELABELED_ECONOMIC_FAIL",
+      "rule": "Provider timeout, rate limit, parser/JSON error, zero-ready transport result or source fetch failure is technical failure; it may not close an axis as economic FAIL.",
+      "on_violation": "HOLD_RETRY_SAME_IDENTITY"
+    },
+    {
+      "code": "GENERIC_SCOUT_CERTIFIES_ALPHA",
+      "rule": "Generated/generic executables are scout-only until bound to the exact parent, exact baseline, exact frozen cohort or explicit new fresh cohort, and the same cost model.",
+      "on_violation": "BLOCK_PROMOTION"
+    },
+    {
+      "code": "SCREENING_METRIC_AS_SURVIVOR_METRIC",
+      "rule": "Screening results cannot be reported as A1/A2/A3 survivor results. Fresh gate order remains A1 controls -> A2 economic/cost -> A3 durability.",
+      "on_violation": "HOLD"
+    },
+    {
+      "code": "NOOP_AXIS_REPORTED_PASS",
+      "rule": "If the child is economically identical to the parent within deterministic tolerance across all tracked deltas, classify NO_EFFECT and route to the next distinct axis; never call it improvement PASS.",
+      "on_violation": "ROUTE_NEXT_AXIS"
+    },
+    {
+      "code": "POST_OUTCOME_RESCUE",
+      "rule": "No threshold sweep, best-horizon search, post-outcome loss deletion, holdout peek or parameter rescue after seeing outcomes.",
+      "on_violation": "BLOCK"
+    },
+    {
+      "code": "SOURCE_GRANULARITY_MISMATCH",
+      "rule": "A causal claim that requires L2 order book, trade flow, basis or OI may not be proxied by OHLCV/volume and labeled as the same axis. Wait for the native source or define a different observable axis.",
+      "on_violation": "HOLD_SOURCE_GATE"
+    },
+    {
+      "code": "MICROSTRUCTURE_PAYER_INVERSION",
+      "rule": "Candidate mechanism must not invert maker/taker economics. Aggressive takers generally pay spread/impact; a claim that liquidity providers pay spread/impact to takers is rejected unless exact venue evidence proves a different transfer mechanism.",
+      "on_violation": "REJECT_CANDIDATE"
+    },
+    {
+      "code": "UNIVERSAL_8H_FUNDING_ASSUMPTION",
+      "rule": "Funding settlement cadence must be instrument/time-specific from source data; never assume a universal 8h interval.",
+      "on_violation": "HOLD_COST_MODEL"
+    },
+    {
+      "code": "TERMINAL_RETRY_WITH_SAME_IDENTITY",
+      "rule": "Do not rerun a terminal economic/no-effect attempt with the same strategy_id, canonical_baseline_id, changed_axis, config/source identity and data cohort. Advance to a genuinely distinct preregistered axis unless the prior terminal was explicitly invalidated by an integrity or technical defect.",
+      "on_violation": "ROUTE_NEXT_AXIS"
+    },
+    {
+      "code": "A3_BYPASS",
+      "rule": "Do not force A2 or A3 while the exact fresh child has not passed the preceding sample/control/economic gates. Waiting for the minimum fresh sample is not permission to substitute historical or parent PASS.",
+      "on_violation": "HOLD_GATE_ORDER"
+    }
+  ],
+  "known_attempts": [
+    {
+      "strategy_id": "break_and_continue",
+      "canonical_baseline_id": "GEN1_ORIGINAL_BREAK_AND_CONTINUE",
+      "axis": "TRADE_FLOW_REL_VOLUME_CONFIRMATION_ONLY",
+      "terminal_class": "NO_EFFECT",
+      "evidence": "direct original 7-trade same-cohort A/B; retention 100%; all economic deltas 0",
+      "retry_same_identity": false,
+      "next": "BREAKOUT_PERSISTENCE_OWNER_ONLY"
+    },
+    {
+      "strategy_id": "trend_rider",
+      "canonical_baseline_id": "ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3",
+      "axis": "DELAYED_FILL_OR_LONG_ONLY_SUBSTITUTE_BASELINE",
+      "terminal_class": "INVALID_COMPARISON_LINEAGE",
+      "retry_same_identity": false,
+      "next": "DIRECT_SAME_ORIGINAL_FRESH_BASELINE_ONLY"
+    },
+    {
+      "strategy_id": "break_and_continue|supertrend_pullback|keltner_trend|trend_ma_macd",
+      "canonical_baseline_id": "GEN1_ORIGINAL_PER_STRATEGY",
+      "axis": "GENERIC_ZERO_READY_RUN",
+      "terminal_class": "TECHNICAL_INVALID_NOT_ECONOMIC",
+      "evidence": "OpenAI strict-JSON failure and Gemini timeout produced zero economically tested axes",
+      "retry_same_identity": true,
+      "next": "EXACT_PARENT_DIRECT_AB"
+    },
+    {
+      "strategy_id": "keltner_trend",
+      "canonical_baseline_id": "GEN1_ORIGINAL_KELTNER_TREND",
+      "axis": "LIQUIDITY_REGIME_OWNER_ONLY_WITH_OHLCV_AS_L2_PROXY",
+      "terminal_class": "SOURCE_GRANULARITY_REJECT",
+      "retry_same_identity": false,
+      "next": "USE_ONLY_SOURCE_READY_LIQUIDITY_PROXY_AXIS_OR_WAIT_NATIVE_L2"
+    }
+  ],
+  "provider_policy": {
+    "minimum_independent_reviews_for_replay": 2,
+    "maximum_explicit_rejects": 0,
+    "unavailable_provider_is_not_a_pass": true,
+    "unavailable_provider_is_not_an_economic_fail": true,
+    "fallback_cannot_override_explicit_reject": true
+  },
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED"
+  }
+}

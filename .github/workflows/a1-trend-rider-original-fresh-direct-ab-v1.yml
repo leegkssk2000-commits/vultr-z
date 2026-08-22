@@ -8,6 +8,8 @@ on:
       - 'backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py'
       - 'backend/research/rebuild/trend_rider_momentum_child_policy_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py'
+      - 'backend/research/contracts/a1_trend_rider_original_fresh_direct_ab_runner_v1.json'
+      - 'backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py'
       - '.github/workflows/a1-trend-rider-original-fresh-direct-ab-v1.yml'
   push:
     branches: [master]
@@ -15,6 +17,8 @@ on:
       - 'backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py'
       - 'backend/research/rebuild/trend_rider_momentum_child_policy_v1.py'
       - 'backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py'
+      - 'backend/research/contracts/a1_trend_rider_original_fresh_direct_ab_runner_v1.json'
+      - 'backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py'
       - '.github/workflows/a1-trend-rider-original-fresh-direct-ab-v1.yml'
 
 permissions:
@@ -43,7 +47,10 @@ jobs:
           python -m py_compile \
             backend/research/rebuild/a1_trend_rider_momentum_ab_v1.py \
             backend/research/rebuild/trend_rider_momentum_child_policy_v1.py \
-            backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py
+            backend/research/rebuild/a1_trend_rider_fresh_w123_audit_v1.py \
+            backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py
+          python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py \
+            --out /tmp/a1_trend_rider_original_fresh_direct_ab_guard_v1.json
           python -m backend.research.rebuild.a1_trend_rider_momentum_ab_v1 --self-test
 
   evaluate:
@@ -58,6 +65,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Enforce canonical baseline guard
+        run: |
+          set -euo pipefail
+          python backend/research/architecture_factory/a1_trend_rider_original_fresh_direct_ab_guard_v1.py \
+            --out out/a1_trend_rider_original_fresh_direct_ab_guard_v1.json
       - name: Run same-original-fresh W123 parent child A/B
         run: |
           set -euo pipefail
@@ -142,6 +154,8 @@ jobs:
         if: always()
         with:
           name: a1-trend-rider-original-fresh-direct-ab-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_trend_rider_momentum_ab_latest.json
+          path: |
+            out/a1_trend_rider_momentum_ab_latest.json
+            out/a1_trend_rider_original_fresh_direct_ab_guard_v1.json
           if-no-files-found: error
           retention-days: 90

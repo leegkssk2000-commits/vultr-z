@@ -16,6 +16,13 @@ SCHEMA = "zel.a1_mechanism_first_research.v1"
 COMMON_READY_SOURCES = {"ohlcv", "volume"}
 DERIVATIVES_HISTORY_SOURCES = {"funding", "basis", "open_interest"}
 MICROSTRUCTURE_HISTORY_SOURCES = {"l2_order_book", "trade_flow"}
+COMMON_READY_GENERATION_REQUIREMENT = (
+    "COMMON_READY_NEW_ARCHITECTURE_REQUIRED: among the NEW_ARCHITECTURE candidates, generate at least one "
+    "candidate whose required_sources are a non-empty subset of [ohlcv, volume] only. It must still be a genuinely "
+    "new mechanism/payer/native-horizon architecture, not a renamed legacy repair. Do not add funding, basis, "
+    "open_interest, l2_order_book, or trade_flow to that candidate. This is a source-availability constraint only; "
+    "do not relax evidence quorum, economics, falsification, cost geometry, or any alpha threshold."
+)
 AUTH = {
     "selection_authority": False,
     "promotion_authority": False,
@@ -102,6 +109,19 @@ def _guard(candidate: Mapping[str, Any]) -> tuple[bool, list[str], str, list[str
     return runnable, reasons, source_state, source_blockers
 
 
+def _run_architecture_factory_common_ready(architecture_receipt: Path) -> dict[str, Any]:
+    original_prompt = af.generator_prompt
+
+    def source_ready_prompt(context: Mapping[str, Any]) -> str:
+        return original_prompt(context) + "\n" + COMMON_READY_GENERATION_REQUIREMENT
+
+    try:
+        af.generator_prompt = source_ready_prompt
+        return dict(af.run(architecture_receipt))
+    finally:
+        af.generator_prompt = original_prompt
+
+
 def run(output: Path) -> dict[str, Any]:
     depth = depth_audit()
     if depth.get("state") != "PASS_RESEARCH_DEPTH_RETRY_GUARD":
@@ -125,7 +145,7 @@ def run(output: Path) -> dict[str, Any]:
         architecture_receipt = temp / "architecture_factory.json"
         try:
             af.EVIDENCE = combined_path
-            architecture = dict(af.run(architecture_receipt))
+            architecture = _run_architecture_factory_common_ready(architecture_receipt)
         finally:
             af.EVIDENCE = original_evidence
 
@@ -178,6 +198,7 @@ def run(output: Path) -> dict[str, Any]:
             "minimum_independent_passes": 2,
             "maximum_independent_rejects": 0,
             "minimum_supporting_evidence_documents": 3,
+            "minimum_common_ready_new_architectures_requested": 1,
             "expected_move_cost_multiple_target": 2.0,
             "expected_move_cost_multiple_is_design_objective_not_alpha_evidence": True,
             "threshold_sweep": False,
@@ -189,6 +210,7 @@ def run(output: Path) -> dict[str, Any]:
             "common_ready": sorted(COMMON_READY_SOURCES),
             "derivatives_history_requires_native_audit": sorted(DERIVATIVES_HISTORY_SOURCES),
             "microstructure_requires_timestamped_preentry_history": sorted(MICROSTRUCTURE_HISTORY_SOURCES),
+            "common_ready_generation_requirement": COMMON_READY_GENERATION_REQUIREMENT,
         },
         "depth_retry_guard": depth,
         "architecture_factory_state": architecture.get("state"),
@@ -237,6 +259,9 @@ def self_test() -> int:
     ok, reasons, source_state, blockers = _guard(advanced)
     assert not ok and not reasons and source_state == "HOLD_SOURCE_PREFLIGHT"
     assert "NATIVE_DERIVATIVES_HISTORY_AUDIT_REQUIRED" in blockers
+    sample_prompt = af.generator_prompt({"available_source_vocabulary": sorted(COMMON_READY_SOURCES)}) + "\n" + COMMON_READY_GENERATION_REQUIREMENT
+    assert "COMMON_READY_NEW_ARCHITECTURE_REQUIRED" in sample_prompt
+    assert "ohlcv" in sample_prompt and "volume" in sample_prompt
     print("PASS_A1_MECHANISM_FIRST_RESEARCH_V1_SELF_TEST")
     return 0
 

@@ -133,3 +133,5 @@ def self_test() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(self_test())
+
+# direct-ab trigger: 2026-08-22T16:10+02:00

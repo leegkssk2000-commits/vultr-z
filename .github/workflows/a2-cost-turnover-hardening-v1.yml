@@ -1,0 +1,56 @@
+name: A2 Cost Turnover Hardening V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/a2_cost_turnover_actual_v2.py'
+      - 'backend/research/prep/a2_cost_turnover_ssot_v1.json'
+      - '.github/workflows/a2-cost-turnover-hardening-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/a2_cost_turnover_actual_v2.py'
+      - 'backend/research/prep/a2_cost_turnover_ssot_v1.json'
+      - '.github/workflows/a2-cost-turnover-hardening-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a2-cost-turnover-hardening-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile A2 evaluator
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/prep/a2_cost_turnover_actual_v2.py
+      - name: Verify A2 sample and turnover contract
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.a2_cost_turnover_actual_v2 --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/prep/a2_cost_turnover_ssot_v1.json')
+          s=json.loads(p.read_text())
+          a=s['activation']; t=s['turnover']
+          assert int(a['minimum_completed_trades_for_actual_a2_pass']) >= 25
+          assert int(a['minimum_h4_control_trades_for_actual_a2_pass']) >= 25
+          assert t['pass_role'] == 'DIAGNOSTIC_ONLY'
+          assert t['positive_turnover_is_not_economic_edge'] is True
+          assert set(s['stress_contract']) == {'1X_COST','2X_COST','P95_FUNDING','PLUS_ONE_BAR'}
+          print('PASS_A2_HARDENING_CONTRACT_V1')
+          PY

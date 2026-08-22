@@ -2,8 +2,6 @@ name: A1 External Research Exact25 Multicritic V1
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '11 */12 * * *'
   pull_request:
     branches: [master]
     paths:
@@ -11,19 +9,11 @@ on:
       - 'backend/research/architecture_factory/a1_external_research_exact25_router_v1.py'
       - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json'
       - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.py'
-      - '.github/workflows/a1-external-research-exact25-multicritic-v1.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'
-      - 'backend/research/architecture_factory/a1_external_research_exact25_router_v1.py'
-      - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.json'
-      - 'backend/research/architecture_factory/a1_external_research_exact8_spec_v1.py'
+      - 'backend/research/a1_ai_multicritic_review_v2.py'
       - '.github/workflows/a1-external-research-exact25-multicritic-v1.yml'
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: a1-external-research-exact25-multicritic-v1
@@ -40,7 +30,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate outcome-blind Exact25 research router
+      - name: Validate outcome-blind Exact25 router and review semantics
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_external_research_exact25_router_v1.py
@@ -50,9 +40,10 @@ jobs:
           python -m backend.research.architecture_factory.a1_external_research_exact25_router_v1 --self-test
           python -m backend.research.architecture_factory.a1_external_research_exact8_spec_v1
           python -m backend.research.a1_ai_multicritic_review_v2 --self-test
+          echo 'PASS_EXACT25_MULTICRITIC_STATIC_ONLY_NO_PAID_AI'
 
   review:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     needs: validate
     strategy:
       fail-fast: false
@@ -68,18 +59,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install Groq SDK
+      - name: Install Groq SDK for explicit Exact25 review only
         run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Generate this Exact25 research shard
+      - name: Generate preregistered Exact25 shard
         run: |
           set -euo pipefail
+          mkdir -p out/prep
           python -m backend.research.architecture_factory.a1_external_research_exact25_router_v1 \
             --shard-count 5 \
             --shard-index '${{ matrix.shard }}' \
             --output-dir out/prep \
             --receipt 'out/router_shard_${{ matrix.shard }}.json'
           test "$(find out/prep -maxdepth 1 -name '*.json' | wc -l)" -eq 5
-      - name: Read existing Gemini receipt without requesting new Gemini quota
+      - name: Read existing Gemini receipt without new Gemini quota
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -92,22 +84,13 @@ jobs:
             printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
             chmod 600 ~/.ssh/vps_key
             ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-            if ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            ssh -i ~/.ssh/vps_key -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
               "cat /home/z/z/ledger/production_external_evidence_v1.json 2>/dev/null || printf '%s' '{}'" \
-              > out/gemini_external_evidence.tmp; then
-              if python -m json.tool out/gemini_external_evidence.tmp >/dev/null 2>&1; then
-                mv out/gemini_external_evidence.tmp out/gemini_external_evidence.json
-              else
-                echo 'Gemini cache was not valid JSON; continuing without Gemini.' >&2
-              fi
-            else
-              echo 'Gemini cache fetch unavailable; continuing with independent critics.' >&2
-            fi
-          else
-            echo 'Gemini cache credentials unavailable; continuing with independent critics.' >&2
+              > out/gemini_external_evidence.tmp || true
+            python -m json.tool out/gemini_external_evidence.tmp >/dev/null 2>&1 && mv out/gemini_external_evidence.tmp out/gemini_external_evidence.json || true
           fi
           rm -f out/gemini_external_evidence.tmp
-      - name: Run independent critics on five preregistered axes
+      - name: Run explicit independent critics on five axes
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -124,9 +107,7 @@ jobs:
             --output 'out/review_shard_${{ matrix.shard }}.json'
           python - <<'PY'
           import json
-          from pathlib import Path
-          p=Path("out/review_shard_${{ matrix.shard }}.json")
-          d=json.loads(p.read_text())
+          d=json.load(open("out/review_shard_${{ matrix.shard }}.json"))
           assert d['reviewed_strategy_count']==5,d
           assert d['selection_authority'] is False and d['promotion_authority'] is False,d
           assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
@@ -145,7 +126,7 @@ jobs:
           retention-days: 90
 
   aggregate:
-    if: github.event_name != 'pull_request' && always()
+    if: github.event_name == 'workflow_dispatch' && always()
     needs: review
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -159,103 +140,23 @@ jobs:
           pattern: a1-external-research-exact25-shard-*-${{ github.run_id }}
           path: out
           merge-multiple: true
-      - name: Aggregate fail-closed Exact25 review receipt
+      - name: Aggregate explicit fail-closed Exact25 review receipt
         run: |
           set -euo pipefail
           python - <<'PY'
           import hashlib,json
           from pathlib import Path
-          reviews=[]; providers={"gemini":0,"openai":0,"groq":0,"workers_ai":0}; blockers=[]
-          mapping=json.load(open('backend/research/architecture_factory/a1_external_research_exact25_map_v1.json'))
-          code_audit=mapping.get('parent_code_dedup_audit') or {}
-          code_novel={str(x) for x in (code_audit.get('novel_strategy_ids') or [])}
-          code_duplicates={str(x) for x in (code_audit.get('duplicate_parent_axis') or {})}
+          reviews=[]; providers={'gemini':0,'openai':0,'groq':0,'workers_ai':0}; blockers=[]
           paths=sorted(Path('out').glob('review_shard_*.json'))
           for p in paths:
-              d=json.loads(p.read_text())
-              reviews.extend(d.get('reviews') or [])
-              for key in providers: providers[key]+=int((d.get('provider_successful_strategy_counts') or {}).get(key) or 0)
+              d=json.loads(p.read_text()); reviews.extend(d.get('reviews') or [])
+              for k in providers: providers[k]+=int((d.get('provider_successful_strategy_counts') or {}).get(k) or 0)
               blockers.extend(d.get('bottlenecks') or [])
           ids=[str(x.get('strategy_id') or '') for x in reviews]
-          complete=len(paths)==5 and len(ids)==25 and len(set(ids))==25
-          consensus=[]; revise=[]; rejected=[]; duplicates=[]
-          for row in reviews:
-              strategy_id=str(row.get('strategy_id') or '')
-              decisions=list((row.get('review_decisions') or {}).values())
-              pass_count=sum(x=='PASS_TO_REPLAY' for x in decisions)
-              reject_count=sum(x=='REJECT' for x in decisions)
-              row['critic_pass_count']=pass_count
-              row['critic_reject_count']=reject_count
-              if strategy_id in code_duplicates:
-                  row['triage']='DUPLICATE_PARENT_AXIS_NO_CHILD'
-                  duplicates.append(strategy_id)
-              elif pass_count >= 2 and reject_count == 0 and strategy_id in code_novel:
-                  row['triage']='SPEC_READY_NOT_EFFECT_VERIFIED'
-                  consensus.append(strategy_id)
-              elif reject_count > 0:
-                  row['triage']='REJECTED_BY_CRITIC'
-                  rejected.append(row.get('strategy_id'))
-              else:
-                  row['triage']='SPEC_REVISION_REQUIRED'
-                  revise.append(row.get('strategy_id'))
-          out={
-              'schema_version':'zel.a1_external_research_exact25_multicritic.v1',
-              'state':'PASS_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_TRIAGED' if complete and all(x.get('state')=='AI_REVIEW_READY' for x in reviews) else 'HOLD_EXACT25_EXTERNAL_RESEARCH_MULTICRITIC_GAPS',
-              'reviewed_strategy_count':len(ids),'unique_strategy_count':len(set(ids)),
-              'provider_successful_strategy_counts':providers,'bottlenecks':sorted(set(blockers)),
-              'spec_ready_strategy_ids':sorted(str(x) for x in consensus),
-              'spec_revision_strategy_ids':sorted(str(x) for x in revise),
-              'critic_rejected_strategy_ids':sorted(str(x) for x in rejected),
-              'code_duplicate_strategy_ids':sorted(str(x) for x in duplicates),
-              'effect_verified_strategy_ids':[],
-              'effect_verified_count':0,
-              'reviews':reviews,'selection_authority':False,'promotion_authority':False,
-              'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED',
-              'protected_mutations':0,'action':'hold'
-          }
+          out={'schema_version':'zel.a1_external_research_exact25_multicritic.v1','state':'PASS_EXPLICIT_EXACT25_MULTICRITIC_COMPLETE' if len(paths)==5 and len(ids)==25 and len(set(ids))==25 else 'HOLD_EXPLICIT_EXACT25_MULTICRITIC_GAPS','reviewed_strategy_count':len(ids),'unique_strategy_count':len(set(ids)),'provider_successful_strategy_counts':providers,'bottlenecks':sorted(set(blockers)),'reviews':reviews,'automatic_schedule':False,'paid_review_requires_explicit_dispatch':True,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','protected_mutations':0,'action':'hold'}
           out['receipt_sha256']=hashlib.sha256(json.dumps(out,sort_keys=True,separators=(',',':')).encode()).hexdigest()
           Path('out/a1_external_research_exact25_multicritic_v1.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'state':out['state'],'reviewed':len(ids),'providers':providers,'bottlenecks':out['bottlenecks']},sort_keys=True))
-          PY
-      - name: Publish stable inspection marker
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,os,urllib.request
-          d=json.load(open('out/a1_external_research_exact25_multicritic_v1.json'))
-          marker='<!-- A1_EXTERNAL_RESEARCH_EXACT25_MULTICRITIC_V1 -->'
-          body='\n'.join([
-              marker,'## A1 External Research Exact25 Multicritic V1',
-              f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",
-              f"state={d['state']}|reviewed={d['reviewed_strategy_count']}|unique={d['unique_strategy_count']}",
-              'providers='+json.dumps(d['provider_successful_strategy_counts'],sort_keys=True),
-              'spec_ready='+json.dumps(d['spec_ready_strategy_ids'],sort_keys=True),
-              'spec_revision='+json.dumps(d['spec_revision_strategy_ids'],sort_keys=True),
-              'critic_rejected='+json.dumps(d['critic_rejected_strategy_ids'],sort_keys=True),
-              'code_duplicate='+json.dumps(d['code_duplicate_strategy_ids'],sort_keys=True),
-              f"effect_verified={d['effect_verified_count']}",
-              'bottlenecks='+json.dumps(d['bottlenecks'],sort_keys=True),
-              'policy=one-axis; primary-evidence-required; YouTube/forum hypothesis-only; no threshold adoption; no holdout outcomes',
-              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
-          ])
-          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
-          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          comments=[]; page=1
-          while True:
-              with urllib.request.urlopen(urllib.request.Request(base+f'&page={page}',headers=headers),timeout=20) as resp: rows=json.load(resp)
-              if not rows: break
-              comments.extend(rows)
-              if len(rows)<100: break
-              page+=1
-          existing=next((x for x in reversed(comments) if marker in str(x.get('body') or '')),None)
-          url=existing.get('url') if existing else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
-          req=urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if existing else 'POST')
-          with urllib.request.urlopen(req,timeout=20) as resp: json.load(resp)
+          print(json.dumps({'state':out['state'],'reviewed':len(ids),'providers':providers,'manual_only':True},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()

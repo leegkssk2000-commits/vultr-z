@@ -1,0 +1,53 @@
+name: A1 Trend Rider Transition Freshness Concentration Diagnostic V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_transition_freshness_concentration_diag_v1.py'
+      - '.github/workflows/a1_trend_rider_transition_freshness_concentration_diag_v1.yml'
+      - 'backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose current fresh transition concentration without bypassing mature gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/research/rebuild/a1_trend_rider_transition_freshness_concentration_diag_v1.py
+          python -m backend.research.rebuild.a1_trend_rider_transition_freshness_concentration_diag_v1 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_transition_freshness_concentration_diag_v1 \
+            --out out/a1_trend_rider_transition_freshness_concentration_diag_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_transition_freshness_concentration_diag_latest.json'))
+          assert r['diagnostic_only'] is True
+          assert r['minimum_mature_hardening_trades'] == 25
+          assert r['survivor_improvement_claim_allowed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'trades':r['completed_trades'],
+            'mature':r['mature_budget_ready'],
+            'top10':r['top10_trade_profit_share'],
+            'blockers':r['diagnostic_blockers_if_thresholds_were_applied'],
+            'symbol':r['dimensions']['symbol'],
+            'regime':r['dimensions']['regime'],
+            'side':r['dimensions']['side'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-transition-fresh-concentration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_transition_freshness_concentration_diag_latest.json
+          retention-days: 30

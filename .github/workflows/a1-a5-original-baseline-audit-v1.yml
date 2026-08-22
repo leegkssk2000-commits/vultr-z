@@ -1,0 +1,51 @@
+name: A1 A5 Original Baseline Audit V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
+      - 'backend/research/contracts/a1_a4_original_baseline_retest_queue_v1.json'
+      - 'backend/research/architecture_factory/a1_a5_original_baseline_guard_v1.py'
+      - '.github/workflows/a1-a5-original-baseline-audit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_a5_original_baseline_integrity_v1.json'
+      - 'backend/research/contracts/a1_a4_original_baseline_retest_queue_v1.json'
+      - 'backend/research/architecture_factory/a1_a5_original_baseline_guard_v1.py'
+
+permissions:
+  contents: read
+
+jobs:
+  baseline-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile guard
+        run: python -m py_compile backend/research/architecture_factory/a1_a5_original_baseline_guard_v1.py
+      - name: Self-test canonical baselines
+        run: python backend/research/architecture_factory/a1_a5_original_baseline_guard_v1.py --self-test
+      - name: Produce audit receipt
+        run: |
+          python backend/research/architecture_factory/a1_a5_original_baseline_guard_v1.py \
+            --out /tmp/a1_a5_original_baseline_audit_latest.json
+          cat /tmp/a1_a5_original_baseline_audit_latest.json
+      - name: Validate existing exact break adapter contract
+        run: |
+          python - <<'PY'
+          from backend.research.architecture_factory.a1_exact8_break_and_continue_adapter_v1 import (
+              PARENT_ID, CHILD_ID, RelativeVolumeConfirmPolicyConfig
+          )
+          cfg = RelativeVolumeConfirmPolicyConfig()
+          assert PARENT_ID == 'break_and_continue'
+          assert CHILD_ID == 'break_and_continue__relative_volume_confirm_v1'
+          assert cfg.relative_volume_floor == 1.0
+          assert cfg.relative_volume_lookback == 20
+          print('PASS_EXACT_BREAK_ADAPTER_CONTRACT')
+          PY

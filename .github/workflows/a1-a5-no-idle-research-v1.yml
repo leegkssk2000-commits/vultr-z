@@ -1,4 +1,4 @@
-name: A1 A5 No-Idle Research V1
+name: A1 A5 No-Idle Research V7
 
 on:
   pull_request:
@@ -6,23 +6,25 @@ on:
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/architecture_factory/a1_research_factory_v6.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v7.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/architecture_factory/a1_research_factory_v6.py'
+      - 'backend/research/architecture_factory/a1_research_factory_v7.py'
       - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   workflow_dispatch:
   schedule:
-    - cron: '17 2 * * *'
+    - cron: '17 */6 * * *'
 
 permissions:
   contents: write
   issues: write
 
 concurrency:
-  group: a1-a5-no-idle-research-v1
+  group: a1-a5-no-idle-research-v7
   cancel-in-progress: false
 
 jobs:
@@ -37,17 +39,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify frozen A5 no-idle contract
+      - name: Verify A5 no-idle V7 review quorum contract
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_research_factory_v6.py
+          python -m py_compile backend/research/architecture_factory/a1_research_factory_v7.py
           python -m backend.research.architecture_factory.a1_research_factory_v6 --self-test
+          python -m backend.research.architecture_factory.a1_research_factory_v7 --self-test
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v6 --no-network --no-ai --ai-strategy-limit 5 --output out/a1_research_factory_v6.json
+          python -m backend.research.architecture_factory.a1_research_factory_v7 --no-network --no-ai --ai-strategy-limit 5 --output out/a1_research_factory_v7.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v6.json'))
+          r=json.load(open('out/a1_research_factory_v7.json'))
           a=r['a5_no_idle']
+          q=r['a5_review_quorum']
           expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
           assert a['priority_order']==expected, a
           assert a['targets_this_run']==expected, a
@@ -55,10 +60,13 @@ jobs:
           assert a['fresh_wait_blocks_validation_only'] is True
           assert a['queue_generation_continues_during_fresh_wait'] is True
           assert a['sealed_exact25_axis_mutation_forbidden'] is True
+          assert q['required_independent_passes']==2 and q['maximum_rejects']==0
+          assert q['gemini_fallback_only_when_quorum_missing'] is True
+          assert q['gemini_fallback_cannot_override_reject'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_STATIC_CONTRACT')
+          print('PASS_A1_A5_NO_IDLE_RESEARCH_V7_STATIC_CONTRACT')
           PY
 
   research:
@@ -75,7 +83,7 @@ jobs:
           python-version: '3.12'
       - name: Install review dependencies
         run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Discover internet evidence and review all A-grade five
+      - name: Discover internet evidence and review all A-grade five with fallback quorum
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -83,19 +91,23 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}
           GROQ_REVIEW_MODEL: ${{ vars.GROQ_REVIEW_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
           WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_research_factory_v6 --ai-strategy-limit 5 --output out/a1_research_factory_v6.json
+          python -m backend.research.architecture_factory.a1_research_factory_v7 --ai-strategy-limit 5 --output out/a1_research_factory_v7.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_research_factory_v6.json'))
-          a=r['a5_no_idle']; expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
+          r=json.load(open('out/a1_research_factory_v7.json'))
+          a=r['a5_no_idle']; q=r['a5_review_quorum']; expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
           assert a['targets_this_run']==expected, a
           assert a['validation_wait_blocks_research'] is False
+          assert q['required_independent_passes']==2 and q['maximum_rejects']==0
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({
@@ -104,6 +116,7 @@ jobs:
             'sources':r.get('external_source_count'),
             'new':r.get('new_discovered_source_count'),
             'reviewed':r.get('reviewed_ready_common_count'),
+            'quorum':q,
             'flow':r.get('candidate_flow_counts'),
             'next':r.get('next_experiment_candidate'),
             'receipt':r.get('receipt_sha256')
@@ -113,12 +126,12 @@ jobs:
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_research_factory_a5_latest.json
-          cp out/a1_research_factory_v6.json "$target"
+          cp out/a1_research_factory_v7.json "$target"
           git config user.name 'a1-a5-no-idle-research'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist no-idle research receipt [skip ci]'
+          git commit -m 'A1 A5: persist no-idle research V7 receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -133,17 +146,18 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_research_factory_v6.json')); a=r['a5_no_idle']; flow=r.get('candidate_flow_counts') or {}; nxt=r.get('next_experiment_candidate') or {}
-          marker='<!-- A1_A5_NO_IDLE_RESEARCH_V1 -->'
+          r=json.load(open('out/a1_research_factory_v7.json')); a=r['a5_no_idle']; q=r['a5_review_quorum']; flow=r.get('candidate_flow_counts') or {}; nxt=r.get('next_experiment_candidate') or {}
+          marker='<!-- A1_A5_NO_IDLE_RESEARCH_V7 -->'
           lines=[
             marker,
-            '## A1 A5 No-Idle Research V1',
+            '## A1 A5 No-Idle Research V7',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
             'targets='+','.join(a.get('targets_this_run') or []),
             f"sources={r.get('external_source_count')}|new={r.get('new_discovered_source_count')}|reviewed={r.get('reviewed_ready_common_count')}",
+            f"fallback_attempt={q.get('fallback_attempt_count')}|fallback_pass={q.get('fallback_pass_count')}|fallback_reject={q.get('fallback_reject_count')}",
             f"flow_raw={flow.get('raw_generated')}|validated={flow.get('validated')}|reviewed={flow.get('reviewed')}|eligible={flow.get('eligible')}",
             f"next={nxt.get('strategy_id')}|candidate={nxt.get('candidate_id')}|axis={nxt.get('changed_axis')}|score={nxt.get('score')}",
-            'NO_IDLE=fresh prospective wait gates validation only; external discovery + A5 design/review continue',
+            'NO_IDLE=fresh prospective wait gates validation only; Groq outage can be replaced by Gemini only to complete missing independent quorum',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
           ]
           body='\n'.join(lines)
@@ -154,12 +168,12 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_A5_NO_IDLE_RESEARCH_PUBLISHED')
+          print('PASS_A1_A5_NO_IDLE_RESEARCH_V7_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-a5-no-idle-research-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_research_factory_v6.json
+          name: a1-a5-no-idle-research-v7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_research_factory_v7.json
           if-no-files-found: error
           retention-days: 90

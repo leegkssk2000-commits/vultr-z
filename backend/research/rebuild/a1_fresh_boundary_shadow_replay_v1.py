@@ -6,7 +6,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v2 as exact
 
@@ -24,6 +24,34 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _source_symbol_names(source: Any) -> tuple[str, ...]:
+    """Normalize evaluator source symbols across legacy and current receipt schemas.
+
+    Legacy receipts emitted ``source.symbols`` as a list of strings. Current
+    receipts emit a list of per-symbol mappings carrying bar-coverage metadata.
+    Universe validation must compare symbol identities, never stringify the
+    entire mapping. Malformed mappings fail closed.
+    """
+    if not isinstance(source, Mapping):
+        return ()
+    raw = source.get("symbols") or []
+    if isinstance(raw, (str, bytes, bytearray)) or not isinstance(raw, Sequence):
+        raise RuntimeError("SOURCE_SYMBOLS_SEQUENCE_REQUIRED")
+
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            symbol = str(item.get("symbol") or "").strip()
+            if not symbol:
+                raise RuntimeError("SOURCE_SYMBOL_MAPPING_MISSING_SYMBOL")
+        else:
+            symbol = str(item).strip()
+            if not symbol:
+                raise RuntimeError("SOURCE_SYMBOL_EMPTY")
+        names.append(symbol)
+    return tuple(names)
 
 
 def run_terminal_shadow(
@@ -99,7 +127,7 @@ def run_terminal_shadow(
     if replay.get("canonical_ledger_mutated") is not False:
         raise RuntimeError("SHADOW_LEDGER_MUTATION_GUARD_FAILED")
     if fixed_symbols:
-        source_symbols = tuple(sorted(str(x) for x in ((receipt.get("source") or {}).get("symbols") or [])))
+        source_symbols = tuple(sorted(_source_symbol_names(receipt.get("source"))))
         if source_symbols and source_symbols != tuple(sorted(fixed_symbols)):
             raise RuntimeError(f"FIXED_SYMBOL_UNIVERSE_MISMATCH:{source_symbols}:{fixed_symbols}")
     meta = {
@@ -128,6 +156,24 @@ def self_test() -> int:
     assert INVENTORY.name == "strategy25_structural_inventory_v2.json"
     fixed = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT", "DOGE-USDT")
     assert len(fixed) == 6 and len(set(fixed)) == 6
+
+    legacy = {"symbols": ["BTC-USDT", "ETH-USDT"]}
+    current = {
+        "symbols": [
+            {"symbol": "BTC-USDT", "bars_total": 1000, "bars_post_boundary": 1},
+            {"symbol": "ETH-USDT", "bars_total": 1000, "bars_post_boundary": 1},
+        ]
+    }
+    assert _source_symbol_names(legacy) == ("BTC-USDT", "ETH-USDT")
+    assert _source_symbol_names(current) == ("BTC-USDT", "ETH-USDT")
+
+    try:
+        _source_symbol_names({"symbols": [{"bars_total": 1000}]})
+    except RuntimeError as exc:
+        assert str(exc) == "SOURCE_SYMBOL_MAPPING_MISSING_SYMBOL"
+    else:
+        raise AssertionError("MALFORMED_SOURCE_SYMBOL_MAPPING_MUST_FAIL_CLOSED")
+
     print("PASS_A1_FRESH_BOUNDARY_SHADOW_REPLAY_V1_SELF_TEST")
     return 0
 

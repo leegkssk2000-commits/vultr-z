@@ -1,0 +1,85 @@
+# retrigger after global heavy lane released
+name: A1 Finalist Lifecycle and Liquid6 V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_finalist_intent_lifecycle_diagnostic_v1.py'
+      - '.github/workflows/a1-finalist-lifecycle-and-liquid6-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  lifecycle-and-universe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      LIQUID6: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_finalist_intent_lifecycle_diagnostic_v1.py
+          python -m backend.research.rebuild.a1_finalist_intent_lifecycle_diagnostic_v1 --strategy-id supertrend_pullback --out /tmp/x --self-test
+      - name: Classify BTC ETH intent maturity
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_intent_lifecycle_diagnostic_v1 --strategy-id supertrend_pullback --out out/supertrend_lifecycle.json
+          python -m backend.research.rebuild.a1_finalist_intent_lifecycle_diagnostic_v1 --strategy-id trend_ma_macd --out out/trendma_lifecycle.json
+      - name: Run unchanged policies on fixed Liquid6
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --terminal-replay --strategy-id supertrend_pullback --symbols "$LIQUID6" --out out/supertrend_liquid6.json
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --terminal-replay --strategy-id trend_ma_macd --symbols "$LIQUID6" --out out/trendma_liquid6.json
+      - name: Summarize lifecycle and universe leverage
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          latest=json.load(open('backend/research/rebuild/a1_finalist_fresh_growth_latest.json'))
+          parent={x['strategy_id']:x for x in latest['targets']}
+          out={'schema_version':'zel.a1.finalist.lifecycle_liquid6.v1','fixed_liquid6':['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],'policy_changed':False,'thresholds_changed':False,'canonical_ledger_mutation':False,'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','targets':{}}
+          for sid,life_name,liq_name in [('supertrend_pullback','supertrend_lifecycle.json','supertrend_liquid6.json'),('trend_ma_macd','trendma_lifecycle.json','trendma_liquid6.json')]:
+              life=json.load(open('out/'+life_name)); liq=json.load(open('out/'+liq_name)); p=parent[sid]
+              m=liq.get('metrics') or {}
+              ptr=int(p['completed_trades']); ltr=int(liq.get('completed_trades') or 0)
+              pwr=float(p['win_rate']); lwr=m.get('win_rate')
+              ppnl=float(p['net_pnl_bps']); lpnl=m.get('net_pnl_bps')
+              pexp=float(p['net_expectancy_bps']); lexp=m.get('net_expectancy_bps')
+              economic=bool(lpnl is not None and lexp is not None and lpnl>0 and lexp>0 and ((m.get('net_profit_factor') or 1)>=1))
+              out['targets'][sid]={
+                'btceth':{'trades':ptr,'win_rate':pwr,'net_pnl_bps':ppnl,'net_expectancy_bps':pexp},
+                'lifecycle':life,
+                'liquid6':{'trades':ltr,'win_rate':lwr,'net_pnl_bps':lpnl,'net_expectancy_bps':lexp,'profit_factor':m.get('net_profit_factor'),'max_drawdown_bps':m.get('max_drawdown_bps'),'source_quality_state':(liq.get('source_quality_gate') or {}).get('state'),'integrity_defects':liq.get('integrity_defects') or [],'leakage_lookahead':int(liq.get('leakage_lookahead') or 0)},
+                'trade_growth':ltr-ptr,
+                'win_rate_delta':None if lwr is None else lwr-pwr,
+                'net_pnl_delta_bps':None if lpnl is None else lpnl-ppnl,
+                'expectancy_delta_bps':None if lexp is None else lexp-pexp,
+                'liquid6_economics_positive':economic,
+                'future_liquid6_fresh_prereg_eligible':bool(ltr>ptr and economic and not (liq.get('integrity_defects') or []) and int(liq.get('leakage_lookahead') or 0)==0),
+                'promotion_claim':False,
+              }
+          raw=json.dumps(out,sort_keys=True,separators=(',',':')).encode(); out['receipt_sha256']=hashlib.sha256(raw).hexdigest()
+          open('out/a1_finalist_lifecycle_liquid6_summary.json','w').write(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({sid:{'root':x['lifecycle']['root_cause'],'pending':x['lifecycle']['pending_unmature_count'],'btceth_trades':x['btceth']['trades'],'liquid6_trades':x['liquid6']['trades'],'liquid6_wr':x['liquid6']['win_rate'],'liquid6_pnl':x['liquid6']['net_pnl_bps'],'eligible':x['future_liquid6_fresh_prereg_eligible']} for sid,x in out['targets'].items()},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-lifecycle-liquid6-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 30

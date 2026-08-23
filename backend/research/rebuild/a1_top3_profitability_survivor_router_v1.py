@@ -16,7 +16,7 @@ from backend.research.rebuild import a1_trend_rider_transition_freshness_frozen_
 ROOT = Path(__file__).resolve().parents[3]
 TRENDMA = ROOT / "backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json"
 KELTNER = ROOT / "backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json"
-A3_CONTEXT = ROOT / "backend/research/prep/a3_prospective_context_latest.json"
+A3_CONTEXT = ROOT / "backend/research/prep/a3_forward_context_ledger_v2.json"
 TOP3 = (
     "trend_rider_transition_freshness",
     "trend_ma_macd_chase_atr_up_long_good_v1",
@@ -69,11 +69,6 @@ def metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "net_expectancy_bps": exp,
         "profit_factor": pf,
     }
-
-
-def hardening_pass(receipt: Mapping[str, Any]) -> bool:
-    hard = receipt.get("hardening_receipt") if isinstance(receipt.get("hardening_receipt"), Mapping) else {}
-    return str(hard.get("state") or "") == "PASS_HARDENING_EVIDENCE"
 
 
 def a1_status(receipt: Mapping[str, Any], *, explicit_hardening: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -198,6 +193,8 @@ def candidate_row(identity: str, receipt: Mapping[str, Any], hard: Mapping[str, 
 
 def run(out: Path) -> dict[str, Any]:
     context = read(A3_CONTEXT)
+    if not isinstance(context.get("rows"), list):
+        raise RuntimeError("A3_CONTEXT_ROWS_REQUIRED")
     with tempfile.TemporaryDirectory(prefix="top3_profitability_") as td:
         tr_receipt, tr_hard = trend_rider_current(Path(td))
         trendma = read(TRENDMA)
@@ -250,6 +247,7 @@ def self_test() -> int:
     assert p["pass"] is True and p["state"] == "PASS_A1_PROFITABILITY_SURVIVOR"
     q = a1_status({**fake, "completed_trades": 24}, explicit_hardening={"state": "PASS_HARDENING_EVIDENCE"})
     assert q["pass"] is False and q["state"].startswith("WAIT_")
+    assert A3_CONTEXT.name == "a3_forward_context_ledger_v2.json"
     print("PASS_A1_TOP3_PROFITABILITY_SURVIVOR_ROUTER_V1_SELF_TEST")
     return 0
 

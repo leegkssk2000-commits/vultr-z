@@ -1,0 +1,69 @@
+name: A1 Regime EMA21 Reclaim Auto Survivor V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_prereg_v1.json'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py'
+      - '.github/workflows/a1-regime-ema21-reclaim-auto-survivor-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_prereg_v1.json'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py'
+      - '.github/workflows/a1-regime-ema21-reclaim-auto-survivor-v1.yml'
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fresh-to-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: |
+          python -m py_compile backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
+          python -m py_compile backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py
+          python -m py_compile backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py
+      - name: Policy invariant self test
+        run: python backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
+      - name: Fresh collector self test
+        run: python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --self-test
+      - name: EMA21 identity hardening self test
+        run: python backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py --self-test
+      - name: Fresh-only replay and automatic identity H4 H5 at 25
+        run: |
+          mkdir -p out
+          python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --out out/a1_regime_ema21_reclaim_fresh_latest.json
+          cat out/a1_regime_ema21_reclaim_fresh_latest.json
+      - name: Upload fresh and hardening receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-regime-ema21-reclaim-auto-survivor-${{ github.run_id }}
+          path: out/a1_regime_ema21_reclaim_fresh_latest.json
+      - name: Persist latest receipt on master
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          cp out/a1_regime_ema21_reclaim_fresh_latest.json backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          if git diff --quiet -- backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json; then
+            exit 0
+          fi
+          git config user.name 'a1-ema21-reclaim-auto-survivor'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          git commit -m 'A1 EMA21 reclaim: persist fresh survivor progress [skip ci]'
+          git push

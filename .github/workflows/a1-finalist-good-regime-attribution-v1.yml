@@ -22,7 +22,8 @@ jobs:
     env:
       PYTHONPATH: .
       FROZEN_ARTIFACT_ID: '9495054717'
-      FROZEN_ARTIFACT_SHA256: 'aaf71825db7605feea2c32c568fcf340596edd5922908c4c8b34ae6b1c7ee045'
+      FROZEN_ST_RECEIPT_SHA256: '5be1986bba47492333e6df1daaf735538ee73694d99da68332344d7215344eec'
+      FROZEN_TM_RECEIPT_SHA256: 'de18e7f12e851a1912b225a0dc9943b590c25f772b93be2f7f353bfb2f364f53'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +48,6 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${FROZEN_ARTIFACT_ID}/zip" \
             -o frozen/pr990.zip
-          echo "${FROZEN_ARTIFACT_SHA256}  frozen/pr990.zip" | sha256sum -c -
           unzip -q frozen/pr990.zip -d frozen/pr990
           ST=$(find frozen/pr990 -type f -name 'supertrend_liquid6.json' | head -1)
           TM=$(find frozen/pr990 -type f -name 'trendma_liquid6.json' | head -1)
@@ -55,14 +55,18 @@ jobs:
           cp "$ST" frozen/supertrend_liquid6.json
           cp "$TM" frozen/trendma_liquid6.json
           python - <<'PY'
-          import json
+          import json, os
           st=json.load(open('frozen/supertrend_liquid6.json'))
           tm=json.load(open('frozen/trendma_liquid6.json'))
           assert st['strategy_id']=='supertrend_pullback' and int(st['completed_trades'])==47,st.get('completed_trades')
           assert tm['strategy_id']=='trend_ma_macd' and int(tm['completed_trades'])==18,tm.get('completed_trades')
+          assert st.get('receipt_sha256')==os.environ['FROZEN_ST_RECEIPT_SHA256'],st.get('receipt_sha256')
+          assert tm.get('receipt_sha256')==os.environ['FROZEN_TM_RECEIPT_SHA256'],tm.get('receipt_sha256')
+          assert (st.get('source_quality_gate') or {}).get('state')=='PASS',st.get('source_quality_gate')
+          assert (tm.get('source_quality_gate') or {}).get('state')=='PASS',tm.get('source_quality_gate')
           assert not (st.get('integrity_defects') or []) and not (tm.get('integrity_defects') or [])
           assert int(st.get('leakage_lookahead') or 0)==0 and int(tm.get('leakage_lookahead') or 0)==0
-          print('PASS_FROZEN_PR990_LIQUID6_AUTHORITY')
+          print('PASS_FROZEN_PR990_LIQUID6_INNER_RECEIPT_AUTHORITY')
           PY
       - name: Attribute strategy-specific GOOD pre-entry regimes
         run: |

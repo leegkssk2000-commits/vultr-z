@@ -1,0 +1,35 @@
+name: A1 Trend Rider WR80 Winner Restore V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py'
+      - '.github/workflows/a1-trend-rider-wr80-winner-restore-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  winner-restore-attribution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py
+      - name: Self test
+        run: python backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py --self-test
+      - name: Frozen-24 US winner restore attribution
+        run: |
+          mkdir -p out
+          python backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py --out out/a1_trend_rider_wr80_winner_restore_attribution_latest.json
+          cat out/a1_trend_rider_wr80_winner_restore_attribution_latest.json
+      - name: Upload receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-wr80-winner-restore-${{ github.run_id }}
+          path: out/a1_trend_rider_wr80_winner_restore_attribution_latest.json

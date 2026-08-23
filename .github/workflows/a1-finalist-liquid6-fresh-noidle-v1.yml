@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_latest.json'
       - '.github/workflows/a1-finalist-liquid6-fresh-noidle-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_latest.json'
       - '.github/workflows/a1-finalist-liquid6-fresh-noidle-v1.yml'
   schedule:
     - cron: '17 * * * *'
@@ -37,13 +41,18 @@ jobs:
       - name: Compile and self test
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py
+          python -m py_compile \
+            backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py \
+            backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py \
+            backend/research/rebuild/a1_multisymbol_realized_dd_v1.py
           python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_v1 --self-test
+          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_dd_v2 --self-test
+          python -m backend.research.rebuild.a1_multisymbol_realized_dd_v1 --self-test
       - name: Run retrospective qualifier and frozen Liquid6 fresh lanes
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_v1 \
+          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_dd_v2 \
             --out out/a1_finalist_liquid6_fresh_latest.json
           python - <<'PY'
           import json
@@ -55,10 +64,19 @@ jobs:
           assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
           assert r['selection_authority'] is False and r['promotion_authority'] is False,r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert r['drawdown_integrity']['state']=='PASS_MULTISYMBOL_REALIZED_DD_AUTHORITY_BOUND',r
+          assert r['drawdown_integrity']['ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',r
+          assert r['drawdown_integrity']['legacy_symbol_append_dd_used'] is False,r
           for sid,x in r['targets'].items():
+              assert x['frozen_liquid6_fresh_boundary_utc']=='2026-08-23T16:00:00Z',(sid,x)
+              assert x['boundary_reused_from_previous_receipt'] is True,(sid,x)
               assert x['retrospective_liquid6_qualifier']['economics_positive'] is True,(sid,x)
               assert x['retrospective_liquid6_qualifier']['integrity_ok'] is True,(sid,x)
+              assert x['retrospective_liquid6_qualifier']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',(sid,x)
+              assert x['retrospective_liquid6_qualifier']['legacy_symbol_append_dd_used'] is False,(sid,x)
               assert x['fresh']['integrity_ok'] is True,(sid,x)
+              assert x['fresh']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',(sid,x)
+              assert x['fresh']['legacy_symbol_append_dd_used'] is False,(sid,x)
               assert x['canonical_parent_collection_should_continue'] is True,(sid,x)
               assert x['full_h5_not_claimed'] is True,(sid,x)
               assert x['strategy_parameters_changed'] is False and x['thresholds_changed'] is False,(sid,x)
@@ -68,9 +86,9 @@ jobs:
               'retro_trades':x['retrospective_liquid6_qualifier']['completed_trades'],
               'retro_wr':x['retrospective_liquid6_qualifier']['win_rate'],
               'retro_pnl_bps':x['retrospective_liquid6_qualifier']['net_pnl_bps'],
-              'retro_dd_bps':x['retrospective_liquid6_qualifier']['max_drawdown_bps'],
+              'retro_realized_dd_bps':x['retrospective_liquid6_qualifier']['realized_exit_bucket_max_drawdown_bps'],
               'fresh_trades':x['fresh']['completed_trades'],
-              'fresh_dd_bps':x['fresh']['max_drawdown_bps'],
+              'fresh_realized_dd_bps':x['fresh']['realized_exit_bucket_max_drawdown_bps'],
               'fresh_streak':x['fresh']['max_consecutive_losses'],
               'h5_subset':x['h5_symbol_top10_subset_precheck']['state'],
               'max_symbol_profit_share':x['h5_symbol_top10_subset_precheck']['maximum_single_symbol_profit_share'],

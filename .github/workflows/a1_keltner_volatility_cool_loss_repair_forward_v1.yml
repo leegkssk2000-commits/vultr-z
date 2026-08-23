@@ -1,4 +1,4 @@
-name: A1 Keltner Volatility-Cool Loss Repair Forward V1
+name: A1 Keltner Volatility-Cool Loss Repair Forward V2
 
 on:
   pull_request:
@@ -6,6 +6,7 @@ on:
       - 'backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py'
       - 'backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_prereg_v1.json'
       - 'backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_forward_v1.py'
+      - 'backend/research/rebuild/a1_keltner_h4_h5_hardening_v1.py'
       - '.github/workflows/a1_keltner_volatility_cool_loss_repair_forward_v1.yml'
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - 'backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py'
       - 'backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_prereg_v1.json'
       - 'backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_forward_v1.py'
+      - 'backend/research/rebuild/a1_keltner_h4_h5_hardening_v1.py'
       - '.github/workflows/a1_keltner_volatility_cool_loss_repair_forward_v1.yml'
   workflow_dispatch:
   schedule:
@@ -22,13 +24,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: a1-keltner-volatility-cool-loss-repair-forward-v1
+  group: a1-keltner-volatility-cool-loss-repair-forward-v2
   cancel-in-progress: false
 
 jobs:
   collect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,12 +40,16 @@ jobs:
           python-version: '3.12'
       - name: Compile and self-test
         run: |
-          python -m py_compile backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_forward_v1.py
+          python -m py_compile \
+            backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py \
+            backend/research/rebuild/a1_keltner_h4_h5_hardening_v1.py \
+            backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_forward_v1.py
           python -m backend.research.rebuild.keltner_trend_volatility_cool_child_policy_v1
+          python -m backend.research.rebuild.a1_keltner_h4_h5_hardening_v1 --self-test
           python -m backend.research.rebuild.a1_keltner_volatility_cool_loss_repair_forward_v1 --self-test
-      - name: Collect fresh Keltner repair evidence
+      - name: Collect fresh Keltner repair evidence and auto-harden at 25
         run: python -m backend.research.rebuild.a1_keltner_volatility_cool_loss_repair_forward_v1 --out out/a1_keltner_volatility_cool_loss_repair_forward_latest.json
-      - name: Verify fail closed
+      - name: Verify fail closed and automatic handoff
         run: |
           python - <<'PY'
           import json
@@ -53,7 +59,15 @@ jobs:
           assert r['leakage_lookahead']==0 and not r['integrity_defects']
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False
-          print({k:r.get(k) for k in ['state','completed_trades','sample_gap_to_25','next']})
+          if int(r['completed_trades']) < 25:
+              assert r['h4_state']=='NOT_RUN_MIN_SAMPLE' and r['h5_state']=='NOT_RUN_MIN_SAMPLE'
+              assert r['next']=='CONTINUE_HOURLY_FRESH_COLLECTION'
+          else:
+              assert r['hardening_receipt'] is not None
+              assert r['h4_state'] in {'PASS_PLACEBO_NEGATIVE_CONTROLS','NO_PROVEN_EDGE'}
+              assert r['h5_state'] in {'PASS_CONCENTRATION_FRAGILITY','HOLD_CONCENTRATION_FRAGILITY'}
+              assert r['next'] in {'A2_COST_REVALIDATION_THEN_A3_FRESH_DURABILITY','PRESERVE_EVIDENCE_AND_ROUTE_NEXT_DISTINCT_PREENTRY_AXIS'}
+          print({k:r.get(k) for k in ['state','completed_trades','sample_gap_to_25','h4_state','h5_state','next']})
           PY
       - name: Persist latest repair receipt
         if: github.event_name != 'pull_request'
@@ -61,7 +75,7 @@ jobs:
           set -euo pipefail
           target=backend/research/rebuild/a1_keltner_volatility_cool_loss_repair_forward_latest.json
           cp out/a1_keltner_volatility_cool_loss_repair_forward_latest.json "$target"
-          git config user.name 'a1-keltner-volatility-cool-loss-repair-v1'
+          git config user.name 'a1-keltner-volatility-cool-loss-repair-v2'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi

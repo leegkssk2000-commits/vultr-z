@@ -1,0 +1,37 @@
+name: A1 Keltner Matched Regime Control V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_keltner_matched_regime_control_v1.py'
+      - '.github/workflows/a1-keltner-matched-regime-control-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  matched-regime-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_keltner_matched_regime_control_v1.py
+      - name: Self test
+        run: python backend/research/rebuild/a1_keltner_matched_regime_control_v1.py --self-test
+      - name: Run matched-regime controls
+        run: |
+          mkdir -p out
+          python backend/research/rebuild/a1_keltner_matched_regime_control_v1.py --out out/a1_keltner_matched_regime_control_latest.json
+          cat out/a1_keltner_matched_regime_control_latest.json
+      - name: Upload receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-keltner-matched-regime-${{ github.run_id }}
+          path: out/a1_keltner_matched_regime_control_latest.json

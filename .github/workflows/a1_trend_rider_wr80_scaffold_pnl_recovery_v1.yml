@@ -4,10 +4,11 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_strength_reentry_child_policy_v1.py'
+      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_chase_cooling_reentry_child_policy_v1.py'
       - 'backend/research/rebuild/a1_loss_streak_pareto_scaffold_policy_v1.py'
       - 'backend/research/rebuild/trend_rider_trigger32623644328_incumbent_context_v1.json'
-      - 'backend/research/rebuild/a1_trend_rider_wr80_scaffold_targeted_recovery_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_scaffold_chase_recovery_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_scaffold_recovery_decision_ledger_v1.json'
       - '.github/workflows/a1_trend_rider_wr80_scaffold_pnl_recovery_v1.yml'
   workflow_dispatch:
 
@@ -31,30 +32,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test targeted scaffold recovery
+      - name: Compile and self-test chase-cooling recovery
         run: |
           set -euo pipefail
           python -m py_compile \
-            backend/research/rebuild/trend_rider_transition_freshness_non_us_strength_reentry_child_policy_v1.py \
+            backend/research/rebuild/trend_rider_transition_freshness_non_us_chase_cooling_reentry_child_policy_v1.py \
             backend/research/rebuild/a1_loss_streak_pareto_scaffold_policy_v1.py \
-            backend/research/rebuild/a1_trend_rider_wr80_scaffold_targeted_recovery_v1.py
-          python -m backend.research.rebuild.trend_rider_transition_freshness_non_us_strength_reentry_child_policy_v1
+            backend/research/rebuild/a1_trend_rider_wr80_scaffold_chase_recovery_v1.py
+          python -m backend.research.rebuild.trend_rider_transition_freshness_non_us_chase_cooling_reentry_child_policy_v1
           python -m backend.research.rebuild.a1_loss_streak_pareto_scaffold_policy_v1
-          python -m backend.research.rebuild.a1_trend_rider_wr80_scaffold_targeted_recovery_v1 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_wr80_scaffold_chase_recovery_v1 --self-test
       - name: Targeted replay of immutable 24-trade context
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_trend_rider_wr80_scaffold_targeted_recovery_v1 \
-            --out out/a1_trend_rider_wr80_scaffold_targeted_recovery_latest.json | tee out/stdout.txt
+          python -m backend.research.rebuild.a1_trend_rider_wr80_scaffold_chase_recovery_v1 \
+            --out out/a1_trend_rider_wr80_scaffold_chase_recovery_latest.json | tee out/stdout.txt
       - name: Verify constrained Pareto semantics
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_trend_rider_wr80_scaffold_targeted_recovery_latest.json'))
+          r=json.load(open('out/a1_trend_rider_wr80_scaffold_chase_recovery_latest.json'))
           assert not r['integrity_defects']
-          assert r['method']=='IMMUTABLE_24_TRADE_OVERLAY_PREENTRY_TARGETED_REPLAY_LINEAR_ST_GAP_PARITY'
+          assert r['generation']==2
+          assert r['changed_axis']=='NON_US_SCAFFOLD_PLUS_US_CHASE_ATR_COOLING_REENTRY'
+          assert r['method']=='IMMUTABLE_24_TRADE_OVERLAY_PREENTRY_TARGETED_REPLAY_LINEAR_CHASE_PARITY'
           assert r['parked_wr80_scaffold']['trades']==15
           assert r['parked_wr80_scaffold']['win_rate']==0.8
           assert abs(r['parked_wr80_scaffold']['net_pnl_bps']-21196.60152461874)<1e-6

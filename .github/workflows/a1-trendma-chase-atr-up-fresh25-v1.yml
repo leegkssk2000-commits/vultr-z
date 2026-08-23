@@ -74,8 +74,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_trendma_chase_atr_up_fresh25_v1 \
-            --out out/a1_trendma_chase_atr_up_fresh25_latest.json
+          attempt=1
+          while true; do
+            rm -f out/a1_trendma_chase_atr_up_fresh25_latest.json
+            if python -m backend.research.rebuild.a1_trendma_chase_atr_up_fresh25_v1 \
+              --out out/a1_trendma_chase_atr_up_fresh25_latest.json; then
+              break
+            fi
+            if [ "$attempt" -ge 4 ]; then
+              echo "CHASE_ATR_UP_FRESH_TRANSPORT_RETRY_EXHAUSTED:${attempt}" >&2
+              exit 1
+            fi
+            sleep $((attempt * 3))
+            attempt=$((attempt + 1))
+          done
           cat out/a1_trendma_chase_atr_up_fresh25_latest.json
       - name: Verify independent fail-closed contract
         run: |

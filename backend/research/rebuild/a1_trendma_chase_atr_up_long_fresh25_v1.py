@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from backend.research.rebuild.a1_fresh_boundary_shadow_replay_v1 import run_terminal_shadow
+from backend.research.rebuild.a1_fresh_boundary_shadow_replay_v1 import _source_symbol_names, run_terminal_shadow
 from backend.research.rebuild import a1_finalist_good_regime_fresh25_v1 as common
 from backend.research.rebuild import a1_trendma_chase_atr_up_long_h4_h5_hardening_v1 as nested_hardening
 from backend.tools import zel_economic_hardening_gate_v1 as hard
@@ -151,7 +151,7 @@ def run(now: datetime | None = None) -> dict[str, Any]:
         source_state = str(source_quality.get("state") or "")
         if defects or lookahead != 0:
             raise RuntimeError(f"CHASE_LONG_FRESH_INTEGRITY_FAIL:{defects}:{lookahead}")
-        source_symbols = tuple(sorted(str(x) for x in ((raw.get("source") or {}).get("symbols") or [])))
+        source_symbols = tuple(sorted(_source_symbol_names(raw.get("source"))))
         if source_symbols and source_symbols != tuple(sorted(LIQUID6)):
             raise RuntimeError(f"CHASE_LONG_SOURCE_UNIVERSE_MISMATCH:{source_symbols}")
 

@@ -12,7 +12,7 @@ MECHANISM = "VOL_HIGH_EMA21_TOUCH_RECLAIM_WITH_EMA21_55_ALIGNMENT"
 
 @dataclass(frozen=True)
 class KeltnerRegimeEMA21ReclaimComparatorConfig(parent.BreakoutPolicyConfig):
-    """Preserve parent risk/exit config; replace breakout timing only."""
+    """Preserve parent risk/exit config; replace breakout timing for mechanism diagnosis only."""
 
 
 FeatureSnapshot = parent.FeatureSnapshot
@@ -74,6 +74,8 @@ def compute_keltner_trend_feature(
         "ema21_touch_reclaim_short": short_reclaim,
         "long_break": long_reclaim,
         "short_break": short_reclaim,
+        # Neutralize Keltner-break-specific gates. This comparator is not eligible
+        # for Keltner promotion; it isolates regime-internal timing only.
         "expansion_ratio": 1.0,
         "chase_atr": 0.0,
         "comparison_mode": MODE,

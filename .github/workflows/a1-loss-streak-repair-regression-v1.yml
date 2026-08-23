@@ -1,12 +1,14 @@
-name: A1 Loss-Streak Repair Regression V1
+name: A1 Loss-Streak Repair Regression V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_loss_streak_repair_regression_v1.py'
-      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py'
-      - 'backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_loss_streak_repair_regression_v2.py'
+      - 'backend/research/rebuild/a1_loss_streak_repair_decision_ledger_v1.json'
+      - 'backend/research/rebuild/trend_rider_transition_freshness_atr_expansion_child_policy_v1.py'
+      - 'backend/research/rebuild/keltner_trend_ema_spread_expansion_child_policy_v1.py'
       - '.github/workflows/a1-loss-streak-repair-regression-v1.yml'
   workflow_dispatch:
 
@@ -15,7 +17,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: a1-loss-streak-repair-regression-v1-${{ github.head_ref || github.ref }}
+  group: a1-loss-streak-repair-regression-v2-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,16 +32,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test
+      - name: Compile and self-test second-axis children
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_loss_streak_repair_regression_v1.py
-          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v1 --self-test
-      - name: Re-run original loss context against repair children
+          python -m py_compile \
+            backend/research/rebuild/a1_loss_streak_repair_regression_v2.py \
+            backend/research/rebuild/trend_rider_transition_freshness_atr_expansion_child_policy_v1.py \
+            backend/research/rebuild/keltner_trend_ema_spread_expansion_child_policy_v1.py
+          python -m backend.research.rebuild.trend_rider_transition_freshness_atr_expansion_child_policy_v1
+          python -m backend.research.rebuild.keltner_trend_ema_spread_expansion_child_policy_v1
+          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v2 --self-test
+      - name: Re-run immutable loss context against second-axis children
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v1 \
+          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v2 \
             --out out/a1_loss_streak_repair_regression_latest.json | tee out/regression_stdout.txt
       - name: Verify fail-closed research semantics
         run: |
@@ -58,6 +65,7 @@ jobs:
           assert r['exchange_order_submitted'] is False
           assert r['protected_mutations']==0
           for sid,row in r['cases'].items():
+              assert row['authority']['match'] is True
               assert row['selection_authority'] is False
               assert row['promotion_authority'] is False
               assert row['execution_authority']=='NONE'
@@ -77,7 +85,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-loss-streak-repair-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-loss-streak-repair-regression-v2-${{ github.run_id }}-${{ github.run_attempt }}
           path: out
           if-no-files-found: error
           retention-days: 30

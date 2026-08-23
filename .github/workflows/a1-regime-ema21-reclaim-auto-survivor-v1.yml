@@ -56,7 +56,11 @@ jobs:
           policy=p['policy_path']
           blob=subprocess.check_output(['git','hash-object',policy],text=True).strip()
           assert blob==p['policy_blob_sha'],(blob,p['policy_blob_sha'])
-          subprocess.run(['git','merge-base','--is-ancestor',p['policy_freeze_commit'],'HEAD'],check=True)
+          freeze=p['policy_freeze_commit']
+          subprocess.run(['git','fetch','origin',freeze],check=True)
+          subprocess.run(['git','cat-file','-e',f'{freeze}^{{commit}}'],check=True)
+          frozen_blob=subprocess.check_output(['git','rev-parse',f'{freeze}:{policy}'],text=True).strip()
+          assert frozen_blob==p['policy_blob_sha'],(frozen_blob,p['policy_blob_sha'])
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED',p
           print('PASS_FROZEN_EMA21_RECLAIM_IDENTITY')
           PY

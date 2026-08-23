@@ -9,7 +9,10 @@ on:
       - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
       - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
       - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py'
       - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
       - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
   push:
     branches: [master]
@@ -20,7 +23,10 @@ on:
       - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
       - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
       - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py'
       - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
       - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
   schedule:
     - cron: '41 * * * *'
@@ -36,7 +42,7 @@ concurrency:
 jobs:
   top3-profitability:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     env:
       PYTHONPATH: .
     steps:
@@ -55,42 +61,50 @@ jobs:
             backend/research/prep/a3_forward_context_collector_v2.py \
             backend/research/prep/a3_exact25_forward_durability_v3.py \
             backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py \
-            backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py
+            backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py
           python -m backend.research.prep.a2_forward_cost_turnover_v1 --self-test
           python -m backend.research.prep.a3_forward_context_collector_v2 --self-test
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
           python -m backend.research.rebuild.a1_top3_profitability_survivor_router_v1 --self-test
+          python -m backend.research.rebuild.a1_seed_receipt_fresh_refresher_v1 --self-test
           python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v2 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v3 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v4 --self-test
           python - <<'PY'
           from backend.research.prep import a3_forward_context_collector_v1 as c
           assert tuple(c.SYMBOLS) == ('BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'), c.SYMBOLS
           print('PASS_A3_TOP3_SIX_SYMBOL_CONTEXT_COVERAGE')
           PY
-      - name: Execute Top3 two-lane profitability route with bounded transport retry
+      - name: Execute all Top3 fresh two-lane route through A3 pilot
         run: |
           set -uo pipefail
           mkdir -p out
           rc=1
           for n in 1 2 3; do
-            python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v2 \
+            python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v4 \
               --out out/a1_top3_profitability_survivor_latest.json
             rc=$?
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            echo "top3 two-lane attempt ${n} failed rc=${rc}" >&2
+            echo "top3 v4 attempt ${n} failed rc=${rc}" >&2
             sleep $((n * 5))
           done
           exit "$rc"
-      - name: Verify two-lane profitability contract and checkpoint
+      - name: Verify all Top3 auto-route and checkpoint
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           r=json.load(open('out/a1_top3_profitability_survivor_latest.json'))
+          assert r['schema_version']=='zel.a1.top3_profitability_two_lane_router.v4',r
           assert r['profitability_first'] is True and r['two_lane_mode'] is True and r['top3_only'] is True,r
+          assert r['all_top3_fresh_refreshed_each_run'] is True and r['all_top3_auto_route_to_a3_pilot'] is True,r
           assert r['strict_reference_preserved'] is True and r['strict_global_gate_mutation'] is False,r
-          assert r['a2_gate_relaxed'] is False,r
+          assert r['strict_h4_deferred_is_not_strict_pass'] is True and r['strict_a2_gate_relaxed'] is False,r
           assert r['new_strategy_generation_enabled'] is False and r['new_filter_generation_enabled'] is False,r
           assert len(r['top3_identities'])==3 and len(r['candidates'])==3,r
           assert r['selection_authority'] is False and r['promotion_authority'] is False,r
@@ -98,32 +112,41 @@ jobs:
           assert isinstance(r['checkpoint']['rows'],list) and len(r['checkpoint']['rows'])==3,r
           m={x['identity']:x for x in r['candidates']}
           tr=m['trend_rider_transition_freshness']
-          # Existing 26-trade Trend Rider must no longer be held out of the Profit Lane solely by strict H4/H5.
           assert int(tr['profit_lane']['metrics']['completed_trades'])>=10,tr
           assert tr['profit_lane']['pass'] is True,tr
           assert tr['certification_pilot']['state'] in ('PASS_CERT_PILOT_H4_H5','HOLD_CERT_PILOT_H4_H5'),tr
-          if tr['a2'] is not None:
-              assert tr['a2_state'] in ('PASS_A2_COST_TURNOVER','HOLD_A2_COST_TURNOVER'),tr
+          for identity in ('trend_ma_macd_chase_atr_up_long_good_v1','regime_ema21_reclaim_v1'):
+              x=m[identity]
+              assert 'fresh_refresh_errors' in x,x
+              if int(x['completed_trades'])>=12 and x['profit_lane']['pass']:
+                  assert x['certification_pilot']['state'] in ('PASS_CERT_PILOT_H5_WITH_H4_DEFERRED','HOLD_CERT_PILOT_H5_LITE'),x
+                  assert (x['certification_pilot'].get('h4') or {}).get('strict_h4_pass') is False,x
+              if x['certification_pilot']['pass'] and x['a2_pilot']['pass']:
+                  assert x['a3_pilot']['state'] in ('PASS_A3_PILOT_DURABILITY','FAIL_A3_PILOT_DURABILITY','WAIT_A3_PILOT_PROSPECTIVE_SAMPLE'),x
           for x in r['candidates']:
               if x['pilot_survivor']:
                   assert x['certification_pilot']['pass'] is True,x
-                  assert x['a2_state']=='PASS_A2_COST_TURNOVER',x
+                  assert x['a2_pilot']['pass'] is True,x
                   assert x['a3_pilot']['state']=='PASS_A3_PILOT_DURABILITY',x
           print(json.dumps({
-              'profit_active':r['profit_active_count'],
-              'cert_A1':r['certification_pilot_a1_pass_count'],
-              'A2':r['a2_pass_count'],
-              'A3_pilot':r['a3_pilot_pass_count'],
-              'pilot_survivors':r['pilot_survivor_count'],
+              'profit':r['profit_lane_pass_count'],
+              'strict_A2':r['strict_a2_pass_count'],
+              'pilot_A2':r['a2_pilot_pass_count'],
+              'cert':r['certification_pilot_a1_pass_count'],
+              'A3':r['a3_pilot_pass_count'],
+              'pilots':r['pilot_survivor_count'],
               'progressing':r['checkpoint']['progressing_count'],
               'rows':[{
                   'id':x['identity'],
+                  'trades':x['completed_trades'],
                   'metrics':x['profit_lane']['metrics'],
                   'profit':x['profit_lane']['state'],
-                  'A2':x['a2_state'],
+                  'strict_A2':x['strict_a2_state'],
+                  'pilot_A2':x['a2_pilot_state'],
                   'cert':x['certification_pilot']['state'],
                   'A3':x['a3_pilot']['state'],
                   'A3_coverage':x['a3_pilot'].get('coverage'),
+                  'refresh_errors':x['fresh_refresh_errors'],
                   'pilot':x['pilot_survivor']
               } for x in r['candidates']],
               'checkpoint':r['checkpoint']['rows']
@@ -135,11 +158,11 @@ jobs:
           set -euo pipefail
           target=backend/research/rebuild/a1_top3_profitability_survivor_latest.json
           cp out/a1_top3_profitability_survivor_latest.json "$target"
-          git config user.name 'a1-top3-profitability-two-lane-v2'
+          git config user.name 'a1-top3-profitability-two-lane-v4'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist Top3 two-lane profitability checkpoint [skip ci]'
+          git commit -m 'A1: persist Top3 v4 A3 auto-route checkpoint [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3

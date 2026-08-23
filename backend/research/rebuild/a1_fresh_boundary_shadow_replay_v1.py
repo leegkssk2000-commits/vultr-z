@@ -39,6 +39,7 @@ def run_terminal_shadow(
     the evaluator no longer iterates/settles pre-boundary signals. The real
     canonical inventory and disposition ledger are byte-for-byte protected.
     """
+    out.parent.mkdir(parents=True, exist_ok=True)
     real_ledger_sha_before = _sha(LEDGER)
     real_inventory_sha_before = _sha(INVENTORY)
     inventory = _read(INVENTORY)

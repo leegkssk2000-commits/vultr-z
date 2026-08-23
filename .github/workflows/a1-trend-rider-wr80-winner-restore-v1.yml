@@ -4,14 +4,28 @@ on:
   pull_request:
     paths:
       - 'backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_latest.json'
+      - 'backend/research/rebuild/trend_rider_wr80_us_chase_cooling_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py'
       - '.github/workflows/a1-trend-rider-wr80-winner-restore-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_rider_wr80_us_chase_cooling_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py'
+      - '.github/workflows/a1-trend-rider-wr80-winner-restore-v1.yml'
+  schedule:
+    - cron: '37 * * * *'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   winner-restore-attribution:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -21,17 +35,58 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile
+      - name: Compile attribution
         run: python -m py_compile backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py
-      - name: Self test
+      - name: Attribution self test
         run: python backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py --self-test
       - name: Frozen-24 US winner restore attribution
         run: |
           mkdir -p out
           python backend/research/rebuild/a1_trend_rider_wr80_winner_restore_attribution_v1.py --out out/a1_trend_rider_wr80_winner_restore_attribution_latest.json
           cat out/a1_trend_rider_wr80_winner_restore_attribution_latest.json
-      - name: Upload receipt
+      - name: Upload attribution receipt
         uses: actions/upload-artifact@v4
         with:
           name: a1-trend-rider-wr80-winner-restore-${{ github.run_id }}
           path: out/a1_trend_rider_wr80_winner_restore_attribution_latest.json
+
+  fresh-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile fresh child
+        run: |
+          python -m py_compile backend/research/rebuild/trend_rider_wr80_us_chase_cooling_child_policy_v1.py
+          python -m py_compile backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py
+      - name: Policy invariant self test
+        run: python backend/research/rebuild/trend_rider_wr80_us_chase_cooling_child_policy_v1.py
+      - name: Fresh-forward self test
+        run: python backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py --self-test
+      - name: Fresh-only replay and automatic H4/H5 at 25
+        run: |
+          mkdir -p out
+          python backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py --out out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          cat out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+      - name: Upload fresh receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-trend-rider-wr80-us-chase-cooling-${{ github.run_id }}
+          path: out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+      - name: Persist latest fresh receipt on master
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push')
+        run: |
+          cp out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          if git diff --quiet -- backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json; then
+            exit 0
+          fi
+          git config user.name 'a1-trend-wr80-winner-restore'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          git commit -m 'A1 trend_rider: persist WR80 winner-restore fresh proof [skip ci]'
+          git push

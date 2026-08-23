@@ -1,0 +1,100 @@
+name: A1 NEW Session Break 003 Forward V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/new_session_break_003_prereg_v1.json'
+      - 'backend/research/rebuild/a1_new_session_break_003_forward_v1.py'
+      - '.github/workflows/a1_new_session_break_003_forward_v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/new_session_break_003_prereg_v1.json'
+      - 'backend/research/rebuild/a1_new_session_break_003_forward_v1.py'
+      - '.github/workflows/a1_new_session_break_003_forward_v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '31 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-new-session-break-003-forward-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen preregistration and forward collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_new_session_break_003_forward_v1.py
+          python -m backend.research.rebuild.a1_new_session_break_003_forward_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Collect fresh session-break evidence and auto-evaluate A1 at 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_new_session_break_003_forward_v1 \
+            --out out/a1_new_session_break_003_forward_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_new_session_break_003_forward_latest.json'))
+          assert r['candidate_id']=='NEW_session_break_003',r
+          assert r['preboundary_outcomes_counted'] is False,r
+          assert r['canonical_exact25_ledger_mutation'] is False,r
+          assert r['thresholds_changed'] is False and r['strategy_parameters_changed'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['protected_mutations'])==0 and r['exchange_order_submitted'] is False,r
+          if int(r['completed_trades']) >= 25 and r['state']=='PASS_A1_CAUSAL_READY_FOR_A2':
+              assert set(r['a1_controls']['hard_control_states'].values())=={'PASS'},r
+              assert r['a1_economic_nonfail'] is True,r
+          print(json.dumps({k:r.get(k) for k in ['state','boundary_utc','completed_trades','sample_gap_to_25','next','receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist immutable-boundary progress receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_new_session_break_003_forward_latest.json
+          cp out/a1_new_session_break_003_forward_latest.json "$target"
+          git config user.name 'a1-new-session-break-003-forward-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 NEW session break: persist fresh forward receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-new-session-break-003-forward-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_new_session_break_003_forward_latest.json
+          if-no-files-found: error
+          retention-days: 90

@@ -15,34 +15,34 @@ from backend.research.rebuild import a1_exact25_generic_evaluator_v2 as exact
 
 ROOT = Path(__file__).resolve().parents[3]
 INVENTORY = ROOT / "backend/research/rebuild/strategy25_structural_inventory_v2.json"
-SCHEMA = "zel.a1.loss_streak_repair_regression.v2"
+SCHEMA = "zel.a1.loss_streak_repair_regression.v3"
 
 CASES: dict[str, dict[str, Any]] = {
     "trend_rider": {
-        # The observed 24-trade receipt came from this incumbent lineage, not
-        # directly from the canonical trend policy.
+        "trigger_run_id": 32623644328,
         "parent_policy": "backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py",
         "child_policy": "backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py",
         "expected_context_trade_count": 24,
-        "expected_loss_cluster_net_bps": -680.1800975576468,
+        "expected_loss_cluster_net_bps": -680.7580413522833,
         "loss_keys": [
-            ("ETH-USDT", 1787184000000, "long"),
-            ("ETH-USDT", 1787216400000, "long"),
-            ("BTC-USDT", 1787238000000, "short"),
-            ("BTC-USDT", 1787324400000, "short"),
+            ("ETH-USDT", 1787400000000, "long"),
+            ("ETH-USDT", 1787418000000, "long"),
+            ("ETH-USDT", 1787439600000, "long"),
+            ("BTC-USDT", 1787439600000, "long"),
         ],
         "changed_axis": "FROZEN_H5_US_SESSION_EXCLUSION_ONLY",
     },
     "keltner_trend": {
+        "trigger_run_id": 32624307572,
         "parent_policy": "backend/research/rebuild/breakout_policy_batch_v1.py",
         "child_policy": "backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py",
-        "expected_context_trade_count": 10,
-        "expected_loss_cluster_net_bps": -617.7985669039492,
+        "expected_context_trade_count": 24,
+        "expected_loss_cluster_net_bps": -704.9952609009406,
         "loss_keys": [
-            ("BTC-USDT", 1786856400000, "long"),
-            ("BTC-USDT", 1786946400000, "short"),
-            ("ETH-USDT", 1787040000000, "long"),
-            ("ETH-USDT", 1787119200000, "long"),
+            ("ETH-USDT", 1787302800000, "long"),
+            ("BTC-USDT", 1787317200000, "long"),
+            ("ETH-USDT", 1787342400000, "long"),
+            ("BTC-USDT", 1787346000000, "long"),
         ],
         "changed_axis": "FROZEN_A4_VOLATILITY_COOL_REGIME_ONLY",
     },
@@ -183,6 +183,7 @@ def evaluate_case(strategy_id: str, spec: Mapping[str, Any], out_dir: Path) -> d
     tail_keys = [ident(x) for x in parent_context[-len(loss_keys):]] if len(parent_context) >= len(loss_keys) else []
 
     authority = {
+        "trigger_run_id": int(spec["trigger_run_id"]),
         "parent_policy_expected": spec["parent_policy"],
         "parent_policy_observed": parent.get("policy_path"),
         "child_policy_expected": spec["child_policy"],
@@ -243,7 +244,7 @@ def evaluate_case(strategy_id: str, spec: Mapping[str, Any], out_dir: Path) -> d
         "strategy_id": strategy_id,
         "state": state,
         "changed_axis": spec["changed_axis"],
-        "regression_scope": "INCUMBENT_PRELOSS_CONTEXT_THROUGH_ORIGINAL_CONSECUTIVE_LOSS_CLUSTER_CUTOFF",
+        "regression_scope": "IMMUTABLE_TRIGGER_INCUMBENT_CONTEXT_THROUGH_ORIGINAL_CONSECUTIVE_LOSS_CLUSTER_CUTOFF",
         "promotion_evidence": False,
         "mechanism_sanity_only": True,
         "authority": authority,
@@ -344,11 +345,12 @@ def run(out: Path) -> dict[str, Any]:
 def self_test() -> int:
     assert set(CASES) == {"trend_rider", "keltner_trend"}
     assert all(len(spec["loss_keys"]) == 4 for spec in CASES.values())
-    assert CASES["trend_rider"]["parent_policy"].endswith("transition_freshness_child_policy_v1.py")
+    assert CASES["trend_rider"]["trigger_run_id"] == 32623644328
+    assert CASES["keltner_trend"]["trigger_run_id"] == 32624307572
     assert CASES["trend_rider"]["expected_context_trade_count"] == 24
-    assert CASES["keltner_trend"]["expected_context_trade_count"] == 10
+    assert CASES["keltner_trend"]["expected_context_trade_count"] == 24
     assert all(float(spec["expected_loss_cluster_net_bps"]) < 0.0 for spec in CASES.values())
-    print("PASS_A1_LOSS_STREAK_REPAIR_REGRESSION_V2_SELF_TEST")
+    print("PASS_A1_LOSS_STREAK_REPAIR_REGRESSION_V3_SELF_TEST")
     return 0
 
 

@@ -1,0 +1,38 @@
+name: A1 Trend Rider Loss Cluster Fast V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_recent_loss_cluster_diagnostic_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_loss_cluster_fast_v1.py'
+      - '.github/workflows/a1_trend_rider_loss_cluster_fast_v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose current Trend Rider loss cluster
+        run: python -m backend.research.rebuild.a1_trend_rider_loss_cluster_fast_v1 --out out/a1_trend_rider_loss_cluster_fast_latest.json
+      - name: Verify fail closed
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_loss_cluster_fast_latest.json'))
+          assert r['incumbent_mutated'] is False and r['post_outcome_threshold_sweep'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'loss_streak':r['current_loss_streak'],'route':r['recommended_route'],'top':r['ranked_causal_hypotheses'][:5]},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-loss-fast-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_loss_cluster_fast_latest.json

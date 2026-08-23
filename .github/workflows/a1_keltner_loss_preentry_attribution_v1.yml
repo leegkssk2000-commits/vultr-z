@@ -1,0 +1,75 @@
+name: A1 Keltner Loss Preentry Attribution V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_keltner_loss_preentry_attribution_v1.py'
+      - '.github/workflows/a1_keltner_loss_preentry_attribution_v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_loss_preentry_attribution_v1.py'
+      - '.github/workflows/a1_keltner_loss_preentry_attribution_v1.yml'
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-keltner-loss-preentry-attribution-v1
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          python -m py_compile backend/research/rebuild/a1_keltner_loss_preentry_attribution_v1.py
+          python -m backend.research.rebuild.a1_keltner_loss_preentry_attribution_v1 --self-test
+      - name: Attribute current Keltner loss cluster using pre-entry features only
+        run: python -m backend.research.rebuild.a1_keltner_loss_preentry_attribution_v1 --out out/a1_keltner_loss_preentry_attribution_latest.json
+      - name: Verify fail closed
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_keltner_loss_preentry_attribution_latest.json'))
+          assert r['incumbent_mutated'] is False and r['numeric_threshold_sweep'] is False
+          assert r['leakage_lookahead']==0 and not r['integrity_defects']
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          root=r.get('actionable_root_cause')
+          if root:
+              assert root['axis'] not in {'REASON','HOLD_BARS','REALIZED_COST_BPS','COST_TO_ABS_GROSS'}
+          print({k:r.get(k) for k in ['state','completed_trades','current_loss_streak','actionable_root_cause','next']})
+          PY
+      - name: Persist latest Keltner attribution
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_keltner_loss_preentry_attribution_latest.json
+          cp out/a1_keltner_loss_preentry_attribution_latest.json "$target"
+          git config user.name 'a1-keltner-loss-preentry-attribution-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 keltner: persist loss preentry attribution [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-keltner-loss-preentry-attribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_keltner_loss_preentry_attribution_latest.json
+          retention-days: 30

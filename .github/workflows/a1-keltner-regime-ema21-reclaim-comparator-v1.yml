@@ -1,18 +1,23 @@
-name: A1 Keltner Regime EMA21 Reclaim Comparator V1
+name: A1 Regime EMA21 Reclaim Research V1
 
 on:
   pull_request:
     paths:
       - 'backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py'
       - 'backend/research/rebuild/a1_keltner_regime_ema21_reclaim_comparator_eval_v1.py'
+      - 'backend/research/rebuild/a1_keltner_regime_ema21_reclaim_prereg_v1.json'
+      - 'backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py'
       - '.github/workflows/a1-keltner-regime-ema21-reclaim-comparator-v1.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '43 * * * *'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   ema21-reclaim-comparator:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -35,8 +40,45 @@ jobs:
           mkdir -p out
           python backend/research/rebuild/a1_keltner_regime_ema21_reclaim_comparator_eval_v1.py --out out/a1_keltner_regime_ema21_reclaim_comparator_latest.json
           cat out/a1_keltner_regime_ema21_reclaim_comparator_latest.json
-      - name: Upload receipt
+      - name: Upload discovery receipt
         uses: actions/upload-artifact@v4
         with:
           name: a1-keltner-ema21-reclaim-${{ github.run_id }}
           path: out/a1_keltner_regime_ema21_reclaim_comparator_latest.json
+
+  fresh-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile fresh collector
+        run: python -m py_compile backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py
+      - name: Policy invariant self test
+        run: python backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
+      - name: Fresh collector self test
+        run: python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --self-test
+      - name: Fresh-only replay from preregistered boundary
+        run: |
+          mkdir -p out
+          python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --out out/a1_regime_ema21_reclaim_fresh_latest.json
+          cat out/a1_regime_ema21_reclaim_fresh_latest.json
+      - name: Upload fresh receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-regime-ema21-reclaim-fresh-${{ github.run_id }}
+          path: out/a1_regime_ema21_reclaim_fresh_latest.json
+      - name: Persist latest fresh receipt on master
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          cp out/a1_regime_ema21_reclaim_fresh_latest.json backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          git config user.name 'regime-ema21-reclaim-collector'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 regime EMA21 reclaim: persist fresh evidence [skip ci]'
+          git push

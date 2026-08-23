@@ -8,6 +8,8 @@ on:
       - 'backend/research/prep/a3_forward_context_collector_v2.py'
       - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
       - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
+      - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
       - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
   push:
     branches: [master]
@@ -17,6 +19,8 @@ on:
       - 'backend/research/prep/a3_forward_context_collector_v2.py'
       - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
       - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
+      - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
       - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
   schedule:
     - cron: '41 * * * *'
@@ -50,69 +54,92 @@ jobs:
             backend/research/prep/a3_forward_context_collector_v1.py \
             backend/research/prep/a3_forward_context_collector_v2.py \
             backend/research/prep/a3_exact25_forward_durability_v3.py \
-            backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py
+            backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py
           python -m backend.research.prep.a2_forward_cost_turnover_v1 --self-test
           python -m backend.research.prep.a3_forward_context_collector_v2 --self-test
           python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
           python -m backend.research.rebuild.a1_top3_profitability_survivor_router_v1 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v2 --self-test
           python - <<'PY'
           from backend.research.prep import a3_forward_context_collector_v1 as c
           assert tuple(c.SYMBOLS) == ('BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'), c.SYMBOLS
           print('PASS_A3_TOP3_SIX_SYMBOL_CONTEXT_COVERAGE')
           PY
-      - name: Execute Top3 profitability route with bounded transport retry
+      - name: Execute Top3 two-lane profitability route with bounded transport retry
         run: |
           set -uo pipefail
           mkdir -p out
           rc=1
           for n in 1 2 3; do
-            python -m backend.research.rebuild.a1_top3_profitability_survivor_router_v1 \
+            python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v2 \
               --out out/a1_top3_profitability_survivor_latest.json
             rc=$?
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            echo "top3 attempt ${n} failed rc=${rc}" >&2
+            echo "top3 two-lane attempt ${n} failed rc=${rc}" >&2
             sleep $((n * 5))
           done
           exit "$rc"
-      - name: Verify profitability-only survivor contract
+      - name: Verify two-lane profitability contract and checkpoint
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           r=json.load(open('out/a1_top3_profitability_survivor_latest.json'))
-          assert r['profitability_first'] is True and r['top3_only'] is True,r
-          assert r['new_strategy_generation_enabled'] is False,r
-          assert r['new_filter_generation_enabled'] is False,r
+          assert r['profitability_first'] is True and r['two_lane_mode'] is True and r['top3_only'] is True,r
+          assert r['strict_reference_preserved'] is True and r['strict_global_gate_mutation'] is False,r
+          assert r['a2_gate_relaxed'] is False,r
+          assert r['new_strategy_generation_enabled'] is False and r['new_filter_generation_enabled'] is False,r
           assert len(r['top3_identities'])==3 and len(r['candidates'])==3,r
-          assert r['infrastructure_pass_never_counts_as_survivor'] is True,r
-          assert r['retrospective_discovery_never_counts_as_survivor'] is True,r
           assert r['selection_authority'] is False and r['promotion_authority'] is False,r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert isinstance(r['checkpoint']['rows'],list) and len(r['checkpoint']['rows'])==3,r
+          m={x['identity']:x for x in r['candidates']}
+          tr=m['trend_rider_transition_freshness']
+          # Existing 26-trade Trend Rider must no longer be held out of the Profit Lane solely by strict H4/H5.
+          assert int(tr['profit_lane']['metrics']['completed_trades'])>=10,tr
+          assert tr['profit_lane']['pass'] is True,tr
+          assert tr['certification_pilot']['state'] in ('PASS_CERT_PILOT_H4_H5','HOLD_CERT_PILOT_H4_H5'),tr
+          if tr['a2'] is not None:
+              assert tr['a2_state'] in ('PASS_A2_COST_TURNOVER','HOLD_A2_COST_TURNOVER'),tr
           for x in r['candidates']:
-              expected=(x['a1']['pass'] is True and x['a2_state']=='PASS_A2_COST_TURNOVER' and x['a3_state']=='PASS_A3_GLOBAL_DURABILITY')
-              assert x['economic_survivor'] is expected,x
-              if x['economic_survivor']:
-                  m=x['a1']['metrics']
-                  assert int(m['completed_trades'])>=25 and float(m['net_pnl_bps'])>0 and float(m['net_expectancy_bps'])>0 and float(m['profit_factor'])>=1,x
-          assert r['economic_survivor_count']==sum(bool(x['economic_survivor']) for x in r['candidates']),r
+              if x['pilot_survivor']:
+                  assert x['certification_pilot']['pass'] is True,x
+                  assert x['a2_state']=='PASS_A2_COST_TURNOVER',x
+                  assert x['a3_pilot']['state']=='PASS_A3_PILOT_DURABILITY',x
           print(json.dumps({
-              'A1':r['a1_pass_count'],'A2':r['a2_pass_count'],'A3':r['a3_pass_count'],'survivors':r['economic_survivor_count'],
-              'rows':[{'id':x['identity'],'metrics':x['a1']['metrics'],'A1':x['a1']['state'],'A2':x['a2_state'],'A3':x['a3_state'],'blockers':x['blockers'][:6]} for x in r['candidates']]
+              'profit_active':r['profit_active_count'],
+              'cert_A1':r['certification_pilot_a1_pass_count'],
+              'A2':r['a2_pass_count'],
+              'A3_pilot':r['a3_pilot_pass_count'],
+              'pilot_survivors':r['pilot_survivor_count'],
+              'progressing':r['checkpoint']['progressing_count'],
+              'rows':[{
+                  'id':x['identity'],
+                  'metrics':x['profit_lane']['metrics'],
+                  'profit':x['profit_lane']['state'],
+                  'A2':x['a2_state'],
+                  'cert':x['certification_pilot']['state'],
+                  'A3':x['a3_pilot']['state'],
+                  'A3_coverage':x['a3_pilot'].get('coverage'),
+                  'pilot':x['pilot_survivor']
+              } for x in r['candidates']],
+              'checkpoint':r['checkpoint']['rows']
           },sort_keys=True))
           PY
-      - name: Persist one canonical Top3 profitability receipt
+      - name: Persist canonical Top3 two-lane receipt with progress checkpoint
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
           target=backend/research/rebuild/a1_top3_profitability_survivor_latest.json
           cp out/a1_top3_profitability_survivor_latest.json "$target"
-          git config user.name 'a1-top3-profitability-survivor-v1'
+          git config user.name 'a1-top3-profitability-two-lane-v2'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist Top3 profitability survivor state [skip ci]'
+          git commit -m 'A1: persist Top3 two-lane profitability checkpoint [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3

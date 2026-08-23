@@ -23,41 +23,105 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
 jobs:
   fresh-to-hardening:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     env:
       PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Compile
+          python-version: '3.12'
+      - name: Verify frozen EMA21 reclaim identity
         run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,subprocess
+          p=json.load(open('backend/research/rebuild/a1_regime_ema21_reclaim_prereg_v1.json'))
+          assert p['state']=='PASS_PREREG_FROZEN',p
+          assert p['candidate_identity']=='regime_ema21_reclaim_v1',p
+          assert p['transport_strategy_id']=='keltner_trend',p
+          assert p['fresh_boundary_utc']=='2026-08-23T14:00:00Z',p
+          assert p['minimum_fresh_trades']==25 and p['fresh_only'] is True,p
+          assert p['preboundary_outcomes_counted'] is False and p['numeric_threshold_sweep'] is False,p
+          assert p['existing_keltner_h4_h5_reuse_for_promotion'] is False and p['identity_specific_hardening_required_after_25'] is True,p
+          policy=p['policy_path']
+          blob=subprocess.check_output(['git','hash-object',policy],text=True).strip()
+          assert blob==p['policy_blob_sha'],(blob,p['policy_blob_sha'])
+          subprocess.run(['git','merge-base','--is-ancestor',p['policy_freeze_commit'],'HEAD'],check=True)
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED',p
+          print('PASS_FROZEN_EMA21_RECLAIM_IDENTITY')
+          PY
+      - name: Compile and self tests
+        run: |
+          set -euo pipefail
           python -m py_compile backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
           python -m py_compile backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py
           python -m py_compile backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py
-      - name: Policy invariant self test
-        run: python backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
-      - name: Fresh collector self test
-        run: python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --self-test
-      - name: EMA21 identity hardening self test
-        run: python backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py --self-test
+          python backend/research/rebuild/keltner_regime_ema21_reclaim_comparator_policy_v1.py
+          python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --self-test
+          python backend/research/rebuild/a1_regime_ema21_reclaim_h4_h5_hardening_v1.py --self-test
       - name: Fresh-only replay and automatic identity H4 H5 at 25
         run: |
+          set -euo pipefail
           mkdir -p out
-          python backend/research/rebuild/a1_regime_ema21_reclaim_fresh_forward_v1.py --out out/a1_regime_ema21_reclaim_fresh_latest.json
+          attempt=1
+          while true; do
+            rm -f out/a1_regime_ema21_reclaim_fresh_latest.json
+            if python -m backend.research.rebuild.a1_regime_ema21_reclaim_fresh_forward_v1 \
+              --out out/a1_regime_ema21_reclaim_fresh_latest.json; then
+              break
+            fi
+            if [ "$attempt" -ge 4 ]; then
+              echo "EMA21_RECLAIM_FRESH_TRANSPORT_RETRY_EXHAUSTED:${attempt}" >&2
+              exit 1
+            fi
+            sleep $((attempt * 3))
+            attempt=$((attempt + 1))
+          done
           cat out/a1_regime_ema21_reclaim_fresh_latest.json
+      - name: Verify fresh receipt authority and progress
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_regime_ema21_reclaim_fresh_latest.json'))
+          assert r['candidate_identity']=='regime_ema21_reclaim_v1',r
+          assert r['transport_strategy_id']=='keltner_trend',r
+          assert r['fresh_boundary_utc']=='2026-08-23T14:00:00Z',r
+          assert r['preboundary_outcomes_counted'] is False and r['numeric_threshold_sweep'] is False,r
+          assert r['canonical_ledger_mutation'] is False,r
+          assert r['existing_keltner_h4_h5_reuse_for_promotion'] is False,r
+          assert r['identity_specific_hardening_required_after_25'] is True,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['completed_trades']) >= 0,r
+          assert int(r['sample_gap_to_25'])==max(0,25-int(r['completed_trades'])),r
+          assert int(r.get('leakage_lookahead') or 0)==0 and not (r.get('integrity_defects') or []),r
+          if int(r['completed_trades'])>=25 and r['state'].startswith('PASS_'):
+              assert r['h4_state']=='PASS_PLACEBO_NEGATIVE_CONTROLS',r
+              assert r['h5_state']=='PASS_CONCENTRATION_FRAGILITY',r
+          print(json.dumps({'state':r['state'],'completed':r['completed_trades'],'gap':r['sample_gap_to_25'],'wr':r.get('win_rate'),'pnl':r.get('net_pnl_bps'),'exp':r.get('net_expectancy_bps'),'h4':r['h4_state'],'h5':r['h5_state'],'next':r['next']},sort_keys=True))
+          PY
       - name: Upload fresh and hardening receipt
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: a1-regime-ema21-reclaim-auto-survivor-${{ github.run_id }}
+          name: a1-regime-ema21-reclaim-auto-survivor-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_regime_ema21_reclaim_fresh_latest.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Persist latest receipt on master
         if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
+          set -euo pipefail
           cp out/a1_regime_ema21_reclaim_fresh_latest.json backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
           if git diff --quiet -- backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json; then
             exit 0

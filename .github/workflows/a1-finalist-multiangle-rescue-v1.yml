@@ -64,10 +64,25 @@ jobs:
       - name: Run multiangle pairwise and exit rescue
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 \
-            --strategy-id supertrend_pullback --receipt frozen/supertrend_liquid6.json --out out/supertrend_multiangle.json
-          python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 \
-            --strategy-id trend_ma_macd --receipt frozen/trendma_liquid6.json --out out/trendma_multiangle.json
+          retry_research() {
+            local sid="$1" receipt="$2" outfile="$3"
+            local attempt=1
+            while true; do
+              rm -f "$outfile"
+              if python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 \
+                --strategy-id "$sid" --receipt "$receipt" --out "$outfile"; then
+                return 0
+              fi
+              if [ "$attempt" -ge 4 ]; then
+                echo "RESEARCH_FETCH_RETRY_EXHAUSTED:${sid}:${attempt}" >&2
+                return 1
+              fi
+              sleep $((attempt * 3))
+              attempt=$((attempt + 1))
+            done
+          }
+          retry_research supertrend_pullback frozen/supertrend_liquid6.json out/supertrend_multiangle.json
+          retry_research trend_ma_macd frozen/trendma_liquid6.json out/trendma_multiangle.json
       - name: Verify research-only authority and print compact findings
         run: |
           set -euo pipefail

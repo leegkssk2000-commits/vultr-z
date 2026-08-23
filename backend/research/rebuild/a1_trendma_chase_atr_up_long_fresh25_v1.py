@@ -151,7 +151,7 @@ def run(now: datetime | None = None) -> dict[str, Any]:
         source_state = str(source_quality.get("state") or "")
         if defects or lookahead != 0:
             raise RuntimeError(f"CHASE_LONG_FRESH_INTEGRITY_FAIL:{defects}:{lookahead}")
-        source_symbols = _source_symbol_names(raw)
+        source_symbols = tuple(sorted(_source_symbol_names(raw.get("source"))))
         if source_symbols and source_symbols != tuple(sorted(LIQUID6)):
             raise RuntimeError(f"CHASE_LONG_SOURCE_UNIVERSE_MISMATCH:{source_symbols}")
 

@@ -139,7 +139,7 @@ def evaluate_case(strategy_id: str, spec: Mapping[str, Any], out_dir: Path) -> d
             snapshot_cache[symbol] = copy.deepcopy(original_snapshot(symbol, authority))
         return copy.deepcopy(snapshot_cache[symbol])
 
-    def cached_bars(symbol: str, interval: str, limit: int) -> list[dict[str, Any]]:
+    def cached_bars(symbol: str, interval: str, limit: int = 1000) -> list[dict[str, Any]]:
         key = (symbol, interval, int(limit))
         if key not in bar_cache:
             bar_cache[key] = copy.deepcopy(original_bars(symbol, interval, limit))

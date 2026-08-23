@@ -1,0 +1,144 @@
+name: A1 Finalist GOOD Regime Fresh25 Auto Survivor V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/supertrend_pullback_long_reclaim_good_child_policy_v1.py'
+      - 'backend/research/rebuild/trend_ma_macd_ema_fast_up_good_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_supertrend_long_reclaim_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trendma_ema_fast_up_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_fresh_boundary_shadow_replay_v1.py'
+      - 'backend/research/rebuild/a1_finalist_good_regime_fresh25_v1.py'
+      - 'backend/research/rebuild/a1_finalist_good_regime_h4_h5_hardening_v1.py'
+      - '.github/workflows/a1-finalist-good-regime-fresh25-auto-survivor-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/supertrend_pullback_long_reclaim_good_child_policy_v1.py'
+      - 'backend/research/rebuild/trend_ma_macd_ema_fast_up_good_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_supertrend_long_reclaim_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trendma_ema_fast_up_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_fresh_boundary_shadow_replay_v1.py'
+      - 'backend/research/rebuild/a1_finalist_good_regime_fresh25_v1.py'
+      - 'backend/research/rebuild/a1_finalist_good_regime_h4_h5_hardening_v1.py'
+      - '.github/workflows/a1-finalist-good-regime-fresh25-auto-survivor-v1.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  fresh25-to-identity-hardening:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      FRESH_BOUNDARY_UTC: '2026-08-23T18:00:00Z'
+      LIQUID6: 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile all fresh child components
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/supertrend_pullback_long_reclaim_good_child_policy_v1.py \
+            backend/research/rebuild/trend_ma_macd_ema_fast_up_good_child_policy_v1.py \
+            backend/research/rebuild/a1_fresh_boundary_shadow_replay_v1.py \
+            backend/research/rebuild/a1_finalist_good_regime_fresh25_v1.py \
+            backend/research/rebuild/a1_finalist_good_regime_h4_h5_hardening_v1.py
+      - name: Verify frozen policy blobs and freeze commits
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, subprocess
+          pairs=[
+            ('backend/research/rebuild/a1_supertrend_long_reclaim_good_prereg_v1.json','backend/research/rebuild/supertrend_pullback_long_reclaim_good_child_policy_v1.py'),
+            ('backend/research/rebuild/a1_trendma_ema_fast_up_good_prereg_v1.json','backend/research/rebuild/trend_ma_macd_ema_fast_up_good_child_policy_v1.py'),
+          ]
+          for prereg_path,policy_path in pairs:
+              p=json.load(open(prereg_path))
+              blob=subprocess.check_output(['git','hash-object',policy_path],text=True).strip()
+              assert blob==p['policy_blob_sha'],(policy_path,blob,p['policy_blob_sha'])
+              subprocess.run(['git','merge-base','--is-ancestor',p['policy_freeze_commit'],'HEAD'],check=True)
+              assert p['fresh_boundary_utc']=='2026-08-23T18:00:00Z',p
+              assert p['fixed_universe']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],p
+              assert p['minimum_fresh_trades']==25 and p['exact_first_completed_trades']==25,p
+              assert p['preboundary_outcomes_counted'] is False and p['numeric_threshold_sweep'] is False,p
+              assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED',p
+          print('PASS_GOOD_CHILD_POLICY_FREEZE_AND_PREREG_AUTHORITY')
+          PY
+      - name: Policy and infrastructure invariant self tests
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/supertrend_pullback_long_reclaim_good_child_policy_v1.py
+          python backend/research/rebuild/trend_ma_macd_ema_fast_up_good_child_policy_v1.py
+          python backend/research/rebuild/a1_fresh_boundary_shadow_replay_v1.py
+          python backend/research/rebuild/a1_finalist_good_regime_h4_h5_hardening_v1.py --self-test
+          python backend/research/rebuild/a1_finalist_good_regime_fresh25_v1.py --self-test
+      - name: Collect exact fresh25 and auto-run identity H4 H5 at 25
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_good_regime_fresh25_v1 \
+            --out out/a1_finalist_good_regime_fresh25_latest.json
+          cat out/a1_finalist_good_regime_fresh25_latest.json
+      - name: Verify fail-closed fresh contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_finalist_good_regime_fresh25_latest.json'))
+          assert r['state']=='PASS_GOOD_REGIME_FRESH25_BUNDLE_ACTIVE',r
+          assert r['fixed_universe']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],r
+          assert r['exact_first_completed_trades']==25,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['runtime_good_boost_enabled'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          for identity,x in r['targets'].items():
+              assert x['preboundary_outcomes_counted'] is False,x
+              assert x['post_25_outcomes_ignored'] is True,x
+              assert x['parent_preserved'] is True,x
+              assert x['numeric_threshold_sweep'] is False and x['outcome_used_at_runtime'] is False,x
+              assert 0 <= int(x['completed_trades']) <= 25,x
+              assert int(x['sample_gap_to_25'])==25-int(x['completed_trades']),x
+              assert x['runtime_good_boost_enabled'] is False,x
+              if int(x['completed_trades'])==25 and x['state'].startswith('PASS_'):
+                  assert x['h4_state']=='PASS_PLACEBO_NEGATIVE_CONTROLS',x
+                  assert x['h5_state']=='PASS_CONCENTRATION_FRAGILITY',x
+          print(json.dumps({k:{'state':x['state'],'completed':x['completed_trades'],'gap':x['sample_gap_to_25'],'wr':x.get('win_rate'),'pnl':x.get('net_pnl_bps'),'h4':x['h4_state'],'h5':x['h5_state'],'next':x['next']} for k,x in r['targets'].items()},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-good-regime-fresh25-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_finalist_good_regime_fresh25_latest.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Persist latest fresh25 bundle on master
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_finalist_good_regime_fresh25_latest.json
+          cp out/a1_finalist_good_regime_fresh25_latest.json "$target"
+          git config user.name 'a1-finalist-good-regime-fresh25'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist GOOD-regime fresh25 progress [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

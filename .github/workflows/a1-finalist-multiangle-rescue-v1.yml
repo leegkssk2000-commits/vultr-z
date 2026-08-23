@@ -1,0 +1,100 @@
+name: A1 Finalist Multiangle Rescue V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_finalist_multiangle_rescue_v1.py'
+      - '.github/workflows/a1-finalist-multiangle-rescue-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  multiangle-rescue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .
+      FROZEN_ARTIFACT_ID: '9495054717'
+      FROZEN_ST_RECEIPT_SHA256: '5be1986bba47492333e6df1daaf735538ee73694d99da68332344d7215344eec'
+      FROZEN_TM_RECEIPT_SHA256: 'de18e7f12e851a1912b225a0dc9943b590c25f772b93be2f7f353bfb2f364f53'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_finalist_multiangle_rescue_v1.py
+          python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 --self-test
+      - name: Download frozen PR990 Liquid6 authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p frozen out
+          curl -fL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${FROZEN_ARTIFACT_ID}/zip" \
+            -o frozen/pr990.zip
+          unzip -q frozen/pr990.zip -d frozen/pr990
+          cp "$(find frozen/pr990 -type f -name 'supertrend_liquid6.json' | head -1)" frozen/supertrend_liquid6.json
+          cp "$(find frozen/pr990 -type f -name 'trendma_liquid6.json' | head -1)" frozen/trendma_liquid6.json
+          python - <<'PY'
+          import json,os
+          for path,sid,sha,n in [
+            ('frozen/supertrend_liquid6.json','supertrend_pullback',os.environ['FROZEN_ST_RECEIPT_SHA256'],47),
+            ('frozen/trendma_liquid6.json','trend_ma_macd',os.environ['FROZEN_TM_RECEIPT_SHA256'],18),
+          ]:
+              r=json.load(open(path)); assert r['strategy_id']==sid and r['receipt_sha256']==sha and int(r['completed_trades'])==n,r
+              assert (r.get('source_quality_gate') or {}).get('state')=='PASS' and not (r.get('integrity_defects') or []) and int(r.get('leakage_lookahead') or 0)==0,r
+          print('PASS_FROZEN_PR990_MULTIANGLE_AUTHORITY')
+          PY
+      - name: Run multiangle pairwise and exit rescue
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 \
+            --strategy-id supertrend_pullback --receipt frozen/supertrend_liquid6.json --out out/supertrend_multiangle.json
+          python -m backend.research.rebuild.a1_finalist_multiangle_rescue_v1 \
+            --strategy-id trend_ma_macd --receipt frozen/trendma_liquid6.json --out out/trendma_multiangle.json
+      - name: Verify research-only authority and print compact findings
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          summary={}
+          for sid,name in [('supertrend_pullback','supertrend_multiangle.json'),('trend_ma_macd','trendma_multiangle.json')]:
+              r=json.load(open('out/'+name))
+              assert r['strategy_id']==sid and r['strategy_parameters_changed'] is False and r['runtime_changed'] is False and r['fresh_lanes_changed'] is False,r
+              assert r['numeric_threshold_sweep'] is False and r['selection_authority'] is False and r['promotion_authority'] is False,r
+              assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+              p=r['pairwise_preentry']; e=r['exit_geometry']
+              assert p['numeric_threshold_sweep'] is False and p['runtime_selector_enabled'] is False and p['fresh_oos_required'] is True,p
+              assert e['numeric_threshold_sweep'] is False and e['post_outcome_runtime_use'] is False and e['discovery_only'] is True,e
+              top=(p.get('top_candidates') or [None])[0]
+              summary[sid]={
+                  'pair_count':p.get('candidate_count'),
+                  'top_pair':None if top is None else {'axis1':top['axis1'],'state1':top['state1'],'axis2':top['axis2'],'state2':top['state2'],'metrics':top['metrics'],'relation':top['relation'],'robust':top['robust_positive_after_each_leave_one_out'],'context_fragile':top['context_fragile']},
+                  'native_exit':e['native_alignment_break_exit'],
+                  'firstbar_exit':e['first_bar_failed_followthrough_exit'],
+              }
+          print(json.dumps(summary,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-multiangle-rescue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 30

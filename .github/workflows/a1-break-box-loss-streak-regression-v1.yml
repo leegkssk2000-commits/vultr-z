@@ -1,0 +1,87 @@
+name: A1 Break Box Loss-Streak Regression V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_break_box_loss_streak_regression_v1.py'
+      - '.github/workflows/a1-break-box-loss-streak-regression-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_break_box_loss_streak_regression_v1.py'
+      - '.github/workflows/a1-break-box-loss-streak-regression-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  break-box-loss-streak-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_break_box_loss_streak_regression_v1.py
+          python -m backend.research.rebuild.a1_break_box_loss_streak_regression_v1 --self-test
+      - name: Compare parent and box child loss clusters
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_break_box_loss_streak_regression_v1 --out out/a1_break_box_loss_streak_regression_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_break_box_loss_streak_regression_latest.json'))
+          assert r['historical_parent_five_loss_cluster_confirmed'] is True,r
+          assert r['promotion_claim'] is False and r['selection_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert r['fresh_child_boundary_unchanged'] is True,r
+          assert r['integrity_ok'] is True,r
+          print(json.dumps({
+            'state':r['state'],
+            'parent_streak':r['parent']['max_consecutive_losses'],
+            'child_streak':r['box_child']['max_consecutive_losses'],
+            'parent_streak_bps':r['parent']['worst_streak_net_bps'],
+            'child_streak_bps':r['box_child']['worst_streak_net_bps'],
+            'parent_dd_bps':r['parent']['max_drawdown_bps'],
+            'child_dd_bps':r['box_child']['max_drawdown_bps'],
+            'parent_pnl_bps':r['parent']['net_pnl_bps'],
+            'child_pnl_bps':r['box_child']['net_pnl_bps'],
+          },sort_keys=True))
+          PY
+      - name: Persist latest regression on master
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_break_box_loss_streak_regression_latest.json
+          cp out/a1_break_box_loss_streak_regression_latest.json "$target"
+          git config user.name 'a1-break-box-loss-streak-regression-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 break box: persist loss-streak regression [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-box-loss-streak-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_break_box_loss_streak_regression_latest.json
+          if-no-files-found: warn
+          retention-days: 30

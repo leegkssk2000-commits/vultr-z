@@ -1,0 +1,149 @@
+name: A1 TrendMA Chase ATR Up Long Fresh25 V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_h4_h5_hardening_v1.py'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_v1.py'
+      - '.github/workflows/a1-trendma-chase-atr-up-long-fresh25-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_good_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_h4_h5_hardening_v1.py'
+      - 'backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_v1.py'
+      - '.github/workflows/a1-trendma-chase-atr-up-long-fresh25-v1.yml'
+  schedule:
+    - cron: '29 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  cumulative-fresh-to-hardening:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .
+      FRESH_BOUNDARY_UTC: '2026-08-23T18:00:00Z'
+      LIQUID6: 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile cumulative child components
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py \
+            backend/research/rebuild/a1_trendma_chase_atr_up_long_h4_h5_hardening_v1.py \
+            backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_v1.py
+      - name: Verify immutable cumulative prereg and policy identity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,subprocess
+          p=json.load(open('backend/research/rebuild/a1_trendma_chase_atr_up_long_good_prereg_v1.json'))
+          policy=p['policy_path']
+          blob=subprocess.check_output(['git','hash-object',policy],text=True).strip()
+          assert blob==p['policy_blob_sha'],(blob,p['policy_blob_sha'])
+          subprocess.run(['git','merge-base','--is-ancestor',p['policy_freeze_commit'],'HEAD'],check=True)
+          assert p['state']=='PASS_PREREG_FROZEN'
+          assert p['candidate_identity']=='trend_ma_macd_chase_atr_up_long_good_v1'
+          assert p['cumulative_parent_identity']=='trend_ma_macd_chase_atr_up_good_v1'
+          assert p['changed_axis_relative_to_cumulative_parent']=='LONG_ONLY_SIDE'
+          assert p['changed_axis_count_relative_to_cumulative_parent']==1
+          assert p['original_parent_to_child_axis_count']==2
+          assert p['fresh_boundary_utc']=='2026-08-23T18:00:00Z'
+          assert p['fixed_universe']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT']
+          assert p['minimum_fresh_trades']==25 and p['exact_first_completed_trades']==25
+          assert p['preboundary_outcomes_counted'] is False and p['numeric_threshold_sweep'] is False
+          assert p['outcome_used_at_runtime'] is False and p['combined_with_primary'] is False
+          assert p['discovery_relation']=='PARETO_DOMINATES_PARENT'
+          assert p['discovery_metrics']['winner_retention']==1.0 and p['discovery_metrics']['loss_retention']==1/3
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          print('PASS_TRENDMA_CHASE_LONG_POLICY_FREEZE_AND_PREREG')
+          PY
+      - name: Policy collector and marginal hardening self tests
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py
+          python backend/research/rebuild/a1_trendma_chase_atr_up_long_h4_h5_hardening_v1.py --self-test
+          python backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_v1.py --self-test
+      - name: Collect exact fresh25 and auto-run marginal H4 H5 at 25
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          attempt=1
+          while true; do
+            rm -f out/a1_trendma_chase_atr_up_long_fresh25_latest.json
+            if python -m backend.research.rebuild.a1_trendma_chase_atr_up_long_fresh25_v1 \
+              --out out/a1_trendma_chase_atr_up_long_fresh25_latest.json; then
+              break
+            fi
+            if [ "$attempt" -ge 4 ]; then
+              echo "CHASE_LONG_FRESH_TRANSPORT_RETRY_EXHAUSTED:${attempt}" >&2
+              exit 1
+            fi
+            sleep $((attempt * 3))
+            attempt=$((attempt + 1))
+          done
+          cat out/a1_trendma_chase_atr_up_long_fresh25_latest.json
+      - name: Verify cumulative fail-closed contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendma_chase_atr_up_long_fresh25_latest.json'))
+          assert r['candidate_identity']=='trend_ma_macd_chase_atr_up_long_good_v1',r
+          assert r['cumulative_parent_identity']=='trend_ma_macd_chase_atr_up_good_v1',r
+          assert r['fixed_universe']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],r
+          assert r['exact_first_completed_trades']==25 and r['changed_axis_count_relative_to_cumulative_parent']==1,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['cumulative_parent_preserved'] is True and r['primary_ema_fast_child_preserved'] is True,r
+          assert r['combined_with_primary'] is False and r['runtime_good_boost_enabled'] is False,r
+          assert r['preboundary_outcomes_counted'] is False and r['post_25_outcomes_ignored'] is True,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert 0 <= int(r['completed_trades']) <= 25,r
+          assert int(r['sample_gap_to_25'])==25-int(r['completed_trades']),r
+          if int(r['completed_trades'])==25 and r['state'].startswith('PASS_'):
+              assert r['h4_state']=='PASS_PLACEBO_NEGATIVE_CONTROLS',r
+              assert r['h5_state']=='PASS_CONCENTRATION_FRAGILITY',r
+              h=r['hardening_receipt']
+              assert h['indicator_removal_restores_cumulative_parent'] is True,h
+              assert h['indicator_removal_restores_original_parent'] is False,h
+              assert h['cumulative_parent_identity']=='trend_ma_macd_chase_atr_up_good_v1',h
+          print(json.dumps({'state':r['state'],'completed':r['completed_trades'],'gap':r['sample_gap_to_25'],'wr':r.get('win_rate'),'pnl':r.get('net_pnl_bps'),'h4':r['h4_state'],'h5':r['h5_state'],'next':r['next']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendma-chase-atr-up-long-fresh25-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendma_chase_atr_up_long_fresh25_latest.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Persist latest cumulative fresh25 on master
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          set -euo pipefail
+          cp out/a1_trendma_chase_atr_up_long_fresh25_latest.json backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json
+          if git diff --quiet -- backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json; then
+            exit 0
+          fi
+          git config user.name 'a1-trendma-chase-long-auto-survivor'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json
+          git commit -m 'A1 TrendMA chase-long: persist cumulative fresh25 progress [skip ci]'
+          git push

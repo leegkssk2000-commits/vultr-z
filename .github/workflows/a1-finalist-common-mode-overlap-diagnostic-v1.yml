@@ -1,0 +1,85 @@
+name: A1 Finalist Common-Mode Overlap Diagnostic V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_finalist_common_mode_overlap_diagnostic_v1.py'
+      - '.github/workflows/a1-finalist-common-mode-overlap-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  common-mode-overlap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_finalist_common_mode_overlap_diagnostic_v1.py
+          python -m backend.research.rebuild.a1_finalist_common_mode_overlap_diagnostic_v1 --self-test
+      - name: Download immutable PR990 Liquid6 evidence
+        run: |
+          set -euo pipefail
+          mkdir -p frozen
+          gh run download 32646262135 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name a1-finalist-lifecycle-liquid6-32646262135-1 \
+            --dir frozen
+          test -s frozen/supertrend_liquid6.json
+          test -s frozen/trendma_liquid6.json
+      - name: Diagnose common-mode overlap and one-axis child
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_common_mode_overlap_diagnostic_v1 \
+            --supertrend frozen/supertrend_liquid6.json \
+            --trendma frozen/trendma_liquid6.json \
+            --out out/a1_finalist_common_mode_overlap_latest.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_finalist_common_mode_overlap_latest.json'))
+          assert r['state']=='PASS_COMMON_MODE_OVERLAP_DIAGNOSTIC',r
+          assert r['numeric_threshold_invented'] is False,r
+          assert r['policy_parameters_changed'] is False and r['risk_parameters_changed'] is False and r['exit_parameters_changed'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          expected={
+            'supertrend_pullback':(47,12,4,1609.954014652285,939.9080168260953),
+            'trend_ma_macd':(18,9,5,834.6295374703624,829.8871861055222),
+          }
+          for sid,(n,ps,cs,pdd,cdd) in expected.items():
+              x=r['targets'][sid]
+              assert x['parent']['completed_trades']==n,(sid,x)
+              assert x['parent']['max_consecutive_losses_exit_order']==ps,(sid,x)
+              assert x['one_axis_child']['accepted']['max_consecutive_losses_exit_order']==cs,(sid,x)
+              assert math.isclose(x['parent']['realized_exit_bucket_max_drawdown_bps'],pdd,rel_tol=0,abs_tol=1e-9),(sid,x)
+              assert math.isclose(x['one_axis_child']['accepted']['realized_exit_bucket_max_drawdown_bps'],cdd,rel_tol=0,abs_tol=1e-9),(sid,x)
+              assert x['one_axis_child']['risk_diagnostic_improved'] is True,(sid,x)
+              assert x['one_axis_child']['no_expectancy_degradation'] is False,(sid,x)
+              assert x['one_axis_child']['economic_upgrade_passed'] is False,(sid,x)
+              assert x['conclusion']=='COMMON_MODE_STACKING_CONFIRMED_BUT_NAIVE_BLOCK_NOT_ECONOMIC_UPGRADE',(sid,x)
+          print(json.dumps({sid:{
+            'parent':x['parent'],
+            'common_mode':x['common_mode'],
+            'child':x['one_axis_child'],
+            'conclusion':x['conclusion'],
+          } for sid,x in r['targets'].items()},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-common-mode-overlap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_finalist_common_mode_overlap_latest.json
+          if-no-files-found: warn
+          retention-days: 30

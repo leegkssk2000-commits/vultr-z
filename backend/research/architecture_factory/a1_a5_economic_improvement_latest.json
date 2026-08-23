@@ -454,14 +454,15 @@
         "MULTIHORIZON_TREND_CONSENSUS_ONLY",
         "MOMENTUM_CONFIRMATION_OWNER_ONLY",
         "EMA_SLOPE_REVERSAL_EXIT_ONLY",
-        "VOLATILITY_ADAPTIVE_TRAIL_ONLY"
+        "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
+        "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
       ],
       "economically_tested_axes_this_run": [
-        "VOLATILITY_ADAPTIVE_TRAIL_ONLY"
+        "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
       ],
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
       "pass_candidate_ids": [],
-      "remaining_axis_count": 10,
+      "remaining_axis_count": 9,
       "technical_rejected_axes": []
     }
   },
@@ -500,16 +501,64 @@
       "MULTIHORIZON_TREND_CONSENSUS_ONLY",
       "MOMENTUM_CONFIRMATION_OWNER_ONLY",
       "EMA_SLOPE_REVERSAL_EXIT_ONLY",
-      "VOLATILITY_ADAPTIVE_TRAIL_ONLY"
+      "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
+      "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
     ]
   },
   "exchange_order_submitted": false,
   "execution_authority": "NONE",
   "failure_decomposition": {
     "cost_dominated_count": 0,
-    "economic_fail_count": 0,
-    "no_gross_edge_count": 0,
-    "rows": [],
+    "economic_fail_count": 1,
+    "no_gross_edge_count": 1,
+    "rows": [
+      {
+        "candidate_id": "trend_rider_repair_long_short_asym_cap_v1",
+        "cost_bps_per_trade": 14.0,
+        "drawdown_bps": 4132.645610466494,
+        "evidence_ids": [
+          "F1",
+          "TR59E1"
+        ],
+        "executable_spec": {
+          "bar_interval": "15m",
+          "cost_model": "14bps verified round trip",
+          "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
+          "entry_rule": "close > ema(close,20) and ema(close,20) > ema(close,50)",
+          "entry_timing": "completed-bar timing",
+          "exit_rule": "max_hold_bars",
+          "features": [
+            {
+              "formula": "ema(close,20) - ema(close,50)",
+              "name": "ema_diff_20_50"
+            },
+            {
+              "formula": "std(close,20) / max(sma(close,20),0.00000001)",
+              "name": "vol_norm_20"
+            }
+          ],
+          "max_hold_bars": 12,
+          "parameter_provenance": "mechanism prior only; no outcome sweep",
+          "side_rule": "long if ema_diff_20_50 > 0 else short"
+        },
+        "failure_class": "NO_GROSS_EDGE",
+        "gross_expectancy_bps": -3.1209832054366733,
+        "net_expectancy_bps": -17.120983205436673,
+        "payoff": 0.9408665494153686,
+        "profit_factor": 0.36314147521294926,
+        "provider": "openai",
+        "repairable": false,
+        "required_net_improvement_bps_per_trade": 17.130983,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "route": "REPLACE_ARCHITECTURE",
+        "strategy_id": "trend_rider",
+        "trades": 237,
+        "win_rate": 0.27848101265822783
+      }
+    ],
     "rule": "Gross<=0 => no repair API; replace architecture. Gross>0 but Net<=0/PF<=1 => at most one causal repair, ranked by smallest break-even gap.",
     "schema_version": "zel.a1_failure_economics.v1",
     "selected_for_single_repair": [],
@@ -520,51 +569,40 @@
     {
       "alpha_proof_candidate_ready": false,
       "architecture_family": "trend",
-      "candidate_id": "trend_rider_repair_voltrail_v1",
-      "candidate_sha256": "f298b4cd5ea4cde340267e6241fd0e25daa6375cdb4e89ac048843ec4826585e",
-      "changed_axis": "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
-      "direction_rule": "both rule",
+      "candidate_id": "trend_rider_repair_long_short_asym_cap_v1",
+      "candidate_sha256": "838433037c5ed772858fce8c751a636786f44a3b48eedd28c840e8d96bbb9828",
+      "changed_axis": "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY",
+      "direction_rule": "both",
       "economic_next": "AUTO_DEVELOPMENT_REPLAY",
-      "entry_event": "close > highest(close,20) or close < lowest(close,20)",
+      "entry_event": "close > ema(close,20) and ema(close,20) > ema(close,50)",
       "evidence_ids": [
-        "F1"
+        "F1",
+        "TR59E1"
       ],
       "executable_spec": {
-        "bar_interval": "1h",
+        "bar_interval": "15m",
         "cost_model": "14bps verified round trip",
         "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
-        "entry_rule": "(close > highest(close,20)) or (close < lowest(close,20))",
+        "entry_rule": "close > ema(close,20) and ema(close,20) > ema(close,50)",
         "entry_timing": "completed-bar timing",
         "exit_rule": "max_hold_bars",
         "features": [
           {
-            "formula": "atr(14)",
-            "name": "atr_14"
-          },
-          {
-            "formula": "std(close,20)",
-            "name": "vol20"
-          },
-          {
-            "formula": "close - highest(close,20)",
-            "name": "breakout_dist_pos"
-          },
-          {
-            "formula": "close - lowest(close,20)",
-            "name": "breakout_dist_neg"
-          },
-          {
             "formula": "ema(close,20) - ema(close,50)",
-            "name": "ema_diff"
+            "name": "ema_diff_20_50"
+          },
+          {
+            "formula": "std(close,20) / max(sma(close,20),0.00000001)",
+            "name": "vol_norm_20"
           }
         ],
         "max_hold_bars": 12,
         "parameter_provenance": "mechanism prior only; no outcome sweep",
-        "side_rule": "long if ema_diff > 0 else short"
+        "side_rule": "long if ema_diff_20_50 > 0 else short"
       },
-      "exit_logic": "use time-based stop to realize volatility-adaptive trailing benefits without introducing fit thresholds",
+      "exit_logic": "preserve parent exit mechanics; use max_hold_bars to bound exposure without tuning continuous thresholds",
       "expected_move_cost_multiple_target": 2.0,
-      "falsification": "Reject if improvement disappears under cost stress, leave-extreme-out, chronological split or volatility-regime leave-one-out tests.",
+      "falsification": "Reject if asymmetric capital allocation fails to improve risk-adjusted expectancy or increases drawdown materially in prospective pre-gen1 validation",
       "forbidden_changes": [
         "fees",
         "best-horizon selection",
@@ -572,32 +610,33 @@
       ],
       "invalidation": "causal invalidation",
       "machine_replayable": true,
-      "mechanism": "Freeze entry and initial risk; change only favorable-direction trailing distance using lagged completed-bar volatility state to let natural move dominate costs; market participant/inefficiency pays via regime-dependent trend persistence",
+      "mechanism": "allocate capital asymmetrically to long vs short sides to reflect persistent long-bias in crypto; market participant/inefficiency pays when side-capital mismatch exploits persistent directional premium",
       "mode": "REPAIR",
-      "native_horizon": "natural holding horizon",
+      "native_horizon": "intraday to multi-day trend horizon",
       "payer": "market participant/inefficiency",
       "provider": "openai",
-      "regime_owner": "trade in trending volatility regimes only; avoid flat/low-volatility regimes",
+      "regime_owner": "trade only when completed-bar trend geometry holds; avoid trading in non-trending liquidity regimes",
       "required_sources": [
-        "ohlcv"
+        "ohlcv",
+        "volume"
       ],
-      "score": 6.8,
+      "score": 7.6,
       "source_ready": true,
       "strategy_id": "trend_rider",
-      "time_stop_rationale": "max_hold_bars bounds exposure so volatility-adaptive trail can capture natural moves while limiting path risk",
-      "turnover_cost_budget": "expected move (2x cost) can dominate verified costs when trailing adapts to higher lagged volatility, reducing churn",
-      "why_distinct": "alters only trailing-distance rule by linking to completed-bar volatility state; preserves original entry/risk with single-axis change"
+      "time_stop_rationale": "max_hold_bars bounds natural holding horizon and limits cost accumulation consistent with volatility-managed rationale",
+      "turnover_cost_budget": "expected_move_cost_multiple_target explains why predicted move should dominate verified 14bps round trip",
+      "why_distinct": "changes only deterministic side-level capital weighting while preserving original trend signals and exits; not duplicate because baseline had symmetric capital exposure"
     }
   ],
   "initial_development_economics": {
     "candidate_count": 1,
     "cost_bps_per_trade": 14.0,
     "development_only": true,
-    "economic_fail_count": 0,
+    "economic_fail_count": 1,
     "economic_pass_count": 0,
     "exchange_order_submitted": false,
     "execution_authority": "NONE",
-    "insufficient_event_count": 1,
+    "insufficient_event_count": 0,
     "live_trade_authority": "BLOCKED",
     "mixed_scope": true,
     "order_authority": "BLOCKED",
@@ -607,22 +646,22 @@
     "rows": [
       {
         "boundary": "2026-08-16T18:45:01Z",
-        "candidate_id": "trend_rider_repair_voltrail_v1",
+        "candidate_id": "trend_rider_repair_long_short_asym_cap_v1",
         "development_only": true,
         "economic_pass": false,
         "metrics": {
           "cost_bps_per_trade": 14.0,
-          "development_days": 124.83333333333333,
-          "drawdown_bps": 0.0,
-          "events_per_day": 0.0,
-          "gross_expectancy_bps": null,
-          "net_bps_per_calendar_day": 0.0,
-          "net_expectancy_bps": null,
-          "net_pnl_bps": 0,
-          "payoff": null,
-          "profit_factor": null,
-          "trades": 0,
-          "win_rate": null
+          "development_days": 31.208333333333332,
+          "drawdown_bps": 4132.645610466494,
+          "events_per_day": 7.594125500667557,
+          "gross_expectancy_bps": -3.1209832054366733,
+          "net_bps_per_calendar_day": -130.0188951569076,
+          "net_expectancy_bps": -17.120983205436673,
+          "net_pnl_bps": -4057.6730196884914,
+          "payoff": 0.9408665494153686,
+          "profit_factor": 0.36314147521294926,
+          "trades": 237,
+          "win_rate": 0.27848101265822783
         },
         "prospective": false,
         "provider": "openai",
@@ -634,7 +673,7 @@
             "bars": 2997
           }
         },
-        "state": "FAIL_INSUFFICIENT_EVENTS",
+        "state": "FAIL_DEVELOPMENT_ECONOMICS",
         "strategy_id": "trend_rider",
         "uses_data_strictly_before_gen1_boundary": true
       }
@@ -712,7 +751,8 @@
       "MULTISPEED_TREND_OWNER_ONLY",
       "MULTIHORIZON_TREND_CONSENSUS_ONLY",
       "MOMENTUM_CONFIRMATION_OWNER_ONLY",
-      "EMA_SLOPE_REVERSAL_EXIT_ONLY"
+      "EMA_SLOPE_REVERSAL_EXIT_ONLY",
+      "VOLATILITY_ADAPTIVE_TRAIL_ONLY"
     ]
   },
   "promotion_authority": false,
@@ -731,13 +771,13 @@
         "trend_rider"
       ],
       "model": "gpt-5-mini",
-      "prompt_sha": "f3f549026a133c7df12313d2b6df287d7dde22a9450580d0624ab1e24d7d3e15",
+      "prompt_sha": "e2c35466211027c814e67cb6204f727f601d2af4dd805e2a5ad4cb56b0aba8da",
       "provider_contract": "A5_ECONOMIC_V2",
       "represented_strategy_ids": [
         "trend_rider"
       ],
       "request_count": 1,
-      "response_sha": "2d411777cff1e9f9c69212f1439340f35c146cc4bcad983d9dd6b8f8e38ebc5c",
+      "response_sha": "2c5d2964ca236150471aaaca4548cb6cf184331aff28523700926304ad0a43a9",
       "structured_output": "strict",
       "successful": true
     },
@@ -754,7 +794,7 @@
       "successful": false
     }
   },
-  "receipt_sha256": "c70d0fc2616d467b729d6b2ad254407af39bfb675f45ff24555b3d7a9c5f2884",
+  "receipt_sha256": "c654a77ce5bd46926b0366f137da78870200325b453421128bb6c9499883b24c",
   "schema_version": "zel.a1_a5_economic_improvement.v5",
   "second_step_candidates": [],
   "second_step_development_economics": {
@@ -768,9 +808,9 @@
   "selection_authority": false,
   "source_history_readiness": {
     "basis": {
-      "captured_min_span_ms": 1074905412,
-      "coverage_progress_ratio": 0.5924498230761599,
-      "coverage_receipt": "c09ab7259cec307041f0fa44d228dac7b9e4b79bccb50563db0987b15ce0112c",
+      "captured_min_span_ms": 1095682663,
+      "coverage_progress_ratio": 0.6039015085375398,
+      "coverage_receipt": "908876d367ad9842b34c0d4a04fa20f8a85202356b731bc0bedcef13f318a5db",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -780,16 +820,16 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 8.558270694444445,
-      "remaining_span_ms": 739434588,
+      "remaining_days": 8.317793252314814,
+      "remaining_span_ms": 718657337,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },
     "basis_oi_combined_gate": {
-      "coverage_progress_ratio": 0.5924498230761599,
+      "coverage_progress_ratio": 0.6039015085375398,
       "duration_gate_pass": false,
       "reason": "BASIS_FUNDING_OI_SUBAXIS_21D_PLUS_FUNDING_REQUIRED",
-      "remaining_days": 8.558270694444445,
+      "remaining_days": 8.317793252314814,
       "source_ready": false,
       "subaxis_contract_verified": true
     },
@@ -807,9 +847,9 @@
       "reason": "BINGX_KLINE_PRE_BOUNDARY_PULL_AVAILABLE"
     },
     "open_interest": {
-      "captured_min_span_ms": 1074905412,
-      "coverage_progress_ratio": 0.5924498230761599,
-      "coverage_receipt": "c09ab7259cec307041f0fa44d228dac7b9e4b79bccb50563db0987b15ce0112c",
+      "captured_min_span_ms": 1095682663,
+      "coverage_progress_ratio": 0.6039015085375398,
+      "coverage_receipt": "908876d367ad9842b34c0d4a04fa20f8a85202356b731bc0bedcef13f318a5db",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -819,8 +859,8 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 8.558270694444445,
-      "remaining_span_ms": 739434588,
+      "remaining_days": 8.317793252314814,
+      "remaining_span_ms": 718657337,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },
@@ -838,9 +878,7 @@
     "a1_a2_a3_gate_order_preserved": true,
     "baseline_identity": "ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3",
     "consumer_connected": true,
-    "dedicated_evaluator_pending_axes": [
-      "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
-    ],
+    "dedicated_evaluator_pending_axes": [],
     "derivative_lineages_not_baseline": [
       "trend_rider_one_bar_delayed_fill_v1",
       "trend_rider_delayed_fill_long_only_v1"
@@ -857,9 +895,9 @@
     "external_evidence_count": 4,
     "fresh_prospective_validation_required": true,
     "generic_dsl_candidate_axes_this_run": [
-      "VOLATILITY_ADAPTIVE_TRAIL_ONLY"
+      "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
     ],
-    "generic_dsl_expected_axis_this_run": "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
+    "generic_dsl_expected_axis_this_run": null,
     "generic_dsl_next_axis": null,
     "generic_dsl_remaining_axes": [],
     "long_short_capital_axis_route": "DEDICATED_EVALUATOR_REQUIRED_NOT_GENERIC_DSL",

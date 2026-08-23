@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from backend.research.rebuild.a1_fresh_boundary_shadow_replay_v1 import run_terminal_shadow
+from backend.research.rebuild.a1_fresh_boundary_shadow_replay_v1 import _source_symbol_names, run_terminal_shadow
 from backend.research.rebuild import a1_finalist_good_regime_fresh25_v1 as common
 from backend.research.rebuild import a1_finalist_good_regime_h4_h5_hardening_v1 as generic_hardening
 from backend.tools import zel_economic_hardening_gate_v1 as hard
@@ -141,7 +141,7 @@ def run(now: datetime | None = None) -> dict[str, Any]:
         source_state = str(source_quality.get("state") or "")
         if defects or lookahead != 0:
             raise RuntimeError(f"CHASE_FRESH_INTEGRITY_FAIL:{defects}:{lookahead}")
-        source_symbols = tuple(sorted(str(x) for x in ((raw.get("source") or {}).get("symbols") or [])))
+        source_symbols = tuple(sorted(_source_symbol_names(raw.get("source"))))
         if source_symbols and source_symbols != tuple(sorted(LIQUID6)):
             raise RuntimeError(f"CHASE_SOURCE_UNIVERSE_MISMATCH:{source_symbols}")
 
@@ -192,8 +192,6 @@ def run(now: datetime | None = None) -> dict[str, Any]:
             candidate_path.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
             hard_path = td_path / "hardening.json"
 
-            # Reuse the already-CI-validated generic H4/H5 engine without
-            # changing the sealed two-child target registry on master.
             generic_hardening.TARGETS[IDENTITY] = {
                 "transport_strategy_id": STRATEGY_ID,
                 "indicator_removal_semantics": "REMOVE_CHASE_ATR_UP_GOOD_ADMISSION_RESTORE_UNCHANGED_TRENDMA_PARENT",

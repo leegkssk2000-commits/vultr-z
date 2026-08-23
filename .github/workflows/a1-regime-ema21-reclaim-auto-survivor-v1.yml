@@ -122,12 +122,15 @@ jobs:
         if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           set -euo pipefail
-          cp out/a1_regime_ema21_reclaim_fresh_latest.json backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
-          if git diff --quiet -- backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json; then
-            exit 0
-          fi
+          target=backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          cp out/a1_regime_ema21_reclaim_fresh_latest.json "$target"
           git config user.name 'a1-ema21-reclaim-auto-survivor'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/rebuild/a1_regime_ema21_reclaim_fresh_latest.json
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
           git commit -m 'A1 EMA21 reclaim: persist fresh survivor progress [skip ci]'
-          git push
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

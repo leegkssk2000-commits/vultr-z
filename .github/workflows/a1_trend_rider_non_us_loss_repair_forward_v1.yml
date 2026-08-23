@@ -1,0 +1,90 @@
+name: A1 Trend Rider Non-US Loss Repair Forward V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_non_us_loss_repair_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_non_us_loss_repair_forward_v1.py'
+      - '.github/workflows/a1_trend_rider_non_us_loss_repair_forward_v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_non_us_loss_repair_prereg_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_non_us_loss_repair_forward_v1.py'
+      - '.github/workflows/a1_trend_rider_non_us_loss_repair_forward_v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '27 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-trend-rider-non-us-loss-repair-forward-v1
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py \
+            backend/research/rebuild/a1_trend_rider_non_us_loss_repair_forward_v1.py
+          python -m backend.research.rebuild.trend_rider_transition_freshness_non_us_child_policy_v1
+          python -m backend.research.rebuild.a1_trend_rider_non_us_loss_repair_forward_v1 --self-test
+      - name: Collect fresh repair evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trend_rider_non_us_loss_repair_forward_v1 \
+            --out out/a1_trend_rider_non_us_loss_repair_forward_latest.json
+      - name: Verify fail-closed authority
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_non_us_loss_repair_forward_latest.json'))
+          assert r['canonical_exact25_ledger_mutation'] is False
+          assert r['preboundary_outcomes_counted'] is False
+          assert r['strategy_parameters_changed'] is False and r['thresholds_changed'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          print({k:r.get(k) for k in ['state','completed_trades','sample_gap_to_25','h4_state','h5_state','next']})
+          PY
+      - name: Persist latest repair receipt
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_rider_non_us_loss_repair_forward_latest.json
+          cp out/a1_trend_rider_non_us_loss_repair_forward_latest.json "$target"
+          git config user.name 'a1-trend-rider-non-us-loss-repair-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_rider: persist non-US fresh repair [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-non-us-loss-repair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_non_us_loss_repair_forward_latest.json
+          retention-days: 30

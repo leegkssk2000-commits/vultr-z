@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,12 +36,70 @@ def parse_utc(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def git_blob_sha(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def receipt_symbols(receipt: Mapping[str, Any]) -> list[str]:
+    execution = receipt.get("execution_snapshots")
+    if isinstance(execution, Mapping) and execution:
+        return sorted(str(x) for x in execution)
+    trades = [x for x in (receipt.get("trades") or []) if isinstance(x, Mapping)]
+    trade_symbols = sorted({str(x.get("symbol") or "") for x in trades if str(x.get("symbol") or "")})
+    if trade_symbols:
+        return trade_symbols
+    source = receipt.get("source") if isinstance(receipt.get("source"), Mapping) else {}
+    raw_symbols = source.get("symbols") or receipt.get("fixed_universe") or []
+    out: set[str] = set()
+    for item in raw_symbols:
+        if isinstance(item, Mapping):
+            symbol = str(item.get("symbol") or "")
+        else:
+            symbol = str(item or "")
+        if symbol:
+            out.add(symbol)
+    return sorted(out)
+
+
+def gross_expectancy_bps(receipt: Mapping[str, Any]) -> float:
+    metrics = receipt.get("metrics") if isinstance(receipt.get("metrics"), Mapping) else {}
+    value = metrics.get("gross_expectancy_bps")
+    if value is not None:
+        return float(value)
+    trades = [x for x in (receipt.get("trades") or []) if isinstance(x, Mapping)]
+    if not trades or any(x.get("gross_bps") is None for x in trades):
+        raise RuntimeError("GROSS_EXPECTANCY_UNAVAILABLE")
+    return sum(float(x["gross_bps"]) for x in trades) / len(trades)
+
+
+def resolve_receipt_policy(receipt: Mapping[str, Any]) -> tuple[Any, Path, str]:
+    candidate_id = str(receipt.get("strategy_id") or "")
+    raw_path = str(receipt.get("policy_path") or "")
+    expected_sha = str(receipt.get("policy_sha") or "")
+    if raw_path:
+        policy_path = (ROOT / raw_path).resolve()
+        if ROOT not in policy_path.parents or not policy_path.is_file():
+            raise RuntimeError(f"RECEIPT_POLICY_PATH_INVALID:{raw_path}")
+        policy_sha = git_blob_sha(policy_path)
+        if expected_sha and policy_sha != expected_sha:
+            raise RuntimeError(f"RECEIPT_POLICY_SHA_MISMATCH:{policy_sha}!={expected_sha}")
+        spec = importlib.util.spec_from_file_location(f"a2_receipt_policy_{candidate_id}_{policy_sha[:12]}", policy_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"RECEIPT_POLICY_LOAD_FAILED:{raw_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, policy_path, policy_sha
+    inventory = read(INVENTORY)
+    return ev.load_policy(candidate_id, inventory)
+
+
 def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]) -> dict[str, Any]:
     candidate_id = str(receipt.get("strategy_id") or "")
-    inventory = read(INVENTORY)
-    module, policy_path, policy_sha = ev.load_policy(candidate_id, inventory)
-    if policy_sha != receipt.get("policy_sha"):
-        return {"pass": False, "state": "HOLD_POLICY_SHA_MISMATCH", "blockers": [f"{policy_sha}!={receipt.get('policy_sha')}"]}
+    try:
+        module, policy_path, policy_sha = resolve_receipt_policy(receipt)
+    except Exception as exc:
+        return {"pass": False, "state": "HOLD_POLICY_LINEAGE", "blockers": [f"{type(exc).__name__}:{exc}"]}
     cfg = ev.config_instance(module)
     interval = ev.interval_for_ms(int(getattr(cfg, "timeframe_ms")))
     if interval != str((receipt.get("source") or {}).get("interval") or ""):
@@ -135,16 +195,19 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
     if tiering.get("a2_entry_allowed") is not True:
         raise RuntimeError("A2_ENTRY_NOT_ALLOWED")
 
-    symbols = sorted((receipt.get("execution_snapshots") or {}).keys()) or ["BTC-USDT", "ETH-USDT"]
+    trades = [x for x in (receipt.get("trades") or []) if isinstance(x, Mapping)]
+    if not trades:
+        raise RuntimeError("A2_COMPLETED_TRADES_REQUIRED")
+    symbols = receipt_symbols(receipt)
+    if not symbols:
+        raise RuntimeError("A2_SYMBOLS_REQUIRED")
     snapshots = {symbol: ev.fetch_execution_snapshot(symbol, authority) for symbol in symbols}
     worst_symbol = max(symbols, key=lambda s: float(snapshots[s]["pretrade_verified_cost_bps"]))
     one_x = float(snapshots[worst_symbol]["pretrade_verified_cost_bps"]); two_x = 2.0 * one_x
     p95_funding = max(float(snapshots[s]["funding_p95_abs_bps"]) for s in symbols)
-    metrics = receipt.get("metrics") if isinstance(receipt.get("metrics"), Mapping) else {}
-    gross_exp = float(metrics.get("gross_expectancy_bps"))
+    gross_exp = gross_expectancy_bps(receipt)
     one_x_exp = gross_exp - one_x; two_x_exp = gross_exp - two_x
     plus_one = plus_one_bar_stress(receipt, authority)
-    trades = [x for x in (receipt.get("trades") or []) if isinstance(x, Mapping)]
     boundary = parse_utc(str(receipt["boundary_utc"])); end = datetime.fromtimestamp(max(int(x["exit_ts"]) for x in trades)/1000, tz=timezone.utc)
     elapsed_days = max((end-boundary).total_seconds()/86400.0, 1e-9); turnover = len(trades)/elapsed_days
     stress = {
@@ -156,10 +219,12 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
     }
     passed = all(v.get("pass") is True for v in stress.values()) and not list(receipt.get("integrity_defects") or [])
     result = {
-        "schema_version": "zel.a2.forward_cost_turnover.v1", "stage": "A2", "candidate_id": candidate_id,
+        "schema_version": "zel.a2.forward_cost_turnover.v2", "stage": "A2", "candidate_id": candidate_id,
         "state": "PASS_A2_COST_TURNOVER" if passed else "HOLD_A2_COST_TURNOVER",
         "a1_transition_receipt_sha256": transition.get("receipt_sha256"), "candidate_receipt_sha256": receipt.get("receipt_sha256"),
         "a1_tier": tiering.get("a1_tier"), "a1_activation_mode": tiering.get("activation", {}).get("mode"),
+        "evaluated_symbols": symbols,
+        "gross_expectancy_source": "receipt.metrics.gross_expectancy_bps" if (receipt.get("metrics") or {}).get("gross_expectancy_bps") is not None else "mean(receipt.trades.gross_bps)",
         "cost_authority": {"ssot_sha256": sha(ssot), "cost_authority_sha256": sha(authority), "worst_current_symbol": worst_symbol, "one_x_cost_bps": one_x, "two_x_cost_bps": two_x, "funding_p95_abs_bps": p95_funding},
         "stress": stress, "stress_contract": ["1X_COST","2X_COST","P95_FUNDING","PLUS_ONE_BAR","TURNOVER"],
         "next_stage_if_pass": "A3_FORWARD_REGIME_DURABILITY", "promotion_authority_note": "A2 pass does not grant Survivor; A3 plus fresh promotion activation remain required.",
@@ -172,7 +237,13 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
 def self_test() -> int:
     ssot = read(SSOT)
     assert set(ssot.get("stress_contract") or []) >= {"1X_COST","2X_COST","P95_FUNDING","PLUS_ONE_BAR"}
-    print("PASS_A2_FORWARD_COST_TURNOVER_V1_SELF_TEST")
+    assert receipt_symbols({"source":{"symbols":[{"symbol":"ETH-USDT"},{"symbol":"BTC-USDT"}]}}) == ["BTC-USDT","ETH-USDT"]
+    assert gross_expectancy_bps({"trades":[{"gross_bps":10.0},{"gross_bps":20.0}]}) == 15.0
+    child = ROOT / "backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py"
+    if child.exists():
+        module, path, blob = resolve_receipt_policy({"strategy_id":"trend_ma_macd","policy_path":str(child.relative_to(ROOT)),"policy_sha":git_blob_sha(child)})
+        assert path == child and len(blob) == 40 and module is not None
+    print("PASS_A2_FORWARD_COST_TURNOVER_V2_SELF_TEST")
     return 0
 
 

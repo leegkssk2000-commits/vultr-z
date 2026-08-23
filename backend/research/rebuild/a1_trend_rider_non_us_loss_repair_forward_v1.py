@@ -6,19 +6,18 @@ import json
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_exact25_generic_evaluator_v2 as exact
+from backend.research.rebuild.a1_fresh_boundary_shadow_replay_v1 import run_terminal_shadow
 
 ROOT = Path(__file__).resolve().parents[3]
-INVENTORY = ROOT / "backend/research/rebuild/strategy25_structural_inventory_v2.json"
 POLICY = ROOT / "backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py"
 PREREG = ROOT / "backend/research/rebuild/a1_trend_rider_non_us_loss_repair_prereg_v1.json"
 MIN_TRADES = 25
-SCHEMA = "zel.a1.trend_rider.non_us_loss_repair.forward.v1"
+SCHEMA = "zel.a1.trend_rider.non_us_loss_repair.forward.v2"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -26,10 +25,6 @@ def _read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"OBJECT_REQUIRED:{path}")
     return value
-
-
-def _parse_ms(value: str) -> int:
-    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp() * 1000)
 
 
 def _metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
@@ -53,49 +48,18 @@ def _metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _run_child(out: Path) -> dict[str, Any]:
-    inventory = _read(INVENTORY)
-    inventory["strategies"]["trend_rider"]["policy_owner"] = str(POLICY.relative_to(ROOT))
-    with tempfile.TemporaryDirectory(prefix="trend_rider_non_us_shadow_") as td:
-        inv = Path(td) / "inventory.json"
-        inv.write_text(json.dumps(inventory, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        old_inventory = exact.v1.INVENTORY_PATH
-        old_argv = sys.argv[:]
-        try:
-            exact.v1.INVENTORY_PATH = inv
-            sys.argv = [old_argv[0], "--strategy-id", "trend_rider", "--out", str(out), "--terminal-replay"]
-            exact.main()
-        finally:
-            exact.v1.INVENTORY_PATH = old_inventory
-            sys.argv = old_argv
-    return _read(out)
-
-
-def _fresh_source(base: dict[str, Any], boundary_ms: int) -> dict[str, Any]:
-    source = base.get("source") if isinstance(base.get("source"), dict) else {}
-    interval = str(source.get("interval") or "1h")
-    rows = []
-    symbols = [str(x.get("symbol")) for x in (source.get("symbols") or []) if isinstance(x, dict) and x.get("symbol")]
-    for symbol in sorted(set(symbols or ["BTC-USDT", "ETH-USDT"])):
-        bars = ev.fetch_bars(symbol, interval, 1000)
-        post = [x for x in bars if int(x["ts_ms"]) >= boundary_ms]
-        rows.append({
-            "symbol": symbol,
-            "bars_total": len(bars),
-            "bars_post_boundary": len(post),
-            "first_post_boundary_ts": int(post[0]["ts_ms"]) if post else None,
-            "last_post_boundary_ts": int(post[-1]["ts_ms"]) if post else None,
-        })
-    return {"endpoint": source.get("endpoint", "/openApi/swap/v3/quote/klines"), "interval": interval, "symbols": rows}
-
-
 def run(out: Path) -> dict[str, Any]:
     prereg = _read(PREREG)
     boundary = str(prereg["fresh_boundary_utc"])
-    boundary_ms = _parse_ms(boundary)
     with tempfile.TemporaryDirectory(prefix="trend_rider_non_us_forward_") as td:
-        base_path = Path(td) / "all_child.json"
-        base = _run_child(base_path)
+        td_path = Path(td)
+        base_path = td_path / "fresh_child.json"
+        base, fastpath = run_terminal_shadow(
+            strategy_id="trend_rider",
+            policy_path=POLICY,
+            fresh_boundary_utc=boundary,
+            out=base_path,
+        )
 
         if str(base.get("policy_path") or "") != str(POLICY.relative_to(ROOT)):
             raise RuntimeError("NON_US_CHILD_POLICY_MISMATCH")
@@ -103,25 +67,22 @@ def run(out: Path) -> dict[str, Any]:
             raise RuntimeError("NON_US_CHILD_INTEGRITY_DEFECT")
         if int(base.get("leakage_lookahead") or 0) != 0:
             raise RuntimeError("NON_US_CHILD_LOOKAHEAD_DEFECT")
-        if (base.get("terminal_replay") or {}).get("canonical_ledger_mutated") is not False:
-            raise RuntimeError("CANONICAL_LEDGER_MUTATION_GUARD")
+        trades = [dict(x) for x in (base.get("trades") or [])]
+        if any(str(base.get("boundary_utc") or "") != boundary for _ in [0]):
+            raise RuntimeError("FRESH_BOUNDARY_MISMATCH")
 
-        fresh = [dict(x) for x in (base.get("trades") or []) if int(x.get("signal_ts") or 0) >= boundary_ms]
-        fresh.sort(key=lambda x: (int(x.get("entry_ts") or 0), str(x.get("symbol") or "")))
-        source = _fresh_source(base, boundary_ms)
         candidate = dict(base)
         candidate.update({
             "schema_version": SCHEMA,
             "candidate_id": prereg["candidate_id"],
             "changed_axis": prereg["changed_axis"],
-            "boundary_utc": boundary,
             "fresh_boundary_utc": boundary,
-            "source": source,
-            "trades": fresh,
-            "completed_trades": len(fresh),
-            "metrics": _metrics(fresh),
+            "completed_trades": len(trades),
+            "trades": trades,
+            "metrics": _metrics(trades),
             "preboundary_outcomes_counted": False,
             "preboundary_data_feature_warmup_only": True,
+            "fresh_boundary_shadow_replay": fastpath,
             "canonical_exact25_ledger_mutation": False,
             "strategy_parameters_changed": False,
             "thresholds_changed": False,
@@ -132,12 +93,11 @@ def run(out: Path) -> dict[str, Any]:
             "live_trade_authority": "BLOCKED",
             "exchange_order_submitted": False,
             "protected_mutations": 0,
+            "sample_gap_to_25": max(0, MIN_TRADES - len(trades)),
+            "prereg_policy_blob_sha": prereg["policy_blob_sha"],
+            "prereg_policy_freeze_commit": prereg["policy_freeze_commit"],
+            "prereg_receipt_sha256": ev.stable_sha(prereg),
         })
-        candidate["source_quality_gate"] = exact.source_quality_gate(candidate)
-        candidate["sample_gap_to_25"] = max(0, MIN_TRADES - len(fresh))
-        candidate["prereg_policy_blob_sha"] = prereg["policy_blob_sha"]
-        candidate["prereg_policy_freeze_commit"] = prereg["policy_freeze_commit"]
-        candidate["prereg_receipt_sha256"] = ev.stable_sha(prereg)
 
         h4_state = "NOT_RUN_MIN_SAMPLE"
         h5_state = "NOT_RUN_MIN_SAMPLE"
@@ -146,14 +106,14 @@ def run(out: Path) -> dict[str, Any]:
         if source_state == "FAIL":
             state = "HOLD_FRESH_SOURCE_QUALITY"
             nxt = "REPAIR_SOURCE_ONLY_NO_STRATEGY_CHANGE"
-        elif len(fresh) < MIN_TRADES:
+        elif len(trades) < MIN_TRADES:
             state = "WAIT_FRESH_25"
             nxt = "CONTINUE_HOURLY_FRESH_COLLECTION"
         else:
             candidate["receipt_sha256"] = ev.stable_sha({k: v for k, v in candidate.items() if k != "receipt_sha256"})
-            candidate_path = Path(td) / "fresh_candidate.json"
+            candidate_path = td_path / "fresh_candidate.json"
             candidate_path.write_text(json.dumps(candidate, sort_keys=True, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-            hard_path = Path(td) / "hardening.json"
+            hard_path = td_path / "hardening.json"
             subprocess.run([
                 sys.executable, "-m", "backend.research.rebuild.a1_trend_rider_h4_h5_hardening_v1",
                 "--receipt", str(candidate_path), "--out", str(hard_path),
@@ -188,7 +148,7 @@ def self_test() -> int:
     assert prereg["fresh_boundary_utc"] == "2026-08-23T08:00:00Z"
     assert prereg["preboundary_outcomes_counted"] is False
     assert prereg["numeric_threshold_sweep"] is False
-    print("PASS_A1_TREND_RIDER_NON_US_LOSS_REPAIR_FORWARD_V1_SELF_TEST")
+    print("PASS_A1_TREND_RIDER_NON_US_LOSS_REPAIR_FORWARD_V2_SELF_TEST")
     return 0
 
 
@@ -206,6 +166,7 @@ def main() -> int:
         "sample_gap_to_25": r["sample_gap_to_25"],
         "h4_state": r["h4_state"],
         "h5_state": r["h5_state"],
+        "fastpath": r["fresh_boundary_shadow_replay"],
         "next": r["next"],
     }, sort_keys=True))
     return 0

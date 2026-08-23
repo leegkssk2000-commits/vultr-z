@@ -1,0 +1,97 @@
+name: A1 Multisymbol Realized DD Integrity V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_multisymbol_realized_dd_v1.py'
+      - 'backend/research/rebuild/a1_break_box_realized_dd_correction_v1.py'
+      - '.github/workflows/a1-multisymbol-realized-dd-integrity-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_multisymbol_realized_dd_v1.py'
+      - 'backend/research/rebuild/a1_break_box_realized_dd_correction_v1.py'
+      - '.github/workflows/a1-multisymbol-realized-dd-integrity-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  realized-dd-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self tests
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_multisymbol_realized_dd_v1.py \
+            backend/research/rebuild/a1_break_box_realized_dd_correction_v1.py
+          python -m backend.research.rebuild.a1_multisymbol_realized_dd_v1 --self-test
+          python -m backend.research.rebuild.a1_break_box_realized_dd_correction_v1 --self-test
+      - name: Correct break parent vs box child DD ordering
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_break_box_realized_dd_correction_v1 \
+            --out out/a1_break_box_realized_dd_correction_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_break_box_realized_dd_correction_latest.json'))
+          assert r['state']=='PASS_BREAK_BOX_DD_ORDERING_CORRECTED',r
+          assert r['prior_legacy_dd_comparison_superseded'] is True,r
+          assert r['loss_streak_comparison_remains_valid'] is True,r
+          assert r['parent']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',r
+          assert r['box_child']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',r
+          assert r['parent']['max_consecutive_losses_exit_order']>=5,r
+          assert r['box_child']['max_consecutive_losses_exit_order']<r['parent']['max_consecutive_losses_exit_order'],r
+          assert not r['parent']['integrity_defects'] and not r['box_child']['integrity_defects'],r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          print(json.dumps({
+            'parent_legacy_dd_bps':r['parent']['legacy_receipt_max_drawdown_bps'],
+            'parent_realized_dd_bps':r['parent']['realized_exit_bucket_max_drawdown_bps'],
+            'child_legacy_dd_bps':r['box_child']['legacy_receipt_max_drawdown_bps'],
+            'child_realized_dd_bps':r['box_child']['realized_exit_bucket_max_drawdown_bps'],
+            'parent_streak':r['parent']['max_consecutive_losses_exit_order'],
+            'child_streak':r['box_child']['max_consecutive_losses_exit_order'],
+            'parent_streak_bps':r['parent']['worst_loss_streak_net_bps'],
+            'child_streak_bps':r['box_child']['worst_loss_streak_net_bps'],
+          },sort_keys=True))
+          PY
+      - name: Persist DD correction on master
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_break_box_realized_dd_correction_latest.json
+          cp out/a1_break_box_realized_dd_correction_latest.json "$target"
+          git config user.name 'a1-multisymbol-realized-dd-integrity-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist multisymbol realized DD correction [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-multisymbol-realized-dd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_break_box_realized_dd_correction_latest.json
+          if-no-files-found: warn
+          retention-days: 30

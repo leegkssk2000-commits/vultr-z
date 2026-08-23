@@ -1,0 +1,83 @@
+name: A1 Loss-Streak Repair Regression V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_loss_streak_repair_regression_v1.py'
+      - 'backend/research/rebuild/trend_rider_transition_freshness_non_us_child_policy_v1.py'
+      - 'backend/research/rebuild/keltner_trend_volatility_cool_child_policy_v1.py'
+      - '.github/workflows/a1-loss-streak-repair-regression-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-loss-streak-repair-regression-v1-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_loss_streak_repair_regression_v1.py
+          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v1 --self-test
+      - name: Re-run original loss context against repair children
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_loss_streak_repair_regression_v1 \
+            --out out/a1_loss_streak_repair_regression_latest.json | tee out/regression_stdout.txt
+      - name: Verify fail-closed research semantics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_loss_streak_repair_regression_latest.json'))
+          assert r['historical_regression_is_promotion_evidence'] is False
+          assert r['fresh_25_h4_h5_still_required'] is True
+          assert r['same_filter_cross_strategy_copy_forbidden'] is True
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          assert r['protected_mutations']==0
+          for sid,row in r['cases'].items():
+              assert row['selection_authority'] is False
+              assert row['promotion_authority'] is False
+              assert row['execution_authority']=='NONE'
+              assert row['order_authority']=='BLOCKED'
+              assert row['live_trade_authority']=='BLOCKED'
+              assert row['exchange_order_submitted'] is False
+              print(sid, {
+                  'state':row['state'],
+                  'authority':row['authority']['match'],
+                  'parent':row['parent_context'],
+                  'repair':row['repair_context'],
+                  'deltas':row['deltas'],
+                  'retention':row['retention'],
+                  'next':row['decision']['next'],
+              })
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-loss-streak-repair-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+          if-no-files-found: error
+          retention-days: 30

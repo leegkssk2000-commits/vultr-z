@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+from backend.research.rebuild import a1_strategy25_improvement_league_v1 as core
+
+ROOT = core.ROOT
+REBUILD = core.REBUILD
+
+
+def trusted_stage(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> dict[str, Any]:
+    trusted = [
+        x for x in rows
+        if x.get("operational_evidence")
+        and not list(x.get("integrity_defects") or [])
+        and int(x.get("leakage_lookahead") or 0) == 0
+    ]
+    pool = trusted or [dict(fallback)]
+    return max(
+        pool,
+        key=lambda x: (
+            int(x.get("stage_rank") or 0),
+            int(x.get("source_priority") or 0),
+            int((x.get("metrics") or {}).get("completed_trades") or 0),
+        ),
+    )
+
+
+def collect_evidence(extra_json: list[Path] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
+    inventory = core.read(core.INVENTORY)
+    baseline = core.read(core.BASELINE)
+    canonical = list((inventory.get("strategies") or {}).keys())
+    canonical_set = set(canonical)
+    evidence = core.baseline_evidence(baseline, canonical)
+    for path in sorted(REBUILD.rglob("*latest*.json")):
+        if path == core.PREVIOUS or "strategy25_improvement_league" in path.name:
+            continue
+        payload = core.read(path, None)
+        if payload is None:
+            continue
+        evidence.extend(core.walk_rows(payload, canonical_set, path))
+    for path in extra_json or []:
+        if not path.exists():
+            continue
+        source_path = path if path.is_absolute() and ROOT in path.parents else ROOT / path
+        evidence.extend(core.walk_rows(core.read(path), canonical_set, source_path))
+    return canonical, evidence
+
+
+def repartition(result: dict[str, Any], baseline: Mapping[str, Any]) -> None:
+    # Stable two-pass sort: economic/stage rank descending, strategy_id ascending on exact ties.
+    rows = sorted(result["rows"], key=lambda x: x["strategy_id"])
+    rows = sorted(rows, key=core.rank_key, reverse=True)
+    active_n = 5
+    challenger_n = 5
+    for i, row in enumerate(rows):
+        row["rank"] = i + 1
+        row["remainder_disposition"] = None
+        if i < active_n:
+            row["role"] = "ACTIVE_TOP5"
+        elif i < active_n + challenger_n:
+            row["role"] = "CHALLENGER_NEXT5"
+        else:
+            row["role"] = "MATERIAL_HOLD"
+            status = str(((baseline.get("strategies") or {}).get(row["strategy_id"]) or {}).get("status") or "")
+            row["remainder_disposition"] = core.remainder_disposition(row, status)
+    result["rows"] = rows
+    result["role_counts"] = {
+        "ACTIVE_TOP5": sum(x["role"] == "ACTIVE_TOP5" for x in rows),
+        "CHALLENGER_NEXT5": sum(x["role"] == "CHALLENGER_NEXT5" for x in rows),
+        "MATERIAL_HOLD": sum(x["role"] == "MATERIAL_HOLD" for x in rows),
+    }
+    result["active_top5"] = [x["strategy_id"] for x in rows if x["role"] == "ACTIVE_TOP5"]
+    result["challenger_next5"] = [x["strategy_id"] for x in rows if x["role"] == "CHALLENGER_NEXT5"]
+    result["failover_due"] = [x["strategy_id"] for x in rows if x.get("failover_due")]
+    result["deep_replay_manifest"]["strategy_ids"] = list(result["active_top5"])
+
+
+def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
+    result = core.build(extra_json)
+    baseline = core.read(core.BASELINE)
+    canonical, evidence = collect_evidence(extra_json)
+    by_sid: dict[str, list[dict[str, Any]]] = {sid: [] for sid in canonical}
+    for item in evidence:
+        sid = item.get("strategy_id")
+        if sid in by_sid:
+            by_sid[sid].append(item)
+
+    for row in result["rows"]:
+        sid = row["strategy_id"]
+        fallback = {
+            "stage_rank": row.get("stage_rank", 0),
+            "source_priority": (row.get("source") or {}).get("priority", 0),
+            "source_path": (row.get("source") or {}).get("path"),
+            "observed_at_utc": (row.get("source") or {}).get("observed_at_utc"),
+            "metrics": row.get("metrics") or {},
+            "operational_evidence": True,
+            "integrity_defects": [],
+            "leakage_lookahead": 0,
+        }
+        stage_evidence = trusted_stage(by_sid.get(sid) or [], fallback)
+        metric_stage = int(row.get("stage_rank") or 0)
+        trusted_rank = int(stage_evidence.get("stage_rank") or 0)
+        row["metric_source_stage_rank"] = metric_stage
+        row["stage_rank"] = trusted_rank
+        row["stage_source"] = {
+            "path": stage_evidence.get("source_path"),
+            "priority": stage_evidence.get("source_priority"),
+            "observed_at_utc": stage_evidence.get("observed_at_utc"),
+        }
+        row["stage_preserved_across_metric_refresh"] = trusted_rank >= metric_stage
+        if trusted_rank >= 6:
+            row["failover_due"] = False
+
+    repartition(result, baseline)
+    result["schema_version"] = "zel.a1.strategy25_improvement_league.v2"
+    result["stage_aggregation"] = "MAX_TRUSTED_OPERATIONAL_STAGE_SEPARATE_FROM_METRIC_SOURCE"
+    result["stage_regression_guard"] = True
+    result["receipt_sha256"] = core.stable({k: v for k, v in result.items() if k != "receipt_sha256"})
+    if result["role_counts"] != {"ACTIVE_TOP5": 5, "CHALLENGER_NEXT5": 5, "MATERIAL_HOLD": 15}:
+        raise RuntimeError(f"ROLE_PARTITION_INVALID:{result['role_counts']}")
+    return result
+
+
+def self_test() -> int:
+    assert core.self_test() == 0
+    high_metric_low_stage = {
+        "stage_rank": 1, "source_priority": 600, "metrics": {"completed_trades": 13},
+        "operational_evidence": True, "integrity_defects": [], "leakage_lookahead": 0,
+        "source_path": "deep.json",
+    }
+    lower_metric_high_stage = {
+        "stage_rank": 4, "source_priority": 550, "metrics": {"completed_trades": 12},
+        "operational_evidence": True, "integrity_defects": [], "leakage_lookahead": 0,
+        "source_path": "a2.json",
+    }
+    contaminated_stage = {
+        "stage_rank": 6, "source_priority": 999, "metrics": {"completed_trades": 99},
+        "operational_evidence": True, "integrity_defects": ["TEST"], "leakage_lookahead": 0,
+        "source_path": "bad.json",
+    }
+    picked = trusted_stage([high_metric_low_stage, lower_metric_high_stage, contaminated_stage], high_metric_low_stage)
+    assert picked["stage_rank"] == 4 and picked["source_path"] == "a2.json", picked
+    print("PASS_A1_STRATEGY25_IMPROVEMENT_LEAGUE_V2_STAGE_GUARD_SELF_TEST")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--self-test", action="store_true")
+    p.add_argument("--out", type=Path, default=Path("out/a1_strategy25_improvement_league_latest.json"))
+    p.add_argument("--extra-json", action="append", default=[])
+    args = p.parse_args()
+    if args.self_test:
+        return self_test()
+    result = build([Path(x) for x in args.extra_json])
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    print("STRATEGY25_LEAGUE_V2=" + json.dumps({
+        "active": result["active_top5"],
+        "challenger": result["challenger_next5"],
+        "roles": result["role_counts"],
+        "improved": result["improved_count"],
+        "failover": result["failover_due"],
+        "stage_guard": result["stage_regression_guard"],
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

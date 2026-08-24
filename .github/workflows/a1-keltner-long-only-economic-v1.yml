@@ -1,0 +1,78 @@
+name: A1 Keltner Long Only Economic V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_keltner_long_only_economic_v1.py'
+      - '.github/workflows/a1-keltner-long-only-economic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-keltner-long-only-economic-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keltner-long-only-economic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_long_only_economic_v1.py
+          python -m backend.research.rebuild.a1_keltner_long_only_economic_v1 --self-test
+      - name: Run current-parent long-only economic counterfactual
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ok=0
+          for attempt in 1 2 3; do
+            if python -m backend.research.rebuild.a1_keltner_long_only_economic_v1 --out out/a1_keltner_long_only_economic_latest.json; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 10))
+          done
+          test "$ok" -eq 1
+          cat out/a1_keltner_long_only_economic_latest.json
+      - name: Verify research-only and strict economic gate contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_keltner_long_only_economic_latest.json'))
+          assert r['strategy_id']=='keltner_trend',r
+          assert r['changed_axis']=='SIDE_ADMISSION_LONG_ONLY',r
+          assert r['contract']['numeric_threshold_sweep'] is False,r
+          assert r['contract']['post_outcome_threshold_fitting'] is False,r
+          assert r['contract']['exit_geometry_changed'] is False,r
+          assert r['contract']['stop_changed'] is False,r
+          assert r['contract']['timeout_changed'] is False,r
+          assert r['fresh_oos_required_before_any_runtime_use'] is True,r
+          assert r['promotion_claim'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['protected_mutations'])==0 and not r['integrity_defects'],r
+          print(json.dumps({
+              'state':r['state'],
+              'parent':r['parent'],
+              'long_only':r['long_only'],
+              'short_only_diagnostic':r['short_only_diagnostic'],
+              'delta':r['delta_long_minus_parent'],
+              'gate':r['gate'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-keltner-long-only-economic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_keltner_long_only_economic_latest.json
+          retention-days: 30

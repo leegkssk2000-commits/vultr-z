@@ -79,7 +79,12 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
     top10 = sum(sorted(positives, reverse=True)[:10]) / total_profit if total_profit > 0 else 1.0
     positive_sides = [s for s, v in net_by_side.items() if v > 0]
     nonpositive_sides = [s for s, v in net_by_side.items() if v <= 0]
-    one_sided = len(positive_sides) == 1 and len(nonpositive_sides) >= 1
+    preregistered_side = str(receipt.get("side_specialization_preregistered") or "")
+    preregistered_one_sided = (
+        preregistered_side in ("LONG_ONLY", "SHORT_ONLY")
+        and set(net_by_side).issubset({"long"} if preregistered_side == "LONG_ONLY" else {"short"})
+    )
+    one_sided = (len(positive_sides) == 1 and len(nonpositive_sides) >= 1) or preregistered_one_sided
     limits = {
         "regime": float(cfg["maximum_single_regime_profit_share"]),
         "symbol": float(cfg["maximum_single_symbol_profit_share"]),
@@ -90,7 +95,12 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
     for dim, limit in limits.items():
         if shares[dim] > limit:
             blockers.append(f"H5_LITE_{dim.upper()}:{shares[dim]}>{limit}")
-    if top10 > float(cfg["maximum_top10_trade_profit_share"]):
+    # With ten or fewer profitable observations, Top10 share is identically
+    # 100% and cannot distinguish concentration from sample count.  The pilot
+    # already has an independent minimum-trade gate, so defer this one metric
+    # until it becomes mathematically informative. Strict H5 is unchanged.
+    top10_informative = len([x for x in positives if x > 0]) > 10
+    if top10_informative and top10 > float(cfg["maximum_top10_trade_profit_share"]):
         blockers.append(f"H5_LITE_TOP10:{top10}>{cfg['maximum_top10_trade_profit_share']}")
     if shares["side"] > 0.85 and not (cfg.get("one_sided_specialization_allowed_when_opposite_side_nonpositive") and one_sided):
         blockers.append(f"H5_LITE_SIDE:{shares['side']}>0.85")
@@ -100,8 +110,12 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
         "max_profit_share_by_dimension": shares,
         "top10_trade_profit_share": top10,
+        "top10_trade_profit_share_informative": top10_informative,
+        "top10_deferred_reason": None if top10_informative else "POSITIVE_TRADE_COUNT_LE_10",
         "side_specialization": {
             "allowed": one_sided,
+            "preregistered": preregistered_one_sided,
+            "preregistered_side": preregistered_side or None,
             "positive_sides": positive_sides,
             "nonpositive_sides": nonpositive_sides,
             "net_bps_by_side": dict(net_by_side),

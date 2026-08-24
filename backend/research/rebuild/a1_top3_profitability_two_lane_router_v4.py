@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_seed_receipt_fresh_refresher_v1 as refresh
+from backend.research.rebuild import a1_recent_loss_cluster_diagnostic_v1 as loss_diag
+from backend.research.rebuild import a1_trend_rider_native_preentry_pareto_v1 as preentry_pareto
 from backend.research.rebuild import a1_top3_profitability_survivor_router_v1 as strict
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v2 as v2
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v3 as v3
@@ -77,12 +79,7 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
     top10 = sum(sorted(positives, reverse=True)[:10]) / total_profit if total_profit > 0 else 1.0
     positive_sides = [s for s, v in net_by_side.items() if v > 0]
     nonpositive_sides = [s for s, v in net_by_side.items() if v <= 0]
-    preregistered_side = str(receipt.get("side_specialization_preregistered") or "")
-    preregistered_one_sided = (
-        preregistered_side in ("LONG_ONLY", "SHORT_ONLY")
-        and set(net_by_side).issubset({"long"} if preregistered_side == "LONG_ONLY" else {"short"})
-    )
-    one_sided = (len(positive_sides) == 1 and len(nonpositive_sides) >= 1) or preregistered_one_sided
+    one_sided = len(positive_sides) == 1 and len(nonpositive_sides) >= 1
     limits = {
         "regime": float(cfg["maximum_single_regime_profit_share"]),
         "symbol": float(cfg["maximum_single_symbol_profit_share"]),
@@ -93,12 +90,7 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
     for dim, limit in limits.items():
         if shares[dim] > limit:
             blockers.append(f"H5_LITE_{dim.upper()}:{shares[dim]}>{limit}")
-    # With ten or fewer profitable observations, Top10 share is identically
-    # 100% and cannot distinguish concentration from sample count.  The pilot
-    # already has an independent minimum-trade gate, so defer this one metric
-    # until it becomes mathematically informative. Strict H5 is unchanged.
-    top10_informative = len([x for x in positives if x > 0]) > 10
-    if top10_informative and top10 > float(cfg["maximum_top10_trade_profit_share"]):
+    if top10 > float(cfg["maximum_top10_trade_profit_share"]):
         blockers.append(f"H5_LITE_TOP10:{top10}>{cfg['maximum_top10_trade_profit_share']}")
     if shares["side"] > 0.85 and not (cfg.get("one_sided_specialization_allowed_when_opposite_side_nonpositive") and one_sided):
         blockers.append(f"H5_LITE_SIDE:{shares['side']}>0.85")
@@ -108,12 +100,8 @@ def h5_lite(receipt: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
         "max_profit_share_by_dimension": shares,
         "top10_trade_profit_share": top10,
-        "top10_trade_profit_share_informative": top10_informative,
-        "top10_deferred_reason": None if top10_informative else "POSITIVE_TRADE_COUNT_LE_10",
         "side_specialization": {
             "allowed": one_sided,
-            "preregistered": preregistered_one_sided,
-            "preregistered_side": preregistered_side or None,
             "positive_sides": positive_sides,
             "nonpositive_sides": nonpositive_sides,
             "net_bps_by_side": dict(net_by_side),
@@ -231,6 +219,8 @@ def run(out_path: Path) -> dict[str, Any]:
     context = v2.read(A3_CONTEXT); previous = v2.read_optional(PREVIOUS)
     with tempfile.TemporaryDirectory(prefix="top3_two_lane_v4_") as td:
         trend_receipt, trend_hard = strict.trend_rider_current(Path(td))
+        trend_diagnostic = loss_diag.diagnose("trend_rider", trend_receipt)
+        trend_preentry_pareto = preentry_pareto.screen(trend_diagnostic)
         trendma, trendma_errors = refresh_or_seed(TRENDMA_SEED)
         keltner, keltner_errors = refresh_or_seed(KELTNER_SEED)
         rows = [
@@ -248,6 +238,8 @@ def run(out_path: Path) -> dict[str, Any]:
         "strict_reference_preserved": True, "strict_global_gate_mutation": False,
         "strict_h4_deferred_is_not_strict_pass": True, "strict_a2_gate_relaxed": False,
         "new_strategy_generation_enabled": False, "new_filter_generation_enabled": False,
+        "automatic_native_preentry_pareto_each_run": True,
+        "trend_rider_native_preentry_pareto": trend_preentry_pareto,
         "top3_identities": list(strict.TOP3),
         "profit_lane_pass_count": sum(x["profit_lane"]["pass"] for x in rows),
         "strict_a2_pass_count": sum(x["strict_a2_state"] == "PASS_A2_COST_TURNOVER" for x in rows),

@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -194,12 +194,63 @@ def profit_factor(gross_profit: float, gross_loss: float) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def execution_ownership_policy(intent: Any) -> tuple[bool, int]:
+    """Return the execution-declared no-pyramiding/cooldown contract.
+
+    Ownership is applied only when the intent explicitly disables pyramiding;
+    policies without that field retain their prior evaluator semantics.
+    """
+    pyramiding = getattr(intent, "pyramiding", None)
+    cooldown = getattr(intent, "cooldown", None)
+    owns_position = isinstance(pyramiding, Mapping) and pyramiding.get("enabled") is False
+    cooldown_bars = int(cooldown.get("bars", 0)) if isinstance(cooldown, Mapping) else 0
+    if cooldown_bars < 0:
+        raise RuntimeError("NEGATIVE_COOLDOWN_BARS")
+    return owns_position, cooldown_bars
+
+
+def ownership_blocked(entry_ts: int, blocked_until_ts: int) -> bool:
+    return int(entry_ts) <= int(blocked_until_ts)
+
+
+def reserve_position_ownership(
+    *, exit_ts: int | None, open_horizon_ts: int | None, cooldown_bars: int, timeframe_ms: int
+) -> int:
+    terminal_ts = exit_ts if exit_ts is not None else open_horizon_ts
+    if terminal_ts is None:
+        raise RuntimeError("OWNERSHIP_TERMINAL_TS_REQUIRED")
+    return int(terminal_ts) + int(cooldown_bars) * int(timeframe_ms)
+
+
+def self_test() -> int:
+    class Intent:
+        pyramiding = {"enabled": False}
+        cooldown = {"bars": 2, "one_entry_per_transition": True}
+
+    owns, bars = execution_ownership_policy(Intent())
+    assert owns is True and bars == 2
+    closed_until = reserve_position_ownership(
+        exit_ts=10_000, open_horizon_ts=None, cooldown_bars=bars, timeframe_ms=1_000
+    )
+    assert closed_until == 12_000 and ownership_blocked(12_000, closed_until)
+    open_until = reserve_position_ownership(
+        exit_ts=None, open_horizon_ts=20_000, cooldown_bars=bars, timeframe_ms=1_000
+    )
+    assert open_until == 22_000 and ownership_blocked(15_000, open_until)
+    print("PASS_A1_EXACT25_NATIVE_POSITION_OWNERSHIP_SELF_TEST")
+    return 0
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
+    p.add_argument("--self-test", action="store_true")
     p.add_argument("--strategy-id")
     p.add_argument("--symbols", default="BTC-USDT,ETH-USDT")
     p.add_argument("--out", default="a1_exact25_receipt.json")
     args = p.parse_args()
+    if args.self_test:
+        self_test()
+        return
     ledger, inventory, authority = load_json(LEDGER_PATH), load_json(INVENTORY_PATH), load_json(COST_PATH)
     strategy_id = args.strategy_id or str(ledger["active_strategy_id"])
     entry = ledger["strategies"].get(strategy_id)
@@ -225,8 +276,12 @@ def main() -> None:
     defects: list[str] = []
     sources: list[dict[str, Any]] = []
     snapshots: dict[str, Any] = {}
+    ownership_signal_count = 0
+    rejected_ownership_intents: list[dict[str, Any]] = []
+    open_intents: list[dict[str, Any]] = []
 
     for symbol in [x.strip() for x in args.symbols.split(",") if x.strip()]:
+        blocked_until_ts = -1
         snap = fetch_execution_snapshot(symbol, authority)
         snapshots[symbol] = snap
         bars = fetch_bars(symbol, interval)
@@ -257,6 +312,20 @@ def main() -> None:
                 defects.append(f"UNSUPPORTED_SIDE:{side_name}")
                 continue
             entry_bar = bars[i + 1]
+            entry_ts = int(entry_bar["ts_ms"])
+            owns_position, cooldown_bars = execution_ownership_policy(intent)
+            if owns_position:
+                ownership_signal_count += 1
+                if ownership_blocked(entry_ts, blocked_until_ts):
+                    rejected_ownership_intents.append({
+                        "intent_sha": sha,
+                        "symbol": symbol,
+                        "signal_ts": int(getattr(intent, "signal_ts")),
+                        "entry_ts": entry_ts,
+                        "blocked_until_ts": blocked_until_ts,
+                        "reason": "PYRAMIDING_OR_COOLDOWN_BLOCK",
+                    })
+                    continue
             entry_px = float(entry_bar["open"])
             side = 1 if side_name == "long" else -1
             timeout = getattr(intent, "timeout", {}) or {}
@@ -278,8 +347,36 @@ def main() -> None:
                     break
             if exit_px is None:
                 if last_j >= len(bars) - 1:
+                    open_intents.append({
+                        "intent_sha": sha,
+                        "symbol": symbol,
+                        "signal_ts": int(getattr(intent, "signal_ts")),
+                        "entry_ts": entry_ts,
+                        "side": side_name,
+                        "ownership_reserved_through_ts": int(bars[-1]["ts_ms"]),
+                    })
+                    if owns_position:
+                        blocked_until_ts = max(
+                            blocked_until_ts,
+                            reserve_position_ownership(
+                                exit_ts=None,
+                                open_horizon_ts=int(bars[-1]["ts_ms"]),
+                                cooldown_bars=cooldown_bars,
+                                timeframe_ms=timeframe_ms,
+                            ),
+                        )
                     continue
                 exit_px, exit_ts, reason = float(bars[last_j]["close"]), int(bars[last_j]["ts_ms"]), "TIMEOUT"
+            if owns_position:
+                blocked_until_ts = max(
+                    blocked_until_ts,
+                    reserve_position_ownership(
+                        exit_ts=int(exit_ts),
+                        open_horizon_ts=None,
+                        cooldown_bars=cooldown_bars,
+                        timeframe_ms=timeframe_ms,
+                    ),
+                )
             fee, spread, impact = float(snap["fee_bps"]), float(snap["spread_bps"]), float(snap["impact_bps"])
             fund = funding_cost(int(entry_bar["ts_ms"]), int(exit_ts), list(snap["funding_rows"]))
             cost = fee + spread + impact + fund
@@ -300,6 +397,20 @@ def main() -> None:
         "cost_authority_sha256": stable_sha(authority), "source": {"endpoint": "/openApi/swap/v3/quote/klines", "interval": interval, "symbols": sources},
         "execution_snapshots": {k: {kk: vv for kk, vv in v.items() if kk != "funding_rows"} for k, v in snapshots.items()},
         "intent_count": intent_count, "completed_trades": len(trades),
+        "native_policy_ownership": {
+            "state": "PASS_NATIVE_POLICY_OWNERSHIP_ENFORCED" if ownership_signal_count else "NOT_APPLICABLE_NO_EXPLICIT_OWNERSHIP_SIGNAL",
+            "pyramiding": False if ownership_signal_count else None,
+            "raw_intent_count": intent_count,
+            "ownership_signal_count": ownership_signal_count,
+            "admitted_completed_trade_count": len(trades),
+            "admitted_open_intent_count": len(open_intents),
+            "rejected_intent_count": len(rejected_ownership_intents),
+            "open_intents_reserve_ownership": True,
+            "rejected_intents_sha256": stable_sha(rejected_ownership_intents),
+            "open_intents_sha256": stable_sha(open_intents),
+        },
+        "open_intents": open_intents,
+        "ownership_rejected_intents": rejected_ownership_intents,
         "metrics": {"gross_pnl_bps": sum(gross_values), "gross_expectancy_bps": sum(gross_values) / len(gross_values) if gross_values else None, "net_pnl_bps": sum(net_values), "net_expectancy_bps": sum(net_values) / len(net_values) if net_values else None, "net_profit_factor": profit_factor(gp, gl), "net_payoff": avg_win / avg_loss if avg_win is not None and avg_loss not in (None, 0) else None, "win_rate": len(wins) / len(net_values) if net_values else None, "max_drawdown_bps": max_drawdown(net_values)},
         "required_negative_controls": ["same_count_random_entry", "one_bar_delay", "direction_inversion", "timestamp_shuffle", "indicator_removal"], "negative_control_gate": "PENDING_EXISTING_H4_CONTROL_EVALUATOR",
         "trades": trades, "integrity_defects": defects, "leakage_lookahead": 0, "duplicate_count": len([x for x in defects if x.startswith("DUPLICATE_INTENT:")]),

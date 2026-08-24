@@ -24,6 +24,28 @@ def enforce_policy_ownership(receipt: dict[str, Any]) -> dict[str, Any]:
     challenger additionally owns the policy's explicit execution semantics so
     overlapping entries cannot inflate its sample or PnL.
     """
+    native = receipt.get("native_policy_ownership") or {}
+    if native.get("state") == "PASS_NATIVE_POLICY_OWNERSHIP_ENFORCED":
+        trades = list(receipt.get("trades") or [])
+        rejected = list(receipt.get("ownership_rejected_intents") or [])
+        open_intents = list(receipt.get("open_intents") or [])
+        receipt["raw_completed_trades_before_policy_ownership"] = len(trades)
+        receipt["policy_fidelity"] = {
+            "state": "PASS_POLICY_OWNERSHIP_ENFORCED",
+            "mode": "NATIVE_INTENT_TIMELINE",
+            "pyramiding": False,
+            "cooldown_bars": 2,
+            "one_entry_per_transition": True,
+            "raw_trade_count": int(native.get("raw_intent_count") or len(trades)),
+            "admitted_trade_count": len(trades),
+            "admitted_open_intent_count": len(open_intents),
+            "rejected_trade_count": len(rejected),
+            "open_intents_reserve_ownership": bool(native.get("open_intents_reserve_ownership")),
+            "rejected_intents_sha256": stable_sha(rejected),
+            "open_intents_sha256": stable_sha(open_intents),
+        }
+        return receipt
+
     interval_ms = 3_600_000
     cooldown_bars = 2
     kept: list[dict[str, Any]] = []

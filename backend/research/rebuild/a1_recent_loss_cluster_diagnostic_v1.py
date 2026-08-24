@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_trend_rider_transition_freshness_frozen_w123_ab_v1 as tr_ab
 from backend.research.rebuild import trend_rider_transition_freshness_child_policy_v1 as tr_policy
+from backend.research.rebuild.policy_kernel_v1 import atr
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGETS = ("trend_rider", "supertrend_pullback", "trend_ma_macd", "keltner_trend", "break_and_continue")
@@ -88,6 +89,30 @@ def _trend_enrichment(receipt: Mapping[str, Any], rows: list[dict[str, Any]]) ->
         row["st_gap_atr"] = float(vals.get("st_gap_atr")) if vals.get("st_gap_atr") is not None else None
         row["chase_atr"] = float(vals.get("chase_atr")) if vals.get("chase_atr") is not None else None
         row["atr_pct"] = float(f.atr / max(f.close, 1e-12) * 100.0)
+        prior_atr_pcts: list[float] = []
+        start = max(13, idx - 100)
+        for prior_idx in range(start, idx):
+            prior_bars = bars[:prior_idx + 1]
+            prior_atr = atr(prior_bars, cfg.atr_len)
+            prior_close = float(prior_bars[-1]["close"])
+            prior_atr_pcts.append(float(prior_atr / max(prior_close, 1e-12) * 100.0))
+        atr_pct_reference = (
+            sum(prior_atr_pcts) / len(prior_atr_pcts) if prior_atr_pcts else None
+        )
+        row["atr_pct_rolling100_mean"] = atr_pct_reference
+        row["atr_pct_self_normalized_cool"] = bool(
+            atr_pct_reference is not None and row["atr_pct"] <= atr_pct_reference
+        )
+        previous_chase = None
+        if idx >= 65:
+            previous = tr_policy.compute_trend_rider_feature(
+                bars[:idx], symbol=symbol, now_ts_ms=int(bars[idx - 1]["ts_ms"]), config=cfg
+            )
+            previous_chase = float(previous.values.get("chase_atr"))
+        row["prior_chase_atr"] = previous_chase
+        row["chase_cooling_or_flat"] = bool(
+            previous_chase is not None and row["chase_atr"] <= previous_chase
+        )
 
 
 def diagnose(strategy_id: str, receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -165,6 +190,28 @@ def diagnose(strategy_id: str, receipt: Mapping[str, Any]) -> dict[str, Any]:
         "prior_win_count": sum(1 for x in prior if float(x.get("net_bps") or 0.0)>0),
         "categorical_prior": {d:_counts(prior,d) for d in ("symbol","side","session","reason")},
         "ranked_causal_hypotheses": candidates[:8],
+        # Persist the complete pre-entry feature ledger once so independent
+        # one-axis repairs can be compared without repeatedly downloading and
+        # recomputing the same market history.  These fields are all available
+        # at signal time; exit outcomes remain evaluation labels only.
+        "preentry_trade_ledger": [
+            {k: x.get(k) for k in (
+                "symbol", "side", "signal_ts", "entry_ts", "exit_ts", "reason",
+                "gross_bps", "realized_cost_bps", "net_bps", "session", "hold_bars",
+                "st_gap_atr", "chase_atr", "atr_pct", "atr_pct_rolling100_mean",
+                "atr_pct_self_normalized_cool", "prior_chase_atr", "chase_cooling_or_flat",
+            ) if k in x}
+            for x in rows
+        ] if strategy_id == "trend_rider" else [],
+        "preentry_trade_ledger_sha256": sha([
+            {k: x.get(k) for k in (
+                "symbol", "side", "signal_ts", "entry_ts", "exit_ts", "reason",
+                "gross_bps", "realized_cost_bps", "net_bps", "session", "hold_bars",
+                "st_gap_atr", "chase_atr", "atr_pct", "atr_pct_rolling100_mean",
+                "atr_pct_self_normalized_cool", "prior_chase_atr", "chase_cooling_or_flat",
+            ) if k in x}
+            for x in rows
+        ]) if strategy_id == "trend_rider" else None,
         "recommended_route": route,
         "incumbent_mutated": False,
         "post_outcome_threshold_sweep": False,
@@ -178,10 +225,10 @@ def diagnose(strategy_id: str, receipt: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def run(out: Path) -> dict[str, Any]:
+def run(out: Path, *, targets: tuple[str, ...] = TARGETS) -> dict[str, Any]:
     results = []
     with tempfile.TemporaryDirectory(prefix="a1_loss_cluster_") as td:
-        for sid in TARGETS:
+        for sid in targets:
             receipt = _run_receipt(sid, Path(td) / f"{sid}.json")
             results.append(diagnose(sid, receipt))
     triggered = [x for x in results if int(x["current_loss_streak"]) >= 3]
@@ -216,9 +263,9 @@ def self_test() -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", type=Path, default=Path("out/a1_recent_loss_cluster_diagnostic_latest.json")); ap.add_argument("--self-test", action="store_true"); args=ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument("--out", type=Path, default=Path("out/a1_recent_loss_cluster_diagnostic_latest.json")); ap.add_argument("--strategy-id", choices=TARGETS); ap.add_argument("--self-test", action="store_true"); args=ap.parse_args()
     if args.self_test: return self_test()
-    r=run(args.out)
+    r=run(args.out, targets=(args.strategy_id,) if args.strategy_id else TARGETS)
     print(json.dumps({"state":r["state"],"triggered":r["triggered_strategy_ids"],"routes":{x['strategy_id']:x['recommended_route'] for x in r['targets']}},sort_keys=True))
     return 0
 

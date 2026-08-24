@@ -178,6 +178,31 @@ def intent_sha(intent: Any) -> str:
     return stable_sha(body)
 
 
+def sealed_intent_geometry(intent: Any, *, policy_sha: str) -> dict[str, Any]:
+    """Persist the execution geometry needed for deterministic later stress.
+
+    Recomputing an old EMA-backed intent from a rolling ``latest 1000 bars``
+    request is not deterministic after that request window advances.  A2 only
+    needs the already-authorized geometry, not a newly recomputed signal.
+    """
+    row = {
+        "schema_version": "zel.intent_geometry.v1",
+        "strategy_id": str(getattr(intent, "strategy_id")),
+        "symbol": str(getattr(intent, "symbol")),
+        "signal_ts": int(getattr(intent, "signal_ts")),
+        "side": str(getattr(intent, "side")),
+        "sl": getattr(intent, "sl", None),
+        "tp": getattr(intent, "tp", None),
+        "timeout": dict(getattr(intent, "timeout", {}) or {}),
+        "feature_sha": str(getattr(intent, "feature_sha", "")),
+        "config_sha": str(getattr(intent, "config_sha", "")),
+        "policy_sha": policy_sha,
+        "intent_sha": intent_sha(intent),
+    }
+    row["geometry_sha256"] = stable_sha(row)
+    return row
+
+
 def max_drawdown(values: list[float]) -> float:
     equity = peak = dd = 0.0
     for x in values:
@@ -237,6 +262,13 @@ def self_test() -> int:
         exit_ts=None, open_horizon_ts=20_000, cooldown_bars=bars, timeframe_ms=1_000
     )
     assert open_until == 22_000 and ownership_blocked(15_000, open_until)
+    sealed = Intent()
+    sealed.strategy_id = "trend_rider"; sealed.symbol = "BTC-USDT"; sealed.signal_ts = 1
+    sealed.side = "long"; sealed.sl = 99.0; sealed.tp = None; sealed.timeout = {"bars": 48}
+    sealed.feature_sha = "f"; sealed.config_sha = "c"; sealed.sha = "i"
+    geometry = sealed_intent_geometry(sealed, policy_sha="p")
+    assert geometry["intent_sha"] == "i" and geometry["sl"] == 99.0
+    assert geometry["geometry_sha256"] == stable_sha({k: v for k, v in geometry.items() if k != "geometry_sha256"})
     print("PASS_A1_EXACT25_NATIVE_POSITION_OWNERSHIP_SELF_TEST")
     return 0
 
@@ -354,6 +386,7 @@ def main() -> None:
                         "entry_ts": entry_ts,
                         "side": side_name,
                         "ownership_reserved_through_ts": int(bars[-1]["ts_ms"]),
+                        "intent_geometry": sealed_intent_geometry(intent, policy_sha=policy_sha),
                     })
                     if owns_position:
                         blocked_until_ts = max(
@@ -382,7 +415,7 @@ def main() -> None:
             cost = fee + spread + impact + fund
             gross = side * (float(exit_px) - entry_px) / entry_px * 10_000
             net = gross - cost
-            trades.append({"symbol": symbol, "signal_ts": int(getattr(intent, "signal_ts")), "entry_ts": int(entry_bar["ts_ms"]), "exit_ts": int(exit_ts), "side": side_name, "entry": entry_px, "exit": float(exit_px), "reason": reason, "gross_bps": gross, "realized_cost_bps": cost, "net_bps": net, "intent_sha": sha, "feature_sha": str(getattr(intent, "feature_sha", "")), "config_sha": str(getattr(intent, "config_sha", config_sha)), "policy_sha": policy_sha, "cost_snapshot_sha": snap["snapshot_sha256"]})
+            trades.append({"symbol": symbol, "signal_ts": int(getattr(intent, "signal_ts")), "entry_ts": int(entry_bar["ts_ms"]), "exit_ts": int(exit_ts), "side": side_name, "entry": entry_px, "exit": float(exit_px), "reason": reason, "gross_bps": gross, "realized_cost_bps": cost, "net_bps": net, "intent_sha": sha, "feature_sha": str(getattr(intent, "feature_sha", "")), "config_sha": str(getattr(intent, "config_sha", config_sha)), "policy_sha": policy_sha, "cost_snapshot_sha": snap["snapshot_sha256"], "intent_geometry": sealed_intent_geometry(intent, policy_sha=policy_sha)})
 
     net_values = [float(x["net_bps"]) for x in trades]
     gross_values = [float(x["gross_bps"]) for x in trades]

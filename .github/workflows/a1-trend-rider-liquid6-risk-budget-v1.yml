@@ -1,0 +1,124 @@
+name: A1 Trend Rider Liquid6 Risk Budget V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/trend_rider_first_confirmation_long_only_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_prereg_v1.json'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v1.py'
+      - 'backend/research/prep/a2_forward_cost_turnover_v1.py'
+      - '.github/workflows/a1-trend-rider-liquid6-risk-budget-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_rider_first_confirmation_long_only_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_prereg_v1.json'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v1.py'
+      - 'backend/research/prep/a2_forward_cost_turnover_v1.py'
+      - '.github/workflows/a1-trend-rider-liquid6-risk-budget-v1.yml'
+  schedule:
+    - cron: '29 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-trend-rider-liquid6-risk-budget-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  liquid6-risk-budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      BOUNDARY_UTC: '2026-08-24T04:00:00Z'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/trend_rider_first_confirmation_long_only_policy_v1.py \
+            backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_v1.py \
+            backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_v1.py
+          python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 --self-test
+          python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_two_lane_v1 --self-test
+      - name: Evaluate same-window parent and Liquid6 child
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
+              --symbols BTC-USDT,ETH-USDT --mode development --out out/parent.json
+            python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 \
+              --mode development --parent-receipt out/parent.json --out out/child.json
+          else
+            python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
+              --symbols BTC-USDT,ETH-USDT --mode prospective --boundary-utc "$BOUNDARY_UTC" --out out/parent.json
+            python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 \
+              --mode prospective --boundary-utc "$BOUNDARY_UTC" --parent-receipt out/parent.json --out out/child.json
+          fi
+          python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_two_lane_v1 \
+            --receipt out/child.json --out out/two_lane.json
+      - name: Verify economic comparison and authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          child=json.load(open('out/child.json'))
+          route=json.load(open('out/two_lane.json'))
+          assert child['portfolio_risk_budget']['outcome_fitted'] is False,child
+          assert child['portfolio_risk_budget']['maximum_gross_risk_units']==2.0,child
+          assert child['symbols']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],child
+          assert child['order_authority']=='BLOCKED' and child['live_trade_authority']=='BLOCKED',child
+          assert route['strict_global_gate_mutation'] is False,route
+          assert route['candidate']['identity']==child['candidate_id'],route
+          if child['evaluation_mode']=='development':
+              assert child['development_comparison']['pareto_pass'] is True,child
+          print(json.dumps({
+              'mode':child['evaluation_mode'],'trades':child['completed_trades'],
+              'metrics':child['metrics'],'comparison':child['development_comparison'],
+              'profit':route['candidate']['profit_lane']['state'],
+              'cert':route['candidate']['certification_pilot']['state'],
+              'a2':route['candidate']['a2_pilot']['state'],
+              'a3':route['candidate']['a3_pilot']['state'],
+          },sort_keys=True))
+          PY
+      - name: Persist prospective child and two-lane checkpoint
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          cp out/child.json backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_latest.json
+          cp out/two_lane.json backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_latest.json
+          git config user.name 'a1-trend-rider-liquid6-risk-budget-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_latest.json \
+            backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 trend_rider: persist Liquid6 risk-budget checkpoint [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trend-rider-liquid6-risk-budget-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30

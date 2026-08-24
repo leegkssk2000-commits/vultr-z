@@ -456,14 +456,15 @@
         "EMA_SLOPE_REVERSAL_EXIT_ONLY",
         "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
         "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY",
-        "VOLATILITY_RISK_SCALING_ONLY"
+        "VOLATILITY_RISK_SCALING_ONLY",
+        "LIQUIDITY_REGIME_OWNER_ONLY"
       ],
       "economically_tested_axes_this_run": [
-        "VOLATILITY_RISK_SCALING_ONLY"
+        "LIQUIDITY_REGIME_OWNER_ONLY"
       ],
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
       "pass_candidate_ids": [],
-      "remaining_axis_count": 8,
+      "remaining_axis_count": 7,
       "technical_rejected_axes": []
     }
   },
@@ -504,16 +505,67 @@
       "EMA_SLOPE_REVERSAL_EXIT_ONLY",
       "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
       "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY",
-      "VOLATILITY_RISK_SCALING_ONLY"
+      "VOLATILITY_RISK_SCALING_ONLY",
+      "LIQUIDITY_REGIME_OWNER_ONLY"
     ]
   },
   "exchange_order_submitted": false,
   "execution_authority": "NONE",
   "failure_decomposition": {
     "cost_dominated_count": 0,
-    "economic_fail_count": 0,
-    "no_gross_edge_count": 0,
-    "rows": [],
+    "economic_fail_count": 1,
+    "no_gross_edge_count": 1,
+    "rows": [
+      {
+        "candidate_id": "trend_rider_repair_liquidity_owner_v1",
+        "cost_bps_per_trade": 14.0,
+        "drawdown_bps": 4474.94693186924,
+        "evidence_ids": [
+          "F1"
+        ],
+        "executable_spec": {
+          "bar_interval": "1h",
+          "cost_model": "14bps verified round trip",
+          "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
+          "entry_rule": "ema(close,20) > ema(close,50) and vol_ratio(20) > 1 and pct_rank(volume,50) > 0.6",
+          "entry_timing": "completed-bar timing",
+          "exit_rule": "time_stop",
+          "features": [
+            {
+              "formula": "ema(close,20) - ema(close,50)",
+              "name": "ema_diff"
+            },
+            {
+              "formula": "vol_ratio(20)",
+              "name": "vol_confirm"
+            },
+            {
+              "formula": "pct_rank(volume,50)",
+              "name": "rel_volume"
+            }
+          ],
+          "max_hold_bars": 12,
+          "parameter_provenance": "mechanism prior only; no outcome sweep",
+          "side_rule": "long if ema(close,20) > ema(close,50) else short"
+        },
+        "failure_class": "NO_GROSS_EDGE",
+        "gross_expectancy_bps": -7.494721290353725,
+        "net_expectancy_bps": -21.494721290353723,
+        "payoff": 0.8821375185074258,
+        "profit_factor": 0.6595420699120941,
+        "provider": "openai",
+        "repairable": false,
+        "required_net_improvement_bps_per_trade": 21.504721,
+        "required_sources": [
+          "ohlcv",
+          "volume"
+        ],
+        "route": "REPLACE_ARCHITECTURE",
+        "strategy_id": "trend_rider",
+        "trades": 187,
+        "win_rate": 0.42780748663101603
+      }
+    ],
     "rule": "Gross<=0 => no repair API; replace architecture. Gross>0 but Net<=0/PF<=1 => at most one causal repair, ranked by smallest break-even gap.",
     "schema_version": "zel.a1_failure_economics.v1",
     "selected_for_single_repair": [],
@@ -524,46 +576,41 @@
     {
       "alpha_proof_candidate_ready": false,
       "architecture_family": "trend",
-      "candidate_id": "trend_rider_repair_volatility_risk_scaling_v1",
-      "candidate_sha256": "ef0e20e317a999c3b191bed0d149222c944e247a2a8a3deed40a2be869988cf1",
-      "changed_axis": "VOLATILITY_RISK_SCALING_ONLY",
+      "candidate_id": "trend_rider_repair_liquidity_owner_v1",
+      "candidate_sha256": "8cf5f39a0bfd3e74a1c844a77c776901a688731df2169c0eee1135d0006c2977",
+      "changed_axis": "LIQUIDITY_REGIME_OWNER_ONLY",
       "direction_rule": "both",
       "economic_next": "AUTO_DEVELOPMENT_REPLAY",
-      "entry_event": "completed-bar",
+      "entry_event": "completed_bar",
       "evidence_ids": [
-        "F1",
-        "A5E1"
+        "F1"
       ],
       "executable_spec": {
         "bar_interval": "1h",
         "cost_model": "14bps verified round trip",
         "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
-        "entry_rule": "ema(close,20) > ema(close,50) and close > highest(close,20)",
+        "entry_rule": "ema(close,20) > ema(close,50) and vol_ratio(20) > 1 and pct_rank(volume,50) > 0.6",
         "entry_timing": "completed-bar timing",
         "exit_rule": "time_stop",
         "features": [
           {
             "formula": "ema(close,20) - ema(close,50)",
-            "name": "trend_spread"
+            "name": "ema_diff"
           },
           {
-            "formula": "std(ret(close),20)",
-            "name": "volatility_raw"
+            "formula": "vol_ratio(20)",
+            "name": "vol_confirm"
           },
           {
-            "formula": "volatility_raw / max(sma(volatility_raw,50),0.00000001)",
-            "name": "volatility_scale_factor"
-          },
-          {
-            "formula": "trend_spread * (1 / max(volatility_scale_factor,0.00000001))",
-            "name": "volatility_scaled_signal"
+            "formula": "pct_rank(volume,50)",
+            "name": "rel_volume"
           }
         ],
         "max_hold_bars": 12,
         "parameter_provenance": "mechanism prior only; no outcome sweep",
-        "side_rule": "long if volatility_scaled_signal > 0 else short"
+        "side_rule": "long if ema(close,20) > ema(close,50) else short"
       },
-      "exit_logic": "use time_stop to limit exposure while preserving parent exit geometry; no tuned threshold introduced",
+      "exit_logic": "use fixed time_stop to limit exposure and preserve causal test of liquidity-owner entry change without tuning exit thresholds",
       "expected_move_cost_multiple_target": 2.0,
       "falsification": "one bounded prospective kill test",
       "forbidden_changes": [
@@ -573,33 +620,33 @@
       ],
       "invalidation": "causal invalidation",
       "machine_replayable": true,
-      "mechanism": "volatility-scaled exposure preserves signal geometry while allocating risk-capital proportional to inverse realized volatility; market participant/inefficiency pays for mispricing through size-adjusted loss",
+      "mechanism": "Change only entry ownership across completed-bar liquidity states derived from price and volume; money exists via liquidity-seeking participant paying spread/impact costs",
       "mode": "REPAIR",
-      "native_horizon": "1h",
+      "native_horizon": "hours (intraday trend)",
       "payer": "market participant/inefficiency",
       "provider": "openai",
-      "regime_owner": "trade only when ohlcv-derived realized volatility_scale_factor within historical percentile band and avoid extreme microstructure regimes",
+      "regime_owner": "trade only when relative-volume indicates buyer/seller liquidity dominance; avoid low-liquidity windows",
       "required_sources": [
         "ohlcv",
         "volume"
       ],
-      "score": 7.6,
+      "score": 6.8,
       "source_ready": true,
       "strategy_id": "trend_rider",
-      "time_stop_rationale": "time_stop bounds natural horizon and limits drawdown accumulation consistent with volatility-scaled position sizing",
-      "turnover_cost_budget": "expected_move_cost_multiple_target * verified_round_trip_cost_bps justifies scaled sizing to dominate costs",
-      "why_distinct": "preserves original trend geometry while changing only volatility-managed exposure; distinct from baseline because sizing is volatility-adaptive rather than fixed"
+      "time_stop_rationale": "fixed bar limit caps exposure while testing liquidity-owner hypothesis and keeps verified cost model dominant",
+      "turnover_cost_budget": "natural hourly trend horizon expected move can dominate verified 14bps round trip when entry filtered by elevated relative volume",
+      "why_distinct": "alters only liquidity-regime entry ownership preserving original trend geometry, not duplicate of family because parent preserved entries but changes permitted entry-ownership rule to require elevated relative volume"
     }
   ],
   "initial_development_economics": {
     "candidate_count": 1,
     "cost_bps_per_trade": 14.0,
     "development_only": true,
-    "economic_fail_count": 0,
+    "economic_fail_count": 1,
     "economic_pass_count": 0,
     "exchange_order_submitted": false,
     "execution_authority": "NONE",
-    "insufficient_event_count": 1,
+    "insufficient_event_count": 0,
     "live_trade_authority": "BLOCKED",
     "mixed_scope": true,
     "order_authority": "BLOCKED",
@@ -609,22 +656,22 @@
     "rows": [
       {
         "boundary": "2026-08-16T18:45:01Z",
-        "candidate_id": "trend_rider_repair_volatility_risk_scaling_v1",
+        "candidate_id": "trend_rider_repair_liquidity_owner_v1",
         "development_only": true,
         "economic_pass": false,
         "metrics": {
           "cost_bps_per_trade": 14.0,
           "development_days": 124.83333333333333,
-          "drawdown_bps": 0.0,
-          "events_per_day": 0.0,
-          "gross_expectancy_bps": null,
-          "net_bps_per_calendar_day": 0.0,
-          "net_expectancy_bps": null,
-          "net_pnl_bps": 0,
-          "payoff": null,
-          "profit_factor": null,
-          "trades": 0,
-          "win_rate": null
+          "drawdown_bps": 4474.94693186924,
+          "events_per_day": 1.4979973297730307,
+          "gross_expectancy_bps": -7.494721290353725,
+          "net_bps_per_calendar_day": -32.19903509716539,
+          "net_expectancy_bps": -21.494721290353723,
+          "net_pnl_bps": -4019.5128812961466,
+          "payoff": 0.8821375185074258,
+          "profit_factor": 0.6595420699120941,
+          "trades": 187,
+          "win_rate": 0.42780748663101603
         },
         "prospective": false,
         "provider": "openai",
@@ -636,7 +683,7 @@
             "bars": 2997
           }
         },
-        "state": "FAIL_INSUFFICIENT_EVENTS",
+        "state": "FAIL_DEVELOPMENT_ECONOMICS",
         "strategy_id": "trend_rider",
         "uses_data_strictly_before_gen1_boundary": true
       }
@@ -716,7 +763,8 @@
       "MOMENTUM_CONFIRMATION_OWNER_ONLY",
       "EMA_SLOPE_REVERSAL_EXIT_ONLY",
       "VOLATILITY_ADAPTIVE_TRAIL_ONLY",
-      "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY"
+      "LONG_SHORT_ASYMMETRIC_CAPITAL_ONLY",
+      "VOLATILITY_RISK_SCALING_ONLY"
     ]
   },
   "promotion_authority": false,
@@ -735,13 +783,13 @@
         "trend_rider"
       ],
       "model": "gpt-5-mini",
-      "prompt_sha": "00a7be65363ac1080a8b12f3f0dd5efcf13c6da5096cde547d2ce8fa13e711c2",
+      "prompt_sha": "99f1c639e3c441e1c7aaa3bd80927af4e7bda10515b89186e3f910e654b89b90",
       "provider_contract": "A5_ECONOMIC_V2",
       "represented_strategy_ids": [
         "trend_rider"
       ],
       "request_count": 1,
-      "response_sha": "6267963bc3b92cac3ffd7af520fe1a2f0fb772a0b6b8b61965fff1b21a08312c",
+      "response_sha": "f932ac21dded97235f64936ed165419bc99b865b6820680dfdebd9048fba0d5a",
       "structured_output": "strict",
       "successful": true
     },
@@ -758,7 +806,7 @@
       "successful": false
     }
   },
-  "receipt_sha256": "3628a7834e7ee7e0a9dcee6909c73d89a043dda456b15349469ea3ea6392a7e2",
+  "receipt_sha256": "986714414e4cfa9891f3d9402f5c04027869b0dd826a2a454c4dec9c5909f219",
   "schema_version": "zel.a1_a5_economic_improvement.v5",
   "second_step_candidates": [],
   "second_step_development_economics": {
@@ -772,9 +820,9 @@
   "selection_authority": false,
   "source_history_readiness": {
     "basis": {
-      "captured_min_span_ms": 1121467782,
-      "coverage_progress_ratio": 0.618113353616191,
-      "coverage_receipt": "95af0743bc3a9f26690f92a942933e8620933d51d9654f7070a00d2944c13553",
+      "captured_min_span_ms": 1140759431,
+      "coverage_progress_ratio": 0.6287462278294035,
+      "coverage_receipt": "27fb22a1d932c4b896dc782fc10c1603f377bc411a5d6e8544be60deb5a99a18",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -784,16 +832,16 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 8.019354375,
-      "remaining_span_ms": 692872218,
+      "remaining_days": 7.796071400462963,
+      "remaining_span_ms": 673580569,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },
     "basis_oi_combined_gate": {
-      "coverage_progress_ratio": 0.618113353616191,
+      "coverage_progress_ratio": 0.6287462278294035,
       "duration_gate_pass": false,
       "reason": "BASIS_FUNDING_OI_SUBAXIS_21D_PLUS_FUNDING_REQUIRED",
-      "remaining_days": 8.019354375,
+      "remaining_days": 7.796071400462963,
       "source_ready": false,
       "subaxis_contract_verified": true
     },
@@ -811,9 +859,9 @@
       "reason": "BINGX_KLINE_PRE_BOUNDARY_PULL_AVAILABLE"
     },
     "open_interest": {
-      "captured_min_span_ms": 1121467782,
-      "coverage_progress_ratio": 0.618113353616191,
-      "coverage_receipt": "95af0743bc3a9f26690f92a942933e8620933d51d9654f7070a00d2944c13553",
+      "captured_min_span_ms": 1140759431,
+      "coverage_progress_ratio": 0.6287462278294035,
+      "coverage_receipt": "27fb22a1d932c4b896dc782fc10c1603f377bc411a5d6e8544be60deb5a99a18",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -823,8 +871,8 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 8.019354375,
-      "remaining_span_ms": 692872218,
+      "remaining_days": 7.796071400462963,
+      "remaining_span_ms": 673580569,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },
@@ -859,7 +907,7 @@
     "external_evidence_count": 4,
     "fresh_prospective_validation_required": true,
     "generic_dsl_candidate_axes_this_run": [
-      "VOLATILITY_RISK_SCALING_ONLY"
+      "LIQUIDITY_REGIME_OWNER_ONLY"
     ],
     "generic_dsl_expected_axis_this_run": null,
     "generic_dsl_next_axis": null,

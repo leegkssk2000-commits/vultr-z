@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -73,6 +74,15 @@ def gross_expectancy_bps(receipt: Mapping[str, Any]) -> float:
     return sum(float(x["gross_bps"]) for x in trades) / len(trades)
 
 
+def portfolio_risk_scale(receipt: Mapping[str, Any]) -> float:
+    budget = receipt.get("portfolio_risk_budget")
+    raw = budget.get("position_risk_scale", 1.0) if isinstance(budget, Mapping) else 1.0
+    scale = float(raw)
+    if not math.isfinite(scale) or scale <= 0.0 or scale > 1.0:
+        raise RuntimeError(f"PORTFOLIO_RISK_SCALE_INVALID:{raw}")
+    return scale
+
+
 def resolve_receipt_policy(receipt: Mapping[str, Any]) -> tuple[Any, Path, str]:
     candidate_id = str(receipt.get("strategy_id") or "")
     raw_path = str(receipt.get("policy_path") or "")
@@ -110,6 +120,7 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
     bars_by = {symbol: ev.fetch_bars(symbol, interval, 1000) for symbol in symbols}
     maps = {symbol: {int(x["ts_ms"]): i for i, x in enumerate(bars_by[symbol])} for symbol in symbols}
     snapshots = {symbol: ev.fetch_execution_snapshot(symbol, dict(authority)) for symbol in symbols}
+    risk_scale = portfolio_risk_scale(receipt)
     vals: list[float] = []
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
@@ -183,13 +194,17 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
             exit_px = float(bars[last_i]["close"]); exit_ts = int(bars[last_i]["ts_ms"]); reason = "TIMEOUT"
         snap = snapshots[symbol]
         funding = ev.funding_cost(int(bars[delayed_entry_i]["ts_ms"]), int(exit_ts), list(snap["funding_rows"]))
-        cost_bps = float(snap["fee_bps"]) + float(snap["spread_bps"]) + float(snap["impact_bps"]) + funding
-        gross_bps = side * (float(exit_px) / entry - 1.0) * 10000.0
+        instrument_cost_bps = float(snap["fee_bps"]) + float(snap["spread_bps"]) + float(snap["impact_bps"]) + funding
+        instrument_gross_bps = side * (float(exit_px) / entry - 1.0) * 10000.0
+        gross_bps = instrument_gross_bps * risk_scale
+        cost_bps = instrument_cost_bps * risk_scale
         net_r = (gross_bps - cost_bps) / 100.0
         vals.append(net_r)
         rows.append({
             "symbol": symbol, "signal_ts": signal_ts, "delayed_entry_ts": int(bars[delayed_entry_i]["ts_ms"]),
             "exit_ts": exit_ts, "side": side_name, "reason": reason,
+            "instrument_gross_bps": instrument_gross_bps, "instrument_cost_bps": instrument_cost_bps,
+            "portfolio_risk_scale": risk_scale,
             "gross_bps": gross_bps, "cost_bps": cost_bps, "net_R": net_r,
         })
     complete = len(vals) == len(trades) and bool(trades) and not blockers
@@ -203,6 +218,7 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
         "rows": rows, "policy_path": str(policy_path.relative_to(ROOT)), "policy_sha": policy_sha,
         "sealed_intent_geometry_count": sealed_geometry_count,
         "rolling_window_policy_replay_count": len(trades) - sealed_geometry_count,
+        "portfolio_risk_scale": risk_scale,
         "semantics": "same frozen signal; fill delayed exactly one strategy bar; original SL/TP/timeout; current public BingX stress costs; no retune",
     }
 
@@ -230,8 +246,12 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
         raise RuntimeError("A2_SYMBOLS_REQUIRED")
     snapshots = {symbol: ev.fetch_execution_snapshot(symbol, authority) for symbol in symbols}
     worst_symbol = max(symbols, key=lambda s: float(snapshots[s]["pretrade_verified_cost_bps"]))
-    one_x = float(snapshots[worst_symbol]["pretrade_verified_cost_bps"]); two_x = 2.0 * one_x
-    p95_funding = max(float(snapshots[s]["funding_p95_abs_bps"]) for s in symbols)
+    risk_scale = portfolio_risk_scale(receipt)
+    instrument_one_x = float(snapshots[worst_symbol]["pretrade_verified_cost_bps"])
+    one_x = instrument_one_x * risk_scale
+    two_x = 2.0 * one_x
+    instrument_p95_funding = max(float(snapshots[s]["funding_p95_abs_bps"]) for s in symbols)
+    p95_funding = instrument_p95_funding * risk_scale
     gross_exp = gross_expectancy_bps(receipt)
     one_x_exp = gross_exp - one_x; two_x_exp = gross_exp - two_x
     plus_one = plus_one_bar_stress(receipt, authority)
@@ -252,7 +272,7 @@ def evaluate(transition: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[
         "a1_tier": tiering.get("a1_tier"), "a1_activation_mode": tiering.get("activation", {}).get("mode"),
         "evaluated_symbols": symbols,
         "gross_expectancy_source": "receipt.metrics.gross_expectancy_bps" if (receipt.get("metrics") or {}).get("gross_expectancy_bps") is not None else "mean(receipt.trades.gross_bps)",
-        "cost_authority": {"ssot_sha256": sha(ssot), "cost_authority_sha256": sha(authority), "worst_current_symbol": worst_symbol, "one_x_cost_bps": one_x, "two_x_cost_bps": two_x, "funding_p95_abs_bps": p95_funding},
+        "cost_authority": {"ssot_sha256": sha(ssot), "cost_authority_sha256": sha(authority), "worst_current_symbol": worst_symbol, "portfolio_risk_scale": risk_scale, "instrument_one_x_cost_bps": instrument_one_x, "one_x_cost_bps": one_x, "two_x_cost_bps": two_x, "instrument_funding_p95_abs_bps": instrument_p95_funding, "funding_p95_abs_bps": p95_funding},
         "stress": stress, "stress_contract": ["1X_COST","2X_COST","P95_FUNDING","PLUS_ONE_BAR","TURNOVER"],
         "next_stage_if_pass": "A3_FORWARD_REGIME_DURABILITY", "promotion_authority_note": "A2 pass does not grant Survivor; A3 plus fresh promotion activation remain required.",
         **AUTH,
@@ -266,6 +286,8 @@ def self_test() -> int:
     assert set(ssot.get("stress_contract") or []) >= {"1X_COST","2X_COST","P95_FUNDING","PLUS_ONE_BAR"}
     assert receipt_symbols({"source":{"symbols":[{"symbol":"ETH-USDT"},{"symbol":"BTC-USDT"}]}}) == ["BTC-USDT","ETH-USDT"]
     assert gross_expectancy_bps({"trades":[{"gross_bps":10.0},{"gross_bps":20.0}]}) == 15.0
+    assert portfolio_risk_scale({}) == 1.0
+    assert portfolio_risk_scale({"portfolio_risk_budget":{"position_risk_scale":1.0/3.0}}) == 1.0/3.0
     child = ROOT / "backend/research/rebuild/trend_ma_macd_chase_atr_up_long_good_child_policy_v1.py"
     if child.exists():
         module, path, blob = resolve_receipt_policy({"strategy_id":"trend_ma_macd","policy_path":str(child.relative_to(ROOT)),"policy_sha":git_blob_sha(child)})

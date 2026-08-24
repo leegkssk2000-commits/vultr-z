@@ -17,7 +17,10 @@ KLINE_API = "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
 DEPTH_API = "https://open-api.bingx.com/openApi/swap/v2/quote/depth"
 FUNDING_API = "https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate"
 OI_API = "https://open-api.bingx.com/openApi/swap/v2/quote/openInterest"
-SYMBOLS = ("BTC-USDT", "ETH-USDT")
+# Profitability Top3 coverage SSOT: TrendMA's frozen child uses the widest
+# current Top3 universe. A3 must collect causal context for every symbol that
+# can produce a candidate trade; otherwise full causal coverage is impossible.
+SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT", "DOGE-USDT")
 HOUR_MS = 3_600_000
 HISTORY_CAP = 480
 
@@ -150,8 +153,6 @@ def _capture_ms(row: dict[str, Any]) -> int | None:
 
 
 def previous_oi(prior_rows: list[dict[str, Any]], symbol: str, capture_started_ms: int) -> float | None:
-    # Legacy V1 rows have no actual snapshot-capture timestamp and are not
-    # admissible for causal OI change. Use only a strictly earlier real capture.
     eligible = [
         x for x in prior_rows
         if x.get("symbol") == symbol
@@ -237,8 +238,6 @@ def collect_symbol(symbol: str, prior_rows: list[dict[str, Any]], now: datetime)
 def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     raw_prior = [x for x in (prior.get("rows") or []) if isinstance(x, dict)]
-    # Retain legacy rows for audit only; mark them causally ineligible rather than
-    # silently treating their collector runtime snapshot as an old closed-bar fact.
     prior_rows: list[dict[str, Any]] = []
     legacy_count = 0
     for raw in raw_prior:
@@ -259,8 +258,6 @@ def evaluate(prior: dict[str, Any], now: datetime | None = None) -> dict[str, An
         except Exception as exc:
             blockers.append(f"{symbol}:{type(exc).__name__}:{exc}")
 
-    # Snapshot observations are unique by actual capture time, not by the latest
-    # closed 1h bar. Multiple captures inside one bar are legitimate evidence.
     by_key: dict[tuple[str, int | str], dict[str, Any]] = {}
     for row in prior_rows + new_rows:
         key_capture = _capture_ms(row)
@@ -323,10 +320,14 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({
-        "state": result["state"], "row_count": result["row_count"],
-        "valid_row_count": result["valid_row_count"], "current_valid_count": result["current_valid_count"],
+        "state": result["state"],
+        "symbols": result["symbols"],
+        "row_count": result["row_count"],
+        "valid_row_count": result["valid_row_count"],
+        "current_valid_count": result["current_valid_count"],
         "legacy_causal_ineligible_count": result["legacy_causal_ineligible_count"],
-        "blockers": result["blockers"], "receipt_sha256": result["receipt_sha256"],
+        "blockers": result["blockers"],
+        "receipt_sha256": result["receipt_sha256"],
     }, sort_keys=True))
     return 0
 

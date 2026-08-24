@@ -1,0 +1,192 @@
+name: A1 Top3 Profitability Survivor V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/prep/a2_forward_cost_turnover_v1.py'
+      - 'backend/research/prep/a3_forward_context_collector_v1.py'
+      - 'backend/research/prep/a3_forward_context_collector_v2.py'
+      - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
+      - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
+      - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/a2_forward_cost_turnover_v1.py'
+      - 'backend/research/prep/a3_forward_context_collector_v1.py'
+      - 'backend/research/prep/a3_forward_context_collector_v2.py'
+      - 'backend/research/prep/a3_exact25_forward_durability_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py'
+      - 'backend/research/rebuild/a1_top3_two_lane_contract_v1.json'
+      - 'backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py'
+      - 'backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py'
+      - '.github/workflows/a1-top3-profitability-survivor-v1.yml'
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top3-profitability-survivor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  top3-profitability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and contract self-tests
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/prep/a2_forward_cost_turnover_v1.py \
+            backend/research/prep/a3_forward_context_collector_v1.py \
+            backend/research/prep/a3_forward_context_collector_v2.py \
+            backend/research/prep/a3_exact25_forward_durability_v3.py \
+            backend/research/rebuild/a1_top3_profitability_survivor_router_v1.py \
+            backend/research/rebuild/a1_seed_receipt_fresh_refresher_v1.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v2.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v3.py \
+            backend/research/rebuild/a1_top3_profitability_two_lane_router_v4.py
+          python -m backend.research.prep.a2_forward_cost_turnover_v1 --self-test
+          python -m backend.research.prep.a3_forward_context_collector_v2 --self-test
+          python -m backend.research.prep.a3_exact25_forward_durability_v3 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_survivor_router_v1 --self-test
+          python -m backend.research.rebuild.a1_seed_receipt_fresh_refresher_v1 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v2 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v3 --self-test
+          python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v4 --self-test
+          python - <<'PY'
+          from backend.research.prep import a3_forward_context_collector_v1 as c
+          assert tuple(c.SYMBOLS) == ('BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'), c.SYMBOLS
+          print('PASS_A3_TOP3_SIX_SYMBOL_CONTEXT_COVERAGE')
+          PY
+      - name: Capture and stage fresh A3 causal context for all Top3 symbols
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.a3_forward_context_collector_v2 \
+            --prior backend/research/prep/a3_forward_context_ledger_v2.json \
+            --output out/a3_forward_context_v2.json
+          cp out/a3_forward_context_v2.json backend/research/prep/a3_forward_context_ledger_v2.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a3_forward_context_v2.json'))
+          assert r['schema_version']=='zel.a3.forward_context.v2',r
+          assert int(r['row_count'])>=1,r
+          assert int(r['valid_row_count'])>=1,r
+          print(json.dumps({'A3_CONTEXT':{'rows':r['row_count'],'valid':r['valid_row_count'],'current_valid':r['current_valid_count'],'new_rows':len(r.get('new_rows') or [])}},sort_keys=True))
+          PY
+      - name: Execute all Top3 fresh two-lane route through A3 pilot
+        run: |
+          set -uo pipefail
+          rc=1
+          for n in 1 2 3; do
+            python -m backend.research.rebuild.a1_top3_profitability_two_lane_router_v4 \
+              --out out/a1_top3_profitability_survivor_latest.json
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            echo "top3 v4 attempt ${n} failed rc=${rc}" >&2
+            sleep $((n * 5))
+          done
+          exit "$rc"
+      - name: Verify all Top3 auto-route and checkpoint
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top3_profitability_survivor_latest.json'))
+          c=json.load(open('out/a3_forward_context_v2.json'))
+          assert r['schema_version']=='zel.a1.top3_profitability_two_lane_router.v4',r
+          assert r['profitability_first'] is True and r['two_lane_mode'] is True and r['top3_only'] is True,r
+          assert r['all_top3_fresh_refreshed_each_run'] is True and r['all_top3_auto_route_to_a3_pilot'] is True,r
+          assert r['strict_reference_preserved'] is True and r['strict_global_gate_mutation'] is False,r
+          assert r['strict_h4_deferred_is_not_strict_pass'] is True and r['strict_a2_gate_relaxed'] is False,r
+          assert r['new_strategy_generation_enabled'] is False and r['new_filter_generation_enabled'] is False,r
+          assert len(r['top3_identities'])==3 and len(r['candidates'])==3,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert isinstance(r['checkpoint']['rows'],list) and len(r['checkpoint']['rows'])==3,r
+          assert int(c['valid_row_count'])>=1,c
+          m={x['identity']:x for x in r['candidates']}
+          tr=m['trend_rider_transition_freshness']
+          assert int(tr['profit_lane']['metrics']['completed_trades'])>=10,tr
+          assert tr['profit_lane']['pass'] is True,tr
+          assert tr['certification_pilot']['state'] in ('PASS_CERT_PILOT_H4_H5','HOLD_CERT_PILOT_H4_H5'),tr
+          for identity in ('trend_ma_macd_chase_atr_up_long_good_v1','regime_ema21_reclaim_v1'):
+              x=m[identity]
+              assert 'fresh_refresh_errors' in x,x
+              if int(x['completed_trades'])>=12 and x['profit_lane']['pass']:
+                  assert x['certification_pilot']['state'] in ('PASS_CERT_PILOT_H5_WITH_H4_DEFERRED','HOLD_CERT_PILOT_H5_LITE'),x
+                  assert (x['certification_pilot'].get('h4') or {}).get('strict_h4_pass') is False,x
+              if x['certification_pilot']['pass'] and x['a2_pilot']['pass']:
+                  assert x['a3_pilot']['state'] in ('PASS_A3_PILOT_DURABILITY','FAIL_A3_PILOT_DURABILITY','WAIT_A3_PILOT_PROSPECTIVE_SAMPLE'),x
+          for x in r['candidates']:
+              if x['pilot_survivor']:
+                  assert x['certification_pilot']['pass'] is True,x
+                  assert x['a2_pilot']['pass'] is True,x
+                  assert x['a3_pilot']['state']=='PASS_A3_PILOT_DURABILITY',x
+          print(json.dumps({
+              'context':{'rows':c['row_count'],'valid':c['valid_row_count'],'current_valid':c['current_valid_count'],'new_rows':len(c.get('new_rows') or [])},
+              'profit':r['profit_lane_pass_count'],
+              'strict_A2':r['strict_a2_pass_count'],
+              'pilot_A2':r['a2_pilot_pass_count'],
+              'cert':r['certification_pilot_a1_pass_count'],
+              'A3':r['a3_pilot_pass_count'],
+              'pilots':r['pilot_survivor_count'],
+              'progressing':r['checkpoint']['progressing_count'],
+              'rows':[{
+                  'id':x['identity'],'trades':x['completed_trades'],'metrics':x['profit_lane']['metrics'],
+                  'profit':x['profit_lane']['state'],'strict_A2':x['strict_a2_state'],'pilot_A2':x['a2_pilot_state'],
+                  'cert':x['certification_pilot']['state'],'A3':x['a3_pilot']['state'],
+                  'A3_coverage':x['a3_pilot'].get('coverage'),'refresh_errors':x['fresh_refresh_errors'],'pilot':x['pilot_survivor']
+              } for x in r['candidates']],
+              'checkpoint':r['checkpoint']['rows']
+          },sort_keys=True))
+          PY
+      - name: Persist canonical Top3 receipt and cumulative A3 causal ledger
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top3_profitability_survivor_latest.json
+          ledger=backend/research/prep/a3_forward_context_ledger_v2.json
+          cp out/a1_top3_profitability_survivor_latest.json "$target"
+          cp out/a3_forward_context_v2.json "$ledger"
+          git config user.name 'a1-top3-profitability-two-lane-v4'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target" "$ledger"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Top3 v4 checkpoint and A3 causal ledger [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top3-profitability-survivor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top3_profitability_survivor_latest.json
+            out/a3_forward_context_v2.json
+          if-no-files-found: warn
+          retention-days: 30

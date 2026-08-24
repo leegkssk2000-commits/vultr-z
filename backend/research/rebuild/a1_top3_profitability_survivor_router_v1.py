@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from typing import Any, Mapping
 from backend.research.prep import a2_forward_cost_turnover_v1 as a2
 from backend.research.prep import a3_exact25_forward_durability_v3 as a3
 from backend.research.rebuild import a1_trend_rider_transition_freshness_frozen_w123_ab_v1 as tr_ab
+from backend.research.rebuild import a1_trend_rider_challenger_evaluator_v1 as tr_owner
 
 ROOT = Path(__file__).resolve().parents[3]
 TRENDMA = ROOT / "backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_latest.json"
@@ -149,7 +151,17 @@ def run_a2_a3(receipt: Mapping[str, Any], a1: Mapping[str, Any], context: Mappin
 def trend_rider_current(tmp: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     child_path = tmp / "trend_rider_transition_child.json"
     hard_path = tmp / "trend_rider_hardening.json"
-    child = tr_ab._run_exact(child_path, child=True)
+    raw_child = tr_ab._run_exact(child_path, child=True)
+    # The generic bar-by-bar evaluator emits every qualifying intent, but the
+    # frozen Trend Rider execution contract forbids pyramiding and owns a
+    # two-bar post-exit cooldown per symbol.  Enforce those existing semantics
+    # before any profitability, hardening, A2, or A3 gate sees the receipt.
+    # Otherwise overlapping entries from one trend episode inflate both the
+    # trade count and PnL while being impossible to reproduce as independent
+    # positions in the runtime.
+    child = tr_owner.enforce_policy_ownership(copy.deepcopy(raw_child))
+    child["receipt_sha256"] = stable({k: v for k, v in child.items() if k != "receipt_sha256"})
+    child_path.write_text(json.dumps(child, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     if int(child.get("completed_trades") or 0) < 25:
         return child, {"state": "NOT_RUN_MIN_SAMPLE"}
     subprocess.run([
@@ -247,6 +259,18 @@ def self_test() -> int:
     assert p["pass"] is True and p["state"] == "PASS_A1_PROFITABILITY_SURVIVOR"
     q = a1_status({**fake, "completed_trades": 24}, explicit_hardening={"state": "PASS_HARDENING_EVIDENCE"})
     assert q["pass"] is False and q["state"].startswith("WAIT_")
+    overlap = {
+        "completed_trades": 3,
+        "trades": [
+            {"symbol": "BTC-USDT", "entry_ts": 1_000, "exit_ts": 10_000, "intent_sha": "a", "gross_bps": 10.0, "net_bps": 9.0},
+            {"symbol": "BTC-USDT", "entry_ts": 2_000, "exit_ts": 3_000, "intent_sha": "b", "gross_bps": 10.0, "net_bps": 9.0},
+            {"symbol": "ETH-USDT", "entry_ts": 2_000, "exit_ts": 3_000, "intent_sha": "c", "gross_bps": -5.0, "net_bps": -6.0},
+        ],
+    }
+    owned = tr_owner.enforce_policy_ownership(overlap)
+    assert owned["completed_trades"] == 2
+    assert owned["policy_fidelity"]["rejected_trade_count"] == 1
+    assert owned["policy_fidelity"]["pyramiding"] is False
     assert A3_CONTEXT.name == "a3_forward_context_ledger_v2.json"
     print("PASS_A1_TOP3_PROFITABILITY_SURVIVOR_ROUTER_V1_SELF_TEST")
     return 0

@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_seed_receipt_fresh_refresher_v1 as refresh
+from backend.research.rebuild import a1_recent_loss_cluster_diagnostic_v1 as loss_diag
+from backend.research.rebuild import a1_trend_rider_native_preentry_pareto_v1 as preentry_pareto
 from backend.research.rebuild import a1_top3_profitability_survivor_router_v1 as strict
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v2 as v2
 from backend.research.rebuild import a1_top3_profitability_two_lane_router_v3 as v3
@@ -231,6 +233,8 @@ def run(out_path: Path) -> dict[str, Any]:
     context = v2.read(A3_CONTEXT); previous = v2.read_optional(PREVIOUS)
     with tempfile.TemporaryDirectory(prefix="top3_two_lane_v4_") as td:
         trend_receipt, trend_hard = strict.trend_rider_current(Path(td))
+        trend_diagnostic = loss_diag.diagnose("trend_rider", trend_receipt)
+        trend_preentry_pareto = preentry_pareto.screen(trend_diagnostic)
         trendma, trendma_errors = refresh_or_seed(TRENDMA_SEED)
         keltner, keltner_errors = refresh_or_seed(KELTNER_SEED)
         rows = [
@@ -248,6 +252,8 @@ def run(out_path: Path) -> dict[str, Any]:
         "strict_reference_preserved": True, "strict_global_gate_mutation": False,
         "strict_h4_deferred_is_not_strict_pass": True, "strict_a2_gate_relaxed": False,
         "new_strategy_generation_enabled": False, "new_filter_generation_enabled": False,
+        "automatic_native_preentry_pareto_each_run": True,
+        "trend_rider_native_preentry_pareto": trend_preentry_pareto,
         "top3_identities": list(strict.TOP3),
         "profit_lane_pass_count": sum(x["profit_lane"]["pass"] for x in rows),
         "strict_a2_pass_count": sum(x["strict_a2_state"] == "PASS_A2_COST_TURNOVER" for x in rows),

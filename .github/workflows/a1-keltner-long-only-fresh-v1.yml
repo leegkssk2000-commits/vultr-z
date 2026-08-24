@@ -1,0 +1,95 @@
+name: A1 Keltner Long Only Fresh V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_keltner_long_only_fresh_prereg_v1.json'
+      - 'backend/research/rebuild/a1_keltner_long_only_fresh_v1.py'
+      - '.github/workflows/a1-keltner-long-only-fresh-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_long_only_fresh_prereg_v1.json'
+      - 'backend/research/rebuild/a1_keltner_long_only_fresh_v1.py'
+      - '.github/workflows/a1-keltner-long-only-fresh-v1.yml'
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keltner-long-only-fresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and prereg self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_long_only_fresh_v1.py
+          python -m backend.research.rebuild.a1_keltner_long_only_fresh_v1 --self-test
+      - name: Run frozen-boundary fresh comparison
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ok=0
+          for attempt in 1 2 3; do
+            if python -m backend.research.rebuild.a1_keltner_long_only_fresh_v1 --out out/a1_keltner_long_only_fresh_latest.json; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 10))
+          done
+          test "$ok" -eq 1
+          cat out/a1_keltner_long_only_fresh_latest.json
+      - name: Verify no authority expansion
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_keltner_long_only_fresh_latest.json'))
+          assert r['candidate_id']=='keltner_long_only_v1',r
+          assert r['strategy_id']=='keltner_trend',r
+          assert r['fresh_boundary_utc']=='2026-08-24T17:30:00Z',r
+          assert r['promotion_claim'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['protected_mutations'])==0,r
+          assert r['canonical_ledger_mutated'] is False,r
+          assert r['preboundary_outcomes_counted'] is False,r
+          assert r['preboundary_data_feature_warmup_only'] is True,r
+          print({
+              'state':r['state'],
+              'parent_trades':r['completed_parent_trades'],
+              'long_trades':r['completed_fresh_long_trades'],
+              'short_trades':r['completed_fresh_short_trades'],
+              'gap':r['sample_gap_to_25'],
+              'long_only':r['long_only'],
+              'delta':r['delta_long_minus_parent'],
+              'next':r['next'],
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-keltner-long-only-fresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_keltner_long_only_fresh_latest.json
+          retention-days: 30
+      - name: Persist latest fresh receipt on master
+        if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          set -euo pipefail
+          cp out/a1_keltner_long_only_fresh_latest.json backend/research/rebuild/a1_keltner_long_only_fresh_latest.json
+          if git diff --quiet -- backend/research/rebuild/a1_keltner_long_only_fresh_latest.json; then
+            exit 0
+          fi
+          git config user.name 'a1-keltner-long-only-fresh-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_keltner_long_only_fresh_latest.json
+          git commit -m 'A1 Keltner long-only: persist fresh OOS progress [skip ci]'
+          git push

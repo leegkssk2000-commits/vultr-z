@@ -14,7 +14,7 @@ from backend.research.rebuild.a1_exact25_survivor_gate_v1 import stable_sha
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = ROOT / "backend/research/rebuild/a1_top3_two_lane_contract_v1.json"
 CONTEXT = ROOT / "backend/research/prep/a3_forward_context_ledger_v2.json"
-IDENTITY = "trend_rider_first_confirmation_liquid6_long_only_risk_budget_v1"
+IDENTITY = "trend_rider_liquid6_losing_basket_guard_v1"
 
 
 def evaluate(receipt_path: Path, out: Path) -> dict[str, Any]:
@@ -29,7 +29,7 @@ def evaluate(receipt_path: Path, out: Path) -> dict[str, Any]:
         raise RuntimeError("FIXED_RISK_BUDGET_REQUIRED")
     row = v4.candidate(IDENTITY, receipt, None, context, contract)
     result = {
-        "schema_version": "zel.a1.trend_rider.liquid6_risk_budget_two_lane.v1",
+        "schema_version": "zel.a1.trend_rider.liquid6_losing_basket_guard_two_lane.v1",
         "state": "PASS_A3_PILOT_SURVIVOR" if row["pilot_survivor"] else "ACTIVE_AUTO_ROUTE_TO_A3",
         "candidate": row,
         "profit_lane_pass_count": int(row["profit_lane"]["pass"] is True),
@@ -53,6 +53,7 @@ def self_test() -> int:
     contract = v2.read(CONTRACT)
     v2.validate_contract(contract)
     assert contract["profit_lane"]["minimum_completed_trades"] == 10
+    assert IDENTITY == "trend_rider_liquid6_losing_basket_guard_v1"
     assert contract["certification_pilot_lane"]["h4_deferred_fallback"]["minimum_completed_trades"] == 12
     assert contract["certification_pilot_lane"]["a3_pilot"]["minimum_causally_matched_trades"] == 12
     print("PASS_TREND_RIDER_LIQUID6_RISK_BUDGET_TWO_LANE_V1")

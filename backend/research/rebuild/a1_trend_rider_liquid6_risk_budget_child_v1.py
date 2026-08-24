@@ -19,7 +19,7 @@ POLICY_PATH = Path(policy.__file__).resolve()
 TOP3_LATEST = ROOT / "backend/research/rebuild/a1_top3_profitability_survivor_latest.json"
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT", "DOGE-USDT")
 RISK_SCALE = 1.0 / 3.0
-PROSPECTIVE_BOUNDARY_UTC = "2026-08-24T04:00:00Z"
+PROSPECTIVE_BOUNDARY_UTC = "2026-08-24T15:00:00Z"
 
 
 def _metrics(trades: list[Mapping[str, Any]]) -> dict[str, Any]:

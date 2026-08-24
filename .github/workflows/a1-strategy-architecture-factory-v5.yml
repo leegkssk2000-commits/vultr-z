@@ -1,0 +1,112 @@
+name: A1 Strategy Architecture Factory V5
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v5.py'
+      - '.github/workflows/a1-strategy-architecture-factory-v5.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: a1-strategy-architecture-factory-v5
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test diversity scout and factory V5
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py
+          python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
+          python -m py_compile backend/research/architecture_factory/a1_strategy_architecture_factory_v5.py
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v5 --self-test
+
+  factory:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Groq SDK for explicit deep review only
+        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+      - name: Run diversity-aware explicit architecture factory V5
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+          GEMINI_ECONOMIC_REBUILD_ENABLED: 'true'
+          G2_PARALLEL_RESEARCH_ENABLED: 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v5 --output out/a1_strategy_architecture_factory_v5.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_strategy_architecture_factory_v5.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          assert float(r['dedup_cosine_threshold'])==0.85
+          assert r['alpha_proof_required'] is True and r['preregistration_blocked_without_receipt'] is True
+          assert int(r['eligible_for_preregistration_count'])==0
+          assert r['youtube_diversity_can_promote_candidate'] is False
+          assert r['youtube_diversity_single_video_authority_forbidden'] is True
+          print(json.dumps({'state':r['state'],'generated':r['generated_after_dedup'],'alpha_proof_ready':r['alpha_proof_ready_count'],'youtube_diversity':r['youtube_diversity_evidence']},sort_keys=True))
+          PY
+      - name: Publish V5 receipt to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          r=json.load(open('out/a1_strategy_architecture_factory_v5.json')); d=r.get('youtube_diversity_evidence') or {}
+          marker='<!-- A1_STRATEGY_ARCHITECTURE_FACTORY_V5 -->'
+          lines=[marker,'## A1 Strategy Architecture Factory V5 — diversity-aware explicit deep review',f"run={os.environ['RUN_ID']}|state={r.get('state')}",f"generated={r.get('generated_after_dedup')}|alpha_proof_ready={r.get('alpha_proof_ready_count')}|prereg_eligible=0",f"youtube_diversity_sources={d.get('factory_source_count')}|qualified_buckets={d.get('qualified_bucket_count')}",'single_video_authority=FORBIDDEN|local_replay=REQUIRED|unverified_views=NOT_FACT','automatic_paid_schedule=DISABLED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED']
+          body='\n'.join(lines); headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
+          url=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST'),timeout=20): pass
+          print('PASS_A1_ARCHITECTURE_FACTORY_V5_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-strategy-architecture-factory-v5-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_strategy_architecture_factory_v5.json
+          if-no-files-found: error
+          retention-days: 90

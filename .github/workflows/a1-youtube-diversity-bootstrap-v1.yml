@@ -1,0 +1,95 @@
+name: A1 YouTube Diversity Bootstrap V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-youtube-diversity-bootstrap-v1.yml'
+      - 'backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-youtube-diversity-bootstrap-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-youtube-diversity-bootstrap-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py
+          python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
+
+  bootstrap:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run first live 15-bucket Gemini diversity scout
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          A1_YOUTUBE_GEMINI_MODELS: 'models/gemini-3.6-flash,models/gemini-3.1-pro-preview'
+          YOUTUBE_DIVERSITY_SEARCH_GROUP_SIZE: '5'
+          YOUTUBE_DIVERSITY_MAX_VIDEO_REVIEWS: '6'
+          YOUTUBE_DIVERSITY_MAX_POOL: '60'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 \
+            --existing backend/research/architecture_factory/a1_youtube_diversity_latest.json \
+            --registry backend/research/zel_manual_video_registry_v1.json \
+            --output out/a1_youtube_diversity_scout_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_youtube_diversity_scout_v1.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert len(r['buckets'])==15 and int(r['metrics']['candidate_pool_count'])<=60
+          print(json.dumps({'state':r['state'],**r['metrics']},sort_keys=True))
+          PY
+      - name: Persist first live diversity receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_youtube_diversity_latest.json
+          cp out/a1_youtube_diversity_scout_v1.json "$target"
+          git config user.name 'a1-youtube-diversity-bootstrap'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 YouTube: persist initial diversity scout [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep $((n * 3))
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-youtube-diversity-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_youtube_diversity_scout_v1.json
+          if-no-files-found: warn
+          retention-days: 60

@@ -1,4 +1,4 @@
-name: A1 Strategy25 Improvement League V2
+name: A1 Strategy25 Improvement League V3
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'backend/research/rebuild/a1_strategy25_improvement_league_v1.py'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_v2.py'
       - 'backend/research/rebuild/a1_strategy25_active_deep_replay_v1.py'
+      - 'backend/research/rebuild/a1_strategy25_active_deep_replay_v2.py'
       - 'backend/research/rebuild/strategy25_structural_inventory_v2.json'
       - 'backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'
       - '.github/workflows/a1-strategy25-improvement-league-v1.yml'
@@ -17,6 +18,7 @@ on:
       - 'backend/research/rebuild/a1_strategy25_improvement_league_v1.py'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_v2.py'
       - 'backend/research/rebuild/a1_strategy25_active_deep_replay_v1.py'
+      - 'backend/research/rebuild/a1_strategy25_active_deep_replay_v2.py'
       - 'backend/research/rebuild/strategy25_structural_inventory_v2.json'
       - 'backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'
       - '.github/workflows/a1-strategy25-improvement-league-v1.yml'
@@ -34,9 +36,10 @@ concurrency:
 jobs:
   strategy25-league:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PYTHONPATH: .
+      LIQUID6: BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,LINK-USDT,DOGE-USDT
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,9 +55,10 @@ jobs:
             backend/research/rebuild/a1_strategy25_improvement_league_v1.py \
             backend/research/rebuild/a1_strategy25_improvement_league_v2.py \
             backend/research/rebuild/a1_strategy25_active_deep_replay_v1.py \
+            backend/research/rebuild/a1_strategy25_active_deep_replay_v2.py \
             backend/research/rebuild/a1_exact25_generic_evaluator_v1.py
           python -m backend.research.rebuild.a1_strategy25_improvement_league_v2 --self-test
-          python -m backend.research.rebuild.a1_strategy25_active_deep_replay_v1 --self-test
+          python -m backend.research.rebuild.a1_strategy25_active_deep_replay_v2 --self-test
 
       - name: Build receipt-first 25-wide roster
         run: |
@@ -75,31 +79,31 @@ jobs:
           print(json.dumps({'PRE_LEAGUE':{'active':r['active_top5'],'challenger':r['challenger_next5'],'failover':r['failover_due']}},sort_keys=True))
           PY
 
-      - name: Shared-cache deep replay only current Active Top5
+      - name: Shared-cache Liquid6 replay only current Active Top5
         run: |
           set -euo pipefail
           rc=1
           for n in 1 2 3; do
             rm -rf out/strategy25_active_deep
-            python -m backend.research.rebuild.a1_strategy25_active_deep_replay_v1 \
+            python -m backend.research.rebuild.a1_strategy25_active_deep_replay_v2 \
               --league out/a1_strategy25_improvement_league_pre.json \
               --out-dir out/strategy25_active_deep \
               --aggregate out/a1_strategy25_active_deep_replay_latest.json \
-              --symbols BTC-USDT,ETH-USDT || true
+              --symbols "$LIQUID6" || true
             if python - <<'PY'
           import json,sys
           try:
               r=json.load(open('out/a1_strategy25_active_deep_replay_latest.json'))
           except Exception:
               sys.exit(1)
-          print('ACTIVE5_REPLAY_ATTEMPT',r.get('success_count'),r.get('error_count'))
+          print('ACTIVE5_REPLAY_ATTEMPT',r.get('success_count'),r.get('error_count'),r.get('quality_pass_count'))
           sys.exit(0 if int(r.get('success_count') or 0)>=3 else 1)
           PY
             then
               rc=0
               break
             fi
-            echo "active5 shared replay attempt ${n} insufficient" >&2
+            echo "active5 Liquid6 replay attempt ${n} insufficient" >&2
             sleep $((n * 7))
           done
           exit "$rc"
@@ -111,13 +115,14 @@ jobs:
             --extra-json out/a1_strategy25_active_deep_replay_latest.json \
             --out out/a1_strategy25_improvement_league_latest.json
 
-      - name: Verify league economics, stage preservation, partition, cache and authority
+      - name: Verify league economics, replay robustness, stage preservation and authority
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           league=json.load(open('out/a1_strategy25_improvement_league_latest.json'))
           replay=json.load(open('out/a1_strategy25_active_deep_replay_latest.json'))
+          liquid6=['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT']
           assert league['canonical_strategy_count']==25,league
           assert len(league['rows'])==25 and len({x['strategy_id'] for x in league['rows']})==25,league
           assert league['role_counts']=={'ACTIVE_TOP5':5,'CHALLENGER_NEXT5':5,'MATERIAL_HOLD':15},league
@@ -125,9 +130,17 @@ jobs:
           assert league['stage_regression_guard'] is True,league
           assert league['stage_aggregation']=='MAX_TRUSTED_OPERATIONAL_STAGE_SEPARATE_FROM_METRIC_SOURCE',league
           assert all(x['stage_preserved_across_metric_refresh'] for x in league['rows']),league
+          assert replay['schema_version']=='zel.a1.strategy25_active_deep_replay.v2',replay
+          assert replay['symbols']==liquid6,replay
           assert replay['canonical_ledger_mutated'] is False and replay['temporary_terminal_replay_ledger'] is True,replay
           assert replay['shared_cache']['enabled'] is True,replay
+          assert replay['quality_guard']['ranking_mutation'] is False,replay
+          assert replay['quality_guard']['strict_h4_h5_a2_a3_threshold_mutation'] is False,replay
           assert int(replay['success_count'])>=3,replay
+          for row in replay['rows']:
+              q=row['evidence_quality']
+              assert q['strict_certification_gate_mutated'] is False,q
+              assert 'pnl_without_best_trade_bps' in q and 'best_trade_share_of_total' in q,q
           for r in (league,replay):
               assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
               assert r['selection_authority'] is False and r['promotion_authority'] is False,r
@@ -140,15 +153,19 @@ jobs:
                   'regressed_or_tradeoff':league['regressed_or_tradeoff_count'],'failover':league['failover_due'],
                   'stages':{x['strategy_id']:x['stage_rank'] for x in league['rows'][:10]}},
               'DEEP_REPLAY':{
-                  'success':replay['success_count'],'errors':replay['error_count'],
+                  'symbols':replay['symbols'],'success':replay['success_count'],'errors':replay['error_count'],
+                  'quality_pass':replay['quality_pass_count'],
                   'bar_fetch_unique':replay['shared_cache']['bar_fetch_unique_count'],
                   'execution_snapshot_unique':replay['shared_cache']['execution_snapshot_unique_count'],
-                  'rows':[{'id':x['strategy_id'],'metrics':x['metrics']} for x in replay['rows']]}
+                  'rows':[{
+                      'id':x['strategy_id'],'metrics':x['metrics'],
+                      'quality':x['evidence_quality']
+                  } for x in replay['rows']]}
           },sort_keys=True))
           PY
           git diff --exit-code -- backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
 
-      - name: Persist canonical league and active replay checkpoint
+      - name: Persist canonical league and Liquid6 replay checkpoint
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
@@ -156,11 +173,11 @@ jobs:
           replay=backend/research/rebuild/a1_strategy25_active_deep_replay_latest.json
           cp out/a1_strategy25_improvement_league_latest.json "$league"
           cp out/a1_strategy25_active_deep_replay_latest.json "$replay"
-          git config user.name 'a1-strategy25-improvement-league-v2'
+          git config user.name 'a1-strategy25-improvement-league-v3'
           git config user.email 'actions@users.noreply.github.com'
           git add "$league" "$replay"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist 25-wide league and Active5 replay [skip ci]'
+          git commit -m 'A1: persist 25-wide league and Liquid6 Active5 replay [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3

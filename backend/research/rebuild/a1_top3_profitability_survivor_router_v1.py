@@ -271,6 +271,23 @@ def self_test() -> int:
     assert owned["completed_trades"] == 2
     assert owned["policy_fidelity"]["rejected_trade_count"] == 1
     assert owned["policy_fidelity"]["pyramiding"] is False
+    native = {
+        "completed_trades": 1,
+        "trades": [overlap["trades"][0]],
+        "open_intents": [{"intent_sha": "open", "symbol": "BTC-USDT", "entry_ts": 11_000}],
+        "ownership_rejected_intents": [{"intent_sha": "later", "symbol": "BTC-USDT", "entry_ts": 12_000}],
+        "native_policy_ownership": {
+            "state": "PASS_NATIVE_POLICY_OWNERSHIP_ENFORCED",
+            "raw_intent_count": 3,
+            "open_intents_reserve_ownership": True,
+        },
+    }
+    native_owned = tr_owner.enforce_policy_ownership(native)
+    assert native_owned["completed_trades"] == 1
+    assert native_owned["policy_fidelity"]["mode"] == "NATIVE_INTENT_TIMELINE"
+    assert native_owned["policy_fidelity"]["admitted_open_intent_count"] == 1
+    assert native_owned["policy_fidelity"]["rejected_trade_count"] == 1
+    assert native_owned["policy_fidelity"]["open_intents_reserve_ownership"] is True
     assert A3_CONTEXT.name == "a3_forward_context_ledger_v2.json"
     print("PASS_A1_TOP3_PROFITABILITY_SURVIVOR_ROUTER_V1_SELF_TEST")
     return 0

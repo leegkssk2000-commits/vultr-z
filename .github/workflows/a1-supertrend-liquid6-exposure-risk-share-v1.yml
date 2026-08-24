@@ -1,0 +1,107 @@
+name: A1 Supertrend Liquid6 Exposure Risk Share V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_liquid6_exposure_risk_share_v1.py'
+      - '.github/workflows/a1-supertrend-liquid6-exposure-risk-share-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  supertrend-exposure-risk-share:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      FROZEN_ARTIFACT_ID: '9495054717'
+      FROZEN_ST_RECEIPT_SHA256: '5be1986bba47492333e6df1daaf735538ee73694d99da68332344d7215344eec'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_supertrend_liquid6_exposure_risk_share_v1.py
+          python -m backend.research.rebuild.a1_supertrend_liquid6_exposure_risk_share_v1 --self-test
+      - name: Download and verify frozen PR990 Supertrend Liquid6 evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p frozen out
+          curl -fL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${FROZEN_ARTIFACT_ID}/zip" \
+            -o frozen/pr990.zip
+          unzip -q frozen/pr990.zip -d frozen/pr990
+          ST=$(find frozen/pr990 -type f -name 'supertrend_liquid6.json' | head -1)
+          test -n "$ST"
+          cp "$ST" frozen/supertrend_liquid6.json
+          python - <<'PY'
+          import json, os
+          r=json.load(open('frozen/supertrend_liquid6.json'))
+          assert r['strategy_id']=='supertrend_pullback',r.get('strategy_id')
+          assert int(r['completed_trades'])==47,r.get('completed_trades')
+          assert r.get('receipt_sha256')==os.environ['FROZEN_ST_RECEIPT_SHA256'],r.get('receipt_sha256')
+          assert (r.get('source_quality_gate') or {}).get('state')=='PASS',r.get('source_quality_gate')
+          assert not (r.get('integrity_defects') or []),r.get('integrity_defects')
+          assert int(r.get('leakage_lookahead') or 0)==0,r.get('leakage_lookahead')
+          print('PASS_FROZEN_PR990_SUPERTREND_LIQUID6_RECEIPT_AUTHORITY')
+          PY
+      - name: Run single-axis exposure risk-share counterfactual
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_supertrend_liquid6_exposure_risk_share_v1 \
+            --receipt frozen/supertrend_liquid6.json \
+            --out out/a1_supertrend_liquid6_exposure_risk_share_latest.json
+          cat out/a1_supertrend_liquid6_exposure_risk_share_latest.json
+      - name: Verify research-only no-retune contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_supertrend_liquid6_exposure_risk_share_latest.json'))
+          assert r['strategy_id']=='supertrend_pullback',r
+          assert r['scope']=='FROZEN_PR990_RETROSPECTIVE_COUNTERFACTUAL_ONLY',r
+          assert r['changed_axis']=='POSITION_RISK_ALLOCATION_ONLY',r
+          assert r['all_47_entries_preserved'] is True,r
+          assert r['win_loss_signs_preserved'] is True,r
+          c=r['contract']
+          assert c['entry_signals_changed'] is False and c['entry_trade_count_changed'] is False,c
+          assert c['exit_geometry_changed'] is False and c['stop_changed'] is False and c['timeout_changed'] is False,c
+          assert c['numeric_threshold_sweep'] is False and c['post_outcome_threshold_fitting'] is False,c
+          assert c['weight_rule_uses_preentry_position_state_only'] is True,c
+          assert r['promotion_claim'] is False and r['fresh_oos_required_before_any_runtime_use'] is True,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert int(r['protected_mutations'])==0 and not r['integrity_defects'],r
+          print(json.dumps({
+              'state':r['state'],
+              'parent':r['parent'],
+              'risk_shared':r['risk_shared'],
+              'delta':r['delta'],
+              'pnl_retention':r['pnl_retention'],
+              'max_same_symbol_concurrency_at_entry':r['max_same_symbol_concurrency_at_entry'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-supertrend-liquid6-exposure-risk-share-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_supertrend_liquid6_exposure_risk_share_latest.json
+          if-no-files-found: warn
+          retention-days: 30

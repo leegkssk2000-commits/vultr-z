@@ -27,6 +27,10 @@ CANDIDATE_WARMUPS = {
     "session_bias": 90,
 }
 INTERVAL_BY_MS = {300_000: "5m", 3_600_000: "1h"}
+# BingX may revise the newest nominally closed candle after late trades settle.
+# Seal only after one additional full strategy bar; this is source finality,
+# not a strategy threshold and is identical for every symbol/timeframe.
+FINALIZATION_LAG_BARS = 1
 
 
 def read(path: Path) -> dict[str, Any]:
@@ -127,7 +131,11 @@ def audit_stream(
     normalized.sort(key=lambda row: row["ts_ms"])
     timestamps = [row["ts_ms"] for row in normalized]
     duplicate_count = len(timestamps) - len(set(timestamps))
-    closed = [row for row in normalized if row["ts_ms"] + timeframe_ms <= now_ms]
+    seal_delay_ms = timeframe_ms * FINALIZATION_LAG_BARS
+    closed = [
+        row for row in normalized
+        if row["ts_ms"] + timeframe_ms + seal_delay_ms <= now_ms
+    ]
     in_progress_excluded = len(normalized) - len(closed)
 
     gap_count = 0
@@ -169,6 +177,8 @@ def audit_stream(
         "normalized_count": len(normalized),
         "completed_bar_count": len(closed),
         "in_progress_bar_count_excluded": in_progress_excluded,
+        "finalization_lag_bars": FINALIZATION_LAG_BARS,
+        "finalization_lag_ms": seal_delay_ms,
         "first_completed_ts_ms": closed[0]["ts_ms"] if closed else None,
         "last_completed_ts_ms": closed[-1]["ts_ms"] if closed else None,
         "parse_error_count": len(parse_errors),

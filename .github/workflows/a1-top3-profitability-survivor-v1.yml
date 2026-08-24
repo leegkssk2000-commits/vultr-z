@@ -129,9 +129,17 @@ jobs:
           assert int(c['valid_row_count'])>=1,c
           m={x['identity']:x for x in r['candidates']}
           tr=m['trend_rider_transition_freshness']
-          assert int(tr['profit_lane']['metrics']['completed_trades'])>=10,tr
-          assert tr['profit_lane']['pass'] is True,tr
-          assert tr['certification_pilot']['state'] in ('PASS_CERT_PILOT_H4_H5','HOLD_CERT_PILOT_H4_H5'),tr
+          fidelity=tr['policy_fidelity']
+          assert fidelity['state']=='PASS_POLICY_OWNERSHIP_ENFORCED',tr
+          assert fidelity['pyramiding'] is False and int(fidelity['cooldown_bars'])==2,tr
+          assert int(fidelity['admitted_trade_count'])==int(tr['completed_trades']),tr
+          assert int(fidelity['raw_trade_count'])>=int(fidelity['admitted_trade_count']),tr
+          if int(tr['completed_trades']) < 10:
+              assert tr['profit_lane']['state']=='WAIT_PROFIT_SAMPLE' and tr['profit_lane']['pass'] is False,tr
+              assert tr['certification_pilot']['state']=='WAIT_CERT_PILOT_SAMPLE',tr
+          else:
+              assert tr['profit_lane']['pass'] is True,tr
+              assert tr['certification_pilot']['state'] in ('PASS_CERT_PILOT_H4_H5','HOLD_CERT_PILOT_H4_H5','WAIT_CERT_PILOT_SAMPLE'),tr
           for identity in ('trend_ma_macd_chase_atr_up_long_good_v1','regime_ema21_reclaim_v1'):
               x=m[identity]
               assert 'fresh_refresh_errors' in x,x

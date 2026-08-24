@@ -113,6 +113,7 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
     vals: list[float] = []
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
+    sealed_geometry_count = 0
     for trade in trades:
         symbol = str(trade["symbol"]); bars = bars_by[symbol]; mp = maps[symbol]
         signal_ts = int(trade["signal_ts"]); original_entry_ts = int(trade["entry_ts"])
@@ -121,28 +122,52 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
         signal_i = mp[signal_ts]; entry_i = mp[original_entry_ts]
         if entry_i != signal_i + 1:
             blockers.append(f"ENTRY_NOT_NEXT_BAR:{symbol}:{signal_i}:{entry_i}"); continue
-        try:
-            feature = compute(bars[:signal_i+1], symbol=symbol, now_ts_ms=signal_ts, config=cfg)
-            intent = build(
-                feature,
-                policy_source_sha=policy_sha,
-                verified_round_trip_cost_bps=float((receipt.get("execution_snapshots") or {}).get(symbol, {}).get("pretrade_verified_cost_bps") or snapshots[symbol]["pretrade_verified_cost_bps"]),
-                config=cfg,
+        geometry = trade.get("intent_geometry") if isinstance(trade.get("intent_geometry"), Mapping) else None
+        if geometry is not None:
+            expected_geometry_sha = str(geometry.get("geometry_sha256") or "")
+            unsigned_geometry = {k: v for k, v in geometry.items() if k != "geometry_sha256"}
+            if ev.stable_sha(unsigned_geometry) != expected_geometry_sha:
+                blockers.append(f"INTENT_GEOMETRY_SHA_MISMATCH:{symbol}:{signal_ts}"); continue
+            lineage = (
+                str(geometry.get("strategy_id")) == candidate_id
+                and str(geometry.get("symbol")) == symbol
+                and int(geometry.get("signal_ts") or -1) == signal_ts
+                and str(geometry.get("side")) == str(trade.get("side"))
+                and str(geometry.get("feature_sha")) == str(trade.get("feature_sha"))
+                and str(geometry.get("config_sha")) == str(trade.get("config_sha"))
+                and str(geometry.get("policy_sha")) == policy_sha
+                and str(geometry.get("intent_sha")) == str(trade.get("intent_sha"))
             )
-        except Exception as exc:
-            blockers.append(f"POLICY_REPLAY:{symbol}:{type(exc).__name__}:{exc}"); continue
-        if bool(getattr(intent, "no_trade")):
-            blockers.append(f"ORIGINAL_SIGNAL_REPLAYED_NO_TRADE:{symbol}:{signal_ts}"); continue
-        if ev.intent_sha(intent) != str(trade.get("intent_sha") or ""):
-            blockers.append(f"INTENT_SHA_MISMATCH:{symbol}:{signal_ts}"); continue
+            if not lineage:
+                blockers.append(f"INTENT_GEOMETRY_LINEAGE_MISMATCH:{symbol}:{signal_ts}"); continue
+            side_name = str(geometry["side"])
+            sl, tp = geometry.get("sl"), geometry.get("tp")
+            timeout = dict(geometry.get("timeout") or {})
+            sealed_geometry_count += 1
+        else:
+            try:
+                feature = compute(bars[:signal_i+1], symbol=symbol, now_ts_ms=signal_ts, config=cfg)
+                intent = build(
+                    feature,
+                    policy_source_sha=policy_sha,
+                    verified_round_trip_cost_bps=float((receipt.get("execution_snapshots") or {}).get(symbol, {}).get("pretrade_verified_cost_bps") or snapshots[symbol]["pretrade_verified_cost_bps"]),
+                    config=cfg,
+                )
+            except Exception as exc:
+                blockers.append(f"POLICY_REPLAY:{symbol}:{type(exc).__name__}:{exc}"); continue
+            if bool(getattr(intent, "no_trade")):
+                blockers.append(f"ORIGINAL_SIGNAL_REPLAYED_NO_TRADE:{symbol}:{signal_ts}"); continue
+            if ev.intent_sha(intent) != str(trade.get("intent_sha") or ""):
+                blockers.append(f"INTENT_SHA_MISMATCH:{symbol}:{signal_ts}"); continue
+            side_name = str(getattr(intent, "side"))
+            sl, tp = getattr(intent, "sl", None), getattr(intent, "tp", None)
+            timeout = getattr(intent, "timeout", {}) or {}
         delayed_entry_i = entry_i + 1
         if delayed_entry_i >= len(bars):
             blockers.append(f"PENDING_DELAYED_ENTRY:{symbol}:{signal_ts}"); continue
-        side_name = str(getattr(intent, "side")); side = 1 if side_name == "long" else -1
-        sl = getattr(intent, "sl", None); tp = getattr(intent, "tp", None)
+        side = 1 if side_name == "long" else -1
         if sl is None and tp is None:
             blockers.append(f"NO_EXIT_GEOMETRY:{symbol}:{signal_ts}"); continue
-        timeout = getattr(intent, "timeout", {}) or {}
         timeout_bars = int(timeout.get("bars", getattr(cfg, "timeout_bars", 1)))
         last_i = delayed_entry_i + max(1, timeout_bars)
         if last_i >= len(bars):
@@ -176,6 +201,8 @@ def plus_one_bar_stress(receipt: Mapping[str, Any], authority: Mapping[str, Any]
         "candidate_trade_count": len(trades), "stress_trade_count": len(vals),
         "net_R": net_r, "expectancy_R": exp_r, "blockers": blockers[:30],
         "rows": rows, "policy_path": str(policy_path.relative_to(ROOT)), "policy_sha": policy_sha,
+        "sealed_intent_geometry_count": sealed_geometry_count,
+        "rolling_window_policy_replay_count": len(trades) - sealed_geometry_count,
         "semantics": "same frozen signal; fill delayed exactly one strategy bar; original SL/TP/timeout; current public BingX stress costs; no retune",
     }
 

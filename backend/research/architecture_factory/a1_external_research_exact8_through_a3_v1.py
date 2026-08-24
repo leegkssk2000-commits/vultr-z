@@ -140,16 +140,53 @@ def _bar_fingerprint(bar: Mapping[str, Any]) -> tuple[Any, ...]:
     return tuple(bar.get(k) for k in ("ts_ms", "open", "high", "low", "close", "volume"))
 
 
-def merge_completed_bars(state: dict[str, Any], key: str, rows: Sequence[Mapping[str, Any]]) -> list[str]:
+def merge_completed_bars(
+    state: dict[str, Any],
+    key: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    known_defects: set[str] | None = None,
+    allow_legacy_finality_repair: bool = False,
+    resolved: list[str] | None = None,
+) -> list[str]:
     existing = state.setdefault("streams", {}).setdefault(key, [])
     by_ts = {int(x["ts_ms"]): dict(x) for x in existing}
+    active = known_defects if known_defects is not None else set()
+    repairs = state.setdefault("source_revision_repairs", [])
+    repaired_defects = {str(x.get("defect")) for x in repairs if isinstance(x, Mapping)}
     defects: list[str] = []
     for row in rows:
         item = dict(row)
         ts = int(item["ts_ms"])
         prior = by_ts.get(ts)
         if prior is not None and _bar_fingerprint(prior) != _bar_fingerprint(item):
-            defects.append(f"APPEND_ONLY_BAR_MUTATION:{key}:{ts}")
+            defect = f"APPEND_ONLY_BAR_MUTATION:{key}:{ts}"
+            # One bounded migration is allowed only for defects already created
+            # under the former zero-lag sealing contract. The incoming row has
+            # now passed the one-full-bar finality quarantine. Any later change
+            # remains a new fail-closed append-only defect.
+            if (
+                allow_legacy_finality_repair
+                and defect in active
+                and defect not in repaired_defects
+            ):
+                repairs.append({
+                    "defect": defect,
+                    "stream_key": key,
+                    "ts_ms": ts,
+                    "prior_bar_sha256": stable_sha(prior),
+                    "final_bar_sha256": stable_sha(item),
+                    "resolution": "REVALIDATED_AFTER_ONE_FULL_BAR_FINALITY_LAG",
+                    "repaired_at_utc": utc_now(),
+                    "outcome_fields_used": False,
+                    "thresholds_changed": False,
+                })
+                by_ts[ts] = item
+                active.discard(defect)
+                if resolved is not None:
+                    resolved.append(defect)
+                continue
+            defects.append(defect)
             continue
         by_ts[ts] = item
     state["streams"][key] = [by_ts[k] for k in sorted(by_ts)]
@@ -171,19 +208,29 @@ def collect_live(state_path: Path) -> dict[str, Any]:
     raw_streams = source_audit.fetch_live_streams(spec)
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     audit = source_audit.build_receipt(spec, raw_streams, now_ms=now_ms)
-    defects = list(state.get("integrity_defects") or [])
+    defects = set(str(x) for x in (state.get("integrity_defects") or []))
+    previous_finality_lag = int(state.get("bar_finalization_lag_bars") or 0)
+    allow_legacy_finality_repair = previous_finality_lag < source_audit.FINALIZATION_LAG_BARS
+    resolved_defects: list[str] = []
     if audit.get("state") != "PASS_EXACT8_SIX_SOURCE_REALITY_AUDIT_NO_BOUNDARY":
-        defects.append(f"SOURCE_AUDIT_NOT_PASS:{audit.get('state')}")
+        defects.add(f"SOURCE_AUDIT_NOT_PASS:{audit.get('state')}")
 
     needed = sorted({int(spec["specs"][pid]["timeframe_ms"]) for pid in SOURCE_READY})
     for symbol in SYMBOLS:
         for timeframe_ms in needed:
             audited, closed = source_audit.audit_stream(raw_streams[(symbol, timeframe_ms)], symbol=symbol, timeframe_ms=timeframe_ms, now_ms=now_ms)
             if audited["state"] != "PASS_SOURCE_STREAM_INTEGRITY":
-                defects.append(f"STREAM_INTEGRITY:{symbol}:{timeframe_ms}:{audited['state']}")
+                defects.add(f"STREAM_INTEGRITY:{symbol}:{timeframe_ms}:{audited['state']}")
             # Pre-boundary completed bars are retained only to compute causal indicator warmup.
             # All signal/outcome counting is separately clamped to boundary_ms in replay_child.
-            defects.extend(merge_completed_bars(state, _stream_key(symbol, timeframe_ms), closed))
+            defects.update(merge_completed_bars(
+                state,
+                _stream_key(symbol, timeframe_ms),
+                closed,
+                known_defects=defects,
+                allow_legacy_finality_repair=allow_legacy_finality_repair,
+                resolved=resolved_defects,
+            ))
 
     frozen_costs = state.setdefault("cost_snapshot_by_symbol", {})
     for symbol in SYMBOLS:
@@ -202,7 +249,10 @@ def collect_live(state_path: Path) -> dict[str, Any]:
 
     state["source_audit_receipt_sha256"] = audit.get("receipt_sha256")
     state["updated_at_utc"] = utc_now()
-    state["integrity_defects"] = sorted(set(defects))
+    state["bar_finalization_lag_bars"] = source_audit.FINALIZATION_LAG_BARS
+    state["resolved_integrity_defects_this_run"] = sorted(set(resolved_defects))
+    state["source_revision_repair_count"] = len(state.get("source_revision_repairs") or [])
+    state["integrity_defects"] = sorted(defects)
     state["state"] = "HOLD_INTEGRITY" if state["integrity_defects"] else "COLLECTING"
     state["receipt_sha256"] = stable_sha({k: v for k, v in state.items() if k != "receipt_sha256"})
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -666,6 +716,25 @@ def self_test() -> int:
     assert normalized["rows"][0]["capture_completed_at_ms"] == 123
     m = metrics([10.0, -5.0, 20.0])
     assert m["trades"] == 3 and m["net_bps"] == 25.0
+    prior = {"ts_ms": 1, "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1.0}
+    final = {**prior, "close": 10.5, "volume": 2.0}
+    defect = "APPEND_ONLY_BAR_MUTATION:BTC-USDT|300000:1"
+    repair_state = {"streams": {"BTC-USDT|300000": [prior]}, "source_revision_repairs": []}
+    active = {defect}; resolved: list[str] = []
+    new_defects = merge_completed_bars(
+        repair_state, "BTC-USDT|300000", [final],
+        known_defects=active, allow_legacy_finality_repair=True, resolved=resolved,
+    )
+    assert not new_defects and defect not in active and resolved == [defect]
+    assert repair_state["streams"]["BTC-USDT|300000"][0]["close"] == 10.5
+    assert len(repair_state["source_revision_repairs"]) == 1
+    later = {**final, "close": 10.7}
+    new_defects = merge_completed_bars(
+        repair_state, "BTC-USDT|300000", [later],
+        known_defects=active, allow_legacy_finality_repair=False,
+    )
+    assert new_defects == [defect]
+    assert repair_state["streams"]["BTC-USDT|300000"][0]["close"] == 10.5
     a3_contract = read(a3.CONTRACT)
     if int(boundary["boundary_ms"]) < a3.dt_ms(str(a3_contract["activation_boundary_utc"])):
         raise RuntimeError("EXACT8_BOUNDARY_PRECEDES_A3_ACTIVATION")

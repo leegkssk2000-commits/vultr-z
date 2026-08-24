@@ -60,8 +60,19 @@ class Exact8SourceRealityAuditTests(unittest.TestCase):
         )
         receipt = audit.build_receipt(self.spec, streams, now_ms=self.now_ms)
         row = next(x for x in receipt["stream_rows"] if x["symbol"] == key[0] and x["timeframe_ms"] == key[1])
-        self.assertEqual(row["in_progress_bar_count_excluded"], 1)
+        # The live candle plus the newest nominally closed candle remain unsealed.
+        self.assertEqual(row["in_progress_bar_count_excluded"], 2)
+        self.assertEqual(row["finalization_lag_bars"], 1)
         self.assertEqual(row["state"], "PASS_SOURCE_STREAM_INTEGRITY")
+
+    def test_nominally_closed_bar_waits_one_full_bar_for_finality(self) -> None:
+        key = ("BTC-USDT", 300_000)
+        audited, closed = audit.audit_stream(
+            self.streams[key], symbol=key[0], timeframe_ms=key[1], now_ms=self.now_ms
+        )
+        self.assertEqual(audited["completed_bar_count"], 129)
+        self.assertEqual(audited["in_progress_bar_count_excluded"], 1)
+        self.assertEqual(closed[-1]["ts_ms"], self.now_ms - 2 * key[1])
 
     def test_authority_remains_blocked(self) -> None:
         receipt = audit.build_receipt(self.spec, self.streams, now_ms=self.now_ms)

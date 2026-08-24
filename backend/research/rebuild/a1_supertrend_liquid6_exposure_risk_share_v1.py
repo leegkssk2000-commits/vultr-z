@@ -75,7 +75,10 @@ def validate_receipt(receipt: Mapping[str, Any]) -> list[str]:
         entry_ts = int(row.get("entry_ts") or 0)
         exit_ts = int(row.get("exit_ts") or 0)
         net = float(row.get("net_bps") or 0.0)
-        if entry_ts <= 0 or exit_ts <= entry_ts:
+        # Same-bar exits are valid in the canonical evaluator: entry and exit
+        # can share the bar timestamp when SL/TP is realized inside the entry bar.
+        # Only a strictly earlier exit is an interval defect.
+        if entry_ts <= 0 or exit_ts < entry_ts:
             defects.append("INVALID_TRADE_INTERVAL")
             break
         if not math.isfinite(net):
@@ -121,13 +124,13 @@ def metrics(rows: list[dict[str, Any]], pnl_key: str) -> dict[str, Any]:
 def active_same_symbol_count(trade: Mapping[str, Any], rows: list[dict[str, Any]]) -> int:
     symbol = str(trade["symbol"])
     entry_ts = int(trade["entry_ts"])
-    # Includes the trade itself. Equal-entry overlaps receive the same count,
-    # avoiding arbitrary ordering effects.
+    # Includes the trade itself. Same-bar exits count as active at their entry
+    # instant; equal-entry overlaps receive the same count, avoiding ordering bias.
     return sum(
         1
         for other in rows
         if str(other["symbol"]) == symbol
-        and int(other["entry_ts"]) <= entry_ts < int(other["exit_ts"])
+        and int(other["entry_ts"]) <= entry_ts <= int(other["exit_ts"])
     )
 
 
@@ -259,6 +262,9 @@ def self_test() -> int:
     ]
     same_shared = apply_equal_same_symbol_risk_share(same_entry)
     assert all(x["same_symbol_active_at_entry"] == 2 and x["risk_share_weight"] == 0.5 for x in same_shared)
+    same_bar = [{"intent_sha": "z", "symbol": "SOL-USDT", "entry_ts": 50, "exit_ts": 50, "net_bps": -10.0}]
+    same_bar_shared = apply_equal_same_symbol_risk_share(same_bar)
+    assert same_bar_shared[0]["same_symbol_active_at_entry"] == 1
     print("PASS_A1_SUPERTREND_LIQUID6_EXPOSURE_RISK_SHARE_V1_SELF_TEST")
     return 0
 

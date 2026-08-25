@@ -459,15 +459,16 @@
         "VOLATILITY_RISK_SCALING_ONLY",
         "LIQUIDITY_REGIME_OWNER_ONLY",
         "RELATIVE_VOLUME_CONFIRMATION_ONLY",
-        "SESSION_PRICE_DISCOVERY_OWNER_ONLY"
+        "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "COST_TURNOVER_COMPRESSION_ONLY"
       ],
-      "economically_tested_axes_this_run": [],
+      "economically_tested_axes_this_run": [
+        "COST_TURNOVER_COMPRESSION_ONLY"
+      ],
       "next": "NEXT_DISTINCT_ALLOWED_AXIS",
       "pass_candidate_ids": [],
-      "remaining_axis_count": 5,
-      "technical_rejected_axes": [
-        "COST_TURNOVER_COMPRESSION_ONLY"
-      ]
+      "remaining_axis_count": 4,
+      "technical_rejected_axes": []
     }
   },
   "development_economic_pass_count": 0,
@@ -510,7 +511,8 @@
       "VOLATILITY_RISK_SCALING_ONLY",
       "LIQUIDITY_REGIME_OWNER_ONLY",
       "RELATIVE_VOLUME_CONFIRMATION_ONLY",
-      "SESSION_PRICE_DISCOVERY_OWNER_ONLY"
+      "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+      "COST_TURNOVER_COMPRESSION_ONLY"
     ]
   },
   "exchange_order_submitted": false,
@@ -531,11 +533,11 @@
       "alpha_proof_candidate_ready": false,
       "architecture_family": "trend",
       "candidate_id": "trend_rider_repair_COST_TURNOVER_COMPRESSION_ONLY_v1",
-      "candidate_sha256": "9fcd3ec6430769657bea827dd4b61bf88c603dd5e73654d13ba8c9f293d1a8ad",
+      "candidate_sha256": "4cf3e95c0cb3bfe89a4e00c72fce3498890224606979b80b60daa98a1575db67",
       "changed_axis": "COST_TURNOVER_COMPRESSION_ONLY",
       "direction_rule": "both",
       "economic_next": "AUTO_DEVELOPMENT_REPLAY",
-      "entry_event": "close > ema(close,20) and ema(close,20) > ema(close,50)",
+      "entry_event": "close > highest(close,20) or close < lowest(close,20)",
       "evidence_ids": [
         "F1"
       ],
@@ -543,30 +545,30 @@
         "bar_interval": "15m",
         "cost_model": "14bps verified round trip",
         "development_data_rule": "STRICTLY_PRE_GEN1_BOUNDARY",
-        "entry_rule": "close > ema(close,20) and ema(close,20) > ema(close,50)",
+        "entry_rule": "(close > highest(close,20)) or (close < lowest(close,20))",
         "entry_timing": "completed-bar timing",
         "exit_rule": "max_hold_bars",
         "features": [
           {
             "formula": "std(close,20) / max(sma(close,20),0.00000001)",
-            "name": "volatility_norm"
+            "name": "vol_norm"
           },
           {
             "formula": "vol_ratio(20)",
-            "name": "vol_ratio_20"
+            "name": "vol_ratio20"
           },
           {
             "formula": "ema(close,20) - ema(close,50)",
-            "name": "ema_gap"
+            "name": "ema_diff"
           }
         ],
         "max_hold_bars": 12,
         "parameter_provenance": "mechanism prior only; no outcome sweep",
-        "side_rule": "both"
+        "side_rule": "long if ema(close,20) > ema(close,50) else short"
       },
-      "exit_logic": "time-constrained exit to limit turnover while preserving parent exit mechanics",
+      "exit_logic": "limit holding horizon to enforce cost-dominant natural horizon rather than tuned threshold",
       "expected_move_cost_multiple_target": 2.0,
-      "falsification": "kill if prospective net_expectancy_bps <= verified_round_trip_cost_bps * 2 over STRICTLY_PRE_GEN1_BOUNDARY",
+      "falsification": "kill if prospective net_expectancy_bps <= 0 over strictly pre-gen1 boundary holdout",
       "forbidden_changes": [
         "fees",
         "best-horizon selection",
@@ -574,23 +576,21 @@
       ],
       "invalidation": "causal invalidation",
       "machine_replayable": true,
-      "mechanism": "Reduce frequency of re-entry to respect transaction-cost budget; who pays: strategy turnover to market friction",
+      "mechanism": "reduce turnover by stricter re-entry screening so natural signal horizon dominates verified cost budget; market participant = end liquidity taker paying costs",
       "mode": "REPAIR",
-      "native_horizon": "intraday to multiday natural holding horizon",
+      "native_horizon": "intraday-to-short-horizon (natural holding horizon)",
       "payer": "market participant/inefficiency",
       "provider": "openai",
-      "regime_owner": "trade only when persistent trend confirmed and volatility-normalized signal exceeds threshold implicitly via entry rule and feature gating",
+      "regime_owner": "trade only when volatility-normalized breakout aligns with multi-speed trend direction",
       "required_sources": [
         "ohlcv"
       ],
       "score": 6.8,
       "source_ready": true,
-      "spec_repair_iteration": 1,
-      "spec_repair_semantics_frozen": true,
       "strategy_id": "trend_rider",
-      "time_stop_rationale": "max_hold_bars prevents long-duration exposure that increases realized turnover costs inconsistent with mechanism",
-      "turnover_cost_budget": "Expected move must dominate verified costs by targeting persistent multi-bar trends and limiting re-entry frequency",
-      "why_distinct": "Alters only re-entry/turnover eligibility while preserving original cost model and exit family, distinct from multihorizon or side-asymmetry repairs"
+      "time_stop_rationale": "max_hold_bars bounds exposure so expected move can exceed verified costs within natural horizon",
+      "turnover_cost_budget": "strict re-entry (breakout) plus directional alignment reduces trade count so expected move can dominate verified costs",
+      "why_distinct": "changes only re-entry eligibility to compress turnover while preserving original exit and cost model"
     }
   ],
   "initial_development_economics": {
@@ -601,7 +601,7 @@
     "economic_pass_count": 0,
     "exchange_order_submitted": false,
     "execution_authority": "NONE",
-    "insufficient_event_count": 0,
+    "insufficient_event_count": 1,
     "live_trade_authority": "BLOCKED",
     "mixed_scope": true,
     "order_authority": "BLOCKED",
@@ -610,16 +610,43 @@
     "protected_mutations": 0,
     "rows": [
       {
+        "boundary": "2026-08-16T18:45:01Z",
         "candidate_id": "trend_rider_repair_COST_TURNOVER_COMPRESSION_ONLY_v1",
+        "development_only": true,
         "economic_pass": false,
-        "error": "ValueError:SIDE_RULE_UNSUPPORTED",
-        "state": "REJECT_UNEXECUTABLE_SPEC"
+        "metrics": {
+          "cost_bps_per_trade": 14.0,
+          "development_days": 31.208333333333332,
+          "drawdown_bps": 0.0,
+          "events_per_day": 0.0,
+          "gross_expectancy_bps": null,
+          "net_bps_per_calendar_day": 0.0,
+          "net_expectancy_bps": null,
+          "net_pnl_bps": 0,
+          "payoff": null,
+          "profit_factor": null,
+          "trades": 0,
+          "win_rate": null
+        },
+        "prospective": false,
+        "provider": "openai",
+        "source_summary": {
+          "BTC-USDT": {
+            "bars": 2997
+          },
+          "ETH-USDT": {
+            "bars": 2997
+          }
+        },
+        "state": "FAIL_INSUFFICIENT_EVENTS",
+        "strategy_id": "trend_rider",
+        "uses_data_strictly_before_gen1_boundary": true
       }
     ],
     "schema_version": "zel.a1_gen2_generic_dev_econ.v3",
     "selection_authority": false,
     "source_skip_count": 0,
-    "spec_reject_count": 1,
+    "spec_reject_count": 0,
     "supported_sources": [
       "basis",
       "funding",
@@ -631,7 +658,7 @@
   "live_trade_authority": "BLOCKED",
   "order_authority": "BLOCKED",
   "paid_request_cap": 3,
-  "paid_request_count": 2,
+  "paid_request_count": 1,
   "policy": {
     "a1_a2_a3_gate_order_preserved": true,
     "a5_only": true,
@@ -714,13 +741,13 @@
         "trend_rider"
       ],
       "model": "gpt-5-mini",
-      "prompt_sha": "a846612076c22c337c3726f2ec2589f0246dd20bf5c86664efe23c3bdb712ebf",
+      "prompt_sha": "478b70683619b874cc71f5f624de337884fbaa0d4207c50e4e3449ffa69c9ee8",
       "provider_contract": "A5_ECONOMIC_V2",
       "represented_strategy_ids": [
         "trend_rider"
       ],
       "request_count": 1,
-      "response_sha": "77b42c95498add88d7e7010b0edcd9527fae7d1bfb38a0de8cc2e24bc39aa30f",
+      "response_sha": "ee0110f16f2830dfb5a12ae83aba827ccf12edc4d2f2ce0b3801312c5e1dbd62",
       "structured_output": "strict",
       "successful": true
     },
@@ -731,18 +758,13 @@
       "successful": false
     },
     "openai_spec_repair": {
-      "candidate_count": 1,
-      "model": "gpt-5-mini",
-      "prompt_sha": "c9ca21d2e97a3e1630219ad19732aac439a6848c8a98b3781a143680c5f3de86",
-      "provider_contract": "A5_ECONOMIC_V2",
-      "repair_scope": "EXECUTABLE_SPEC_ONLY",
-      "request_count": 1,
-      "response_sha": "77b42c95498add88d7e7010b0edcd9527fae7d1bfb38a0de8cc2e24bc39aa30f",
-      "structured_output": "strict",
-      "successful": true
+      "reason": "NO_SPEC_REJECT_OR_REQUEST_BUDGET",
+      "request_count": 0,
+      "skipped": true,
+      "successful": false
     }
   },
-  "receipt_sha256": "796ca1dd328f5f808edb7e83bfb7e7bd5a2009ab069f2cd231fe9db864f7d448",
+  "receipt_sha256": "eef749065a6ba383315a2343ed81e5cd9918300785e8c466a4bb1081b8efb2c4",
   "schema_version": "zel.a1_a5_economic_improvement.v5",
   "second_step_candidates": [],
   "second_step_development_economics": {
@@ -756,9 +778,9 @@
   "selection_authority": false,
   "source_history_readiness": {
     "basis": {
-      "captured_min_span_ms": 1207516725,
-      "coverage_progress_ratio": 0.665540485796488,
-      "coverage_receipt": "8959d911f4271e7389ab9b5b3cb32425e06f301525e86cb2c4815f7796a5f752",
+      "captured_min_span_ms": 1226476891,
+      "coverage_progress_ratio": 0.6759906583110111,
+      "coverage_receipt": "f3910e07ec48fc7c5af95e5cb3675a47034f3b8bb3ecc319799eb732f190b457",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -768,16 +790,16 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 7.023417534722222,
-      "remaining_span_ms": 606823275,
+      "remaining_days": 6.803971168981482,
+      "remaining_span_ms": 587863109,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },
     "basis_oi_combined_gate": {
-      "coverage_progress_ratio": 0.665540485796488,
+      "coverage_progress_ratio": 0.6759906583110111,
       "duration_gate_pass": false,
       "reason": "BASIS_FUNDING_OI_SUBAXIS_21D_PLUS_FUNDING_REQUIRED",
-      "remaining_days": 7.023417534722222,
+      "remaining_days": 6.803971168981482,
       "source_ready": false,
       "subaxis_contract_verified": true
     },
@@ -795,9 +817,9 @@
       "reason": "BINGX_KLINE_PRE_BOUNDARY_PULL_AVAILABLE"
     },
     "open_interest": {
-      "captured_min_span_ms": 1207516725,
-      "coverage_progress_ratio": 0.665540485796488,
-      "coverage_receipt": "8959d911f4271e7389ab9b5b3cb32425e06f301525e86cb2c4815f7796a5f752",
+      "captured_min_span_ms": 1226476891,
+      "coverage_progress_ratio": 0.6759906583110111,
+      "coverage_receipt": "f3910e07ec48fc7c5af95e5cb3675a47034f3b8bb3ecc319799eb732f190b457",
       "coverage_state": "HOLD_P3_PROSPECTIVE_HISTORY_ACCUMULATING",
       "flow_source_bound": false,
       "full_carry_flow_replay_allowed": false,
@@ -807,8 +829,8 @@
       "prospective_only": true,
       "ready": false,
       "reason": "P3_SUBAXIS_FROZEN_21D_DURATION_GATE_PENDING",
-      "remaining_days": 7.023417534722222,
-      "remaining_span_ms": 606823275,
+      "remaining_days": 6.803971168981482,
+      "remaining_span_ms": 587863109,
       "required_capture_span_ms": 1814340000,
       "subaxis_contract_verified": true
     },

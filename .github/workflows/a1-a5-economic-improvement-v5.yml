@@ -1,4 +1,4 @@
-name: A1 Top5 Economic Improvement V8
+name: A1 Top5 Economic Improvement V9
 
 on:
   pull_request:
@@ -12,6 +12,7 @@ on:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v6.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v7.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
@@ -20,6 +21,7 @@ on:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
@@ -33,7 +35,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: a1-top5-economic-improvement-v8
+  group: a1-top5-economic-improvement-v9
   cancel-in-progress: true
 
 jobs:
@@ -51,11 +53,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test named-channel risk sizing pipe
+      - name: Compile and self-test V8 plus WR81 dynamic HTF
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v8.py
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --self-test
+          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py --self-test
 
   improve:
     if: github.event_name != 'pull_request'
@@ -71,7 +75,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run Top5 economic cascade plus account-equity risk sizing evaluator
+      - name: Run Top5 V8 plus exact WR81 dynamic trendline HTF attribution
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -82,9 +86,11 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --output out/a1_a5_economic_improvement_v8.json
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_a5_economic_improvement_v8.json'))
+          d=json.load(open('out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json'))
           league=json.load(open('backend/research/rebuild/a1_strategy25_improvement_league_latest.json'))
           b=r['named_channel_executable_bridge']
           risk=r['named_channel_risk_sizing_evaluator']
@@ -107,10 +113,18 @@ jobs:
           assert risk['risk_fraction_absolute_value_imported'] is False
           assert risk['same_signal_and_exit_events_required'] is True
           assert risk['no_outcome_threshold_sweep'] is True
+          assert d['authority_match'] is True, d
+          assert d['canonical_head']=='trend_rider_wr80_us_chase_cooling_v1'
+          assert d['base_wr8125']['trades']==16 and d['base_wr8125']['wins']==13
+          assert abs(d['base_wr8125']['win_rate']-0.8125) < 1e-12
+          assert d['numeric_threshold_sweep'] is False
+          assert d['creator_numeric_threshold_imported'] is False
+          assert d['outcome_used_at_runtime'] is False
           assert set((r.get('by_strategy') or {}).keys()).issubset(set(r['performance_focus_order']))
           assert int(r['paid_request_count']) <= 3
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED' and d['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
           print(json.dumps({
             'state':r.get('state'),'focus':r['performance_focus_order'],
@@ -118,19 +132,21 @@ jobs:
             'yt_eligible':b.get('eligible_axis_count'),'yt_attempted':b.get('attempted_named_axis_count'),
             'risk_hypotheses':risk.get('hypothesis_count'),'risk_evaluated':risk.get('evaluated_count'),
             'risk_pass':risk.get('economic_pass_count'),'risk_control_improved':risk.get('risk_control_improvement_count'),
+            'wr8125_dynamic_state':d.get('state'),'wr8125_dynamic_strict':d.get('strict_candidate_count'),
+            'wr8125_dynamic_recommended':d.get('recommended_discovery_child'),
             'paid':r.get('paid_request_count'),'receipt':r.get('receipt_sha256')
           },sort_keys=True))
           PY
-      - name: Persist focused economic receipt
+      - name: Persist focused economic and WR81 dynamic HTF receipts
         run: |
           set -euo pipefail
-          target=backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
-          cp out/a1_a5_economic_improvement_v8.json "$target"
-          git config user.name 'a1-top5-economic-improvement-v8'
+          cp out/a1_a5_economic_improvement_v8.json backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
+          cp out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
+          git config user.name 'a1-top5-economic-improvement-v9'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
+          git add backend/research/architecture_factory/a1_a5_economic_improvement_latest.json backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist named-channel risk sizing V8 receipt [skip ci]'
+          git commit -m 'A1 A5: persist V9 WR81 dynamic HTF receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -146,23 +162,25 @@ jobs:
           python - <<'PY'
           import json, os, urllib.request
           r=json.load(open('out/a1_a5_economic_improvement_v8.json'))
+          d=json.load(open('out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json'))
           b=r['named_channel_executable_bridge']
           risk=r['named_channel_risk_sizing_evaluator']
-          marker='<!-- A1_TOP5_ECONOMIC_IMPROVEMENT_V8 -->'
+          marker='<!-- A1_TOP5_ECONOMIC_IMPROVEMENT_V9 -->'
           rows=[]
           for sid in r['performance_focus_order']:
               x=(r.get('by_strategy') or {}).get(sid,{})
               yt=','.join((b.get('attempted_named_axes_by_strategy') or {}).get(sid,[])) or '-'
               rows.append(f"{sid}:attempts={x.get('attempt_count',0)},dev_pass={x.get('development_economic_pass_count',0)},yt={yt},next={x.get('next')}")
           lines=[
-            marker,'## A1 Top5 Economic Improvement V8',
+            marker,'## A1 Top5 Economic Improvement V9',
             f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
             'focus_order='+','.join(r['performance_focus_order']),
             f"development_pass={r.get('development_economic_pass_count')}|paid={r.get('paid_request_count')}/{r.get('paid_request_cap')}",
             f"named_channel_eligible_axes={b.get('eligible_axis_count')}|attempted={b.get('attempted_named_axis_count')}|evidence={b.get('eligible_evidence_count')}",
             f"risk_hypotheses={risk.get('hypothesis_count')}|evaluated={risk.get('evaluated_count')}|economic_pass={risk.get('economic_pass_count')}|risk_control_improved={risk.get('risk_control_improvement_count')}",
+            f"wr8125_dynamic_htf_state={d.get('state')}|strict={d.get('strict_candidate_count')}|canonical={d.get('canonical_head')}",
             *rows,
-            'POLICY=named-channel account-equity/risk mechanisms use a dedicated paired replay; creator risk percentages/performance claims are not imported; same entry/exit events and verified cost model are preserved',
+            'POLICY=WR81.25 canonical Trend Rider is the only Trend Rider host for dynamic trendline/HTF restoration; creator thresholds/performance claims are not imported; fresh/OOS required before promotion',
             'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
           ]
           body='\n'.join(lines)
@@ -173,12 +191,14 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_TOP5_ECONOMIC_IMPROVEMENT_V8_PUBLISHED')
+          print('PASS_A1_TOP5_ECONOMIC_IMPROVEMENT_V9_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-top5-economic-improvement-v8-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_a5_economic_improvement_v8.json
+          name: a1-top5-economic-improvement-v9-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_a5_economic_improvement_v8.json
+            out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
           if-no-files-found: error
           retention-days: 30

@@ -60,6 +60,10 @@ def _resolve_shell_ref(token: str, assignments: dict[str, str]) -> str:
 
 def _write_target_tokens(line: str) -> list[str]:
     stripped = line.strip()
+    if stripped.startswith("- run:"):
+        stripped = stripped[len("- run:"):].strip()
+    elif stripped.startswith("run:"):
+        stripped = stripped[len("run:"):].strip()
     if not stripped or stripped.startswith("#"):
         return []
     targets: list[str] = []

@@ -30,6 +30,52 @@ def trusted_stage(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> di
     )
 
 
+def lineage_headline(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> dict[str, Any]:
+    """Pick the best meaningful branch for display without granting promotion authority.
+
+    Formal league rank/stage continues to use trusted operational evidence. This selector is
+    intentionally display-only so a strong discovery/repair child can be the user-facing
+    representative of a strategy lineage while its parent remains the formal baseline.
+    """
+    clean = [
+        x for x in rows
+        if not list(x.get("integrity_defects") or [])
+        and int(x.get("leakage_lookahead") or 0) == 0
+    ]
+    meaningful = [
+        x for x in clean
+        if int((x.get("metrics") or {}).get("completed_trades") or 0) >= 8
+        and core.positive_economics(x.get("metrics") or {})
+    ]
+    pool = meaningful or clean or [dict(fallback)]
+
+    def key(x: Mapping[str, Any]) -> tuple[Any, ...]:
+        m = x.get("metrics") or {}
+        dd = core.finite(m.get("drawdown_bps"))
+        return (
+            int(core.positive_economics(m)),
+            core.finite(m.get("net_expectancy_bps")) or -1e30,
+            core.finite(m.get("net_pnl_bps")) or -1e30,
+            core.finite(m.get("profit_factor")) or -1e30,
+            core.finite(m.get("win_rate")) or -1e30,
+            -(dd if dd is not None else 1e30),
+            int(m.get("completed_trades") or 0),
+        )
+
+    picked = max(pool, key=key)
+    operational = bool(picked.get("operational_evidence"))
+    return {
+        "identity": picked.get("identity") or fallback.get("identity"),
+        "source_path": picked.get("source_path"),
+        "observed_at_utc": picked.get("observed_at_utc"),
+        "metrics": dict(picked.get("metrics") or {}),
+        "verification_tier": "OPERATIONAL_EVIDENCE" if operational else "DISCOVERY_ONLY_FRESH_PENDING",
+        "display_only": True,
+        "formal_rank_uses_headline": False,
+        "formal_promotion_eligible": False,
+    }
+
+
 def collect_evidence(extra_json: list[Path] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
     inventory = core.read(core.INVENTORY)
     baseline = core.read(core.BASELINE)
@@ -78,6 +124,16 @@ def repartition(result: dict[str, Any], baseline: Mapping[str, Any]) -> None:
     result["challenger_next5"] = [x["strategy_id"] for x in rows if x["role"] == "CHALLENGER_NEXT5"]
     result["failover_due"] = [x["strategy_id"] for x in rows if x.get("failover_due")]
     result["deep_replay_manifest"]["strategy_ids"] = list(result["active_top5"])
+    result["headline_top5"] = [
+        {
+            "strategy_id": x["strategy_id"],
+            "rank": x["rank"],
+            "role": x["role"],
+            "lineage_headline": x.get("lineage_headline"),
+            "formal_metrics": x.get("metrics"),
+        }
+        for x in rows if x["role"] == "ACTIVE_TOP5"
+    ]
 
 
 def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
@@ -93,6 +149,7 @@ def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
     for row in result["rows"]:
         sid = row["strategy_id"]
         fallback = {
+            "identity": row.get("identity") or sid,
             "stage_rank": row.get("stage_rank", 0),
             "source_priority": (row.get("source") or {}).get("priority", 0),
             "source_path": (row.get("source") or {}).get("path"),
@@ -113,12 +170,17 @@ def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
             "observed_at_utc": stage_evidence.get("observed_at_utc"),
         }
         row["stage_preserved_across_metric_refresh"] = trusted_rank >= metric_stage
+        row["lineage_headline"] = lineage_headline(by_sid.get(sid) or [], fallback)
+        row["formal_metrics"] = dict(row.get("metrics") or {})
+        row["display_metrics"] = dict((row["lineage_headline"] or {}).get("metrics") or {})
         if trusted_rank >= 6:
             row["failover_due"] = False
 
     repartition(result, baseline)
     result["schema_version"] = "zel.a1.strategy25_improvement_league.v2"
     result["stage_aggregation"] = "MAX_TRUSTED_OPERATIONAL_STAGE_SEPARATE_FROM_METRIC_SOURCE"
+    result["lineage_display_policy"] = "BEST_MEANINGFUL_BRANCH_HEADLINE_PARENT_RETAINED_AS_FORMAL_BASELINE"
+    result["lineage_display_min_trades"] = 8
     result["stage_regression_guard"] = True
     result["receipt_sha256"] = core.stable({k: v for k, v in result.items() if k != "receipt_sha256"})
     if result["role_counts"] != {"ACTIVE_TOP5": 5, "CHALLENGER_NEXT5": 5, "MATERIAL_HOLD": 15}:
@@ -145,7 +207,24 @@ def self_test() -> int:
     }
     picked = trusted_stage([high_metric_low_stage, lower_metric_high_stage, contaminated_stage], high_metric_low_stage)
     assert picked["stage_rank"] == 4 and picked["source_path"] == "a2.json", picked
+
+    parent = {
+        "identity": "trend_rider_parent", "source_path": "deep.json", "operational_evidence": True,
+        "integrity_defects": [], "leakage_lookahead": 0,
+        "metrics": {"completed_trades": 27, "win_rate": 0.4074, "net_pnl_bps": 10939.0,
+                    "net_expectancy_bps": 405.1, "profit_factor": 5.27, "drawdown_bps": 877.4},
+    }
+    child = {
+        "identity": "trend_rider_wr81_child", "source_path": "attribution_latest.json", "operational_evidence": False,
+        "integrity_defects": [], "leakage_lookahead": 0,
+        "metrics": {"completed_trades": 16, "win_rate": 0.8125, "net_pnl_bps": 23297.8,
+                    "net_expectancy_bps": 1456.1, "profit_factor": None, "drawdown_bps": None},
+    }
+    head = lineage_headline([parent, child], parent)
+    assert head["identity"] == "trend_rider_wr81_child" and head["verification_tier"] == "DISCOVERY_ONLY_FRESH_PENDING", head
+    assert head["formal_rank_uses_headline"] is False and head["formal_promotion_eligible"] is False, head
     print("PASS_A1_STRATEGY25_IMPROVEMENT_LEAGUE_V2_STAGE_GUARD_SELF_TEST")
+    print("PASS_A1_STRATEGY25_LINEAGE_HEADLINE_SELF_TEST")
     return 0
 
 
@@ -162,6 +241,7 @@ def main() -> int:
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     print("STRATEGY25_LEAGUE_V2=" + json.dumps({
         "active": result["active_top5"],
+        "headline_top5": result["headline_top5"],
         "challenger": result["challenger_next5"],
         "roles": result["role_counts"],
         "improved": result["improved_count"],

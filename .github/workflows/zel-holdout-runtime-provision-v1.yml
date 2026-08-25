@@ -142,22 +142,22 @@ jobs:
           assert a['execution_authority']=='NONE' and a['order_authority']=='BLOCKED',a
           print(json.dumps({'provision':p['state'],'audit':a['state']},sort_keys=True))
           PY
-      - name: Publish redacted receipts only
+      - name: Publish provision receipt and scoped post-audit receipt
         run: |
           set -euo pipefail
           git clone --depth=1 --branch zel-data-expansion-results-v1 \
             "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" results
           proot=results/runtime_results/zel/holdout_runtime_provision_v1
-          aroot=results/runtime_results/zel/holdout_vault_audit_v1
-          mkdir -p "$proot" "$aroot"
+          postroot="$proot/post_audit"
+          mkdir -p "$proot" "$postroot"
           cp out/provision_latest.json "$proot/latest.json"
           cp out/provision_latest.json "$proot/run_${GITHUB_RUN_ID}.json"
-          cp out/audit_latest.json "$aroot/latest.json"
-          cp out/audit_latest.json "$aroot/run_${GITHUB_RUN_ID}.json"
+          cp out/audit_latest.json "$postroot/latest.json"
+          cp out/audit_latest.json "$postroot/run_${GITHUB_RUN_ID}.json"
           cd results
           git config user.name 'zel-holdout-provision-bot'
           git config user.email 'zel-holdout-provision-bot@users.noreply.github.com'
-          git add runtime_results/zel/holdout_runtime_provision_v1 runtime_results/zel/holdout_vault_audit_v1
+          git add runtime_results/zel/holdout_runtime_provision_v1
           git commit -m "result(zel): provision external holdout vault ${GITHUB_RUN_ID}"
           git push origin HEAD:zel-data-expansion-results-v1
       - name: Clean temporary files
@@ -171,4 +171,4 @@ jobs:
           name: zel-holdout-runtime-provision-v1-${{ github.run_id }}
           path: out
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30

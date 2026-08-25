@@ -22,7 +22,6 @@ on:
       - 'backend/research/architecture_factory/a1_mechanism_first_research_v1.py'
       - 'backend/research/architecture_factory/a1_mechanism_first_research_v2.py'
       - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
-      - '.github/workflows/a1-a5-no-idle-research-v1.yml'
   workflow_dispatch:
   schedule:
     - cron: '37 * * * *'
@@ -33,7 +32,7 @@ permissions:
 
 concurrency:
   group: a1-mechanism-first-research-v13
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -77,12 +76,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install review dependencies
-        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
+        run: python -m pip install --disable-pip-version-check groq
       - name: Run resilient mechanism-first architecture research
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -129,7 +128,7 @@ jobs:
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'A1: persist resilient mechanism-first research receipt [skip ci]'
           for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 3
           done
           exit 1
@@ -171,4 +170,4 @@ jobs:
             out/a1_mechanism_first_research_raw.json
             out/a1_mechanism_first_research_v1.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30

@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: zel-data-ab-status-probe-v1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -103,28 +103,34 @@ jobs:
         with:
           ref: zel-data-expansion-results-v1
           path: results-branch
-          fetch-depth: 0
+          fetch-depth: 1
           token: ${{ github.token }}
 
-      - name: Publish PASS or HOLD result
+      - name: Publish probe-scoped PASS or HOLD result
         if: always()
         run: |
           set -euo pipefail
           test -s result/latest.json
-          mkdir -p results-branch/runtime_results/zel/data_ab_expansion_v1
-          cp result/latest.json results-branch/runtime_results/zel/data_ab_expansion_v1/latest.json
-          cp result/latest.json "results-branch/runtime_results/zel/data_ab_expansion_v1/probe_${GITHUB_RUN_ID}.json"
+          root=results-branch/runtime_results/zel/data_ab_expansion_v1/probes
+          mkdir -p "$root"
+          cp result/latest.json "$root/latest.json"
+          cp result/latest.json "$root/probe_${GITHUB_RUN_ID}.json"
           cd results-branch
           git config user.name 'zel-data-ab-probe-bot'
           git config user.email 'zel-data-ab-probe-bot@users.noreply.github.com'
-          git add runtime_results/zel/data_ab_expansion_v1
+          git add runtime_results/zel/data_ab_expansion_v1/probes
           if git diff --cached --quiet; then
-            echo 'No result delta.'
+            echo 'No probe result delta.'
             exit 0
           fi
-          state=$(python -c "import json;print(json.load(open('runtime_results/zel/data_ab_expansion_v1/latest.json')).get('state','UNKNOWN'))")
-          git commit -m "result(zel): data A+B terminal ${state} ${GITHUB_RUN_ID}"
-          git push origin HEAD:zel-data-expansion-results-v1
+          state=$(python -c "import json;print(json.load(open('runtime_results/zel/data_ab_expansion_v1/probes/latest.json')).get('state','UNKNOWN'))")
+          git commit -m "result(zel): data A+B probe ${state} ${GITHUB_RUN_ID}"
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin zel-data-expansion-results-v1 && \
+              git push origin HEAD:zel-data-expansion-results-v1 && exit 0
+            sleep $((n * 2))
+          done
+          exit 1
 
       - name: Assert PASS terminal state
         if: always()

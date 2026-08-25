@@ -23,6 +23,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: a1-trend-rider-wr80-winner-restore-v1
+  cancel-in-progress: false
+
 jobs:
   winner-restore-attribution:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
@@ -57,6 +61,8 @@ jobs:
       PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -70,23 +76,44 @@ jobs:
         run: python backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py --self-test
       - name: Fresh-only replay and automatic H4/H5 at 25
         run: |
+          set -euo pipefail
           mkdir -p out
           python backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_v1.py --out out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
-          cat out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json'))
+          assert r['canonical_exact25_ledger_mutation'] is False
+          assert r['strategy_parameters_changed'] is False
+          assert r['thresholds_changed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r.get('state'),
+            'completed_trades':r.get('completed_trades'),
+            'sample_gap_to_25':r.get('sample_gap_to_25'),
+            'metrics':r.get('metrics'),
+            'receipt':r.get('receipt_sha256'),
+          },sort_keys=True))
+          PY
       - name: Upload fresh receipt
         uses: actions/upload-artifact@v4
         with:
           name: a1-trend-rider-wr80-us-chase-cooling-${{ github.run_id }}
           path: out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          retention-days: 30
       - name: Persist latest fresh receipt on master
         if: github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'push')
         run: |
-          cp out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
-          if git diff --quiet -- backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json; then
-            exit 0
-          fi
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          cp out/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json "$target"
           git config user.name 'a1-trend-wr80-winner-restore'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/rebuild/a1_trend_rider_wr80_us_chase_cooling_forward_latest.json
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
           git commit -m 'A1 trend_rider: persist WR80 winner-restore fresh proof [skip ci]'
-          git push
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

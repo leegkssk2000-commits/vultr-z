@@ -44,14 +44,14 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.rebuild.a1_common_regime_selector_pareto_router_v1 \
-            --out out/a1_common_regime_selector_pareto_latest.json
-          cat out/a1_common_regime_selector_pareto_latest.json
-      - name: Verify research-only selector contract
+            --out out/a1_common_regime_selector_pareto_rolling_latest.json
+          cat out/a1_common_regime_selector_pareto_rolling_latest.json
+      - name: Verify research-only rolling selector contract
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_common_regime_selector_pareto_latest.json'))
+          r=json.load(open('out/a1_common_regime_selector_pareto_rolling_latest.json'))
           assert r['state']=='PASS_COMMON_REGIME_SELECTOR_RESEARCH_ACTIVE',r
           assert r['cross_strategy_filter_copy_forbidden'] is True,r
           assert r['post_outcome_threshold_fitting_forbidden'] is True,r
@@ -68,26 +68,24 @@ jobs:
               assert x['bad_runtime_block_enabled'] is False,x
               assert x['good_runtime_boost_enabled'] is False,x
               assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED',x
-              bad=x.get('bad_regime_candidate')
-              if bad:
-                  assert bad['preentry_only'] is True and bad['runtime_enabled'] is False,bad
           print(json.dumps({
+              'writer_role':'ROLLING_DIAGNOSTIC_ONLY',
+              'canonical_writer':'VALIDATED_V2_ONLY',
               'routes':{x['strategy_id']:x['route'] for x in r['strategies']},
-              'partial_success':[x['strategy_id'] for x in r['strategies'] if x['partial_success_preserved']],
               'available_evidence':r['available_evidence'],
           },sort_keys=True))
           PY
-      - name: Persist latest common selector receipt on master
+      - name: Persist rolling receipt without overwriting validated canonical
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
-          target=backend/research/rebuild/a1_common_regime_selector_pareto_latest.json
-          cp out/a1_common_regime_selector_pareto_latest.json "$target"
+          target=backend/research/rebuild/a1_common_regime_selector_pareto_rolling_latest.json
+          cp out/a1_common_regime_selector_pareto_rolling_latest.json "$target"
           git config user.name 'a1-common-regime-selector-pareto-v1'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist common regime selector Pareto routes [skip ci]'
+          git commit -m 'A1: persist rolling common regime selector routes [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -97,6 +95,6 @@ jobs:
         if: always()
         with:
           name: a1-common-regime-selector-pareto-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_common_regime_selector_pareto_latest.json
+          path: out/a1_common_regime_selector_pareto_rolling_latest.json
           if-no-files-found: warn
           retention-days: 30

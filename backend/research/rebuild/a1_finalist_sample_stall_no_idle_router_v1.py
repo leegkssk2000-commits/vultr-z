@@ -188,14 +188,21 @@ def pace_diagnostic(receipt: Mapping[str, Any], funnel: Mapping[str, Any]) -> di
     boundary_ms = int(datetime.fromisoformat(boundary.replace("Z", "+00:00")).timestamp() * 1000)
     latest, post_bars, interval = source_frontier(receipt)
     trades = [dict(x) for x in (receipt.get("trades") or [])]
+    open_intents = [x for x in (receipt.get("open_intents") or []) if isinstance(x, Mapping)]
+    rejected_intents = [x for x in (receipt.get("ownership_rejected_intents") or []) if isinstance(x, Mapping)]
     completed = len(trades)
     intents = int(receipt.get("intent_count") or 0)
+    open_count = len(open_intents)
+    rejected_count = len(rejected_intents)
+    accounted_intents = completed + open_count + rejected_count
+    raw_intent_minus_completed = max(0, intents - completed)
+    unaccounted_intents = max(0, intents - accounted_intents)
     elapsed_h = max(0.0, ((latest or boundary_ms) - boundary_ms) / 3_600_000.0)
     last_exit = max((int(x.get("exit_ts") or 0) for x in trades), default=boundary_ms)
     last_trade_age_h = max(0.0, ((latest or boundary_ms) - last_exit) / 3_600_000.0)
     throughput = completed / elapsed_h if elapsed_h > 0 else 0.0
     projected = (MIN_TRADES - completed) / throughput if completed < MIN_TRADES and throughput > 0 else (0.0 if completed >= MIN_TRADES else None)
-    closure_gap = max(0, intents - completed)
+    closure_gap = unaccounted_intents
     closure_lag = closure_gap >= max(2, math.ceil(max(1, intents) * 0.25))
     stall = bool(
         completed < MIN_TRADES
@@ -218,7 +225,12 @@ def pace_diagnostic(receipt: Mapping[str, Any], funnel: Mapping[str, Any]) -> di
     return {
         "completed_trades": completed,
         "intent_count": intents,
-        "intent_minus_completed": closure_gap,
+        "intent_minus_completed": raw_intent_minus_completed,
+        "open_intent_count": open_count,
+        "ownership_rejected_intent_count": rejected_count,
+        "accounted_intent_count": accounted_intents,
+        "unaccounted_intent_count": unaccounted_intents,
+        "closure_gap_after_settlement_reconciliation": closure_gap,
         "post_boundary_bars_total": post_bars,
         "source_interval": interval,
         "elapsed_hours": elapsed_h,
@@ -233,6 +245,7 @@ def pace_diagnostic(receipt: Mapping[str, Any], funnel: Mapping[str, Any]) -> di
         "recommended_route": route,
         "feature_funnel": funnel,
         "monitor_thresholds_are_research_sla_not_strategy_parameters": True,
+        "settlement_reconciliation_rule": "intent = completed + valid_open + ownership_rejected + unaccounted; closure lag uses unaccounted only",
     }
 
 

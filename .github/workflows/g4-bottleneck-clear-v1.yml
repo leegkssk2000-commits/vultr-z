@@ -1,0 +1,118 @@
+name: G4 Bottleneck Clear V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/g4_bingx_1m_gap_exclusion_policy_v1.json'
+      - 'backend/research/g4_bingx_gap_exclusion_seal_v1.py'
+      - 'backend/research/g4_h5_bottleneck_router_v1.py'
+      - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
+      - 'backend/research/rebuild/a1_a4_exact_parent_repair_latest.json'
+      - 'backend/research/rebuild/a1_trend_rider_exact_parent_repair_latest.json'
+      - 'backend/research/rebuild/a1_a4_distinct_child_repair_latest.json'
+      - '.github/workflows/g4-bottleneck-clear-v1.yml'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: g4-bottleneck-clear-v1
+  cancel-in-progress: true
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 10
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/g4_bingx_gap_exclusion_seal_v1.py backend/research/g4_h5_bottleneck_router_v1.py
+          python backend/research/g4_bingx_gap_exclusion_seal_v1.py --self-test
+          python backend/research/g4_h5_bottleneck_router_v1.py --self-test
+      - name: Seal source gap and route H5
+        run: |
+          set -euo pipefail
+          python backend/research/g4_bingx_gap_exclusion_seal_v1.py
+          python backend/research/g4_h5_bottleneck_router_v1.py
+          python - <<'PY'
+          import json
+          g=json.load(open('backend/research/g4_bingx_1m_gap_exclusion_seal_latest.json'))
+          h=json.load(open('backend/research/g4_h5_bottleneck_route_latest.json'))
+          assert g['state']=='PASS_G4_BINGX_GAP_EXCLUSION_SEALED',g
+          assert g['source_gap_minutes']==4 and g['synthetic_rows_added']==0,g
+          assert g['usable_rows_per_symbol']==214560 and g['usable_total_rows']==1072800,g
+          assert h['state']=='PASS_G4_H5_ANTI_STALL_ROUTE_BOUND',h
+          assert len(h['active_top5'])==5 and len(h['routes'])==5,h
+          assert h['same_axis_repeat_allowed'] is False
+          assert h['h5_threshold_weakening_allowed'] is False
+          assert all(r['repeat_same_axis_forbidden'] is True for r in h['routes'])
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED'
+          assert h['execution_authority']=='NONE' and h['order_authority']=='BLOCKED'
+          print(json.dumps({'gap':g['state'],'usable_total_rows':g['usable_total_rows'],'h5_routes':h['route_counts']},sort_keys=True))
+          PY
+      - name: Persist receipts
+        run: |
+          set -euo pipefail
+          git config user.name 'g4-bottleneck-clear-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/g4_bingx_1m_gap_exclusion_seal_latest.json backend/research/g4_h5_bottleneck_route_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G4: persist source-gap seal and H5 route [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish G4 bottleneck state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request
+          g=json.load(open('backend/research/g4_bingx_1m_gap_exclusion_seal_latest.json'))
+          h=json.load(open('backend/research/g4_h5_bottleneck_route_latest.json'))
+          marker='<!-- G4_BOTTLENECK_CLEAR_V1 -->'
+          rows=[]
+          for r in h['routes']:
+              rows.append(f"{r['strategy_id']}:route={r['route']}|candidate={r.get('candidate_id')}|h5={','.join(r.get('h5_blockers') or r.get('parent_h5_blockers') or []) or '-'}")
+          body='\n'.join([
+            marker,'## G4 Bottleneck Clear V1',
+            f"run={os.environ['RUN_ID']}|gap={g['state']}|gap_minutes={g['source_gap_minutes']}|usable_rows={g['usable_total_rows']}|coverage_retained_pct={g['coverage_retained_pct']:.6f}",
+            f"h5={h['state']}|route_counts={json.dumps(h['route_counts'],sort_keys=True)}",
+            *rows,
+            'NO_SPIN=same-axis repeat forbidden; H5 threshold weakening forbidden; no post-outcome deletion',
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
+          ])
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((c for c in reversed(comments) if marker in str(c.get('body') or '')),None)
+          target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_G4_BOTTLENECK_STATE_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g4-bottleneck-clear-${{ github.run_id }}
+          path: |
+            backend/research/g4_bingx_1m_gap_exclusion_seal_latest.json
+            backend/research/g4_h5_bottleneck_route_latest.json
+          retention-days: 30

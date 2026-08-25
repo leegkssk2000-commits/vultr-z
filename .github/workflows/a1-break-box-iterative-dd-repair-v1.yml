@@ -6,6 +6,7 @@ on:
     paths:
       - 'backend/research/contracts/a1_iterative_repair_named_channel_gemini_v1.json'
       - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v1.py'
+      - 'backend/research/rebuild/a1_break_box_iterative_dd_repair_v2.py'
       - 'backend/research/rebuild/break_and_continue_box_break_child_policy_v1.py'
       - '.github/workflows/a1-break-box-iterative-dd-repair-v1.yml'
   workflow_dispatch:
@@ -22,7 +23,7 @@ concurrency:
 jobs:
   iterative-dd-repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     env:
       PYTHONPATH: .
     steps:
@@ -37,34 +38,36 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_break_box_iterative_dd_repair_v1.py
+          python -m py_compile backend/research/rebuild/a1_break_box_iterative_dd_repair_v2.py
           python -m backend.research.rebuild.a1_break_box_iterative_dd_repair_v1 --self-test
-      - name: Run R2 attribution and R3 one-axis repair search
+          python -m backend.research.rebuild.a1_break_box_iterative_dd_repair_v2 --self-test
+      - name: Run R2 R3 and R4 cumulative DD repair search
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_break_box_iterative_dd_repair_v1 \
-            --out out/a1_break_box_iterative_dd_repair_latest.json
+          python -m backend.research.rebuild.a1_break_box_iterative_dd_repair_v2 \
+            --out out/a1_break_box_iterative_dd_repair_v2_latest.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_break_box_iterative_dd_repair_latest.json'))
+          r=json.load(open('out/a1_break_box_iterative_dd_repair_v2_latest.json'))
           assert r['policy']['preserve_partial_success'] is True
           assert r['policy']['restart_from_zero_forbidden'] is True
-          assert r['policy']['one_primary_axis_per_child'] is True
+          assert r['policy']['one_primary_axis_per_generation'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          best=r.get('R3_best_candidate') or {}
-          print(json.dumps({'state':r['state'],'ready':r['R3_ready_count'],'best':best.get('candidate_id'),'best_metrics':best.get('metrics'),'next':r['next']},sort_keys=True))
+          c=r['R4_candidate']
+          print(json.dumps({'state':r['state'],'r4_pass':c['development_upgrade_gate_pass'],'r4_metrics':c['metrics'],'retention':c['trade_retention_pct'],'next':r['next']},sort_keys=True))
           PY
-      - name: Persist R2/R3 receipt
+      - name: Persist iterative R2-R4 receipt
         run: |
           set -euo pipefail
-          target=backend/research/rebuild/a1_break_box_iterative_dd_repair_latest.json
-          cp out/a1_break_box_iterative_dd_repair_latest.json "$target"
-          git config user.name 'a1-break-box-iterative-dd-repair-v1'
+          target=backend/research/rebuild/a1_break_box_iterative_dd_repair_v2_latest.json
+          cp out/a1_break_box_iterative_dd_repair_v2_latest.json "$target"
+          git config user.name 'a1-break-box-iterative-dd-repair-v2'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Break: persist iterative R2 R3 DD repair receipt [skip ci]'
+          git commit -m 'A1 Break: persist iterative R2 R3 R4 DD repair receipt [skip ci]'
           for n in 1 2 3 4; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 4
@@ -74,6 +77,6 @@ jobs:
         if: always()
         with:
           name: a1-break-box-iterative-dd-repair-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_break_box_iterative_dd_repair_latest.json
+          path: out/a1_break_box_iterative_dd_repair_v2_latest.json
           if-no-files-found: warn
           retention-days: 60

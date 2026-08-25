@@ -63,12 +63,16 @@ def route_for(
     parent_blockers = [str(x) for x in (parent_c.get("blockers") or [])]
     exact_rows = [dict(x) for x in (exact_block.get("candidates") or []) if isinstance(x, Mapping)]
     distinct_rows = [dict(x) for x in (distinct_block.get("candidates") or []) if isinstance(x, Mapping)]
+    distinct_attempted = bool(distinct_rows)
+    attempted_distinct_axes = sorted({str(x.get("changed_axis") or "") for x in distinct_rows if x.get("changed_axis")})
 
     exact_ready = [x for x in exact_rows if bool(x.get("development_candidate_ready"))]
     distinct_ready = [x for x in distinct_rows if bool(x.get("development_candidate_ready"))]
     best = best_candidate(exact_ready or exact_rows)
+    source = "EXACT_PARENT"
     if not best:
         best = best_candidate(distinct_ready or distinct_rows)
+        source = "DISTINCT_CHILD"
 
     if best:
         c = best.get("concentration") if isinstance(best.get("concentration"), Mapping) else {}
@@ -79,21 +83,32 @@ def route_for(
         symbol = float(c.get("maximum_single_symbol_profit_share") or 0.0)
         loo = float(c.get("minimum_leave_one_group_out_net_R") or 0.0)
         metrics = best.get("metrics") if isinstance(best.get("metrics"), Mapping) else {}
+        structural = (
+            "SINGLE_REGIME_CONCENTRATION" in blockers
+            or "SINGLE_SYMBOL_CONCENTRATION" in blockers
+            or "LEAVE_ONE_GROUP_OUT_NON_POSITIVE" in blockers
+        )
         if blocker_count == 0:
             route = "FRESH_OOS_NOW"
+            reason = "H5_CLEAR"
         elif set(blockers) == {"TOP10_TRADE_CONCENTRATION"}:
             route = "FRESH_SAMPLE_EXPANSION_TOP10_DILUTION"
-        elif "SINGLE_REGIME_CONCENTRATION" in blockers or "SINGLE_SYMBOL_CONCENTRATION" in blockers:
-            route = "DISTINCT_MECHANISM_DIVERSIFICATION"
-        elif "LEAVE_ONE_GROUP_OUT_NON_POSITIVE" in blockers:
-            route = "DISTINCT_MECHANISM_OR_FAILOVER"
+            reason = "ONLY_TOP10_CONCENTRATION_REMAINS"
+        elif structural and distinct_attempted:
+            route = "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM_NOW"
+            reason = "STRUCTURAL_H5_REMAINS_AFTER_DISTINCT_CHILD_ATTEMPT"
+        elif structural:
+            route = "RUN_ONE_DISTINCT_MECHANISM_THEN_FAILOVER"
+            reason = "STRUCTURAL_H5_REQUIRES_NONREDUNDANT_MECHANISM"
         else:
-            route = "DISTINCT_MECHANISM_OR_FAILOVER"
+            route = "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM_NOW" if distinct_attempted else "RUN_ONE_DISTINCT_MECHANISM_THEN_FAILOVER"
+            reason = "NO_REPEAT_H5_POLICY"
         return {
             "strategy_id": sid,
             "route": route,
+            "route_reason": reason,
             "candidate_id": best.get("candidate_id"),
-            "candidate_source": "EXACT_PARENT" if best in exact_rows else "DISTINCT_CHILD",
+            "candidate_source": source,
             "candidate_trades": metrics.get("trades", best.get("completed_trades")),
             "candidate_net_expectancy_bps": metrics.get("net_expectancy_bps"),
             "candidate_profit_factor": metrics.get("profit_factor"),
@@ -109,25 +124,36 @@ def route_for(
             "single_symbol_profit_share": symbol,
             "single_symbol_limit": float(thresholds["maximum_single_symbol_profit_share"]),
             "minimum_leave_one_group_out_net_R": loo,
+            "distinct_child_already_attempted": distinct_attempted,
+            "attempted_distinct_axes": attempted_distinct_axes,
             "repeat_same_axis_forbidden": True,
             "threshold_weakening_forbidden": True,
             "fresh_oos_required_before_survivor": True,
         }
 
     formal_trades = int(formal.get("completed_trades") or 0)
-    if exact_block.get("unsupported_exact_identity_axes"):
-        route = "RUN_DISTINCT_CHILD_REPAIR"
+    if distinct_attempted:
+        route = "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM_NOW"
+        reason = "DISTINCT_CHILD_ALREADY_ATTEMPTED_WITHOUT_ECONOMIC_H5_READY_CANDIDATE"
+    elif exact_block.get("unsupported_exact_identity_axes"):
+        route = "RUN_ONE_DISTINCT_MECHANISM_THEN_FAILOVER"
+        reason = "ONE_UNTRIED_DISTINCT_AXIS_ALLOWED"
     elif formal_trades < 50:
-        route = "FRESH_SAMPLE_EXPANSION"
+        route = "FRESH_SAMPLE_EXPANSION_WITH_DEADLINE"
+        reason = "LOW_SAMPLE_NO_READY_CHILD"
     else:
-        route = "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM"
+        route = "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM_NOW"
+        reason = "NO_READY_CHILD_AND_SAMPLE_NOT_SPARSE"
     return {
         "strategy_id": sid,
         "route": route,
+        "route_reason": reason,
         "candidate_id": None,
         "candidate_source": None,
         "formal_trades": formal_trades,
         "parent_h5_blockers": parent_blockers,
+        "distinct_child_already_attempted": distinct_attempted,
+        "attempted_distinct_axes": attempted_distinct_axes,
         "repeat_same_axis_forbidden": True,
         "threshold_weakening_forbidden": True,
         "fresh_oos_required_before_survivor": True,
@@ -172,13 +198,13 @@ def run(out: Path) -> dict[str, Any]:
         "same_axis_repeat_allowed": False,
         "h5_threshold_weakening_allowed": False,
         "post_outcome_trade_deletion_allowed": False,
-        "g4_progress_rule": "EVERY_TOP5_MEMBER_MUST_ROUTE_TO_FRESH_OOS,FRESH_SAMPLE,DISTINCT_MECHANISM,OR_FAILOVER; NO INDEFINITE_HOLD",
+        "g4_progress_rule": "EVERY_TOP5_MEMBER_MUST_ROUTE_TO_FRESH_OOS,FRESH_SAMPLE,ONE_UNTRIED_DISTINCT_MECHANISM,OR_IMMEDIATE_FAILOVER; NO_INDEFINITE_HOLD_AND_NO_REPEAT_DISTINCT_CHILD",
         "selection_authority": False,
         "promotion_authority": False,
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "protected_mutations": 0,
-        "next": "EXECUTE_ROUTE_PER_STRATEGY_WITH_TOP10_ONLY_CANDIDATES_PRIORITIZED_FOR_FRESH_EXPANSION",
+        "next": "EXECUTE_ONLY_NONREPEATED_ROUTES; FAILOVER_STRUCTURAL_H5_AFTER_DISTINCT_ATTEMPT",
     }
     result["receipt_sha256"] = stable(result)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -192,6 +218,11 @@ def self_test() -> int:
     exact = {"candidates": [{"candidate_id":"x","economic_gate_pass":True,"development_candidate_ready":True,"trade_retention_pct":90.0,"metrics":{"trades":58,"net_expectancy_bps":100.0,"profit_factor":2.0,"drawdown_bps":100.0},"concentration":{"blocker_count":1,"blockers":["TOP10_TRADE_CONCENTRATION"],"top10_trade_profit_share":0.86,"maximum_single_regime_profit_share":0.6,"maximum_single_symbol_profit_share":0.3,"minimum_leave_one_group_out_net_R":1.0}}]}
     r = route_for("x", formal, exact, {}, thresholds)
     assert r["route"] == "FRESH_SAMPLE_EXPANSION_TOP10_DILUTION"
+    structural = {"candidates": [{"candidate_id":"y","economic_gate_pass":True,"development_candidate_ready":False,"trade_retention_pct":90.0,"metrics":{"trades":58,"net_expectancy_bps":100.0,"profit_factor":2.0,"drawdown_bps":100.0},"concentration":{"blocker_count":2,"blockers":["SINGLE_REGIME_CONCENTRATION","LEAVE_ONE_GROUP_OUT_NON_POSITIVE"],"top10_trade_profit_share":0.7,"maximum_single_regime_profit_share":0.95,"maximum_single_symbol_profit_share":0.3,"minimum_leave_one_group_out_net_R":-1.0}}]}
+    distinct = {"candidates": [{"candidate_id":"old","changed_axis":"EXIT_TRAILING_ONLY","economic_gate_pass":False,"development_candidate_ready":False}]}
+    r2 = route_for("y", formal, structural, distinct, thresholds)
+    assert r2["route"] == "FAILOVER_TO_NEXT5_OR_NEW_MECHANISM_NOW"
+    assert r2["distinct_child_already_attempted"] is True
     assert r["repeat_same_axis_forbidden"] is True
     print("PASS_G4_H5_BOTTLENECK_ROUTER_SELF_TEST")
     return 0

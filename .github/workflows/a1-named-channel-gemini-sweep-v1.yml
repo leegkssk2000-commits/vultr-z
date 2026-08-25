@@ -9,6 +9,7 @@ on:
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v1.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v2.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v3.py'
+      - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v4.py'
       - 'backend/research/architecture_factory/a1_research_factory_named_channel_bridge_v1.py'
       - '.github/workflows/a1-named-channel-gemini-sweep-v1.yml'
   workflow_dispatch:
@@ -25,13 +26,13 @@ concurrency:
 jobs:
   mine-named-channels:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 120
     env:
       PYTHONPATH: .
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       A1_NAMED_CHANNEL_SEARCHES_PER_RUN: '9'
-      A1_NAMED_CHANNEL_VIDEO_REVIEWS_PER_RUN: '9'
+      A1_NAMED_CHANNEL_VIDEO_REVIEWS_PER_RUN: '18'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,16 +49,18 @@ jobs:
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v1.py
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v2.py
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v3.py
+          python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v4.py
           python -m py_compile backend/research/architecture_factory/a1_research_factory_named_channel_bridge_v1.py
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v1 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v2 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v3 --self-test
+          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v4 --self-test
           python -m backend.research.architecture_factory.a1_research_factory_named_channel_bridge_v1 --self-test
-      - name: Discover and analyze next videos fairly across all nine channels
+      - name: Deep-discover and analyze videos fairly across all nine channels
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v3 \
+          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v4 \
             --output out/a1_named_channel_gemini_latest.json \
             --existing backend/research/architecture_factory/a1_named_channel_gemini_latest.json
           python - <<'PY'
@@ -68,8 +71,10 @@ jobs:
           assert r['protected_mutations']==0
           assert r['url_integrity_policy']=='ONLY_CANONICAL_11_CHAR_YOUTUBE_VIDEO_IDS_ACCEPTED'
           assert r['review_rotation_policy']=='LEAST_REVIEWED_CHANNEL_FIRST_THEN_TRUE_ROUND_ROBIN'
+          assert r['discovery_policy']=='ALL_9_CHANNELS_ROUND_ROBIN__MOST_VIEWED_NEWEST_ARCHIVE_MECHANISM_DENSE'
           assert r['metrics']['configured_channel_count']==9
-          print(json.dumps({'state':r['state'], **r['metrics'], 'errors':r['provider']['errors'][:3]},ensure_ascii=False,sort_keys=True))
+          assert r['channel_utilization_controls']['creator_threshold_import_forbidden'] is True
+          print(json.dumps({'state':r['state'], **r['metrics'], 'channel_utilization':r['channel_utilization'], 'errors':r['provider']['errors'][:3]},ensure_ascii=False,sort_keys=True))
           PY
       - name: Feed accepted video mechanisms directly into Research Factory
         env:
@@ -85,7 +90,7 @@ jobs:
           python -m backend.research.architecture_factory.a1_research_factory_named_channel_bridge_v1 \
             --named out/a1_named_channel_gemini_latest.json \
             --no-network \
-            --ai-strategy-limit 6 \
+            --ai-strategy-limit 10 \
             --output out/a1_research_factory_named_channel_bridge_latest.json
           python - <<'PY'
           import json
@@ -103,11 +108,11 @@ jobs:
           factory_target=backend/research/architecture_factory/a1_research_factory_latest.json
           cp out/a1_named_channel_gemini_latest.json "$named_target"
           cp out/a1_research_factory_named_channel_bridge_latest.json "$factory_target"
-          git config user.name 'a1-named-channel-gemini-sweep-v3'
+          git config user.name 'a1-named-channel-gemini-sweep-v4'
           git config user.email 'actions@users.noreply.github.com'
           git add "$named_target" "$factory_target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Gemini: persist fair named-channel summaries and factory mappings [skip ci]'
+          git commit -m 'A1 Gemini: persist deep named-channel mechanisms and factory mappings [skip ci]'
           for n in 1 2 3 4; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 4
@@ -121,4 +126,4 @@ jobs:
             out/a1_named_channel_gemini_latest.json
             out/a1_research_factory_named_channel_bridge_latest.json
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 45

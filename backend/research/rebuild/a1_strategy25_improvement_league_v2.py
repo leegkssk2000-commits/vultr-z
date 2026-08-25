@@ -84,9 +84,9 @@ def performance_metrics(row: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def performance_eligible(row: Mapping[str, Any]) -> bool:
     m = performance_metrics(row)
+    # Parent stall/failover is NOT allowed to hide a strong child. Top5 is lineage performance.
     return (
-        not bool(row.get("failover_due"))
-        and int(m.get("completed_trades") or 0) >= PERFORMANCE_MIN_TRADES
+        int(m.get("completed_trades") or 0) >= PERFORMANCE_MIN_TRADES
         and core.positive_economics(m)
     )
 
@@ -222,7 +222,7 @@ def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
     result["stage_aggregation"] = "MAX_TRUSTED_OPERATIONAL_STAGE_SEPARATE_FROM_METRIC_SOURCE"
     result["lineage_display_policy"] = "BEST_MEANINGFUL_BRANCH_HEADLINE_PARENT_RETAINED_AS_FORMAL_BASELINE"
     result["lineage_display_min_trades"] = PERFORMANCE_MIN_TRADES
-    result["top5_selection_policy"] = "PERFORMANCE_LINEAGE_HEADLINE:POSITIVE_ECONOMICS+MIN8;ORDER=NET_PNL,TRADES,WR,EXPECTANCY,PF,DD"
+    result["top5_selection_policy"] = "PERFORMANCE_LINEAGE_HEADLINE:POSITIVE_ECONOMICS+MIN8;ORDER=NET_PNL,TRADES,WR,EXPECTANCY,PF,DD;PARENT_FAILOVER_DOES_NOT_HIDE_STRONG_CHILD"
     result["formal_certification_separate_from_top5_rank"] = True
     result["stage_regression_guard"] = True
     result["receipt_sha256"] = core.stable({k: v for k, v in result.items() if k != "receipt_sha256"})
@@ -267,9 +267,10 @@ def self_test() -> int:
     assert head["identity"] == "trend_rider_wr81_child" and head["verification_tier"] == "DISCOVERY_ONLY_FRESH_PENDING", head
     assert head["formal_rank_uses_headline"] is False and head["formal_promotion_eligible"] is False, head
 
-    strong = {"strategy_id": "strong", "display_metrics": child["metrics"], "stage_rank": 0, "failover_due": False}
+    strong = {"strategy_id": "strong", "display_metrics": child["metrics"], "stage_rank": 0, "failover_due": True}
     weak = {"strategy_id": "weak", "display_metrics": {"completed_trades": 100, "win_rate": 0.9, "net_pnl_bps": -1.0,
             "net_expectancy_bps": -0.01, "profit_factor": 0.9, "drawdown_bps": 1.0}, "stage_rank": 6, "failover_due": False}
+    assert performance_eligible(strong) is True, strong
     assert performance_rank_key(strong) > performance_rank_key(weak), (strong, weak)
     print("PASS_A1_STRATEGY25_IMPROVEMENT_LEAGUE_V2_STAGE_GUARD_SELF_TEST")
     print("PASS_A1_STRATEGY25_LINEAGE_HEADLINE_SELF_TEST")

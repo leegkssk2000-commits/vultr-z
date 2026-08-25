@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: a1-named-channel-gemini-sweep-v1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   mine-named-channels:
@@ -37,13 +37,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Research Factory AI client
-        run: python -m pip install --disable-pip-version-check --no-cache-dir groq
-      - name: Verify named-channel miner and Research Factory bridge
+      - name: Verify named-channel miner and V5 Research Factory bridge
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v1.py
@@ -76,48 +74,48 @@ jobs:
           assert r['channel_utilization_controls']['creator_threshold_import_forbidden'] is True
           print(json.dumps({'state':r['state'], **r['metrics'], 'channel_utilization':r['channel_utilization'], 'errors':r['provider']['errors'][:3]},ensure_ascii=False,sort_keys=True))
           PY
-      - name: Feed accepted video mechanisms directly into Research Factory
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
-          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+      - name: Build deterministic V5 named-channel bridge preview without paid secondary AI
         run: |
           set -euo pipefail
           python -m backend.research.architecture_factory.a1_research_factory_named_channel_bridge_v1 \
             --named out/a1_named_channel_gemini_latest.json \
             --no-network \
-            --ai-strategy-limit 10 \
+            --no-ai \
+            --ai-strategy-limit 0 \
             --output out/a1_research_factory_named_channel_bridge_latest.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_research_factory_named_channel_bridge_latest.json',encoding='utf-8'))
           b=r['named_channel_gemini_bridge']
+          assert r['schema_version']=='zel.a1_research_factory.v5',r
+          assert b['factory_schema']=='zel.a1_research_factory.v5',b
           assert b['creator_threshold_imported'] is False
           assert b['local_replay_required'] is True and b['fresh_oos_required'] is True
           assert b['selection_authority'] is False and b['promotion_authority'] is False
-          print(json.dumps({'factory_state':r.get('state'),'bridge':b,'queue':r.get('experiment_queue_count'),'next':r.get('next_experiment_candidate')},ensure_ascii=False,sort_keys=True))
+          print(json.dumps({'factory_state':r.get('state'),'bridge':b,'queue':r.get('experiment_queue_count')},ensure_ascii=False,sort_keys=True))
           PY
-      - name: Persist summaries, mappings, and Research Factory backlog
+      - name: Persist named-channel evidence and lane-scoped V5 bridge only
         run: |
           set -euo pipefail
           named_target=backend/research/architecture_factory/a1_named_channel_gemini_latest.json
-          factory_target=backend/research/architecture_factory/a1_research_factory_latest.json
+          bridge_target=backend/research/architecture_factory/a1_research_factory_named_channel_bridge_latest.json
           cp out/a1_named_channel_gemini_latest.json "$named_target"
-          cp out/a1_research_factory_named_channel_bridge_latest.json "$factory_target"
+          cp out/a1_research_factory_named_channel_bridge_latest.json "$bridge_target"
           git config user.name 'a1-named-channel-gemini-sweep-v4'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$named_target" "$factory_target"
+          git add "$named_target" "$bridge_target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Gemini: persist deep named-channel mechanisms and factory mappings [skip ci]'
+          git commit -m 'A1 Gemini: persist named-channel evidence and V5 bridge lane [skip ci]'
           for n in 1 2 3 4; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 4
           done
           exit 1
+      - name: Assert hourly sweep has no canonical Research Factory write target
+        run: |
+          set -euo pipefail
+          test ! -e out/a1_research_factory_latest.json
+          echo 'PASS_NAMED_SWEEP_LANE_SCOPED_CANONICAL_OWNER_V5_DAILY_ONLY'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -126,4 +124,4 @@ jobs:
             out/a1_named_channel_gemini_latest.json
             out/a1_research_factory_named_channel_bridge_latest.json
           if-no-files-found: warn
-          retention-days: 45
+          retention-days: 30

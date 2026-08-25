@@ -13,11 +13,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   liquid6-rescue:
@@ -27,7 +27,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -90,21 +91,13 @@ jobs:
           open('out/trend_rider_liquid6_summary.json','w').write(json.dumps(summary,indent=2,sort_keys=True)+'\n')
           print('A1_TREND_RIDER_LIQUID6_RESCUE='+json.dumps(summary,sort_keys=True))
           PY
-      - name: Persist latest Liquid6 diagnostic
+      - name: Assert rescue cannot overwrite canonical Liquid6 diagnostic
         run: |
           set -euo pipefail
-          mkdir -p backend/research/rebuild/diagnostics
-          cp out/trend_rider_liquid6_summary.json backend/research/rebuild/diagnostics/trend_rider_liquid6_latest.json
-          git config user.name 'a1-trend-rider-rescue'
-          git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/rebuild/diagnostics/trend_rider_liquid6_latest.json
-          if ! git diff --cached --quiet; then
-            git commit -m 'A1 trend_rider: persist Liquid6 rescue diagnostic [skip ci]'
-            git pull --rebase origin master
-            git push origin HEAD:master
-          fi
+          git diff --exit-code -- backend/research/rebuild/diagnostics/trend_rider_liquid6_latest.json
+          echo 'PASS_LIQUID6_RESCUE_READ_ONLY_H4_H5_CANONICAL_OWNER'
       - uses: actions/upload-artifact@v4
         with:
           name: a1-trend-rider-liquid6-${{ github.run_id }}
           path: out
-          retention-days: 90
+          retention-days: 30

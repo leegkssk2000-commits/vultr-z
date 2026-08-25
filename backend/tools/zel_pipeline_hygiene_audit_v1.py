@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.pipeline_hygiene_audit.v2"
+SCHEMA = "zel.pipeline_hygiene_audit.v3"
 WORKFLOW_SUFFIXES = {".yml", ".yaml"}
 VOLATILE_OUTPUT_RE = re.compile(r"[A-Za-z0-9_./${}:-]*latest\.json")
 CRON_RE = re.compile(r"cron:\s*['\"]([^'\"]+)['\"]")
@@ -18,6 +18,13 @@ NAME_RE = re.compile(r"^name:\s*(.+?)\s*$", re.M)
 FILE_VERSION_RE = re.compile(r"(?:^|[-_])v(\d+)(?:\.(?:ya?ml))$", re.I)
 NAME_VERSION_RE = re.compile(r"\bV(\d+)\b", re.I)
 FETCH_DEPTH_ZERO_RE = re.compile(r"fetch-depth:\s*0\b")
+SHELL_ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(?:['\"])?([^'\"\n]+?)(?:['\"])?\s*$", re.M)
+PY_PATH_WRITE_RE = re.compile(
+    r"Path\(\s*['\"]([^'\"]*latest\.json)['\"]\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\("
+)
+PY_OPEN_WRITE_RE = re.compile(
+    r"open\(\s*['\"]([^'\"]*latest\.json)['\"]\s*,\s*['\"][wax][^'\"]*['\"]"
+)
 CANONICAL_LATEST_PREFIXES = (
     "backend/",
     "runtime_results/",
@@ -33,6 +40,52 @@ def _read(path: Path) -> str:
 def _cron_minute(expr: str) -> str:
     parts = expr.split()
     return parts[0] if len(parts) >= 5 else "INVALID"
+
+
+def _clean_shell_token(token: str) -> str:
+    return token.strip().strip("'\";,()")
+
+
+def _resolve_shell_ref(token: str, assignments: dict[str, str]) -> str:
+    token = _clean_shell_token(token)
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?", token)
+    if not m:
+        return token
+    base = assignments.get(m.group(1))
+    if not base:
+        return token
+    suffix = m.group(2) or ""
+    return base.rstrip("/") + suffix
+
+
+def _write_target_tokens(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return []
+    targets: list[str] = []
+    cmd = re.search(r"(?:^|[;&|]\s*)(?:cp|mv|install)\s+([^\n]+)$", stripped)
+    if cmd:
+        parts = cmd.group(1).split()
+        if parts:
+            targets.append(parts[-1])
+    for match in re.finditer(r"\btee(?:\s+-a)?\s+([^\s|;&]+)", stripped):
+        targets.append(match.group(1))
+    for match in re.finditer(r"(?:>>|>)\s*([^\s|;&]+)", stripped):
+        targets.append(match.group(1))
+    return targets
+
+
+def _written_latest_refs(text: str) -> list[str]:
+    assignments = {name: value.strip() for name, value in SHELL_ASSIGN_RE.findall(text)}
+    written: set[str] = set()
+    for line in text.splitlines():
+        for token in _write_target_tokens(line):
+            ref = _resolve_shell_ref(token, assignments)
+            if ref.endswith("latest.json"):
+                written.add(ref)
+    written.update(PY_PATH_WRITE_RE.findall(text))
+    written.update(PY_OPEN_WRITE_RE.findall(text))
+    return sorted(written)
 
 
 def _is_canonical_latest_ref(ref: str) -> bool:
@@ -61,6 +114,9 @@ def _workflow_row(path: Path, root: Path) -> dict[str, Any]:
     fetch_depth_zero = bool(FETCH_DEPTH_ZERO_RE.search(text))
     latest_refs = sorted(set(VOLATILE_OUTPUT_RE.findall(text)))
     canonical_latest_refs = sorted(x for x in latest_refs if _is_canonical_latest_ref(x))
+    written_latest_refs = _written_latest_refs(text)
+    canonical_written_latest_refs = sorted(x for x in written_latest_refs if _is_canonical_latest_ref(x))
+    canonical_read_only_mentions = sorted(set(canonical_latest_refs) - set(canonical_written_latest_refs))
 
     file_v_match = FILE_VERSION_RE.search(path.name)
     name_v_match = NAME_VERSION_RE.search(display_name)
@@ -111,6 +167,9 @@ def _workflow_row(path: Path, root: Path) -> dict[str, Any]:
         "timeout_minutes_max": max(timeouts) if timeouts else 0,
         "latest_json_refs": latest_refs,
         "canonical_latest_json_refs": canonical_latest_refs,
+        "written_latest_json_refs": written_latest_refs,
+        "canonical_written_latest_json_refs": canonical_written_latest_refs,
+        "canonical_read_only_latest_mentions": canonical_read_only_mentions,
         "file_version": file_version,
         "display_name_version": name_version,
         "version_mismatch": version_mismatch,
@@ -133,9 +192,9 @@ def audit(repo_root: Path) -> dict[str, Any]:
         for minute in row["cron_minutes"]:
             cron_minutes[minute] += 1
         if row["git_push"]:
-            for ref in row["latest_json_refs"]:
+            for ref in row["written_latest_json_refs"]:
                 broad_latest_writers[ref].append(row["path"])
-            for ref in row["canonical_latest_json_refs"]:
+            for ref in row["canonical_written_latest_json_refs"]:
                 canonical_latest_writers[ref].append(row["path"])
 
     duplicate_latest_writers = {
@@ -155,6 +214,8 @@ def audit(repo_root: Path) -> dict[str, Any]:
     version_mismatch = [x for x in rows if x["version_mismatch"]]
     full_history_checkout = [x for x in rows if x["fetch_depth_zero"]]
     high_risk = sorted(rows, key=lambda x: (-x["risk_score"], x["path"]))[:25]
+    canonical_write_workflows = [x for x in rows if x["git_push"] and x["canonical_written_latest_json_refs"]]
+    canonical_read_only_mentions = sum(len(x["canonical_read_only_latest_mentions"]) for x in rows)
 
     recommendations: list[str] = []
     if scheduled_git_writers:
@@ -189,12 +250,18 @@ def audit(repo_root: Path) -> dict[str, Any]:
             "artifact_retention_gt30d_count": len(long_retention),
             "workflow_version_mismatch_count": len(version_mismatch),
             "fetch_depth_zero_workflow_count": len(full_history_checkout),
+            "canonical_latest_writer_workflow_count": len(canonical_write_workflows),
+            "canonical_latest_read_only_mention_count": canonical_read_only_mentions,
             "duplicate_latest_json_writer_count_broad": len(duplicate_latest_writers),
             "duplicate_canonical_latest_json_writer_count": len(duplicate_canonical_writers),
         },
         "cron_minute_density": dict(sorted(cron_minutes.items(), key=lambda kv: (-kv[1], kv[0]))),
         "duplicate_latest_json_writers_broad": duplicate_latest_writers,
         "duplicate_canonical_latest_json_writers": duplicate_canonical_writers,
+        "canonical_latest_writer_workflows": [
+            {"path": x["path"], "targets": x["canonical_written_latest_json_refs"]}
+            for x in canonical_write_workflows
+        ],
         "full_history_checkout_workflows": [x["path"] for x in full_history_checkout],
         "long_artifact_retention": [
             {"path": x["path"], "days": x["max_artifact_retention_days"]} for x in long_retention
@@ -229,22 +296,32 @@ def self_test() -> int:
             "      - uses: actions/upload-artifact@v4\n        with:\n          retention-days: 90\n"
         )
         (wf / "alpha-v1.yml").write_text(
-            "name: Alpha V2\n" + common + "      - run: cp out/x.json backend/research/x_latest.json\n",
+            "name: Alpha V2\n" + common +
+            "      - run: |\n          target=backend/research/x_latest.json\n          cp out/x.json \"$target\"\n",
             encoding="utf-8",
         )
         (wf / "beta-v1.yml").write_text(
-            "name: Beta V1\n" + common + "      - run: cp out/x.json backend/research/x_latest.json\n",
+            "name: Beta V1\n" + common +
+            "      - run: python tool.py --input backend/research/x_latest.json --output out/beta.json\n",
+            encoding="utf-8",
+        )
+        (wf / "gamma-v1.yml").write_text(
+            "name: Gamma V1\n" + common + "      - run: cp out/z.json backend/research/x_latest.json\n",
             encoding="utf-8",
         )
         r = audit(root)
-        assert r["metrics"]["workflow_count"] == 2, r
-        assert r["metrics"]["scheduled_git_push_writer_count"] == 2, r
-        assert r["metrics"]["artifact_retention_gt30d_count"] == 2, r
+        assert r["metrics"]["workflow_count"] == 3, r
+        assert r["metrics"]["scheduled_git_push_writer_count"] == 3, r
+        assert r["metrics"]["artifact_retention_gt30d_count"] == 3, r
         assert r["metrics"]["workflow_version_mismatch_count"] == 1, r
-        assert r["metrics"]["fetch_depth_zero_workflow_count"] == 2, r
+        assert r["metrics"]["fetch_depth_zero_workflow_count"] == 3, r
         assert r["metrics"]["duplicate_canonical_latest_json_writer_count"] == 1, r
+        assert r["metrics"]["canonical_latest_read_only_mention_count"] >= 1, r
+        assert r["duplicate_canonical_latest_json_writers"]["backend/research/x_latest.json"] == [
+            ".github/workflows/alpha-v1.yml", ".github/workflows/gamma-v1.yml"
+        ], r
         assert r["read_only"] is True and r["protected_mutations"] == 0, r
-    print("PASS_ZEL_PIPELINE_HYGIENE_AUDIT_V2_SELF_TEST")
+    print("PASS_ZEL_PIPELINE_HYGIENE_AUDIT_V3_SELF_TEST")
     return 0
 
 

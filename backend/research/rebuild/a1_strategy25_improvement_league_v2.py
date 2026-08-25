@@ -10,6 +10,7 @@ from backend.research.rebuild import a1_strategy25_improvement_league_v1 as core
 
 ROOT = core.ROOT
 REBUILD = core.REBUILD
+PERFORMANCE_MIN_TRADES = 8
 
 
 def trusted_stage(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> dict[str, Any]:
@@ -31,11 +32,11 @@ def trusted_stage(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> di
 
 
 def lineage_headline(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) -> dict[str, Any]:
-    """Pick the best meaningful branch for display without granting promotion authority.
+    """Pick the best meaningful branch for lineage display/performance ranking only.
 
-    Formal league rank/stage continues to use trusted operational evidence. This selector is
-    intentionally display-only so a strong discovery/repair child can be the user-facing
-    representative of a strategy lineage while its parent remains the formal baseline.
+    Formal certification stage still comes from trusted operational evidence. A discovery/repair
+    child may represent the lineage in the Top5 performance table, but cannot gain A1/A2/A3,
+    promotion, execution, order or live authority from this selector.
     """
     clean = [
         x for x in rows
@@ -44,7 +45,7 @@ def lineage_headline(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) ->
     ]
     meaningful = [
         x for x in clean
-        if int((x.get("metrics") or {}).get("completed_trades") or 0) >= 8
+        if int((x.get("metrics") or {}).get("completed_trades") or 0) >= PERFORMANCE_MIN_TRADES
         and core.positive_economics(x.get("metrics") or {})
     ]
     pool = meaningful or clean or [dict(fallback)]
@@ -76,6 +77,40 @@ def lineage_headline(rows: list[dict[str, Any]], fallback: Mapping[str, Any]) ->
     }
 
 
+def performance_metrics(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    display = row.get("display_metrics") if isinstance(row.get("display_metrics"), Mapping) else {}
+    return display or (row.get("metrics") or {})
+
+
+def performance_eligible(row: Mapping[str, Any]) -> bool:
+    m = performance_metrics(row)
+    return (
+        not bool(row.get("failover_due"))
+        and int(m.get("completed_trades") or 0) >= PERFORMANCE_MIN_TRADES
+        and core.positive_economics(m)
+    )
+
+
+def performance_rank_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Top5 is a performance board: PnL first, then sample, WR, expectancy/PF, then DD.
+
+    This is deliberately separate from formal A1/A2/A3 stage rank. Weak/negative lineages are
+    removed from Active Top5 immediately when at least five eligible positive lineages exist.
+    """
+    m = performance_metrics(row)
+    dd = core.finite(m.get("drawdown_bps"))
+    return (
+        int(performance_eligible(row)),
+        core.finite(m.get("net_pnl_bps")) or -1e30,
+        int(m.get("completed_trades") or 0),
+        core.finite(m.get("win_rate")) or -1e30,
+        core.finite(m.get("net_expectancy_bps")) or -1e30,
+        core.finite(m.get("profit_factor")) or -1e30,
+        -(dd if dd is not None else 1e30),
+        int(row.get("stage_rank") or 0),
+    )
+
+
 def collect_evidence(extra_json: list[Path] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
     inventory = core.read(core.INVENTORY)
     baseline = core.read(core.BASELINE)
@@ -98,13 +133,16 @@ def collect_evidence(extra_json: list[Path] | None = None) -> tuple[list[str], l
 
 
 def repartition(result: dict[str, Any], baseline: Mapping[str, Any]) -> None:
-    # Stable two-pass sort: economic/stage rank descending, strategy_id ascending on exact ties.
+    # Top5/Next5 are performance ranks, not parent/stage ranks. Stable ID tie-break first.
     rows = sorted(result["rows"], key=lambda x: x["strategy_id"])
-    rows = sorted(rows, key=core.rank_key, reverse=True)
+    rows = sorted(rows, key=performance_rank_key, reverse=True)
     active_n = 5
     challenger_n = 5
+    eligible_count = sum(performance_eligible(x) for x in rows)
     for i, row in enumerate(rows):
         row["rank"] = i + 1
+        row["performance_rank"] = i + 1
+        row["performance_eligible"] = performance_eligible(row)
         row["remainder_disposition"] = None
         if i < active_n:
             row["role"] = "ACTIVE_TOP5"
@@ -120,6 +158,8 @@ def repartition(result: dict[str, Any], baseline: Mapping[str, Any]) -> None:
         "CHALLENGER_NEXT5": sum(x["role"] == "CHALLENGER_NEXT5" for x in rows),
         "MATERIAL_HOLD": sum(x["role"] == "MATERIAL_HOLD" for x in rows),
     }
+    result["performance_eligible_count"] = eligible_count
+    result["performance_top5_fully_eligible"] = eligible_count >= active_n
     result["active_top5"] = [x["strategy_id"] for x in rows if x["role"] == "ACTIVE_TOP5"]
     result["challenger_next5"] = [x["strategy_id"] for x in rows if x["role"] == "CHALLENGER_NEXT5"]
     result["failover_due"] = [x["strategy_id"] for x in rows if x.get("failover_due")]
@@ -129,6 +169,7 @@ def repartition(result: dict[str, Any], baseline: Mapping[str, Any]) -> None:
             "strategy_id": x["strategy_id"],
             "rank": x["rank"],
             "role": x["role"],
+            "performance_eligible": x.get("performance_eligible"),
             "lineage_headline": x.get("lineage_headline"),
             "formal_metrics": x.get("metrics"),
         }
@@ -180,7 +221,9 @@ def build(extra_json: list[Path] | None = None) -> dict[str, Any]:
     result["schema_version"] = "zel.a1.strategy25_improvement_league.v2"
     result["stage_aggregation"] = "MAX_TRUSTED_OPERATIONAL_STAGE_SEPARATE_FROM_METRIC_SOURCE"
     result["lineage_display_policy"] = "BEST_MEANINGFUL_BRANCH_HEADLINE_PARENT_RETAINED_AS_FORMAL_BASELINE"
-    result["lineage_display_min_trades"] = 8
+    result["lineage_display_min_trades"] = PERFORMANCE_MIN_TRADES
+    result["top5_selection_policy"] = "PERFORMANCE_LINEAGE_HEADLINE:POSITIVE_ECONOMICS+MIN8;ORDER=NET_PNL,TRADES,WR,EXPECTANCY,PF,DD"
+    result["formal_certification_separate_from_top5_rank"] = True
     result["stage_regression_guard"] = True
     result["receipt_sha256"] = core.stable({k: v for k, v in result.items() if k != "receipt_sha256"})
     if result["role_counts"] != {"ACTIVE_TOP5": 5, "CHALLENGER_NEXT5": 5, "MATERIAL_HOLD": 15}:
@@ -223,8 +266,14 @@ def self_test() -> int:
     head = lineage_headline([parent, child], parent)
     assert head["identity"] == "trend_rider_wr81_child" and head["verification_tier"] == "DISCOVERY_ONLY_FRESH_PENDING", head
     assert head["formal_rank_uses_headline"] is False and head["formal_promotion_eligible"] is False, head
+
+    strong = {"strategy_id": "strong", "display_metrics": child["metrics"], "stage_rank": 0, "failover_due": False}
+    weak = {"strategy_id": "weak", "display_metrics": {"completed_trades": 100, "win_rate": 0.9, "net_pnl_bps": -1.0,
+            "net_expectancy_bps": -0.01, "profit_factor": 0.9, "drawdown_bps": 1.0}, "stage_rank": 6, "failover_due": False}
+    assert performance_rank_key(strong) > performance_rank_key(weak), (strong, weak)
     print("PASS_A1_STRATEGY25_IMPROVEMENT_LEAGUE_V2_STAGE_GUARD_SELF_TEST")
     print("PASS_A1_STRATEGY25_LINEAGE_HEADLINE_SELF_TEST")
+    print("PASS_A1_STRATEGY25_PERFORMANCE_TOP5_SELF_TEST")
     return 0
 
 
@@ -244,6 +293,7 @@ def main() -> int:
         "headline_top5": result["headline_top5"],
         "challenger": result["challenger_next5"],
         "roles": result["role_counts"],
+        "performance_eligible_count": result["performance_eligible_count"],
         "improved": result["improved_count"],
         "failover": result["failover_due"],
         "stage_guard": result["stage_regression_guard"],

@@ -8,6 +8,7 @@ on:
     branches: [master]
     paths:
       - backend/tools/zel_parallel_readiness_audit_v1.py
+      - backend/tools/zel_pipeline_hygiene_audit_v1.py
       - backend/tools/zel_pre_shadow_receipt_dag_v1.py
       - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
       - .github/workflows/zel-pre-shadow-dag-extension-v1.yml
@@ -16,6 +17,7 @@ on:
     branches: [master]
     paths:
       - backend/tools/zel_parallel_readiness_audit_v1.py
+      - backend/tools/zel_pipeline_hygiene_audit_v1.py
       - backend/tools/zel_pre_shadow_receipt_dag_v1.py
       - .github/workflows/zel-pre-shadow-dag-controller-v1.yml
       - .github/workflows/zel-pre-shadow-dag-extension-v1.yml
@@ -39,18 +41,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate audit engine and no-mutation boundary
+      - name: Validate audit engines and no-mutation boundary
         run: |
           set -euo pipefail
-          python -m py_compile backend/tools/zel_parallel_readiness_audit_v1.py
+          python -m py_compile \
+            backend/tools/zel_parallel_readiness_audit_v1.py \
+            backend/tools/zel_pipeline_hygiene_audit_v1.py
           python backend/tools/zel_parallel_readiness_audit_v1.py --self-test
+          python backend/tools/zel_pipeline_hygiene_audit_v1.py --self-test
           python - <<'PY'
           from pathlib import Path
           text=Path('backend/tools/zel_parallel_readiness_audit_v1.py').read_text()
+          hygiene=Path('backend/tools/zel_pipeline_hygiene_audit_v1.py').read_text()
           extension=Path('.github/workflows/zel-pre-shadow-dag-extension-v1.yml')
           assert extension.is_file(),extension
           for token in ('os.chmod(', 'os.chown(', 'subprocess.', 'requests.', 'unlink(', 'rmtree('):
               assert token not in text,token
+              assert token not in hygiene,token
           for token in (
               'active_data_b_1m_mutated": False',
               'canonical_strategy_files_mutated": False',
@@ -58,7 +65,14 @@ jobs:
               'runtime_registry_mutated": False',
           ):
               assert token in text,token
-          print('PASS_PARALLEL_READINESS_READ_ONLY_BOUNDARY')
+          for token in (
+              '"read_only": True',
+              '"execution_authority": "NONE"',
+              '"order_authority": "BLOCKED"',
+              '"protected_mutations": 0',
+          ):
+              assert token in hygiene,token
+          print('PASS_PARALLEL_READINESS_AND_PIPELINE_HYGIENE_READ_ONLY_BOUNDARY')
           PY
 
   audit:
@@ -112,7 +126,31 @@ jobs:
               'unproved_producers':len(d['unproved_producer_stage_ids']),
           },sort_keys=True))
           PY
-      - name: Publish read-only audit receipt
+      - name: Audit repository pipeline hygiene
+        run: |
+          set -euo pipefail
+          python control/backend/tools/zel_pipeline_hygiene_audit_v1.py \
+            --repo-root control \
+            --out out/pipeline_hygiene_latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('out/pipeline_hygiene_latest.json').read_text())
+          assert d['read_only'] is True and d['protected_mutations']==0,d
+          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED',d
+          m=d['metrics']
+          print(json.dumps({
+              'state':d['state'],
+              'workflows':m['workflow_count'],
+              'scheduled':m['scheduled_workflow_count'],
+              'scheduled_git_writers':m['scheduled_git_push_writer_count'],
+              'duplicate_latest_writers':m['duplicate_latest_json_writer_count'],
+              'retention_gt30d':m['artifact_retention_gt30d_count'],
+              'version_mismatch':m['workflow_version_mismatch_count'],
+              'recommendations':d['recommendations'],
+          },sort_keys=True))
+          PY
+      - name: Publish read-only audit receipts
         run: |
           set -euo pipefail
           cd results
@@ -120,20 +158,25 @@ jobs:
           git config user.email 'zel-parallel-readiness-audit-bot@users.noreply.github.com'
           git pull --rebase origin zel-data-expansion-results-v1
           cd ..
-          root=results/runtime_results/zel/parallel_readiness_audit_v1
-          mkdir -p "$root"
-          cp out/latest.json "$root/latest.json"
-          cp out/latest.json "$root/run_${GITHUB_RUN_ID}.json"
+          parallel_root=results/runtime_results/zel/parallel_readiness_audit_v1
+          hygiene_root=results/runtime_results/zel/pipeline_hygiene_audit_v1
+          mkdir -p "$parallel_root" "$hygiene_root"
+          cp out/latest.json "$parallel_root/latest.json"
+          cp out/latest.json "$parallel_root/run_${GITHUB_RUN_ID}.json"
+          cp out/pipeline_hygiene_latest.json "$hygiene_root/latest.json"
+          cp out/pipeline_hygiene_latest.json "$hygiene_root/run_${GITHUB_RUN_ID}.json"
           cd results
-          git add runtime_results/zel/parallel_readiness_audit_v1
-          git commit -m "result(zel): parallel readiness audit ${GITHUB_RUN_ID}" || true
+          git add runtime_results/zel/parallel_readiness_audit_v1 runtime_results/zel/pipeline_hygiene_audit_v1
+          git commit -m "result(zel): readiness and pipeline hygiene audit ${GITHUB_RUN_ID}" || true
           git push origin HEAD:zel-data-expansion-results-v1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: zel-parallel-readiness-audit-v1-${{ github.run_id }}
-          path: out/latest.json
+          path: |
+            out/latest.json
+            out/pipeline_hygiene_latest.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30
 
-# trigger: 2026-08-02T01:24Z verify-13-of-13-static-readiness
+# trigger: 2026-08-25 pipeline-hygiene-bound

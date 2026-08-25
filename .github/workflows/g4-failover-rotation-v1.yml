@@ -1,0 +1,76 @@
+name: G4 Failover Rotation V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/g4_failover_rotation_v1.py'
+      - 'backend/research/g4_h5_bottleneck_route_latest.json'
+      - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
+      - '.github/workflows/g4-failover-rotation-v1.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g4-failover-rotation-v1
+  cancel-in-progress: true
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 10
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Static and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/g4_failover_rotation_v1.py
+          python backend/research/g4_failover_rotation_v1.py --self-test
+      - name: Bind four failovers and retain fresh lane
+        run: |
+          set -euo pipefail
+          python backend/research/g4_failover_rotation_v1.py
+          python - <<'PY'
+          import json
+          r=json.load(open('backend/research/g4_failover_rotation_latest.json'))
+          assert r['state']=='PASS_G4_FAILOVER_ROTATION_BOUND',r
+          assert r['failover_count']==4 and r['retained_count']==1,r
+          assert r['new_g4_slate']==['ema_ribbon_scalp','trend_rider','rbreaker_like','squeeze_break','pivot_reversal'],r
+          assert r['reserve_challengers']==['bb_revert'],r
+          assert r['retained_strategy_ids']==['trend_rider'],r
+          assert r['formal_league_active_top5_mutated'] is False,r
+          assert r['same_axis_repeat_allowed'] is False,r
+          assert r['h5_threshold_weakening_allowed'] is False,r
+          assert r['post_outcome_trade_deletion_allowed'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED',r
+          print(json.dumps({'state':r['state'],'slate':r['new_g4_slate'],'reserve':r['reserve_challengers']},sort_keys=True))
+          PY
+      - name: Persist rotation receipt
+        run: |
+          set -euo pipefail
+          git config user.name 'g4-failover-rotation-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/g4_failover_rotation_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G4: persist Next5 failover rotation [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g4-failover-rotation-${{ github.run_id }}
+          path: backend/research/g4_failover_rotation_latest.json
+          retention-days: 30

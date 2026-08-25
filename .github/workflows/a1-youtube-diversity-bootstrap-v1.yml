@@ -13,12 +13,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   issues: write
 
 concurrency:
   group: a1-youtube-diversity-bootstrap-v1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -45,11 +45,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run first live 15-bucket Gemini diversity scout
+      - name: Run read-only live 15-bucket Gemini diversity bootstrap
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
           A1_YOUTUBE_GEMINI_MODELS: 'models/gemini-3.6-flash,models/gemini-3.1-pro-preview'
@@ -71,25 +72,15 @@ jobs:
           assert len(r['buckets'])==15 and int(r['metrics']['candidate_pool_count'])<=60
           print(json.dumps({'state':r['state'],**r['metrics']},sort_keys=True))
           PY
-      - name: Persist first live diversity receipt
+      - name: Assert bootstrap cannot overwrite canonical diversity state
         run: |
           set -euo pipefail
-          target=backend/research/architecture_factory/a1_youtube_diversity_latest.json
-          cp out/a1_youtube_diversity_scout_v1.json "$target"
-          git config user.name 'a1-youtube-diversity-bootstrap'
-          git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 YouTube: persist initial diversity scout [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
-            sleep $((n * 3))
-          done
-          exit 1
+          git diff --exit-code -- backend/research/architecture_factory/a1_youtube_diversity_latest.json
+          echo 'PASS_BOOTSTRAP_READ_ONLY_CANONICAL_OWNER_SCOUT_ONLY'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: a1-youtube-diversity-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_youtube_diversity_scout_v1.json
           if-no-files-found: warn
-          retention-days: 60
+          retention-days: 30

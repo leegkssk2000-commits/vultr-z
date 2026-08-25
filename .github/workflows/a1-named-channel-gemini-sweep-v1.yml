@@ -10,6 +10,7 @@ on:
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v2.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v3.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v4.py'
+      - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v5.py'
       - 'backend/research/architecture_factory/a1_research_factory_named_channel_bridge_v1.py'
       - '.github/workflows/a1-named-channel-gemini-sweep-v1.yml'
   workflow_dispatch:
@@ -41,10 +42,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install transcript fallback dependency
+      - name: Install multi-route YouTube evidence dependencies
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check 'youtube-transcript-api>=1.0,<2'
+          python -m pip install --disable-pip-version-check 'youtube-transcript-api>=1.0,<2' 'yt-dlp>=2025.1,<2027'
       - name: Verify named-channel miner and V5 Research Factory bridge
         run: |
           set -euo pipefail
@@ -52,17 +53,19 @@ jobs:
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v2.py
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v3.py
           python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v4.py
+          python -m py_compile backend/research/architecture_factory/a1_named_channel_gemini_sweep_v5.py
           python -m py_compile backend/research/architecture_factory/a1_research_factory_named_channel_bridge_v1.py
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v1 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v2 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v3 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v4 --self-test
+          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v5 --self-test
           python -m backend.research.architecture_factory.a1_research_factory_named_channel_bridge_v1 --self-test
       - name: Deep-discover and analyze videos fairly across all nine channels
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v4 \
+          python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v5 \
             --output out/a1_named_channel_gemini_latest.json \
             --existing backend/research/architecture_factory/a1_named_channel_gemini_latest.json
           python - <<'PY'
@@ -75,8 +78,13 @@ jobs:
           assert r['review_rotation_policy']=='LEAST_REVIEWED_CHANNEL_FIRST_THEN_TRUE_ROUND_ROBIN'
           assert r['discovery_policy']=='ALL_9_CHANNELS_ROUND_ROBIN__MOST_VIEWED_NEWEST_ARCHIVE_MECHANISM_DENSE'
           assert r['metrics']['configured_channel_count']==9
+          p=r['video_evidence_recovery_policy']
+          assert p['oembed_prevalidation_enabled'] is True
+          assert p['youtube_transcript_api_enabled'] is True
+          assert p['yt_dlp_caption_fallback_enabled'] is True
+          assert p['search_grounded_textual_fallback_enabled'] is True
+          assert p['title_thumbnail_rule_inference_forbidden'] is True
           assert r['channel_utilization_controls']['creator_threshold_import_forbidden'] is True
-          assert r['channel_utilization_controls']['transcript_fallback_enabled'] is True
           print(json.dumps({'state':r['state'], **r['metrics'], 'channel_utilization':r['channel_utilization'], 'errors':r['provider']['errors'][:3]},ensure_ascii=False,sort_keys=True))
           PY
       - name: Build deterministic V5 named-channel bridge preview without paid secondary AI
@@ -106,7 +114,7 @@ jobs:
           bridge_target=backend/research/architecture_factory/a1_research_factory_named_channel_bridge_latest.json
           cp out/a1_named_channel_gemini_latest.json "$named_target"
           cp out/a1_research_factory_named_channel_bridge_latest.json "$bridge_target"
-          git config user.name 'a1-named-channel-gemini-sweep-v4'
+          git config user.name 'a1-named-channel-gemini-sweep-v5'
           git config user.email 'actions@users.noreply.github.com'
           git add "$named_target" "$bridge_target"
           if git diff --cached --quiet; then exit 0; fi

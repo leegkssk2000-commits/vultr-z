@@ -1,4 +1,4 @@
-name: A1 A5 Economic Improvement V5
+name: A1 Top5 Economic Improvement V6
 
 on:
   pull_request:
@@ -9,77 +9,64 @@ on:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v3.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v4.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v5.py'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v6.py'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
+      - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
       - '.github/workflows/a1-a5-economic-improvement-v5.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v1.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v2.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v3.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v4.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v5.py'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v6.py'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/contracts/a1_trend_rider_online_expansion_v1.json'
       - '.github/workflows/a1-a5-economic-improvement-v5.yml'
   workflow_dispatch:
   schedule:
-    - cron: '47 */6 * * *'
+    - cron: '47 * * * *'
 
 permissions:
   contents: write
   issues: write
 
 concurrency:
-  group: a1-a5-economic-improvement-v5
-  cancel-in-progress: false
+  group: a1-top5-economic-improvement-v6
+  cancel-in-progress: true
 
 jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test original-fresh priority engine
+      - name: Compile and self-test focused improvement engine
         run: |
           set -euo pipefail
-          for v in 1 2 3 4 5; do
-            python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v${v}.py
-            python -m backend.research.architecture_factory.a1_a5_economic_improvement_v${v} --self-test
-          done
-          python - <<'PY'
-          import json
-          c=json.load(open('backend/research/contracts/a1_trend_rider_online_expansion_v1.json'))
-          assert c['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3'
-          a=c['acceptance_contract']
-          assert a['same_original_fresh_baseline_required'] is True
-          assert a['a1_a2_a3_gate_order_preserved'] is True
-          assert a['numeric_threshold_sweep'] is False
-          assert a['best_horizon_selection'] is False
-          assert a['post_outcome_trade_deletion'] is False
-          print('PASS_TREND_RIDER_ORIGINAL_FRESH_59PCT_ACCEPTANCE_CONTRACT')
-          PY
+          python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v6.py
+          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v6 --self-test
 
   improve:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 55
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run original-fresh priority-enforced A5 economic cascade
+      - name: Run current performance-Top5-only economic cascade
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -89,50 +76,45 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v5 --output out/a1_a5_economic_improvement_v5.json
+          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v6 --output out/a1_a5_economic_improvement_v6.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_a5_economic_improvement_v5.json'))
-          expected=['trend_rider','break_and_continue','supertrend_pullback','keltner_trend','trend_ma_macd']
-          assert r['a5_order']==expected
+          r=json.load(open('out/a1_a5_economic_improvement_v6.json'))
+          league=json.load(open('backend/research/rebuild/a1_strategy25_improvement_league_latest.json'))
+          assert r['performance_focus_order']==league['active_top5'], (r['performance_focus_order'],league['active_top5'])
+          assert len(r['performance_focus_order'])==5 and len(set(r['performance_focus_order']))==5
+          assert r['direct_improvement_scope']=='PERFORMANCE_TOP5_ONLY_IN_CURRENT_ORDER'
+          assert r['non_top5_direct_repair_enabled'] is False
+          assert r['policy']['performance_top5_only_direct_improvement'] is True
+          assert r['policy']['non_top5_direct_repair_forbidden'] is True
+          assert set((r.get('by_strategy') or {}).keys()).issubset(set(r['performance_focus_order']))
           assert int(r['paid_request_count']) <= 3
-          p=r['policy']; tr=r['trend_rider_original_fresh_online_expansion']
-          assert tr['baseline_identity']=='ORIGINAL_TREND_RIDER_FRESH_W1_W2_W3'
-          assert tr['same_original_fresh_baseline_required'] is True
-          assert tr['consumer_connected'] is True
-          assert tr['priority_selection_enforced'] is True
-          assert tr['long_short_capital_axis_route']=='DEDICATED_EVALUATOR_REQUIRED_NOT_GENERIC_DSL'
-          assert tr['numeric_improvement_vs_59pct_baseline_claim_allowed'] is False
-          assert p['trend_rider_original_fresh_online_expansion_consumed'] is True
-          assert p['trend_rider_original_fresh_generic_axis_priority_enforced'] is True
-          assert p['trend_rider_long_short_capital_axis_requires_dedicated_evaluator'] is True
-          assert p['same_original_fresh_baseline_required_for_59pct_improvement_claim'] is True
-          assert p['delayed_fill_or_long_only_cannot_substitute_for_original_fresh_baseline'] is True
-          assert p['a1_a2_a3_gate_order_preserved'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
-          e=tr.get('generic_dsl_expected_axis_this_run'); obs=tr.get('generic_dsl_candidate_axes_this_run') or []
-          if e and obs:
-              assert all(x==e for x in obs), (e,obs)
-          print(json.dumps({'state':r['state'],'development_pass':r['development_economic_pass_count'],'paid':r['paid_request_count'],'expected_axis':e,'observed_axes':obs,'next_axis':tr.get('generic_dsl_next_axis'),'by_strategy':r['by_strategy'],'providers':r['providers'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({
+            'state':r.get('state'),'focus':r['performance_focus_order'],
+            'development_pass':r.get('development_economic_pass_count'),
+            'synthesis_pool':r.get('synthesis_pool_count'),'archive_reject':r.get('archive_reject_count'),
+            'paid':r.get('paid_request_count'),'receipt':r.get('receipt_sha256')
+          },sort_keys=True))
           PY
-      - name: Persist A5 economic improvement V5 receipt
+      - name: Persist focused economic receipt
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
-          cp out/a1_a5_economic_improvement_v5.json "$target"
-          git config user.name 'a1-a5-economic-improvement'
+          cp out/a1_a5_economic_improvement_v6.json "$target"
+          git config user.name 'a1-top5-economic-improvement-v6'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist original-fresh priority V5 receipt [skip ci]'
+          git commit -m 'A1 A5: persist performance-Top5-only V6 receipt [skip ci]'
           for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 3
           done
           exit 1
-      - name: Publish A5 economic state to issue 566
+      - name: Publish focus state to issue 566
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -141,13 +123,22 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_a5_economic_improvement_v5.json')); tr=r['trend_rider_original_fresh_online_expansion']
-          marker='<!-- A1_A5_ECONOMIC_IMPROVEMENT_V5 -->'
+          r=json.load(open('out/a1_a5_economic_improvement_v6.json'))
+          marker='<!-- A1_TOP5_ECONOMIC_IMPROVEMENT_V6 -->'
           rows=[]
-          for sid in r['a5_order']:
-              x=r['by_strategy'][sid]
-              rows.append(f"{sid}:candidates={x['candidate_count']},dev_pass={x['development_economic_pass_count']},economic_axes={','.join(x['economic_attempted_axes'])},remaining={x['remaining_axis_count']},next={x['next']}")
-          lines=[marker,'## A1 A5 Economic Improvement V5',f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",f"development_economic_pass={r['development_economic_pass_count']}|paid_requests={r['paid_request_count']}/{r['paid_request_cap']}",f"trend_rider_baseline={tr['baseline_identity']}|expected_axis={tr.get('generic_dsl_expected_axis_this_run')}|observed={','.join(tr.get('generic_dsl_candidate_axes_this_run') or [])}|next={tr.get('generic_dsl_next_axis')}|dedicated={','.join(tr.get('dedicated_evaluator_pending_axes') or [])}",*rows,'59pct numeric improvement remains forbidden until a development PASS is followed by direct same-original-fresh W123 parent/child A/B receipt','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          for sid in r['performance_focus_order']:
+              x=(r.get('by_strategy') or {}).get(sid,{})
+              rows.append(f"{sid}:attempts={x.get('attempt_count',0)},dev_pass={x.get('development_economic_pass_count',0)},remaining={x.get('remaining_axis_count',0)},next={x.get('next')}")
+          lines=[
+            marker,'## A1 Top5 Economic Improvement V6',
+            f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
+            'focus_order='+','.join(r['performance_focus_order']),
+            f"development_pass={r.get('development_economic_pass_count')}|paid={r.get('paid_request_count')}/{r.get('paid_request_cap')}",
+            f"non_top5_synthesis={r.get('synthesis_pool_count')}|archive_reject={r.get('archive_reject_count')}|direct_repair=false",
+            *rows,
+            'POLICY=only current performance Top5 receives direct improvement budget; positive dropped lineages are synthesis-only; nonpositive dropped lineages are archive/reject',
+            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
+          ]
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
@@ -156,12 +147,12 @@ jobs:
           target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
           req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
           with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_A5_ECONOMIC_IMPROVEMENT_V5_PUBLISHED')
+          print('PASS_A1_TOP5_ECONOMIC_IMPROVEMENT_V6_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-a5-economic-improvement-v5-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_a5_economic_improvement_v5.json
+          name: a1-top5-economic-improvement-v6-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_a5_economic_improvement_v6.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30

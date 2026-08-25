@@ -8,6 +8,7 @@ on:
     paths:
       - 'backend/research/prep/a3_regime_taxonomy_v1.json'
       - 'backend/research/prep/a3_forward_context_collector_v1.py'
+      - 'backend/research/prep/a3_forward_context_ledger_v2.json'
       - 'backend/research/prep/a3_trend_rider_forward_durability_v1.py'
       - '.github/workflows/a3-forward-context-v1.yml'
 permissions:
@@ -32,15 +33,31 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile backend/research/prep/a3_forward_context_collector_v1.py backend/research/prep/a3_regime_labeler_v1.py backend/research/prep/a3_trend_rider_forward_durability_v1.py
-      - name: Recover prior prospective state
+      - name: Recover canonical V2 prospective state
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           mkdir -p out
           python - <<'PY'
           import json,os,urllib.request
           from pathlib import Path
+          canonical=Path('backend/research/prep/a3_forward_context_ledger_v2.json')
+          out=Path('out/a3_forward_prior.json')
+          source=Path('out/a3_prior_source.txt')
+          if canonical.exists():
+              try:
+                  prior=json.loads(canonical.read_text())
+                  if not isinstance(prior,dict): raise ValueError('canonical_not_object')
+                  if prior.get('schema_version')!='zel.a3.forward_context.v2': raise ValueError('canonical_schema_mismatch')
+                  if not isinstance(prior.get('rows'),list): raise ValueError('canonical_rows_missing')
+                  out.write_text(json.dumps(prior,sort_keys=True)+'\n')
+                  source.write_text('CANONICAL_LEDGER_V2\n')
+                  print(json.dumps({'prior_source':'CANONICAL_LEDGER_V2','prior_rows':len(prior.get('rows') or []),'captured_at_utc':prior.get('captured_at_utc'),'receipt':prior.get('receipt_sha256')},sort_keys=True))
+                  raise SystemExit(0)
+              except Exception as exc:
+                  print(json.dumps({'canonical_fallback':f'{type(exc).__name__}:{exc}'},sort_keys=True))
           marker='<!-- A3_FORWARD_CONTEXT_V1 -->'
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json'}
           comments=[]
@@ -58,8 +75,9 @@ jobs:
                       try: prior=json.loads(line[len('STATE_JSON='):])
                       except Exception: prior={}
               break
-          Path('out/a3_forward_prior.json').write_text(json.dumps(prior,sort_keys=True)+'\n')
-          print(json.dumps({'prior_rows':len(prior.get('rows') or []),'comments_scanned':len(comments)},sort_keys=True))
+          out.write_text(json.dumps(prior,sort_keys=True)+'\n')
+          source.write_text('ISSUE566_FALLBACK\n')
+          print(json.dumps({'prior_source':'ISSUE566_FALLBACK','prior_rows':len(prior.get('rows') or []),'comments_scanned':len(comments)},sort_keys=True))
           PY
       - name: Capture entry-time context
         run: |
@@ -86,8 +104,10 @@ jobs:
               except Exception:return default
           state=load('out/a3_forward_context_v1.json',{'state':'HOLD_A3_FORWARD_CONTEXT_RUNTIME_NO_RECEIPT','rows':[],'blockers':['NO_RECEIPT']})
           dur=load('out/a3_forward_durability_v1.json',{'state':'HOLD_A3_FORWARD_DURABILITY_RUNTIME_NO_RECEIPT','blockers':['NO_RECEIPT']})
+          try: prior_source=Path('out/a3_prior_source.txt').read_text().strip()
+          except Exception: prior_source='UNKNOWN'
           compact=json.dumps(state,sort_keys=True,separators=(',',':'))
-          lines=[marker,'## A3 Forward Context + Durability V1',f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}",f"context_state={state.get('state')}|rows={state.get('row_count',len(state.get('rows') or []))}|valid={state.get('valid_row_count',0)}|current_valid={state.get('current_valid_count',0)}|receipt={state.get('receipt_sha256')}",'newest='+json.dumps(state.get('new_rows') or [],sort_keys=True,separators=(',',':')),'context_blockers='+json.dumps(state.get('blockers') or [],sort_keys=True),f"durability_state={dur.get('state')}|valid_context={dur.get('valid_context_count',0)}|signals={dur.get('signal_count',0)}|completed={dur.get('completed_trade_count',0)}|pending={dur.get('pending_trade_count',0)}|receipt={dur.get('receipt_sha256')}",'durability_global='+json.dumps(dur.get('global_metrics') or {},sort_keys=True),'durability_regimes='+json.dumps(dur.get('regime_metrics') or {},sort_keys=True),'durability_blockers='+json.dumps(dur.get('blockers') or [],sort_keys=True),'other_A1_GEN2_candidates=PARALLEL_UNCHANGED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0','STATE_JSON='+compact]
+          lines=[marker,'## A3 Forward Context + Durability V1',f"run={os.environ['RUN_ID']}|head={os.environ['HEAD_SHA']}|prior_source={prior_source}",f"context_state={state.get('state')}|rows={state.get('row_count',len(state.get('rows') or []))}|valid={state.get('valid_row_count',0)}|current_valid={state.get('current_valid_count',0)}|receipt={state.get('receipt_sha256')}",'newest='+json.dumps(state.get('new_rows') or [],sort_keys=True,separators=(',',':')),'context_blockers='+json.dumps(state.get('blockers') or [],sort_keys=True),f"durability_state={dur.get('state')}|valid_context={dur.get('valid_context_count',0)}|signals={dur.get('signal_count',0)}|completed={dur.get('completed_trade_count',0)}|pending={dur.get('pending_trade_count',0)}|receipt={dur.get('receipt_sha256')}",'durability_global='+json.dumps(dur.get('global_metrics') or {},sort_keys=True),'durability_regimes='+json.dumps(dur.get('regime_metrics') or {},sort_keys=True),'durability_blockers='+json.dumps(dur.get('blockers') or [],sort_keys=True),'other_A1_GEN2_candidates=PARALLEL_UNCHANGED','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0','STATE_JSON='+compact]
           body='\n'.join(lines)
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json'}
           comments=[]

@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "zel.pipeline_hygiene_audit.v3"
+SCHEMA = "zel.pipeline_hygiene_audit.v4"
 WORKFLOW_SUFFIXES = {".yml", ".yaml"}
 VOLATILE_OUTPUT_RE = re.compile(r"[A-Za-z0-9_./${}:-]*latest\.json")
 CRON_RE = re.compile(r"cron:\s*['\"]([^'\"]+)['\"]")
@@ -40,6 +40,33 @@ def _read(path: Path) -> str:
 def _cron_minute(expr: str) -> str:
     parts = expr.split()
     return parts[0] if len(parts) >= 5 else "INVALID"
+
+
+def _top_level_concurrency_group(text: str) -> str | None:
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if line.strip() != "concurrency:" or line[:1].isspace():
+            continue
+        for child in lines[idx + 1:]:
+            if child and not child[:1].isspace():
+                break
+            match = re.match(r"^\s+group:\s*(.+?)\s*$", child)
+            if match:
+                value = match.group(1).strip().strip("'\"")
+                return value or None
+        return None
+    inline = re.search(r"(?m)^concurrency:\s*\{[^\n}]*\bgroup:\s*([^,}]+)", text)
+    if inline:
+        value = inline.group(1).strip().strip("'\"")
+        return value or None
+    return None
+
+
+def _static_serialization_group(group: str | None) -> bool:
+    if not group:
+        return False
+    lowered = group.lower()
+    return "${{" not in group and "github." not in lowered and "matrix." not in lowered and "inputs." not in lowered
 
 
 def _clean_shell_token(token: str) -> str:
@@ -116,6 +143,7 @@ def _workflow_row(path: Path, root: Path) -> dict[str, Any]:
     workflow_run_trigger = bool(re.search(r"\bworkflow_run\s*:", text))
     workflow_dispatch = bool(re.search(r"\bworkflow_dispatch\s*:", text))
     fetch_depth_zero = bool(FETCH_DEPTH_ZERO_RE.search(text))
+    concurrency_group = _top_level_concurrency_group(text)
     latest_refs = sorted(set(VOLATILE_OUTPUT_RE.findall(text)))
     canonical_latest_refs = sorted(x for x in latest_refs if _is_canonical_latest_ref(x))
     written_latest_refs = _written_latest_refs(text)
@@ -161,6 +189,8 @@ def _workflow_row(path: Path, root: Path) -> dict[str, Any]:
         "git_push": git_push,
         "cancel_in_progress_false": cancel_false,
         "cancel_in_progress_true": cancel_true,
+        "concurrency_group": concurrency_group,
+        "concurrency_group_static": _static_serialization_group(concurrency_group),
         "pip_install": pip_install,
         "no_cache_pip": no_cache_pip,
         "workflow_run_trigger": workflow_run_trigger,
@@ -188,6 +218,7 @@ def audit(repo_root: Path) -> dict[str, Any]:
         raise RuntimeError(f"WORKFLOW_DIR_MISSING:{wf_root}")
     paths = sorted(p for p in wf_root.iterdir() if p.is_file() and p.suffix.lower() in WORKFLOW_SUFFIXES)
     rows = [_workflow_row(p, repo_root) for p in paths]
+    row_by_path = {row["path"]: row for row in rows}
 
     cron_minutes: Counter[str] = Counter()
     broad_latest_writers: dict[str, list[str]] = defaultdict(list)
@@ -206,11 +237,30 @@ def audit(repo_root: Path) -> dict[str, Any]:
         for ref, writer_paths in broad_latest_writers.items()
         if len(set(writer_paths)) > 1
     }
-    duplicate_canonical_writers = {
+    all_duplicate_canonical_writers = {
         ref: sorted(set(writer_paths))
         for ref, writer_paths in canonical_latest_writers.items()
         if len(set(writer_paths)) > 1
     }
+    serialized_canonical_writers: dict[str, dict[str, Any]] = {}
+    unsafe_duplicate_canonical_writers: dict[str, list[str]] = {}
+    for ref, writer_paths in all_duplicate_canonical_writers.items():
+        groups = {row_by_path[path].get("concurrency_group") for path in writer_paths}
+        same_static_group = (
+            len(groups) == 1
+            and None not in groups
+            and all(row_by_path[path].get("concurrency_group_static") is True for path in writer_paths)
+        )
+        if same_static_group:
+            group = next(iter(groups))
+            serialized_canonical_writers[ref] = {
+                "writers": writer_paths,
+                "concurrency_group": group,
+                "race_prevented_by_shared_static_concurrency": True,
+            }
+        else:
+            unsafe_duplicate_canonical_writers[ref] = writer_paths
+
     scheduled = [x for x in rows if x["crons"]]
     git_writers = [x for x in rows if x["git_push"]]
     scheduled_git_writers = [x for x in rows if x["crons"] and x["git_push"]]
@@ -224,8 +274,10 @@ def audit(repo_root: Path) -> dict[str, Any]:
     recommendations: list[str] = []
     if scheduled_git_writers:
         recommendations.append("COALESCE_SCHEDULED_STATE_WRITES_OR_SERIALIZE_CANONICAL_WRITERS")
-    if duplicate_canonical_writers:
-        recommendations.append("ELIMINATE_DUPLICATE_CANONICAL_LATEST_JSON_WRITERS")
+    if unsafe_duplicate_canonical_writers:
+        recommendations.append("ELIMINATE_UNSAFE_DUPLICATE_CANONICAL_LATEST_JSON_WRITERS")
+    if serialized_canonical_writers:
+        recommendations.append("DOCUMENT_SERIALIZED_CANONICAL_MULTIWRITER_OWNERSHIP")
     if long_retention:
         recommendations.append("REDUCE_EPHEMERAL_HOURLY_ARTIFACT_RETENTION_TO_30D_OR_LESS")
     if any(x["pip_install"] for x in scheduled):
@@ -236,7 +288,7 @@ def audit(repo_root: Path) -> dict[str, Any]:
         recommendations.append("ALIGN_WORKFLOW_DISPLAY_VERSIONS_WITH_ACTIVE_IMPLEMENTATION")
 
     state = "HOLD_PIPELINE_HYGIENE_RISKS_PRESENT" if (
-        duplicate_canonical_writers or any(x["risk_score"] >= 8 for x in rows)
+        unsafe_duplicate_canonical_writers or any(x["risk_score"] >= 8 for x in rows)
     ) else "PASS_PIPELINE_HYGIENE_NO_CRITICAL_RISK"
 
     return {
@@ -257,13 +309,17 @@ def audit(repo_root: Path) -> dict[str, Any]:
             "canonical_latest_writer_workflow_count": len(canonical_write_workflows),
             "canonical_latest_read_only_mention_count": canonical_read_only_mentions,
             "duplicate_latest_json_writer_count_broad": len(duplicate_latest_writers),
-            "duplicate_canonical_latest_json_writer_count": len(duplicate_canonical_writers),
+            "duplicate_canonical_latest_json_writer_count_total": len(all_duplicate_canonical_writers),
+            "duplicate_canonical_latest_json_writer_count": len(unsafe_duplicate_canonical_writers),
+            "serialized_canonical_latest_json_multiwriter_count": len(serialized_canonical_writers),
         },
         "cron_minute_density": dict(sorted(cron_minutes.items(), key=lambda kv: (-kv[1], kv[0]))),
         "duplicate_latest_json_writers_broad": duplicate_latest_writers,
-        "duplicate_canonical_latest_json_writers": duplicate_canonical_writers,
+        "all_duplicate_canonical_latest_json_writers": all_duplicate_canonical_writers,
+        "duplicate_canonical_latest_json_writers": unsafe_duplicate_canonical_writers,
+        "serialized_canonical_latest_json_multiwriters": serialized_canonical_writers,
         "canonical_latest_writer_workflows": [
-            {"path": x["path"], "targets": x["canonical_written_latest_json_refs"]}
+            {"path": x["path"], "targets": x["canonical_written_latest_json_refs"], "concurrency_group": x["concurrency_group"]}
             for x in canonical_write_workflows
         ],
         "full_history_checkout_workflows": [x["path"] for x in full_history_checkout],
@@ -292,40 +348,60 @@ def self_test() -> int:
         root = Path(td)
         wf = root / ".github" / "workflows"
         wf.mkdir(parents=True)
-        common = (
+        common_prefix = (
             "on:\n  schedule:\n    - cron: '17 * * * *'\npermissions:\n  contents: write\n"
-            "concurrency:\n  cancel-in-progress: false\njobs:\n  x:\n    timeout-minutes: 70\n    steps:\n"
+        )
+        common_jobs = (
+            "jobs:\n  x:\n    timeout-minutes: 70\n    steps:\n"
             "      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n"
             "      - run: python -m pip install --no-cache-dir groq\n      - run: git commit -m x && git push origin master\n"
             "      - uses: actions/upload-artifact@v4\n        with:\n          retention-days: 90\n"
         )
+        shared = "concurrency:\n  group: shared-static-writer\n  cancel-in-progress: false\n"
         (wf / "alpha-v1.yml").write_text(
-            "name: Alpha V2\n" + common +
+            "name: Alpha V2\n" + common_prefix + shared + common_jobs +
             "      - run: |\n          target=backend/research/x_latest.json\n          cp out/x.json \"$target\"\n",
             encoding="utf-8",
         )
         (wf / "beta-v1.yml").write_text(
-            "name: Beta V1\n" + common +
+            "name: Beta V1\n" + common_prefix +
+            "concurrency:\n  group: beta-only\n  cancel-in-progress: false\n" + common_jobs +
             "      - run: python tool.py --input backend/research/x_latest.json --output out/beta.json\n",
             encoding="utf-8",
         )
         (wf / "gamma-v1.yml").write_text(
-            "name: Gamma V1\n" + common + "      - run: cp out/z.json backend/research/x_latest.json\n",
+            "name: Gamma V1\n" + common_prefix + shared + common_jobs +
+            "      - run: cp out/z.json backend/research/x_latest.json\n",
+            encoding="utf-8",
+        )
+        (wf / "delta-v1.yml").write_text(
+            "name: Delta V1\n" + common_prefix +
+            "concurrency:\n  group: delta-only\n  cancel-in-progress: false\n" + common_jobs +
+            "      - run: cp out/y.json backend/research/y_latest.json\n",
+            encoding="utf-8",
+        )
+        (wf / "epsilon-v1.yml").write_text(
+            "name: Epsilon V1\n" + common_prefix +
+            "concurrency:\n  group: epsilon-only\n  cancel-in-progress: false\n" + common_jobs +
+            "      - run: cp out/y.json backend/research/y_latest.json\n",
             encoding="utf-8",
         )
         r = audit(root)
-        assert r["metrics"]["workflow_count"] == 3, r
-        assert r["metrics"]["scheduled_git_push_writer_count"] == 3, r
-        assert r["metrics"]["artifact_retention_gt30d_count"] == 3, r
+        assert r["metrics"]["workflow_count"] == 5, r
+        assert r["metrics"]["scheduled_git_push_writer_count"] == 5, r
+        assert r["metrics"]["artifact_retention_gt30d_count"] == 5, r
         assert r["metrics"]["workflow_version_mismatch_count"] == 1, r
-        assert r["metrics"]["fetch_depth_zero_workflow_count"] == 3, r
+        assert r["metrics"]["fetch_depth_zero_workflow_count"] == 5, r
+        assert r["metrics"]["duplicate_canonical_latest_json_writer_count_total"] == 2, r
+        assert r["metrics"]["serialized_canonical_latest_json_multiwriter_count"] == 1, r
         assert r["metrics"]["duplicate_canonical_latest_json_writer_count"] == 1, r
         assert r["metrics"]["canonical_latest_read_only_mention_count"] >= 1, r
-        assert r["duplicate_canonical_latest_json_writers"]["backend/research/x_latest.json"] == [
-            ".github/workflows/alpha-v1.yml", ".github/workflows/gamma-v1.yml"
+        assert r["serialized_canonical_latest_json_multiwriters"]["backend/research/x_latest.json"]["concurrency_group"] == "shared-static-writer", r
+        assert r["duplicate_canonical_latest_json_writers"]["backend/research/y_latest.json"] == [
+            ".github/workflows/delta-v1.yml", ".github/workflows/epsilon-v1.yml"
         ], r
         assert r["read_only"] is True and r["protected_mutations"] == 0, r
-    print("PASS_ZEL_PIPELINE_HYGIENE_AUDIT_V3_SELF_TEST")
+    print("PASS_ZEL_PIPELINE_HYGIENE_AUDIT_V4_SELF_TEST")
     return 0
 
 

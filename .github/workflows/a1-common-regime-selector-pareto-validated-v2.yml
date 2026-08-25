@@ -6,6 +6,7 @@ on:
       - 'backend/research/rebuild/a1_common_regime_selector_pareto_router_v1.py'
       - 'backend/research/rebuild/a1_common_regime_selector_validated_evidence_v1.json'
       - 'backend/research/rebuild/a1_common_regime_selector_pareto_validated_v2.py'
+      - '.github/workflows/a1-common-regime-selector-pareto-v1.yml'
       - '.github/workflows/a1-common-regime-selector-pareto-validated-v2.yml'
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - 'backend/research/rebuild/a1_common_regime_selector_pareto_router_v1.py'
       - 'backend/research/rebuild/a1_common_regime_selector_validated_evidence_v1.json'
       - 'backend/research/rebuild/a1_common_regime_selector_pareto_validated_v2.py'
+      - '.github/workflows/a1-common-regime-selector-pareto-v1.yml'
       - '.github/workflows/a1-common-regime-selector-pareto-validated-v2.yml'
   schedule:
     - cron: '2 * * * *'
@@ -80,15 +82,14 @@ jobs:
               assert x['common_mode_risk_context']['conclusion']=='COMMON_MODE_STACKING_CONFIRMED_BUT_NAIVE_BLOCK_NOT_ECONOMIC_UPGRADE',x
               assert x['breadth_candidate_preserved'] is True,x
           print(json.dumps({
+              'canonical_writer':'VALIDATED_V2_ONLY',
               'routes':{sid:m[sid]['route'] for sid in m},
               'break_relation':b['pareto']['relation'],
               'break_improved':b['pareto']['improved_metrics'],
               'break_worsened':b['pareto']['worsened_metrics'],
-              'supertrend_trigger_classes':m['supertrend_pullback']['trigger_classes'],
-              'trendma_trigger_classes':m['trend_ma_macd']['trigger_classes'],
           },sort_keys=True))
           PY
-      - name: Persist validated selector after rolling selector
+      - name: Persist validated selector as the only canonical selector writer
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
@@ -100,7 +101,7 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add "$validated" "$canonical"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist validated common regime selector routes [skip ci]'
+          git commit -m 'A1: persist validated canonical regime selector routes [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -112,4 +113,4 @@ jobs:
           name: a1-common-regime-selector-pareto-validated-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/a1_common_regime_selector_pareto_validated_latest.json
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 45

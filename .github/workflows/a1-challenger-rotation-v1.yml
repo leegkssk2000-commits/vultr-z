@@ -1,0 +1,160 @@
+name: A1 Challenger Rotation V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py'
+      - 'backend/research/rebuild/a1_finalist_sample_stall_no_idle_router_v1.py'
+      - 'backend/research/rebuild/a1_finalist_no_idle_action_executor_v1.py'
+      - 'backend/research/rebuild/a1_challenger_rotation_v1.py'
+      - 'backend/research/rebuild/a1_finalist_no_idle_action_executor_v2.py'
+      - '.github/workflows/a1-challenger-rotation-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py'
+      - 'backend/research/rebuild/a1_finalist_sample_stall_no_idle_router_v1.py'
+      - 'backend/research/rebuild/a1_finalist_no_idle_action_executor_v1.py'
+      - 'backend/research/rebuild/a1_challenger_rotation_v1.py'
+      - 'backend/research/rebuild/a1_finalist_no_idle_action_executor_v2.py'
+      - '.github/workflows/a1-challenger-rotation-v1.yml'
+  schedule:
+    - cron: '58 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-challenger-rotation-v1
+  cancel-in-progress: true
+
+jobs:
+  rotate-one-slot-per-strategy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile and self-test rotation lane
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/production_economic_guard_v1.py \
+            backend/research/rebuild/a1_a4_distinct_child_repair_batch_v1.py \
+            backend/research/rebuild/a1_finalist_no_idle_action_executor_v1.py \
+            backend/research/rebuild/a1_challenger_rotation_v1.py \
+            backend/research/rebuild/a1_finalist_no_idle_action_executor_v2.py
+          python -m backend.research.production_economic_guard_v1
+          python -m backend.research.rebuild.a1_a4_distinct_child_repair_batch_v1 --self-test
+          python -m backend.research.rebuild.a1_challenger_rotation_v1 --self-test
+          python -m backend.research.rebuild.a1_finalist_no_idle_action_executor_v2 --self-test
+
+      - name: Rotate terminal rejects against current incumbent boundary
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_challenger_rotation_v1 \
+            --routes backend/research/rebuild/a1_finalist_sample_stall_no_idle_latest.json \
+            --out out/a1_challenger_rotation_latest.json
+          python - <<'PY'
+          import json
+          routes=json.load(open('backend/research/rebuild/a1_finalist_sample_stall_no_idle_latest.json'))
+          r=json.load(open('out/a1_challenger_rotation_latest.json'))
+          terminal=[x for x in routes.get('targets',[]) if x.get('state')=='REJECT_CHILD_PRODUCTION_ECONOMICS']
+          assert r['state']=='PASS_CHALLENGER_ROTATION_ACTIVE',r
+          assert r['terminal_reject_count']==len(terminal),r
+          assert r['slot_count']==len(terminal),r
+          assert r['max_challengers_per_strategy']==1,r
+          assert len({x['strategy_id'] for x in r['slots']})==len(r['slots']),r
+          assert r['strategy_parameters_changed'] is False,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          for x in r['slots']:
+              assert int(x.get('challenger_slot_count') or 0) <= 1,x
+              assert x['incumbent_mutated'] is False and x['restart_from_zero'] is False,x
+              assert x['strategy_parameters_changed'] is False,x
+              if x['state']=='READY_DISTINCT_CHALLENGER_SLOT':
+                  c=x.get('challenger') or {}
+                  assert c.get('rotation_eligible') is True,c
+                  assert (c.get('production_economic_guard') or {}).get('pass') is True,c
+              else:
+                  assert x['state']=='BUILD_NEW_DISTINCT_MECHANISM_WITHOUT_RESET',x
+                  assert x.get('challenger') is None,x
+          print(json.dumps({
+              'terminal_reject_count':r['terminal_reject_count'],
+              'ready_slot_count':r['ready_slot_count'],
+              'build_new_mechanism_count':r['build_new_mechanism_count'],
+              'slots':{x['strategy_id']:x['state'] for x in r['slots']},
+          },sort_keys=True))
+          PY
+
+      - name: Execute rotated no-idle actions
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_finalist_no_idle_action_executor_v2 \
+            --routes backend/research/rebuild/a1_finalist_sample_stall_no_idle_latest.json \
+            --rotation out/a1_challenger_rotation_latest.json \
+            --out out/a1_finalist_no_idle_action_executor_v2_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_finalist_no_idle_action_executor_v2_latest.json'))
+          assert r['state']=='PASS_NO_IDLE_ACTION_EXECUTOR_ACTIVE',r
+          assert r['rotation_actionable_count']>=1,r
+          assert r['strategy_parameters_changed'] is False,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          rotated=0
+          for x in r['actions']:
+              assert x['incumbent_mutated'] is False and x['restart_from_zero'] is False,x
+              if x.get('router_state')=='REJECT_CHILD_PRODUCTION_ECONOMICS':
+                  assert x['action_type'] in {'ROTATE_DISTINCT_CHALLENGER_SLOT','BUILD_NEW_DISTINCT_MECHANISM_WITHOUT_RESET'},x
+                  rotated+=1
+          assert rotated==r['rotation_actionable_count'],r
+          print(json.dumps({
+              'rotation_actionable_count':r['rotation_actionable_count'],
+              'rotation_ready_slot_count':r['rotation_ready_slot_count'],
+              'rotation_build_new_mechanism_count':r['rotation_build_new_mechanism_count'],
+              'actions':{x['strategy_id']:x['action_type'] for x in r['actions']},
+          },sort_keys=True))
+          PY
+
+      - name: Persist rotation receipts on master
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          rotation_target=backend/research/rebuild/a1_challenger_rotation_latest.json
+          executor_target=backend/research/rebuild/a1_finalist_no_idle_action_executor_v2_latest.json
+          cp out/a1_challenger_rotation_latest.json "$rotation_target"
+          cp out/a1_finalist_no_idle_action_executor_v2_latest.json "$executor_target"
+          git config user.name 'a1-challenger-rotation-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$rotation_target" "$executor_target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 finalists: persist one-slot challenger rotation [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-challenger-rotation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_challenger_rotation_latest.json
+            out/a1_finalist_no_idle_action_executor_v2_latest.json
+          if-no-files-found: warn
+          retention-days: 30

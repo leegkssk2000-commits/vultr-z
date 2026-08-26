@@ -1,0 +1,132 @@
+name: A1 Production High-WR Branch Verify V1
+
+on:
+  push:
+    branches:
+      - a1-highwr-rolling-closed-collector-v1
+    paths:
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py'
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v2.py'
+      - '.github/workflows/a1-production-highwr-branch-verify-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify_collect_twice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py
+          python -m py_compile backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v2.py
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 --self-test
+
+      - name: Recover exact historical parents
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work=/tmp/a1-highwr-historical
+          mkdir -p "$work/broad-bootstrap" "$work/broad"
+
+          gh api --allow-escape-sequences "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > "$work/primary.log"
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          raw=Path('/tmp/a1-highwr-historical/primary.log').read_text(encoding='utf-8',errors='replace')
+          cleaned='\n'.join(re.sub(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\s*','',line) for line in raw.splitlines())
+          decoder=json.JSONDecoder(); matches=[]
+          for m in re.finditer(r'\{',cleaned):
+              try: obj,_=decoder.raw_decode(cleaned[m.start():])
+              except json.JSONDecodeError: continue
+              if not isinstance(obj,dict): continue
+              if str(obj.get('strategy_id'))!='trend_rider': continue
+              if int(obj.get('completed_trades') or 0)!=25: continue
+              if not isinstance(obj.get('trades'),list) or len(obj['trades'])!=25: continue
+              if str(obj.get('policy_path'))!='backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py': continue
+              if str(obj.get('receipt_sha256') or '')!='b064d6ee58c158cdb1169b79d93d1df46ea020d0dde3762703a577f9a3068103': continue
+              matches.append(obj)
+          if len(matches)!=1: raise SystemExit(f'PRIMARY_HISTORICAL_25T_RECEIPT_REQUIRED:{len(matches)}')
+          Path('/tmp/a1-highwr-historical/primary.json').write_text(json.dumps(matches[0],sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+          PY
+
+          gh run download 32482936710 -n a1-exact25-32482936710 -D "$work/broad-bootstrap"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('/tmp/a1-highwr-historical/broad-bootstrap')
+          matches=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if str(x.get('receipt_sha256') or '')=='b9a7cc4c930952e9fae3a4b65012ceb393f0e084ee3c9decbd2854858a4fedd9' and int(x.get('completed_trades') or 0)==30:
+                      matches.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          for path in root.rglob('*.json'):
+              try: walk(json.loads(path.read_text(encoding='utf-8')))
+              except Exception: pass
+          unique={json.dumps(x,sort_keys=True,separators=(',',':'),allow_nan=False):x for x in matches}
+          if len(unique)!=1: raise SystemExit(f'BROAD_HISTORICAL_30T_RECEIPT_REQUIRED:{len(unique)}')
+          receipt=next(iter(unique.values()))
+          Path('/tmp/a1-highwr-historical/broad/receipt.json').write_text(json.dumps(receipt,sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+          PY
+
+      - name: Collect pass 1
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 \
+            --primary-seed /tmp/a1-highwr-historical/primary.json \
+            --broad-artifact-dir /tmp/a1-highwr-historical/broad \
+            --previous backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json \
+            --out out/pass1.json
+
+      - name: Collect pass 2 from pass 1
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 \
+            --primary-seed /tmp/a1-highwr-historical/primary.json \
+            --broad-artifact-dir /tmp/a1-highwr-historical/broad \
+            --previous out/pass1.json \
+            --out out/pass2.json
+
+      - name: Assert 5-lane append-only idempotence and blocked authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p1=json.load(open('out/pass1.json'))
+          p2=json.load(open('out/pass2.json'))
+          expected=['trend_rider_primary_wr8125','trend_rider_broad_wr7000','break_and_continue_main','keltner_trend_main','supertrend_pullback_main']
+          for r in (p1,p2):
+              assert r['state']=='PASS_HIGHWR_ROLLING_CLOSED_ACTIVE',r
+              assert r['schema_version']=='zel.a1.production_highwr.rolling_closed.v2'
+              assert r['primary_seed_authority']=='EXACT_PARENT_DESCRIPTOR_PLUS_IMMUTABLE_TRADE_IDENTITY'
+              assert r['primary_frozen_membership_uses_current_feature_recomputation'] is False
+              assert list(r['lanes'])==expected
+              assert r['selection_authority'] is False and r['promotion_authority'] is False
+              assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+              for lane_id,x in r['lanes'].items():
+                  assert x['lane_id']==lane_id
+                  ids=[t['closed_trade_id'] for t in x['closed_trades']]
+                  assert len(ids)==len(set(ids))
+                  assert x['selection_authority'] is False and x['promotion_authority'] is False
+                  assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED' and x['live_trade_authority']=='BLOCKED'
+          assert int(p2['total_delta_t'])==0,p2['total_delta_t']
+          for lane_id in expected:
+              a=p1['lanes'][lane_id]; b=p2['lanes'][lane_id]
+              assert int(b['delta_t'])==0,(lane_id,b['delta_t'])
+              assert b['closed_trades']==a['closed_trades'],lane_id
+              assert b['rolling_completed_trades']==a['rolling_completed_trades'],lane_id
+          print(json.dumps({'state':'PASS_2PASS_IDEMPOTENT','pass1_deltaT':p1['total_delta_t'],'pass2_deltaT':p2['total_delta_t'],'T':{k:v['rolling_completed_trades'] for k,v in p2['lanes'].items()}},sort_keys=True))
+          PY

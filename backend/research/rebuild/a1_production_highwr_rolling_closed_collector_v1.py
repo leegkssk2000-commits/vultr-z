@@ -36,6 +36,13 @@ EXPECTED_LANES = (
     "keltner_trend_main",
     "supertrend_pullback_main",
 )
+CLOSED_IDENTITY_FIELDS = (
+    "symbol",
+    "signal_ts",
+    "entry_ts",
+    "exit_ts",
+    "side",
+)
 AUTH = {
     "selection_authority": False,
     "promotion_authority": False,
@@ -60,16 +67,16 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _immutable_trade_identity(trade: Mapping[str, Any]) -> dict[str, Any]:
+    return {field: trade.get(field) for field in CLOSED_IDENTITY_FIELDS}
+
+
+def _immutable_trade_key(trade: Mapping[str, Any]) -> str:
+    return _sha(_immutable_trade_identity(trade))
+
+
 def _trade_id(lane_id: str, trade: Mapping[str, Any]) -> str:
-    return _sha({
-        "lane_id": lane_id,
-        "symbol": trade.get("symbol"),
-        "signal_ts": trade.get("signal_ts"),
-        "entry_ts": trade.get("entry_ts"),
-        "exit_ts": trade.get("exit_ts"),
-        "side": trade.get("side"),
-        "intent_sha": trade.get("intent_sha"),
-    })
+    return _sha({"lane_id": lane_id, **_immutable_trade_identity(trade)})
 
 
 def _seal_trade(lane_id: str, trade: Mapping[str, Any]) -> dict[str, Any]:
@@ -311,11 +318,48 @@ def _break_source(lane: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[d
     symbols = _source_symbols(source) or A4_SYMBOLS
     current = _run_replay("break_and_continue", _inventory_policy("break_and_continue"), boundary, symbols)
     eligible = [dict(x) for x in current.get("trades") or [] if a4.keep_session_price_discovery(x, {}, {})]
-    seed_ids = {a4.trade_identity(x) for x in seed}
-    if not seed_ids.issubset({a4.trade_identity(x) for x in eligible}):
-        raise RuntimeError("BREAK_SEED_NOT_SUBSET_OF_CURRENT_REPLAY")
-    meta = {"boundary_utc": boundary, "symbols": list(symbols), "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY"}
+    seed_ids = {_immutable_trade_key(x) for x in seed}
+    current_ids = {_immutable_trade_key(x) for x in eligible}
+    if len(seed_ids) != len(seed):
+        raise RuntimeError("BREAK_SEED_IMMUTABLE_IDENTITY_DUPLICATE")
+    if not seed_ids.issubset(current_ids):
+        raise RuntimeError("BREAK_SEED_NOT_SUBSET_OF_CURRENT_REPLAY_IMMUTABLE_IDENTITY")
+    meta = {
+        "boundary_utc": boundary,
+        "symbols": list(symbols),
+        "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
+        "seed_membership_authority": "IMMUTABLE_CLOSED_TRADE_IDENTITY",
+    }
     return seed, _ordered(eligible), meta
+
+
+def _a4_candidate_economics_defects(
+    lane: Mapping[str, Any], candidate: Mapping[str, Any], seed: Sequence[Mapping[str, Any]], *, tol: float = 1e-6,
+) -> list[str]:
+    defects = _validate_seed_headline(lane, seed, pnl_tol=tol)
+    observed = _metrics(seed)
+    expected = candidate.get("metrics") if isinstance(candidate.get("metrics"), Mapping) else {}
+    pairs = (
+        ("completed_trades", "trades"),
+        ("win_rate", "win_rate"),
+        ("net_pnl_bps", "net_pnl_bps"),
+        ("net_expectancy_bps", "net_expectancy_bps"),
+        ("profit_factor", "profit_factor"),
+        ("payoff", "payoff"),
+        ("max_drawdown_bps", "drawdown_bps"),
+    )
+    for observed_key, expected_key in pairs:
+        got = observed.get(observed_key)
+        want = expected.get(expected_key)
+        if observed_key == "completed_trades":
+            if int(got or 0) != int(want or 0):
+                defects.append(f"CANDIDATE_{observed_key}:{got}!={want}")
+        elif got is None or want is None:
+            if got != want:
+                defects.append(f"CANDIDATE_{observed_key}:{got}!={want}")
+        elif abs(float(got) - float(want)) > tol:
+            defects.append(f"CANDIDATE_{observed_key}:{got}!={want}")
+    return defects
 
 
 def _a4_display_source(lane: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -325,22 +369,44 @@ def _a4_display_source(lane: Mapping[str, Any]) -> tuple[list[dict[str, Any]], l
     candidate = _candidate(repair, strategy_id, candidate_id)
     expected_digest = str(candidate.get("trade_identity_sha256") or "")
     expected_n = int(lane.get("completed_trades") or 0)
+    if str(candidate.get("candidate_sha256") or "") != str(lane.get("source_candidate_sha256") or ""):
+        raise RuntimeError(f"A4_SOURCE_CANDIDATE_SHA_DRIFT:{strategy_id}")
+    if str(candidate.get("parent_receipt_sha256") or "") != str(lane.get("source_parent_receipt_sha256") or ""):
+        raise RuntimeError(f"A4_SOURCE_PARENT_SHA_DRIFT:{strategy_id}")
+    if int(candidate.get("completed_trades") or 0) != expected_n:
+        raise RuntimeError(f"A4_SOURCE_CANDIDATE_COUNT_DRIFT:{strategy_id}")
     boundary = _canonical_boundary(strategy_id)
     current = _run_replay(strategy_id, _inventory_policy(strategy_id), boundary, A4_SYMBOLS)
-    eligible = [dict(x) for x in current.get("trades") or [] if a4.keep_session_price_discovery(x, {}, {})]
-    seed = _first_identity_prefix(eligible, expected_n, expected_digest)
-    # Identity digest is authoritative here; historical candidate economics are retained in SSOT and not rewritten.
-    if len(seed) != expected_n:
-        raise RuntimeError(f"A4_SEED_COUNT_MISMATCH:{strategy_id}")
+    eligible = _ordered([dict(x) for x in current.get("trades") or [] if a4.keep_session_price_discovery(x, {}, {})])
+    if len(eligible) < expected_n:
+        raise RuntimeError(f"REGENERATED_SEED_TOO_SHORT:{len(eligible)}<{expected_n}")
+    seed = eligible[:expected_n]
+    immutable_ids = {_immutable_trade_key(x) for x in seed}
+    if len(immutable_ids) != expected_n:
+        raise RuntimeError(f"A4_SEED_IMMUTABLE_IDENTITY_DUPLICATE:{strategy_id}")
+    legacy_digest = _identity_digest(seed)
+    legacy_digest_match = legacy_digest == expected_digest
+    if not legacy_digest_match:
+        defects = _a4_candidate_economics_defects(lane, candidate, seed)
+        if defects:
+            raise RuntimeError(f"A4_IMMUTABLE_REBIND_ECONOMICS_MISMATCH:{strategy_id}:" + ";".join(defects))
+        membership_authority = "EXACT_CANDIDATE_METADATA_PLUS_IMMUTABLE_PREFIX_PLUS_ECONOMIC_EQUIVALENCE"
+    else:
+        membership_authority = "LEGACY_A4_TRADE_IDENTITY_DIGEST"
     meta = {
         "boundary_utc": boundary,
         "symbols": list(A4_SYMBOLS),
         "axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
         "source_candidate_id": candidate_id,
+        "source_candidate_sha256": candidate.get("candidate_sha256"),
+        "source_parent_receipt_sha256": candidate.get("parent_receipt_sha256"),
         "source_trade_identity_sha256": expected_digest,
+        "legacy_trade_identity_digest_match": legacy_digest_match,
+        "seed_membership_authority": membership_authority,
+        "closed_identity_fields": list(CLOSED_IDENTITY_FIELDS),
         "display_only": True,
     }
-    return seed, _ordered(eligible), meta
+    return seed, eligible, meta
 
 
 def _previous_lane(previous: Mapping[str, Any] | None, lane_id: str) -> dict[str, Any] | None:
@@ -405,6 +471,7 @@ def _merge_lane(
         "rolling_completed_trades": rolling["completed_trades"],
         "closed_trades": combined,
         "value_semantics": VALUE_SEMANTICS,
+        "closed_identity_fields": list(CLOSED_IDENTITY_FIELDS),
         "state": state,
         "selection_authority": False,
         "promotion_authority": False,
@@ -446,6 +513,8 @@ def run(primary_seed_path: Path, broad_artifact_dir: Path, out: Path, previous_p
         "economic_value_semantics": VALUE_SEMANTICS,
         "append_only": True,
         "stable_identity_dedup": True,
+        "closed_trade_identity_authority": "LANE_PLUS_IMMUTABLE_CLOSED_EXECUTION_TUPLE",
+        "closed_trade_identity_fields": ["lane_id", *CLOSED_IDENTITY_FIELDS],
         "headline_ssot_mutated": False,
         "rolling_receipt_grants_promotion": False,
         "total_delta_t": total_delta,
@@ -462,18 +531,23 @@ def run(primary_seed_path: Path, broad_artifact_dir: Path, out: Path, previous_p
 
 def self_test() -> int:
     assert EXPECTED_LANES[0] != EXPECTED_LANES[1]
-    a = {"symbol": "BTC-USDT", "signal_ts": 1, "entry_ts": 2, "exit_ts": 3, "side": "long", "intent_sha": "x", "net_bps": 10.0}
+    a = {"symbol": "BTC-USDT", "signal_ts": 1, "entry_ts": 2, "exit_ts": 3, "side": "long", "intent_sha": "x", "feature_sha": "f1", "net_bps": 10.0}
     b = dict(a)
+    b["intent_sha"] = "changed"
+    b["feature_sha"] = "changed"
     b["net_bps"] = 999.0
-    assert _trade_id("lane", a) == _trade_id("lane", b), "economic replay drift must not change CLOSED identity"
+    assert _trade_id("lane", a) == _trade_id("lane", b), "feature/intent/economic replay drift must not change CLOSED identity"
+    assert _immutable_trade_key(a) == _immutable_trade_key(b), "immutable source membership must ignore enrichment hashes"
     assert _trade_id("lane-a", a) != _trade_id("lane-b", a), "same strategy trade may belong to distinct production lanes"
+    assert _trade_id("lane", a) != _trade_id("lane", {**a, "exit_ts": 4}), "different CLOSED execution must remain distinct"
     m = _metrics([a, {**a, "signal_ts": 4, "entry_ts": 5, "exit_ts": 6, "intent_sha": "y", "net_bps": -4.0}])
     assert m["completed_trades"] == 2 and m["wins"] == 1 and abs(float(m["net_pnl_bps"]) - 6.0) < 1e-12
     lane = {"lane_id": "lane", "strategy_id": "s", "role": "MAIN", "completed_trades": 1, "wins": 1, "win_rate": 1.0, "net_pnl_bps": 10.0, "production_headline_eligible": True, "challenger_parent_eligible": True}
-    merged = _merge_lane(lane, [a], [a, {**a, "signal_ts": 4, "entry_ts": 5, "exit_ts": 6, "intent_sha": "y", "net_bps": 5.0}], {}, None)
+    merged = _merge_lane(lane, [a], [b, {**a, "signal_ts": 4, "entry_ts": 5, "exit_ts": 6, "intent_sha": "y", "net_bps": 5.0}], {}, None)
     assert merged["delta_t"] == 1 and merged["rolling_completed_trades"] == 2
     assert merged["selection_authority"] is False and merged["promotion_authority"] is False
     print("PASS_A1_PRODUCTION_HIGHWR_ROLLING_CLOSED_COLLECTOR_V1_SELF_TEST")
+    print("PASS_IMMUTABLE_CLOSED_IDENTITY_IGNORES_INTENT_FEATURE_ECONOMIC_DRIFT")
     return 0
 
 

@@ -14,6 +14,8 @@ on:
       - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
       - 'backend/research/rebuild/a1_break_and_continue_production_main_v1.json'
       - 'backend/research/rebuild/a1_a4_exact_parent_repair_latest.json'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_upstream_source_receipt_v1.json'
+      - 'backend/research/rebuild/a1_trend_rider_broad_wr7000_upstream_source_receipt_v1.json'
       - '.github/workflows/a1-production-highwr-rolling-closed-v1.yml'
   workflow_dispatch:
   schedule:
@@ -55,27 +57,27 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Download frozen Broad 70 Exact25 source artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: a1-exact25-32482936710
-          path: /tmp/a1-exact25-32482936710
-          repository: ${{ github.repository }}
-          run-id: 32482936710
-          github-token: ${{ github.token }}
-
-      - name: Recover immutable Primary 81.25 source receipt
+      - name: Prepare durable historical source receipts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api --allow-escape-sequences "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > /tmp/a1-trendrider-primary-source.log
-          python - <<'PY'
+          work=/tmp/a1-highwr-historical
+          primary_repo=backend/research/rebuild/a1_trend_rider_wr8125_upstream_source_receipt_v1.json
+          broad_repo=backend/research/rebuild/a1_trend_rider_broad_wr7000_upstream_source_receipt_v1.json
+          mkdir -p "$work/broad"
+
+          if [[ -f "$primary_repo" ]]; then
+            cp "$primary_repo" "$work/primary.json"
+            echo PRIMARY_SOURCE=REPO_DURABLE
+          else
+            gh api --allow-escape-sequences "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > "$work/primary.log"
+            python - <<'PY'
           import json,re
           from pathlib import Path
-          raw=Path('/tmp/a1-trendrider-primary-source.log').read_text(encoding='utf-8',errors='replace')
+          raw=Path('/tmp/a1-highwr-historical/primary.log').read_text(encoding='utf-8',errors='replace')
           cleaned='\n'.join(re.sub(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\s*','',line) for line in raw.splitlines())
-          decoder=json.JSONDecoder(); receipt=None
+          decoder=json.JSONDecoder(); matches=[]
           for m in re.finditer(r'\{',cleaned):
               try: obj,_=decoder.raw_decode(cleaned[m.start():])
               except json.JSONDecodeError: continue
@@ -84,19 +86,94 @@ jobs:
               if int(obj.get('completed_trades') or 0)!=25: continue
               if not isinstance(obj.get('trades'),list) or len(obj['trades'])!=25: continue
               if str(obj.get('policy_path'))!='backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py': continue
-              receipt=obj; break
-          if receipt is None: raise SystemExit('PRIMARY_HISTORICAL_25T_RECEIPT_NOT_FOUND')
-          Path('/tmp/a1-trendrider-primary-source.json').write_text(json.dumps(receipt,sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
-          print(json.dumps({'completed_trades':receipt['completed_trades'],'policy_path':receipt['policy_path'],'boundary':receipt.get('boundary_utc')},sort_keys=True))
+              if str(obj.get('receipt_sha256') or '')!='b064d6ee58c158cdb1169b79d93d1df46ea020d0dde3762703a577f9a3068103': continue
+              matches.append(obj)
+          if len(matches)!=1: raise SystemExit(f'PRIMARY_HISTORICAL_25T_RECEIPT_REQUIRED:{len(matches)}')
+          Path('/tmp/a1-highwr-historical/primary.json').write_text(json.dumps(matches[0],sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
           PY
+            echo PRIMARY_SOURCE=BOOTSTRAP_JOB_LOG
+          fi
+
+          if [[ -f "$broad_repo" ]]; then
+            cp "$broad_repo" "$work/broad/receipt.json"
+            echo BROAD_SOURCE=REPO_DURABLE
+          else
+            mkdir -p "$work/broad-bootstrap"
+            gh run download 32482936710 -n a1-exact25-32482936710 -D "$work/broad-bootstrap"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('/tmp/a1-highwr-historical/broad-bootstrap')
+          matches=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  if str(x.get('receipt_sha256') or '')=='b9a7cc4c930952e9fae3a4b65012ceb393f0e084ee3c9decbd2854858a4fedd9' and int(x.get('completed_trades') or 0)==30:
+                      matches.append(x)
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+          for path in root.rglob('*.json'):
+              try: walk(json.loads(path.read_text(encoding='utf-8')))
+              except Exception: pass
+          unique={json.dumps(x,sort_keys=True,separators=(',',':'),allow_nan=False):x for x in matches}
+          if len(unique)!=1: raise SystemExit(f'BROAD_HISTORICAL_30T_RECEIPT_REQUIRED:{len(unique)}')
+          receipt=next(iter(unique.values()))
+          Path('/tmp/a1-highwr-historical/broad/receipt.json').write_text(json.dumps(receipt,sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+          PY
+            echo BROAD_SOURCE=BOOTSTRAP_EXACT25_ARTIFACT
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          primary=json.load(open('/tmp/a1-highwr-historical/primary.json'))
+          broad=json.load(open('/tmp/a1-highwr-historical/broad/receipt.json'))
+          checks={
+              'primary_sha':str(primary.get('receipt_sha256') or '')=='b064d6ee58c158cdb1169b79d93d1df46ea020d0dde3762703a577f9a3068103',
+              'primary_t':int(primary.get('completed_trades') or 0)==25 and len(primary.get('trades') or [])==25,
+              'primary_policy':str(primary.get('policy_path') or '')=='backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py',
+              'broad_sha':str(broad.get('receipt_sha256') or '')=='b9a7cc4c930952e9fae3a4b65012ceb393f0e084ee3c9decbd2854858a4fedd9',
+              'broad_t':int(broad.get('completed_trades') or 0)==30 and len(broad.get('trades') or [])==30,
+              'broad_policy':str(broad.get('policy_path') or '')=='backend/research/rebuild/trend_policy_batch_v1.py',
+          }
+          for prefix,obj in [('primary',primary),('broad',broad)]:
+              checks[prefix+'_lookahead']=int(obj.get('leakage_lookahead') or 0)==0
+              checks[prefix+'_duplicates']=int(obj.get('duplicate_count') or 0)==0
+              checks[prefix+'_execution']=str(obj.get('execution_authority'))=='NONE'
+              checks[prefix+'_order']=str(obj.get('order_authority'))=='BLOCKED'
+              checks[prefix+'_live']=str(obj.get('live_trade_authority'))=='BLOCKED'
+          failed=[k for k,v in checks.items() if not v]
+          if failed: raise SystemExit('HISTORICAL_SOURCE_INTEGRITY:'+','.join(failed))
+          print(json.dumps({'primary_sha':primary['receipt_sha256'],'primary_T':primary['completed_trades'],'broad_sha':broad['receipt_sha256'],'broad_T':broad['completed_trades']},sort_keys=True))
+          PY
+
+      - name: Persist durable historical source receipts on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          primary=backend/research/rebuild/a1_trend_rider_wr8125_upstream_source_receipt_v1.json
+          broad=backend/research/rebuild/a1_trend_rider_broad_wr7000_upstream_source_receipt_v1.json
+          changed=0
+          if [[ ! -f "$primary" ]]; then cp /tmp/a1-highwr-historical/primary.json "$primary"; changed=1; fi
+          if [[ ! -f "$broad" ]]; then cp /tmp/a1-highwr-historical/broad/receipt.json "$broad"; changed=1; fi
+          if [[ "$changed" != 1 ]]; then echo HISTORICAL_SOURCES_ALREADY_DURABLE; exit 0; fi
+          git config user.name 'a1-highwr-rolling-closed-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$primary" "$broad"
+          git commit -m 'A1: persist immutable historical source receipts [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
 
       - name: Collect lane-aware rolling CLOSED receipts
         run: |
           set -euo pipefail
           mkdir -p out
           python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 \
-            --primary-seed /tmp/a1-trendrider-primary-source.json \
-            --broad-artifact-dir /tmp/a1-exact25-32482936710 \
+            --primary-seed /tmp/a1-highwr-historical/primary.json \
+            --broad-artifact-dir /tmp/a1-highwr-historical/broad \
             --previous backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json \
             --out out/a1_production_highwr_rolling_closed_latest.json
 

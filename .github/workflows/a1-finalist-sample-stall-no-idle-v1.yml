@@ -77,6 +77,8 @@ jobs:
           assert r['production_economic_guard_enabled'] is True,r
           assert r['incumbent_collectors_continue_on_child_reject'] is True,r
           assert r['fresh25_reset_on_child_reject'] is False,r
+          assert r['failed_child_replay_allowed'] is False,r
+          assert isinstance(r.get('production_child_terminal_reject_ids'),list),r
           assert r['strategy_parameters_changed'] is False and r['thresholds_changed'] is False,r
           assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
           assert r['selection_authority'] is False and r['promotion_authority'] is False,r
@@ -90,11 +92,17 @@ jobs:
                   assert comp.get('development_prereg_eligible') is False,(x,comp)
                   assert g.get('incumbent_state_action')=='PRESERVE_UNCHANGED',g
                   assert g.get('fresh25_state_action')=='PRESERVE_UNCHANGED',g
+              if x.get('production_child_terminal_reject'):
+                  assert x['state']=='REJECT_CHILD_PRODUCTION_ECONOMICS',x
+                  assert x.get('restart_from_zero') is False,x
+                  assert x['next']=='PRESERVE_INCUMBENT_STOP_FAILED_CHILD_AND_ROTATE_DISTINCT_MECHANISM',x
+                  assert x['state']!='COLLECT_CHILD_FRESH_TO_25',x
               d=x.get('parent_diagnostic') or {}
               if d:
                   assert d['monitor_thresholds_are_research_sla_not_strategy_parameters'] is True,d
           print(json.dumps({
               'guard':r['production_economic_guard_enabled'],
+              'terminal_rejects':r.get('production_child_terminal_reject_ids'),
               'frozen_child_count':r['frozen_child_count'],
               'fresh25_ready_count':r['fresh25_ready_count'],
               'routes':{x['strategy_id']:x['state'] for x in r['targets']},

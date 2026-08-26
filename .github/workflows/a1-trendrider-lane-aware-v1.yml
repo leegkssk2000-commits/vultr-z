@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "backend/research/architecture_factory/a1_trendrider_lane_aware_synthesis_v1.py"
+      - "backend/research/architecture_factory/a1_trendrider_lane_historical_bind_v1.py"
       - ".github/workflows/a1-trendrider-lane-aware-v1.yml"
 
 permissions:
@@ -31,6 +32,7 @@ jobs:
       - name: Self-test lane identity and authority guards
         run: |
           python -m backend.research.architecture_factory.a1_trendrider_lane_aware_synthesis_v1 --self-test
+          python -m backend.research.architecture_factory.a1_trendrider_lane_historical_bind_v1 --self-test
 
       - name: Download frozen Broad 70 Exact25 source artifact
         uses: actions/download-artifact@v4
@@ -41,10 +43,58 @@ jobs:
           run-id: 32482936710
           github-token: ${{ github.token }}
 
+      - name: Recover immutable Primary 81.25 source receipt from historical job log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > /tmp/a1-trendrider-primary-source.log
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          raw = Path('/tmp/a1-trendrider-primary-source.log').read_text(encoding='utf-8', errors='replace')
+          cleaned = '\n'.join(re.sub(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\s*', '', line) for line in raw.splitlines())
+          decoder = json.JSONDecoder()
+          receipt = None
+          for m in re.finditer(r'\{', cleaned):
+              try:
+                  obj, _ = decoder.raw_decode(cleaned[m.start():])
+              except json.JSONDecodeError:
+                  continue
+              if not isinstance(obj, dict):
+                  continue
+              if str(obj.get('strategy_id')) != 'trend_rider':
+                  continue
+              if int(obj.get('completed_trades') or 0) != 25:
+                  continue
+              trades = obj.get('trades')
+              if not isinstance(trades, list) or len(trades) != 25:
+                  continue
+              if str(obj.get('policy_path')) != 'backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py':
+                  continue
+              receipt = obj
+              break
+          if receipt is None:
+              raise SystemExit('PRIMARY_HISTORICAL_25T_RECEIPT_NOT_FOUND')
+          out = Path('/tmp/a1-trendrider-primary-source.json')
+          out.write_text(json.dumps(receipt, sort_keys=True, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+          print(json.dumps({
+              'strategy_id': receipt['strategy_id'],
+              'completed_trades': receipt['completed_trades'],
+              'policy_path': receipt['policy_path'],
+              'execution_authority': receipt.get('execution_authority'),
+              'order_authority': receipt.get('order_authority'),
+              'live_trade_authority': receipt.get('live_trade_authority'),
+          }, sort_keys=True))
+          PY
+
       - name: Verify both TrendRider lane parents
         run: |
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_trendrider_lane_aware_synthesis_v1 \
+          python -m backend.research.architecture_factory.a1_trendrider_lane_historical_bind_v1 \
+            --primary-source /tmp/a1-trendrider-primary-source.json \
             --exact25-artifact-dir /tmp/a1-exact25-32482936710 \
             --output out/a1_trendrider_lane_aware_synthesis_v1.json
 
@@ -66,6 +116,12 @@ jobs:
           assert all(x["exact_trade_replay_verified"] is True for x in r["parent_adapters"])
           assert all(x["same_baseline_ab_ready"] is True for x in r["parent_adapters"])
           assert all(x["development_child_generation_allowed"] is True for x in r["lane_plans"])
+          bind = r["historical_parent_binding"]
+          assert bind["primary_source_run_id"] == 32640190665
+          assert bind["primary_source_job_id"] == 97195981802
+          assert bind["broad_source_run_id"] == 32482936710
+          assert bind["receipt_order_preserved_for_path_dependent_drawdown"] is True
+          assert bind["thresholds_changed"] is False
           assert r["improvement_claim_allowed"] is False
           assert r["promotion_ready"] is False
           assert r["selection_authority"] is False

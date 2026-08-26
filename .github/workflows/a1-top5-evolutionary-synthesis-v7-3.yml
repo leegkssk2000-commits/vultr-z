@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_3.py
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_3 --self-test
-      - name: Execute only official remaining Break axis
+      - name: Execute and terminalize only official remaining Break axis
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -52,7 +52,6 @@ jobs:
           p='out/a1_top5_evolutionary_synthesis_v7_3.json'
           r=json.load(open(p))
           lanes=r['production_top5_lane_ids']
-          assert len(lanes)==5 and len(set(lanes))==5, lanes
           assert lanes==[
             'trend_rider_primary_wr8125',
             'trend_rider_broad_wr7000',
@@ -60,9 +59,14 @@ jobs:
             'keltner_trend_main',
             'supertrend_pullback_main',
           ], lanes
+          assert len(set(lanes))==5
           assert r['legacy_strategy_id_synthesis_hosts']==['break_and_continue'], r['legacy_strategy_id_synthesis_hosts']
-          assert r['official_remaining_axis_count']==1
-          assert r['official_remaining_axis']['axis']=='DONOR__VOL_SPIKE_FADE__VOLATILITY_EXHAUSTION__ONLY'
+          assert r['official_remaining_axis_count_before_execution']==1
+          assert r['official_remaining_axis']['axis']=='DONOR__TURTLE_TREND__CHANNEL_BREAKOUT_PERSISTENCE__ONLY'
+          assert r['official_axis_terminalized'] is True
+          assert r['official_remaining_axis_count_after_execution']==0
+          assert r['official_remaining_axis_result']['state'] in {'PASS_DEVELOPMENT_ECONOMICS','FAIL_DEVELOPMENT_ECONOMICS','FAIL_INSUFFICIENT_EVENTS'}
+          assert r['side_rule_reject_present_after_guard'] is False
           assert r['trend_ma_top5_eligible'] is False
           assert r['low_wr_fallback_allowed'] is False
           assert r['trend_rider_lane_collision_blocked'] is True
@@ -71,9 +75,12 @@ jobs:
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({
             'state':r.get('state'),
+            'highwr_rebind_state':r.get('highwr_rebind_state'),
             'lanes':lanes,
             'host':r['legacy_strategy_id_synthesis_hosts'],
             'remaining_axis':r['official_remaining_axis'],
+            'axis_result':r['official_remaining_axis_result'],
+            'remaining_after':r['official_remaining_axis_count_after_execution'],
             'development_pass':r.get('development_economic_pass_count'),
             'side_rule_reject':r.get('side_rule_reject_present_after_guard'),
             'receipt':r.get('receipt_sha256'),

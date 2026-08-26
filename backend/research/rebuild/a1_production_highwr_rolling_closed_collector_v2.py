@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -167,14 +168,35 @@ def _primary_source(primary_seed: Mapping[str, Any], lane: Mapping[str, Any]):
     return seed, eligible, meta
 
 
+def _previous_for_v1(previous: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a persisted v2 receipt onto the v1 merge schema without touching sealed lane data."""
+    compat = dict(previous)
+    schema = str(compat.get("schema_version") or "")
+    if schema == SCHEMA:
+        compat["schema_version"] = v1.SCHEMA
+    elif schema != v1.SCHEMA:
+        raise RuntimeError(f"PREVIOUS_SCHEMA_UNSUPPORTED:{schema}")
+    return compat
+
+
 def run(primary_seed_path: Path, broad_artifact_dir: Path, out: Path, previous_path: Path | None = None) -> dict[str, Any]:
     # v1 owns append-only merge/metrics/source bindings; v2 replaces only the Primary seed authority.
-    original = v1._primary_source
-    v1._primary_source = _primary_source
-    try:
-        result = v1.run(primary_seed_path, broad_artifact_dir, out, previous_path)
-    finally:
-        v1._primary_source = original
+    previous_for_v1 = previous_path
+    with tempfile.TemporaryDirectory(prefix="a1-highwr-prev-") as td:
+        if previous_path is not None and previous_path.is_file():
+            previous = _previous_for_v1(v1._read(previous_path))
+            previous_for_v1 = Path(td) / "previous_v1_compat.json"
+            previous_for_v1.write_text(
+                json.dumps(previous, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+
+        original = v1._primary_source
+        v1._primary_source = _primary_source
+        try:
+            result = v1.run(primary_seed_path, broad_artifact_dir, out, previous_for_v1)
+        finally:
+            v1._primary_source = original
 
     result["schema_version"] = SCHEMA
     result["compat_base_schema"] = v1.SCHEMA
@@ -200,6 +222,14 @@ def self_test() -> int:
     assert stats["completed_trades"] == 4 and stats["wins"] == 2
     assert abs(float(stats["net_pnl_bps"]) - 110.0) < 1e-12
     assert abs(float(stats["max_drawdown_bps"]) - 40.0) < 1e-12
+    sample_previous = {
+        "schema_version": SCHEMA,
+        "lanes": {"lane": {"closed_trades": [{"closed_trade_id": "sealed"}]}},
+    }
+    compat = _previous_for_v1(sample_previous)
+    assert compat["schema_version"] == v1.SCHEMA
+    assert compat["lanes"]["lane"]["closed_trades"][0]["closed_trade_id"] == "sealed"
+    assert sample_previous["schema_version"] == SCHEMA
     assert v1.self_test() == 0
     print("PASS_A1_PRODUCTION_HIGHWR_ROLLING_CLOSED_COLLECTOR_V2_SELF_TEST")
     return 0

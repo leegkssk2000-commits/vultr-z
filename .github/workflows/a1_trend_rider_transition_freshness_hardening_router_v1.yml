@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Route transition child to H4/H5 when sample is sufficient
+      - name: Route strict transition hardening in parallel with Top3 pilot
         shell: bash
         run: |
           set -euo pipefail
@@ -52,10 +52,15 @@ jobs:
           import json
           r=json.load(open('out/a1_trend_rider_transition_freshness_hardening_router_latest.json'))
           assert r['changed_axis']=='TRANSITION_FRESHNESS_REENTRY_SUPPRESSION_ONLY'
+          assert r['minimum_profit_pilot_trades']==10
+          assert r['minimum_cert_pilot_trades']==12
           assert r['minimum_hardening_trades']==25
+          assert r['strict_reference_only'] is True
+          assert r['blocks_top3_profit_a2_a3_pilot'] is False
+          assert r['primary_progress_route']=='A1_TOP3_PROFITABILITY_TWO_LANE_ROUTER_V4'
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({k:r.get(k) for k in ['state','completed_trades','minimum_hardening_trades','sample_gap','h4_state','h5_state','next']},sort_keys=True))
+          print(json.dumps({k:r.get(k) for k in ['state','completed_trades','minimum_profit_pilot_trades','minimum_cert_pilot_trades','minimum_hardening_trades','pilot_sample_gap','sample_gap','blocks_top3_profit_a2_a3_pilot','h4_state','h5_state','next']},sort_keys=True))
           PY
       - name: Persist latest router receipt
         if: github.event_name != 'pull_request'

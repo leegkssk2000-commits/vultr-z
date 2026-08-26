@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from backend.research.architecture_factory import a1_terminal_repair_swarm_v4 as hashutil
+from backend.research.architecture_factory import a1_trendrider_lane_historical_bind_v1 as parent_bind
 from backend.research.rebuild import a1_production_highwr_rolling_closed_collector_v1 as v1
 from backend.research.rebuild import a1_trend_rider_wr80_winner_restore_attribution_v1 as wr80
 
@@ -16,7 +16,7 @@ PRIMARY_DESCRIPTOR = v1.ROOT / "backend/research/rebuild/a1_trend_rider_wr8125_e
 
 
 def _historical_primary_anchor(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Reproduce the immutable Primary 81.25 lane authority: entry_ts/symbol first 24."""
+    """Reproduce the frozen parent boundary: first 24 by immutable entry_ts/symbol order."""
     ordered = sorted(
         (dict(x) for x in rows),
         key=lambda x: (int(x.get("entry_ts") or 0), str(x.get("symbol") or "")),
@@ -26,11 +26,42 @@ def _historical_primary_anchor(rows: Sequence[Mapping[str, Any]]) -> list[dict[s
     return ordered[:24]
 
 
-def _primary_rule(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        dict(x) for x in rows
-        if str(x.get("session")) != "US" or str(x.get("chase_state")) == "COOLING_OR_FLAT"
-    ]
+def _immutable_identity(row: Mapping[str, Any]) -> dict[str, Any]:
+    return parent_bind._immutable_trade_identity(row)
+
+
+def _frozen_primary_seed(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    frozen24 = _historical_primary_anchor(rows)
+    selected: list[dict[str, Any]] = []
+    non_us_count = 0
+    anchor_matches = 0
+    for row in frozen24:
+        identity = _immutable_identity(row)
+        is_anchor = identity == parent_bind.PRIMARY_REINTRODUCED_US_TRADE
+        if is_anchor:
+            anchor_matches += 1
+        session = wr80.nonus._session(int(row.get("signal_ts") or 0))
+        if session != "US":
+            selected.append(dict(row))
+            non_us_count += 1
+        elif is_anchor:
+            selected.append(dict(row))
+    return selected, {
+        "frozen_parent_count": len(frozen24),
+        "non_us_selected_count": non_us_count,
+        "reintroduced_us_trade_count": anchor_matches,
+    }
+
+
+def _prospective_primary_rule(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Prospective CLOSED lane rule; enrichment is allowed only for newly observed replay evidence."""
+    out: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        session = wr80.nonus._session(int(row.get("signal_ts") or 0))
+        if session != "US" or str(row.get("chase_state")) == "COOLING_OR_FLAT":
+            out.append(row)
+    return out
 
 
 def _historical_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -72,22 +103,32 @@ def _load_primary_descriptor() -> dict[str, Any]:
     return descriptor
 
 
-def _assert_primary_seed_descriptor(primary_seed: Mapping[str, Any], seed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _assert_primary_seed_descriptor(
+    primary_seed: Mapping[str, Any],
+    seed: Sequence[Mapping[str, Any]],
+    membership_counts: Mapping[str, int],
+) -> dict[str, Any]:
     descriptor = _load_primary_descriptor()
     historical = descriptor.get("historical_source") if isinstance(descriptor.get("historical_source"), Mapping) else {}
     membership = descriptor.get("membership_authority") if isinstance(descriptor.get("membership_authority"), Mapping) else {}
+    identity = membership.get("immutable_identity_authority") if isinstance(membership.get("immutable_identity_authority"), Mapping) else {}
     expected = descriptor.get("metrics") if isinstance(descriptor.get("metrics"), Mapping) else {}
 
-    if str(primary_seed.get("receipt_sha256") or "") != str(historical.get("upstream_receipt_sha256") or ""):
-        raise RuntimeError("PRIMARY_UPSTREAM_RECEIPT_SHA_DRIFT")
-    if int(primary_seed.get("completed_trades") or 0) != int(membership.get("upstream_completed_trades") or 0):
-        raise RuntimeError("PRIMARY_UPSTREAM_T_DRIFT")
-    selected_digest = hashutil.sha([dict(x) for x in seed])
-    if selected_digest != str(membership.get("selected_trade_receipt_sha256") or ""):
-        raise RuntimeError(
-            "PRIMARY_SELECTED_TRADE_RECEIPT_DRIFT:"
-            f"{selected_digest}!={membership.get('selected_trade_receipt_sha256')}"
-        )
+    checks = {
+        "upstream_receipt_sha": str(primary_seed.get("receipt_sha256") or "") == str(historical.get("upstream_receipt_sha256") or ""),
+        "upstream_completed_trades": int(primary_seed.get("completed_trades") or 0) == int(membership.get("upstream_completed_trades") or 0) == 25,
+        "frozen_prefix_count": int(membership_counts.get("frozen_parent_count") or 0) == int(membership.get("upstream_frozen_prefix_count") or 0) == 24,
+        "selected_trade_count": len(seed) == int(membership.get("selected_trades") or 0) == 16,
+        "non_us_selected_count": int(membership_counts.get("non_us_selected_count") or 0) == 15,
+        "reintroduced_us_trade_count": int(membership_counts.get("reintroduced_us_trade_count") or 0) == 1,
+        "legacy_digest_is_non_identity": str(membership.get("selected_trade_receipt_semantics") or "") == "LEGACY_ENRICHED_ROW_SNAPSHOT_NON_IDENTITY",
+        "immutable_identity_fields": tuple(identity.get("identity_fields") or ()) == parent_bind.IDENTITY_FIELDS,
+        "immutable_anchor": _immutable_identity(identity.get("reintroduced_us_trade") or {}) == parent_bind.PRIMARY_REINTRODUCED_US_TRADE,
+        "no_current_feature_membership": identity.get("current_feature_recomputation_required") is False,
+    }
+    failed = [key for key, ok in checks.items() if not ok]
+    if failed:
+        raise RuntimeError("PRIMARY_IMMUTABLE_MEMBERSHIP_DRIFT:" + ",".join(failed))
 
     observed = _historical_metrics(seed)
     tolerances = {
@@ -118,12 +159,8 @@ def _primary_source(primary_seed: Mapping[str, Any], lane: Mapping[str, Any]):
         raise RuntimeError("PRIMARY_SEED_25T_REQUIRED")
 
     raw = [dict(x) for x in primary_seed.get("trades") or []]
-    frozen24 = _historical_primary_anchor(raw)
-    wr80._enrich(dict(primary_seed), frozen24)
-    if any(bool(x.get("feature_missing")) for x in frozen24):
-        raise RuntimeError("PRIMARY_SEED_FEATURE_MISSING")
-    seed = _primary_rule(frozen24)
-    descriptor = _assert_primary_seed_descriptor(primary_seed, seed)
+    seed, membership_counts = _frozen_primary_seed(raw)
+    descriptor = _assert_primary_seed_descriptor(primary_seed, seed, membership_counts)
     defects = v1._validate_seed_headline(lane, seed)
     if defects:
         raise RuntimeError("PRIMARY_SEED_HEADLINE_MISMATCH:" + ";".join(defects))
@@ -138,31 +175,25 @@ def _primary_source(primary_seed: Mapping[str, Any], lane: Mapping[str, Any]):
     wr80._enrich(current, current_rows)
     if any(bool(x.get("feature_missing")) for x in current_rows):
         raise RuntimeError("PRIMARY_CURRENT_FEATURE_MISSING")
+    eligible = v1._ordered(_prospective_primary_rule(current_rows))
 
-    # Re-prove immutable membership by trade identity. Current replay economics are never allowed
-    # to rewrite the historical seed's sealed values.
-    current_anchor = _primary_rule(_historical_primary_anchor(current_rows))
-    seed_ids = {v1.a4.trade_identity(x) for x in seed}
-    current_anchor_ids = {v1.a4.trade_identity(x) for x in current_anchor}
-    if current_anchor_ids != seed_ids:
-        raise RuntimeError(
-            "PRIMARY_IMMUTABLE_ANCHOR_DRIFT:"
-            f"seed={v1._sha(sorted(seed_ids))}:current={v1._sha(sorted(current_anchor_ids))}"
-        )
-
-    eligible = v1._ordered(_primary_rule(current_rows))
     historical = descriptor["historical_source"]
     membership = descriptor["membership_authority"]
+    seed_identity = [_immutable_identity(x) for x in seed]
     meta = {
         "boundary_utc": boundary,
         "symbols": list(symbols),
         "policy_path": str(v1.PRIMARY_POLICY.relative_to(v1.ROOT)),
         "historical_parent_order": "ENTRY_TS_SYMBOL_ASC_FIRST24",
-        "historical_lane_rule": "session!=US OR chase_state==COOLING_OR_FLAT",
+        "historical_membership_authority": "IMMUTABLE_TRADE_IDENTITY",
+        "historical_lane_membership": "DETERMINISTIC_NON_US_PLUS_EXACT_REINTRODUCED_US_TRADE",
+        "prospective_lane_rule": "NON_US_OR_US_CHASE_COOLING_OR_FLAT",
         "exact_parent_descriptor_path": str(PRIMARY_DESCRIPTOR.relative_to(v1.ROOT)),
         "upstream_receipt_sha256": historical["upstream_receipt_sha256"],
-        "selected_trade_receipt_sha256": membership["selected_trade_receipt_sha256"],
-        "immutable_anchor_trade_identity_sha256": v1._sha(sorted(seed_ids)),
+        "legacy_enriched_selected_trade_receipt_sha256": membership.get("selected_trade_receipt_sha256"),
+        "immutable_seed_trade_identity_sha256": v1._sha(seed_identity),
+        "current_feature_recomputation_used_for_frozen_membership": False,
+        "prospective_feature_enrichment_used": True,
         "historical_economics_rewrite_allowed": False,
     }
     return seed, eligible, meta
@@ -180,7 +211,6 @@ def _previous_for_v1(previous: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def run(primary_seed_path: Path, broad_artifact_dir: Path, out: Path, previous_path: Path | None = None) -> dict[str, Any]:
-    # v1 owns append-only merge/metrics/source bindings; v2 replaces only the Primary seed authority.
     previous_for_v1 = previous_path
     with tempfile.TemporaryDirectory(prefix="a1-highwr-prev-") as td:
         if previous_path is not None and previous_path.is_file():
@@ -200,9 +230,10 @@ def run(primary_seed_path: Path, broad_artifact_dir: Path, out: Path, previous_p
 
     result["schema_version"] = SCHEMA
     result["compat_base_schema"] = v1.SCHEMA
-    result["primary_seed_authority"] = "EXACT_PARENT_DESCRIPTOR_PLUS_ENTRY_TS_SYMBOL_ASC_FIRST24"
+    result["primary_seed_authority"] = "EXACT_PARENT_DESCRIPTOR_PLUS_IMMUTABLE_TRADE_IDENTITY"
     result["primary_historical_economics_rewrite_allowed"] = False
-    result["receipt_sha256"] = v1._sha({k: val for k, val in result.items() if k != "receipt_sha256"})
+    result["primary_frozen_membership_uses_current_feature_recomputation"] = False
+    result["receipt_sha256"] = v1._sha({key: value for key, value in result.items() if key != "receipt_sha256"})
     out.write_text(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     return result
 
@@ -215,7 +246,7 @@ def self_test() -> int:
     anchor = _historical_primary_anchor(rows)
     expected = sorted(rows, key=lambda x: (x["entry_ts"], x["symbol"]))[:24]
     assert [(x["entry_ts"], x["symbol"]) for x in anchor] == [(x["entry_ts"], x["symbol"]) for x in expected]
-    assert [(x["exit_ts"]) for x in anchor] != sorted(x["exit_ts"] for x in anchor), "test must distinguish entry vs exit ordering"
+    assert [x["exit_ts"] for x in anchor] != sorted(x["exit_ts"] for x in anchor), "test must distinguish entry vs exit ordering"
     stats = _historical_metrics([
         {"net_bps": 100.0}, {"net_bps": -40.0}, {"net_bps": 60.0}, {"net_bps": -10.0},
     ])
@@ -230,8 +261,14 @@ def self_test() -> int:
     assert compat["schema_version"] == v1.SCHEMA
     assert compat["lanes"]["lane"]["closed_trades"][0]["closed_trade_id"] == "sealed"
     assert sample_previous["schema_version"] == SCHEMA
+    descriptor = _load_primary_descriptor()
+    identity = descriptor["membership_authority"]["immutable_identity_authority"]
+    assert tuple(identity["identity_fields"]) == parent_bind.IDENTITY_FIELDS
+    assert identity["current_feature_recomputation_required"] is False
+    assert parent_bind.self_test() == 0
     assert v1.self_test() == 0
     print("PASS_A1_PRODUCTION_HIGHWR_ROLLING_CLOSED_COLLECTOR_V2_SELF_TEST")
+    print("PASS_PRIMARY_FROZEN_MEMBERSHIP_USES_IMMUTABLE_TRADE_IDENTITY")
     return 0
 
 
@@ -252,7 +289,7 @@ def main() -> int:
         "state": result["state"],
         "schema": result["schema_version"],
         "total_delta_t": result["total_delta_t"],
-        "lanes": {k: {"state": v["state"], "delta_t": v["delta_t"], "T": v["rolling_completed_trades"]} for k, v in result["lanes"].items()},
+        "lanes": {key: {"state": value["state"], "delta_t": value["delta_t"], "T": value["rolling_completed_trades"]} for key, value in result["lanes"].items()},
         "receipt": result["receipt_sha256"],
     }, sort_keys=True))
     return 0

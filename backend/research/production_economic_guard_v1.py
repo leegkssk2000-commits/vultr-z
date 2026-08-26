@@ -57,6 +57,19 @@ def evaluate(parent: Mapping[str, Any] | None, child: Mapping[str, Any] | None) 
     if p["trades"] > 0 and c["trades"] < p["trades"]:
         reasons.append("TRADE_COUNT_DECREASE")
 
+    # Standalone economic floor for already-frozen children. A child that has
+    # produced trades but is negative on both cumulative net and per-trade net
+    # expectancy is not allowed to keep consuming a fresh25 slot.
+    negative_child_economics = bool(
+        c["trades"] > 0
+        and c["net_pnl_bps"] is not None
+        and c["net_expectancy_bps"] is not None
+        and float(c["net_pnl_bps"]) < 0.0
+        and float(c["net_expectancy_bps"]) < 0.0
+    )
+    if negative_child_economics:
+        reasons.append("NEGATIVE_CHILD_ECONOMICS")
+
     pnl_worse = (
         p["net_pnl_bps"] is not None
         and c["net_pnl_bps"] is not None
@@ -87,6 +100,7 @@ def evaluate(parent: Mapping[str, Any] | None, child: Mapping[str, Any] | None) 
         "trade_delta": int(c["trades"]) - int(p["trades"]),
         "pnl_worse": pnl_worse,
         "expectancy_worse": expectancy_worse,
+        "negative_child_economics": negative_child_economics,
         "drawdown_improved_observed": dd_improved,
         "drawdown_improvement_valid": dd_improvement_valid,
         "zero_trade_dd_improvement_invalid": bool(c["trades"] == 0 and dd_improved),
@@ -110,6 +124,10 @@ def self_test() -> int:
     worse = {"trades": 10, "net_pnl_bps": 800.0, "net_expectancy_bps": 80.0, "drawdown_bps": 250.0}
     gw = evaluate(parent, worse)
     assert gw["hard_fail"] and "PNL_EXPECTANCY_BOTH_WORSE" in gw["reasons"]
+
+    negative = {"trades": 3, "net_pnl_bps": -380.0, "net_expectancy_bps": -126.0, "drawdown_bps": 380.0}
+    gn = evaluate(None, negative)
+    assert gn["hard_fail"] and "NEGATIVE_CHILD_ECONOMICS" in gn["reasons"]
 
     good = {"trades": 10, "net_pnl_bps": 1000.0, "net_expectancy_bps": 110.0, "drawdown_bps": 250.0}
     gg = evaluate(parent, good)

@@ -1,0 +1,50 @@
+name: A1 High-WR Top5 Loss-Tail Recovery V1
+
+on:
+  push:
+    branches:
+      - a1-highwr-top5-loss-tail-recovery-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  break-main-path-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py
+      - name: Self-test
+        run: python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py --self-test
+      - name: Exact 9T path replay
+        run: python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py --out /tmp/a1_break_main_loss_tail_path_replay_v1.json
+      - name: Verify fail-closed authority and print best candidate
+        run: |
+          python - <<'PY'
+          import json
+          p='/tmp/a1_break_main_loss_tail_path_replay_v1.json'
+          d=json.load(open(p))
+          assert d['promotion_allowed'] is False
+          assert d['execution_authority']=='NONE'
+          assert d['order_authority']=='BLOCKED'
+          assert d['live_trade_authority']=='BLOCKED'
+          assert d['parent_metrics']['completed_trades']==9
+          print('decision=',d['decision'])
+          print('passing_count=',d['passing_count'])
+          if d['best_candidate']:
+              b=d['best_candidate']
+              print('best=',b['candidate_id'])
+              print(json.dumps(b['metrics'],sort_keys=True))
+          PY
+      - name: Upload research receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-break-main-loss-tail-path-replay-v1
+          path: /tmp/a1_break_main_loss_tail_path_replay_v1.json
+          retention-days: 30

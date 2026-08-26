@@ -136,7 +136,14 @@ jobs:
             python3 -m backend.production.zel_production_ai_admission_materializer_v1 >/tmp/zel-ai-repair-materializer.json
             python3 -m backend.production.zel_production_ai_admission_executor_v3 >/tmp/zel-ai-repair-economic.json
             python3 -m backend.production.zel_production_ai_family_canary_handoff_v1 >/tmp/zel-ai-repair-handoff.json
-            python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-repair-canary.json
+            if ! python3 -m backend.production.zel_production_family_paper_canary_runner_v2 >/tmp/zel-ai-repair-canary.json 2>/tmp/zel-ai-repair-canary.err; then
+              if grep -q 'FAMILY_CANARY_HISTORY_DUPLICATE' /tmp/zel-ai-repair-canary.err; then
+                printf '%s\n' '{"state":"HOLD_FAMILY_CANARY_HISTORY_DUPLICATE","action":"hold","execution_authority":"NONE","order_authority":"BLOCKED","live_trade_authority":"BLOCKED"}' >/tmp/zel-ai-repair-canary.json
+              else
+                cat /tmp/zel-ai-repair-canary.err >&2
+                exit 1
+              fi
+            fi
           fi
           python3 - <<'PY'
           import json

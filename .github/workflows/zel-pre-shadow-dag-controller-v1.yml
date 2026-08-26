@@ -270,7 +270,19 @@ jobs:
           cd results
           git add runtime_results/zel/pre_shadow_receipt_dag_v1 runtime_results/zel/pre_shadow_lineage_v1
           git commit -m "result(zel): pre-Shadow DAG lineage ${GITHUB_RUN_ID}" || true
-          git push origin HEAD:zel-data-expansion-results-v1
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:zel-data-expansion-results-v1; then
+              pushed=true
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              break
+            fi
+            git pull --rebase --autostash origin zel-data-expansion-results-v1
+            sleep 2
+          done
+          [ "$pushed" = true ]
 
       - name: Dispatch exactly one planned stage
         env:

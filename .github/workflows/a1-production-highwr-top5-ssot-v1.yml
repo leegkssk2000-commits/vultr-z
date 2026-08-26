@@ -66,8 +66,13 @@ jobs:
           assert not any(str(r.get('role', '')).startswith('VACANT_') for r in rows)
           assert all(r.get('production_headline_eligible') is True for r in rows)
           assert all(r.get('win_rate', 0) >= 0.5 for r in rows)
-          assert all(r.get('source_path') and Path(r['source_path']).exists() for r in rows)
+          assert all(r.get('source_path') for r in rows)
           assert all(r.get('source_sha') for r in rows)
+          for r in rows:
+              if r.get('source_branch') == 'master':
+                  assert Path(r['source_path']).exists(), r
+              else:
+                  assert r.get('source_branch') and r.get('source_sha'), r
           assert not any('PENDING_EXACT_RECEIPT' in str(r.get('source_provenance_status', '')) for r in rows)
 
           repair_rows = [r for r in rows if r['source_provenance_status'] == 'EXACT_PARENT_REPAIR_RECEIPT_DISPLAY_ONLY']

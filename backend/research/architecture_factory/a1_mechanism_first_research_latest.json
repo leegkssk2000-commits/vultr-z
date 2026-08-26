@@ -1,22 +1,21 @@
 {
   "action": "hold",
-  "architecture_factory_receipt_sha256": "2e59fe761bee5d8249ff79b794f5e64807434aa5d5dda1459d15efb3ca34b42c",
+  "architecture_factory_receipt_sha256": "558bab1e87300149a5ced50d4cf97f4ba6f91ce3eceeb560d2e13eee92702d7c",
   "architecture_factory_state": "PASS_ARCHITECTURE_FACTORY_TOP3_READY",
   "automatic_legacy_a5_repair_primary": false,
   "candidate_guard_diagnostics": [
     {
-      "architecture_family": "basis_funding_carry_switch",
-      "candidate_id": "NEW_BASIS_FUNDING_REVERSION",
+      "architecture_family": "basis_funding_dislocation",
+      "candidate_id": "NEW_BASIS_FUND_002",
       "guard_pass": false,
-      "guard_reasons": [
-        "EVIDENCE_SUPPORT_LT3"
-      ],
+      "guard_reasons": [],
       "mode": "NEW_ARCHITECTURE",
-      "native_horizon": "hours-to-days (aligned with funding cadence and basis mean-reversion), not 5m scalp",
+      "native_horizon": "funding-cycle-aware (hours-to-days aligned with funding settlement cadence)",
       "required_sources": [
         "basis",
+        "open_interest",
         "funding",
-        "open_interest"
+        "ohlcv"
       ],
       "source_preflight_blockers": [
         "NATIVE_DERIVATIVES_HISTORY_AUDIT_REQUIRED"
@@ -25,53 +24,15 @@
     },
     {
       "architecture_family": "trend_rider_variant",
-      "candidate_id": "NEW_TR_MULTI_DAY",
+      "candidate_id": "NEW_TRND_LONGTERM_001",
       "common_source_semantic_guard_pass": true,
-      "guard_pass": false,
-      "guard_reasons": [
-        "EVIDENCE_SUPPORT_LT3"
-      ],
-      "mode": "NEW_ARCHITECTURE",
-      "native_horizon": "multi-day to week (natural holding horizon determined by daily-series continuation)",
-      "required_sources": [
-        "ohlcv",
-        "volume"
-      ],
-      "source_preflight_blockers": [],
-      "source_preflight_state": "READY_COMMON"
-    },
-    {
-      "architecture_family": "microstructure_flow_momentum",
-      "candidate_id": "NEW_L2_TF_FLOW",
       "guard_pass": false,
       "guard_reasons": [
         "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
         "REVIEW_QUORUM_LT2"
       ],
       "mode": "NEW_ARCHITECTURE",
-      "native_horizon": "minutes to a few hours (microstructure-implied persistence), larger than 5m scalps when flow persists",
-      "required_sources": [
-        "l2_order_book",
-        "trade_flow",
-        "volume"
-      ],
-      "source_preflight_blockers": [
-        "TIMESTAMPED_PREENTRY_L2_TRADE_FLOW_HISTORY_REQUIRED"
-      ],
-      "source_preflight_state": "HOLD_SOURCE_PREFLIGHT"
-    },
-    {
-      "architecture_family": "session_momentum_volume",
-      "candidate_id": "NA1",
-      "common_source_semantic_guard_pass": true,
-      "guard_pass": false,
-      "guard_reasons": [
-        "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
-        "REVIEW_QUORUM_LT2",
-        "EVIDENCE_SUPPORT_LT3"
-      ],
-      "mode": "NEW_ARCHITECTURE",
-      "native_horizon": "3-6h",
+      "native_horizon": "multi-day (several daily bars) natural holding horizon",
       "required_sources": [
         "ohlcv",
         "volume"
@@ -80,20 +41,40 @@
       "source_preflight_state": "READY_COMMON"
     },
     {
-      "architecture_family": "range_fade_repair",
-      "candidate_id": "REPAIR_RANGE_FADE_DEPTH_ONLY",
+      "architecture_family": "session_trend_confirmation_repair",
+      "candidate_id": "REPAIR_SESSION_OWNER_004",
+      "common_source_semantic_guard_pass": true,
       "guard_pass": false,
       "guard_reasons": [
         "LEGACY_REPAIR_NOT_PRIMARY_LANE",
         "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
-        "REVIEW_QUORUM_LT2",
-        "EVIDENCE_SUPPORT_LT3"
+        "REVIEW_QUORUM_LT2"
       ],
       "mode": "REPAIR",
-      "native_horizon": "intraday (tens of minutes to a few hours)",
+      "native_horizon": "intraday (within-session) natural holding horizon",
+      "required_sources": [
+        "ohlcv",
+        "volume"
+      ],
+      "source_preflight_blockers": [],
+      "source_preflight_state": "READY_COMMON"
+    },
+    {
+      "architecture_family": "microstructure_flow_reversal_repair",
+      "candidate_id": "REPAIR_FLOW_DEPTH_003",
+      "guard_pass": false,
+      "guard_reasons": [
+        "LEGACY_REPAIR_NOT_PRIMARY_LANE",
+        "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
+        "REVIEW_QUORUM_LT2"
+      ],
+      "mode": "REPAIR",
+      "native_horizon": "short-to-intraday (minutes to hours) natural holding horizon",
       "required_sources": [
         "l2_order_book",
-        "trade_flow"
+        "trade_flow",
+        "volume",
+        "ohlcv"
       ],
       "source_preflight_blockers": [
         "TIMESTAMPED_PREENTRY_L2_TRADE_FLOW_HISTORY_REQUIRED"
@@ -321,41 +302,35 @@
   },
   "exchange_order_submitted": false,
   "execution_authority": "NONE",
-  "generated_after_dedup": 5,
+  "generated_after_dedup": 4,
   "generator_status": {
     "groq": {
-      "attempt_mode": "PRIMARY_JSON_COMPACT",
-      "candidate_count": 1,
-      "compact_prompt": "true",
-      "fallback_used": "false",
-      "model": "openai/gpt-oss-120b",
-      "prompt_sha": "6a70b507f9b9472d9c2e5971f5d962805db7d906777f7ba877e4e8cbda23b6ba",
-      "response_sha": "6e1480bf06ef72f82798516d727984aa11b23b56fcf5880509e8495b14d8eeb2",
-      "successful": true
+      "error": "RuntimeError:GROQ_COMPACT_GENERATOR_FAILED:PRIMARY_JSON_COMPACT:openai/gpt-oss-120b:BadRequestError:Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'invalid_request_error', 'code': 'json_validate_failed', 'failed_generation': ''}} | PRIMARY_JSON_ULTRA_COMPACT:openai/gpt-oss-120b:BadRequestError:Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'invalid_request_error', 'code': 'json_validate_failed', 'failed_generation': 'max completion tokens reached before | FALLBACK_ULTRA_COMPACT:allam-2-7b:JSONDecodeError:Expecting ',' delimiter: line 21 column 1 (char 800)",
+      "successful": false
     },
     "openai": {
       "candidate_count": 4,
       "model": "gpt-5-mini",
       "prompt_sha": "cbbade08e2598b1f0f33d021572860bc62e6b6622ae186604271b5107158ce4e",
-      "response_sha": "f7c09db504945fdfa6af3b052729fc73f1b0021e4c9832cbde7cf8135d69f6e5",
+      "response_sha": "36a3bd3f1002297d1d1643ad304582edd6722e6be8a69f45af0ec2165ada1a1a",
       "successful": true
     }
   },
   "legacy_repair_backlog": [
     {
-      "architecture_family": "range_fade_repair",
-      "candidate_id": "REPAIR_RANGE_FADE_DEPTH_ONLY",
-      "candidate_sha256": "6c4f18278dd2e76522971b30436b88a63a016e692f001a197d3fca67736d29a4",
-      "changed_axis": "L2_FLOW_NATIVE",
+      "architecture_family": "session_trend_confirmation_repair",
+      "candidate_id": "REPAIR_SESSION_OWNER_004",
+      "candidate_sha256": "dfd7296af4b68d6738e85fefb636ff0f766e5141cae3c3de7d50268c97d88063",
+      "changed_axis": "SESSION_PRICE_DISCOVERY_OWNER_ONLY",
       "cross_reviews": {
         "groq": {
           "decision": "HOLD",
           "error": null,
-          "input_sha": "09e6539585ffdfd42cb7d742213daa6181121c26cfd1daf8cb51b961b6610386",
+          "input_sha": "51ebbfa7a2b291a08528b289de3675979be1e8529119a9faf4973badd0930240",
           "model": "allam-2-7b",
-          "prompt_sha": "958fa59b4f24d46ee86657e737f7593bc62c14c2cd00de0c8cec5440b7252895",
-          "reason": "The hypothesis is based on a single axis and requires further validation before proceeding.",
-          "response_sha": "908a0f2d6570cb50abca658169609cf950183665e335a766275116d8129d0f25",
+          "prompt_sha": "fe935f47cc9b16f345f1630ac66b65954c4f6b85424cbd675645bd75b73813eb",
+          "reason": "The proposed hypothesis is based on a single axis and requires further validation before proceeding.",
+          "response_sha": "5418ba0d7ebd7a75bf0ddd02355f31ff5fc51ed35be536a914ea9752b2b76caf",
           "successful": true
         },
         "openai": {
@@ -370,24 +345,25 @@
         "workers_ai": {
           "decision": "PASS_TO_REPLAY",
           "error": null,
-          "input_sha": "09e6539585ffdfd42cb7d742213daa6181121c26cfd1daf8cb51b961b6610386",
+          "input_sha": "51ebbfa7a2b291a08528b289de3675979be1e8529119a9faf4973badd0930240",
           "model": "@cf/meta/llama-3.1-8b-instruct",
           "prompt_sha": "ff6a5ac2309b24896921466d745badde04991b21586c2496b428250140acbfb1",
-          "reason": "No blockers detected, evidence supports the hypothesis, and overfit risk is low due to bounded generation and retention safety.",
-          "response_sha": "55e224ebe3dbb44cb16e351a0aeb18d02d0c5be86869a24fa863127dc03ede1d",
+          "reason": "No blockers found, evidence supports the hypothesis, bounded generation is enabled, and retention safety is not a concern.",
+          "response_sha": "d8af87ea301d2a2f2618ff58ee49e347f5fa09b66b97c24c61c4f563b066ea4a",
           "successful": true
         }
       },
       "direction_rule": "both rule",
       "eligible_for_preregistration": false,
-      "entry_event": "execution-time price reversion attempt from intra-session range edge coinciding with increased passive depth and order-flow imbalance signaling counter-side liquidity (observable in l2_order_book and trade_flow)",
+      "entry_event": "observable overlap of high-volume regional session (e.g., US/EU hours) and confirming intraday OHLCV momentum at entry time",
       "evidence_ids": [
-        "F5",
-        "F9"
+        "F14",
+        "F15",
+        "HV6"
       ],
-      "exit_logic": "exit when counterparty depth and flow imbalance dissipate or price re-crosses range edge; use time stop matching intra-session mean-reversion decay",
+      "exit_logic": "exit when session-volume momentum dissipates or when intraday trend flips; time-stop tied to session end rather than tuned thresholds",
       "expected_move_cost_multiple_target": 2.0,
-      "falsification": "if over next 60 days, mean reversion after depth-signal entries yields realized move < 1x verified round-trip cost across 30+ trades, kill repair axis",
+      "falsification": "kill if ten consecutive session-aligned entries fail to clear round-trip cost before session close, implying no session-driven predictability",
       "forbidden_changes": [
         "fees",
         "best-horizon selection",
@@ -395,44 +371,204 @@
       ],
       "independent_passes": 1,
       "independent_rejects": 0,
-      "invalidation": "if depth no longer presages liquidity provision at range edges (e.g., spoofing or hidden liquidity predominates), mechanism invalidated",
-      "mechanism": "money exists because passive liquidity providers at range edges absorb flows and re-establish price; liquidity providers and takers paying spread/slippage constitute who funds reversion",
+      "invalidation": "if session-overlap volume no longer precedes intraday momentum in holdout periods, the session-ownership causal claim is invalidated",
+      "mechanism": "intraday directional moves driven by region-specific liquidity and price discovery; participants during overlapping sessions supply the liquidity that pays transient price movement",
       "mechanism_first_guard_pass": false,
       "mechanism_first_guard_reasons": [
         "LEGACY_REPAIR_NOT_PRIMARY_LANE",
         "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
-        "REVIEW_QUORUM_LT2",
-        "EVIDENCE_SUPPORT_LT3"
+        "REVIEW_QUORUM_LT2"
       ],
       "mode": "REPAIR",
-      "native_horizon": "intraday (tens of minutes to a few hours)",
-      "payer": "passive liquidity providers and short-term mean-reversion seekers who provide the counter-pressure",
+      "native_horizon": "intraday (within-session) natural holding horizon",
+      "payer": "session-specific liquidity providers and directional flow during overlapping hours",
       "provider": "openai",
-      "regime_owner": "work in stable intra-session range regimes with visible depth; avoid during breakout/volatile-news regimes",
+      "regime_owner": "only during documented high-volume session overlaps; avoid weekends and thin sessions",
+      "required_sources": [
+        "ohlcv",
+        "volume"
+      ],
+      "score": 10.9,
+      "source_preflight_blockers": [],
+      "source_preflight_state": "READY_COMMON",
+      "strategy_id": "range_fade",
+      "time_stop_rationale": "time-stop at session end aligns with the mechanism that session-driven discovery typically resolves by session close",
+      "turnover_cost_budget": "restricting trades to session-confirmed windows reduces turnover relative to continuous intraday rules so expected moves can better exceed costs",
+      "why_distinct": "alters exactly one causal axis (session ownership) of the range_fade family rather than other parameters"
+    },
+    {
+      "architecture_family": "microstructure_flow_reversal_repair",
+      "candidate_id": "REPAIR_FLOW_DEPTH_003",
+      "candidate_sha256": "9a790a5ef1c5285935dba1d64af74d479d733e127c3cc1add7e890a424c616e8",
+      "changed_axis": "L2_FLOW_NATIVE",
+      "cross_reviews": {
+        "groq": {
+          "decision": "HOLD",
+          "error": null,
+          "input_sha": "46bf911dafb09ad277d94b9f850ef709522f7a09b327fca71a255e19b0d1f720",
+          "model": "allam-2-7b",
+          "prompt_sha": "7df8d6119f422a2bec7e20aac73c52a7e425e119b153e927dddebfbde2701269",
+          "reason": "The proposed hypothesis introduces a new axis ('L2_FLOW_NATIVE') while also relying on the existing axis ('L2_ORDER_BOOK'). This duplication increases the complexity of the hypothesis and may lead to overfitting. Additionally, the hypothesis lacks a clear falsification mechanism to differentiate between microstructure edge and random noise in the data.",
+          "response_sha": "767e922087ce3a193f39c3edf97f7a1520af413f2bb3e4fc9d7199510c659217",
+          "successful": true
+        },
+        "openai": {
+          "decision": "HOLD",
+          "input_sha": null,
+          "model": "gpt-5-mini",
+          "prompt_sha": null,
+          "reason": null,
+          "response_sha": null,
+          "successful": true
+        },
+        "workers_ai": {
+          "decision": "PASS_TO_REPLAY",
+          "error": null,
+          "input_sha": "46bf911dafb09ad277d94b9f850ef709522f7a09b327fca71a255e19b0d1f720",
+          "model": "@cf/meta/llama-3.1-8b-instruct",
+          "prompt_sha": "ff6a5ac2309b24896921466d745badde04991b21586c2496b428250140acbfb1",
+          "reason": "Overfit risk is MEDIUM due to the strategy's reliance on sequential flow-imbalance triggered trades, which may not generalize well to all market conditions.",
+          "response_sha": "a99cb609dc2f031750eea4a78a6c6849940d0527937eba852af5e3969776aa97",
+          "successful": true
+        }
+      },
+      "direction_rule": "both rule",
+      "eligible_for_preregistration": false,
+      "entry_event": "observable aggressive trade-flow imbalance and concurrent L2 depth depletion at entry time",
+      "evidence_ids": [
+        "F4",
+        "F5",
+        "HV9"
+      ],
+      "exit_logic": "exit when aggressive-side flow abates or opposite-side depth replenishment appears; time-stop tied to expected microstructure recovery window",
+      "expected_move_cost_multiple_target": 2.0,
+      "falsification": "kill if three sequential flow-imbalance triggered trades produce losses after verified costs, indicating no microstructure edge",
+      "forbidden_changes": [
+        "fees",
+        "best-horizon selection",
+        "post-outcome loss deletion"
+      ],
+      "independent_passes": 1,
+      "independent_rejects": 0,
+      "invalidation": "if real-time L2/trade-flow imbalance stops predicting short-to-intermediate price continuation in prospective live test, causal axis (flow→price persistence) is invalidated",
+      "mechanism": "liquidity takers initiating aggressive flow temporarily move price and pay the liquidity-providing counterparties; strategy captures residual momentum as liquidity replenishes",
+      "mechanism_first_guard_pass": false,
+      "mechanism_first_guard_reasons": [
+        "LEGACY_REPAIR_NOT_PRIMARY_LANE",
+        "INDEPENDENT_REVIEW_NOT_ELIGIBLE",
+        "REVIEW_QUORUM_LT2"
+      ],
+      "mode": "REPAIR",
+      "native_horizon": "short-to-intraday (minutes to hours) natural holding horizon",
+      "payer": "aggressive liquidity takers and transient liquidity providers",
+      "provider": "openai",
+      "regime_owner": "only in high activity/low depth microstructure regimes; avoid deep, passive-book conditions",
       "required_sources": [
         "l2_order_book",
-        "trade_flow"
+        "trade_flow",
+        "volume",
+        "ohlcv"
       ],
-      "score": 10.1,
+      "score": 9.9,
       "source_preflight_blockers": [
         "TIMESTAMPED_PREENTRY_L2_TRADE_FLOW_HISTORY_REQUIRED"
       ],
       "source_preflight_state": "HOLD_SOURCE_PREFLIGHT",
-      "strategy_id": "range_fade",
-      "time_stop_rationale": "time stop follows typical intra-session mean-reversion decay; prevents extended holding when liquidity regimes change",
-      "turnover_cost_budget": "by conditioning on depth signals, expected reversion episodes are larger and rarer so average move per trade can plausibly overcome round-trip costs",
-      "why_distinct": "changes exactly one causal axis (adds L2/flow native ownership) rather than altering multiple parameters; keeps original range_fade logic but repairs its missing microstructure axis"
+      "strategy_id": "scalp_snap",
+      "time_stop_rationale": "time-stop matches expected book replenishment/rebalancing interval to avoid becoming a prolonged trend owner",
+      "turnover_cost_budget": "shorter bursts with selective entries reduce unnecessary turnover; but repair expects active cost management so expected move aim can still dominate verified costs",
+      "why_distinct": "changes exactly the data-resolution axis (L2_FLOW_NATIVE) of an existing scalp family — not altering fees or horizon selection"
     }
   ],
-  "legacy_repair_backlog_count": 1,
+  "legacy_repair_backlog_count": 2,
   "legacy_repair_lane": "SECONDARY_MANUAL_OR_FALLBACK_ONLY",
   "live_trade_authority": "BLOCKED",
   "new_architecture_ready_count": 0,
   "new_architecture_ready_queue": [],
   "new_architecture_semantic_hold_count": 0,
   "new_architecture_semantic_hold_queue": [],
-  "new_architecture_source_wait_count": 0,
-  "new_architecture_source_wait_queue": [],
+  "new_architecture_source_wait_count": 1,
+  "new_architecture_source_wait_queue": [
+    {
+      "architecture_family": "basis_funding_dislocation",
+      "candidate_id": "NEW_BASIS_FUND_002",
+      "candidate_sha256": "17788b7ca8b5f5c206c22d89f762cd8e6749a5775da17cf153e32860406032bc",
+      "changed_axis": "FUNDING_STATE_OWNER_ONLY",
+      "cross_reviews": {
+        "groq": {
+          "decision": "PASS_TO_REPLAY",
+          "error": null,
+          "input_sha": "8fe5722fbbf50b598746f603c3a1a9617866a0e66addef5fca810e39ea72ee6c",
+          "model": "allam-2-7b",
+          "prompt_sha": "3ec937e8a7a34c2482b97b491029eec0b220ed5a141bdcde13a99cd8aded9796",
+          "reason": "The proposed hypothesis seems valid and well-supported by the provided data sources (F3, F17, F18). The axis \"FUNDING_STATE_OWNER_ONLY\" is a focused approach that aligns with the funding-cycle-aware horizon. The required data includes basis, open_interest, funding, and ohlcv, which are essential for understanding the mechanism and testing the hypothesis.",
+          "response_sha": "d154736f1817b015c03692b7a7bb81819f4a5979c8aabb603e8763e2fc54d8b3",
+          "successful": true
+        },
+        "openai": {
+          "decision": "HOLD",
+          "input_sha": null,
+          "model": "gpt-5-mini",
+          "prompt_sha": null,
+          "reason": null,
+          "response_sha": null,
+          "successful": true
+        },
+        "workers_ai": {
+          "decision": "PASS_TO_REPLAY",
+          "error": null,
+          "input_sha": "8fe5722fbbf50b598746f603c3a1a9617866a0e66addef5fca810e39ea72ee6c",
+          "model": "@cf/meta/llama-3.1-8b-instruct",
+          "prompt_sha": "ff6a5ac2309b24896921466d745badde04991b21586c2496b428250140acbfb1",
+          "reason": "No blockers detected, evidence supports the hypothesis, bounded generation is enabled, and retention safety is not a concern.",
+          "response_sha": "97f805329aff4e0590f2d3a6be990775f0f12c07b58730cdb800007e68ca5ff6",
+          "successful": true
+        }
+      },
+      "direction_rule": "both rule",
+      "eligible_for_preregistration": true,
+      "entry_event": "observable divergence between perpetual basis and short-term price trend combined with concurrent net open_interest build (entry-time basis and OI readings)",
+      "evidence_ids": [
+        "F3",
+        "F17",
+        "F18"
+      ],
+      "exit_logic": "exit when basis mean-reverts toward funding-neutral state or when open_interest unwinds; time-stop tied to expected funding-reset cadence rather than tuned thresholds",
+      "expected_move_cost_multiple_target": 2.5,
+      "falsification": "kill if basis-OI divergence reverts without producing price move exceeding round-trip cost in two consecutive funded cycles",
+      "forbidden_changes": [
+        "fees",
+        "best-horizon selection",
+        "post-outcome loss deletion"
+      ],
+      "independent_passes": 2,
+      "independent_rejects": 0,
+      "invalidation": "if funding/basis changes cease to lead price correction in prospectively held samples, mechanism (arbitrage/speculative unwind) is invalidated",
+      "mechanism": "money exists because holders of leveraged perpetuals pay funding or arbitrageurs capture basis; liquidation/unwind and margin-driven flows move spot/perp price so someone (levered shorts/longs) pays for convergence",
+      "mechanism_first_guard_pass": false,
+      "mechanism_first_guard_reasons": [],
+      "mode": "NEW_ARCHITECTURE",
+      "native_horizon": "funding-cycle-aware (hours-to-days aligned with funding settlement cadence)",
+      "payer": "speculative imbalance and constrained arbitrageurs who pay funding or cause unwinds",
+      "provider": "openai",
+      "regime_owner": "trade during stressed basis/funding regimes with rising OI; avoid when basis is stable and OI flat",
+      "required_sources": [
+        "basis",
+        "open_interest",
+        "funding",
+        "ohlcv"
+      ],
+      "score": 14.4,
+      "source_preflight_blockers": [
+        "NATIVE_DERIVATIVES_HISTORY_AUDIT_REQUIRED"
+      ],
+      "source_preflight_state": "HOLD_SOURCE_PREFLIGHT",
+      "strategy_id": "NEW",
+      "time_stop_rationale": "stop after a funding cycle multiple if convergence not observed; aligns holding duration with funding settlement mechanics",
+      "turnover_cost_budget": "targeting funding-cycle moves concentrates expected returns per trade and reduces trade frequency so expected moves can exceed verified costs",
+      "why_distinct": "uses derivative-specific causal payer (funding/OI-driven convergence) unlike pure trend or microstructure families"
+    }
+  ],
   "next_experiment_candidate": null,
   "objective": "Find robust after-cost alpha by mechanism/payer/native-horizon architecture before spending more budget repairing weak legacy parents.",
   "order_authority": "BLOCKED",
@@ -454,7 +590,7 @@
     ],
     "reason": "Recover generator diversity from TPM/context/JSON failures without weakening evidence, review, source, or promotion gates."
   },
-  "receipt_sha256": "8d9458e9e14a5fa4d204f603c9b52b32e88f20f866833508fbdeb200590792f6",
+  "receipt_sha256": "44af21fc2d44b4c24d406b43c444ed929b5deeecb27cf84c88780700a1cd8a4f",
   "research_direction": "NEW_ARCHITECTURE_PRIMARY",
   "schema_version": "zel.a1_mechanism_first_research.v2",
   "selection_authority": false,

@@ -12,8 +12,12 @@ SCHEMA = "zel.a1.top5_exit_asymmetry_optimizer.v2"
 
 def _pareto(candidate: Mapping[str, Any], baseline: Mapping[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
-    if int(candidate.get("completed_trades") or 0) < 8:
+    c_trades = int(candidate.get("completed_trades") or 0)
+    b_trades = int(baseline.get("completed_trades") or 0)
+    if c_trades < 8:
         reasons.append("MIN_SAMPLE_LT_8")
+    if c_trades < b_trades:
+        reasons.append("TRADE_COUNT_DECREASE")
     for key, reason in (
         ("net_pnl_bps", "NET_PNL_WORSE"),
         ("net_expectancy_bps", "EXPECTANCY_WORSE"),
@@ -41,6 +45,7 @@ def run(strategy_id: str, out: Path) -> dict[str, Any]:
         v1.SCHEMA = SCHEMA
         result = v1.run(strategy_id, out)
         result["tail_gate"] = {
+            "completed_trades_nondecrease": True,
             "avg_loss_nonincrease": True,
             "worst_loss_nonincrease": True,
             "avg_win_nondecrease": True,
@@ -78,7 +83,11 @@ def self_test() -> int:
     bad_best = dict(good); bad_best["best_win_bps"] = 499.0
     passed, reasons = _pareto(bad_best, base)
     assert not passed and "BEST_WIN_WORSE" in reasons
+    fewer = dict(good); fewer["completed_trades"] = 9
+    passed, reasons = _pareto(fewer, base)
+    assert not passed and "TRADE_COUNT_DECREASE" in reasons
     print("PASS_A1_TOP5_EXIT_ASYMMETRY_OPTIMIZER_V2_SELF_TEST")
+    print("PASS_TOP5_EXIT_TRADE_DENSITY_NONDECREASE")
     return 0
 
 

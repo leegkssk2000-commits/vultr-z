@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py'
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v2.py'
       - '.github/workflows/a1-production-highwr-rolling-closed-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py'
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v2.py'
       - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
       - 'backend/research/rebuild/a1_break_and_continue_production_main_v1.json'
       - 'backend/research/rebuild/a1_a4_exact_parent_repair_latest.json'
@@ -34,7 +36,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py
-          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v1 --self-test
+          python -m py_compile backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v2.py
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 --self-test
 
   collect:
     if: github.event_name != 'pull_request'
@@ -91,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v1 \
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 \
             --primary-seed /tmp/a1-trendrider-primary-source.json \
             --broad-artifact-dir /tmp/a1-exact25-32482936710 \
             --previous backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json \
@@ -104,6 +107,8 @@ jobs:
           import json
           r=json.load(open('out/a1_production_highwr_rolling_closed_latest.json'))
           assert r['state']=='PASS_HIGHWR_ROLLING_CLOSED_ACTIVE',r
+          assert r['schema_version']=='zel.a1.production_highwr.rolling_closed.v2'
+          assert r['primary_seed_authority']=='ENTRY_TS_SYMBOL_ASC_FIRST24'
           assert r['selection_unit']=='lane_id'
           assert r['source_kind']=='PROSPECTIVE_POLICY_REPLAY_CLOSED'
           assert r['economic_value_semantics']=='FIRST_OBSERVED_REPLAY_VALUE_SEALED'
@@ -137,6 +142,18 @@ jobs:
         run: |
           set -euo pipefail
           target=backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json
+          rm -f /tmp/a1-highwr-persist-required
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          target=Path('backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json')
+          current=json.load(open('out/a1_production_highwr_rolling_closed_latest.json'))
+          if (not target.is_file()) or int(current.get('total_delta_t') or 0) > 0:
+              Path('/tmp/a1-highwr-persist-required').write_text('1\n')
+          else:
+              print('NO_DELTA_NO_MASTER_COMMIT')
+          PY
+          if [[ ! -f /tmp/a1-highwr-persist-required ]]; then exit 0; fi
           cp out/a1_production_highwr_rolling_closed_latest.json "$target"
           git config user.name 'a1-highwr-rolling-closed-v1'
           git config user.email 'actions@users.noreply.github.com'

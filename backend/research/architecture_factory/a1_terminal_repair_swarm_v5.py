@@ -14,6 +14,7 @@ SUBAXIS_CONTRACT=Path('backend/research/contracts/a1_basis_funding_oi_subaxis_re
 CACHE=Path('backend/research/architecture_factory/a1_terminal_repair_swarm_v5_latest.json')
 P3_COVERAGE_URL=v4.P3_COVERAGE_URL
 CACHE_POLICY='API_ROI_PERSISTENT_CACHE_V1'
+DEDUP_COSINE_THRESHOLD=0.85
 CODE_PATHS=[
   Path('backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py'),
   Path('backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py'),
@@ -85,7 +86,7 @@ def run(output:Path)->dict[str,Any]:
     if cached is not None:
         result=json.loads(json.dumps(cached)); old_receipt=result.get('receipt_sha256')
         roi=result.setdefault('api_roi',{}); roi['cache_hit']=True; roi['cache_policy']=CACHE_POLICY; roi['cache_source_receipt']=old_receipt; roi['paid_request_count']=0; roi['request_counts']={'openai_batch':0,'gemini_rescue_batch':0,'openai_repair_batch':0}; roi['token_usage_this_run']={'openai':{'input_tokens':0,'output_tokens':0,'total_tokens':0},'gemini':{'input_tokens':0,'output_tokens':0,'total_tokens':0}}
-        result['run_mode']='CACHE_HIT_NO_PAID_AI'; result['source_history_readiness']=readiness; result.pop('receipt_sha256',None); result['receipt_sha256']=v4.sha(result)
+        result['run_mode']='CACHE_HIT_NO_PAID_AI'; result['source_history_readiness']=readiness; result['dedup_cosine_threshold']=DEDUP_COSINE_THRESHOLD; result.pop('receipt_sha256',None); result['receipt_sha256']=v4.sha(result)
         output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8'); return result
 
     v4._history_readiness=lambda: readiness
@@ -97,12 +98,13 @@ def run(output:Path)->dict[str,Any]:
         result['post_econ_alpha_intake']=alpha_intake.build(result)
     else:
         result['post_econ_alpha_intake']={'schema_version':alpha_intake.SCHEMA_VERSION,'state':'BLOCKED_UNTIL_EXACT25_COMPLETE','ledger_done_count':int(result.get('ledger_done_count') or 0),'prep_only':result.get('prep_only'),'development_pass_count':0,'intake_count':0,'intake_ready_count':0,'top_ready_candidate_ids':[],'rows':[],'failures':['EXACT25_NOT_COMPLETE'],**alpha_intake.AUTHORITY}; result['post_econ_alpha_intake']['receipt_sha256']=v4.sha(result['post_econ_alpha_intake'])
-    result['schema_version']='zel.a1_terminal_repair_swarm.v5'; result['input_signature']=signature; result['run_mode']='PAID_API_BATCH_CASCADE'
+    result['schema_version']='zel.a1_terminal_repair_swarm.v5'; result['input_signature']=signature; result['run_mode']='PAID_API_BATCH_CASCADE'; result['dedup_cosine_threshold']=DEDUP_COSINE_THRESHOLD
     roi=result.setdefault('api_roi',{}); roi['cache_hit']=False; roi['cache_policy']=CACHE_POLICY; roi['duplicate_paid_call_policy']='IDENTICAL_INPUT_SIGNATURE_ZERO_PAID_AI'; roi['fresh_sample_wait_policy']='ZERO_AI_UNLESS_SIGNATURE_CHANGES'
     result.pop('receipt_sha256',None); result['receipt_sha256']=v4.sha(result)
     output.write_text(json.dumps(result,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8'); return result
 
 def self_test()->int:
+    assert DEDUP_COSINE_THRESHOLD==0.85
     assert {'basis','funding','open_interest'}.issubset(econ.SUPPORTED_SOURCES)
     probe=_funding_probe(); assert probe['required_sources']==['funding','ohlcv'] and probe['executable_spec']['max_hold_bars']==8
     s=json.loads(SUBAXIS_CONTRACT.read_text(encoding='utf-8')); assert (s.get('separation_invariant') or {}).get('duration_gate_lowered') is False

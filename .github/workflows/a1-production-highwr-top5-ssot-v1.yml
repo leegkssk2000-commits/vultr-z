@@ -6,6 +6,7 @@ on:
     paths:
       - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
       - 'backend/research/rebuild/a1_production_highwr_top5_selector_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'
       - '.github/workflows/a1-production-highwr-top5-ssot-v1.yml'
 
 permissions:
@@ -32,8 +33,11 @@ jobs:
           import json
           from pathlib import Path
 
-          p = Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
-          d = json.loads(p.read_text())
+          ssot_path = Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
+          descriptor_path = Path('backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json')
+          d = json.loads(ssot_path.read_text())
+          primary_descriptor = json.loads(descriptor_path.read_text())
+
           assert d['schema_version'] == 'zel.a1_production_highwr_top5_ssot.v3'
           assert d['selection_unit'] == 'lane_id'
           assert d['minimum_production_win_rate'] == 0.5
@@ -46,7 +50,7 @@ jobs:
           rows = d['production_top5']
           assert len(rows) == 5
           expected = [
-              ('trend_rider_primary_wr8125', 'trend_rider', 16, 0.8125, 23297.773984906438),
+              ('trend_rider_primary_wr8125', 'trend_rider', 16, 0.8125, 23297.769437281215),
               ('trend_rider_broad_wr7000', 'trend_rider', 30, 0.70, 34960.57723836853),
               ('break_and_continue_main', 'break_and_continue', 9, 5/9, 9063.67),
               ('keltner_trend_main', 'keltner_trend', 10, 0.50, 11583.28886165358),
@@ -60,6 +64,33 @@ jobs:
               assert got[0:3] == want[0:3], (got, want)
               assert abs(got[3] - want[3]) < 1e-12, (got, want)
               assert abs(got[4] - want[4]) < 1e-9, (got, want)
+
+          primary = rows[0]
+          assert primary_descriptor['schema_version'] == 'zel.a1.trend_rider.wr8125.exact_parent.v1'
+          assert primary_descriptor['state'] == 'EXACT_HISTORICAL_PARENT_FROZEN'
+          assert primary_descriptor['lane_id'] == primary['lane_id'] == 'trend_rider_primary_wr8125'
+          assert primary_descriptor['strategy_id'] == primary['strategy_id'] == 'trend_rider'
+          assert primary['source_provenance_status'] == 'EXACT_HISTORICAL_PARENT_FROZEN'
+          assert primary['source_path'] == str(descriptor_path)
+          assert descriptor_path.exists()
+          hist = primary_descriptor['historical_source']
+          membership = primary_descriptor['membership_authority']
+          metrics = primary_descriptor['metrics']
+          assert primary['source_run_id'] == hist['workflow_run_id'] == 32640190665
+          assert primary['source_job_id'] == hist['workflow_job_id'] == 97195981802
+          assert primary['source_receipt_sha256'] == hist['upstream_receipt_sha256'] == 'b064d6ee58c158cdb1169b79d93d1df46ea020d0dde3762703a577f9a3068103'
+          assert primary['selected_trade_receipt_sha256'] == membership['selected_trade_receipt_sha256'] == '40e6025f28cd3dfcd28b3f0313dda97730ba89dde41bf26928813df7a4d8f47a'
+          for key in ('completed_trades','wins'):
+              assert int(primary[key]) == int(metrics[key]), (key, primary[key], metrics[key])
+          for key in ('win_rate','net_pnl_bps','net_expectancy_bps','max_drawdown_bps','profit_factor','payoff'):
+              assert abs(float(primary[key]) - float(metrics[key])) < 1e-12, (key, primary[key], metrics[key])
+          assert primary_descriptor['economic_value_semantics'] == 'ORIGINAL_HISTORICAL_UPSTREAM_RECEIPT_NET_BPS'
+          assert primary_descriptor['recomputed_economics_may_replace_frozen_values'] is False
+          assert primary_descriptor['selection_authority'] is False
+          assert primary_descriptor['promotion_authority'] is False
+          assert primary_descriptor['execution_authority'] == 'NONE'
+          assert primary_descriptor['order_authority'] == 'BLOCKED'
+          assert primary_descriptor['live_trade_authority'] == 'BLOCKED'
 
           assert sum(1 for r in rows if r['strategy_id'] == 'trend_rider') == 2
           assert not any(r['strategy_id'] == 'trend_ma_macd' for r in rows)
@@ -85,5 +116,5 @@ jobs:
           assert d['reporting_policy']['forbid_strategy_id_deduplication_across_distinct_lanes'] is True
           assert d['reporting_policy']['require_repository_provenance_for_all_filled_lanes'] is True
           assert d['reporting_policy']['trend_ma_macd_top5_eligible'] is False
-          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_PROVENANCE_V3')
+          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_PROVENANCE_V3_EXACT_PRIMARY')
           PY

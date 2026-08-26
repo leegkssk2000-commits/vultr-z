@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: a1-top5-evolutionary-synthesis-v7
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:
@@ -94,15 +94,35 @@ jobs:
           assert r['stable_donor_host_attempt_history'] is True
           assert r['failed_gene_pair_retest_same_axis_allowed'] is False
           assert r['synthesis_acceptance_gate']['drawdown_nonworse'] is True
+          assert r['donor_nursery_enabled'] is True
+          assert r['donor_contribution_attribution_enabled'] is True
+          assert r['donor_contribution_method']=='ONE_AXIS_DONOR_GENE_ATTRIBUTION_WITH_STABLE_HISTORY'
+          cp=r['donor_contribution_policy']
+          assert cp['report_how_material_helped'] is True
+          assert cp['report_raw_magnitude_by_metric'] is True
+          assert cp['same_baseline_ab_required_for_causal_marginal_claim'] is True
+          assert cp['cross_scope_delta_is_directional_only'] is True
+          assert isinstance(r['donor_contribution_ledger'], list)
+          assert isinstance(r['donor_contribution_summary'], list)
           assert int(r.get('paid_request_count') or 0) <= 3
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
+          top=[{
+            'donor':x.get('donor_strategy_id'),'gene':x.get('donor_gene'),
+            'attempts':x.get('terminal_attempt_count'),'passes':x.get('development_pass_count'),
+            'pass_rate':x.get('development_pass_rate'),'delta':x.get('average_observed_delta_directional_only'),
+            'route':x.get('next_route')
+          } for x in (r.get('donor_contribution_summary') or [])[:5]]
           print(json.dumps({
             'state':r.get('state'),'hosts':r['performance_top5_hosts'],
             'donors':r.get('donor_pool_count'),'validated_donors':r.get('validated_edge_donor_count'),
             'candidates':r.get('evolutionary_candidate_count'),
             'development_pass':r.get('development_economic_pass_count'),
+            'donor_nursery':r.get('donor_nursery_strategy_count'),
+            'contribution_rows':len(r.get('donor_contribution_ledger') or []),
+            'contribution_donors':len(r.get('donor_contribution_summary') or []),
+            'top_donor_effects':top,
             'paid':r.get('paid_request_count'),'stable_attempt_history':r.get('stable_donor_host_attempt_history'),
             'receipt':r.get('receipt_sha256')
           },sort_keys=True))

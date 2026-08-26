@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 MIN_WR = 0.50
+LANE_ORDER = [
+    "trend_rider_primary_wr8125",
+    "trend_rider_broad_wr7000",
+    "break_and_continue_main",
+    "keltner_trend_main",
+    "supertrend_pullback_main",
+]
 EXCLUDED_ROLES = {
     "FORMAL",
     "FORMAL_REPLAY",
@@ -23,6 +30,8 @@ ALLOWED_MAIN_ROLES = {
     "INCUMBENT",
     "FROZEN_MAIN",
     "FROZEN_WINNER_BENCHMARK",
+    "FROZEN_BROAD_CONTROL",
+    "FROZEN_G4_MAIN",
 }
 
 
@@ -38,11 +47,16 @@ def _wr(row: Dict[str, Any]) -> float | None:
 
 
 def classify(row: Dict[str, Any]) -> Dict[str, Any]:
+    lane_id = str(row.get("lane_id") or "")
     role = str(row.get("role") or row.get("source_role") or "").upper()
     wr = _wr(row)
     promoted = bool(row.get("promotion_authority") or row.get("production_headline_eligible"))
 
     reasons: List[str] = []
+    if not lane_id:
+        reasons.append("MISSING_LANE_ID")
+    elif lane_id not in LANE_ORDER:
+        reasons.append(f"UNKNOWN_PRODUCTION_LANE:{lane_id}")
     if role in EXCLUDED_ROLES:
         reasons.append(f"EXCLUDED_ROLE:{role}")
     if role not in ALLOWED_MAIN_ROLES:
@@ -55,29 +69,34 @@ def classify(row: Dict[str, Any]) -> Dict[str, Any]:
         reasons.append("UNPROMOTED_EVIDENCE")
 
     eligible = not reasons
-    return {"eligible": eligible, "reasons": reasons, "win_rate": wr, "role": role}
+    return {"eligible": eligible, "reasons": reasons, "win_rate": wr, "role": role, "lane_id": lane_id}
 
 
-def select(rows: Iterable[Dict[str, Any]], strategy_order: Iterable[str]) -> Dict[str, Any]:
-    by_strategy: Dict[str, List[Dict[str, Any]]] = {}
+def select(rows: Iterable[Dict[str, Any]], lane_order: Iterable[str] = LANE_ORDER) -> Dict[str, Any]:
+    by_lane: Dict[str, List[Dict[str, Any]]] = {}
     rejected: List[Dict[str, Any]] = []
     for row in rows:
-        sid = str(row.get("strategy_id") or "")
+        lane_id = str(row.get("lane_id") or "")
         verdict = classify(row)
         if verdict["eligible"]:
-            by_strategy.setdefault(sid, []).append(row)
+            by_lane.setdefault(lane_id, []).append(row)
         else:
-            rejected.append({"strategy_id": sid, "candidate_id": row.get("candidate_id"), **verdict})
+            rejected.append({
+                "lane_id": lane_id,
+                "strategy_id": row.get("strategy_id"),
+                "candidate_id": row.get("candidate_id"),
+                **verdict,
+            })
 
     selected: List[Dict[str, Any]] = []
-    for sid in strategy_order:
-        candidates = by_strategy.get(sid, [])
+    for lane_id in lane_order:
+        candidates = by_lane.get(lane_id, [])
         if not candidates:
             selected.append({
-                "strategy_id": sid,
+                "lane_id": lane_id,
                 "role": "VACANT_PENDING_HIGHWR_MAIN_PROVENANCE",
                 "production_headline_eligible": False,
-                "reason": "NO_VERIFIED_WR50_MAIN; LOW_WR_FALLBACK_FORBIDDEN",
+                "reason": "NO_VERIFIED_WR50_MAIN_FOR_LANE; LOW_WR_FALLBACK_FORBIDDEN",
             })
             continue
         candidates.sort(
@@ -91,7 +110,8 @@ def select(rows: Iterable[Dict[str, Any]], strategy_order: Iterable[str]) -> Dic
         selected.append(candidates[0])
 
     return {
-        "schema_version": "zel.a1_production_highwr_top5_selection.v1",
+        "schema_version": "zel.a1_production_highwr_top5_selection.v2",
+        "selection_unit": "lane_id",
         "minimum_production_win_rate": MIN_WR,
         "low_wr_fallback_allowed": False,
         "selected": selected,
@@ -101,22 +121,34 @@ def select(rows: Iterable[Dict[str, Any]], strategy_order: Iterable[str]) -> Dic
 
 def _self_test() -> None:
     rows = [
-        {"strategy_id": "trend_rider", "role": "FROZEN_WINNER_BENCHMARK", "win_rate": 0.8125, "completed_trades": 16, "production_headline_eligible": True},
-        {"strategy_id": "trend_rider", "role": "FORMAL_REPLAY", "win_rate": 0.46, "completed_trades": 30},
-        {"strategy_id": "break_and_continue", "role": "FROZEN_PRODUCTION_MAIN", "win_rate": 5/9, "completed_trades": 9, "production_headline_eligible": True},
-        {"strategy_id": "break_and_continue", "role": "GENERIC_REPLAY", "win_rate": 0.2963, "completed_trades": 27},
-        {"strategy_id": "supertrend_pullback", "role": "FRESH_GROWTH", "win_rate": 0.50, "completed_trades": 10, "promotion_authority": False},
+        {"lane_id": "trend_rider_primary_wr8125", "strategy_id": "trend_rider", "role": "FROZEN_WINNER_BENCHMARK", "win_rate": 0.8125, "completed_trades": 16, "production_headline_eligible": True},
+        {"lane_id": "trend_rider_broad_wr7000", "strategy_id": "trend_rider", "role": "FROZEN_BROAD_CONTROL", "win_rate": 0.70, "completed_trades": 30, "production_headline_eligible": True},
+        {"lane_id": "break_and_continue_main", "strategy_id": "break_and_continue", "role": "FROZEN_PRODUCTION_MAIN", "win_rate": 5/9, "completed_trades": 9, "production_headline_eligible": True},
+        {"lane_id": "keltner_trend_main", "strategy_id": "keltner_trend", "role": "FROZEN_G4_MAIN", "win_rate": 0.50, "completed_trades": 10, "production_headline_eligible": True},
+        {"lane_id": "supertrend_pullback_main", "strategy_id": "supertrend_pullback", "role": "FROZEN_G4_MAIN", "win_rate": 0.50, "completed_trades": 8, "production_headline_eligible": True},
+        {"lane_id": "trend_rider_primary_wr8125", "strategy_id": "trend_rider", "role": "FORMAL_REPLAY", "win_rate": 0.46, "completed_trades": 30},
+        {"lane_id": "break_and_continue_main", "strategy_id": "break_and_continue", "role": "GENERIC_REPLAY", "win_rate": 0.2963, "completed_trades": 27},
+        {"lane_id": "supertrend_pullback_main", "strategy_id": "supertrend_pullback", "role": "FRESH_GROWTH", "win_rate": 0.50, "completed_trades": 10, "promotion_authority": False},
+        {"lane_id": "trend_ma_macd_main", "strategy_id": "trend_ma_macd", "role": "FROZEN_MAIN", "win_rate": 0.60, "completed_trades": 10, "production_headline_eligible": True},
     ]
-    out = select(rows, ["trend_rider", "break_and_continue", "supertrend_pullback"])
-    assert out["selected"][0]["win_rate"] == 0.8125
-    assert abs(out["selected"][1]["win_rate"] - 5/9) < 1e-12
-    assert out["selected"][2]["role"].startswith("VACANT_")
+    out = select(rows)
+    selected = out["selected"]
+    assert [x["lane_id"] for x in selected] == LANE_ORDER
+    assert selected[0]["win_rate"] == 0.8125
+    assert selected[1]["win_rate"] == 0.70
+    assert abs(selected[2]["win_rate"] - 5/9) < 1e-12
+    assert selected[3]["win_rate"] == 0.50
+    assert selected[4]["win_rate"] == 0.50
+    assert sum(1 for x in selected if x.get("strategy_id") == "trend_rider") == 2
+    assert all(x.get("strategy_id") != "trend_ma_macd" for x in selected)
+    assert not any(str(x.get("role", "")).startswith("VACANT_") for x in selected)
     rejected_roles = {x["role"] for x in out["rejected"]}
     assert "FORMAL_REPLAY" in rejected_roles
     assert "GENERIC_REPLAY" in rejected_roles
     assert "FRESH_GROWTH" in rejected_roles
+    assert any("UNKNOWN_PRODUCTION_LANE:trend_ma_macd_main" in x["reasons"] for x in out["rejected"])
     assert out["low_wr_fallback_allowed"] is False
-    print("PASS_A1_PRODUCTION_HIGHWR_TOP5_SELECTOR_V1_SELF_TEST")
+    print("PASS_A1_PRODUCTION_HIGHWR_TOP5_SELECTOR_V2_SELF_TEST")
 
 
 def main() -> None:
@@ -133,8 +165,7 @@ def main() -> None:
     rows = json.loads(Path(args.rows).read_text())
     if isinstance(rows, dict):
         rows = rows.get("rows") or rows.get("targets") or rows.get("production_top5") or []
-    order = ["trend_rider", "break_and_continue", "supertrend_pullback", "keltner_trend", "trend_ma_macd"]
-    result = select(rows, order)
+    result = select(rows)
     Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
 

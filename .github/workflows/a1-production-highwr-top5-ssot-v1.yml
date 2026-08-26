@@ -26,24 +26,36 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_production_highwr_top5_selector_v1.py
           python -m backend.research.rebuild.a1_production_highwr_top5_selector_v1 --self-test
-      - name: Validate SSOT invariants
+      - name: Validate five-lane high-WR SSOT invariants
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           p=Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
           d=json.loads(p.read_text())
+          assert d['selection_unit'] == 'lane_id'
           assert d['minimum_production_win_rate'] == 0.5
           assert d['low_wr_fallback_allowed'] is False
           rows=d['production_top5']
           assert len(rows)==5
-          assert rows[0]['strategy_id']=='trend_rider' and rows[0]['win_rate']==0.8125 and rows[0]['completed_trades']==16
-          assert rows[1]['strategy_id']=='break_and_continue' and rows[1]['win_rate'] >= 0.5 and rows[1]['completed_trades']==9
-          for row in rows:
-              if row.get('production_headline_eligible'):
-                  assert row.get('win_rate', 0) >= 0.5
-              if str(row.get('role','')).startswith('VACANT_'):
-                  assert row.get('production_headline_eligible') is False
+          expected=[
+              ('trend_rider_primary_wr8125','trend_rider',16,0.8125),
+              ('trend_rider_broad_wr7000','trend_rider',30,0.70),
+              ('break_and_continue_main','break_and_continue',9,5/9),
+              ('keltner_trend_main','keltner_trend',10,0.50),
+              ('supertrend_pullback_main','supertrend_pullback',8,0.50),
+          ]
+          actual=[(r['lane_id'],r['strategy_id'],r['completed_trades'],r['win_rate']) for r in rows]
+          for got,want in zip(actual,expected):
+              assert got[0:3] == want[0:3], (got,want)
+              assert abs(got[3]-want[3]) < 1e-12, (got,want)
+          assert sum(1 for r in rows if r['strategy_id']=='trend_rider') == 2
+          assert not any(r['strategy_id']=='trend_ma_macd' for r in rows)
+          assert not any(str(r.get('role','')).startswith('VACANT_') for r in rows)
+          assert all(r.get('production_headline_eligible') is True for r in rows)
+          assert all(r.get('win_rate',0) >= 0.5 for r in rows)
           assert {'FORMAL_REPLAY','ACTIVE_DEEP','GENERIC_REPLAY','FRESH_FORWARD','FRESH_GROWTH','UNPROMOTED_CHILD','UNPROMOTED_CHALLENGER'} <= set(d['excluded_roles'])
-          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_SSOT_V1')
+          assert d['reporting_policy']['forbid_strategy_id_deduplication_across_distinct_lanes'] is True
+          assert d['reporting_policy']['trend_ma_macd_top5_eligible'] is False
+          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_FIVE_LANES_V2')
           PY

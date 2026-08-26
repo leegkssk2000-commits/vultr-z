@@ -10,6 +10,7 @@ from backend.research.rebuild import a1_a4_distinct_child_repair_batch_v1 as bas
 from backend.research.rebuild.a1_a4_exact_parent_repair_batch_v1 import _maps, read, validate_parent
 
 SCHEMA = "zel.a1.a4.distinct_child_repair_batch.v2"
+PRODUCTION_POLICY = base.ROOT / "backend/research/rebuild/a1_a4_production_candidate_policy_v1.json"
 BREAK_PRODUCTION_MIN_WIN_RATE = 0.50
 BREAK_SIDE_RECOVERY_AXIS = "SIDE_AWARE_RECOVERY_EXIT_ONLY"
 BREAK_SIDE_RECOVERY_EVIDENCE = ("A5E2", "A5E3")
@@ -91,7 +92,7 @@ def _side_aware_recovery_exit(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Preserve every parent trade and repair only the structurally degraded side.
 
-    For the degraded side, once a *completed* bar close is net-positive after the
+    For the degraded side, once a completed bar close is net-positive after the
     parent's full realized cost, schedule an unconditional exit at the next bar open.
     This is next-bar executable, has no threshold sweep, and keeps the parent's full
     realized cost as a conservative charge even though holding time may be shorter.
@@ -132,7 +133,7 @@ def _side_aware_recovery_exit(
             if mark_gross - cost <= 0.0:
                 continue
 
-            # Decision is made only after bar j closes; execution is next bar open.
+            # Decision uses bar j only; execution occurs unconditionally at j+1 open.
             next_bar = bars[j + 1]
             new_exit = float(next_bar["open"])
             gross = (new_exit - entry) / entry * 10_000 if side == "long" else (entry - new_exit) / entry * 10_000
@@ -161,11 +162,9 @@ def evaluate(strategy_id: str, parent: Mapping[str, Any], hard: Mapping[str, Any
     row = base.evaluate(strategy_id, parent, hard)
     parent_m = dict(row["parent_metrics"])
 
-    # First harden every pre-existing V1 challenger with the production gate.
+    # Harden every pre-existing V1 challenger with the production gate.
     candidates = [_attach_production_gate(strategy_id, parent_m, dict(x)) for x in row["candidates"]]
 
-    # Break-only one-axis repair: preserve all entries and alter only the exit of
-    # the parent side that is structurally negative in the frozen parent receipt.
     if strategy_id == "break_and_continue":
         bars_by, maps = _maps(parent)
         parent_trades = [dict(x) for x in (parent.get("trades") or [])]
@@ -212,7 +211,15 @@ def evaluate(strategy_id: str, parent: Mapping[str, Any], hard: Mapping[str, Any
 
 
 def run(parent_paths: Mapping[str, Path], output: Path) -> dict[str, Any]:
-    a5, hard = read(base.A5_CONTRACT), read(base.HARDENING_POLICY)
+    a5, hard, production = read(base.A5_CONTRACT), read(base.HARDENING_POLICY), read(PRODUCTION_POLICY)
+    if production.get("state") != "FROZEN_PRODUCTION_CANDIDATE_GATE":
+        raise RuntimeError("PRODUCTION_CANDIDATE_POLICY_NOT_FROZEN")
+    if float(production["strategies"]["break_and_continue"]["minimum_win_rate"]) != BREAK_PRODUCTION_MIN_WIN_RATE:
+        raise RuntimeError("BREAK_WIN_RATE_POLICY_DRIFT")
+    axis_policy = production["strategies"]["break_and_continue"]["new_axis"]
+    if axis_policy.get("axis") != BREAK_SIDE_RECOVERY_AXIS:
+        raise RuntimeError("BREAK_RECOVERY_AXIS_POLICY_DRIFT")
+
     external_ids = {str(x["id"]) for x in a5["external_evidence"]}
     for ids in list(base.EVIDENCE_BY_AXIS.values()) + [BREAK_SIDE_RECOVERY_EVIDENCE]:
         if not set(ids).issubset(external_ids):
@@ -238,6 +245,7 @@ def run(parent_paths: Mapping[str, Path], output: Path) -> dict[str, Any]:
         "strategies": results,
         "development_ready_count": len(ready),
         "next_distinct_child_candidate": ready[0] if ready else None,
+        "production_policy": str(PRODUCTION_POLICY.relative_to(base.ROOT)),
         "policy": {
             "one_axis_only": True,
             "post_outcome_threshold_rescue_forbidden": True,
@@ -271,9 +279,13 @@ def run(parent_paths: Mapping[str, Path], output: Path) -> dict[str, Any]:
 
 
 def self_test() -> int:
-    contract = read(base.A5_CONTRACT)
-    axes = {x["axis"] for x in contract["strategies"]["break_and_continue"]["repair_axes"]}
-    assert BREAK_SIDE_RECOVERY_AXIS in axes
+    production = read(PRODUCTION_POLICY)
+    assert production["state"] == "FROZEN_PRODUCTION_CANDIDATE_GATE"
+    break_policy = production["strategies"]["break_and_continue"]
+    assert float(break_policy["minimum_win_rate"]) == BREAK_PRODUCTION_MIN_WIN_RATE
+    assert break_policy["new_axis"]["axis"] == BREAK_SIDE_RECOVERY_AXIS
+    assert break_policy["new_axis"]["threshold_sweep"] is False
+    assert production["global_requirements"]["trade_count_non_decrease"] is True
 
     parent = {"trades": 10, "net_pnl_bps": 100.0, "net_expectancy_bps": 10.0, "profit_factor": 2.0}
     good = {

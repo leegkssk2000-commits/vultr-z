@@ -19,22 +19,25 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile
-        run: python -m py_compile backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py
+        run: |
+          python -m py_compile backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py
+          python -m py_compile backend/research/rebuild/a1_break_main_loss_tail_path_replay_v2.py
       - name: Self-test
-        run: PYTHONPATH=. python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py --self-test
+        run: PYTHONPATH=. python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v2.py --self-test
       - name: Exact 9T path replay
-        run: PYTHONPATH=. python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v1.py --out /tmp/a1_break_main_loss_tail_path_replay_v1.json
+        run: PYTHONPATH=. python backend/research/rebuild/a1_break_main_loss_tail_path_replay_v2.py --out /tmp/a1_break_main_loss_tail_path_replay_v2.json
       - name: Verify fail-closed authority and print best candidate
         run: |
           python - <<'PY'
           import json
-          p='/tmp/a1_break_main_loss_tail_path_replay_v1.json'
+          p='/tmp/a1_break_main_loss_tail_path_replay_v2.json'
           d=json.load(open(p))
           assert d['promotion_allowed'] is False
           assert d['execution_authority']=='NONE'
           assert d['order_authority']=='BLOCKED'
           assert d['live_trade_authority']=='BLOCKED'
           assert d['parent_metrics']['completed_trades']==9
+          assert d['grid']['timeout_bars']==[48]
           print('decision=',d['decision'])
           print('passing_count=',d['passing_count'])
           if d['best_candidate']:
@@ -45,6 +48,6 @@ jobs:
       - name: Upload research receipt
         uses: actions/upload-artifact@v4
         with:
-          name: a1-break-main-loss-tail-path-replay-v1
-          path: /tmp/a1_break_main_loss_tail_path_replay_v1.json
+          name: a1-break-main-loss-tail-path-replay-v2
+          path: /tmp/a1_break_main_loss_tail_path_replay_v2.json
           retention-days: 30

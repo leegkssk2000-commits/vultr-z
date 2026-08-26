@@ -47,6 +47,16 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v9 --output out/a1_a5_named_channel_conversion_v9.json
+          if ! python - <<'PY'
+          import json
+          r=json.load(open('out/a1_a5_named_channel_conversion_v9.json'))
+          b=r['named_channel_executable_bridge']
+          raise SystemExit(0 if int(b.get('attempted_named_axis_count') or 0) > 0 else 1)
+          PY
+          then
+            echo 'No named-channel attempt after first provider cycle; retrying the identical frozen research request once.'
+            python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v9 --output out/a1_a5_named_channel_conversion_v9.json
+          fi
           python - <<'PY'
           import json
           r=json.load(open('out/a1_a5_named_channel_conversion_v9.json'))

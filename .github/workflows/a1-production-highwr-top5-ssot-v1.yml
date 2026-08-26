@@ -1,0 +1,49 @@
+name: A1 Production High-WR Top5 SSOT V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
+      - 'backend/research/rebuild/a1_production_highwr_top5_selector_v1.py'
+      - '.github/workflows/a1-production-highwr-top5-ssot-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  highwr-top5-guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test selector
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_production_highwr_top5_selector_v1.py
+          python -m backend.research.rebuild.a1_production_highwr_top5_selector_v1 --self-test
+      - name: Validate SSOT invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
+          d=json.loads(p.read_text())
+          assert d['minimum_production_win_rate'] == 0.5
+          assert d['low_wr_fallback_allowed'] is False
+          rows=d['production_top5']
+          assert len(rows)==5
+          assert rows[0]['strategy_id']=='trend_rider' and rows[0]['win_rate']==0.8125 and rows[0]['completed_trades']==16
+          assert rows[1]['strategy_id']=='break_and_continue' and rows[1]['win_rate'] >= 0.5 and rows[1]['completed_trades']==9
+          for row in rows:
+              if row.get('production_headline_eligible'):
+                  assert row.get('win_rate', 0) >= 0.5
+              if str(row.get('role','')).startswith('VACANT_'):
+                  assert row.get('production_headline_eligible') is False
+          assert {'FORMAL_REPLAY','ACTIVE_DEEP','GENERIC_REPLAY','FRESH_FORWARD','FRESH_GROWTH','UNPROMOTED_CHILD','UNPROMOTED_CHALLENGER'} <= set(d['excluded_roles'])
+          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_SSOT_V1')
+          PY

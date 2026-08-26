@@ -26,36 +26,64 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_production_highwr_top5_selector_v1.py
           python -m backend.research.rebuild.a1_production_highwr_top5_selector_v1 --self-test
-      - name: Validate five-lane high-WR SSOT invariants
+      - name: Validate five-lane high-WR SSOT invariants and provenance
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          p=Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
-          d=json.loads(p.read_text())
+
+          p = Path('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json')
+          d = json.loads(p.read_text())
+          assert d['schema_version'] == 'zel.a1_production_highwr_top5_ssot.v3'
           assert d['selection_unit'] == 'lane_id'
           assert d['minimum_production_win_rate'] == 0.5
           assert d['low_wr_fallback_allowed'] is False
-          rows=d['production_top5']
-          assert len(rows)==5
-          expected=[
-              ('trend_rider_primary_wr8125','trend_rider',16,0.8125),
-              ('trend_rider_broad_wr7000','trend_rider',30,0.70),
-              ('break_and_continue_main','break_and_continue',9,5/9),
-              ('keltner_trend_main','keltner_trend',10,0.50),
-              ('supertrend_pullback_main','supertrend_pullback',8,0.50),
+          assert d['provenance_policy']['repository_source_binding_required'] is True
+          assert d['provenance_policy']['display_headline_grants_promotion_authority'] is False
+          assert d['provenance_policy']['display_headline_grants_execution_authority'] is False
+          assert d['provenance_policy']['stale_handoff_rounding_forbidden_when_repo_receipt_exists'] is True
+
+          rows = d['production_top5']
+          assert len(rows) == 5
+          expected = [
+              ('trend_rider_primary_wr8125', 'trend_rider', 16, 0.8125, 23297.773984906438),
+              ('trend_rider_broad_wr7000', 'trend_rider', 30, 0.70, 34960.57723836853),
+              ('break_and_continue_main', 'break_and_continue', 9, 5/9, 9063.67),
+              ('keltner_trend_main', 'keltner_trend', 10, 0.50, 11583.28886165358),
+              ('supertrend_pullback_main', 'supertrend_pullback', 8, 0.50, 6463.155460281641),
           ]
-          actual=[(r['lane_id'],r['strategy_id'],r['completed_trades'],r['win_rate']) for r in rows]
-          for got,want in zip(actual,expected):
-              assert got[0:3] == want[0:3], (got,want)
-              assert abs(got[3]-want[3]) < 1e-12, (got,want)
-          assert sum(1 for r in rows if r['strategy_id']=='trend_rider') == 2
-          assert not any(r['strategy_id']=='trend_ma_macd' for r in rows)
-          assert not any(str(r.get('role','')).startswith('VACANT_') for r in rows)
+          actual = [
+              (r['lane_id'], r['strategy_id'], r['completed_trades'], r['win_rate'], r['net_pnl_bps'])
+              for r in rows
+          ]
+          for got, want in zip(actual, expected):
+              assert got[0:3] == want[0:3], (got, want)
+              assert abs(got[3] - want[3]) < 1e-12, (got, want)
+              assert abs(got[4] - want[4]) < 1e-9, (got, want)
+
+          assert sum(1 for r in rows if r['strategy_id'] == 'trend_rider') == 2
+          assert not any(r['strategy_id'] == 'trend_ma_macd' for r in rows)
+          assert not any(str(r.get('role', '')).startswith('VACANT_') for r in rows)
           assert all(r.get('production_headline_eligible') is True for r in rows)
-          assert all(r.get('win_rate',0) >= 0.5 for r in rows)
+          assert all(r.get('win_rate', 0) >= 0.5 for r in rows)
+          assert all(r.get('source_path') for r in rows)
+          assert all(r.get('source_sha') for r in rows)
+          for r in rows:
+              if r.get('source_branch') == 'master':
+                  assert Path(r['source_path']).exists(), r
+              else:
+                  assert r.get('source_branch') and r.get('source_sha'), r
+          assert not any('PENDING_EXACT_RECEIPT' in str(r.get('source_provenance_status', '')) for r in rows)
+
+          repair_rows = [r for r in rows if r['source_provenance_status'] == 'EXACT_PARENT_REPAIR_RECEIPT_DISPLAY_ONLY']
+          assert {r['strategy_id'] for r in repair_rows} == {'keltner_trend', 'supertrend_pullback'}
+          assert all(r.get('formal_promotion_eligible') is False for r in repair_rows)
+          assert all(r.get('challenger_parent_eligible') is False for r in repair_rows)
+          assert all(r.get('source_development_candidate_ready') is False for r in repair_rows)
+
           assert {'FORMAL_REPLAY','ACTIVE_DEEP','GENERIC_REPLAY','FRESH_FORWARD','FRESH_GROWTH','UNPROMOTED_CHILD','UNPROMOTED_CHALLENGER'} <= set(d['excluded_roles'])
           assert d['reporting_policy']['forbid_strategy_id_deduplication_across_distinct_lanes'] is True
+          assert d['reporting_policy']['require_repository_provenance_for_all_filled_lanes'] is True
           assert d['reporting_policy']['trend_ma_macd_top5_eligible'] is False
-          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_FIVE_LANES_V2')
+          print('PASS_A1_PRODUCTION_HIGHWR_TOP5_PROVENANCE_V3')
           PY

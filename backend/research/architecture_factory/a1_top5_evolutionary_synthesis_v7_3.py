@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SSOT = ROOT / "backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json"
 LATEST = ROOT / "backend/research/architecture_factory/a1_top5_evolutionary_synthesis_latest.json"
 SCHEMA = "zel.a1_top5_evolutionary_synthesis.v7_3_highwr_lane_ssot"
-EXPECTED_BREAK_AXIS = "DONOR__VOL_SPIKE_FADE__VOLATILITY_EXHAUSTION__ONLY"
+EXPECTED_BREAK_AXIS = "DONOR__TURTLE_TREND__CHANNEL_BREAKOUT_PERSISTENCE__ONLY"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -69,13 +69,11 @@ def _protected_strategy_ids(lanes: list[dict[str, Any]]) -> list[str]:
 def _sanitize_side_rule(rule: str) -> tuple[str, bool]:
     text = str(rule or "").strip()
     # Preserve nested ternary truth table while translating it to the frozen two-side grammar.
-    # long if A else short if B else long  == long if (A) or not (B) else short
     if text.startswith("long if ") and " else short if " in text and text.endswith(" else long"):
         left = text[len("long if "):]
         a, tail = left.split(" else short if ", 1)
         b = tail[: -len(" else long")]
         return f"long if ({a.strip()}) or not ({b.strip()}) else short", True
-    # short if A else long if B else short == short if (A) or not (B) else long
     if text.startswith("short if ") and " else long if " in text and text.endswith(" else short"):
         left = text[len("short if "):]
         a, tail = left.split(" else long if ", 1)
@@ -107,12 +105,34 @@ def _sanitize_attempt(original):
     return wrapped
 
 
+def _axis_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
+    for key in ("initial_development_economics", "spec_repair_development_economics", "second_step_development_economics"):
+        block = result.get(key)
+        if not isinstance(block, Mapping):
+            continue
+        for raw in block.get("rows") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            state = str(raw.get("state") or "")
+            metrics = raw.get("metrics") if isinstance(raw.get("metrics"), Mapping) else {}
+            return {
+                "state": state,
+                "candidate_id": raw.get("candidate_id"),
+                "trades": int(metrics.get("trades") or 0),
+                "win_rate": metrics.get("win_rate"),
+                "net_pnl_bps": metrics.get("net_pnl_bps"),
+                "net_expectancy_bps": metrics.get("net_expectancy_bps"),
+                "profit_factor": metrics.get("profit_factor"),
+                "drawdown_bps": metrics.get("drawdown_bps"),
+                "economic_pass": bool(raw.get("economic_pass")),
+            }
+    return {"state": "NO_ECONOMIC_ROW", "trades": 0, "economic_pass": False}
+
+
 def run(output: Path) -> dict[str, Any]:
     ssot = _read(SSOT)
     lanes = _production_lanes(ssot)
     eligible_hosts, blocked = _eligible_host_strategies(lanes)
-    # Current strategy-id evaluator cannot distinguish the two TrendRider lanes and
-    # Keltner/Supertrend are display-only parents. Break is therefore the only safe host.
     if eligible_hosts != ["break_and_continue"]:
         raise RuntimeError(f"EXPECTED_ONLY_BREAK_ACTIONABLE:{eligible_hosts}")
 
@@ -125,8 +145,6 @@ def run(output: Path) -> dict[str, Any]:
         return list(eligible_hosts)
 
     def protected_pool(league: Mapping[str, Any], _hosts: list[str]) -> list[dict[str, Any]]:
-        # Never recycle any current high-WR production strategy as a donor merely
-        # because only Break is executable in the legacy strategy-id evaluator.
         return original_pool(league, protected)
 
     try:
@@ -145,6 +163,7 @@ def run(output: Path) -> dict[str, Any]:
     if axis != EXPECTED_BREAK_AXIS:
         raise RuntimeError(f"OFFICIAL_REMAINING_AXIS_MISMATCH:{axis}")
 
+    outcome = _axis_outcome(result)
     technical_states: list[str] = []
     for key in ("initial_development_economics", "spec_repair_development_economics", "second_step_development_economics"):
         block = result.get(key)
@@ -154,6 +173,7 @@ def run(output: Path) -> dict[str, Any]:
             if isinstance(raw, Mapping):
                 technical_states.append(str(raw.get("state") or ""))
     side_rule_reject_present = any(x == "REJECT_UNEXECUTABLE_SPEC" for x in technical_states)
+    terminalized = outcome.get("state") in {"PASS_DEVELOPMENT_ECONOMICS", "FAIL_DEVELOPMENT_ECONOMICS", "FAIL_INSUFFICIENT_EVENTS"}
 
     result["schema_version"] = SCHEMA
     result["production_top5_source"] = str(SSOT.relative_to(ROOT))
@@ -162,13 +182,21 @@ def run(output: Path) -> dict[str, Any]:
     result["legacy_strategy_id_synthesis_hosts"] = list(eligible_hosts)
     result["blocked_lane_routes"] = blocked
     result["protected_current_strategy_ids"] = protected
-    result["official_remaining_axis_count"] = 1
+    result["official_remaining_axis_count_before_execution"] = 1
     result["official_remaining_axis"] = {
         "lane_id": "break_and_continue_main",
         "strategy_id": "break_and_continue",
         "axis": axis,
         "policy": "EXECUTE_ONLY_THIS_AXIS_NO_TOP5_RESET",
     }
+    result["official_remaining_axis_result"] = outcome
+    result["official_axis_terminalized"] = terminalized
+    result["official_remaining_axis_count_after_execution"] = 0 if terminalized else 1
+    result["highwr_rebind_state"] = (
+        "PASS_ONE_AXIS_EXECUTED_NO_UPGRADE" if terminalized and not outcome.get("economic_pass")
+        else "PASS_ONE_AXIS_EXECUTED_ECONOMIC_UPGRADE" if terminalized
+        else "HOLD_AXIS_NOT_TERMINAL"
+    )
     result["trend_rider_lane_collision_blocked"] = True
     result["keltner_supertrend_display_only_parent_blocked"] = True
     result["trend_ma_top5_eligible"] = False
@@ -207,7 +235,7 @@ def self_test() -> int:
     assert blocked["ke"] == "BLOCKED_DISPLAY_ONLY_NOT_CHALLENGER_PARENT"
     rule, changed = _sanitize_side_rule("long if close > highest(close,20) else short if close < lowest(close,20) else long")
     assert changed and rule == "long if (close > highest(close,20)) or not (close < lowest(close,20)) else short"
-    assert EXPECTED_BREAK_AXIS.endswith("__ONLY")
+    assert EXPECTED_BREAK_AXIS == "DONOR__TURTLE_TREND__CHANNEL_BREAKOUT_PERSISTENCE__ONLY"
     assert v7.v3.AUTH["execution_authority"] == "NONE" and v7.v3.AUTH["order_authority"] == "BLOCKED"
     print("PASS_A1_TOP5_EVOLUTIONARY_SYNTHESIS_V7_3_HIGHWR_SSOT_SELF_TEST")
     print("PASS_ONLY_BREAK_CURRENT_LANE_ACTIONABLE_AND_NESTED_SIDE_RULE_GUARD")
@@ -224,9 +252,12 @@ def main() -> int:
     result = run(args.output)
     print(json.dumps({
         "state": result.get("state"),
+        "highwr_rebind_state": result.get("highwr_rebind_state"),
         "lanes": result.get("production_top5_lane_ids"),
         "active_hosts": result.get("legacy_strategy_id_synthesis_hosts"),
         "remaining_axis": result.get("official_remaining_axis"),
+        "axis_result": result.get("official_remaining_axis_result"),
+        "remaining_after": result.get("official_remaining_axis_count_after_execution"),
         "development_pass": result.get("development_economic_pass_count"),
         "side_rule_reject": result.get("side_rule_reject_present_after_guard"),
         "receipt": result.get("receipt_sha256"),

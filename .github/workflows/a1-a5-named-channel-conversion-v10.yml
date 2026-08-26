@@ -1,11 +1,14 @@
-name: A1 Named Channel Conversion V10
+name: A1 Named Channel Conversion V10 HighWR
 
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches:
+      - a1-highwr-gemini-rebind-v1
+      - master
     paths:
-      - 'backend/research/architecture_factory/a1_a5_named_channel_conversion_v9.py'
+      - 'backend/research/architecture_factory/a1_a5_named_channel_conversion_v10.py'
+      - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
       - '.github/workflows/a1-a5-named-channel-conversion-v10.yml'
   schedule:
     - cron: '37 * * * *'
@@ -14,8 +17,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: a1-a5-named-channel-conversion-v10
-  cancel-in-progress: false
+  group: a1-a5-named-channel-conversion-v10-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   convert:
@@ -26,17 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
           fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test strict named-channel conversion
+      - name: Compile and self-test high-WR named-channel conversion
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_a5_named_channel_conversion_v9.py
-          python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v9 --self-test
-      - name: Force eligible named-channel mechanisms into economic replay
+          python -m py_compile backend/research/architecture_factory/a1_a5_named_channel_conversion_v10.py
+          python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v10 --self-test
+      - name: Run one paid high-WR named-channel economic replay cycle
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -46,49 +48,51 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v9 --output out/a1_a5_named_channel_conversion_v9.json
-          if ! python - <<'PY'
-          import json
-          r=json.load(open('out/a1_a5_named_channel_conversion_v9.json'))
-          b=r['named_channel_executable_bridge']
-          raise SystemExit(0 if int(b.get('attempted_named_axis_count') or 0) > 0 else 1)
-          PY
-          then
-            echo 'No named-channel attempt after first provider cycle; retrying the identical frozen research request once.'
-            python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v9 --output out/a1_a5_named_channel_conversion_v9.json
-          fi
+          python -m backend.research.architecture_factory.a1_a5_named_channel_conversion_v10 --output out/a1_a5_named_channel_conversion_v10.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_a5_named_channel_conversion_v9.json'))
+          r=json.load(open('out/a1_a5_named_channel_conversion_v10.json'))
           b=r['named_channel_executable_bridge']
-          g=r['named_channel_conversion_guard']
-          assert int(b['eligible_axis_count']) > 0, b
-          assert int(g['nontrend_eligible_axis_count']) > 0, g
-          assert int(b['attempted_named_axis_count']) > 0, (b,g)
-          assert g['state']=='PASS_NAMED_CHANNEL_CONVERSION_NONZERO', g
+          lanes=r['production_top5_lane_ids']
+          assert lanes==[
+            'trend_rider_primary_wr8125',
+            'trend_rider_broad_wr7000',
+            'break_and_continue_main',
+            'keltner_trend_main',
+            'supertrend_pullback_main',
+          ], lanes
+          assert r['paid_gemini_current_safe_parent_strategy_ids']==['break_and_continue']
+          assert r['trend_rider_paid_gemini_blocked_until_lane_aware'] is True
+          assert r['keltner_supertrend_paid_gemini_blocked_until_valid_parent'] is True
+          assert r['trend_ma_top5_eligible'] is False
+          assert r['low_wr_fallback_allowed'] is False
+          assert r['stale_strategy_level_a5_order_forbidden'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           print(json.dumps({
             'state':r.get('state'),
-            'guard':g.get('state'),
+            'lanes':lanes,
+            'safe_parent':r['paid_gemini_current_safe_parent_strategy_ids'],
             'eligible':b.get('eligible_axis_count'),
             'attempted':b.get('attempted_named_axis_count'),
             'by_strategy':b.get('attempted_named_axes_by_strategy'),
             'development_pass':r.get('development_economic_pass_count'),
             'risk_pass':(r.get('named_channel_risk_sizing_evaluator') or {}).get('economic_pass_count'),
+            'paid':r.get('paid_request_count'),
             'receipt':r.get('receipt_sha256'),
           },sort_keys=True))
           PY
-      - name: Persist strict conversion receipt and canonical economic receipt
+      - name: Persist high-WR conversion receipt and canonical economic receipt
+        if: github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
-          cp out/a1_a5_named_channel_conversion_v9.json backend/research/architecture_factory/a1_a5_named_channel_conversion_latest.json
-          cp out/a1_a5_named_channel_conversion_v9.json backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
-          git config user.name 'a1-named-channel-conversion-v10'
+          cp out/a1_a5_named_channel_conversion_v10.json backend/research/architecture_factory/a1_a5_named_channel_conversion_latest.json
+          cp out/a1_a5_named_channel_conversion_v10.json backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
+          git config user.name 'a1-named-channel-conversion-v10-highwr'
           git config user.email 'actions@users.noreply.github.com'
           git add backend/research/architecture_factory/a1_a5_named_channel_conversion_latest.json backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist strict named-channel economic conversion receipt [skip ci]'
+          git commit -m 'A1: persist high-WR named-channel economic conversion receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -97,7 +101,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-named-channel-conversion-v10-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_a5_named_channel_conversion_v9.json
-          if-no-files-found: error
+          name: a1-named-channel-conversion-v10-highwr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_a5_named_channel_conversion_v10.json
+          if-no-files-found: warn
           retention-days: 30

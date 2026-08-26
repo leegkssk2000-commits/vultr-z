@@ -17,6 +17,29 @@ def _finite(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def _trade_count(raw: Mapping[str, Any], metrics: Mapping[str, Any]) -> int:
+    # Generic replay receipts carry raw["trades"] as a list and the actual count
+    # in raw["completed_trades"]. Candidate metric snapshots instead carry a
+    # numeric metrics["trades"]. Never coerce a trade-list into an integer and
+    # silently turn a real incumbent into 0T.
+    for value in (
+        metrics.get("trades"),
+        raw.get("completed_trades"),
+        raw.get("trades"),
+    ):
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, (list, tuple, set, dict)):
+            continue
+        try:
+            trades = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if trades >= 0:
+            return trades
+    return 0
+
+
 def snapshot(raw: Mapping[str, Any] | None) -> dict[str, float | int | None]:
     raw = raw or {}
     metrics = raw.get("metrics") if isinstance(raw.get("metrics"), Mapping) else raw
@@ -29,13 +52,8 @@ def snapshot(raw: Mapping[str, Any] | None) -> dict[str, float | int | None]:
                 return raw.get(key)
         return None
 
-    trades_raw = first("trades", "completed_trades")
-    try:
-        trades = int(trades_raw) if trades_raw is not None else 0
-    except (TypeError, ValueError):
-        trades = 0
     return {
-        "trades": trades,
+        "trades": _trade_count(raw, metrics),
         "net_pnl_bps": _finite(first("net_pnl_bps")),
         "net_expectancy_bps": _finite(first("net_expectancy_bps")),
         "profit_factor": _finite(first("profit_factor", "net_profit_factor")),
@@ -132,7 +150,37 @@ def self_test() -> int:
     good = {"trades": 10, "net_pnl_bps": 1000.0, "net_expectancy_bps": 110.0, "drawdown_bps": 250.0}
     gg = evaluate(parent, good)
     assert gg["pass"] and not gg["reasons"] and gg["drawdown_improvement_valid"] is True
+
+    # Real generic replay receipt shape: raw trades is a list while the count is
+    # completed_trades. This must never collapse the incumbent to 0T.
+    receipt_parent = {
+        "completed_trades": 10,
+        "trades": [{"net_bps": 1.0}] * 10,
+        "metrics": {
+            "net_pnl_bps": 900.0,
+            "net_expectancy_bps": 90.0,
+            "net_profit_factor": 2.0,
+            "max_drawdown_bps": 300.0,
+            "win_rate": 0.4,
+        },
+    }
+    receipt_snap = snapshot(receipt_parent)
+    assert receipt_snap["trades"] == 10, receipt_snap
+    receipt_child = {
+        "metrics": {
+            "trades": 9,
+            "net_pnl_bps": 1000.0,
+            "net_expectancy_bps": 111.0,
+            "profit_factor": 2.1,
+            "drawdown_bps": 250.0,
+        }
+    }
+    gr = evaluate(receipt_parent, receipt_child)
+    assert gr["hard_fail"] is True and "TRADE_COUNT_DECREASE" in gr["reasons"], gr
+    assert gr["parent"]["trades"] == 10 and gr["child"]["trades"] == 9, gr
+
     print("PASS_PRODUCTION_ECONOMIC_GUARD_V1_SELF_TEST")
+    print("PASS_REPLAY_RECEIPT_COMPLETED_TRADE_COUNT_MAPPING")
     return 0
 
 

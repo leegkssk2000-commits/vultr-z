@@ -1,0 +1,150 @@
+name: A1 Production High-WR Rolling CLOSED V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py'
+      - '.github/workflows/a1-production-highwr-rolling-closed-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py'
+      - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
+      - 'backend/research/rebuild/a1_break_and_continue_production_main_v1.json'
+      - 'backend/research/rebuild/a1_a4_exact_parent_repair_latest.json'
+      - '.github/workflows/a1-production-highwr-rolling-closed-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '7 */2 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test collector
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_production_highwr_rolling_closed_collector_v1.py
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download frozen Broad 70 Exact25 source artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: a1-exact25-32482936710
+          path: /tmp/a1-exact25-32482936710
+          repository: ${{ github.repository }}
+          run-id: 32482936710
+          github-token: ${{ github.token }}
+
+      - name: Recover immutable Primary 81.25 source receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > /tmp/a1-trendrider-primary-source.log
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          raw=Path('/tmp/a1-trendrider-primary-source.log').read_text(encoding='utf-8',errors='replace')
+          cleaned='\n'.join(re.sub(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\s*','',line) for line in raw.splitlines())
+          decoder=json.JSONDecoder(); receipt=None
+          for m in re.finditer(r'\{',cleaned):
+              try: obj,_=decoder.raw_decode(cleaned[m.start():])
+              except json.JSONDecodeError: continue
+              if not isinstance(obj,dict): continue
+              if str(obj.get('strategy_id'))!='trend_rider': continue
+              if int(obj.get('completed_trades') or 0)!=25: continue
+              if not isinstance(obj.get('trades'),list) or len(obj['trades'])!=25: continue
+              if str(obj.get('policy_path'))!='backend/research/rebuild/trend_rider_transition_freshness_child_policy_v1.py': continue
+              receipt=obj; break
+          if receipt is None: raise SystemExit('PRIMARY_HISTORICAL_25T_RECEIPT_NOT_FOUND')
+          Path('/tmp/a1-trendrider-primary-source.json').write_text(json.dumps(receipt,sort_keys=True,indent=2,allow_nan=False)+'\n',encoding='utf-8')
+          print(json.dumps({'completed_trades':receipt['completed_trades'],'policy_path':receipt['policy_path'],'boundary':receipt.get('boundary_utc')},sort_keys=True))
+          PY
+
+      - name: Collect lane-aware rolling CLOSED receipts
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v1 \
+            --primary-seed /tmp/a1-trendrider-primary-source.json \
+            --broad-artifact-dir /tmp/a1-exact25-32482936710 \
+            --previous backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json \
+            --out out/a1_production_highwr_rolling_closed_latest.json
+
+      - name: Verify append-only and blocked-authority contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_production_highwr_rolling_closed_latest.json'))
+          assert r['state']=='PASS_HIGHWR_ROLLING_CLOSED_ACTIVE',r
+          assert r['selection_unit']=='lane_id'
+          assert r['source_kind']=='PROSPECTIVE_POLICY_REPLAY_CLOSED'
+          assert r['economic_value_semantics']=='FIRST_OBSERVED_REPLAY_VALUE_SEALED'
+          assert r['append_only'] is True and r['stable_identity_dedup'] is True
+          assert r['headline_ssot_mutated'] is False and r['rolling_receipt_grants_promotion'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          expected=['trend_rider_primary_wr8125','trend_rider_broad_wr7000','break_and_continue_main','keltner_trend_main','supertrend_pullback_main']
+          assert list(r['lanes'])==expected
+          for lane_id,x in r['lanes'].items():
+              assert x['lane_id']==lane_id
+              assert int(x['rolling_completed_trades']) >= int(x['seed_completed_trades'])
+              ids=[t['closed_trade_id'] for t in x['closed_trades']]
+              assert len(ids)==len(set(ids))
+              assert int(x['delta_t'])==len(x['new_closed_trade_ids'])
+              assert x['selection_authority'] is False and x['promotion_authority'] is False
+              assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED' and x['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'deltaT':r['total_delta_t'],'T':{k:v['rolling_completed_trades'] for k,v in r['lanes'].items()}},sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-highwr-rolling-closed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_production_highwr_rolling_closed_latest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist latest append-only receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json
+          cp out/a1_production_highwr_rolling_closed_latest.json "$target"
+          git config user.name 'a1-highwr-rolling-closed-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist high-WR rolling CLOSED receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

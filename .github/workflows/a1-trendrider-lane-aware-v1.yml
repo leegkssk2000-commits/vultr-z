@@ -1,0 +1,87 @@
+name: A1 TrendRider Lane-Aware Parent Verification V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/research/architecture_factory/a1_trendrider_lane_aware_synthesis_v1.py"
+      - ".github/workflows/a1-trendrider-lane-aware-v1.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-trendrider-lane-aware-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-lane-parents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Self-test lane identity and authority guards
+        run: |
+          python -m backend.research.architecture_factory.a1_trendrider_lane_aware_synthesis_v1 --self-test
+
+      - name: Download frozen Broad 70 Exact25 source artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: a1-exact25-32482936710
+          path: /tmp/a1-exact25-32482936710
+          repository: ${{ github.repository }}
+          run-id: 32482936710
+          github-token: ${{ github.token }}
+
+      - name: Verify both TrendRider lane parents
+        run: |
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_trendrider_lane_aware_synthesis_v1 \
+            --exact25-artifact-dir /tmp/a1-exact25-32482936710 \
+            --output out/a1_trendrider_lane_aware_synthesis_v1.json
+
+      - name: Assert exact lane separation and parent readiness
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("out/a1_trendrider_lane_aware_synthesis_v1.json")
+          r = json.loads(p.read_text())
+          assert r["state"] == "READY_FOR_LANE_CHILD_GENERATION", r["state"]
+          assert r["selection_unit"] == "lane_id"
+          assert r["lane_ids"] == ["trend_rider_primary_wr8125", "trend_rider_broad_wr7000"]
+          assert r["strategy_ids"] == ["trend_rider", "trend_rider"]
+          assert r["duplicate_strategy_id_lane_identity_preserved"] is True
+          assert r["generic_trend_rider_history_ignored"] is True
+          assert r["generic_strategy_id_history_may_block_lane_axis"] is False
+          assert all(x["exact_trade_replay_verified"] is True for x in r["parent_adapters"])
+          assert all(x["same_baseline_ab_ready"] is True for x in r["parent_adapters"])
+          assert all(x["development_child_generation_allowed"] is True for x in r["lane_plans"])
+          assert r["improvement_claim_allowed"] is False
+          assert r["promotion_ready"] is False
+          assert r["selection_authority"] is False
+          assert r["promotion_authority"] is False
+          assert r["execution_authority"] == "NONE"
+          assert r["order_authority"] == "BLOCKED"
+          assert r["live_trade_authority"] == "BLOCKED"
+          assert r["exchange_order_submitted"] is False
+          print("PASS_A1_TRENDRIDER_TWO_EXACT_LANE_PARENTS_READY")
+          PY
+
+      - name: Upload verification receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-trendrider-lane-aware-${{ github.run_id }}
+          path: out/a1_trendrider_lane_aware_synthesis_v1.json
+          if-no-files-found: warn
+          retention-days: 30

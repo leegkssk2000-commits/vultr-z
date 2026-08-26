@@ -361,11 +361,25 @@ def _next_donor(donors: list[dict[str, Any]], history: Mapping[str, Any], lane_i
     return None
 
 
+def _history_persistence_ready(history: Mapping[str, Any]) -> bool:
+    if not HISTORY.is_file():
+        return False
+    if str(history.get("schema_version") or "") != "zel.a1_trendrider_lane_aware_history.v1":
+        return False
+    lanes = history.get("lanes") if isinstance(history.get("lanes"), Mapping) else {}
+    for lane_id in EXPECTED_LANES:
+        row = lanes.get(lane_id) if isinstance(lanes, Mapping) else None
+        if not isinstance(row, Mapping) or not isinstance(row.get("attempted_axes"), list):
+            return False
+    return True
+
+
 def run(output: Path, exact25_artifact_dir: Path | None = None) -> dict[str, Any]:
     ssot = _read(SSOT)
     league = _read(LEAGUE)
     legacy = _read(LEGACY)
     history = _read(HISTORY)
+    history_ready = _history_persistence_ready(history)
     lanes = _production_lanes(ssot)
     by_id = {str(x["lane_id"]): x for x in lanes}
 
@@ -386,7 +400,7 @@ def run(output: Path, exact25_artifact_dir: Path | None = None) -> dict[str, Any
             "attempted_axes": sorted(_lane_attempted(history, lane_id)),
             "next_donor": donor,
             "next_axis": donor.get("axis") if donor else None,
-            "development_child_generation_allowed": bool(all_exact and donor),
+            "development_child_generation_allowed": bool(all_exact and donor and history_ready),
             "promotion_ready": False,
         })
 
@@ -395,9 +409,19 @@ def run(output: Path, exact25_artifact_dir: Path | None = None) -> dict[str, Any
     if isinstance(generic_history, Mapping):
         legacy_generic = [str(x) for x in generic_history.get("trend_rider") or []]
 
+    if not all_exact:
+        state = "PARENT_REPLAY_HOLD"
+        next_step = "RESTORE_EXACT_PARENT_REPLAY_BEFORE_CHILD_GENERATION"
+    elif not history_ready:
+        state = "PARENTS_VERIFIED_HISTORY_WRITER_REQUIRED"
+        next_step = "ADD_PERSISTENT_LANE_ATTEMPT_HISTORY_WRITER_BEFORE_CHILD_GENERATION"
+    else:
+        state = "READY_FOR_LANE_CHILD_GENERATION"
+        next_step = "GENERATE_ONE_MECHANISM_CHILD_PER_EXACT_LANE_AND_RUN_SAME_PARENT_AB"
+
     result = {
         "schema_version": SCHEMA,
-        "state": "READY_FOR_LANE_CHILD_GENERATION" if all_exact else "PARENT_REPLAY_HOLD",
+        "state": state,
         "selection_unit": "lane_id",
         "lane_ids": [str(x["lane_id"]) for x in lanes],
         "strategy_ids": [str(x["strategy_id"]) for x in lanes],
@@ -410,7 +434,8 @@ def run(output: Path, exact25_artifact_dir: Path | None = None) -> dict[str, Any
         "generic_trend_rider_history_ignored": True,
         "generic_strategy_id_history_may_block_lane_axis": False,
         "lane_history_path": str(HISTORY.relative_to(ROOT)),
-        "failed_lane_gene_pair_retry_forbidden": True,
+        "lane_history_persistence_ready": history_ready,
+        "failed_lane_gene_pair_retry_forbidden": history_ready,
         "one_gene_per_lane_per_attempt": True,
         "whole_strategy_merge_allowed": False,
         "donor_numeric_threshold_copy_allowed": False,
@@ -419,7 +444,7 @@ def run(output: Path, exact25_artifact_dir: Path | None = None) -> dict[str, Any
         "fresh_oos_required_before_promotion": True,
         "improvement_claim_allowed": False,
         "promotion_ready": False,
-        "next": "GENERATE_ONE_MECHANISM_CHILD_PER_EXACT_LANE_AND_RUN_SAME_PARENT_AB" if all_exact else "RESTORE_EXACT_PARENT_REPLAY_BEFORE_CHILD_GENERATION",
+        "next": next_step,
         **AUTH,
     }
     result["receipt_sha256"] = hashutil.sha(result)
@@ -451,6 +476,7 @@ def self_test() -> int:
     legacy_only = {"economic_attempted_axes": {"trend_rider": [x_axis]}}
     assert x_axis in legacy_only["economic_attempted_axes"]["trend_rider"]
     assert _lane_attempted({}, PRIMARY) == set()
+    assert _history_persistence_ready({}) is False
     assert AUTH["selection_authority"] is False and AUTH["promotion_authority"] is False
     assert AUTH["execution_authority"] == "NONE" and AUTH["order_authority"] == "BLOCKED"
     assert AUTH["live_trade_authority"] == "BLOCKED" and AUTH["exchange_order_submitted"] is False
@@ -458,6 +484,7 @@ def self_test() -> int:
     print("PASS_DUPLICATE_STRATEGY_ID_PRESERVES_TWO_LANE_IDS")
     print("PASS_GENERIC_TREND_RIDER_HISTORY_IGNORED_BY_LANE_HISTORY")
     print("PASS_FAILED_AXIS_EXCLUSION_IS_INDEPENDENT_PER_LANE")
+    print("PASS_HISTORY_ABSENCE_FAILS_CLOSED_BEFORE_CHILD_GENERATION")
     print("PASS_AUTHORITY_BLOCKS_INTACT")
     return 0
 

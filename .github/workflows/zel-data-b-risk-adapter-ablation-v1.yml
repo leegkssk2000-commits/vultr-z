@@ -15,7 +15,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 concurrency:
   group: zel-data-b-risk-adapter-ablation-v1
@@ -44,6 +44,7 @@ jobs:
           assert 'zel_historical_oos_exact25_replay_v1.py' not in ablate,ablate
           assert '--source-root' not in ablate,ablate
           assert 'HOLD_MISSING_SINGLE_OWNER_DATA_B_LEDGER' in ablate,ablate
+          assert 'zel-historical-oos-exact25-replay-v1.yml/dispatches' in ablate,ablate
           print('PASS_RISK_CONSUMER_ONLY_BOUNDARY')
           PY
 
@@ -107,8 +108,11 @@ jobs:
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/"
 
       - name: Require canonical Data B ledgers and run ablation
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          set +e
           ssh -i ~/.ssh/vps_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" 'bash -se' <<'REMOTE'
           set -euo pipefail
           PY=/home/z/z/.venv/bin/python
@@ -130,6 +134,19 @@ jobs:
             --output-dir /tmp/zel_data_b_risk_adapter_ablation_v1
           tar -C /tmp/zel_data_b_risk_adapter_ablation_v1 -czf /tmp/zel_data_b_risk_adapter_ablation_v1.tar.gz .
           REMOTE
+          rc=$?
+          set -e
+          if [ "$rc" -eq 42 ]; then
+            echo 'Missing ephemeral Data B replay ledger; dispatching the canonical single-owner producer.'
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/zel-historical-oos-exact25-replay-v1.yml/dispatches" \
+              -d '{"ref":"master"}'
+            exit 42
+          fi
+          exit "$rc"
 
       - name: Fetch ablation result
         run: |

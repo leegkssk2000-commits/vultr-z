@@ -46,7 +46,7 @@ def _assert_contract(history: Mapping[str, Any]) -> None:
         if history.get(key) != expected:
             raise RuntimeError(f"HISTORY_AUTHORITY_DRIFT:{key}")
     lanes = history.get("lanes")
-    if not isinstance(lanes, Mapping) or tuple(lanes.keys()) != LANES:
+    if not isinstance(lanes, Mapping) or set(lanes.keys()) != set(LANES):
         raise RuntimeError("HISTORY_LANE_ID_DRIFT")
     for lane_id in LANES:
         row = lanes.get(lane_id)

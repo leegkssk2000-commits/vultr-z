@@ -1,4 +1,4 @@
-name: A1 Top5 Evolutionary Synthesis V7.1
+name: A1 Top5 Evolutionary Synthesis V7.2
 
 on:
   pull_request:
@@ -6,6 +6,7 @@ on:
     paths:
       - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7.py'
       - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_1.py'
+      - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_2.py'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
       - '.github/workflows/a1-top5-evolutionary-synthesis-v7.yml'
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7.py'
       - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_1.py'
+      - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_2.py'
       - '.github/workflows/a1-top5-evolutionary-synthesis-v7.yml'
   workflow_dispatch:
   schedule:
@@ -45,8 +47,10 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7.py
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_1.py
+          python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_2.py
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7 --self-test
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_1 --self-test
+          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_2 --self-test
 
   synthesize:
     if: github.event_name != 'pull_request'
@@ -67,9 +71,11 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7.py
           python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_1.py
+          python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_2.py
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7 --self-test
           python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_1 --self-test
-      - name: Run Top5 host donor-gene synthesis with stable attempt memory
+          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_2 --self-test
+      - name: Run Top5 donor nursery and contribution attribution
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -79,10 +85,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_1 --output out/a1_top5_evolutionary_synthesis_v7_1.json
+          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_2 --output out/a1_top5_evolutionary_synthesis_v7_2.json
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_top5_evolutionary_synthesis_v7_1.json'))
+          r=json.load(open('out/a1_top5_evolutionary_synthesis_v7_2.json'))
           assert 1 <= len(r['performance_top5_hosts']) <= 5
           assert r['direct_improvement_scope']=='CURRENT_PERFORMANCE_TOP5_HOSTS_ONLY'
           assert r['demoted_strategy_direct_repair_enabled'] is False
@@ -93,6 +99,9 @@ jobs:
           assert r['failed_gene_pair_archive_via_stable_axis_history'] is True
           assert r['stable_donor_host_attempt_history'] is True
           assert r['failed_gene_pair_retest_same_axis_allowed'] is False
+          assert r['exhausted_host_keyerror_guard'] is True
+          assert r['full_top5_preserved_when_axes_exhausted'] is True
+          assert r['active_host_subset_for_v3'] is True
           assert r['synthesis_acceptance_gate']['drawdown_nonworse'] is True
           assert r['donor_nursery_enabled'] is True
           assert r['donor_contribution_attribution_enabled'] is True
@@ -116,6 +125,7 @@ jobs:
           } for x in (r.get('donor_contribution_summary') or [])[:5]]
           print(json.dumps({
             'state':r.get('state'),'hosts':r['performance_top5_hosts'],
+            'active_hosts':r.get('active_synthesis_hosts'),'exhausted_hosts':r.get('axis_exhausted_hosts'),
             'donors':r.get('donor_pool_count'),'validated_donors':r.get('validated_edge_donor_count'),
             'candidates':r.get('evolutionary_candidate_count'),
             'development_pass':r.get('development_economic_pass_count'),
@@ -131,12 +141,12 @@ jobs:
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_top5_evolutionary_synthesis_latest.json
-          cp out/a1_top5_evolutionary_synthesis_v7_1.json "$target"
-          git config user.name 'a1-top5-evolutionary-synthesis-v7-1'
+          cp out/a1_top5_evolutionary_synthesis_v7_2.json "$target"
+          git config user.name 'a1-top5-evolutionary-synthesis-v7-2'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist Top5 evolutionary synthesis V7.1 receipt [skip ci]'
+          git commit -m 'A1: persist Top5 evolutionary synthesis V7.2 contribution receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -145,7 +155,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-top5-evolutionary-synthesis-v7-1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_top5_evolutionary_synthesis_v7_1.json
+          name: a1-top5-evolutionary-synthesis-v7-2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_evolutionary_synthesis_v7_2.json
           if-no-files-found: error
           retention-days: 30

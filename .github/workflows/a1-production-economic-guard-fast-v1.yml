@@ -1,0 +1,75 @@
+name: A1 Production Economic Guard Fast V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_finalist_sample_stall_no_idle_guarded_v1.py'
+      - '.github/workflows/a1-production-economic-guard-fast-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/production_economic_guard_v1.py'
+      - 'backend/research/rebuild/a1_finalist_sample_stall_no_idle_guarded_v1.py'
+      - '.github/workflows/a1-production-economic-guard-fast-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-production-economic-guard-fast-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove-known-failures-terminate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/production_economic_guard_v1.py backend/research/rebuild/a1_finalist_sample_stall_no_idle_guarded_v1.py
+          python -m backend.research.production_economic_guard_v1
+          python -m backend.research.rebuild.a1_finalist_sample_stall_no_idle_guarded_v1 --self-test
+      - name: Prove prior failed children terminate without replay
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from backend.research.rebuild import a1_finalist_sample_stall_no_idle_guarded_v1 as g
+          rows=g._prior_terminal_rows()
+          expected={'supertrend_pullback','trend_ma_macd','break_and_continue'}
+          assert expected.issubset(rows), (expected, rows.keys())
+          for sid in expected:
+              row=rows[sid]
+              assert row['state']=='REJECT_CHILD_PRODUCTION_ECONOMICS', (sid,row)
+              assert row['next']=='PRESERVE_INCUMBENT_STOP_FAILED_CHILD_AND_ROTATE_DISTINCT_MECHANISM', (sid,row)
+              assert row.get('restart_from_zero') is False, (sid,row)
+              assert row.get('incumbent_mutated') is False, (sid,row)
+              assert row.get('production_child_terminal_reject') is True, (sid,row)
+          print({'terminal_rejects':sorted(expected),'known_failed_child_count':len(rows)})
+          PY
+      - name: Run guarded producer from prior receipts only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_sample_stall_no_idle_guarded_v1 --out out/guarded.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/guarded.json'))
+          expected={'supertrend_pullback','trend_ma_macd','break_and_continue'}
+          assert expected.issubset(set(r['production_child_terminal_reject_ids'])), r
+          assert int(r['known_failed_child_replay_skipped_count']) >= 3, r
+          assert r['failed_child_replay_allowed'] is False, r
+          assert r['fresh25_reset_on_child_reject'] is False, r
+          assert r['incumbent_collectors_continue_on_child_reject'] is True, r
+          assert all(x['state']!='COLLECT_CHILD_FRESH_TO_25' for x in r['targets'] if x.get('production_child_terminal_reject')), r
+          print({'terminal_rejects':r['production_child_terminal_reject_ids'],'skipped_replays':r['known_failed_child_replay_skipped_count']})
+          PY

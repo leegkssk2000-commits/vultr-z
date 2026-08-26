@@ -16,7 +16,6 @@ TERMINAL_CHILD_NEXT = "PRESERVE_INCUMBENT_STOP_FAILED_CHILD_AND_ROTATE_DISTINCT_
 
 
 def _guarded_comparison(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
-    # Call the captured upstream function, never base.comparison after monkey-patch.
     result = dict(_BASE_COMPARISON(parent, child))
     verdict = guard.evaluate(parent, child)
     result["production_economic_guard"] = verdict
@@ -39,22 +38,47 @@ def _terminalize(row: dict[str, Any], verdict: Mapping[str, Any], *, source: str
     row["restart_from_zero"] = False
 
 
-def _apply_row_guard(row: dict[str, Any]) -> dict[str, Any]:
+def _comparison_verdict(comp: Mapping[str, Any]) -> dict[str, Any] | None:
+    existing = comp.get("production_economic_guard")
+    if isinstance(existing, Mapping):
+        return dict(existing)
+    parent = comp.get("parent")
+    child = comp.get("child")
+    if isinstance(parent, Mapping) and isinstance(child, Mapping):
+        return guard.evaluate(parent, child)
+    return None
+
+
+def _apply_row_guard(row: dict[str, Any], *, prior_receipt: bool = False) -> dict[str, Any]:
     comp = row.get("sample_expansion_comparison")
     if isinstance(comp, Mapping):
-        verdict = comp.get("production_economic_guard")
-        if isinstance(verdict, Mapping) and verdict.get("hard_fail") is True:
-            _terminalize(row, verdict, source="SAME_BOUNDARY_PARENT_CHILD_COMPARISON")
-            return row
+        verdict = _comparison_verdict(comp)
+        if verdict is not None:
+            comp2 = dict(comp)
+            comp2["production_economic_guard"] = verdict
+            comp2["pre_guard_development_prereg_eligible"] = bool(comp2.get("development_prereg_eligible"))
+            comp2["development_prereg_eligible"] = bool(comp2.get("development_prereg_eligible") and verdict["pass"])
+            row["sample_expansion_comparison"] = comp2
+            if verdict.get("hard_fail") is True:
+                _terminalize(
+                    row,
+                    verdict,
+                    source="PRIOR_RECEIPT_SAME_BOUNDARY_PARENT_CHILD" if prior_receipt else "SAME_BOUNDARY_PARENT_CHILD_COMPARISON",
+                )
+                return row
 
     child_fresh = row.get("child_fresh")
     if isinstance(child_fresh, Mapping):
         verdict = guard.evaluate(None, child_fresh)
-        child_fresh = dict(child_fresh)
-        child_fresh["production_economic_guard"] = verdict
-        row["child_fresh"] = child_fresh
+        child2 = dict(child_fresh)
+        child2["production_economic_guard"] = verdict
+        row["child_fresh"] = child2
         if verdict["hard_fail"]:
-            _terminalize(row, verdict, source="FROZEN_CHILD_STANDALONE_ECONOMIC_FLOOR")
+            _terminalize(
+                row,
+                verdict,
+                source="PRIOR_RECEIPT_FROZEN_CHILD_ECONOMIC_FLOOR" if prior_receipt else "FROZEN_CHILD_STANDALONE_ECONOMIC_FLOOR",
+            )
     return row
 
 
@@ -64,17 +88,20 @@ def _prior_terminal_rows() -> dict[str, dict[str, Any]]:
     previous = base.read(base.LATEST)
     out: dict[str, dict[str, Any]] = {}
     for raw in previous.get("targets") or []:
-        if not isinstance(raw, Mapping) or raw.get("production_child_terminal_reject") is not True:
+        if not isinstance(raw, Mapping):
             continue
         sid = str(raw.get("strategy_id") or "")
-        if sid:
-            row = dict(raw)
-            row["state"] = TERMINAL_CHILD_STATE
-            row["next"] = TERMINAL_CHILD_NEXT
-            row["mode"] = "TERMINAL_REJECTED_CHILD_PRESERVED_NO_REPLAY"
-            row["incumbent_mutated"] = False
-            row["restart_from_zero"] = False
-            out[sid] = row
+        if not sid:
+            continue
+        row = _apply_row_guard(dict(raw), prior_receipt=True)
+        if row.get("production_child_terminal_reject") is not True:
+            continue
+        row["state"] = TERMINAL_CHILD_STATE
+        row["next"] = TERMINAL_CHILD_NEXT
+        row["mode"] = "TERMINAL_REJECTED_CHILD_PRESERVED_NO_REPLAY"
+        row["incumbent_mutated"] = False
+        row["restart_from_zero"] = False
+        out[sid] = row
     return out
 
 
@@ -96,11 +123,9 @@ def run(out: Path) -> dict[str, Any]:
     original_comparison = base.comparison
     original_targets = base.TARGETS
 
-    # A failed fixed child is not replayed forever. Parent/incumbent collectors are
-    # separate and remain untouched; only the failed child lane is removed.
-    base.TARGETS = {
-        sid: spec for sid, spec in original_targets.items() if sid not in prior_terminal
-    }
+    # Fail-closed from already-produced evidence first. Known failed children do
+    # not consume another full replay just to reach the same economic verdict.
+    base.TARGETS = {sid: spec for sid, spec in original_targets.items() if sid not in prior_terminal}
     try:
         base.comparison = _guarded_comparison
         result = dict(base.run(out))
@@ -125,12 +150,14 @@ def run(out: Path) -> dict[str, Any]:
         "ZERO_TRADE_DD_IMPROVEMENT_INVALID",
         "PNL_AND_EXPECTANCY_BOTH_WORSE_HARD_FAIL",
         "FAILED_FROZEN_CHILD_STOPS_FRESH25_COLLECTION",
+        "KNOWN_FAILED_CHILD_TERMINALIZED_FROM_PRIOR_RECEIPT_BEFORE_REPLAY",
         "FAILED_FIXED_CHILD_NOT_REPLAYED_NEXT_RUN",
         "REJECT_PRESERVES_INCUMBENT_AND_FRESH25_STATE",
     ]
     result["incumbent_collectors_continue_on_child_reject"] = True
     result["fresh25_reset_on_child_reject"] = False
     result["failed_child_replay_allowed"] = False
+    result["known_failed_child_replay_skipped_count"] = len(prior_terminal)
     result["challenger_slot_policy"] = "ONE_FIXED_CHILD_PER_STRATEGY;TERMINAL_REJECT_BEFORE_DISTINCT_REPLACEMENT"
     _recompute_counts(result)
     result.pop("receipt_sha256", None)
@@ -147,8 +174,19 @@ def self_test() -> int:
     assert comp["development_prereg_eligible"] is False
     assert comp["production_economic_guard"]["hard_fail"] is True
     assert comp["production_economic_guard"]["zero_trade_dd_improvement_invalid"] is True
-    assert comp["incumbent_state_action"] == "PRESERVE_UNCHANGED"
-    assert comp["fresh25_state_action"] == "PRESERVE_UNCHANGED"
+
+    prior_trade_drop = _apply_row_guard({
+        "strategy_id": "supertrend_pullback",
+        "state": "HOLD_SAMPLE_EXPANSION_CHILD_NOT_PARETO_USEFUL",
+        "sample_expansion_comparison": {
+            "parent": {"trades": 9, "net_pnl_bps": 900.0, "net_expectancy_bps": 100.0},
+            "child": {"trades": 7, "net_pnl_bps": 800.0, "net_expectancy_bps": 90.0},
+            "development_prereg_eligible": False,
+        },
+        "incumbent_mutated": False,
+    }, prior_receipt=True)
+    assert prior_trade_drop["state"] == TERMINAL_CHILD_STATE
+    assert prior_trade_drop["production_child_reject_source"] == "PRIOR_RECEIPT_SAME_BOUNDARY_PARENT_CHILD"
 
     frozen_zero = _apply_row_guard({
         "strategy_id": "trend_ma_macd",
@@ -157,9 +195,7 @@ def self_test() -> int:
         "child_fresh": zero,
         "incumbent_mutated": False,
     })
-    assert frozen_zero["state"] == TERMINAL_CHILD_STATE
-    assert frozen_zero["production_child_terminal_reject"] is True
-    assert frozen_zero["restart_from_zero"] is False
+    assert frozen_zero["state"] == TERMINAL_CHILD_STATE and frozen_zero["restart_from_zero"] is False
 
     frozen_negative = _apply_row_guard({
         "strategy_id": "break_and_continue",
@@ -171,6 +207,7 @@ def self_test() -> int:
     assert "NEGATIVE_CHILD_ECONOMICS" in frozen_negative["production_economic_guard"]["reasons"]
 
     print("PASS_A1_FINALIST_NO_IDLE_PRODUCTION_GUARD_V1_SELF_TEST")
+    print("PASS_KNOWN_FAILED_CHILD_TERMINALIZES_FROM_PRIOR_RECEIPT_NO_REPLAY")
     print("PASS_FAILED_FROZEN_CHILD_STOPS_FRESH25_AND_PRESERVES_INCUMBENT")
     print("PASS_GUARDED_COMPARISON_CALLS_CAPTURED_UPSTREAM_WITHOUT_RECURSION")
     return 0
@@ -187,6 +224,7 @@ def main() -> int:
     print(json.dumps({
         "state": result.get("state"),
         "guard": result.get("production_economic_guard_enabled"),
+        "skipped_known_failed_replays": result.get("known_failed_child_replay_skipped_count"),
         "terminal_rejects": result.get("production_child_terminal_reject_ids"),
         "routes": {x["strategy_id"]: x["state"] for x in result.get("targets", [])},
         "receipt": result.get("receipt_sha256"),

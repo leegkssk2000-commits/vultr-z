@@ -1,0 +1,110 @@
+name: A1 Top5 Evolutionary Synthesis V7.3 HighWR
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - a1-highwr-top5-synthesis-rebind-v1
+      - master
+    paths:
+      - 'backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_3.py'
+      - 'backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'
+      - '.github/workflows/a1-top5-evolutionary-synthesis-v7-3.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-evolutionary-synthesis-v7-3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-run-one-axis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test lane-aware high-WR bridge
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_top5_evolutionary_synthesis_v7_3.py
+          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_3 --self-test
+      - name: Execute and terminalize only official remaining Break axis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_top5_evolutionary_synthesis_v7_3 --output out/a1_top5_evolutionary_synthesis_v7_3.json
+          python - <<'PY'
+          import json
+          p='out/a1_top5_evolutionary_synthesis_v7_3.json'
+          r=json.load(open(p))
+          lanes=r['production_top5_lane_ids']
+          assert lanes==[
+            'trend_rider_primary_wr8125',
+            'trend_rider_broad_wr7000',
+            'break_and_continue_main',
+            'keltner_trend_main',
+            'supertrend_pullback_main',
+          ], lanes
+          assert len(set(lanes))==5
+          assert r['legacy_strategy_id_synthesis_hosts']==['break_and_continue'], r['legacy_strategy_id_synthesis_hosts']
+          assert r['official_remaining_axis_count_before_execution']==1
+          assert r['official_remaining_axis']['axis']=='DONOR__TURTLE_TREND__CHANNEL_BREAKOUT_PERSISTENCE__ONLY'
+          assert r['official_axis_terminalized'] is True
+          assert r['official_remaining_axis_count_after_execution']==0
+          assert r['official_remaining_axis_result']['state'] in {'PASS_DEVELOPMENT_ECONOMICS','FAIL_DEVELOPMENT_ECONOMICS','FAIL_INSUFFICIENT_EVENTS'}
+          assert r['side_rule_reject_present_after_guard'] is False
+          assert r['trend_ma_top5_eligible'] is False
+          assert r['low_wr_fallback_allowed'] is False
+          assert r['trend_rider_lane_collision_blocked'] is True
+          assert r['keltner_supertrend_display_only_parent_blocked'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r.get('state'),
+            'highwr_rebind_state':r.get('highwr_rebind_state'),
+            'lanes':lanes,
+            'host':r['legacy_strategy_id_synthesis_hosts'],
+            'remaining_axis':r['official_remaining_axis'],
+            'axis_result':r['official_remaining_axis_result'],
+            'remaining_after':r['official_remaining_axis_count_after_execution'],
+            'development_pass':r.get('development_economic_pass_count'),
+            'side_rule_reject':r.get('side_rule_reject_present_after_guard'),
+            'receipt':r.get('receipt_sha256'),
+          },sort_keys=True))
+          PY
+      - name: Persist canonical synthesis receipt on master only
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_evolutionary_synthesis_v7_3.json backend/research/architecture_factory/a1_top5_evolutionary_synthesis_latest.json
+          git config user.name 'a1-top5-synthesis-v7-3'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/architecture_factory/a1_top5_evolutionary_synthesis_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist high-WR Top5 one-axis synthesis receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-evolutionary-synthesis-v7-3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_evolutionary_synthesis_v7_3.json
+          if-no-files-found: warn
+          retention-days: 30

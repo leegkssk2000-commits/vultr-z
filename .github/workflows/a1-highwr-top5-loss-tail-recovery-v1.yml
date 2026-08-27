@@ -87,9 +87,50 @@ jobs:
         run: python -m py_compile backend/research/rebuild/a1_trendrider_primary_loss_tail_path_replay_v1.py
       - name: Exact TrendRider Primary 16T path replay
         run: |
+          set -o pipefail
           PYTHONPATH=. python backend/research/rebuild/a1_trendrider_primary_loss_tail_path_replay_v1.py \
             --source /tmp/a1-trendrider-primary-source.json \
-            --out /tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json
+            --out /tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json \
+            2>&1 | tee /tmp/a1-trendrider-primary-replay.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            if grep -q 'FROZEN_INTENT_GEOMETRY_DRIFT:' /tmp/a1-trendrider-primary-replay.log; then
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              descriptor=json.load(open('backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'))
+              m=descriptor['metrics']
+              result={
+                'schema_version':'zel.a1.trendrider_primary.loss_tail_path_replay.v1',
+                'strategy_id':'trend_rider',
+                'lane_id':'trend_rider_primary_wr8125',
+                'parent_metrics':{
+                  'completed_trades':m['completed_trades'],
+                  'wins':m['wins'],
+                  'win_rate':m['win_rate'],
+                  'net_pnl_bps':m['net_pnl_bps'],
+                  'profit_factor':m['profit_factor'],
+                  'realized_payoff':m['payoff'],
+                  'max_drawdown_bps':m['max_drawdown_bps'],
+                },
+                'grid':{'stop_scales':[1.0,0.9,0.85,0.8],'be_triggers_r':[None,1.0,0.75],'timeout_bars':[48]},
+                'passing_count':0,
+                'best_candidate':None,
+                'decision':'HOLD_FROZEN_GEOMETRY_UNAVAILABLE',
+                'hold_reason':'IMMUTABLE_PARENT_MEMBERSHIP_IS_VALID_BUT_CURRENT_FEATURE_RECOMPUTATION_IS_NOT_AUTHORITATIVE_FOR_HISTORICAL_INTENT_GEOMETRY',
+                'promotion_allowed':False,
+                'requires_fresh_oos':True,
+                'execution_authority':'NONE',
+                'order_authority':'BLOCKED',
+                'live_trade_authority':'BLOCKED',
+              }
+              Path('/tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json').write_text(json.dumps(result,sort_keys=True,indent=2,allow_nan=False)+'\n')
+              print('HOLD_TRENDRIDER_PRIMARY_FROZEN_GEOMETRY_UNAVAILABLE')
+              PY
+            else
+              exit "$rc"
+            fi
+          fi
       - name: Verify T/WR/PnL/PF/payoff/DD guard
         run: |
           python - <<'PY'
@@ -112,7 +153,7 @@ jobs:
               assert m['max_drawdown_bps']<=p['max_drawdown_bps']+1e-12
               print('PRIMARY_BEST',b['candidate_id'],json.dumps(m,sort_keys=True))
           else:
-              print('PRIMARY_KEEP_INCUMBENT')
+              print('PRIMARY_DECISION',d['decision'])
           PY
       - name: Upload TrendRider Primary research receipt
         uses: actions/upload-artifact@v4

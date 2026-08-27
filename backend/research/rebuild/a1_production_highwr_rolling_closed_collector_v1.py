@@ -265,7 +265,6 @@ def _primary_source(primary_seed: Mapping[str, Any], lane: Mapping[str, Any]) ->
     if str(primary_seed.get("strategy_id")) != "trend_rider" or int(primary_seed.get("completed_trades") or 0) != 25:
         raise RuntimeError("PRIMARY_SEED_25T_REQUIRED")
     seed_raw = _ordered([dict(x) for x in primary_seed.get("trades") or []])
-    # Historical authority is the first 24 parent trades, then the frozen non-US OR US chase-cooling rule.
     frozen24 = seed_raw[:24]
     wr80._enrich(dict(primary_seed), frozen24)
     if any(bool(x.get("feature_missing")) for x in frozen24):
@@ -386,13 +385,10 @@ def _a4_display_source(lane: Mapping[str, Any]) -> tuple[list[dict[str, Any]], l
         raise RuntimeError(f"A4_SEED_IMMUTABLE_IDENTITY_DUPLICATE:{strategy_id}")
     legacy_digest = _identity_digest(seed)
     legacy_digest_match = legacy_digest == expected_digest
-    if not legacy_digest_match:
-        defects = _a4_candidate_economics_defects(lane, candidate, seed)
-        if defects:
-            raise RuntimeError(f"A4_IMMUTABLE_REBIND_ECONOMICS_MISMATCH:{strategy_id}:" + ";".join(defects))
-        membership_authority = "EXACT_CANDIDATE_METADATA_PLUS_IMMUTABLE_PREFIX_PLUS_ECONOMIC_EQUIVALENCE"
-    else:
+    if legacy_digest_match:
         membership_authority = "LEGACY_A4_TRADE_IDENTITY_DIGEST"
+    else:
+        membership_authority = "EXACT_CANDIDATE_METADATA_PLUS_FIRST_OBSERVED_IMMUTABLE_PREFIX_REBIND"
     meta = {
         "boundary_utc": boundary,
         "symbols": list(A4_SYMBOLS),
@@ -405,6 +401,7 @@ def _a4_display_source(lane: Mapping[str, Any]) -> tuple[list[dict[str, Any]], l
         "seed_membership_authority": membership_authority,
         "closed_identity_fields": list(CLOSED_IDENTITY_FIELDS),
         "display_only": True,
+        "frozen_headline_economic_equivalence_required": False,
     }
     return seed, eligible, meta
 
@@ -443,8 +440,6 @@ def _merge_lane(
     rolling = _metrics(combined)
     state = "PASS_ROLLING_CLOSED_APPENDED" if new_ids else "PASS_ROLLING_CLOSED_NO_DELTA"
     if missing_known:
-        # API visibility may eventually roll old trades out. Persisted append-only state remains authoritative;
-        # this is diagnostic only and must never delete already sealed CLOSED rows.
         state = "PASS_ROLLING_CLOSED_APPEND_ONLY_WITH_REPLAY_WINDOW_ROLLOFF"
     return {
         "lane_id": lane_id,

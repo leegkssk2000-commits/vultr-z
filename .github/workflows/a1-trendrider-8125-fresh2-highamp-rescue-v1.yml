@@ -1,0 +1,68 @@
+name: A1 TrendRider 8125 Fresh2 HighAmp Rescue V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_highamp_rescue_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
+      - '.github/workflows/a1-trendrider-8125-fresh2-highamp-rescue-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rescue-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_trendrider_8125_fresh2_highamp_rescue_v1.py
+      - name: Download immutable 30T 70pct donor
+        run: |
+          set -euo pipefail
+          mkdir -p out/broad70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/broad70.zip
+          unzip -q out/broad70.zip -d out/broad70
+          test -f out/broad70/a1_exact25_drain_6_receipt.json
+      - name: Exhaustive fresh2 plus donor rescue ceiling
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 \
+            --broad-source out/broad70/a1_exact25_drain_6_receipt.json \
+            --out out/a1_trendrider_8125_fresh2_highamp_rescue_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_8125_fresh2_highamp_rescue_v1.json'))
+          assert r['parent_T']==16 and r['fresh2_T']==2
+          assert r['broad_overlap_parent_T']==15 and r['broad_distinct_T']==15
+          assert r['oracle_subset_count']==32767
+          assert r['strict_rescue_count']==0
+          a=r['closest_24T']; b=r['closest_25T']; f=r['minimum_one_unseen_winner_rescue']
+          assert a['combined_T']==24 and a['checks']['combined_payoff_non_decrease'] is False
+          assert a['checks']['combined_expectancy_non_decrease'] is True
+          assert b['combined_T']==25 and b['checks']['combined_payoff_non_decrease'] is True
+          assert b['checks']['combined_expectancy_non_decrease'] is False
+          assert 2200.0 < f['required_one_unseen_winner_bps'] < 2250.0
+          assert r['fresh2_fixed_not_deleted'] is True and r['parent_immutable'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'closest24_T':a['combined_T'],'closest24_wr':a['combined_metrics']['win_rate'],'closest24_exp':a['combined_metrics']['net_expectancy_bps'],'closest24_pf':a['combined_metrics']['profit_factor'],'closest24_payoff':a['combined_payoff'],'closest25_T':b['combined_T'],'closest25_wr':b['combined_metrics']['win_rate'],'closest25_exp':b['combined_metrics']['net_expectancy_bps'],'closest25_pf':b['combined_metrics']['profit_factor'],'closest25_payoff':b['combined_payoff'],'required_next_highamp_bps':f['required_one_unseen_winner_bps']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-8125-fresh2-highamp-rescue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_8125_fresh2_highamp_rescue_v1.json
+          if-no-files-found: error
+          retention-days: 90

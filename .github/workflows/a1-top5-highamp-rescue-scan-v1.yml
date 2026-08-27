@@ -1,0 +1,125 @@
+name: A1 Top5 HighAmp Rescue Scan V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_v1.py'
+      - 'backend/research/rebuild/a1_top5_highamp_rescue_scan_v1.py'
+      - '.github/workflows/a1-top5-highamp-rescue-scan-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_v1.py'
+      - 'backend/research/rebuild/a1_top5_highamp_rescue_scan_v1.py'
+      - '.github/workflows/a1-top5-highamp-rescue-scan-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 1,7,13,19 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_v1.py
+          python -m py_compile backend/research/rebuild/a1_top5_highamp_rescue_scan_v1.py
+      - name: Watch truly unseen TrendRider closed T after PR1050 freeze
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trendrider_8125_strict25_fresh_watch_v1 \
+            --out out/a1_trendrider_8125_strict25_fresh_watch_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_8125_strict25_fresh_watch_v1.json'))
+          assert r['parent_T']==16 and r['fresh2_T']==2 and r['historical_oracle_donor_T']==6
+          assert r['base_combined_T']==24
+          assert r['parent_immutable'] is True and r['fresh2_fixed_not_deleted'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print(json.dumps({'state':r['state'],'current_native_T':r['current_native_T'],'unseen_closed_T':r['unseen_closed_after_freeze_T'],'strict25_candidates':r['strict25_metric_candidate_count']},sort_keys=True))
+          PY
+      - name: Download immutable donor artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          test -f out/trend70/a1_exact25_drain_6_receipt.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          test -f out/a4/keltner_trend_exact_parent.json
+          test -f out/a4/supertrend_pullback_exact_parent.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Scan Top5 rescue feasibility
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_highamp_rescue_scan_v1 \
+            --trend70-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_top5_highamp_rescue_scan_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_highamp_rescue_scan_v1.json'))
+          assert r['state']=='PASS_TOP5_RESCUE_FEASIBILITY_MAPPED'
+          assert len(r['lanes'])==5 and r['mechanism_reusable'] is True
+          by={(x['strategy_id'],x.get('lane_id')):x for x in r['lanes']}
+          t=by[('trend_rider','trend_rider_primary_wr8125')]
+          assert t['T_needed_to_25']==1 and 2200 < t['required_equal_future_winner_bps_for_25'] < 2250
+          k=next(x for x in r['lanes'] if x['strategy_id']=='keltner_trend')
+          s=next(x for x in r['lanes'] if x['strategy_id']=='supertrend_pullback')
+          b=next(x for x in r['lanes'] if x['strategy_id']=='break_and_continue')
+          assert k['best_historical_strict_combined_T']==16 and k['T_needed_to_25']==9 and 2350 < k['required_equal_future_winner_bps_for_25'] < 2420
+          assert s['best_historical_strict_combined_T']==17 and s['T_needed_to_25']==8 and 1540 < s['required_equal_future_winner_bps_for_25'] < 1610
+          assert b['best_historical_strict_combined_T']==17 and b['T_needed_to_25']==8 and 1850 < b['required_equal_future_winner_bps_for_25'] < 1910
+          print(json.dumps({'trend25_need':t['T_needed_to_25'],'keltner':{'bestT':k['best_historical_strict_combined_T'],'need':k['T_needed_to_25'],'bps':k['required_equal_future_winner_bps_for_25']},'supertrend':{'bestT':s['best_historical_strict_combined_T'],'need':s['T_needed_to_25'],'bps':s['required_equal_future_winner_bps_for_25']},'break':{'bestT':b['best_historical_strict_combined_T'],'need':b['T_needed_to_25'],'bps':b['required_equal_future_winner_bps_for_25']}},sort_keys=True))
+          PY
+      - name: Persist latest receipts on master runs
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          cp out/a1_trendrider_8125_strict25_fresh_watch_v1.json backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_latest.json
+          cp out/a1_top5_highamp_rescue_scan_v1.json backend/research/rebuild/a1_top5_highamp_rescue_scan_latest.json
+          git config user.name 'a1-top5-highamp-rescue'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_latest.json backend/research/rebuild/a1_top5_highamp_rescue_scan_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top5: persist high-amp rescue scan [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-highamp-rescue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_trendrider_8125_strict25_fresh_watch_v1.json
+            out/a1_top5_highamp_rescue_scan_v1.json
+          if-no-files-found: error
+          retention-days: 90

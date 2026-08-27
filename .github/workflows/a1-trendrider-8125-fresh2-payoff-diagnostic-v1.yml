@@ -1,0 +1,85 @@
+name: A1 TrendRider 8125 Fresh2 Payoff Diagnostic V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py'
+      - '.github/workflows/a1-trendrider-8125-fresh2-payoff-diagnostic-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py'
+      - '.github/workflows/a1-trendrider-8125-fresh2-payoff-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen source and union algebra
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py
+          python -m backend.research.rebuild.a1_trendrider_8125_fresh2_payoff_diagnostic_v1 --self-test
+      - name: Diagnose 48bar payoff ceiling
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trendrider_8125_fresh2_payoff_diagnostic_v1 \
+            --out out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json'))
+          u=r['actual_16T_plus_2T_union']; c=r['actual_union_checks']
+          assert u['trades']==18 and u['wins']==15
+          assert abs(u['win_rate']-15/18)<1e-12
+          assert c['T_increase'] and c['WR_non_decrease'] and c['PnL_non_decrease'] and c['PF_non_decrease'] and c['DD_non_increase']
+          assert not c['expectancy_non_decrease'] and not c['payoff_non_decrease']
+          assert r['root_cause'] in ('ENTRY_AMPLITUDE_CEILING_WITHIN_48BARS','EXIT_CAPTURE_DEFICIENCY_WITHIN_48BARS','NO_PAYOFF_BOTTLENECK_ON_FRESH2')
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'root_cause':r['root_cause'],
+            'actual_union':u,
+            'payoff_constraint':r['payoff_constraint'],
+            'mfe':r['same_48bar_excursion_diagnostic'],
+            'mfe_upper_union':r['perfect_mfe_capture_upper_bound_union'],
+            'next_axis':r['next_axis'],
+          },sort_keys=True))
+          PY
+      - name: Persist diagnostic receipt on master push only
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_latest.json
+          cp out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json "$target"
+          git config user.name 'a1-trendrider-8125-payoff-diagnostic'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 TrendRider: persist 81.25 fresh2 payoff diagnostic [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-8125-fresh2-payoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json
+          if-no-files-found: error
+          retention-days: 90

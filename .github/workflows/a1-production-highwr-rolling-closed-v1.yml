@@ -173,11 +173,35 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
+          a4_path=backend/research/rebuild/a1_a4_exact_parent_repair_latest.json
+          cp "$a4_path" /tmp/a1-a4-current.json
+          restore_a4() { cp /tmp/a1-a4-current.json "$a4_path"; }
+          trap restore_a4 EXIT
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          ssot=json.load(open('backend/research/rebuild/a1_production_highwr_top5_ssot_v1.json'))
+          lanes={x['lane_id']:x for x in ssot['production_top5']}
+          ids=('keltner_trend_main','supertrend_pullback_main')
+          refs={(str(lanes[i]['source_sha']),str(lanes[i]['source_path']),str(lanes[i]['source_blob_sha'])) for i in ids}
+          if len(refs)!=1:
+              raise SystemExit(f'A4_FROZEN_SOURCE_BINDING_DIVERGED:{sorted(refs)}')
+          source_sha,source_path,source_blob_sha=next(iter(refs))
+          raw=subprocess.check_output(['git','show',f'{source_sha}:{source_path}'])
+          got=subprocess.check_output(['git','hash-object','--stdin'],input=raw).decode().strip()
+          if got != source_blob_sha:
+              raise SystemExit(f'A4_FROZEN_SOURCE_BLOB_DRIFT:{got}!={source_blob_sha}')
+          Path(source_path).write_bytes(raw)
+          print(json.dumps({'a4_frozen_source_sha':source_sha,'a4_frozen_source_blob_sha':source_blob_sha},sort_keys=True))
+          PY
           python -m backend.research.rebuild.a1_production_highwr_rolling_closed_collector_v2 \
             --primary-seed /tmp/a1-highwr-historical/primary.json \
             --broad-artifact-dir /tmp/a1-highwr-historical/broad \
             --previous backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json \
             --out out/a1_production_highwr_rolling_closed_latest.json
+          restore_a4
+          trap - EXIT
 
       - name: Verify append-only and blocked-authority contract
         run: |

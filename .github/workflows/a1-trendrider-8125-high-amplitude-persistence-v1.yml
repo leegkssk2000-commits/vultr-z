@@ -49,9 +49,61 @@ jobs:
       - name: Test one new causal axis on 81.25 parent
         run: |
           set -euo pipefail
+          mkdir -p out
+          set +e
           python -m backend.research.rebuild.a1_trendrider_8125_high_amplitude_persistence_v1 \
             --broad-source out/broad70/a1_exact25_drain_6_receipt.json \
-            --out out/a1_trendrider_8125_high_amplitude_persistence_v1.json
+            --out out/a1_trendrider_8125_high_amplitude_persistence_v1.json \
+            > out/a1_trendrider_8125_high_amplitude_eval.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if grep -q 'FROZEN_24_UNAVAILABLE:' out/a1_trendrider_8125_high_amplitude_eval.log; then
+              cat out/a1_trendrider_8125_high_amplitude_eval.log
+              python - <<'PY'
+          import json, re
+          from pathlib import Path
+          log=Path('out/a1_trendrider_8125_high_amplitude_eval.log').read_text()
+          m=re.search(r'FROZEN_24_UNAVAILABLE:(\d+)',log)
+          current_count=int(m.group(1)) if m else None
+          meta=json.load(open('backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'))
+          r={
+            'schema_version':'zel.a1.trendrider.8125.high_amplitude_persistence.v1',
+            'state':'HOLD_FROZEN_PRIMARY_TRADE_PAYLOAD_UNAVAILABLE',
+            'strategy_id':'trend_rider',
+            'lane_id':'trend_rider_primary_wr8125',
+            'changed_axis':'PREENTRY_3BAR_DIRECTIONAL_PERSISTENCE',
+            'changed_axis_count':1,
+            'numeric_threshold_sweep':False,
+            'historical_discovery_promotable':False,
+            'remaining_us_selected_T':0,
+            'remaining_us_attribution':[],
+            'additive_receipt':{'combined_metrics':None},
+            'combined_payoff':None,
+            'strict_all_metric_pass':False,
+            'broad70_donor_control':None,
+            'current_live_reconstruction_trade_count':current_count,
+            'required_frozen_prefix_count':24,
+            'historical_source':meta.get('historical_source'),
+            'membership_authority':meta.get('membership_authority'),
+            'cause':'CURRENT_LIVE_REPLAY_NO_LONGER_REPRODUCES_IMMUTABLE_HISTORICAL_24T_PREFIX',
+            'next':'RECOVER_IMMUTABLE_HISTORICAL_24T_TRADE_PAYLOAD_THEN_RERUN_SAME_AXIS',
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'live_trade_authority':'BLOCKED',
+            'exchange_order_submitted':False,
+            'protected_mutations':0,
+            'action':'hold',
+          }
+          Path('out/a1_trendrider_8125_high_amplitude_persistence_v1.json').write_text(json.dumps(r,indent=2,sort_keys=True)+'\n')
+          PY
+            else
+              cat out/a1_trendrider_8125_high_amplitude_eval.log
+              exit "$rc"
+            fi
+          fi
           cat out/a1_trendrider_8125_high_amplitude_persistence_v1.json
           python - <<'PY'
           import json

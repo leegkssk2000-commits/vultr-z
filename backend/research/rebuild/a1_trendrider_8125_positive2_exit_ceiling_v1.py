@@ -33,6 +33,9 @@ def sl_aware_mfe_net(t: Mapping[str, Any], bars: list[dict[str, Any]], horizon: 
     entry_ts=int(t["entry_ts"]); entry=float(t["entry"]); side=str(t["side"])
     cost=float(t.get("realized_cost_bps") or 0.0)
     sl=t.get("sl")
+    if sl is None:
+        geom=t.get("intent_geometry") or {}
+        sl=geom.get("sl") if isinstance(geom, Mapping) else None
     if sl is None: raise RuntimeError(f"SL_MISSING:{trade_key(t)}")
     sl=float(sl)
     rows=[b for b in bars if int(b["ts_ms"])>=entry_ts]
@@ -44,7 +47,6 @@ def sl_aware_mfe_net(t: Mapping[str, Any], bars: list[dict[str, Any]], horizon: 
         used+=1
         high=float(b["high"]); low=float(b["low"])
         if side=="long":
-            # Conservative within-bar ordering: if SL and new high coexist, count SL first and do not use that bar high.
             if low<=sl:
                 sl_hit=True; break
             if high>best: best=high; best_ts=int(b["ts_ms"])

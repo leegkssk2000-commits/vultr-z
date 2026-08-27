@@ -1,0 +1,70 @@
+name: A1 TrendRider Current12 Fresh2 Reservoir V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_current12_fresh2_reservoir_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - '.github/workflows/a1-trendrider-current12-fresh2-reservoir-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_current12_fresh2_reservoir_v1.py
+          python -m backend.research.rebuild.a1_trendrider_current12_fresh2_reservoir_v1 --self-test
+      - name: Build current parent plus frozen fresh2 reservoir
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trendrider_current12_fresh2_reservoir_v1 \
+            --out out/a1_trendrider_current12_fresh2_reservoir_v1.json
+          cat out/a1_trendrider_current12_fresh2_reservoir_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_current12_fresh2_reservoir_v1.json'))
+          assert r['fresh2_T']==2
+          assert r['fresh2_overlap_T']==0
+          assert r['combined_T']==r['current_parent_T']+2
+          assert r['minimum_survivor_T']==25
+          assert r['T_deficit_to_minimum_survivor_gate']==max(0,25-r['combined_T'])
+          assert r['reservoir_policy']['fresh2_preserved'] is True
+          assert r['reservoir_policy']['does_not_replace_81p25_historical_incumbent'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'current_parent_T':r['current_parent_T'],
+            'fresh2_T':r['fresh2_T'],
+            'combined_T':r['combined_T'],
+            'T_deficit':r['T_deficit_to_minimum_survivor_gate'],
+            'parent_metrics':r['parent_metrics'],
+            'combined_metrics':r['combined_metrics'],
+            'parent_payoff':r['parent_payoff'],
+            'combined_payoff':r['combined_payoff'],
+            'strict_all_metric_pass':r['strict_all_metric_pass'],
+            'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-current12-fresh2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_current12_fresh2_reservoir_v1.json
+          if-no-files-found: error
+          retention-days: 90

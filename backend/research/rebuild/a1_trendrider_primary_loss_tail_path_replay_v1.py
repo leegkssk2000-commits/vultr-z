@@ -130,6 +130,28 @@ def run(source_path: Path, out_path: Path) -> dict[str, Any]:
     for key, (a, b) in checks.items():
         if b is None or abs(float(a) - float(b)) > 1e-6:
             raise RuntimeError(f"PRIMARY_METRIC_DRIFT:{key}:{a}:{b}")
+
+    identity_authority = (((descriptor.get("membership_authority") or {}).get("immutable_identity_authority") or {}))
+    if identity_authority.get("current_feature_recomputation_required") is False:
+        result = {
+            "schema_version": SCHEMA,
+            "strategy_id": "trend_rider",
+            "lane_id": "trend_rider_primary_wr8125",
+            "parent_metrics": baseline,
+            "grid": {"stop_scales": list(STOP_SCALES), "be_triggers_r": list(BE_TRIGGERS_R), "timeout_bars": list(TIMEOUT_BARS)},
+            "passing_count": 0,
+            "best_candidate": None,
+            "decision": "HOLD_FROZEN_GEOMETRY_UNAVAILABLE",
+            "hold_reason": "IMMUTABLE_PARENT_MEMBERSHIP_IS_VALID_BUT_CURRENT_FEATURE_RECOMPUTATION_IS_NOT_AUTHORITATIVE_FOR_HISTORICAL_INTENT_GEOMETRY",
+            "promotion_allowed": False,
+            "requires_fresh_oos": True,
+            "execution_authority": "NONE",
+            "order_authority": "BLOCKED",
+            "live_trade_authority": "BLOCKED",
+        }
+        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        return result
+
     selected, bars_by = _bind_geometry(source, selected)
     candidates = []
     for timeout in TIMEOUT_BARS:
@@ -172,6 +194,8 @@ def main() -> None:
     if b:
         m = b["metrics"]
         print("PASS_TRENDRIDER_PRIMARY_LOSS_TAIL_CANDIDATE", b["candidate_id"], f"T={m['completed_trades']}", f"WR={m['win_rate']:.6f}", f"PNL_BPS={m['net_pnl_bps']:.6f}", f"PF={m['profit_factor']:.6f}", f"PAYOFF={m['realized_payoff']:.6f}", f"DD_BPS={m['max_drawdown_bps']:.6f}")
+    elif r.get("decision") == "HOLD_FROZEN_GEOMETRY_UNAVAILABLE":
+        print("HOLD_TRENDRIDER_PRIMARY_FROZEN_GEOMETRY_UNAVAILABLE")
     else:
         print("KEEP_TRENDRIDER_PRIMARY_NO_VALID_LOSS_TAIL_CANDIDATE")
 

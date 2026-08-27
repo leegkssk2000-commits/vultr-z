@@ -7,6 +7,7 @@ on:
       - 'backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'
       - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
       - 'backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.py'
       - '.github/workflows/a1-trendrider-8125-fresh2-payoff-diagnostic-v1.yml'
   push:
     branches: [master]
@@ -14,6 +15,7 @@ on:
       - 'backend/research/rebuild/a1_trend_rider_wr8125_exact_parent_v1.json'
       - 'backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json'
       - 'backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.py'
       - '.github/workflows/a1-trendrider-8125-fresh2-payoff-diagnostic-v1.yml'
   workflow_dispatch:
 
@@ -32,8 +34,11 @@ jobs:
       - name: Verify frozen source and union algebra
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py
+          python -m py_compile \
+            backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.py \
+            backend/research/rebuild/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.py
           python -m backend.research.rebuild.a1_trendrider_8125_fresh2_payoff_diagnostic_v1 --self-test
+          python -m backend.research.rebuild.a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1 --self-test
       - name: Diagnose 48bar payoff ceiling
         run: |
           set -euo pipefail
@@ -60,17 +65,37 @@ jobs:
             'next_axis':r['next_axis'],
           },sort_keys=True))
           PY
-      - name: Persist diagnostic receipt on master push only
+      - name: Diagnose timeout horizon through 96 bars
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1 \
+            --out out/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.json'))
+          assert r['horizons_bars']==[48,72,96]
+          assert r['root_cause'] in ('ENTRY_AMPLITUDE_CEILING_THROUGH_96BARS','TIMEOUT_HORIZON_CEILING','EXIT_CAPTURE_DEFICIENCY_WITHIN_48BARS')
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print(json.dumps({
+            'root_cause':r['root_cause'],
+            'first_payoff_feasible_horizon_bars':r['first_payoff_feasible_horizon_bars'],
+            'by_horizon':r['by_horizon'],
+            'next_axis':r['next_axis'],
+          },sort_keys=True))
+          PY
+      - name: Persist diagnostic receipts on master push only
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
-          target=backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_latest.json
-          cp out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json "$target"
+          target1=backend/research/rebuild/a1_trendrider_8125_fresh2_payoff_diagnostic_latest.json
+          target2=backend/research/rebuild/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_latest.json
+          cp out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json "$target1"
+          cp out/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.json "$target2"
           git config user.name 'a1-trendrider-8125-payoff-diagnostic'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
+          git add "$target1" "$target2"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 TrendRider: persist 81.25 fresh2 payoff diagnostic [skip ci]'
+          git commit -m 'A1 TrendRider: persist 81.25 fresh2 payoff diagnostics [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -80,6 +105,8 @@ jobs:
         if: always()
         with:
           name: a1-trendrider-8125-fresh2-payoff-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json
+          path: |
+            out/a1_trendrider_8125_fresh2_payoff_diagnostic_v1.json
+            out/a1_trendrider_8125_fresh2_timeout_horizon_diagnostic_v1.json
           if-no-files-found: error
           retention-days: 90

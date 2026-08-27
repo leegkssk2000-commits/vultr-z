@@ -1,0 +1,58 @@
+name: A1 Top5 Structure Authority Lock V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_structure_authority_lock_v1.json'
+      - 'backend/research/rebuild/a1_top5_structure_authority_guard_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_v1.py'
+      - '.github/workflows/a1-top5-structure-authority-lock-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-top5-structure-authority-lock-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile lock and watcher
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_structure_authority_guard_v1.py \
+            backend/research/rebuild/a1_trendrider_8125_strict25_fresh_watch_v1.py
+      - name: Validate frozen identities
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_structure_authority_guard_v1 --check
+      - name: Verify pre-lock quarantine semantics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from backend.research.rebuild.a1_top5_structure_authority_guard_v1 import quarantine_unlisted_prelock
+          allowed=[{'symbol':'BTC-USDT','signal_ts':100,'side':'long'}]
+          rows=[
+            {'symbol':'BTC-USDT','signal_ts':100,'side':'long'},
+            {'symbol':'ETH-USDT','signal_ts':101,'side':'long'},
+            {'symbol':'ETH-USDT','signal_ts':201,'side':'long'},
+          ]
+          post, quarantine = quarantine_unlisted_prelock(rows, allowed_locked_rows=allowed, boundary_ms=200)
+          assert len(post) == 1 and post[0]['signal_ts'] == 201
+          assert len(quarantine) == 1 and quarantine[0]['signal_ts'] == 101
+          print('PASS_PRELOCK_HISTORY_QUARANTINE')
+          PY

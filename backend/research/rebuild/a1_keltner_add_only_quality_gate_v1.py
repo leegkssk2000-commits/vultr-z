@@ -251,7 +251,7 @@ def self_test(frozen_path: Path, anchor_path: Path) -> int:
     assert len(discovery) == 60
     diag = anchor.get("loss_concentration_diagnosis") or {}
     assert int((diag.get("added_short") or {}).get("trades") or 0) == 17
-    assert int((diag.get("added_short") or {}).get("wins") or -1) == 0
+    assert int((diag.get("added_short") or {}).get("wins", -1)) == 0
     pref = ((anchor.get("validation_freeze") or {}).get("pre_freeze_corroboration_only") or {})
     assert int(pref.get("trade_count") or 0) == 6
     assert pref.get("promotion_evidence_allowed") is False

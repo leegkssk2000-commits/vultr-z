@@ -1,0 +1,78 @@
+name: A1 Top5 Accumulated Reservoir V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_accumulated_reservoir_additive_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - '.github/workflows/a1-top5-accumulated-reservoir-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify-reservoir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile additive reservoir evaluator
+        run: |
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_additive_entry_union_v1.py \
+            backend/research/rebuild/a1_top5_accumulated_reservoir_additive_v1.py
+      - name: Download immutable accumulated-T source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/source
+          gh api -H 'Accept: application/vnd.github+json' "/repos/${REPO}/actions/artifacts/9614562185/zip" > out/source.zip
+          echo '18d5432facd4f4776d564ed916ceb3dfc7a659732f1ca403630a0de8b3bd7eae  out/source.zip' | sha256sum -c -
+          unzip -q out/source.zip -d out/source
+      - name: Evaluate accumulated T as ADD_ONLY reservoir
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_accumulated_reservoir_additive_v1 \
+            --artifact-dir out/source \
+            --out out/a1_top5_accumulated_reservoir_additive_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_accumulated_reservoir_additive_v1.json'))
+          k=r['by_strategy']['keltner_trend']
+          s=r['by_strategy']['supertrend_pullback']
+          assert k['frozen_parent_trade_count']==10 and k['added_only_reservoir_trade_count']==50
+          kb=k['best_development_candidate']
+          assert kb['rule']=='US_OPEN_3H'
+          kr=kb['additive_receipt']
+          assert kr['parent_match_pct']==100.0 and kr['combined_trade_count']==12
+          assert abs(kr['combined_metrics']['win_rate']-(7/12))<1e-12
+          assert abs(kr['combined_metrics']['net_pnl_bps']-16213.02695520102)<1e-9
+          assert abs(kr['combined_metrics']['net_expectancy_bps']-1351.085579600085)<1e-9
+          assert abs(kr['combined_metrics']['profit_factor']-31.35081608201582)<1e-9
+          assert abs(kr['combined_metrics']['drawdown_bps']-212.6882556068265)<1e-9
+          assert s['frozen_parent_trade_count']==8 and s['added_only_reservoir_trade_count']==48
+          sb=s['best_development_candidate']
+          assert sb['rule']=='APAC_OPEN_POINT'
+          sr=sb['additive_receipt']
+          assert sr['parent_match_pct']==100.0 and sr['combined_trade_count']==11
+          assert abs(sr['combined_metrics']['win_rate']-(6/11))<1e-12
+          assert r['promotion_authority'] is False and r['execution_authority']=='NONE'
+          print('PASS_A1_TOP5_ACCUMULATED_RESERVOIR_V1')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-accumulated-reservoir-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_accumulated_reservoir_additive_v1.json
+          if-no-files-found: error
+          retention-days: 90

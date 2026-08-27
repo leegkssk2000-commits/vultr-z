@@ -13,6 +13,7 @@ on:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v7.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
       - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
       - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py'
       - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
       - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
       - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
@@ -59,6 +61,7 @@ jobs:
           python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v8.py
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --self-test
           python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py
+          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py
           python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py --self-test
 
   improve:
@@ -86,7 +89,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --output out/a1_a5_economic_improvement_v8.json
-          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_a5_economic_improvement_v8.json'))
@@ -113,10 +116,15 @@ jobs:
           assert risk['risk_fraction_absolute_value_imported'] is False
           assert risk['same_signal_and_exit_events_required'] is True
           assert risk['no_outcome_threshold_sweep'] is True
-          assert d['authority_match'] is True, d
           assert d['canonical_head']=='trend_rider_wr80_us_chase_cooling_v1'
-          assert d['base_wr8125']['trades']==16 and d['base_wr8125']['wins']==13
-          assert abs(d['base_wr8125']['win_rate']-0.8125) < 1e-12
+          if d['state']=='HOLD_FROZEN_24_UNAVAILABLE':
+              assert d['authority_match'] is False
+              assert int(d['observed_current_completed_trades']) < int(d['required_frozen_trade_count']) == 24
+              assert d['base_wr8125'] is None
+          else:
+              assert d['authority_match'] is True, d
+              assert d['base_wr8125']['trades']==16 and d['base_wr8125']['wins']==13
+              assert abs(d['base_wr8125']['win_rate']-0.8125) < 1e-12
           assert d['numeric_threshold_sweep'] is False
           assert d['creator_numeric_threshold_imported'] is False
           assert d['outcome_used_at_runtime'] is False

@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   break-main-path-replay:
@@ -50,4 +51,72 @@ jobs:
         with:
           name: a1-break-main-loss-tail-path-replay-v2
           path: /tmp/a1_break_main_loss_tail_path_replay_v2.json
+          retention-days: 30
+
+  trendrider-primary-path-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Recover immutable Primary 81.25 source receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --allow-escape-sequences "/repos/${GITHUB_REPOSITORY}/actions/jobs/97195981802/logs" > /tmp/a1-trendrider-primary-source.log
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          raw=Path('/tmp/a1-trendrider-primary-source.log').read_text(encoding='utf-8',errors='replace')
+          cleaned='\n'.join(re.sub(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\s*','',line) for line in raw.splitlines())
+          dec=json.JSONDecoder(); receipt=None
+          for m in re.finditer(r'\{',cleaned):
+              try: obj,_=dec.raw_decode(cleaned[m.start():])
+              except json.JSONDecodeError: continue
+              if isinstance(obj,dict) and obj.get('strategy_id')=='trend_rider' and int(obj.get('completed_trades') or 0)==25 and isinstance(obj.get('trades'),list) and len(obj['trades'])==25:
+                  if obj.get('receipt_sha256')=='b064d6ee58c158cdb1169b79d93d1df46ea020d0dde3762703a577f9a3068103':
+                      receipt=obj; break
+          if receipt is None: raise SystemExit('PRIMARY_HISTORICAL_25T_RECEIPT_NOT_FOUND')
+          Path('/tmp/a1-trendrider-primary-source.json').write_text(json.dumps(receipt,sort_keys=True,indent=2,allow_nan=False)+'\n')
+          print('PRIMARY_SOURCE_RECOVERED',receipt['completed_trades'],receipt['receipt_sha256'])
+          PY
+      - name: Compile exact 16T loss-tail replay
+        run: python -m py_compile backend/research/rebuild/a1_trendrider_primary_loss_tail_path_replay_v1.py
+      - name: Exact TrendRider Primary 16T path replay
+        run: |
+          PYTHONPATH=. python backend/research/rebuild/a1_trendrider_primary_loss_tail_path_replay_v1.py \
+            --source /tmp/a1-trendrider-primary-source.json \
+            --out /tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json
+      - name: Verify T/WR/PnL/PF/payoff/DD guard
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json'))
+          assert d['parent_metrics']['completed_trades']==16
+          assert abs(d['parent_metrics']['win_rate']-0.8125)<1e-12
+          assert d['promotion_allowed'] is False
+          assert d['execution_authority']=='NONE'
+          assert d['order_authority']=='BLOCKED'
+          assert d['live_trade_authority']=='BLOCKED'
+          b=d.get('best_candidate')
+          if b:
+              m=b['metrics']; p=d['parent_metrics']
+              assert m['completed_trades']==p['completed_trades']
+              assert m['win_rate']+1e-12>=p['win_rate']
+              assert m['net_pnl_bps']>p['net_pnl_bps']
+              assert m['profit_factor']>p['profit_factor']
+              assert m['realized_payoff']>p['realized_payoff']
+              assert m['max_drawdown_bps']<=p['max_drawdown_bps']+1e-12
+              print('PRIMARY_BEST',b['candidate_id'],json.dumps(m,sort_keys=True))
+          else:
+              print('PRIMARY_KEEP_INCUMBENT')
+          PY
+      - name: Upload TrendRider Primary research receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-trendrider-primary-loss-tail-path-replay-v1
+          path: /tmp/a1_trendrider_primary_loss_tail_path_replay_v1.json
           retention-days: 30

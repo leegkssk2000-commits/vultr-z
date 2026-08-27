@@ -68,7 +68,7 @@ def _load_historical_policy(source: Mapping[str, Any]):
     return module, path
 
 
-def _bind_geometry(source: Mapping[str, Any], rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]]:
+def _bind_geometry(source: Mapping[str, Any], rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     module, _ = _load_historical_policy(source)
     cfg = ev.config_instance(module)
     compute, build = ev.policy_functions(module, "trend_rider")

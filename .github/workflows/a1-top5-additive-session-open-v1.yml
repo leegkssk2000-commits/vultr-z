@@ -1,0 +1,97 @@
+name: A1 Top5 Additive Session Open V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_session_open_discovery_v1.py'
+      - '.github/workflows/a1-top5-additive-session-open-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_session_open_discovery_v1.py'
+      - '.github/workflows/a1-top5-additive-session-open-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify-and-discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and self-test additive-only contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_additive_entry_union_v1.py backend/research/rebuild/a1_top5_additive_session_open_discovery_v1.py
+          python -m backend.research.rebuild.a1_top5_additive_entry_union_v1 --self-test
+          python -m backend.research.rebuild.a1_top5_additive_session_open_discovery_v1 --self-test
+      - name: Download immutable A4 source artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/source_artifact
+          gh api -H 'Accept: application/vnd.github+json' "/repos/${REPO}/actions/artifacts/9614562185/zip" > out/source.zip
+          echo '18d5432facd4f4776d564ed916ceb3dfc7a659732f1ca403630a0de8b3bd7eae  out/source.zip' | sha256sum -c -
+          unzip -q out/source.zip -d out/source_artifact
+          test -s out/source_artifact/keltner_trend_exact_parent.json
+          test -s out/source_artifact/supertrend_pullback_exact_parent.json
+      - name: Run frozen-parent additive session-open discovery
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_additive_session_open_discovery_v1 \
+            --artifact-dir out/source_artifact \
+            --out-dir out/a1_top5_additive_session_open_v1
+          python - <<'PY'
+          import json
+          p='out/a1_top5_additive_session_open_v1/a1_top5_additive_session_open_discovery_latest.json'
+          r=json.load(open(p))
+          assert r['state']=='PASS_TWO_ADD_ONLY_DEVELOPMENT_DISCOVERIES_FRESH_REQUIRED'
+          k=r['by_strategy']['keltner_trend']['development_discovery_candidate']
+          s=r['by_strategy']['supertrend_pullback']['development_discovery_candidate']
+          assert k['parent_match_pct']==100.0 and k['parent_trade_count']==10 and k['combined_trade_count']==11
+          assert abs(k['combined_metrics']['win_rate']-6/11)<1e-12
+          assert s['parent_match_pct']==100.0 and s['parent_trade_count']==8 and s['combined_trade_count']==11
+          assert abs(s['combined_metrics']['win_rate']-6/11)<1e-12
+          assert r['promotion_authority'] is False and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'keltner':k,'supertrend':s,'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist immutable frozen corpora and discovery receipt
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_additive_session_open_v1/a1_keltner_trend_highwr_frozen_parent_v1.json backend/research/rebuild/
+          cp out/a1_top5_additive_session_open_v1/a1_keltner_trend_session_open_add_lane_v1.json backend/research/rebuild/
+          cp out/a1_top5_additive_session_open_v1/a1_supertrend_pullback_highwr_frozen_parent_v1.json backend/research/rebuild/
+          cp out/a1_top5_additive_session_open_v1/a1_supertrend_pullback_session_open_add_lane_v1.json backend/research/rebuild/
+          cp out/a1_top5_additive_session_open_v1/a1_top5_additive_session_open_discovery_latest.json backend/research/rebuild/
+          git config user.name 'a1-top5-additive-session-open'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_*highwr_frozen_parent_v1.json backend/research/rebuild/a1_*session_open_add_lane_v1.json backend/research/rebuild/a1_top5_additive_session_open_discovery_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top5: persist frozen-parent additive session-open discovery [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-additive-session-open-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_additive_session_open_v1
+          if-no-files-found: error
+          retention-days: 90

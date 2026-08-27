@@ -1,0 +1,86 @@
+name: A1 TrendRider Broad30 HTF AddOnly V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_broad30_htf_addonly_v1.py'
+      - '.github/workflows/a1-trendrider-broad30-htf-addonly-v1.yml'
+      - 'backend/research/rebuild/a1_top5_structure_authority_lock_v1.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-trendrider-broad30-htf-addonly-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile evaluator
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_broad30_htf_addonly_v1.py
+      - name: Download immutable broad30 authority
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          test -f out/trend70/a1_exact25_drain_6_receipt.json
+      - name: Evaluate one-axis HTF add-only quality gate
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_broad30_htf_addonly_v1 \
+            --broad-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --out out/a1_trendrider_broad30_htf_addonly_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_broad30_htf_addonly_v1.json'))
+          p=r['locked_parent']
+          assert p['T']==30
+          assert abs(p['metrics']['win_rate']-0.70)<1e-12
+          assert abs(p['metrics']['net_pnl_bps']-34960.57723836853)<0.1
+          assert abs(p['metrics']['net_expectancy_bps']-1165.3525746122843)<0.1
+          assert abs(p['metrics']['profit_factor']-60.814848013018874)<0.1
+          assert abs(p['payoff']-26.063506291293802)<0.1
+          assert abs(p['metrics']['drawdown_bps']-413.7929696059291)<0.1
+          assert p['mutated'] is False
+          assert r['htf_semantics']['threshold_sweep'] is False
+          assert r['htf_semantics']['alternative_rule_sweep'] is False
+          assert r['htf_semantics']['gate_value'] is True
+          assert r['old_htf_filter_failure_not_repeated'] is True
+          assert r['parent_trade_deletion']==0 and r['parent_trade_rewrite']==0
+          assert r['automatic_prelock_union'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'historical_profile':r['historical_profile'],
+            'quarantined_prelock_validation':r['quarantined_prelock_validation'],
+            'postlock_prospective':r['postlock_prospective'],
+            'next':r['next'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-broad30-htf-addonly-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_broad30_htf_addonly_v1.json
+          if-no-files-found: error
+          retention-days: 90

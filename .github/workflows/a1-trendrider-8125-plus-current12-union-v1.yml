@@ -1,0 +1,82 @@
+name: A1 TrendRider 8125 Plus Current12 Union V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_wr8125_plus_current12_union_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - '.github/workflows/a1-trendrider-8125-plus-current12-union-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen exact16 membership
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_wr8125_plus_current12_union_v1.py
+          python -m backend.research.rebuild.a1_trendrider_wr8125_plus_current12_union_v1 --self-test
+      - name: Rebuild current TrendRider donor
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import json
+          from backend.research.rebuild.a1_trendrider_current12_fresh2_reservoir_v1 import rebuild_current
+          r=rebuild_current()
+          open('out/trendrider_current12.json','w').write(json.dumps(r,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          print(json.dumps({'completed_trades':r['completed_trades'],'metrics':r['metrics'],'receipt':r.get('receipt_sha256')},sort_keys=True))
+          PY
+      - name: Union 16T 81.25pct parent with full current12 donor
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_wr8125_plus_current12_union_v1 \
+            --current out/trendrider_current12.json \
+            --out out/a1_trendrider_wr8125_plus_current12_union_v1.json
+          cat out/a1_trendrider_wr8125_plus_current12_union_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_wr8125_plus_current12_union_v1.json'))
+          assert r['parent_T']==16
+          assert abs(r['parent_metrics']['win_rate']-0.8125)<1e-12
+          assert r['current_donor_T']==12
+          assert r['overlap_T']==4
+          assert r['added_distinct_T']==8
+          assert r['combined_T']==24
+          assert r['T_deficit_to_minimum_survivor_gate']==1
+          assert r['additive_receipt']['parent_match_pct']==100.0
+          assert r['historical_reintroduced_T']==3
+          assert r['post_frozen24_added_T']==5
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'parent_T':r['parent_T'],'current12_T':r['current_donor_T'],'overlap_T':r['overlap_T'],
+            'added_distinct_T':r['added_distinct_T'],'combined_T':r['combined_T'],'T_deficit':r['T_deficit_to_minimum_survivor_gate'],
+            'parent_metrics':r['parent_metrics'],'combined_metrics':r['combined_metrics'],
+            'parent_payoff':r['parent_payoff'],'combined_payoff':r['combined_payoff'],
+            'strict_all_metric_pass':r['strict_all_metric_pass'],
+            'failed_checks':[k for k,v in r['strict_checks'].items() if not v],
+            'historical_reintroduced_T':r['historical_reintroduced_T'],'post_frozen24_added_T':r['post_frozen24_added_T'],
+            'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-8125-plus-current12-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_wr8125_plus_current12_union_v1.json
+          if-no-files-found: error
+          retention-days: 90

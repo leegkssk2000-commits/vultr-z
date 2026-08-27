@@ -10,8 +10,12 @@ from typing import Any
 
 from backend.research.rebuild import a1_recent_loss_cluster_diagnostic_v1 as v1
 
+ROOT = Path(__file__).resolve().parents[3]
 POST_OUTCOME_AXES = {"COST_TO_ABS_GROSS", "REALIZED_COST_BPS", "REASON", "HOLD_BARS"}
 PREENTRY_AXES = {"SYMBOL", "SIDE", "SESSION", "CHASE_ATR", "ST_GAP_ATR", "ATR_PCT"}
+NATIVE_PREENTRY_ATTRIBUTION = {
+    "keltner_trend": ROOT / "backend/research/rebuild/a1_keltner_loss_preentry_attribution_latest.json",
+}
 
 
 def _frozen_h5_session(ts_ms: int) -> str:
@@ -41,6 +45,37 @@ def _route(strategy_id: str, candidates: list[dict[str, Any]], streak: int) -> t
     return f"PREREGISTER_PREENTRY_STRUCTURAL_CHILD:{axis}:BORROW_EXISTING_CAUSAL_GEOMETRY_ONLY", root
 
 
+def _native_route(strategy_id: str, streak: int) -> tuple[str, dict[str, Any] | None]:
+    if streak < 3:
+        return "NO_STREAK_TRIGGER_CONTINUE_COLLECTION", None
+    path = NATIVE_PREENTRY_ATTRIBUTION.get(strategy_id)
+    if path is None or not path.exists():
+        return f"REQUIRE_STRATEGY_NATIVE_PREENTRY_FEATURE_ATTRIBUTION:{strategy_id}", None
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    root = dict(receipt.get("actionable_root_cause") or {})
+    axis = str(root.get("axis") or "")
+    safe = bool(
+        receipt.get("strategy_id") == strategy_id
+        and receipt.get("state") == "MATERIAL_PREENTRY_SEPARATOR_FOUND"
+        and receipt.get("source_quality_state") == "PASS"
+        and not (receipt.get("integrity_defects") or [])
+        and int(receipt.get("leakage_lookahead") or 0) == 0
+        and receipt.get("numeric_threshold_sweep") is False
+        and root.get("preentry_observable") is True
+        and axis in PREENTRY_AXES
+        and _material(root)
+        and receipt.get("execution_authority") == "NONE"
+        and receipt.get("order_authority") == "BLOCKED"
+        and receipt.get("live_trade_authority") == "BLOCKED"
+        and receipt.get("promotion_authority") is False
+    )
+    if not safe:
+        return f"REQUIRE_STRATEGY_NATIVE_PREENTRY_FEATURE_ATTRIBUTION:{strategy_id}", None
+    if axis in {"SYMBOL", "SIDE", "SESSION"}:
+        return f"PREREGISTER_PREENTRY_CONTEXT_CHILD:{axis}:{root.get('value')}:ONE_AXIS_ONLY", root
+    return f"PREREGISTER_PREENTRY_STRUCTURAL_CHILD:{axis}:BORROW_EXISTING_CAUSAL_GEOMETRY_ONLY", root
+
+
 def diagnose(strategy_id: str, receipt: dict[str, Any]) -> dict[str, Any]:
     # Force the already-frozen H5 taxonomy; do not learn session boundaries from losses.
     old_session = v1._session
@@ -51,7 +86,10 @@ def diagnose(strategy_id: str, receipt: dict[str, Any]) -> dict[str, Any]:
         v1._session = old_session
 
     ranked = [dict(x) for x in row.get("ranked_causal_hypotheses") or []]
-    route, root = _route(strategy_id, ranked, int(row.get("current_loss_streak") or 0))
+    streak = int(row.get("current_loss_streak") or 0)
+    route, root = _route(strategy_id, ranked, streak)
+    if route.startswith("REQUIRE_STRATEGY_NATIVE_PREENTRY_FEATURE_ATTRIBUTION:"):
+        route, root = _native_route(strategy_id, streak)
     row["forensic_raw_recommended_route"] = row.get("recommended_route")
     row["recommended_route"] = route
     row["actionable_root_cause"] = root
@@ -99,6 +137,9 @@ def self_test() -> int:
         {"axis": "REASON", "value": "SL", "loss_streak_share": 1.0, "delta_share": 0.6}
     ], 4)
     assert root2 is None and route2.startswith("REQUIRE_STRATEGY_NATIVE_PREENTRY_FEATURE_ATTRIBUTION")
+    native_route, native_root = _native_route("keltner_trend", 4)
+    assert native_root and native_root["axis"] == "ATR_PCT"
+    assert native_route == "PREREGISTER_PREENTRY_STRUCTURAL_CHILD:ATR_PCT:BORROW_EXISTING_CAUSAL_GEOMETRY_ONLY"
     print("PASS_A1_RECENT_LOSS_CLUSTER_ACTIONABLE_V2_SELF_TEST")
     return 0
 

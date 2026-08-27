@@ -1,0 +1,135 @@
+name: A1 Supertrend 5455 Add Only Continuation V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_5455_research_incumbent_v1.json'
+      - 'backend/research/rebuild/a1_supertrend_5455_add_only_boundary_v1.json'
+      - 'backend/research/rebuild/a1_supertrend_5455_add_only_continuation_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - '.github/workflows/a1-supertrend-5455-add-only-continuation-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_5455_research_incumbent_v1.json'
+      - 'backend/research/rebuild/a1_supertrend_5455_add_only_boundary_v1.json'
+      - 'backend/research/rebuild/a1_supertrend_5455_add_only_continuation_v1.py'
+      - 'backend/research/rebuild/a1_top5_additive_entry_union_v1.py'
+      - '.github/workflows/a1-supertrend-5455-add-only-continuation-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5,11,17,23 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify 54.55pct incumbent continuation contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_additive_entry_union_v1.py \
+            backend/research/rebuild/a1_supertrend_5455_add_only_continuation_v1.py
+          python -m backend.research.rebuild.a1_supertrend_5455_add_only_continuation_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen 54.55pct incumbent
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_additive_entry_union_v1.py \
+            backend/research/rebuild/a1_supertrend_5455_add_only_continuation_v1.py
+          python -m backend.research.rebuild.a1_supertrend_5455_add_only_continuation_v1 --self-test
+      - name: Rebuild current Supertrend broad parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id supertrend_pullback \
+            --symbols "$SYMBOLS" \
+            --out out/supertrend_pullback_current_parent.json
+      - name: Continue only from 11T 54.55pct research incumbent
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_supertrend_5455_add_only_continuation_v1 \
+            --current-parent out/supertrend_pullback_current_parent.json \
+            --out out/a1_supertrend_5455_add_only_continuation_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_supertrend_5455_add_only_continuation_v1.json'))
+          p=r['research_incumbent_metrics']; a=r['additive_receipt']
+          assert p['trades']==11 and abs(p['win_rate']-6/11)<1e-12
+          assert abs(p['net_pnl_bps']-8987.160536440786)<1e-9
+          assert abs(p['net_expectancy_bps']-817.0145942218896)<1e-9
+          assert abs(p['profit_factor']-12.301261556184716)<1e-9
+          assert abs(p['drawdown_bps']-245.7358707597723)<1e-9
+          assert a['parent_match_pct']==100.0
+          assert r['prospective_boundary_trade_count']==59
+          assert r['policy']['parent_trade_delete_forbidden'] is True
+          assert r['policy']['parent_trade_rewrite_forbidden'] is True
+          assert r['policy']['production_ssot_unchanged'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'parent_T':p['trades'],
+            'parent_WR':p['win_rate'],
+            'boundary_T':r['prospective_boundary_trade_count'],
+            'current_broad_T':r['current_broad_parent_T'],
+            'fresh_all_T':r['fresh_all_T'],
+            'fresh_accepted_T':r['fresh_accepted_T'],
+            'combined_T':a['combined_trade_count'],
+            'combined_metrics':a['combined_metrics'],
+            'payoff':r['payoff'],
+            'blockers':r['promotion_blockers'],
+            'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - name: Persist 54.55pct continuation receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_supertrend_5455_add_only_continuation_latest.json
+          cp out/a1_supertrend_5455_add_only_continuation_v1.json "$target"
+          git config user.name 'a1-supertrend-5455-add-only'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Supertrend: persist 54.55pct ADD_ONLY continuation [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-supertrend-5455-add-only-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_supertrend_5455_add_only_continuation_v1.json
+          if-no-files-found: error
+          retention-days: 90

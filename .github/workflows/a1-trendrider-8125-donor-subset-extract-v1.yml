@@ -1,0 +1,60 @@
+name: A1 TrendRider 8125 Donor Subset Extract V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_8125_donor_subset_extract_v1.py'
+      - 'backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_current12_fresh2_reservoir_v1.py'
+      - '.github/workflows/a1-trendrider-8125-donor-subset-extract-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_trendrider_8125_donor_subset_extract_v1.py
+      - name: Extract non-degrading donor subset
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trendrider_8125_donor_subset_extract_v1 \
+            --out out/a1_trendrider_8125_donor_subset_extract_v1.json
+          cat out/a1_trendrider_8125_donor_subset_extract_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_8125_donor_subset_extract_v1.json'))
+          assert r['parent_T']==16
+          assert abs(r['parent_metrics']['win_rate']-0.8125)<1e-12
+          assert r['current12_T']==12 and r['overlap_T']==4 and r['distinct_donor_T']==8
+          assert r['parent_immutable'] is True
+          assert r['oracle_is_promotion_evidence'] is False
+          assert r['historical_discovery_promotable'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'oracle_count':r['oracle_non_degrading_subset_count'],
+            'oracle_best':r['oracle_best'],
+            'best_gate':r['best_historical_discovery_gate'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-8125-donor-subset-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_8125_donor_subset_extract_v1.json
+          if-no-files-found: error
+          retention-days: 90

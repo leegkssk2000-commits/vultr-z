@@ -1,0 +1,164 @@
+name: A1 Keltner Add Only Quality Gate V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_add_only_quality_gate_v1.py'
+      - 'backend/research/rebuild/a1_keltner_add_only_quality_anchor_v1.json'
+      - 'backend/research/rebuild/a1_keltner_trend_highwr_frozen_parent_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-keltner-add-only-quality-gate-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_add_only_quality_gate_v1.py'
+      - 'backend/research/rebuild/a1_keltner_add_only_quality_anchor_v1.json'
+      - 'backend/research/rebuild/a1_keltner_trend_highwr_frozen_parent_v1.json'
+      - 'backend/research/zel_economic_hardening_policy_v1.json'
+      - '.github/workflows/a1-keltner-add-only-quality-gate-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4,10,16,22 * * *'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen additive quality contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_add_only_quality_gate_v1.py
+          python -m backend.research.rebuild.a1_keltner_add_only_quality_gate_v1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify anchor before replay
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_add_only_quality_gate_v1.py
+          python -m backend.research.rebuild.a1_keltner_add_only_quality_gate_v1 --self-test
+      - name: Rebuild current Keltner broad parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id keltner_trend \
+            --symbols "$SYMBOLS" \
+            --out out/keltner_trend_current_parent.json
+      - name: Evaluate frozen-parent ADD_ONLY long-owner gate
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_keltner_add_only_quality_gate_v1 \
+            --current-parent out/keltner_trend_current_parent.json \
+            --out out/a1_keltner_add_only_quality_gate_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_keltner_add_only_quality_gate_v1.json'))
+          assert r['policy']['parent_immutable'] is True
+          assert r['policy']['additive_only'] is True
+          assert r['policy']['one_axis_only'] is True
+          assert r['policy']['post_outcome_trade_deletion'] is False
+          assert r['policy']['parameter_sweep'] is False
+          assert r['policy']['pre_freeze_corroboration_is_not_promotion_evidence'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False and r['protected_mutations']==0
+          print(json.dumps({
+              'state':r['state'],
+              'frozen_T':r['cohorts']['frozen_parent']['trades'],
+              'child_T':r['child']['completed_trades'],
+              'fresh_T':r['cohorts']['fresh_prospective_all']['trades'],
+              'wr':r['child']['metrics']['win_rate'],
+              'pf':r['child']['metrics']['profit_factor'],
+              'dd':r['child']['metrics']['drawdown_bps'],
+              'blockers':r['promotion_blockers'],
+              'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - name: Persist ADD_ONLY quality receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_keltner_add_only_quality_gate_latest.json
+          cp out/a1_keltner_add_only_quality_gate_v1.json "$target"
+          git config user.name 'a1-keltner-add-only-quality'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Keltner: persist ADD_ONLY quality receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish Keltner ADD_ONLY state to issue 566
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          r=json.load(open('out/a1_keltner_add_only_quality_gate_v1.json'))
+          marker='<!-- A1_KELTNER_ADD_ONLY_QUALITY_GATE_V1 -->'
+          f=r['cohorts']['frozen_parent']['metrics']; c=r['child']['metrics']
+          p=r['cohorts']['fresh_prospective_all']; d=r['cohorts']['discovery_added']
+          lines=[
+              marker,
+              '## A1 Keltner ADD_ONLY Quality Gate V1',
+              f"run={os.environ['RUN_ID']}|state={r['state']}|receipt={r['receipt_sha256']}",
+              f"discovery_added={d['added_all']['trades']}|short={d['added_short']['trades']}|short_wr={d['added_short']['win_rate']}|short_net_bps={d['added_short']['net_pnl_bps']}",
+              f"gate={r['changed_axis']}|parent_immutable=true|added_only=true|sweep=false|post_outcome_delete=false",
+              f"frozen:T={f['trades']}|WR={f['win_rate']}|net={f['net_pnl_bps']}|exp={f['net_expectancy_bps']}|PF={f['profit_factor']}|DD={f['drawdown_bps']}",
+              f"child:T={c['trades']}|WR={c['win_rate']}|net={c['net_pnl_bps']}|exp={c['net_expectancy_bps']}|PF={c['profit_factor']}|DD={c['drawdown_bps']}",
+              f"fresh_prospective_T={p['trades']}|promotion_blockers={','.join(r['promotion_blockers'])}",
+              'PRE_FREEZE_CORROBORATION=diagnostic only; excluded from promotion evidence; prospective boundary is frozen at 66T',
+              'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0',
+          ]
+          body='\n'.join(lines)
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
+          old=next((x for x in comments if marker in str(x.get('body') or '')),None)
+          target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
+          req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
+          with urllib.request.urlopen(req,timeout=20): pass
+          print('PASS_A1_KELTNER_ADD_ONLY_QUALITY_PUBLISHED')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-keltner-add-only-quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_keltner_add_only_quality_gate_v1.json
+            out/keltner_trend_current_parent.json
+          if-no-files-found: error
+          retention-days: 90

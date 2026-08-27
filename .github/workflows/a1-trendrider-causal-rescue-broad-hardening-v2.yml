@@ -1,0 +1,109 @@
+name: A1 TrendRider Causal Rescue Broad Hardening V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_causal_rescue_broad_hardening_v2.py'
+      - '.github/workflows/a1-trendrider-causal-rescue-broad-hardening-v2.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_causal_rescue_broad_hardening_v2.py'
+      - '.github/workflows/a1-trendrider-causal-rescue-broad-hardening-v2.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '11 2,8,14,20 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile causal evaluator
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_causal_rescue_broad_hardening_v2.py
+      - name: Download immutable 30T 70pct authority
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          test -f out/trend70/a1_exact25_drain_6_receipt.json
+      - name: Discover causal gates and validate against current material
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_causal_rescue_broad_hardening_v2 \
+            --broad-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --out out/a1_trendrider_causal_rescue_broad_hardening_v2.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_causal_rescue_broad_hardening_v2.json'))
+          assert r['primary']['parent_T']==16
+          assert abs(r['primary']['parent_metrics']['win_rate']-0.8125)<1e-12
+          assert r['primary']['fresh2_fixed_T']==2
+          assert r['broad30']['parent_T']==30
+          assert abs(r['broad30']['parent_metrics']['win_rate']-0.70)<1e-12
+          assert r['gate_contract']['numeric_threshold_sweep'] is False
+          assert r['gate_contract']['outcome_used_at_runtime'] is False
+          assert r['gate_contract']['parent_trade_deletion_forbidden'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          p=r['primary']['recommended_causal_gate'] or {}
+          b=r['broad30']['recommended_future_add_gate'] or {}
+          print(json.dumps({
+            'state':r['state'],
+            'primary_gate':p.get('gate_id'),
+            'primary_selected_T':p.get('selected_T'),
+            'primary_failed':p.get('failed_checks'),
+            'primary_validation':r['primary']['pre_freeze_validation'],
+            'broad_gate':b.get('gate_id'),
+            'broad_profile_pass':b.get('profile_pass'),
+            'broad_selected_T':b.get('selected_T'),
+            'broad_profile_metrics':b.get('selected_metrics'),
+            'broad_validation':r['broad30']['pre_freeze_validation'],
+            'validation_corpus':r['validation_corpus'],
+          },sort_keys=True))
+          PY
+      - name: Persist latest diagnostic on master only
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_trendrider_causal_rescue_broad_hardening_latest.json
+          cp out/a1_trendrider_causal_rescue_broad_hardening_v2.json "$target"
+          git config user.name 'a1-trendrider-causal-hardening'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 TrendRider: persist causal rescue hardening [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-causal-rescue-broad-hardening-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_causal_rescue_broad_hardening_v2.json
+          if-no-files-found: error
+          retention-days: 90

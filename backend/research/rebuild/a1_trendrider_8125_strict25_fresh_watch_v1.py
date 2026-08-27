@@ -8,15 +8,16 @@ from typing import Any
 
 from backend.research.rebuild.a1_trendrider_current12_fresh2_reservoir_v1 import rebuild_current
 from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import strict, metrics, payoff, trade_key
+from backend.research.rebuild.a1_top5_structure_authority_guard_v1 import assert_structure_lock, quarantine_unlisted_prelock
 
 ROOT = Path(__file__).resolve().parents[3]
 PARENT = ROOT / "backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json"
 FRESH2 = ROOT / "backend/research/rebuild/a1_trendrider_8125_fresh2_source_v1.json"
 SCHEMA = "zel.a1.trendrider.8125.strict25_fresh_watch.v1"
-FREEZE_BOUNDARY_MS = 1787866209000  # PR #1050 merged 2026-08-27T21:30:09Z
 REQUIRED_REFERENCE_BPS = 2225.644277854492
 
-# Exact PR #1050 closest-24T donor6 block. Historical oracle only; never promotion evidence.
+# Exact PR #1050 closest-24T donor6 block. This is the ONLY extra pre-lock
+# historical block allowed by the structure lock, and remains diagnostic-only.
 DONOR6 = [
     {"symbol":"BTC-USDT","signal_ts":1786914000000,"entry_ts":1786917600000,"side":"short","net_bps":-39.60576398325979,"reason":"SL"},
     {"symbol":"BTC-USDT","signal_ts":1787133600000,"entry_ts":1787137200000,"side":"long","net_bps":1897.6021632243794,"reason":"TIMEOUT"},
@@ -39,6 +40,10 @@ def compact(t: dict[str, Any]) -> dict[str, Any]:
 
 
 def run() -> dict[str, Any]:
+    lock = assert_structure_lock()
+    freeze_boundary_ms = int(lock["lock_boundary_ms"])
+    freeze_boundary_utc = str(lock["lock_boundary_utc"])
+
     parent_doc = read(PARENT)
     fresh_doc = read(FRESH2)
     parent = [dict(x) for x in parent_doc.get("trades") or []]
@@ -50,11 +55,14 @@ def run() -> dict[str, Any]:
 
     current = rebuild_current()
     current_rows = [dict(x) for x in current.get("trades") or []]
-    blocked = {trade_key(x) for x in parent + fresh2 + DONOR6}
-    unseen_closed = [
-        x for x in current_rows
-        if int(x.get("signal_ts") or 0) > FREEZE_BOUNDARY_MS and trade_key(x) not in blocked
-    ]
+    locked_rows = parent + fresh2 + [dict(x) for x in DONOR6]
+    blocked = {trade_key(x) for x in locked_rows}
+    postlock_rows, quarantined_prelock = quarantine_unlisted_prelock(
+        current_rows,
+        allowed_locked_rows=locked_rows,
+        boundary_ms=freeze_boundary_ms,
+    )
+    unseen_closed = [x for x in postlock_rows if trade_key(x) not in blocked]
 
     base_added = fresh2 + [dict(x) for x in DONOR6]
     base_ok, base_checks, _, base_metrics, base_payoff = strict(parent, base_added)
@@ -82,8 +90,11 @@ def run() -> dict[str, Any]:
         "state": state,
         "strategy_id": "trend_rider",
         "lane_id": "trend_rider_primary_wr8125",
-        "freeze_boundary_ms": FREEZE_BOUNDARY_MS,
-        "freeze_boundary_utc": "2026-08-27T21:30:09Z",
+        "structure_lock_id": lock["lock_id"],
+        "freeze_boundary_ms": freeze_boundary_ms,
+        "freeze_boundary_utc": freeze_boundary_utc,
+        "historical_union_allowed": False,
+        "unlisted_prelock_policy": "QUARANTINE_DO_NOT_UNION",
         "parent_T": 16,
         "fresh2_T": 2,
         "historical_oracle_donor_T": 6,
@@ -95,13 +106,15 @@ def run() -> dict[str, Any]:
         "required_reference_one_unseen_winner_bps": REQUIRED_REFERENCE_BPS,
         "current_native_T": len(current_rows),
         "current_native_receipt_sha256": current.get("receipt_sha256"),
-        "unseen_closed_after_freeze_T": len(unseen_closed),
-        "unseen_closed_after_freeze": [compact(x) for x in unseen_closed],
+        "quarantined_unlisted_prelock_T": len(quarantined_prelock),
+        "quarantined_unlisted_prelock": [compact(x) for x in quarantined_prelock],
+        "unseen_closed_after_lock_T": len(unseen_closed),
+        "unseen_closed_after_lock": [compact(x) for x in unseen_closed],
         "strict25_metric_candidate_count": len(strict25),
         "strict25_metric_candidates": strict25,
         "metric_candidate_is_promotion_evidence": False,
         "historical_oracle_donor_is_promotion_evidence": False,
-        "next": "DERIVE_AND_FREEZE_OUTCOME_BLIND_PREENTRY_GATE_THEN_REQUIRE_NEW_PROSPECTIVE_CONFIRMATION" if strict25 else "KEEP_COLLECTING_UNSEEN_CLOSED_T_AFTER_FREEZE",
+        "next": "DERIVE_AND_FREEZE_OUTCOME_BLIND_PREENTRY_GATE_THEN_REQUIRE_NEW_PROSPECTIVE_CONFIRMATION" if strict25 else "KEEP_COLLECTING_POSTLOCK_CLOSED_T_ONLY",
         "parent_immutable": True,
         "fresh2_fixed_not_deleted": True,
         "selection_authority": False,
@@ -122,8 +135,10 @@ def main() -> int:
     args.out.write_text(json.dumps(r, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     print(json.dumps({
         "state": r["state"],
+        "structure_lock_id": r["structure_lock_id"],
         "current_native_T": r["current_native_T"],
-        "unseen_closed_after_freeze_T": r["unseen_closed_after_freeze_T"],
+        "quarantined_unlisted_prelock_T": r["quarantined_unlisted_prelock_T"],
+        "unseen_closed_after_lock_T": r["unseen_closed_after_lock_T"],
         "strict25_metric_candidate_count": r["strict25_metric_candidate_count"],
     }, sort_keys=True))
     return 0

@@ -240,7 +240,7 @@ def self_test() -> int:
     assert len(baseline) == 59
     assert len(materialized.get("trades") or []) == 11
     assert abs(float((inc.get("metrics") or {})["win_rate"]) - 6 / 11) < 1e-12
-    assert int((boundary.get("validation_freeze") or {}).get("pre_freeze_new_since_discovery_apac_open_point_count") or -1) == 0
+    assert int((boundary.get("validation_freeze") or {}).get("pre_freeze_new_since_discovery_apac_open_point_count", -1)) == 0
     print("PASS_A1_SUPERTREND_5455_ADD_ONLY_CONTINUATION_V1_SELF_TEST")
     return 0
 

@@ -4,15 +4,20 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py'
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_v1.py'
       - '.github/workflows/a1-top6-trendma-long-rebound-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py'
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_v1.py'
       - '.github/workflows/a1-top6-trendma-long-rebound-v1.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '17 1,7,13,19 * * *'
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: a1-global-heavy-economic-evaluator-v1
   cancel-in-progress: false
@@ -28,13 +33,19 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
       - name: Compile
-        run: python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py
+          python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_v1.py
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_rebound_qualifier_v1 --self-test
       - name: Rebuild TrendMA parent
         run: |
+          set -euo pipefail
           mkdir -p out
           python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --terminal-replay --strategy-id trend_ma_macd --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' --out out/trend_ma_macd_parent.json
       - name: Evaluate long-only structural rebound
         run: |
+          set -euo pipefail
           python -m backend.research.rebuild.a1_top6_trend_ma_macd_long_rebound_v1 --parent out/trend_ma_macd_parent.json --out out/rebound.json
           python - <<'PY'
           import json
@@ -42,21 +53,49 @@ jobs:
           assert r['axis']=='LONG_ONLY_ENTRY_SIDE_QUALIFIER'
           assert r['payoff_is_not_optimization_target_here'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'state':r['state'],'native':r['native']['metrics'],'candidate':r['candidate']['metrics'],'checks':r['candidate']['checks']},sort_keys=True))
+          print(json.dumps({'raw_state':r['state'],'native':r['native']['metrics'],'candidate':r['candidate']['metrics'],'checks':r['candidate']['checks']},sort_keys=True))
+          PY
+      - name: Fail-close comparator lineage before routing
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_rebound_qualifier_v1 \
+            --parent out/trend_ma_macd_parent.json \
+            --rebound out/rebound.json \
+            --out out/rebound_qualifier.json
+          python - <<'PY'
+          import json
+          q=json.load(open('out/rebound_qualifier.json'))
+          assert q['execution_authority']=='NONE' and q['order_authority']=='BLOCKED' and q['live_trade_authority']=='BLOCKED'
+          assert q['selection_authority'] is False and q['promotion_authority'] is False
+          if not q['lineage_comparator_pass']:
+              assert q['state']=='HOLD_TOP6_LINEAGE_COMPARATOR_MISMATCH'
+              assert q['eligible_for_fresh_validation'] is False
+              assert q['false_pass_fail_closed'] is True
+          if q['eligible_for_fresh_validation']:
+              assert q['state']=='QUEUE_TOP6_FRESH_OOS_VALIDATION'
+          print(json.dumps({'state':q['state'],'parent_T':q['parent_T'],'native_T':q['rebound_native_T'],'lineage':q['lineage_comparator_pass'],'eligible':q['eligible_for_fresh_validation'],'next':q['next']},sort_keys=True))
           PY
       - name: Persist latest on master
         if: github.event_name != 'pull_request'
         run: |
+          set -euo pipefail
           cp out/rebound.json backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json
+          cp out/rebound_qualifier.json backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_latest.json
           git config user.name a1-top6-trendma-long-rebound
           git config user.email actions@users.noreply.github.com
-          git add backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json
+          git add backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_latest.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Top6: persist TrendMA structural rebound [skip ci]'
-          git pull --rebase origin master && git push origin HEAD:master
+          git commit -m 'A1 Top6: persist structural rebound qualifier [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-top6-trendma-long-rebound-${{ github.run_id }}
-          path: out/rebound.json
+          name: a1-top6-trendma-long-rebound-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/rebound.json
+            out/rebound_qualifier.json
           retention-days: 90

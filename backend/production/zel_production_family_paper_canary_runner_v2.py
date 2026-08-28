@@ -256,7 +256,14 @@ def tick(
         meta = state["canaries"][key]
         if str(meta.get("status") or "") != "ACCUMULATING":
             continue
-        history = v1._verify_history(list(histories.get(key) or []), meta)
+        try:
+            history = v1._verify_history(list(histories.get(key) or []), meta)
+        except RuntimeError as exc:
+            if str(exc) != "FAMILY_CANARY_HISTORY_DUPLICATE":
+                raise
+            meta["history_integrity_state"] = "HOLD_FAMILY_CANARY_HISTORY_DUPLICATE"
+            meta["updated_at_ms"] = now
+            continue
         new_rows = v1._new_observations(meta, history, l2_snapshot, carry_snapshot, candles_by_symbol, cfg["symbols"])
         merged = v1._verify_history(history + new_rows, meta)
         if new_rows:

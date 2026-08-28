@@ -5,10 +5,14 @@ on:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py'
+      - 'backend/research/architecture_factory/a1_gemini_youtube_roi_policy_v1.json'
       - '.github/workflows/a1-youtube-diversity-scout-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '17 4,16 * * *'
+    inputs:
+      blocker:
+        description: 'Named current strategy blocker to solve; generic scouting is forbidden'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -35,9 +39,30 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_youtube_diversity_scout_v1.py
           python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
+      - name: Verify blocker-only ROI policy
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          wf=Path('.github/workflows/a1-youtube-diversity-scout-v1.yml').read_text()
+          policy=json.load(open('backend/research/architecture_factory/a1_gemini_youtube_roi_policy_v1.json'))
+          assert '\n  schedule:' not in wf
+          assert 'blocker:' in wf and 'required: true' in wf
+          assert policy['automatic_collection_enabled'] is False
+          assert policy['scheduled_collection_enabled'] is False
+          assert policy['manual_dispatch_enabled'] is True
+          assert policy['manual_blocker_required'] is True
+          assert int(policy['manual_run_budget']['max_video_reviews']) <= 3
+          assert int(policy['manual_run_budget']['max_candidate_pool']) <= 30
+          assert policy['selection_authority'] is False and policy['promotion_authority'] is False
+          assert policy['execution_authority']=='NONE' and policy['order_authority']=='BLOCKED' and policy['live_trade_authority']=='BLOCKED'
+          assert int(policy['protected_top5_mutations']) == 0
+          print('PASS_GEMINI_YOUTUBE_BLOCKER_ONLY_ROI_POLICY')
+          PY
 
   scout:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -48,13 +73,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Discover 15 mechanism buckets and directly review bounded videos with Gemini
+      - name: Enforce named blocker and ROI cooldown policy
+        env:
+          BLOCKER_CONTEXT: ${{ inputs.blocker }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          blocker=(os.environ.get('BLOCKER_CONTEXT') or '').strip()
+          policy=json.load(open('backend/research/architecture_factory/a1_gemini_youtube_roi_policy_v1.json'))
+          econ=json.load(open('backend/research/architecture_factory/a1_a5_economic_improvement_latest.json'))
+          assert blocker, 'NAMED_STRATEGY_BLOCKER_REQUIRED'
+          assert policy['automatic_collection_enabled'] is False
+          assert policy['manual_dispatch_enabled'] is True
+          assert policy['manual_blocker_required'] is True
+          passes=int(econ.get('development_economic_pass_count') or 0)
+          print(json.dumps({
+              'state': policy['state'],
+              'blocker': blocker,
+              'development_economic_pass_count': passes,
+              'mode': 'MANUAL_BLOCKER_ONLY',
+              'automatic_collection': False,
+          }, sort_keys=True))
+          PY
+      - name: Review at most three blocker-relevant videos with Gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
           A1_YOUTUBE_GEMINI_MODELS: 'models/gemini-3.6-flash,models/gemini-3.1-pro-preview'
-          YOUTUBE_DIVERSITY_SEARCH_GROUP_SIZE: '5'
-          YOUTUBE_DIVERSITY_MAX_VIDEO_REVIEWS: '6'
-          YOUTUBE_DIVERSITY_MAX_POOL: '60'
+          YOUTUBE_DIVERSITY_SEARCH_GROUP_SIZE: '3'
+          YOUTUBE_DIVERSITY_MAX_VIDEO_REVIEWS: '3'
+          YOUTUBE_DIVERSITY_MAX_POOL: '30'
         run: |
           set -euo pipefail
           mkdir -p out
@@ -70,7 +118,8 @@ jobs:
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert int(r['protected_mutations'])==0 and r['factory_blocking'] is False
           assert len(r['buckets'])==15
-          assert int(r['metrics']['candidate_pool_count']) <= 60
+          assert int(r['metrics']['candidate_pool_count']) <= 30
+          assert int(r['metrics'].get('reviewed_now') or 0) <= 3
           assert all(x['accepted_for_hypothesis_only'] is True and x['direct_video_analysis'] is True for x in r.get('accepted_sources') or [])
           assert all(x['evidence_authority']=='HYPOTHESIS_ONLY_REQUIRES_LOCAL_REPLAY' for x in r.get('factory_sources') or [])
           print(json.dumps({'state':r['state'],**r['metrics']},sort_keys=True))
@@ -84,29 +133,31 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 YouTube: persist diversity scout receipt [skip ci]'
+          git commit -m 'A1 YouTube: persist on-demand blocker scout receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep $((n * 3))
           done
           exit 1
-      - name: Publish compact diversity status to issue 566
+      - name: Publish compact on-demand ROI status to issue 566
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          BLOCKER_CONTEXT: ${{ inputs.blocker }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import json,os,pathlib,urllib.request
           p=pathlib.Path('out/a1_youtube_diversity_scout_v1.json')
           marker='<!-- A1_YOUTUBE_DIVERSITY_SCOUT_V1 -->'
+          blocker=(os.environ.get('BLOCKER_CONTEXT') or '').strip()
           if p.exists():
               r=json.load(open(p)); m=r.get('metrics') or {}
-              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state={r.get('state')}",f"pool={m.get('candidate_pool_count')}|accepted={m.get('accepted_source_count')}|factory_sources={m.get('factory_source_count')}",f"buckets={m.get('covered_bucket_count')}/15|qualified={m.get('qualified_bucket_count')}/15|channels={m.get('independent_channel_count')}",f"reviewed_now={m.get('reviewed_now')}|search_calls={m.get('search_call_count')}",'ROLE=hypothesis_only|two-independent-channels-per-bucket-before-factory','selection=false|promotion=false|execution=NONE|order/live=BLOCKED']
+              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state={r.get('state')}|mode=MANUAL_BLOCKER_ONLY",f"blocker={blocker}",f"pool={m.get('candidate_pool_count')}|accepted={m.get('accepted_source_count')}|factory_sources={m.get('factory_source_count')}",f"reviewed_now={m.get('reviewed_now')}|search_calls={m.get('search_call_count')}",'KPI=economic_pass_and_metric_delta|video_count_not_kpi','selection=false|promotion=false|execution=NONE|order/live=BLOCKED']
           else:
-              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state=WORKFLOW_FAILED_BEFORE_RECEIPT"]
+              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state=WORKFLOW_FAILED_BEFORE_RECEIPT|mode=MANUAL_BLOCKER_ONLY",f"blocker={blocker}"]
           body='\n'.join(lines); headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
           with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)

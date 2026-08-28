@@ -1,0 +1,111 @@
+name: G5 TrendRider Broad30 Product OOS V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
+      - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
+      - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '37 1,5,9,13,17,21 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: g5-trendrider-broad30-product-oos-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify G4 seal and G5 manifest
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
+      - name: Run product OOS / walk-forward / stress
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 \
+            --out out/g5_trendrider_broad30_product_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5_trendrider_broad30_product_latest.json'))
+          assert r['stage']=='G5'
+          assert r['strategy_id']=='trend_rider'
+          assert r['lane_id']=='trend_rider_broad_wr7000'
+          assert r['policy_retune'] is False and r['threshold_retune'] is False
+          assert r['old_history_union'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+              'state':r['state'],
+              'postlock_closed_T':r['postlock_closed_T'],
+              'W2_T':r['windows']['W2']['metrics']['trades'],
+              'W3_T':r['windows']['W3']['metrics']['trades'],
+              'combined':r['combined_oos'],
+              'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - name: Persist latest product G5 receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/prep/g5_trendrider_broad30_product_latest.json
+          cp out/g5_trendrider_broad30_product_latest.json "$target"
+          git config user.name 'g5-trendrider-product-oos'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5 TrendRider: persist product OOS receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-trendrider-broad30-product-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_trendrider_broad30_product_latest.json
+          if-no-files-found: error
+          retention-days: 90

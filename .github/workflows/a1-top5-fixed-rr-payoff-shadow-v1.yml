@@ -1,0 +1,71 @@
+name: A1 Top5 Fixed RR Payoff Shadow V1
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_v1.py'
+      - '.github/workflows/a1-top5-fixed-rr-payoff-shadow-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_v1.py'
+      - '.github/workflows/a1-top5-fixed-rr-payoff-shadow-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env: {PYTHONPATH: ., GH_TOKEN: '${{ github.token }}'}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and self-test
+        run: |
+          python -m py_compile backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_v1.py
+          python -m backend.research.rebuild.a1_top5_fixed_rr_payoff_shadow_v1 --self-test
+      - name: Download frozen Top5 sources
+        run: |
+          mkdir -p out/trend70 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+      - name: Run exactly three user-fixed RR cells
+        run: |
+          python -m backend.research.rebuild.a1_top5_fixed_rr_payoff_shadow_v1 --trend70-source out/trend70/a1_exact25_drain_6_receipt.json --a4-source-dir out/a4 --break-source-dir out/break --out out/top5_rr.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/top5_rr.json'))
+          assert r['cells']==[[2.5,0.75],[2.0,0.75],[1.5,0.45]]
+          assert r['cell_policy']=='USER_FIXED_ONLY_NO_SWEEP' and len(r['lanes'])==5
+          assert r['shadow_only'] is True and r['trend_rider_broad_g5_reference_mutated'] is False
+          print(json.dumps({'state':r['state'],'lanes':[{'lane':x['lane'],'T':x['base_metrics']['trades'],'pass':x['pass_count'],'best':x['best']} for x in r['lanes']]},sort_keys=True))
+          PY
+      - name: Persist latest on master
+        if: github.event_name != 'pull_request'
+        run: |
+          cp out/top5_rr.json backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_latest.json
+          git config user.name a1-top5-fixed-rr-payoff-shadow
+          git config user.email actions@users.noreply.github.com
+          git add backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top5: persist fixed RR payoff shadow [skip ci]'
+          git pull --rebase origin master && git push origin HEAD:master
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-fixed-rr-payoff-shadow-${{ github.run_id }}
+          path: out/top5_rr.json
+          retention-days: 90

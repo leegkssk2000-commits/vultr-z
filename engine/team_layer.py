@@ -1,47 +1,33 @@
 """Fail-closed TeamBot authority boundary for Z-OS.
 
-Strategies produce raw alpha candidates only. They never carry execution
-authority. A candidate may cross into the execution path only after an
-explicit Alpha/Beta/Gamma/Delta TeamBot decision proves that all four role
-slots (LBot/MBot/OBot/SBot) participated, the decision is bound to the exact
-strategy candidate, the team approved it, and SBot explicitly did not veto it.
+Strategies produce raw candidates only. They never carry execution authority.
+A candidate may cross into the Z-OS risk layer only after an explicit
+Alpha/Beta/Gamma/Delta team decision proves the preserved TeamBot topology:
 
-ZBot is deliberately outside this contract: it is an advisor/trace layer and
-cannot replace a TeamBot role or grant execution authority.
+- one support bot
+- exactly three watcher bots
+- one helper bot
+
+The contract is structural only. It does not invent bot identities, trading
+thresholds, or strategy logic. Every slot must name a concrete bot and provide
+affirmative participation evidence; a bot identity cannot fill multiple slots.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
-TEAM_LAYOUT: dict[str, dict[str, str]] = {
-    "Alpha": {"lead": "LBot", "support": "MBot", "watcher": "OBot", "guard": "SBot"},
-    "Beta": {"lead": "MBot", "support": "LBot", "watcher": "OBot", "guard": "SBot"},
-    "Gamma": {"lead": "OBot", "support": "MBot", "watcher": "LBot", "guard": "SBot"},
-    "Delta": {"lead": "SBot", "support": "OBot", "watcher": "MBot", "reserve": "LBot"},
-}
-
-BOT_ROLES: dict[str, str] = {
-    "LBot": "lead/trend: primary trend-confirm candidate and hold/reduce posture",
-    "MBot": "method/confirm: setup-method validation, range support and reduce logic",
-    "OBot": "observer/context: breakout probe, venue thinness, momentum scout and veto context",
-    "SBot": "safety/guard: recovery guard, hedge reserve, blocked state and LKG boundary",
-}
-
-REQUIRED_BOTS = frozenset(BOT_ROLES)
+TEAM_NAMES = frozenset({"Alpha", "Beta", "Gamma", "Delta"})
+TEAM_TOPOLOGY = {"support": 1, "watchers": 3, "helper": 1}
 TEAM_AUTHORITY = "team_bot_consensus"
 BLOCK_REASON = "team_bot_hierarchy_required"
 
 
 def build_candidate_id(strategy_name: str, raw_signal: Mapping[str, Any] | None) -> str | None:
-    """Build a stable identity for one raw strategy candidate.
-
-    Non-JSON-compatible candidates fail closed instead of receiving an unstable
-    identity. TeamBot and Z-OS approvals must refer to this exact id.
-    """
+    """Build a stable identity for one raw strategy candidate."""
     if not strategy_name or not isinstance(raw_signal, Mapping):
         return None
     try:
@@ -52,13 +38,7 @@ def build_candidate_id(strategy_name: str, raw_signal: Mapping[str, Any] | None)
     return hashlib.sha256(material).hexdigest()[:24]
 
 
-def _blocked(
-    reason: str,
-    *,
-    team: str | None = None,
-    missing: list[str] | None = None,
-    invalid: list[str] | None = None,
-) -> dict[str, Any]:
+def _blocked(reason: str, *, team: str | None = None, detail: Any = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ok": False,
         "approved": False,
@@ -66,15 +46,70 @@ def _blocked(
         "execution_authority": "none",
         "reason": reason,
         "next_layer": "team_bot",
-        "zbot_authority": "advisor_only",
     }
     if team is not None:
         payload["team"] = team
-    if missing:
-        payload["missing_roles"] = missing
-    if invalid:
-        payload["invalid_roles"] = invalid
+    if detail is not None:
+        payload["detail"] = detail
     return payload
+
+
+def _participant_bot_id(evidence: Any) -> str | None:
+    if not isinstance(evidence, Mapping):
+        return None
+    if evidence.get("participated") is not True:
+        return None
+    bot_id = evidence.get("bot")
+    if not isinstance(bot_id, str) or not bot_id.strip():
+        return None
+    return bot_id.strip()
+
+
+def _validate_team_bots(team_bots: Any) -> tuple[bool, str, dict[str, Any] | None]:
+    if not isinstance(team_bots, Mapping):
+        return False, "missing_team_bot_slots", None
+
+    expected_keys = set(TEAM_TOPOLOGY)
+    actual_keys = set(team_bots)
+    if actual_keys != expected_keys:
+        return False, "team_bot_slot_mismatch", {
+            "expected": sorted(expected_keys),
+            "actual": sorted(actual_keys),
+        }
+
+    support = team_bots.get("support")
+    helper = team_bots.get("helper")
+    watchers = team_bots.get("watchers")
+
+    support_id = _participant_bot_id(support)
+    if support_id is None:
+        return False, "invalid_support_bot_evidence", None
+
+    helper_id = _participant_bot_id(helper)
+    if helper_id is None:
+        return False, "invalid_helper_bot_evidence", None
+
+    if not isinstance(watchers, Sequence) or isinstance(watchers, (str, bytes)) or len(watchers) != 3:
+        count = len(watchers) if isinstance(watchers, Sequence) and not isinstance(watchers, (str, bytes)) else None
+        return False, "watcher_count_mismatch", {"expected": 3, "actual": count}
+
+    watcher_ids: list[str] = []
+    for index, watcher in enumerate(watchers):
+        watcher_id = _participant_bot_id(watcher)
+        if watcher_id is None:
+            return False, "invalid_watcher_bot_evidence", {"index": index}
+        watcher_ids.append(watcher_id)
+
+    all_ids = [support_id, *watcher_ids, helper_id]
+    if len(set(all_ids)) != len(all_ids):
+        return False, "duplicate_team_bot_identity", {"bot_ids": all_ids}
+
+    normalized = {
+        "support": dict(support),
+        "watchers": [dict(watcher) for watcher in watchers],
+        "helper": dict(helper),
+    }
+    return True, "ok", normalized
 
 
 def authorize_team_signal(
@@ -83,12 +118,7 @@ def authorize_team_signal(
     *,
     strategy_name: str | None = None,
 ) -> dict[str, Any]:
-    """Validate TeamBot provenance and return a normalized TeamBot signal.
-
-    This function does not implement trading intelligence. Upstream TeamBots
-    own the decision; this boundary verifies identity, participation and veto
-    evidence and fail-closes every bypass.
-    """
+    """Validate candidate identity and the five-slot TeamBot decision."""
     if not isinstance(raw_signal, Mapping):
         return _blocked("invalid_raw_strategy_signal")
 
@@ -112,37 +142,18 @@ def authorize_team_signal(
         return _blocked("team_candidate_identity_mismatch")
 
     team = team_decision.get("team")
-    if team not in TEAM_LAYOUT:
+    if team not in TEAM_NAMES:
         return _blocked("unknown_team", team=str(team) if team is not None else None)
 
-    roles = team_decision.get("roles")
-    if not isinstance(roles, Mapping):
-        return _blocked("missing_team_bot_roles", team=team, missing=sorted(REQUIRED_BOTS))
-
-    missing = sorted(role for role in REQUIRED_BOTS if role not in roles or roles.get(role) is None)
-    if missing:
-        return _blocked("missing_team_bot_roles", team=team, missing=missing)
-
-    invalid = sorted(
-        role
-        for role in REQUIRED_BOTS
-        if not isinstance(roles.get(role), Mapping) or roles[role].get("participated") is not True
-    )
-    if invalid:
-        return _blocked("invalid_team_bot_evidence", team=team, invalid=invalid)
+    bots_ok, bots_reason, bots_payload = _validate_team_bots(team_decision.get("team_bots"))
+    if not bots_ok:
+        return _blocked(bots_reason, team=team, detail=bots_payload)
 
     if team_decision.get("approved") is not True:
         return _blocked("team_not_approved", team=team)
 
-    team_side = team_decision.get("side")
-    if team_side != side:
+    if team_decision.get("side") != side:
         return _blocked("team_strategy_side_mismatch", team=team)
-
-    sbot = roles["SBot"]
-    if sbot.get("veto") is True:
-        return _blocked("sbot_veto", team=team)
-    if sbot.get("veto") is not False:
-        return _blocked("sbot_non_veto_evidence_required", team=team, invalid=["SBot"])
 
     return {
         "ok": True,
@@ -155,8 +166,7 @@ def authorize_team_signal(
         "candidate_id": candidate_id,
         "side": side,
         "confidence": team_decision.get("confidence", raw_signal.get("confidence", 0.0)),
-        "roles": dict(roles),
+        "team_bots": bots_payload,
         "strategy_signal": dict(raw_signal),
-        "zbot_authority": "advisor_only",
         "next_layer": "z_os_risk_execution",
     }

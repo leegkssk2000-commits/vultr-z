@@ -2,13 +2,17 @@
 
 The runner deliberately keeps live execution blocked.  It is safe to import in
 health checks and tests because it does not touch runtime data at import time.
+
+Architecture invariant:
+strategy -> raw candidate -> TeamBot(L/M/O/S) -> Z-OS risk/execution.
+A raw strategy signal can never be passed directly to an executor.
 """
 
 from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from config.settings import (
     DATA_STALE_SEC,
@@ -25,6 +29,7 @@ from engine.utils.state import load_state
 
 
 P0_P2_BLOCK_REASON = "p0_p2_gate_blocks_live_execution"
+TEAM_BYPASS_BLOCK_REASON = "team_bot_hierarchy_required"
 
 
 def _utcnow() -> datetime:
@@ -82,23 +87,93 @@ def select_exec() -> Any:
     return exec_shadow
 
 
+def run_once(names: Iterable[str], **kwargs: Any) -> dict[str, Any]:
+    """Collect raw strategy candidates without execution authority.
+
+    This keeps the legacy signal_hub import working while making the boundary
+    explicit: output from this function must next enter the TeamBot layer.
+    """
+    from engine.router import route
+
+    results: dict[str, Any] = {}
+    for name in names:
+        try:
+            raw_signal = route(name, **kwargs)
+            results[name] = {
+                "raw_signal": raw_signal,
+                "execution_eligible": False,
+                "execution_authority": "none",
+                "next_layer": "team_bot",
+            }
+        except Exception as exc:
+            results[name] = {
+                "error": str(exc),
+                "execution_eligible": False,
+                "execution_authority": "none",
+                "next_layer": "team_bot",
+            }
+    return results
+
+
+def _decision_for_strategy(
+    name: str,
+    team_decisions: Mapping[str, Any] | None,
+    shared_team_decision: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if isinstance(team_decisions, Mapping):
+        candidate = team_decisions.get(name)
+        if isinstance(candidate, Mapping):
+            return candidate
+    return shared_team_decision if isinstance(shared_team_decision, Mapping) else None
+
+
+def _blocked_execution(reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "execution_allowed": False,
+        "reason": reason,
+    }
+
+
 def run_and_trade(names: Iterable[str], symbol: str, qty: float | None = None, **kwargs: Any) -> dict[str, Any]:
     gate = precheck(kwargs.get("df"), kwargs.get("data_stale_sec"))
     if gate:
         return {name: gate for name in names}
 
     from engine.router import route
+    from engine.team_layer import authorize_team_signal
+
+    routing_kwargs = dict(kwargs)
+    team_decisions = routing_kwargs.pop("team_decisions", None)
+    shared_team_decision = routing_kwargs.pop("team_decision", None)
 
     results: dict[str, Any] = {}
     executor = select_exec()
     for name in names:
         try:
-            sig = route(name, **kwargs)
-            order = {"symbol": symbol, "signal": sig}
+            raw_signal = route(name, **routing_kwargs)
+            team_decision = _decision_for_strategy(name, team_decisions, shared_team_decision)
+            team_signal = authorize_team_signal(raw_signal, team_decision)
+
+            if not team_signal.get("execution_eligible"):
+                results[name] = {
+                    "raw_signal": raw_signal,
+                    "signal": team_signal,
+                    "execution": _blocked_execution(team_signal.get("reason", TEAM_BYPASS_BLOCK_REASON)),
+                }
+                continue
+
+            order = {
+                "symbol": symbol,
+                "strategy": name,
+                "signal": team_signal,
+            }
             if qty is not None:
                 order["qty"] = qty
             results[name] = {
-                "signal": sig,
+                "raw_signal": raw_signal,
+                "signal": team_signal,
                 "execution": executor.place(order),
             }
         except Exception as exc:

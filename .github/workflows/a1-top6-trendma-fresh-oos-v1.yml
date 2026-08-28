@@ -1,0 +1,80 @@
+name: A1 Top6 TrendMA Fresh OOS V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_v1.py'
+      - '.github/workflows/a1-top6-trendma-fresh-oos-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_v1.py'
+      - '.github/workflows/a1-top6-trendma-fresh-oos-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 1,4,7,10,13,16,19,22 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_v1.py
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_fresh_oos_v1 --self-test
+      - name: Evaluate fresh LONG_ONLY child
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_fresh_oos_v1 --out out/top6_fresh_oos.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/top6_fresh_oos.json'))
+          assert r['strategy_id']=='trend_ma_macd'
+          assert r['candidate_axis']=='LONG_ONLY_ENTRY_SIDE_QUALIFIER'
+          assert r['target_fresh_closed_T']==12
+          assert r['old_history_union'] is False
+          assert r['policy_retune'] is False and r['threshold_retune'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'native_T':r['post_boundary_native_T'],'child_T':r['post_boundary_long_child_T'],'pilot':r['pilot_metrics'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist latest on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          cp out/top6_fresh_oos.json backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_latest.json
+          git config user.name a1-top6-trendma-fresh-oos
+          git config user.email actions@users.noreply.github.com
+          git add backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top6: persist TrendMA fresh OOS pilot [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top6-trendma-fresh-oos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/top6_fresh_oos.json
+          if-no-files-found: error
+          retention-days: 90

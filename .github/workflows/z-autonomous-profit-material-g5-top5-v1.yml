@@ -1,0 +1,171 @@
+name: Z Autonomous Profit Material G5 Top5 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - 'backend/research/architecture_factory/a1_c_pair_payoff_bridge_v1.py'
+      - 'backend/research/rebuild/z_autonomous_profit_material_g5_top5_v1.py'
+      - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
+      - '.github/workflows/z-autonomous-profit-material-g5-top5-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
+      - 'backend/research/architecture_factory/a1_c_pair_deterministic_compiler_latest.json'
+      - 'backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_latest.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - 'backend/research/architecture_factory/a1_c_pair_payoff_bridge_v1.py'
+      - 'backend/research/rebuild/z_autonomous_profit_material_g5_top5_v1.py'
+      - '.github/workflows/z-autonomous-profit-material-g5-top5-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */2 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile controller and repair contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py \
+            backend/research/architecture_factory/a1_c_pair_payoff_bridge_v1.py \
+            backend/research/rebuild/z_autonomous_profit_material_g5_top5_v1.py
+      - name: Pure self tests
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 --self-test
+          python -m backend.research.architecture_factory.a1_c_pair_payoff_bridge_v1 --self-test
+          python -m backend.research.rebuild.z_autonomous_profit_material_g5_top5_v1 --self-test
+      - name: Frozen authority and anti-overfit guards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          files = [
+            Path('backend/research/architecture_factory/a1_c_pair_payoff_bridge_v1.py'),
+            Path('backend/research/rebuild/z_autonomous_profit_material_g5_top5_v1.py'),
+          ]
+          text='\n'.join(p.read_text() for p in files)
+          required=(
+            "'promotion_authority': False",
+            "'execution_authority': 'NONE'",
+            "'order_authority': 'BLOCKED'",
+            "'live_trade_authority': 'BLOCKED'",
+            "old_history_union_allowed':False",
+            "best_cell_selection_performed':False",
+            "strict_target = 25",
+          )
+          for token in required:
+            assert token in text, token
+          assert 'OPENAI_API_KEY' not in text
+          assert 'GEMINI_API_KEY' not in text
+          assert 'best_horizon_selection\': False' in text
+          assert "target2 < 12" in text and "target3 < 12" in text
+          print('PASS_AUTONOMOUS_CHAIN_AUTHORITY_AND_TARGET_GUARDS')
+          PY
+      - name: Current receipt contract smoke
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.load(open('backend/research/architecture_factory/a1_c_pair_deterministic_compiler_latest.json'))
+          spec=c['candidate']['executable_spec']
+          names={x['name'] for x in spec['features']}
+          assert {'z24','z_prev'} <= names
+          assert c['verified_cost_bps'] == 14.0
+          assert c['production_mutated'] is False
+          g=json.load(open('backend/research/prep/g5_trendrider_broad30_product_latest.json'))
+          assert g['windows']['W2']['target_T'] >= 12 and g['windows']['W3']['target_T'] >= 12
+          assert g['old_history_union'] is False
+          t=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
+          assert t['record_policy']['old_history_union'] is False
+          assert t['record_policy']['use_only_this_file_for_current_top5_reporting'] is True
+          print('PASS_CURRENT_RECEIPT_CONTRACT_SMOKE')
+          PY
+
+  chain:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run autonomous latest-only blocker chain
+        run: |
+          set -euo pipefail
+          mkdir -p out/chain
+          python -m backend.research.rebuild.z_autonomous_profit_material_g5_top5_v1 \
+            --out out/z_autonomous_profit_material_g5_top5_v1.json \
+            --out-dir out/chain
+          python - <<'PY'
+          import json
+          r=json.load(open('out/z_autonomous_profit_material_g5_top5_v1.json'))
+          assert r['production_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['old_history_union_allowed'] is False
+          print(json.dumps({'state':r['state'],'blockers':r['blocker_counts'],'autorepair':r['safe_autorepair_count'],'stages':{k:v.get('state') for k,v in r['stages'].items()},'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist controller and payoff bridge receipts
+        run: |
+          set -euo pipefail
+          controller=backend/research/rebuild/z_autonomous_profit_material_g5_top5_latest.json
+          cp out/z_autonomous_profit_material_g5_top5_v1.json "$controller"
+          if [ -f out/chain/c_pair_payoff_bridge.json ]; then
+            cp out/chain/c_pair_payoff_bridge.json backend/research/architecture_factory/a1_c_pair_payoff_bridge_latest.json
+          fi
+          git config user.name 'z-autonomous-profit-material-g5-top5-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$controller"
+          if [ -f backend/research/architecture_factory/a1_c_pair_payoff_bridge_latest.json ]; then
+            git add backend/research/architecture_factory/a1_c_pair_payoff_bridge_latest.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 roadmap: persist autonomous profit-material G5 Top5 receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=20 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - name: Publish blocker ledger
+        if: always()
+        run: |
+          if [ -f out/z_autonomous_profit_material_g5_top5_v1.json ]; then
+            echo '## Autonomous Profit Material → G5 → Top5' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat out/z_autonomous_profit_material_g5_top5_v1.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: z-autonomous-profit-material-g5-top5-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30

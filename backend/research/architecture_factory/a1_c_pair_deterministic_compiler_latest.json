@@ -1,18 +1,35 @@
 {
   "action": "hold",
+  "attempted_pair_ids": [
+    "CPAIR__anchor_vwap_trend__X__bb_revert__band_mean_reversion",
+    "CPAIR__bb_revert__X__anchor_vwap_trend__anchored_vwap_trend_ownership",
+    "CPAIR__bb_revert__X__squeeze_break__compression_expansion",
+    "CPAIR__bb_revert__X__turtle_trend__channel_breakout_persistence",
+    "CPAIR__squeeze_break__X__bb_revert__band_mean_reversion",
+    "CPAIR__turtle_trend__X__bb_revert__band_mean_reversion",
+    "CPAIR__turtle_trend__X__squeeze_break__compression_expansion"
+  ],
   "c_to_b_upgrade_pass": false,
   "candidate": {
-    "candidate_id": "CPAIR__bb_revert__X__squeeze_break__compression_expansion",
+    "candidate_id": "CPAIR__turtle_trend__X__squeeze_break__compression_expansion",
     "candidate_type": "REPAIR",
     "changed_axis": "C_PAIR__SQUEEZE_BREAK__COMPRESSION_EXPANSION__ONLY",
     "executable_spec": {
       "bar_interval": "1h",
       "cost_model": "fixed_verified_round_trip_14bps",
       "development_data_rule": "strictly_pre_gen1_boundary_only",
-      "entry_rule": "((z_prev < -1.0 and z24 > z_prev) or (z_prev > 1.0 and z24 < z_prev)) and vol24 > vol_prev and vol_prev <= vol_prev2",
+      "entry_rule": "((ema20 > ema50 and close > ema20) or (ema20 < ema50 and close < ema20)) and vol24 > vol_prev and vol_prev <= vol_prev2",
       "entry_timing": "next_bar_open",
       "exit_rule": "time_stop",
       "features": [
+        {
+          "formula": "ema(close,20)",
+          "name": "ema20"
+        },
+        {
+          "formula": "ema(close,50)",
+          "name": "ema50"
+        },
         {
           "formula": "sma(close,24)",
           "name": "mean24"
@@ -22,16 +39,8 @@
           "name": "sd24"
         },
         {
-          "formula": "(close-mean24)/max(sd24,0.00000001)",
-          "name": "z24"
-        },
-        {
           "formula": "sd24/max(mean24,0.00000001)",
           "name": "vol24"
-        },
-        {
-          "formula": "lag(z24,1)",
-          "name": "z_prev"
         },
         {
           "formula": "lag(vol24,1)",
@@ -46,59 +55,62 @@
       "parameter_provenance": {
         "donor_numeric_thresholds_copied": false,
         "grid_search": false,
-        "kernel": "C_PAIR_STANDARDIZED_MR_VOL_V1",
-        "notes": "24-bar normalization and 1-sigma standardized excursion are nursery-kernel constants, not copied from either donor strategy.",
-        "optimized_on_outcomes": false
+        "kernel": "C_PAIR_TREND_VOL_EXPANSION_V1",
+        "notes": "All constants are fixed nursery-kernel constants; pair selection uses only preregistered order and attempted identity memory.",
+        "optimized_on_outcomes": false,
+        "rotation_order_outcome_selected": false
       },
-      "side_rule": "long if z24 < 0 else short"
+      "side_rule": "long if ema20 > ema50 else short"
     },
-    "expected_effect": "retain mean-reversion geometry while importing only the qualitative compression-to-expansion transition",
-    "mechanism_summary": "standardized mean-reversion return toward center gated by a local volatility-width trough turning upward",
-    "provider": "deterministic_c_pair_compiler_v1",
+    "expected_effect": "retain trend ownership while importing only the qualitative compression-to-expansion timing gate",
+    "mechanism_summary": "directional trend ownership gated by a local volatility-width trough turning upward",
+    "provider": "deterministic_c_pair_compiler_v2",
     "required_sources": [
       "ohlcv"
     ],
-    "risk": "fixed standardized kernel can remain economically weak; fail closed with no threshold sweep",
+    "risk": "fixed semantic kernel can remain economically weak; fail closed and rotate without threshold tuning",
     "source_refs": [],
-    "strategy_id": "CMAT__BB_REVERT__X__SQUEEZE_BREAK__MR_VOL_V1"
+    "strategy_id": "CMAT__TURTLE_TREND__X__SQUEEZE_BREAK__TREND_VOL_V1"
   },
-  "child_material_id": "CMAT__BB_REVERT__X__SQUEEZE_BREAK__MR_VOL_V1",
-  "compiler_mode": "DETERMINISTIC_FIXED_KERNEL",
-  "development_state": "PASS_DEVELOPMENT_ECONOMICS",
+  "child_material_id": "CMAT__TURTLE_TREND__X__SQUEEZE_BREAK__TREND_VOL_V1",
+  "compiler_mode": "DETERMINISTIC_PREREGISTERED_ROTATION",
+  "development_state": "FAIL_DEVELOPMENT_ECONOMICS",
   "donor_numeric_threshold_copy": false,
   "execution_authority": "NONE",
+  "failed_pair_retest_same_identity_allowed": false,
   "fresh_validation_required_before_top5_use": true,
   "live_trade_authority": "BLOCKED",
   "material_grade": "C_PAIR_FAILED",
   "metrics": {
     "cost_bps_per_trade": 14.0,
     "development_days": 124.83333333333333,
-    "drawdown_bps": 1146.3396630938919,
-    "events_per_day": 0.44058744993324434,
-    "gross_expectancy_bps": 14.80998819852817,
-    "net_bps_per_calendar_day": 0.3568706348655491,
-    "net_expectancy_bps": 0.8099881985281704,
-    "net_pnl_bps": 44.549350919049374,
-    "payoff": 0.9779186040149629,
-    "profit_factor": 1.0141378115710726,
-    "trades": 55,
-    "win_rate": 0.509090909090909
+    "drawdown_bps": 4258.807405421943,
+    "events_per_day": 1.1935914552736984,
+    "gross_expectancy_bps": -7.661393383163318,
+    "net_bps_per_calendar_day": -25.854854051465974,
+    "net_expectancy_bps": -21.661393383163325,
+    "net_pnl_bps": -3227.5476140913356,
+    "payoff": 0.9037174938515694,
+    "profit_factor": 0.7384033181470141,
+    "trades": 149,
+    "win_rate": 0.44966442953020136
   },
-  "next": "NEXT_DETERMINISTIC_C_PAIR_KERNEL",
+  "next": "PREREGISTER_DISTINCT_C_PAIR_KERNEL_BEFORE_NEXT_RUN",
   "no_threshold_sweep": true,
   "order_authority": "BLOCKED",
-  "pair_id": "CPAIR__bb_revert__X__squeeze_break__compression_expansion",
+  "pair_id": "CPAIR__turtle_trend__X__squeeze_break__compression_expansion",
   "production_mutated": false,
   "promotion_authority": false,
   "provider_request_count": 0,
-  "receipt_sha256": "1b549e270c6cf2a8714568f2b94e587dcb65efe266058fd7267795aeb7e79573",
-  "schema_version": "zel.a1.c_pair_deterministic_compiler.v1",
+  "receipt_sha256": "639b9c5e5a88f6a3ef6252674565c7a5036fad1399b37cb8526db96b1c2ec9f6",
+  "remaining_preregistered_pair_ids": [],
+  "schema_version": "zel.a1.c_pair_deterministic_compiler.v2",
   "selection_authority": false,
   "source_materials": [
     {
       "grade": "C",
-      "role": "MEAN_REVERSION_HOST_CONCEPT",
-      "strategy_id": "bb_revert"
+      "role": "TREND_HOST_CONCEPT",
+      "strategy_id": "turtle_trend"
     },
     {
       "grade": "C",

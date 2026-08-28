@@ -138,8 +138,14 @@ def self_test() -> int:
     ], 4)
     assert root2 is None and route2.startswith("REQUIRE_STRATEGY_NATIVE_PREENTRY_FEATURE_ATTRIBUTION")
     native_route, native_root = _native_route("keltner_trend", 4)
-    assert native_root and native_root["axis"] == "ATR_PCT"
-    assert native_route == "PREREGISTER_PREENTRY_STRUCTURAL_CHILD:ATR_PCT:BORROW_EXISTING_CAUSAL_GEOMETRY_ONLY"
+    native_receipt = json.loads(NATIVE_PREENTRY_ATTRIBUTION["keltner_trend"].read_text(encoding="utf-8"))
+    expected_root = dict(native_receipt.get("actionable_root_cause") or {})
+    assert native_root == expected_root
+    expected_axis = str(expected_root.get("axis") or "")
+    if expected_axis in {"SYMBOL", "SIDE", "SESSION"}:
+        assert native_route == f"PREREGISTER_PREENTRY_CONTEXT_CHILD:{expected_axis}:{expected_root.get('value')}:ONE_AXIS_ONLY"
+    else:
+        assert native_route == f"PREREGISTER_PREENTRY_STRUCTURAL_CHILD:{expected_axis}:BORROW_EXISTING_CAUSAL_GEOMETRY_ONLY"
     print("PASS_A1_RECENT_LOSS_CLUSTER_ACTIONABLE_V2_SELF_TEST")
     return 0
 

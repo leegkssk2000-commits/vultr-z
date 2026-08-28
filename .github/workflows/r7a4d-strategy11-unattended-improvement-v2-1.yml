@@ -140,9 +140,23 @@ jobs:
           ledger=json.loads(Path('out/plan/search_ledger.json').read_text())
           coverage=json.loads(Path('out/plan/coverage.json').read_text())
           assert plan['state'] in {'PASS_UNATTENDED_IMPROVEMENT_PLAN','COMPLETE_CUTOFF_NO_NEW_REPLAY','COMPLETE_NO_SAFE_UNTESTED_AXIS'}
-          assert plan['strategy_count_total']==25
-          assert sum(plan['lane_counts'].values())==25
-          assert plan['active_strategy_count']<=24
+          if plan['state']=='COMPLETE_CUTOFF_NO_NEW_REPLAY':
+              assert plan['strategy_count_total']==0
+              assert sum(plan['lane_counts'].values())==0
+              assert plan['active_strategy_count']==0
+              assert plan['candidate_count']==0
+              assert plan['rows']==[]
+          else:
+              assert plan['strategy_count_total']==25
+              assert sum(plan['lane_counts'].values())==25
+              assert plan['active_strategy_count']<=24
+              assert plan['candidate_count']<=plan['active_strategy_count']*2
+              for row in plan['rows']:
+                  assert 1<=len(row['candidate_ids'])<=2
+                  axes=[row['candidate_specs'][cid]['axis'] for cid in row['candidate_ids']]
+                  assert len(axes)==len(set(axes))
+                  if row['lane'] in {'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION'}:
+                      assert not all(row['candidate_specs'][cid]['kind']=='GATE' for cid in row['candidate_ids'])
           assert 'alpha_combo' not in plan['active_strategy_ids']
           assert len(plan['special_routes'])==1
           route=plan['special_routes'][0]
@@ -154,13 +168,6 @@ jobs:
           assert alpha['incumbent_snapshot']['candidate_config']['exit']['time_stop_bars']==54
           assert alpha['same_dataset_generation_budget_exhausted'] is True
           assert coverage['alpha_special_route_count']==1
-          assert plan['candidate_count']<=plan['active_strategy_count']*2
-          for row in plan['rows']:
-              assert 1<=len(row['candidate_ids'])<=2
-              axes=[row['candidate_specs'][cid]['axis'] for cid in row['candidate_ids']]
-              assert len(axes)==len(set(axes))
-              if row['lane'] in {'A_ENTRY_LIVENESS_REPAIR','B_COVERAGE_EXPANSION'}:
-                  assert not all(row['candidate_specs'][cid]['kind']=='GATE' for cid in row['candidate_ids'])
           for payload in (plan,ledger,coverage):
               assert payload['promotion_authority'] is False
               assert payload['protected_mutations']==0

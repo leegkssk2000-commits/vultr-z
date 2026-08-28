@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from backend.research.architecture_factory import a1_c_grade_pair_nursery_v2 as v2
 
-SCHEMA = "zel.a1.c_grade_pair_nursery.identifier_guard.v1"
+SCHEMA = "zel.a1.c_grade_pair_nursery.identifier_guard.v2"
 _BASE_PROMPT = v2.prompt_v2
 
 
@@ -29,7 +29,14 @@ def prompt_v2_identifier_guard(
         "raw/replay-ready/function/or previously-declared-feature. If any identifier is unresolved, emit zero candidates for that pair instead of guessing. "
         "INVALID_EXAMPLE={\"features\":[],\"entry_rule\":\"vwap_bias > 0\"}. "
         "VALID_SHAPE_EXAMPLE={\"features\":[{\"name\":\"vwap_bias\",\"formula\":\"close-vwap(96)\"}],\"entry_rule\":\"vwap_bias > 0\"}. "
-        "Do not copy the example horizon unless it is structurally/native justified; the example exists only to show identifier declaration order."
+        "Do not copy the example horizon unless it is structurally/native justified; the example exists only to show identifier declaration order. "
+        "\nSIDE_RULE_GRAMMAR_CONTRACT=HARD. executable_spec.side_rule MUST use exactly one evaluator-supported shape: "
+        "literal 'long'; literal 'short'; 'long if <boolean_expr> else short'; or 'short if <boolean_expr> else long'. "
+        "The executable side_rule MUST NEVER be 'both', 'long/short', 'long and short', a comma-separated pair, an object, a list, prose, or a direction label. "
+        "direction_rule may describe a conceptual both-sided mechanism, but that DOES NOT make side_rule='both' executable. "
+        "For a both-sided mechanism, encode a causal per-bar boolean selector using exactly one of the two conditional SIDE_RULE_FORMS; "
+        "if no causal selector can be expressed with declared evaluator identifiers, emit zero candidates for that pair. "
+        "Do not invent or infer a selector merely to satisfy syntax. Before returning JSON, perform a side grammar closure check against SIDE_RULE_FORMS."
     )
 
 
@@ -45,6 +52,9 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
     result["identifier_namespace_contract"] = "RAW_OR_REPLAY_READY_OR_FUNCTION_OR_PREDECLARED_FEATURE_ONLY"
     result["custom_identifier_requires_prior_feature_declaration"] = True
     result["unresolved_identifier_fails_closed"] = True
+    result["side_rule_grammar_contract"] = "LONG_OR_SHORT_OR_SINGLE_CAUSAL_CONDITIONAL_ONLY"
+    result["literal_both_side_forbidden"] = True
+    result["unexpressible_both_side_fails_closed"] = True
     result["receipt_sha256"] = v2.v1.stable({k: val for k, val in result.items() if k != "receipt_sha256"})
     output.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return result
@@ -67,6 +77,9 @@ def self_test() -> int:
         "previously-declared-feature",
         "If features is empty",
         "lexical closure check",
+        "SIDE_RULE_GRAMMAR_CONTRACT=HARD",
+        "MUST NEVER be 'both'",
+        "side grammar closure check",
     ):
         assert required in text
 
@@ -89,7 +102,18 @@ def self_test() -> int:
     good["candidate_id"] = "good"
     good["executable_spec"]["features"] = [{"name": "vwap_bias", "formula": "close-vwap(24)"}]
     assert v2.dsl_preflight(good)["ok"] is True
-    print("PASS_A1_C_GRADE_PAIR_NURSERY_V2_IDENTIFIER_GUARD_SELF_TEST")
+
+    bad_side = json.loads(json.dumps(good))
+    bad_side["candidate_id"] = "bad_side"
+    bad_side["executable_spec"]["side_rule"] = "both"
+    side_check = v2.dsl_preflight(bad_side)
+    assert side_check["ok"] is False and "SIDE_RULE_UNSUPPORTED" in str(side_check["error"])
+
+    good_side = json.loads(json.dumps(good))
+    good_side["candidate_id"] = "good_side"
+    good_side["executable_spec"]["side_rule"] = "long if vwap_bias > 0 else short"
+    assert v2.dsl_preflight(good_side)["ok"] is True
+    print("PASS_A1_C_GRADE_PAIR_NURSERY_V2_IDENTIFIER_SIDE_GUARD_SELF_TEST")
     return 0
 
 

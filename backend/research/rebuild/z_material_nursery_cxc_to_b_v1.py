@@ -45,6 +45,7 @@ def main() -> int:
     ap.add_argument("--parent-b", type=Path, required=True)
     ap.add_argument("--child", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("out/z_material_nursery_cxc_to_b_v1.json"))
+    args = ap.parse_args()
     a=json.loads(args.parent_a.read_text()); b=json.loads(args.parent_b.read_text()); c=json.loads(args.child.read_text())
     r=grade(a,b,c)
     args.out.parent.mkdir(parents=True,exist_ok=True)

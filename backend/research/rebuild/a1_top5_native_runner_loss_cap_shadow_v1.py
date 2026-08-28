@@ -25,7 +25,7 @@ def key(x:Mapping[str,Any])->tuple[Any,...]:
 
 def loss_cap_rows(rows:list[dict[str,Any]],cap_r:float,bars_by:Mapping[str,list[dict[str,Any]]])->tuple[list[dict[str,Any]],dict[str,int]]:
     out=[]; stats={'capped':0,'native_winner_capped':0,'native_loser_capped':0,'unchanged':0}
-    idx_by={s:{int(b['ts_ms']):i for i,b in bars} for s,bars in bars_by.items()}
+    idx_by={s:{int(b['ts_ms']):i for i,b in enumerate(bars)} for s,bars in bars_by.items()}
     for src in rows:
         row=dict(src); sym=str(row['symbol']); bars=bars_by[sym]; idx=idx_by[sym]
         si=idx.get(int(row['signal_ts'])); ei=idx.get(int(row['entry_ts'])); xi=idx.get(int(row['exit_ts']))
@@ -41,7 +41,6 @@ def loss_cap_rows(rows:list[dict[str,Any]],cap_r:float,bars_by:Mapping[str,list[
         if hit_i is None:
             stats['unchanged']+=1; out.append(row); continue
         gross=(stop-entry)/entry*10000 if side=='long' else (entry-stop)/entry*10000
-        # Conservative: retain the native realized cost even when the cap exits earlier.
         cost=float(row.get('realized_cost_bps') or 0.0)
         native_net=float(row.get('net_bps') or 0.0)
         capped={**row,'exit_ts':int(bars[hit_i]['ts_ms']),'exit':float(stop),'gross_bps':float(gross),'net_bps':float(gross-cost),'realized_cost_bps':cost,'reason':f'LOSS_CAP_{cap_r:.2f}R','loss_cap_r':cap_r,'native_exit_preserved':False}

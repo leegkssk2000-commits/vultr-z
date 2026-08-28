@@ -5,9 +5,9 @@ uses ``authorize_execution`` so a TeamBot-approved signal still cannot reach an
 executor unless an explicit Z-OS risk decision is present and bound to the same
 strategy candidate.
 
-This module intentionally does not invent risk thresholds. Threshold logic
-belongs to the existing SSOT/risk implementation; this boundary only enforces
-provenance and fail-closed ordering.
+This module intentionally does not invent risk thresholds or optional advisor
+modules. Threshold logic belongs to the existing SSOT/risk implementation;
+this boundary only enforces provenance and fail-closed ordering.
 """
 
 from __future__ import annotations
@@ -79,7 +79,6 @@ def authorize_execution(
         "side": team_signal.get("side"),
         "confidence": team_signal.get("confidence"),
         "team": team_signal.get("team"),
-        "zbot_authority": "advisor_only",
         "next_layer": "executor",
     }
 

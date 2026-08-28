@@ -1,0 +1,215 @@
+name: Z Next Roadmap Gates V1
+
+on:
+  push:
+    branches:
+      - master
+      - z-roadmap-trendma-nursery-rr-v1
+    paths:
+      - 'backend/research/rebuild/**'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
+      - 'backend/tests/**'
+      - '.github/workflows/z-next-roadmap-gates-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/**'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
+      - 'backend/tests/**'
+      - '.github/workflows/z-next-roadmap-gates-v1.yml'
+  workflow_dispatch:
+    inputs:
+      trendma_candidate:
+        description: 'Optional explicit TrendMA JSON override; invalid explicit paths never auto-fallback'
+        required: false
+        type: string
+      nursery_parent_a:
+        description: 'Optional explicit C-grade nursery parent A raw metrics JSON'
+        required: false
+        type: string
+      nursery_parent_b:
+        description: 'Optional explicit C-grade nursery parent B raw metrics JSON'
+        required: false
+        type: string
+      nursery_child:
+        description: 'Optional explicit C x C nursery child raw metrics JSON'
+        required: false
+        type: string
+      rr_parent:
+        description: 'Optional explicit frozen Top5 RR parent raw metrics JSON'
+        required: false
+        type: string
+      rr_child:
+        description: 'Optional explicit Top5 RR shadow child raw metrics JSON'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile gates and orchestrator
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/z_trendma_macd_rescue_one_axis_v1.py \
+            backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
+            backend/research/rebuild/z_top5_rr_grid_shadow_gate_v1.py \
+            backend/research/rebuild/z_next_roadmap_auto_v1.py
+      - name: Gate contract tests
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          root=Path('backend/research/rebuild')
+          def load(name):
+              p=root/name
+              s=importlib.util.spec_from_file_location(name,p)
+              m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          tr=load('z_trendma_macd_rescue_one_axis_v1.py')
+          rr=load('z_top5_rr_grid_shadow_gate_v1.py')
+          nu=load('z_material_nursery_cxc_to_b_v1.py')
+          good={"trades":72,"net_pnl_bps":5000,"net_expectancy_bps":70,"profit_factor":1.5,"payoff":4.8,"drawdown_bps":4000,"top10_profit_concentration":0.7}
+          assert tr.verdict(good)['state']=='PASS_TOP6_RESCUE'
+          p={"trades":30,"win_rate":.7,"net_pnl_bps":100,"net_expectancy_bps":3,"profit_factor":2,"payoff":2,"drawdown_bps":10}
+          c={"trades":30,"win_rate":.7,"net_pnl_bps":101,"net_expectancy_bps":3.1,"profit_factor":2.1,"payoff":2.1,"drawdown_bps":9}
+          assert rr.judge(p,c)['state']=='PASS_RR_SHADOW_CHILD'
+          a={"net_expectancy_bps":1,"profit_factor":1.1,"drawdown_bps":20}
+          b={"net_expectancy_bps":2,"profit_factor":1.2,"drawdown_bps":30}
+          child={"trades":12,"net_pnl_bps":100,"net_expectancy_bps":3,"profit_factor":1.3,"payoff":2,"drawdown_bps":10}
+          assert nu.grade(a,b,child)['state']=='PASS_GRADE_B_MATERIAL'
+          print('PASS_Z_NEXT_ROADMAP_GATES_V1')
+          PY
+      - name: CLI smoke test nursery parser
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          printf '%s\n' '{"net_expectancy_bps":1,"profit_factor":1.1,"drawdown_bps":20}' > "$d/a.json"
+          printf '%s\n' '{"net_expectancy_bps":2,"profit_factor":1.2,"drawdown_bps":30}' > "$d/b.json"
+          printf '%s\n' '{"trades":12,"net_pnl_bps":100,"net_expectancy_bps":3,"profit_factor":1.3,"payoff":2,"drawdown_bps":10}' > "$d/c.json"
+          python backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
+            --parent-a "$d/a.json" --parent-b "$d/b.json" --child "$d/c.json" --out "$d/out.json"
+          test -s "$d/out.json"
+      - name: Six-binding auto-discovery contract
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/auto"
+          python - "$d/auto" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['binding_count']==6
+          assert b['ready_count']+b['hold_count']==6
+          assert b['bindings']['trendma_candidate']['status']=='READY_COMPOSITE'
+          assert b['bindings']['nursery_parent_a']['status']=='READY_COMPOSITE'
+          assert b['bindings']['nursery_parent_b']['status']=='READY_COMPOSITE'
+          # The actual nursery receipt currently has no executable child.  That is a truthful HOLD,
+          # not a reason to suppress TrendMA or RR processing.
+          assert b['bindings']['nursery_child']['status'] in {'READY_COMPOSITE','HOLD_SOURCE_MISSING'}
+          assert b['bindings']['rr_parent']['status']=='READY_COMPOSITE'
+          assert b['bindings']['rr_child']['status']=='READY_COMPOSITE'
+          assert s['state']=='COMPLETE_PASS_OR_HOLD'
+          assert set(s['stages']) >= {'trendma_rescue','cxc_nursery','top5_rr_shadow','donor_demotion'}
+          assert s['stages']['top5_rr_shadow'].get('reused_authoritative_receipt') is True
+          print(json.dumps({'ready':b['ready_count'],'hold':b['hold_count'],'stages':{k:v.get('state') for k,v in s['stages'].items()}},sort_keys=True))
+          PY
+      - name: Zero-usable-bindings must HOLD, never skip or fail-fast
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          missing="$d/does-not-exist.json"
+          Z_TRENDMA_CANDIDATE="$missing" \
+          Z_NURSERY_PARENT_A="$missing" \
+          Z_NURSERY_PARENT_B="$missing" \
+          Z_NURSERY_CHILD="$missing" \
+          Z_RR_PARENT="$missing" \
+          Z_RR_CHILD="$missing" \
+            python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/zero"
+          python - "$d/zero" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['binding_count']==6 and b['ready_count']==0 and b['hold_count']==6
+          assert all(x['status']=='HOLD_INVALID_EXPLICIT' for x in b['bindings'].values())
+          assert s['state']=='COMPLETE_PASS_OR_HOLD'
+          assert s['stages']['trendma_rescue']['state'].startswith('HOLD_')
+          assert s['stages']['cxc_nursery']['state'].startswith('HOLD_')
+          assert s['stages']['top5_rr_shadow']['state'].startswith('HOLD_')
+          print('PASS_ZERO_USABLE_BINDINGS_HOLD_NOT_SKIP')
+          PY
+      - name: One invalid explicit binding cannot poison independent RR stage
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          Z_TRENDMA_CANDIDATE="$d/missing.json" \
+            python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/one-invalid"
+          python - "$d/one-invalid" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['bindings']['trendma_candidate']['status']=='HOLD_INVALID_EXPLICIT'
+          assert s['stages']['trendma_rescue']['state']=='HOLD_TRENDMA_BINDING'
+          assert s['stages']['top5_rr_shadow'].get('reused_authoritative_receipt') is True
+          print('PASS_STAGE_INDEPENDENCE_AND_NO_HIDDEN_FALLBACK')
+          PY
+
+  roadmap-auto:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      Z_TRENDMA_CANDIDATE: ${{ inputs.trendma_candidate || vars.Z_TRENDMA_CANDIDATE }}
+      Z_NURSERY_PARENT_A: ${{ inputs.nursery_parent_a || vars.Z_NURSERY_PARENT_A }}
+      Z_NURSERY_PARENT_B: ${{ inputs.nursery_parent_b || vars.Z_NURSERY_PARENT_B }}
+      Z_NURSERY_CHILD: ${{ inputs.nursery_child || vars.Z_NURSERY_CHILD }}
+      Z_RR_PARENT: ${{ inputs.rr_parent || vars.Z_RR_PARENT }}
+      Z_RR_CHILD: ${{ inputs.rr_child || vars.Z_RR_CHILD }}
+      Z_OUT_DIR: artifacts/z_next_roadmap_auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run latest-only approved roadmap automatically
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/z_next_roadmap_auto_v1.py
+      - name: Publish roadmap summary
+        if: always()
+        run: |
+          if [ -f artifacts/z_next_roadmap_auto/summary.json ]; then
+            echo '## Z Next Roadmap Auto' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/z_next_roadmap_auto/summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f artifacts/z_next_roadmap_auto/binding_report.json ]; then
+            echo '## Six Binding Report' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/z_next_roadmap_auto/binding_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload roadmap artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-next-roadmap-auto-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/z_next_roadmap_auto/
+          if-no-files-found: error
+          retention-days: 14

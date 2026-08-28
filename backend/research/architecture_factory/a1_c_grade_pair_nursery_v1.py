@@ -167,10 +167,17 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
     evidence, evidence_ids = evidence_compact()
     queue: list[dict[str, Any]] = []
     provider: dict[str, Any] = {"request_count": 0, "successful": False, "reason": "NO_ELIGIBLE_C_PAIR" if not pairs else "NO_AI_MODE"}
+    generation_valid = False
 
     if pairs and not no_ai:
         model, raw, lineage = call_openai_generator(prompt(pairs, evidence, readiness))
-        validated = swarm.validate_candidates(raw, "openai", evidence_ids, {p["host_strategy_id"] for p in pairs})
+        try:
+            validated = swarm.validate_candidates(raw, "openai", evidence_ids, {p["host_strategy_id"] for p in pairs})
+        except RuntimeError as exc:
+            if str(exc) != "NO_VALID_GENERATED_CANDIDATES":
+                raise
+            validated = []
+            provider = {"request_count": 1, "successful": False, "reason": "NO_VALID_GENERATED_CANDIDATES", "model": model, **lineage, "generated": 0, "accepted_executable": 0}
         pair_by_id = {p["pair_id"]: p for p in pairs}
         strict_rows = []
         for row in validated:
@@ -181,8 +188,10 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
             if str(row.get("changed_axis") or "") != str(p["changed_axis"]):
                 continue
             strict_rows.append(row)
-        queue = swarm._attach(raw, strict_rows, allowed)
-        provider = {"request_count": 1, "successful": bool(queue), "model": model, **lineage, "generated": len(validated), "accepted_executable": len(queue)}
+        queue = swarm._attach(raw, strict_rows, allowed) if strict_rows else []
+        if validated:
+            provider = {"request_count": 1, "successful": bool(queue), "model": model, **lineage, "generated": len(validated), "accepted_executable": len(queue)}
+        generation_valid = bool(queue)
 
     dev = econ.evaluate_queue(queue) if queue else {"rows": [], "passes": [], "economic_pass_count": 0}
     dev_by_id = {str(x.get("candidate_id") or ""): x for x in dev.get("rows") or [] if isinstance(x, Mapping)}
@@ -207,10 +216,10 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
         if absolute_b:
             upgrades.append({"pair_id": p["pair_id"], "host_strategy_id": p["host_strategy_id"], "donor_strategy_id": p["donor_strategy_id"], "from_grade": "C", "to_grade": "B", "reason": "ABSOLUTE_AFTER_COST_ECONOMIC_PASS", "metrics": m})
 
-    attempted_now = {p["pair_id"] for p in pairs}
+    attempted_now = {p["pair_id"] for p in pairs} if generation_valid else set()
     result = {
         "schema_version": SCHEMA,
-        "state": "PASS_C_TO_B_MATERIAL_UPGRADE" if upgrades else ("HOLD_NO_NEW_C_PAIR" if not pairs else "HOLD_C_PAIR_NO_ABSOLUTE_ECONOMIC_PASS"),
+        "state": "PASS_C_TO_B_MATERIAL_UPGRADE" if upgrades else ("HOLD_NO_NEW_C_PAIR" if not pairs else ("HOLD_C_PAIR_GENERATION_INVALID" if not generation_valid and not no_ai else "HOLD_C_PAIR_NO_ABSOLUTE_ECONOMIC_PASS")),
         "material_strategy_count": int(mat.get("strategy_count") or 0),
         "eligible_c_material_count": len(cs),
         "eligible_c_material_ids": [x["strategy_id"] for x in cs],
@@ -221,12 +230,13 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
         "c_to_b_upgrades": upgrades,
         "attempted_pair_ids": sorted(prior_attempted | attempted_now),
         "failed_pair_retest_same_identity_allowed": False,
+        "invalid_generation_consumes_pair_identity": False,
         "max_pairs_per_run": MAX_PAIRS_PER_RUN,
         "max_paid_requests_per_run": MAX_PAID_REQUESTS_PER_RUN,
         "provider": provider,
         "grade_upgrade_gate": {"minimum_trades": 12, "net_pnl_positive": True, "net_expectancy_positive": True, "profit_factor_gt_1": True, "payoff_ge_1": True, "finite_drawdown": True, "verified_cost_bps": 14.0},
         "pair_policy": {"distinct_family_required": True, "host_identity_preserved": True, "one_donor_gene_only": True, "donor_numeric_threshold_copy": False, "outcome_selected_thresholds": False, "dedup_cosine_threshold": 0.85},
-        "next": "REENTER_B_AS_VALIDATED_DONOR" if upgrades else "NEXT_UNTRIED_C_PAIR_ON_MATERIAL_CHANGE_OR_MANUAL_RUN",
+        "next": "REENTER_B_AS_VALIDATED_DONOR" if upgrades else ("RETRY_SAME_PAIR_AFTER_GENERATOR_RECOVERY" if not generation_valid and pairs and not no_ai else "NEXT_UNTRIED_C_PAIR_ON_MATERIAL_CHANGE_OR_MANUAL_RUN"),
         "production_mutated": False,
         "selection_authority": False,
         "promotion_authority": False,

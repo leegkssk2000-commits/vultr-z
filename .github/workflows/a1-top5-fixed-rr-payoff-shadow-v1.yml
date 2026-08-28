@@ -5,20 +5,13 @@ on:
     paths:
       - 'backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_v1.py'
       - '.github/workflows/a1-top5-fixed-rr-payoff-shadow-v1.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_v1.py'
-      - '.github/workflows/a1-top5-fixed-rr-payoff-shadow-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '47 1,7,13,19 * * *'
 permissions:
-  contents: write
+  contents: read
   actions: read
 concurrency:
-  group: a1-global-heavy-economic-evaluator-v1
-  cancel-in-progress: false
+  group: a1-top5-fixed-rr-manual-audit-v1
+  cancel-in-progress: true
 jobs:
   shadow:
     runs-on: ubuntu-latest
@@ -46,7 +39,7 @@ jobs:
           unzip -q out/a4.zip -d out/a4
           gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
           unzip -q out/break.zip -d out/break
-      - name: Run exactly three user-fixed RR cells
+      - name: Reproduce exhausted fixed RR cells for audit only
         run: |
           set -euo pipefail
           python -m backend.research.rebuild.a1_top5_fixed_rr_payoff_shadow_v1 --trend70-source out/trend70/a1_exact25_drain_6_receipt.json --a4-source-dir out/a4 --break-source-dir out/break --out out/top5_rr.json
@@ -55,29 +48,15 @@ jobs:
           r=json.load(open('out/top5_rr.json'))
           assert r['cells']==[[2.5,0.75],[2.0,0.75],[1.5,0.45]]
           assert r['cell_policy']=='USER_FIXED_ONLY_NO_SWEEP' and len(r['lanes'])==5
+          assert sum(int(x['pass_count']) for x in r['lanes'])==0
           assert r['shadow_only'] is True and r['trend_rider_broad_g5_reference_mutated'] is False
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({'state':r['state'],'lanes':[{'lane':x['lane'],'T':x['base_metrics']['trades'],'pass':x['pass_count'],'best':x['best']} for x in r['lanes']]},sort_keys=True))
+          print(json.dumps({'state':r['state'],'strict_pass_total':sum(int(x['pass_count']) for x in r['lanes'])},sort_keys=True))
           PY
-      - name: Persist latest on master
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          cp out/top5_rr.json backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_latest.json
-          git config user.name a1-top5-fixed-rr-payoff-shadow
-          git config user.email actions@users.noreply.github.com
-          git add backend/research/rebuild/a1_top5_fixed_rr_payoff_shadow_latest.json
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Top5: persist fixed RR payoff shadow [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
-            sleep 3
-          done
-          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-top5-fixed-rr-payoff-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          name: a1-top5-fixed-rr-manual-audit-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/top5_rr.json
-          retention-days: 90
+          retention-days: 30

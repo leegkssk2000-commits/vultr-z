@@ -1,0 +1,62 @@
+name: A1 Top6 TrendMA Long Rebound V1
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py'
+      - '.github/workflows/a1-top6-trendma-long-rebound-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py'
+      - '.github/workflows/a1-top6-trendma-long-rebound-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_v1.py
+      - name: Rebuild TrendMA parent
+        run: |
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --terminal-replay --strategy-id trend_ma_macd --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' --out out/trend_ma_macd_parent.json
+      - name: Evaluate long-only structural rebound
+        run: |
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_long_rebound_v1 --parent out/trend_ma_macd_parent.json --out out/rebound.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/rebound.json'))
+          assert r['axis']=='LONG_ONLY_ENTRY_SIDE_QUALIFIER'
+          assert r['payoff_is_not_optimization_target_here'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          print(json.dumps({'state':r['state'],'native':r['native']['metrics'],'candidate':r['candidate']['metrics'],'checks':r['candidate']['checks']},sort_keys=True))
+          PY
+      - name: Persist latest on master
+        if: github.event_name != 'pull_request'
+        run: |
+          cp out/rebound.json backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json
+          git config user.name a1-top6-trendma-long-rebound
+          git config user.email actions@users.noreply.github.com
+          git add backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top6: persist TrendMA structural rebound [skip ci]'
+          git pull --rebase origin master && git push origin HEAD:master
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top6-trendma-long-rebound-${{ github.run_id }}
+          path: out/rebound.json
+          retention-days: 90

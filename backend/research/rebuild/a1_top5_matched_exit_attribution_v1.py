@@ -24,6 +24,7 @@ def q(xs:list[float],p:float)->float|None:
 
 
 def summary(rows:list[dict[str,Any]])->dict[str,Any]:
+    capture=[max(0.0,min(1.5,float(x['realized_r'])/float(x['mfe_r']))) for x in rows if float(x['realized_r'])>0 and float(x['mfe_r'])>0]
     return {
       'T':len(rows),
       'hold_bars_median':med([float(x['hold_bars']) for x in rows]),
@@ -32,6 +33,7 @@ def summary(rows:list[dict[str,Any]])->dict[str,Any]:
       'mae_r_median':med([float(x['mae_r']) for x in rows]),
       'giveback_r_median':med([float(x['giveback_r']) for x in rows]),
       'realized_r_median':med([float(x['realized_r']) for x in rows]),
+      'mfe_capture_ratio_median':med(capture),
     }
 
 
@@ -60,15 +62,17 @@ def row_path(src:Mapping[str,Any],bars:list[dict[str,Any]])->dict[str,Any]:
 
 def next_axis(win:dict[str,Any],loss:dict[str,Any])->str:
     # Diagnostic-only hypothesis selector. No same-sample adoption or promotion authority.
-    if int(loss.get('T') or 0)>=3:
-        lm=loss.get('mfe_r_median'); lh=loss.get('hold_bars_median'); wh=win.get('hold_bars_median')
-        if lm is not None and lh is not None and wh is not None and lm<0.5 and lh>wh:
-            return 'TIME_STOP_ONLY_PROSPECTIVE_HYPOTHESIS'
-    if int(win.get('T') or 0)>=3:
-        wm=win.get('mfe_r_median'); wg=win.get('giveback_r_median')
-        if wm is not None and wg is not None and wm>=2.0 and wg>=0.5:
+    wt=int(win.get('T') or 0); lt=int(loss.get('T') or 0)
+    lm=loss.get('mfe_r_median'); la=loss.get('mae_r_median'); lh=loss.get('hold_bars_median'); wh=win.get('hold_bars_median')
+    if lt>=3 and lm is not None and lh is not None and wh is not None and lm<0.5 and lh>wh:
+        return 'TIME_STOP_ONLY_PROSPECTIVE_HYPOTHESIS'
+    if wt>=3:
+        wm=win.get('mfe_r_median'); wg=win.get('giveback_r_median'); wc=win.get('mfe_capture_ratio_median')
+        if wm is not None and wg is not None and wc is not None and wm>=2.0 and wg>=0.5 and wc<0.75:
             return 'CONDITIONAL_RUNNER_TRAIL_ONLY_PROSPECTIVE_HYPOTHESIS'
-    return 'HOLD_NO_SINGLE_CAUSAL_EXIT_AXIS_YET'
+    if lt>=3 and lm is not None and la is not None and lh is not None and wh is not None and lm<0.5 and la>=1.0 and lh<=wh:
+        return 'PREENTRY_LOSS_FILTER_PROSPECTIVE_HYPOTHESIS'
+    return 'HOLD_NO_SINGLE_CAUSAL_AXIS_YET'
 
 
 def run(trend_path:Path,a4dir:Path,breakdir:Path,out:Path)->dict[str,Any]:
@@ -82,15 +86,16 @@ def run(trend_path:Path,a4dir:Path,breakdir:Path,out:Path)->dict[str,Any]:
         by_reason={}
         for x in rows: by_reason[str(x.get('reason') or 'UNKNOWN')]=by_reason.get(str(x.get('reason') or 'UNKNOWN'),0)+1
         ws,ls=summary(winners),summary(losers)
+        axis=next_axis(ws,ls)
         results.append({
           'lane':lane['lane'],'strategy_id':lane['strategy_id'],'reference':lane['reference'],'T':len(rows),
           'winner':ws,'loser':ls,'exit_reason_counts':dict(sorted(by_reason.items())),
-          'next_single_axis':next_axis(ws,ls),'same_sample_adoption_forbidden':True,
-          'rows':rows,
+          'next_single_axis':axis,'exit_only_exhausted':axis=='PREENTRY_LOSS_FILTER_PROSPECTIVE_HYPOTHESIS',
+          'same_sample_adoption_forbidden':True,'rows':rows,
         })
     r={
       'schema_version':SCHEMA,'state':'PASS_TOP5_MATCHED_EXIT_ATTRIBUTION_COMPLETE','lanes':results,
-      'purpose':'CAUSE_ATTRIBUTION_BEFORE_NEXT_EXIT_ONLY_TEST','fixed_tp_retest_forbidden':True,
+      'purpose':'CAUSE_ATTRIBUTION_BEFORE_NEXT_SINGLE_AXIS_TEST','fixed_tp_retest_forbidden':True,
       'loss_cap_retest_forbidden':True,'same_sample_selection_or_adoption_forbidden':True,
       'trend_rider_broad_g5_reference_mutated':False,'shadow_only':True,'production_mutated':False,
       'selection_authority':False,'promotion_authority':False,'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED','action':'hold'
@@ -101,8 +106,9 @@ def run(trend_path:Path,a4dir:Path,breakdir:Path,out:Path)->dict[str,Any]:
 def main()->int:
     ap=argparse.ArgumentParser(); ap.add_argument('--trend70-source',type=Path); ap.add_argument('--a4-source-dir',type=Path); ap.add_argument('--break-source-dir',type=Path); ap.add_argument('--out',type=Path,default=Path('out/a1_top5_matched_exit_attribution_v1.json')); ap.add_argument('--self-test',action='store_true'); a=ap.parse_args()
     if a.self_test:
-        assert next_axis({'T':3,'hold_bars_median':10,'mfe_r_median':1,'giveback_r_median':0},{'T':3,'hold_bars_median':20,'mfe_r_median':0.2})=='TIME_STOP_ONLY_PROSPECTIVE_HYPOTHESIS'
-        assert next_axis({'T':3,'hold_bars_median':10,'mfe_r_median':2.5,'giveback_r_median':0.8},{'T':2})=='CONDITIONAL_RUNNER_TRAIL_ONLY_PROSPECTIVE_HYPOTHESIS'
+        assert next_axis({'T':3,'hold_bars_median':10,'mfe_r_median':1,'giveback_r_median':0,'mfe_capture_ratio_median':1},{'T':3,'hold_bars_median':20,'mfe_r_median':0.2,'mae_r_median':1.2})=='TIME_STOP_ONLY_PROSPECTIVE_HYPOTHESIS'
+        assert next_axis({'T':3,'hold_bars_median':10,'mfe_r_median':2.5,'giveback_r_median':0.8,'mfe_capture_ratio_median':0.6},{'T':2})=='CONDITIONAL_RUNNER_TRAIL_ONLY_PROSPECTIVE_HYPOTHESIS'
+        assert next_axis({'T':5,'hold_bars_median':49,'mfe_r_median':20,'giveback_r_median':2,'mfe_capture_ratio_median':0.9},{'T':3,'hold_bars_median':6,'mfe_r_median':0.3,'mae_r_median':1.2})=='PREENTRY_LOSS_FILTER_PROSPECTIVE_HYPOTHESIS'
         print('PASS_A1_TOP5_MATCHED_EXIT_ATTRIBUTION_V1_SELF_TEST'); return 0
     if None in (a.trend70_source,a.a4_source_dir,a.break_source_dir): raise SystemExit('sources required')
     r=run(a.trend70_source,a.a4_source_dir,a.break_source_dir,a.out)

@@ -8,14 +8,22 @@ on:
     paths:
       - 'backend/research/rebuild/**'
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
       - 'backend/tests/**'
+      - '.github/workflows/a1-c-grade-pair-nursery-v1.yml'
+      - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
       - '.github/workflows/z-next-roadmap-gates-v1.yml'
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/rebuild/**'
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
       - 'backend/tests/**'
+      - '.github/workflows/a1-c-grade-pair-nursery-v1.yml'
+      - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
       - '.github/workflows/z-next-roadmap-gates-v1.yml'
   workflow_dispatch:
     inputs:
@@ -63,7 +71,26 @@ jobs:
             backend/research/rebuild/z_trendma_macd_rescue_one_axis_v1.py \
             backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
             backend/research/rebuild/z_top5_rr_grid_shadow_gate_v1.py \
-            backend/research/rebuild/z_next_roadmap_auto_v1.py
+            backend/research/rebuild/z_next_roadmap_auto_v1.py \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py
+      - name: Nursery single-writer guard
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          old=Path('.github/workflows/a1-c-grade-pair-nursery-v1.yml').read_text()
+          new=Path('.github/workflows/a1-c-grade-pair-nursery-v2.yml').read_text()
+          target='a1_c_grade_pair_nursery_latest.json'
+          assert target not in old, 'V1_MUST_NOT_WRITE_LATEST'
+          assert 'contents: write' not in old, 'V1_WRITE_PERMISSION_FORBIDDEN'
+          assert 'git push' not in old, 'V1_PUSH_FORBIDDEN'
+          assert 'schedule:' not in old, 'V1_SCHEDULE_FORBIDDEN'
+          assert target in new, 'V2_LATEST_WRITER_MISSING'
+          assert 'contents: write' in new and 'git push' in new
+          assert 'generator_contract_hardened' in new
+          print('PASS_NURSERY_SINGLE_WRITER_V2_ONLY')
+          PY
       - name: Gate contract tests
         run: |
           set -euo pipefail
@@ -115,8 +142,6 @@ jobs:
           assert b['bindings']['trendma_candidate']['status']=='READY_COMPOSITE'
           assert b['bindings']['nursery_parent_a']['status']=='READY_COMPOSITE'
           assert b['bindings']['nursery_parent_b']['status']=='READY_COMPOSITE'
-          # The actual nursery receipt currently has no executable child.  That is a truthful HOLD,
-          # not a reason to suppress TrendMA or RR processing.
           assert b['bindings']['nursery_child']['status'] in {'READY_COMPOSITE','HOLD_SOURCE_MISSING'}
           assert b['bindings']['rr_parent']['status']=='READY_COMPOSITE'
           assert b['bindings']['rr_child']['status']=='READY_COMPOSITE'

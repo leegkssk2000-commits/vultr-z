@@ -4,14 +4,24 @@ on:
   pull_request:
     branches: [master]
     paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py'
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - '.github/workflows/a1-c-grade-pair-nursery-v1.yml'
       - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
   push:
     branches: [master]
     paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py'
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - 'backend/research/prep/strategy_synthesis_material_ssot_v1.json'
+      - 'backend/research/rebuild/a1_exact25_disposition_ledger_v1.json'
+      - 'backend/research/rebuild/strategy25_structural_inventory_v2.json'
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_rebound_qualifier_latest.json'
+      - '.github/workflows/a1-c-grade-pair-nursery-v1.yml'
       - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '23 2 * * *'
 
 permissions:
   contents: write
@@ -31,8 +41,24 @@ jobs:
       - name: Verify hardened generator contract
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py
+          python -m py_compile \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v1.py \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py
           python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 --self-test
+      - name: Assert hardened V2 is the only nursery receipt writer
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          v1=Path('.github/workflows/a1-c-grade-pair-nursery-v1.yml').read_text()
+          v2=Path('.github/workflows/a1-c-grade-pair-nursery-v2.yml').read_text()
+          assert 'a1_c_grade_pair_nursery_latest.json' not in v1
+          assert 'contents: write' not in v1
+          assert 'git push' not in v1
+          assert 'a1_c_grade_pair_nursery_latest.json' in v2
+          assert "A1 synthesis: persist hardened C-grade pair nursery receipt" in v2
+          print('PASS_NURSERY_SINGLE_WRITER_V2')
+          PY
 
   nursery:
     if: github.event_name != 'pull_request'

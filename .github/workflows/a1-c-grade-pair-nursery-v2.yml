@@ -1,0 +1,91 @@
+name: A1 C-Grade Pair Nursery V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify hardened generator contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py
+          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 --self-test
+
+  nursery:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run hardened executable CxC nursery
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 \
+            --out out/a1_c_grade_pair_nursery_v2.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_c_grade_pair_nursery_v2.json'))
+          assert r['generator_contract_hardened'] is True
+          assert r['invalid_generation_is_auditable_hold_not_workflow_failure'] is True
+          assert r['max_pairs_per_run']==3 and r['max_paid_requests_per_run']==1
+          assert r['production_mutated'] is False
+          print(json.dumps({'state':r['state'],'c':r['eligible_c_material_count'],'pairs':r['pair_count_this_run'],'upgrades':r['c_to_b_upgrade_count'],'provider':r['provider'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist hardened nursery receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json
+          cp out/a1_c_grade_pair_nursery_v2.json "$target"
+          git config user.name 'a1-c-grade-pair-nursery-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 synthesis: persist hardened C-grade pair nursery receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-c-grade-pair-nursery-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_c_grade_pair_nursery_v2.json
+          if-no-files-found: error
+          retention-days: 90

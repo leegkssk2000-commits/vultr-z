@@ -4,8 +4,9 @@ The runner deliberately keeps live execution blocked.  It is safe to import in
 health checks and tests because it does not touch runtime data at import time.
 
 Architecture invariant:
-strategy -> raw candidate -> TeamBot(L/M/O/S) -> Z-OS risk/execution.
-A raw strategy signal can never be passed directly to an executor.
+strategy -> raw candidate -> TeamBot(L/M/O/S) -> Z-OS risk -> executor.
+A raw strategy signal or TeamBot-only signal can never be passed directly to an
+executor.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from engine.utils.state import load_state
 
 P0_P2_BLOCK_REASON = "p0_p2_gate_blocks_live_execution"
 TEAM_BYPASS_BLOCK_REASON = "team_bot_hierarchy_required"
+RISK_BYPASS_BLOCK_REASON = "z_os_risk_gate_required"
 
 
 def _utcnow() -> datetime:
@@ -117,14 +119,14 @@ def run_once(names: Iterable[str], **kwargs: Any) -> dict[str, Any]:
 
 def _decision_for_strategy(
     name: str,
-    team_decisions: Mapping[str, Any] | None,
-    shared_team_decision: Mapping[str, Any] | None,
+    per_strategy: Mapping[str, Any] | None,
+    shared: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
-    if isinstance(team_decisions, Mapping):
-        candidate = team_decisions.get(name)
+    if isinstance(per_strategy, Mapping):
+        candidate = per_strategy.get(name)
         if isinstance(candidate, Mapping):
             return candidate
-    return shared_team_decision if isinstance(shared_team_decision, Mapping) else None
+    return shared if isinstance(shared, Mapping) else None
 
 
 def _blocked_execution(reason: str) -> dict[str, Any]:
@@ -141,12 +143,15 @@ def run_and_trade(names: Iterable[str], symbol: str, qty: float | None = None, *
     if gate:
         return {name: gate for name in names}
 
+    from engine.risk_unit import authorize_execution
     from engine.router import route
     from engine.team_layer import authorize_team_signal
 
     routing_kwargs = dict(kwargs)
     team_decisions = routing_kwargs.pop("team_decisions", None)
     shared_team_decision = routing_kwargs.pop("team_decision", None)
+    risk_decisions = routing_kwargs.pop("risk_decisions", None)
+    shared_risk_decision = routing_kwargs.pop("risk_decision", None)
 
     results: dict[str, Any] = {}
     executor = select_exec()
@@ -159,21 +164,34 @@ def run_and_trade(names: Iterable[str], symbol: str, qty: float | None = None, *
             if not team_signal.get("execution_eligible"):
                 results[name] = {
                     "raw_signal": raw_signal,
+                    "team_signal": team_signal,
                     "signal": team_signal,
                     "execution": _blocked_execution(team_signal.get("reason", TEAM_BYPASS_BLOCK_REASON)),
+                }
+                continue
+
+            risk_decision = _decision_for_strategy(name, risk_decisions, shared_risk_decision)
+            execution_signal = authorize_execution(team_signal, risk_decision)
+            if not execution_signal.get("execution_eligible"):
+                results[name] = {
+                    "raw_signal": raw_signal,
+                    "team_signal": team_signal,
+                    "signal": execution_signal,
+                    "execution": _blocked_execution(execution_signal.get("reason", RISK_BYPASS_BLOCK_REASON)),
                 }
                 continue
 
             order = {
                 "symbol": symbol,
                 "strategy": name,
-                "signal": team_signal,
+                "signal": execution_signal,
             }
             if qty is not None:
                 order["qty"] = qty
             results[name] = {
                 "raw_signal": raw_signal,
-                "signal": team_signal,
+                "team_signal": team_signal,
+                "signal": execution_signal,
                 "execution": executor.place(order),
             }
         except Exception as exc:

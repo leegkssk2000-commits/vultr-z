@@ -30,7 +30,7 @@ def validate_policy(p: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("A1_L2_POLICY_SCHEMA_INVALID")
     if p.get("family") != "l2_imbalance_adverse_selection":
         raise RuntimeError("A1_L2_FAMILY_INVALID")
-    if p.get("role") != "A1_MINIMAL_PROSPECTIVE_ECONOMIC_FALSIFICATION":
+    if p.get("role") != "PASSIVE_OBSERVER_COST_FUTILITY":
         raise RuntimeError("A1_L2_ROLE_INVALID")
     if p.get("symbols") != ["BTC-USDT", "ETH-USDT"]:
         raise RuntimeError("A1_L2_SYMBOLS_INVALID")

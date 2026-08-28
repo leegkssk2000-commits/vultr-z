@@ -7,38 +7,40 @@ on:
       - z-roadmap-trendma-nursery-rr-v1
     paths:
       - 'backend/research/rebuild/**'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
       - 'backend/tests/**'
       - '.github/workflows/z-next-roadmap-gates-v1.yml'
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/rebuild/**'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_latest.json'
       - 'backend/tests/**'
       - '.github/workflows/z-next-roadmap-gates-v1.yml'
   workflow_dispatch:
     inputs:
       trendma_candidate:
-        description: 'TrendMA/MACD rescue candidate JSON path'
+        description: 'Optional explicit TrendMA JSON override; invalid explicit paths never auto-fallback'
         required: false
         type: string
       nursery_parent_a:
-        description: 'C-grade nursery parent A JSON path'
+        description: 'Optional explicit C-grade nursery parent A raw metrics JSON'
         required: false
         type: string
       nursery_parent_b:
-        description: 'C-grade nursery parent B JSON path'
+        description: 'Optional explicit C-grade nursery parent B raw metrics JSON'
         required: false
         type: string
       nursery_child:
-        description: 'C x C nursery child JSON path'
+        description: 'Optional explicit C x C nursery child raw metrics JSON'
         required: false
         type: string
       rr_parent:
-        description: 'Frozen Top5 RR parent JSON path'
+        description: 'Optional explicit frozen Top5 RR parent raw metrics JSON'
         required: false
         type: string
       rr_child:
-        description: 'Top5 RR shadow child JSON path'
+        description: 'Optional explicit Top5 RR shadow child raw metrics JSON'
         required: false
         type: string
 
@@ -62,7 +64,7 @@ jobs:
             backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
             backend/research/rebuild/z_top5_rr_grid_shadow_gate_v1.py \
             backend/research/rebuild/z_next_roadmap_auto_v1.py
-      - name: Contract tests
+      - name: Gate contract tests
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -97,10 +99,78 @@ jobs:
           python backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
             --parent-a "$d/a.json" --parent-b "$d/b.json" --child "$d/c.json" --out "$d/out.json"
           test -s "$d/out.json"
+      - name: Six-binding auto-discovery contract
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/auto"
+          python - "$d/auto" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['binding_count']==6
+          assert b['ready_count']+b['hold_count']==6
+          assert b['bindings']['trendma_candidate']['status']=='READY_COMPOSITE'
+          assert b['bindings']['nursery_parent_a']['status']=='READY_COMPOSITE'
+          assert b['bindings']['nursery_parent_b']['status']=='READY_COMPOSITE'
+          # The actual nursery receipt currently has no executable child.  That is a truthful HOLD,
+          # not a reason to suppress TrendMA or RR processing.
+          assert b['bindings']['nursery_child']['status'] in {'READY_COMPOSITE','HOLD_SOURCE_MISSING'}
+          assert b['bindings']['rr_parent']['status']=='READY_COMPOSITE'
+          assert b['bindings']['rr_child']['status']=='READY_COMPOSITE'
+          assert s['state']=='COMPLETE_PASS_OR_HOLD'
+          assert set(s['stages']) >= {'trendma_rescue','cxc_nursery','top5_rr_shadow','donor_demotion'}
+          assert s['stages']['top5_rr_shadow'].get('reused_authoritative_receipt') is True
+          print(json.dumps({'ready':b['ready_count'],'hold':b['hold_count'],'stages':{k:v.get('state') for k,v in s['stages'].items()}},sort_keys=True))
+          PY
+      - name: Zero-usable-bindings must HOLD, never skip or fail-fast
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          missing="$d/does-not-exist.json"
+          Z_TRENDMA_CANDIDATE="$missing" \
+          Z_NURSERY_PARENT_A="$missing" \
+          Z_NURSERY_PARENT_B="$missing" \
+          Z_NURSERY_CHILD="$missing" \
+          Z_RR_PARENT="$missing" \
+          Z_RR_CHILD="$missing" \
+            python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/zero"
+          python - "$d/zero" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['binding_count']==6 and b['ready_count']==0 and b['hold_count']==6
+          assert all(x['status']=='HOLD_INVALID_EXPLICIT' for x in b['bindings'].values())
+          assert s['state']=='COMPLETE_PASS_OR_HOLD'
+          assert s['stages']['trendma_rescue']['state'].startswith('HOLD_')
+          assert s['stages']['cxc_nursery']['state'].startswith('HOLD_')
+          assert s['stages']['top5_rr_shadow']['state'].startswith('HOLD_')
+          print('PASS_ZERO_USABLE_BINDINGS_HOLD_NOT_SKIP')
+          PY
+      - name: One invalid explicit binding cannot poison independent RR stage
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          Z_TRENDMA_CANDIDATE="$d/missing.json" \
+            python backend/research/rebuild/z_next_roadmap_auto_v1.py --out-dir "$d/one-invalid"
+          python - "$d/one-invalid" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          b=json.load(open(root/'binding_report.json'))
+          s=json.load(open(root/'summary.json'))
+          assert b['bindings']['trendma_candidate']['status']=='HOLD_INVALID_EXPLICIT'
+          assert s['stages']['trendma_rescue']['state']=='HOLD_TRENDMA_BINDING'
+          assert s['stages']['top5_rr_shadow'].get('reused_authoritative_receipt') is True
+          print('PASS_STAGE_INDEPENDENCE_AND_NO_HIDDEN_FALLBACK')
+          PY
 
   roadmap-auto:
     needs: verify
-    if: ${{ github.event_name == 'workflow_dispatch' || (vars.Z_TRENDMA_CANDIDATE != '' && vars.Z_NURSERY_PARENT_A != '' && vars.Z_NURSERY_PARENT_B != '' && vars.Z_NURSERY_CHILD != '' && vars.Z_RR_PARENT != '' && vars.Z_RR_CHILD != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -129,11 +199,17 @@ jobs:
             cat artifacts/z_next_roadmap_auto/summary.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f artifacts/z_next_roadmap_auto/binding_report.json ]; then
+            echo '## Six Binding Report' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/z_next_roadmap_auto/binding_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload roadmap artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: z-next-roadmap-auto-${{ github.run_id }}
+          name: z-next-roadmap-auto-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/z_next_roadmap_auto/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14

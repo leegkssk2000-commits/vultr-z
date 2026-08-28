@@ -15,6 +15,9 @@ from backend.research.alpha_proof.a1_alpha_proof_gate_v2 import (
 SCHEMA_VERSION = "zel.a1_gen2_post_econ_alpha_intake.v1"
 AUTHORITY = {
     "research_only": True,
+    "alpha_proof_required": True,
+    "preregistration_blocked_without_receipt": True,
+    "alpha_proof_authorization_state": "BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT",
     "selection_authority": False,
     "promotion_authority": False,
     "execution_authority": "NONE",
@@ -197,6 +200,9 @@ def self_test() -> int:
     r = build(swarm)
     assert r["state"] == "PASS_POST25_ALPHA_INTAKE_READY", r
     assert r["intake_ready_count"] == 1
+    assert r["alpha_proof_required"] is True
+    assert r["preregistration_blocked_without_receipt"] is True
+    assert r["alpha_proof_authorization_state"] == "BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT"
     assert r["selection_authority"] is False
     assert set(CANDIDATE_IDENTITY_FIELDS).issubset(r["rows"][0]["candidate_identity_payload"])
     assert r["rows"][0]["development_receipt"]["economic_pass"] is True

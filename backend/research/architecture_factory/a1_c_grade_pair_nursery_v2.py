@@ -73,7 +73,6 @@ def dsl_preflight(candidate: Mapping[str, Any]) -> dict[str, Any]:
 
     rows: list[dict[str, float]] = []
     for i in range(96):
-        # Values are irrelevant to AST validation; keep every supported raw field present.
         rows.append({
             "ts": float(i * 3_600_000),
             "open": 100.0,
@@ -171,7 +170,7 @@ def prompt_v2(pairs: list[dict[str, Any]], evidence: list[dict[str, Any]], readi
             "why_distinct": "why the donor mechanism adds a distinct causal axis",
             "executable_spec": {
                 "bar_interval": "5m|15m|30m|1h|4h|1d",
-                "features": [{"name": "snake_case_identifier", "formula": "expression using only evaluator DSL"}],
+                "features": [{"name": "snake_case_identifier", "formula": "POSITIONAL_ARGUMENTS_ONLY evaluator-DSL expression"}],
                 "entry_rule": "boolean evaluator-DSL expression",
                 "side_rule": "long|short|long if <expr> else short|short if <expr> else long",
                 "exit_rule": "time_stop|max_hold|max_hold_bars|boolean evaluator-DSL expression",
@@ -190,7 +189,8 @@ def prompt_v2(pairs: list[dict[str, Any]], evidence: list[dict[str, Any]], readi
         "Preserve host identity. Import exactly ONE qualitative donor_gene mechanism. Never copy donor numeric thresholds. Never add a second mechanism. "
         "required_sources MUST be non-empty and a subset of REPLAY_READY_SOURCES. evidence_ids MUST contain 1-3 IDs copied exactly from EVIDENCE_IDS. "
         "EXECUTOR DSL IS HARD, NOT ADVISORY. Feature names must be snake_case identifiers. Use only raw names open/high/low/close/volume plus replay-ready source fields, earlier declared feature names, operators, and ALLOWED_DSL_FUNCTIONS. "
-        "Do NOT use prose, dotted attributes, arrays, dicts, assignments in entry/exit rules, unknown indicator names, or side syntax outside SIDE_RULE_FORMS. "
+        "FUNCTION CALL ARGUMENTS ARE POSITIONAL-ONLY. Keyword arguments are forbidden by the evaluator AST: use sma(close,24), NEVER sma(close, window=24). "
+        "Do NOT use prose, dotted attributes, arrays, dicts, assignments in entry/exit rules, unknown indicator names, keyword arguments, or side syntax outside SIDE_RULE_FORMS. "
         "Every emitted candidate MUST include every generic architecture field AND a deterministic executable_spec. Numeric values are allowed only when inherited from host native constants or structurally defined by the mechanism; no threshold sweep, no best-horizon selection, no outcome-selected filtering. "
         "Same 14bps development economics will kill the child unless it achieves >=12T, Net PnL>0, Net expectancy>0, PF>1, payoff>=1, finite DD. Do not claim it passes; only emit an executable hypothesis. "
         "CONTRACT=" + json.dumps(contract, sort_keys=True, separators=(",", ":")) +
@@ -263,7 +263,7 @@ def run(output: Path, *, no_ai: bool = False) -> dict[str, Any]:
     result["generator_contract_hardened"] = True
     result["invalid_generation_is_auditable_hold_not_workflow_failure"] = True
     result["evaluator_dsl_preflight_required"] = True
-    # Recompute receipt after wrapper annotations.
+    result["function_call_argument_contract"] = "POSITIONAL_ONLY_KEYWORDS_FORBIDDEN"
     result["receipt_sha256"] = v1.stable({k: val for k, val in result.items() if k != "receipt_sha256"})
     output.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return result
@@ -273,7 +273,7 @@ def self_test() -> int:
     evidence = [{"id": "F1", "claim": "x"}]
     p = [{"pair_id":"CPAIR__a__X__b__g","host_strategy_id":"a","host_family":"trend","donor_strategy_id":"b","donor_gene":"g","changed_axis":"C_PAIR__B__G__ONLY"}]
     text = prompt_v2(p, evidence, {"ohlcv":{"ready":True},"funding":{"ready":False}})
-    for required in ("mode=REPAIR EXACTLY", "candidate_id=pair_id EXACTLY", "executable_spec", "evidence_ids", "REPLAY_READY_SOURCES", "ALLOWED_DSL_FUNCTIONS", "SIDE_RULE_FORMS"):
+    for required in ("mode=REPAIR EXACTLY", "candidate_id=pair_id EXACTLY", "executable_spec", "evidence_ids", "REPLAY_READY_SOURCES", "ALLOWED_DSL_FUNCTIONS", "SIDE_RULE_FORMS", "POSITIONAL-ONLY", "Keyword arguments are forbidden"):
         assert required in text
     assert '"ohlcv"' in text
 
@@ -298,6 +298,12 @@ def self_test() -> int:
     bad["executable_spec"]["entry_rule"] = "mystery_indicator > 0"
     check = dsl_preflight(bad)
     assert check["ok"] is False and "UNKNOWN_NAME" in str(check["error"])
+
+    bad_kw = json.loads(json.dumps(good))
+    bad_kw["candidate_id"] = "bad_kw"
+    bad_kw["executable_spec"]["features"][0]["formula"] = "sma(close, window=24)"
+    kw_check = dsl_preflight(bad_kw)
+    assert kw_check["ok"] is False and "keyword" in str(kw_check["error"]).lower()
     print("PASS_A1_C_GRADE_PAIR_NURSERY_V2_SELF_TEST")
     return 0
 

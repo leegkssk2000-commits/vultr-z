@@ -110,10 +110,27 @@ def payoff_stage(out_dir: Path, compiler: Mapping[str, Any]) -> tuple[dict[str, 
 def rr_stage(value: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     lanes = value.get('lanes') if isinstance(value.get('lanes'), list) else []
     pass_count = sum(int(x.get('pass_count') or 0) for x in lanes if isinstance(x, Mapping))
-    cells = int(value.get('cells') or 0)
+    raw_cells = value.get('cells')
+    if isinstance(raw_cells, list):
+        cells = len(raw_cells)
+        cell_input_shape = 'LIST_SPEC'
+    elif isinstance(raw_cells, (int, float)) and not isinstance(raw_cells, bool) and math.isfinite(float(raw_cells)):
+        cells = max(0, int(raw_cells))
+        cell_input_shape = 'COUNT'
+    else:
+        cells = 0
+        cell_input_shape = type(raw_cells).__name__.upper() if raw_cells is not None else 'MISSING'
+    lane_cell_counts = [
+        len(x.get('cells')) for x in lanes
+        if isinstance(x, Mapping) and isinstance(x.get('cells'), list)
+    ]
+    cell_contract_consistent = cells > 0 and all(n == cells for n in lane_cell_counts)
     out = {
         'state':value.get('state'),
         'cells':cells,
+        'cell_input_shape':cell_input_shape,
+        'lane_cell_counts':lane_cell_counts,
+        'cell_contract_consistent':cell_contract_consistent,
         'lane_count':len(lanes),
         'strict_pass_count':pass_count,
         'strict_upgrade_present':pass_count > 0,
@@ -122,7 +139,13 @@ def rr_stage(value: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, A
         'best_cell_selection_performed':False,
         'next':'INDEPENDENT_PREREGISTERED_PAYOFF_AXIS_ONLY' if pass_count == 0 else 'FRESH_VALIDATE_STRICT_PASS_BEFORE_ANY_USE',
     }
-    blockers = [] if pass_count else [{'stage':'fixed_rr','class':'ECONOMIC_QUALITY','state':'HOLD','reason':'fixed-RR grid has zero strict upgrade cells; no retrospective best-cell promotion'}]
+    if not cell_contract_consistent:
+        out['state'] = 'HOLD_RR_CELL_CONTRACT'
+        blockers = [{'stage':'fixed_rr','class':'SOFTWARE_CONTRACT','state':'HOLD','reason':f'RR cells contract inconsistent: shape={cell_input_shape}, cells={cells}, lane_cells={lane_cell_counts}'}]
+    elif pass_count == 0:
+        blockers = [{'stage':'fixed_rr','class':'ECONOMIC_QUALITY','state':'HOLD','reason':'fixed-RR grid has zero strict upgrade cells; no retrospective best-cell promotion'}]
+    else:
+        blockers = []
     return out, blockers
 
 
@@ -206,8 +229,18 @@ def self_test() -> int:
     g = {'state':'WAIT_G5_W2_12','old_history_union':False,'threshold_retune':False,'policy_retune':False,'windows':{'W2':{'target_T':12,'metrics':{'trades':0}},'W3':{'target_T':12,'metrics':{'trades':0}}},'checks':{}}
     gs, gb = g5_stage(g)
     assert gs['classification'] == 'TIME_SAMPLE' and gb[0]['state'] == 'WAIT' and gs['W2_target_T'] == 12
-    rr, rb = rr_stage({'state':'HOLD_NO_FIXED_RR_UPGRADE','cells':45,'lanes':[{'pass_count':0}]})
-    assert rr['best_cell_selection_performed'] is False and rb[0]['class'] == 'ECONOMIC_QUALITY'
+
+    rr_count, rb_count = rr_stage({'state':'HOLD_NO_FIXED_RR_UPGRADE','cells':3,'lanes':[{'pass_count':0,'cells':[{}, {}, {}]}]})
+    assert rr_count['cells'] == 3 and rr_count['cell_input_shape'] == 'COUNT' and rr_count['cell_contract_consistent'] is True
+    assert rr_count['best_cell_selection_performed'] is False and rb_count[0]['class'] == 'ECONOMIC_QUALITY'
+
+    rr_list, rb_list = rr_stage({'state':'HOLD_NO_FIXED_RR_UPGRADE','cells':[[2.5,0.75],[2.0,0.75],[1.5,0.45]],'lanes':[{'pass_count':0,'cells':[{}, {}, {}]}]})
+    assert rr_list['cells'] == 3 and rr_list['cell_input_shape'] == 'LIST_SPEC' and rr_list['cell_contract_consistent'] is True
+    assert rb_list[0]['class'] == 'ECONOMIC_QUALITY'
+
+    rr_bad, rb_bad = rr_stage({'state':'X','cells':[[2.5,0.75]],'lanes':[{'pass_count':0,'cells':[{}, {}]}]})
+    assert rr_bad['state'] == 'HOLD_RR_CELL_CONTRACT' and rb_bad[0]['class'] == 'SOFTWARE_CONTRACT'
+
     top, tb = top5_stage({'state':'CURRENT_TOP5_ONLY','record_policy':{'use_only_this_file_for_current_top5_reporting':True,'old_history_union':False},'top5':[{'rank':1,'strategy':'x','fresh_to_25':{'T_needed':2}}]})
     assert top['latest_only_integrity'] is True and tb[0]['state'] == 'WAIT'
     print('PASS_Z_AUTONOMOUS_PROFIT_MATERIAL_G5_TOP5_V1_SELF_TEST')
@@ -235,7 +268,6 @@ def run(out: Path, out_dir: Path) -> dict[str, Any]:
     cs, cb = source_stage('c_pair_compiler', C_COMPILER, 'zel.a1.c_pair_deterministic_compiler')
     if compiler:
         cs.update({'development_state':compiler.get('development_state'),'metrics':compiler.get('metrics'),'grade':compiler.get('material_grade'),'next':compiler.get('next')})
-        # Exact payoff-only near-pass is a safe deterministic repair trigger.
         near, checks = payoff_bridge.payoff_only_near_pass(compiler)
         cs['grade_b_checks'] = checks; cs['payoff_only_near_pass'] = near
     stages['c_pair_compiler'] = cs; blockers.extend(cb)
@@ -271,7 +303,6 @@ def run(out: Path, out_dir: Path) -> dict[str, Any]:
         ts, tb = ts0, tb0
     stages['top5'] = ts; blockers.extend(tb)
 
-    # De-duplicate blocker records while retaining stage-specific truth.
     seen: set[str] = set(); uniq: list[dict[str, Any]] = []
     for b in blockers:
         key = json.dumps(b, sort_keys=True, separators=(',', ':'))

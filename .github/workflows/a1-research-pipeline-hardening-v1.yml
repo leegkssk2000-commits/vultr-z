@@ -1,0 +1,92 @@
+name: A1 Research Pipeline Hardening V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_research_pipeline_hardening_v1.py'
+      - 'backend/research/architecture_factory/a1_external_evidence_test_ledger_v1.json'
+      - 'backend/research/architecture_factory/a1_mechanism_first_research_latest.json'
+      - 'backend/research/architecture_factory/a1_youtube_evidence_latest.json'
+      - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_latest.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/production/zel_production_external_research_observer_v1.py'
+      - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v4.py'
+      - 'backend/research/architecture_factory/a1_named_channel_gemini_sweep_v6.py'
+      - '.github/workflows/a1-named-channel-gemini-sweep-v1.yml'
+      - '.github/workflows/a1-a5-economic-improvement-v5.yml'
+      - '.github/workflows/a1-research-pipeline-hardening-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-research-pipeline-hardening-v1
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test deterministic terminal audit
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_research_pipeline_hardening_v1.py
+          python -m backend.research.architecture_factory.a1_research_pipeline_hardening_v1 --self-test
+      - name: Run source-to-test terminal audit
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_research_pipeline_hardening_v1 \
+            --output out/a1_research_pipeline_hardening_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_research_pipeline_hardening_latest.json',encoding='utf-8'))
+          assert r['state']=='RESEARCH_PIPELINE_HARDENED_COMPLETE',r['checks']
+          assert all(r['checks'].values()),r['checks']
+          b=r['evidence_bridge']
+          assert b['current_ready_named_axes']==0 or b['traceable_tests']>0
+          assert b['traceable_tests']>0
+          assert b['falsified_count']+b['development_pass_count']>0
+          assert r['semantic_novelty_ledger']['cosine_threshold_strict_gt']==0.85
+          assert r['semantic_novelty_ledger']['unique_mechanism_clusters']>0
+          assert r['provider_hardening']['named_pipeline_self_tests_bound_in_ci'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['protected_mutations']==0
+          print(json.dumps({'state':r['state'],'ready':b['current_ready_named_axes'],'tested':b['traceable_tests'],'falsified':b['falsified_count'],'dev_pass':b['development_pass_count'],'clusters':r['semantic_novelty_ledger']['unique_mechanism_clusters'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist terminal hardening and semantic novelty receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_research_pipeline_hardening_latest.json
+          cp out/a1_research_pipeline_hardening_latest.json "$target"
+          git config user.name 'a1-research-pipeline-hardening-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist research pipeline hardened terminal receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=20 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-research-pipeline-hardening-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_research_pipeline_hardening_latest.json
+          if-no-files-found: error
+          retention-days: 30

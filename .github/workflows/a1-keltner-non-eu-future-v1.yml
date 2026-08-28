@@ -1,0 +1,114 @@
+name: A1 Keltner NON_EU Future V1
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_non_eu_future_v1.py'
+      - '.github/workflows/a1-keltner-non-eu-future-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_keltner_non_eu_future_v1.py'
+      - '.github/workflows/a1-keltner-non-eu-future-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3,9,15,21 * * *'
+permissions:
+  contents: write
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and verify preregistered root cause
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_non_eu_future_v1.py
+          python -m backend.research.rebuild.a1_keltner_non_eu_future_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: master, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Verify contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_keltner_non_eu_future_v1.py
+          python -m backend.research.rebuild.a1_keltner_non_eu_future_v1 --self-test
+      - name: Rebuild current Keltner parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay --strategy-id keltner_trend --symbols "$SYMBOLS" \
+            --out out/keltner_current.json
+      - name: Materialize prereg boundary then rerun salvage lane
+        run: |
+          set -euo pipefail
+          B=backend/research/rebuild/a1_keltner_non_eu_future_boundary_v1.json
+          if [ ! -f "$B" ]; then
+            python -m backend.research.rebuild.a1_keltner_non_eu_future_v1 \
+              --current-parent out/keltner_current.json --freeze-current \
+              --out out/boundary.json
+            cp out/boundary.json "$B"
+          fi
+          python -m backend.research.rebuild.a1_keltner_non_eu_future_v1 \
+            --current-parent out/keltner_current.json --boundary "$B" \
+            --out out/a1_keltner_non_eu_future_latest.json
+          python - <<'PY'
+          import json
+          b=json.load(open('backend/research/rebuild/a1_keltner_non_eu_future_boundary_v1.json'))
+          r=json.load(open('out/a1_keltner_non_eu_future_latest.json'))
+          assert b['state']=='FROZEN_KELTNER_NON_EU_PREREG_BOUNDARY'
+          assert b['preregistered_at_ms']==1787869913000
+          assert b['preregistered_source_commit']=='f2fbd543cd188df537707d3231f755c39cfb721c'
+          assert b['preregistered_receipt_sha256']=='0e01694fe000eab616d9f940f4a9d63846bd7efa62c6dec6f039546599aaefb7'
+          assert b['retroactive_use_of_pre_boundary_trades_for_pass'] is False
+          assert b['post_prereg_existing_trades_may_be_replayed'] is True
+          assert b['numeric_threshold_sweep'] is False
+          assert r['changed_axis']=='PREENTRY_SESSION_NON_EU_ONLY'
+          assert r['preregistered_at_ms']==1787869913000
+          assert r['policy']['separate_from_existing_us_open_child'] is True
+          assert r['policy']['eligibility_boundary_is_first_preregistered_root_cause_receipt'] is True
+          assert r['policy']['post_prereg_existing_trades_may_be_replayed'] is True
+          assert r['policy']['retroactive_pre_boundary_pass_evidence_forbidden'] is True
+          assert r['production_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'boundary_T':r['boundary_parent_T'],'current_T':r['current_parent_T'],'fresh_all_T':r['fresh_all_T'],'fresh_non_eu_T':r['fresh_accepted_T'],'fresh_eu_rejected_T':r['fresh_rejected_eu_T'],'blockers':r['promotion_blockers']},sort_keys=True))
+          PY
+      - name: Persist boundary and latest receipt
+        run: |
+          set -euo pipefail
+          cp out/a1_keltner_non_eu_future_latest.json backend/research/rebuild/a1_keltner_non_eu_future_latest.json
+          git config user.name a1-keltner-non-eu-future
+          git config user.email actions@users.noreply.github.com
+          git add backend/research/rebuild/a1_keltner_non_eu_future_boundary_v1.json backend/research/rebuild/a1_keltner_non_eu_future_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Keltner: persist NON_EU prereg salvage lane [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-keltner-non-eu-future-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_keltner_non_eu_future_latest.json
+            backend/research/rebuild/a1_keltner_non_eu_future_boundary_v1.json
+          retention-days: 90

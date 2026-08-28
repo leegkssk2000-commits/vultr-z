@@ -1,0 +1,55 @@
+name: A1 C-Pair Trend Pullback Kernel V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_c_pair_trend_pullback_kernel_v1.py'
+      - '.github/workflows/a1-c-pair-trend-pullback-kernel-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_c_pair_trend_pullback_kernel_v1.py
+          python -m backend.research.architecture_factory.a1_c_pair_trend_pullback_kernel_v1 --self-test
+      - name: Evaluate second deterministic CxC kernel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_c_pair_trend_pullback_kernel_v1 --out out/cpair2.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/cpair2.json'))
+          assert r['provider_request_count']==0
+          assert r['donor_numeric_threshold_copy'] is False
+          assert r['production_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'pair':r['pair_id'],'child':r['child_material_id'],'metrics':r.get('metrics',{}),'upgrade':r['c_to_b_upgrade_pass'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-c-pair-trend-pullback-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/cpair2.json
+          if-no-files-found: error
+          retention-days: 90

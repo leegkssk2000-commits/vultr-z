@@ -89,6 +89,7 @@ jobs:
           r=json.load(open('out/a1_terminal_repair_swarm_v5.json'))
           roi=r.get('api_roi') or {}
           calls=roi.get('request_counts') or {}
+          alpha=r.get('post_econ_alpha_intake') or {}
           assert r['research_only'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
@@ -96,10 +97,11 @@ jobs:
           assert int(r['protected_mutations'])==0
           assert float(r['dedup_cosine_threshold'])==0.85
           assert r['terminal_count']>=10
-          assert r['alpha_proof_required'] is True
-          assert r['preregistration_blocked_without_receipt'] is True
-          assert int(r['eligible_count'])==0
-          assert r['launch']['state']=='BLOCKED_UNTIL_PASS_ALPHA_PROOF_RECEIPT'
+          assert alpha.get('research_only') is True
+          assert alpha.get('selection_authority') is False and alpha.get('promotion_authority') is False
+          assert alpha.get('execution_authority')=='NONE' and alpha.get('order_authority')=='BLOCKED'
+          assert alpha.get('live_trade_authority')=='BLOCKED' and alpha.get('exchange_order_submitted') is False
+          assert int(alpha.get('protected_mutations') or 0)==0
           assert int(roi.get('paid_request_count') or 0) <= 3, roi
           assert int(calls.get('openai_batch') or 0) <= 1, calls
           assert int(calls.get('gemini_rescue_batch') or 0) <= 1, calls
@@ -115,7 +117,7 @@ jobs:
             'calls':calls,
             'machine':r['machine_replayable_count'],
             'economic_pass':r['development_economic_pass_count'],
-            'alpha_intake':(r.get('post_econ_alpha_intake') or {}).get('state'),
+            'alpha_intake':alpha.get('state'),
           },ensure_ascii=False,sort_keys=True))
           PY
       - name: Persist identical-input cache receipt
@@ -142,9 +144,9 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          r=json.load(open('out/a1_terminal_repair_swarm_v5.json')); roi=r.get('api_roi') or {}; calls=roi.get('request_counts') or {}
+          r=json.load(open('out/a1_terminal_repair_swarm_v5.json')); roi=r.get('api_roi') or {}; calls=roi.get('request_counts') or {}; alpha=r.get('post_econ_alpha_intake') or {}
           marker='<!-- A1_TERMINAL_REPAIR_SWARM_V5_API_ROI -->'
-          lines=[marker,'## A1 Terminal Repair Swarm V5 — API ROI',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"mode={r.get('run_mode')}|cache_hit={roi.get('cache_hit')}|paid_requests={roi.get('paid_request_count')}/3",f"calls=openai_batch:{calls.get('openai_batch',0)},gemini_rescue:{calls.get('gemini_rescue_batch',0)},openai_repair_batch:{calls.get('openai_repair_batch',0)}",f"done={r['ledger_done_count']}/25|terminal={r['terminal_count']}|machine={r['machine_replayable_count']}|development_economic_pass={r['development_economic_pass_count']}",f"alpha_intake={(r.get('post_econ_alpha_intake') or {}).get('state')}|alpha_proof_ready={r['alpha_proof_ready_count']}|prereg_eligible=0",'policy=deterministic economics before Gemini rescue; no pre-economics critics; identical input signature => zero paid AI','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
+          lines=[marker,'## A1 Terminal Repair Swarm V5 — API ROI',f"run={os.environ['RUN_ID']}",f"receipt={r['receipt_sha256']}",f"mode={r.get('run_mode')}|cache_hit={roi.get('cache_hit')}|paid_requests={roi.get('paid_request_count')}/3",f"calls=openai_batch:{calls.get('openai_batch',0)},gemini_rescue:{calls.get('gemini_rescue_batch',0)},openai_repair_batch:{calls.get('openai_repair_batch',0)}",f"done={r['ledger_done_count']}/25|terminal={r['terminal_count']}|machine={r['machine_replayable_count']}|development_economic_pass={r['development_economic_pass_count']}",f"alpha_intake={alpha.get('state')}|alpha_intake_ready={alpha.get('intake_ready_count',0)}|prereg_eligible=0",'policy=deterministic economics before Gemini rescue; no pre-economics critics; identical input signature => zero paid AI','selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0']
           body='\n'.join(lines)
           headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
           base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"

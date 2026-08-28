@@ -33,6 +33,14 @@ class TeamBotHierarchyTest(unittest.TestCase):
             "roles": self._roles(sbot_veto=sbot_veto),
         }
 
+    def _risk_decision(self, *, approved=True, execution_eligible=True):
+        return {
+            "authority": "z_os_risk_gate",
+            "approved": approved,
+            "execution_eligible": execution_eligible,
+            "checks": {"source": "test_contract_only"},
+        }
+
     def test_exact_team_layout_is_restored(self):
         from engine.team_layer import TEAM_LAYOUT
 
@@ -92,7 +100,7 @@ class TeamBotHierarchyTest(unittest.TestCase):
         self.assertEqual(result["missing_roles"], ["LBot"])
         self.assertEqual(result["zbot_authority"], "advisor_only")
 
-    def test_team_approved_signal_is_only_executor_input(self):
+    def test_team_approval_alone_cannot_reach_executor_without_zos_risk(self):
         from engine.runner import run_and_trade
 
         recorder = _RecorderExec()
@@ -102,18 +110,51 @@ class TeamBotHierarchyTest(unittest.TestCase):
             result = run_and_trade(
                 ["breakout"],
                 "BTCUSDT",
-                qty=0.01,
                 df=[None] * 120,
                 team_decision=decision,
             )
 
+        self.assertEqual(recorder.orders, [])
+        self.assertEqual(result["breakout"]["team_signal"]["execution_authority"], "team_bot_consensus")
+        self.assertEqual(result["breakout"]["execution"]["reason"], "z_os_risk_gate_required")
+
+    def test_only_team_plus_zos_risk_signal_reaches_executor(self):
+        from engine.runner import run_and_trade
+
+        recorder = _RecorderExec()
+        raw = {"side": "buy", "confidence": 0.9, "source": "breakout"}
+        decision = self._decision(team="Alpha", side="buy")
+        risk = self._risk_decision()
+        with patch("engine.router.route", return_value=raw), patch("engine.runner.select_exec", return_value=recorder):
+            result = run_and_trade(
+                ["breakout"],
+                "BTCUSDT",
+                qty=0.01,
+                df=[None] * 120,
+                team_decision=decision,
+                risk_decision=risk,
+            )
+
         self.assertEqual(len(recorder.orders), 1)
         order = recorder.orders[0]
-        self.assertEqual(order["signal"]["execution_authority"], "team_bot_consensus")
+        self.assertEqual(order["signal"]["execution_authority"], "z_os_risk_gate")
+        self.assertEqual(order["signal"]["team_signal"]["execution_authority"], "team_bot_consensus")
+        self.assertEqual(order["signal"]["team_signal"]["strategy_signal"], raw)
         self.assertEqual(order["signal"]["team"], "Alpha")
-        self.assertEqual(order["signal"]["strategy_signal"], raw)
-        self.assertNotEqual(order["signal"], raw)
-        self.assertEqual(result["breakout"]["signal"]["next_layer"], "z_os_risk_execution")
+        self.assertEqual(result["breakout"]["signal"]["next_layer"], "executor")
+
+    def test_invalid_zos_risk_authority_is_blocked(self):
+        from engine.risk_unit import authorize_execution
+        from engine.team_layer import authorize_team_signal
+
+        raw = {"side": "buy", "confidence": 0.9, "source": "breakout"}
+        team_signal = authorize_team_signal(raw, self._decision())
+        risk = self._risk_decision()
+        risk["authority"] = "strategy"
+        result = authorize_execution(team_signal, risk)
+
+        self.assertFalse(result["execution_eligible"])
+        self.assertEqual(result["reason"], "invalid_z_os_risk_authority")
 
     def test_run_once_is_raw_candidate_only(self):
         from engine.runner import run_once

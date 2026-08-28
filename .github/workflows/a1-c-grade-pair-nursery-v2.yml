@@ -5,11 +5,13 @@ on:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2_identifier_guard.py'
       - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py'
+      - 'backend/research/architecture_factory/a1_c_grade_pair_nursery_v2_identifier_guard.py'
       - '.github/workflows/a1-c-grade-pair-nursery-v2.yml'
   workflow_dispatch:
 
@@ -31,8 +33,11 @@ jobs:
       - name: Verify hardened generator contract
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py
+          python -m py_compile \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v2.py \
+            backend/research/architecture_factory/a1_c_grade_pair_nursery_v2_identifier_guard.py
           python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 --self-test
+          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2_identifier_guard --self-test
 
   nursery:
     if: github.event_name != 'pull_request'
@@ -56,13 +61,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2 \
+          python -m backend.research.architecture_factory.a1_c_grade_pair_nursery_v2_identifier_guard \
             --out out/a1_c_grade_pair_nursery_v2.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_c_grade_pair_nursery_v2.json'))
           assert r['generator_contract_hardened'] is True
           assert r['invalid_generation_is_auditable_hold_not_workflow_failure'] is True
+          assert r['identifier_namespace_contract']=='RAW_OR_REPLAY_READY_OR_FUNCTION_OR_PREDECLARED_FEATURE_ONLY'
+          assert r['custom_identifier_requires_prior_feature_declaration'] is True
           assert r['max_pairs_per_run']==3 and r['max_paid_requests_per_run']==1
           assert r['production_mutated'] is False
           print(json.dumps({'state':r['state'],'c':r['eligible_c_material_count'],'pairs':r['pair_count_this_run'],'upgrades':r['c_to_b_upgrade_count'],'provider':r['provider'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))

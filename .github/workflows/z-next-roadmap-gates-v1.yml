@@ -1,0 +1,57 @@
+name: Z Next Roadmap Gates V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/z_next_roadmap_20260828_v1.json'
+      - 'backend/research/rebuild/z_trendma_macd_rescue_one_axis_v1.py'
+      - 'backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py'
+      - 'backend/research/rebuild/z_top5_rr_grid_shadow_gate_v1.py'
+      - '.github/workflows/z-next-roadmap-gates-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile gates
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/z_trendma_macd_rescue_one_axis_v1.py \
+            backend/research/rebuild/z_material_nursery_cxc_to_b_v1.py \
+            backend/research/rebuild/z_top5_rr_grid_shadow_gate_v1.py
+      - name: Contract tests
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          root=Path('backend/research/rebuild')
+          def load(name):
+              p=root/name
+              s=importlib.util.spec_from_file_location(name,p)
+              m=importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+          tr=load('z_trendma_macd_rescue_one_axis_v1.py')
+          rr=load('z_top5_rr_grid_shadow_gate_v1.py')
+          nu=load('z_material_nursery_cxc_to_b_v1.py')
+          good={"trades":72,"net_pnl_bps":5000,"net_expectancy_bps":70,"profit_factor":1.5,"payoff":4.8,"drawdown_bps":4000,"top10_profit_concentration":0.7}
+          assert tr.verdict(good)['state']=='PASS_TOP6_RESCUE'
+          p={"trades":30,"win_rate":.7,"net_pnl_bps":100,"net_expectancy_bps":3,"profit_factor":2,"payoff":2,"drawdown_bps":10}
+          c={"trades":30,"win_rate":.7,"net_pnl_bps":101,"net_expectancy_bps":3.1,"profit_factor":2.1,"payoff":2.1,"drawdown_bps":9}
+          assert rr.judge(p,c)['state']=='PASS_RR_SHADOW_CHILD'
+          a={"net_expectancy_bps":1,"profit_factor":1.1,"drawdown_bps":20}
+          b={"net_expectancy_bps":2,"profit_factor":1.2,"drawdown_bps":30}
+          child={"trades":12,"net_pnl_bps":100,"net_expectancy_bps":3,"profit_factor":1.3,"payoff":2,"drawdown_bps":10}
+          assert nu.grade(a,b,child)['state']=='PASS_GRADE_B_MATERIAL'
+          print('PASS_Z_NEXT_ROADMAP_GATES_V1')
+          PY

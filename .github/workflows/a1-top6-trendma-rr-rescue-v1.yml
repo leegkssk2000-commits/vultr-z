@@ -1,0 +1,106 @@
+name: A1 Top6 TrendMA RR Rescue V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_rr_rescue_v1.py'
+      - '.github/workflows/a1-top6-trendma-rr-rescue-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top6_trend_ma_macd_rr_rescue_v1.py'
+      - '.github/workflows/a1-top6-trendma-rr-rescue-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify fixed RR rescue contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top6_trend_ma_macd_rr_rescue_v1.py
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_rr_rescue_v1 --self-test
+
+  evaluate:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild exact TrendMA parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SYMBOLS='BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT'
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay --strategy-id trend_ma_macd --symbols "$SYMBOLS" \
+            --out out/trend_ma_macd_exact_parent.json
+      - name: Evaluate fixed asymmetric TP/SL grid
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top6_trend_ma_macd_rr_rescue_v1 \
+            --parent out/trend_ma_macd_exact_parent.json \
+            --out out/a1_top6_trend_ma_macd_rr_rescue_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top6_trend_ma_macd_rr_rescue_v1.json'))
+          assert r['grid']['cell_count']==30
+          refs={(float(x['tp_r']),float(x['sl_r'])) for x in r['candidates'] if x.get('user_reference_cell')}
+          assert (2.5,0.75) in refs and (2.0,0.75) in refs and (1.0,0.45) in refs
+          assert r['production_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          b=r.get('best_candidate') or {}
+          print(json.dumps({
+            'state':r['state'], 'strict_pass_count':r['strict_pass_count'],
+            'best':b.get('candidate_id'), 'best_metrics':b.get('metrics'),
+            'best_tp_r':b.get('tp_r'),'best_sl_r':b.get('sl_r'),
+            'next':r['next'],'receipt':r['receipt_sha256']
+          },sort_keys=True))
+          PY
+      - name: Persist latest TrendMA RR rescue receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top6_trend_ma_macd_rr_rescue_latest.json
+          cp out/a1_top6_trend_ma_macd_rr_rescue_v1.json "$target"
+          git config user.name 'a1-top6-trendma-rr-rescue'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top6: persist TrendMA fixed RR rescue receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top6-trendma-rr-rescue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top6_trend_ma_macd_rr_rescue_v1.json
+            out/trend_ma_macd_exact_parent.json
+          if-no-files-found: error
+          retention-days: 90

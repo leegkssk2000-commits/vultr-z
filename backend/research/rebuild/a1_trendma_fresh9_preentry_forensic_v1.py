@@ -18,6 +18,7 @@ BAD = ROOT / "backend/research/rebuild/a1_trendma_chase_atr_up_long_fresh25_late
 CHASE_PARENT = ROOT / "backend/research/rebuild/a1_trendma_chase_atr_up_fresh25_latest.json"
 EMA_BUNDLE = ROOT / "backend/research/rebuild/a1_finalist_good_regime_fresh25_latest.json"
 LONG_REF = ROOT / "backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_latest.json"
+FRESH_OOS = ROOT / "backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_latest.json"
 COST = ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
 SCHEMA = "zel.a1.trendma.fresh9.preentry_forensic.v1"
 SYMBOLS = [
@@ -105,6 +106,7 @@ def run(out: Path) -> dict[str, Any]:
     chase_parent = read(CHASE_PARENT)
     bundle = read(EMA_BUNDLE)
     long_ref = read(LONG_REF)
+    fresh_oos = read(FRESH_OOS)
     authority = read(COST)
 
     bad_rows = [dict(x) for x in bad.get("trades") or []]
@@ -117,17 +119,20 @@ def run(out: Path) -> dict[str, Any]:
         raise RuntimeError("BAD_RECEIPT_INTEGRITY_NOT_CLEAN")
 
     boundary = str(long_ref.get("boundary_utc") or "")
-    if not boundary:
-        raise RuntimeError("LONG_REFERENCE_BOUNDARY_REQUIRED")
+    development_end_utc = str(fresh_oos.get("boundary_utc") or "")
+    if not boundary or not development_end_utc:
+        raise RuntimeError("LONG_REFERENCE_BOUNDARIES_REQUIRED")
+    development_end_ms = ab.parse_boundary(development_end_utc)
     bars_by, maps, snapshots = ab.load_shared_inputs(SYMBOLS, authority)
     baseline = ab.simulate(
         variant="BASELINE", symbols=SYMBOLS, boundary_ms=ab.parse_boundary(boundary),
         bars_by=bars_by, snapshots=snapshots,
     )
-    long_dev = [dict(x) for x in baseline if str(x.get("side")) == "long"]
+    long_all = [dict(x) for x in baseline if str(x.get("side")) == "long"]
+    long_dev = [x for x in long_all if int(x.get("signal_ts") or 0) < development_end_ms]
     expected_T = int((((long_ref.get("candidate") or {}).get("metrics") or {}).get("trades") or 0))
     if len(long_dev) != expected_T or expected_T < 25:
-        raise RuntimeError(f"LONG_REFERENCE_REPLAY_MISMATCH:{len(long_dev)}:{expected_T}")
+        raise RuntimeError(f"LONG_REFERENCE_REPLAY_MISMATCH:{len(long_dev)}:{expected_T}:{development_end_utc}")
     dev_winners = [x for x in long_dev if float(x.get("net_bps") or 0.0) > 0.0]
     fresh_losses = [x for x in bad_rows if float(x.get("net_bps") or 0.0) <= 0.0]
     if len(fresh_losses) != 8 or not dev_winners:
@@ -196,6 +201,9 @@ def run(out: Path) -> dict[str, Any]:
         "fresh_loss_T": len(fresh_losses), "fresh_loss_reason_counts": dict(Counter(str(x.get("reason")) for x in fresh_losses)),
         "development_long_reference_T": len(long_dev), "development_winner_T": len(dev_winners),
         "development_reference_boundary_utc": boundary,
+        "development_frozen_end_utc": development_end_utc,
+        "development_frozen_end_source": "a1_top6_trend_ma_macd_fresh_oos_latest.boundary_utc",
+        "current_replay_long_T_before_frozen_cut": len(long_all),
         "parent_vs_long_child_overlap": parent_long_overlap,
         "chase_vs_ema_fast_overlap": chase_ema_overlap,
         "shared_parent_failure_supported": shared_parent_failure,

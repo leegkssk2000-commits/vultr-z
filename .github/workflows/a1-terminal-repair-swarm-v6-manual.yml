@@ -2,6 +2,23 @@ name: A1 Terminal Repair Swarm V6 Manual
 
 on:
   workflow_dispatch:
+    inputs:
+      target_lane_id:
+        description: 'Current Top5 lane_id receiving the paid-AI work'
+        required: true
+        type: string
+      target_stage:
+        description: 'Economic stage receiving the paid-AI work'
+        required: true
+        type: choice
+        options:
+          - G4
+          - G5
+          - G4_CAUSAL_BACKPORT_FROM_G5
+      target_gate:
+        description: 'Concrete frozen economic gate, e.g. W2_FORENSIC_CAUSAL_ANALYSIS'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -27,10 +44,20 @@ jobs:
       - name: Compile deterministic hardening checks
         run: |
           set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_paid_ai_target_gate_v1.py
+          python -m backend.research.architecture_factory.a1_paid_ai_target_gate_v1 --self-test
           python -m py_compile backend/research/architecture_factory/openai_generator_hardened_v1.py
           python -m backend.research.architecture_factory.openai_generator_hardened_v1
           python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py
           python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
+
+      - name: Validate paid target before credentials or provider network
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_paid_ai_target_gate_v1 \
+            --target-lane-id '${{ inputs.target_lane_id }}' \
+            --target-stage '${{ inputs.target_stage }}' \
+            --target-gate '${{ inputs.target_gate }}'
 
       - name: Run one ROI-gated hardened paid cascade
         env:
@@ -44,28 +71,39 @@ jobs:
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 \
+            --target-lane-id '${{ inputs.target_lane_id }}' \
+            --target-stage '${{ inputs.target_stage }}' \
+            --target-gate '${{ inputs.target_gate }}' \
             --output out/a1_terminal_repair_swarm_v6.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_terminal_repair_swarm_v6.json'))
           roi=r.get('api_roi') or {}
           h=r.get('openai_output_hardening') or {}
+          target=r.get('paid_ai_target_binding') or {}
           assert h.get('state')=='ACTIVE_MANUAL_V6'
           assert h.get('automatic_paid_execution') is False
+          assert h.get('caller_target_gate_required_before_network') is True
           assert int(h.get('max_output_tokens') or 0)==8000
           assert int(h.get('max_candidates') or 0)==6
           assert h.get('strict_full_json_schema') is True
           assert roi.get('paid_execution_mode')=='MANUAL_V6_ONLY'
           assert roi.get('automatic_paid_execution') is False
           assert int(roi.get('paid_request_count') or 0) <= 3
+          assert roi.get('detached_generic_candidate_roi_credit') is False
+          assert roi.get('roi_credit_requires_measurable_target_gate_progress') is True
+          assert target.get('target_lane_id')=='${{ inputs.target_lane_id }}'
+          assert target.get('target_stage')=='${{ inputs.target_stage }}'
+          assert target.get('target_gate')=='${{ inputs.target_gate }}'
+          assert roi.get('paid_ai_target_binding')==target
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
           assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
           assert int(r['protected_mutations'])==0
-          print(json.dumps({'mode':r.get('run_mode'),'paid':roi.get('paid_request_count'),'economic_pass':r.get('development_economic_pass_count'),'hardening':h},sort_keys=True))
+          print(json.dumps({'mode':r.get('run_mode'),'paid':roi.get('paid_request_count'),'economic_pass':r.get('development_economic_pass_count'),'target':target,'hardening':h},sort_keys=True))
           PY
 
-      - name: Persist V6 cache only
+      - name: Persist V6 target-bound cache only
         run: |
           set -euo pipefail
           target=backend/research/architecture_factory/a1_terminal_repair_swarm_v6_latest.json
@@ -74,7 +112,7 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist manual hardened paid-AI V6 receipt [skip ci]'
+          git commit -m 'A1: persist manual target-bound paid-AI V6 receipt [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3

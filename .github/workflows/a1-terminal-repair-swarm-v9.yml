@@ -1,0 +1,116 @@
+name: A1 Terminal Repair Swarm V9 Freeze-Correct Forward
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v9.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v9.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v9.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v9.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and freeze semantics self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v9.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v9 --self-test
+
+  forward-validation:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and freeze semantics self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v9.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v9 --self-test
+      - name: Run freeze-correct true forward validation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v9 \
+            --output out/a1_terminal_repair_swarm_v9_latest.json
+      - name: Verify temporal/prospective separation and safety
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v9_latest.json'))
+          t=r.get('truth_correction') or {}; f=r.get('forward_prospective') or {}; a=r.get('candidate_freeze_authority') or {}
+          assert r.get('schema_version')=='zel.a1_terminal_repair_swarm.v9'
+          assert t.get('v8_post_gen1_boundary_is_temporal_oos') is True
+          assert t.get('v8_post_gen1_boundary_is_strict_forward_prospective') is False
+          assert t.get('promotion_from_temporal_holdout_alone_forbidden') is True
+          assert a.get('candidate_frozen_at')=='2026-08-29T20:06:28Z'
+          assert a.get('v7_receipt_sha256')=='eb1e16e32e954cb187bfe09c48936dd42d1d24750b1384ed44ce998cee49c15e'
+          assert int(f.get('candidate_count') or 0)==4 and int(f.get('reject_count') or 0)==0
+          assert r.get('selection_authority') is False and r.get('promotion_authority') is False
+          assert r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+          assert r.get('exchange_order_submitted') is False and int(r.get('protected_mutations') or 0)==0
+          print(json.dumps({
+            'freeze':a,
+            'forward_pass':f.get('pass_count'),
+            'forward_fail':f.get('fail_count'),
+            'forward_wait':f.get('wait_new_t_count'),
+            'forward_summary':f.get('economic_summary'),
+            'temporal_holdout_summary':(r.get('temporal_holdout') or {}).get('economic_summary'),
+            'next':f.get('next'),
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-v9-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_terminal_repair_swarm_v9_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist V9 truth receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v9_latest.json
+          generated=/tmp/a1_terminal_repair_swarm_v9_generated.json
+          cp out/a1_terminal_repair_swarm_v9_latest.json "$generated"
+          git config user.name 'a1-terminal-repair-swarm-v9'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            cp "$generated" "$target"
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1 economics: persist freeze-correct V9 receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

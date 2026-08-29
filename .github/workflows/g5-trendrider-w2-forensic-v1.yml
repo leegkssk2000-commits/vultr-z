@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/prep/g5_trendrider_w2_forensic_v1.py
           python -m backend.research.prep.g5_trendrider_w2_forensic_v1 --self-test
-      - name: Run frozen W2 per-trade forensic
+      - name: Run Top5-bound frozen W2 per-trade forensic
         run: |
           set -euo pipefail
           mkdir -p out
@@ -49,7 +49,18 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/g5_trendrider_w2_forensic_v1.json'))
+          p=json.load(open('backend/research/prep/g5_trendrider_broad30_product_latest.json'))
+          s=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
+          lane=next(x for x in s['top5'] if x['lane_id']=='trend_rider_broad_wr7000')
+          g5=lane['g5']
           assert r['parity']['w2_count_matches_product'] is True
+          assert r['parity']['parent_product_matches_top5'] is True
+          assert r['parity']['parent_receipt_matches_top5'] is True
+          assert r['parity']['parent_input_receipt_matches_top5'] is True
+          assert r['parent_receipt_sha256']==p['receipt_sha256']==g5['source_receipt_sha256']
+          assert r['parent_source_receipt_sha256']==p['source_receipt_sha256']==g5['source_input_receipt_sha256']
+          assert r['parent_top5_binding']['postlock_closed_T']==p['postlock_closed_T']==g5['postlock_closed_T']
+          assert r['w2_product_T']==p['windows']['W2']['metrics']['trades']
           assert r['parity']['duplicate']==0
           assert r['parity']['integrity_defects']==[]
           assert r['parity']['leakage_lookahead']==0
@@ -58,9 +69,9 @@ jobs:
           assert r['causal_policy']['reuse_frozen_preentry_materiality'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({'w2_T':r['w2_observed_T'],'status':r['causal_status'],'axis':r['selected_causal_axis'],'route':r['recommended_route'],'top_preentry':(r['preentry_ranked_hypotheses'] or [None])[0],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'w2_T':r['w2_observed_T'],'status':r['causal_status'],'axis':r['selected_causal_axis'],'route':r['recommended_route'],'parent_receipt':r['parent_receipt_sha256'],'top5_lineage':r['parity']['parent_product_matches_top5'],'top_preentry':(r['preentry_ranked_hypotheses'] or [None])[0],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
-      - name: Persist latest on master
+      - name: Persist latest on master without stale replay
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
@@ -70,9 +81,13 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5 TrendRider: persist W2 forensic receipt [skip ci]'
-          git pull --rebase origin master
-          git push origin HEAD:master
+          git commit -m 'G5 TrendRider: persist Top5-bound W2 forensic receipt [skip ci]'
+          # Never rebase/replay a generated forensic receipt over a master that
+          # moved after the Top5/product lineage check. Retry on the next run.
+          if ! git push origin HEAD:master; then
+            echo 'G5_W2_FORENSIC_PERSIST_SKIPPED_MASTER_MOVED'
+            exit 0
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

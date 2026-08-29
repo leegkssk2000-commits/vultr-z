@@ -1,0 +1,56 @@
+name: A1 AI G4 G5 Economic Routing V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
+      - 'backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'
+      - '.github/workflows/a1-ai-g4-g5-economic-routing-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify G4/G5-only paid AI routing
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/contracts/a1_paid_ai_routing_policy_v1.json'))
+          b=json.load(open('backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'))
+          s=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
+          c=json.load(open('backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'))
+          g=json.load(open('backend/research/prep/g5_trendrider_w2_forensic_latest.json'))
+          m=p['mandatory_controls']
+          assert m['target_lane_id_required_before_provider_call'] is True
+          assert m['target_stage_required_before_provider_call'] is True
+          assert m['target_gate_required_before_provider_call'] is True
+          assert m['generic_unbound_NEW_candidate_success_forbidden'] is True
+          assert m['paid_ai_credit_requires_g4_or_g5_gate_progress'] is True
+          assert m['development_economic_pass_without_g4_g5_binding_is_roi_credit'] is False
+          assert b['state']=='G4_G5_ONLY_AI_ECONOMIC_ATTRIBUTION_FROZEN'
+          assert b['current_g5']['trend_rider_broad_wr7000']['w2_observed_T']==int(g['w2_observed_T'])
+          assert abs(float(b['current_g5']['trend_rider_broad_wr7000']['w2_net_bps'])-float(g['w2']['net_bps']))<1e-9
+          assert b['current_g5']['trend_rider_broad_wr7000']['selected_causal_axis']==g['selected_causal_axis']=='ATR_PCT'
+          by={x['lane_id']:x for x in s['top5']}
+          for lane in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              assert by[lane]['current_role']=='REPLACEMENT_CHILD_FROZEN_WAIT_FRESH_PROSPECTIVE_T'
+              assert int(c['lanes'][lane]['closed_T'])==0
+              assert int(b['current_g4'][lane]['prospective_closed_T'])==0
+              assert b['current_g4'][lane]['next_ai_trigger']=='ONLY_IF_FROZEN_CHILD_IS_FALSIFIED'
+          assert all(x['economic_roi_credit'] is False for x in b['retired_detached_ai_outputs'])
+          assert p['selection_authority'] is False and p['promotion_authority'] is False
+          assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          print('PASS_A1_AI_G4_G5_ONLY_ECONOMIC_ROUTING')
+          PY

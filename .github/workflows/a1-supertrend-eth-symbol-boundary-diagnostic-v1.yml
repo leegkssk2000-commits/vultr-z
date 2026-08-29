@@ -4,6 +4,7 @@ on:
   push:
     branches: [a1-supertrend-eth-symbol-fresh-child-v1]
     paths:
+      - 'backend/research/rebuild/a1_supertrend_eth_symbol_fresh_prereg_v1.json'
       - '.github/workflows/a1-supertrend-eth-symbol-boundary-diagnostic-v1.yml'
   workflow_dispatch:
 
@@ -11,37 +12,63 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Extract authoritative Supertrend target only
+      - name: Validate source parity, boundary, target authority and blocked authority
         run: |
           python - <<'PY'
-          import json
+          import importlib.util, json
           from pathlib import Path
           src=json.loads(Path('backend/research/rebuild/a1_recent_loss_cluster_actionable_latest.json').read_text())
+          reg=json.loads(Path('backend/research/rebuild/a1_supertrend_eth_symbol_fresh_prereg_v1.json').read_text())
           rows=[x for x in src.get('targets',[]) if x.get('strategy_id')=='supertrend_pullback']
-          assert len(rows)==1, f'SUPERTREND_TARGET_COUNT={len(rows)}'
-          x=rows[0]
-          root=x.get('actionable_root_cause') or {}
-          assert root.get('axis')=='SYMBOL' and root.get('value')=='ETH-USDT', root
-          assert x.get('fresh_child_boundary_required') is True
-          assert x.get('recommended_route')=='PREREGISTER_PREENTRY_CONTEXT_CHILD:SYMBOL:ETH-USDT:ONE_AXIS_ONLY', x.get('recommended_route')
-          assert x.get('execution_authority')=='NONE' and x.get('order_authority')=='BLOCKED' and x.get('live_trade_authority')=='BLOCKED'
-          print('ST_KEYS='+json.dumps(sorted(x.keys())))
-          shapes={}
-          for k,v in x.items():
-              if isinstance(v,list): shapes[k]={'type':'list','len':len(v)}
-              elif isinstance(v,dict): shapes[k]={'type':'dict','keys':sorted(v.keys())}
-          print('ST_SHAPES='+json.dumps(shapes,sort_keys=True,separators=(',',':')))
-          scalars={k:v for k,v in x.items() if isinstance(v,(str,int,float,bool)) or v is None}
-          scalars['source_receipt_sha256']=src.get('receipt_sha256')
-          scalars['root']=root
-          print('ST_SCALARS='+json.dumps(scalars,sort_keys=True,separators=(',',':')))
-          for k,v in x.items():
-              if isinstance(v,list) and v and all(isinstance(t,dict) for t in v):
-                  slim=[{q:t.get(q) for q in ('signal_ts','entry_ts','exit_ts','side','symbol','net_bps') if q in t} for t in v]
-                  if any(slim): print('ST_LIST_'+k+'='+json.dumps(slim,sort_keys=True,separators=(',',':')))
+          assert len(rows)==1
+          x=rows[0]; root=x['actionable_root_cause']; losses=x['loss_streak_trades']
+          max_exit=max(int(t['exit_ts']) for t in losses)
+          terminal=[t for t in losses if int(t['exit_ts'])==max_exit]
+          eth=[t for t in terminal if t.get('symbol')=='ETH-USDT']
+          assert len(terminal)==2 and len(eth)==1
+          eth=eth[0]
+
+          p=Path('backend/research/rebuild/a1_supertrend_5455_add_only_continuation_v1.py')
+          spec=importlib.util.spec_from_file_location('st5455',p); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          assert int(mod.FRESH_TARGET)==25
+
+          assert reg['strategy_id']=='supertrend_pullback'
+          assert reg['changed_axis']=='SYMBOL' and reg['changed_value']=='ETH-USDT'
+          assert reg['changed_axis_count']==1 and reg['axis_only'] is True
+          assert root['axis']=='SYMBOL' and root['value']=='ETH-USDT'
+          assert x['fresh_child_boundary_required'] is True
+          assert x['recommended_route']=='PREREGISTER_PREENTRY_CONTEXT_CHILD:SYMBOL:ETH-USDT:ONE_AXIS_ONLY'
+          assert reg['registration']['source_receipt_sha256']==src['receipt_sha256']
+          assert reg['registration']['target_receipt_sha256']==x['receipt_sha256']
+          assert reg['registration']['freeze_commit']=='2c6932d233ecdd4f4c5c44463e7dd930c03c9eb9'
+          assert reg['registration']['freeze_tree']=='a35c6a8dc9b789c7c28e311a9e94f3b2758247ec'
+          assert reg['registration']['completed_trades_at_registration']==x['completed_trades']==12
+          assert reg['registration']['current_loss_streak_at_registration']==x['current_loss_streak']==4
+          assert reg['causal_evidence']['prior_symbol_share']==root['prior_share']==0.375
+          assert reg['causal_evidence']['loss_streak_symbol_share']==root['loss_streak_share']==0.75
+          assert reg['causal_evidence']['delta_share']==root['delta_share']==0.375
+          assert reg['causal_evidence']['diagnostic_score']==root['diagnostic_score']
+          assert reg['boundary']['fresh_boundary_exit_ts_ms']==max_exit==1787932800000
+          assert reg['boundary']['terminal_records_at_max_exit']==len(terminal)==2
+          rr=reg['boundary']['root_axis_record_at_boundary']
+          assert rr['signal_ts_ms']==int(eth['signal_ts']) and rr['entry_ts_ms']==int(eth['entry_ts']) and rr['exit_ts_ms']==int(eth['exit_ts'])
+          assert rr['net_bps']==eth['net_bps'] and rr['symbol']=='ETH-USDT'
+          assert reg['boundary']['freshness_rule']=='SIGNAL_TS_STRICTLY_AFTER_BOUNDARY_EXIT_TS'
+          c=reg['strict_success_contract']
+          assert c['minimum_fresh_symbol_trades']==int(mod.FRESH_TARGET)==25
+          assert c['fixed_symbol']=='ETH-USDT'
+          assert c['preboundary_outcomes_counted'] is False and c['retrospective_append_forbidden'] is True
+          assert c['numeric_threshold_sweep'] is False and c['post_outcome_threshold_fitting'] is False
+          assert reg['current_state']['fresh_accepted_T']==0 and reg['current_state']['sample_gap_to_25']==25
+          g=reg['governance']
+          assert g['research_only'] is True and g['production_strategy_change'] is False and g['canonical_ledger_mutated'] is False
+          assert g['selection_authority'] is False and g['promotion_authority'] is False
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED' and g['live_trade_authority']=='BLOCKED'
+          assert g['protected_mutations']==0 and g['exchange_order_submitted'] is False
+          print(json.dumps({'state':reg['state'],'source_parity':'PASS','axis':'SYMBOL','value':'ETH-USDT','historical_T':12,'loss_streak_T':4,'root_loss_share':0.75,'boundary_exit_ts_ms':max_exit,'fresh_T':0,'target_T':25,'target_authority':'SUPERTREND_FRESH_TARGET','authority':'BLOCKED'},sort_keys=True))
           PY

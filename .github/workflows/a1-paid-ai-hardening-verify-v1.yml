@@ -1,0 +1,70 @@
+name: A1 Paid AI Hardening Verify V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/architecture_factory/openai_generator_hardened_v1.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py'
+      - 'backend/research/architecture_factory/a1_paid_ai_configuration_audit_v1.json'
+      - '.github/workflows/a1-terminal-repair-swarm-v6-manual.yml'
+      - '.github/workflows/a1-paid-ai-hardening-verify-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile and deterministic self-tests only
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/architecture_factory/openai_generator_hardened_v1.py
+          python -m backend.research.architecture_factory.openai_generator_hardened_v1
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
+
+      - name: Verify audit and no automatic paid execution
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          a=json.load(open('backend/research/architecture_factory/a1_paid_ai_configuration_audit_v1.json'))
+          assert a['state']=='PASS_PAID_AI_CONFIGURATION_AUDIT_COMPLETE'
+          assert abs(float(a['reported_spend_eur']['total'])-180.0)<1e-9
+          assert a['reported_spend_eur']['wasted_spend_eur'] is None
+          assert a['reported_spend_eur']['recovered_spend_eur'] is None
+          o=a['openai']
+          assert o['failure_class']=='OUTPUT_JSON_TRUNCATION_OR_MALFORMATION'
+          assert o['failure_interpretation']=='CLIENT_OUTPUT_CONTRACT_FAILURE_NOT_EVIDENCE_OF_MODEL_ECONOMIC_INABILITY'
+          h=o['hardened_manual_v6']
+          assert h['max_output_tokens']==8000 and h['max_candidates']==6
+          assert h['strict_full_json_schema'] is True
+          assert h['automatic_paid_execution'] is False
+          g=a['gemini']
+          assert g['current_audited_named_information_bridge_count']==24
+          assert g['provider_attributed_development_economic_pass_count']==0
+          r=a['top5_replacement_child_readiness']
+          assert r['state']=='HOLD_REPLACEMENT_CHILD_FREEZE_CURRENT_EVIDENCE_INSUFFICIENT'
+          assert r['raw_parallel_observer_should_continue'] is True
+          assert r['countable_replacement_child_T_should_remain_zero_until_new_executable_policy_and_boundary_are_frozen'] is True
+          for sid in ('break_and_continue','keltner_trend','supertrend_pullback'):
+              assert r['lanes'][sid]['development_economic_pass_count']==0
+              assert r['lanes'][sid]['replacement_child_freeze_allowed'] is False
+          route=a['routing_decision']
+          assert route['gemini_broad_sweep'] is False and route['openai_broad_sweep'] is False
+          assert route['automatic_repeated_paid_multicritic'] is False
+          assert route['paid_terminal_repair_v6']=='MANUAL_ONLY'
+          assert a['selection_authority'] is False and a['promotion_authority'] is False
+          assert a['execution_authority']=='NONE' and a['order_authority']=='BLOCKED' and a['live_trade_authority']=='BLOCKED'
+          print('PASS_A1_PAID_AI_HARDENING_NO_PROVIDER_CALL_VERIFY')
+          PY

@@ -1,0 +1,79 @@
+{
+  "schema_version": "zel.a1.top5.parallel_prospective.v1",
+  "state": "FROZEN_TOP5_PARALLEL_PROSPECTIVE_CONTRACT",
+  "purpose": "Overlap calendar-time evidence collection across the five current production lanes without allowing one CLOSED trade to serve both G4 selection and G5 OOS.",
+  "sources": {
+    "current_top5_ssot": "backend/research/rebuild/a1_top5_latest_only_ssot_v1.json",
+    "g4_terminal": "backend/research/rebuild/a1_top5_g4_terminal_latest.json",
+    "rolling_closed": "backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json",
+    "primary_fresh_contract": "backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_contract_v1.json",
+    "broad_g5_manifest": "backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json",
+    "broad_g5_latest": "backend/research/prep/g5_trendrider_broad30_product_latest.json"
+  },
+  "global_rules": {
+    "capture_all_lanes_in_parallel": true,
+    "stage_assignment_is_outcome_blind": true,
+    "stage_assignment_is_immutable_after_first_assignment": true,
+    "same_closed_trade_cannot_be_consumed_by_g4_and_g5": true,
+    "g4_consumed_trade_is_burned_for_g5": true,
+    "g5_escrow_may_be_captured_before_g4_completion_but_may_not_be_opened_early": true,
+    "old_history_union": false,
+    "post_outcome_trade_deletion": false,
+    "threshold_retune": false,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED"
+  },
+  "lanes": [
+    {
+      "lane_id": "trend_rider_primary_wr8125",
+      "strategy_id": "trend_rider",
+      "terminal_state": "WAIT_NEW_T",
+      "clock_state": "G4_ACTIVE_PLUS_G5_ESCROW_CAPTURE",
+      "boundary_source": "backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_contract_v1.json#preregistered_root_cause.boundary_ms",
+      "allocation": "FIRST_GENUINE_POST_BOUNDARY_CLOSED_TO_G4; ALL_LATER_POST_BOUNDARY_CLOSED_TO_G5_ESCROW",
+      "g5_escrow_open_condition": "PRIMARY_G4_PASS_AND_NEW_G5_MANIFEST_FROZEN",
+      "reuse_forbidden": true
+    },
+    {
+      "lane_id": "trend_rider_broad_wr7000",
+      "strategy_id": "trend_rider",
+      "terminal_state": "G4_PASS_SURVIVOR_READY",
+      "clock_state": "G5_NATIVE_ACTIVE",
+      "boundary_source": "backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json#prospective_boundary_ms",
+      "allocation": "G5_MANIFEST_NATIVE_W2_THEN_W3",
+      "g4_reuse": false,
+      "reuse_forbidden": true
+    },
+    {
+      "lane_id": "break_and_continue_main",
+      "strategy_id": "break_and_continue",
+      "terminal_state": "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED",
+      "clock_state": "REPLACEMENT_FACTORY_PARALLEL_RAW_OBSERVER",
+      "replacement_seed": {"axis": "ATR_PCT", "semantics": "QUALITATIVE_ONLY_NO_OUTCOME_FITTED_THRESHOLD"},
+      "old_architecture_trade_use": "RAW_OBSERVER_ONLY_NOT_G4_OR_G5_EVIDENCE",
+      "replacement_counting_starts_only_after": "NEW_ARCHITECTURE_POLICY_AND_BOUNDARY_FROZEN"
+    },
+    {
+      "lane_id": "keltner_trend_main",
+      "strategy_id": "keltner_trend",
+      "terminal_state": "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED",
+      "clock_state": "REPLACEMENT_FACTORY_PARALLEL_RAW_OBSERVER",
+      "replacement_seed": {"axis": "EMA_SPREAD_ATR", "semantics": "QUALITATIVE_ONLY_NO_OUTCOME_FITTED_THRESHOLD"},
+      "old_architecture_trade_use": "RAW_OBSERVER_ONLY_NOT_G4_OR_G5_EVIDENCE",
+      "replacement_counting_starts_only_after": "NEW_ARCHITECTURE_POLICY_AND_BOUNDARY_FROZEN"
+    },
+    {
+      "lane_id": "supertrend_pullback_main",
+      "strategy_id": "supertrend_pullback",
+      "terminal_state": "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED",
+      "clock_state": "REPLACEMENT_FACTORY_PARALLEL_RAW_OBSERVER",
+      "replacement_seed": {"axis": "ENTRY_REGIME_OWNERSHIP", "semantics": "REDESIGN_REQUIRED_NO_OLD_CHILD_REUSE"},
+      "old_architecture_trade_use": "RAW_OBSERVER_ONLY_NOT_G4_OR_G5_EVIDENCE",
+      "replacement_counting_starts_only_after": "NEW_ARCHITECTURE_POLICY_AND_BOUNDARY_FROZEN"
+    }
+  ],
+  "action": "hold"
+}

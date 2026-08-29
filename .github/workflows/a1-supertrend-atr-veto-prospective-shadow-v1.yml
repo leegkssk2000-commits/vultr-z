@@ -1,0 +1,88 @@
+name: A1 Supertrend ATR Veto Prospective Shadow V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_atr_adverse_veto_prospective_shadow_v1.py'
+      - '.github/workflows/a1-supertrend-atr-veto-prospective-shadow-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  supertrend-atr-veto-shadow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_supertrend_atr_adverse_veto_prospective_shadow_v1.py
+          python -m backend.research.rebuild.a1_supertrend_atr_adverse_veto_prospective_shadow_v1 --self-test
+      - name: Rebuild current Supertrend parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id supertrend_pullback \
+            --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' \
+            --out out/supertrend_pullback_current_parent.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/supertrend_pullback_current_parent.json'))
+          assert r.get('strategy_id') == 'supertrend_pullback'
+          assert not r.get('integrity_defects')
+          assert int(r.get('leakage_lookahead') or 0) == 0
+          print('PASS_CURRENT_SUPERTREND_PARENT')
+          PY
+      - name: Run connected ATR veto shadow
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_supertrend_atr_adverse_veto_prospective_shadow_v1 \
+            --parent out/supertrend_pullback_current_parent.json \
+            --out out/a1_supertrend_atr_adverse_veto_prospective_shadow_latest.json
+          cat out/a1_supertrend_atr_adverse_veto_prospective_shadow_latest.json
+      - name: Verify shadow authority lock
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_supertrend_atr_adverse_veto_prospective_shadow_latest.json'))
+          assert r['shadow_connected'] is True
+          assert r['connection_target'] == 'SUPERTREND_NATIVE_PREENTRY_FILTER_SHADOW'
+          assert r['policy']['historical_donor_trade_attachment'] is False
+          assert r['policy']['parent_trade_rewrite'] is False
+          assert r['policy']['top5_ssot_mutated'] is False
+          assert r['policy']['threshold_sweep'] is False
+          assert r['policy']['fresh_only_for_decision'] is True
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority'] == 'NONE'
+          assert r['order_authority'] == 'BLOCKED'
+          assert r['live_trade_authority'] == 'BLOCKED'
+          print('PASS_SUPERTREND_ATR_VETO_SHADOW_AUTHORITY_LOCK')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-supertrend-atr-veto-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/supertrend_pullback_current_parent.json
+            out/a1_supertrend_atr_adverse_veto_prospective_shadow_latest.json
+          if-no-files-found: warn
+          retention-days: 30

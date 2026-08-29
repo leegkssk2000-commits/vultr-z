@@ -48,11 +48,11 @@ def session(ts_ms: int) -> str:
 
 
 def ident(row: dict[str, Any]) -> tuple[str, int, str]:
-    return str(row.get("symbol")), int(row.get("signal_ts") or 0), str(row.get("side"))
+    return str(row.get("symbol")), int(row.get("signal_ts") or 0), str(row.get("side")).lower()
 
 
 def mean(rows: list[dict[str, Any]], key: str) -> float | None:
-    xs = []
+    xs: list[float] = []
     for row in rows:
         value = row.get(key)
         if value is None:
@@ -101,47 +101,50 @@ def overlap(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def run(out: Path) -> dict[str, Any]:
+def run(parent_path: Path, out: Path) -> dict[str, Any]:
     bad = read(BAD)
     chase_parent = read(CHASE_PARENT)
     bundle = read(EMA_BUNDLE)
     long_ref = read(LONG_REF)
     fresh_oos = read(FRESH_OOS)
     authority = read(COST)
+    exact_parent = read(parent_path)
 
     bad_rows = [dict(x) for x in bad.get("trades") or []]
-    parent_rows = [dict(x) for x in chase_parent.get("trades") or []]
+    chase_rows = [dict(x) for x in chase_parent.get("trades") or []]
     ema_target = ((bundle.get("targets") or {}).get("trend_ma_macd_ema_fast_up_good_v1") or {})
     ema_rows = [dict(x) for x in ema_target.get("trades") or []]
     if len(bad_rows) != 9 or int(bad.get("metrics", {}).get("wins") or 0) != 1:
         raise RuntimeError("EXPECTED_FRESH9_1WIN_RECEIPT")
     if str(bad.get("source_quality_state")) != "PASS" or bad.get("integrity_defects"):
         raise RuntimeError("BAD_RECEIPT_INTEGRITY_NOT_CLEAN")
+    if str(exact_parent.get("strategy_id")) != "trend_ma_macd":
+        raise RuntimeError("EXACT_TRENDMA_PARENT_REQUIRED")
 
-    boundary = str(long_ref.get("boundary_utc") or "")
     development_end_utc = str(fresh_oos.get("prospective_boundary_utc") or "")
-    if not boundary or not development_end_utc:
-        raise RuntimeError("LONG_REFERENCE_BOUNDARIES_REQUIRED")
+    if not development_end_utc:
+        raise RuntimeError("FROZEN_DEVELOPMENT_END_REQUIRED")
     development_end_ms = ab.parse_boundary(development_end_utc)
-    bars_by, maps, snapshots = ab.load_shared_inputs(SYMBOLS, authority)
-    baseline = ab.simulate(
-        variant="BASELINE", symbols=SYMBOLS, boundary_ms=ab.parse_boundary(boundary),
-        bars_by=bars_by, snapshots=snapshots,
-    )
-    long_all = [dict(x) for x in baseline if str(x.get("side")) == "long"]
-    long_dev = [x for x in long_all if int(x.get("signal_ts") or 0) < development_end_ms]
-    expected_T = int((((long_ref.get("candidate") or {}).get("metrics") or {}).get("trades") or 0))
-    if len(long_dev) != expected_T or expected_T < 25:
-        raise RuntimeError(f"LONG_REFERENCE_REPLAY_MISMATCH:{len(long_dev)}:{expected_T}:{development_end_utc}")
+    parent_all = [dict(x) for x in exact_parent.get("trades") or []]
+    parent_frozen = [x for x in parent_all if int(x.get("signal_ts") or 0) < development_end_ms]
+    expected_native_T = int((((long_ref.get("native") or {}).get("metrics") or {}).get("trades") or 0))
+    expected_long_T = int((((long_ref.get("candidate") or {}).get("metrics") or {}).get("trades") or 0))
+    long_dev = [x for x in parent_frozen if str(x.get("side")).lower() == "long"]
+    if len(parent_frozen) != expected_native_T or len(long_dev) != expected_long_T:
+        raise RuntimeError(
+            f"EXACT_PARENT_LINEAGE_MISMATCH:native={len(parent_frozen)}/{expected_native_T}:long={len(long_dev)}/{expected_long_T}:cut={development_end_utc}"
+        )
+
     dev_winners = [x for x in long_dev if float(x.get("net_bps") or 0.0) > 0.0]
     fresh_losses = [x for x in bad_rows if float(x.get("net_bps") or 0.0) <= 0.0]
     if len(fresh_losses) != 8 or not dev_winners:
         raise RuntimeError("REFERENCE_GROUPS_NOT_AS_EXPECTED")
 
+    bars_by, maps, _snapshots = ab.load_shared_inputs(SYMBOLS, authority)
     enrich(dev_winners, bars_by, maps)
     enrich(fresh_losses, bars_by, maps)
 
-    numeric = []
+    numeric: list[dict[str, Any]] = []
     for key in (
         "atr_pct", "chase_atr", "impulse_atr", "ema_spread_atr",
         "ema_fast_slope_atr", "ema_slow_slope_atr", "hist_atr", "hist_delta_atr",
@@ -156,11 +159,11 @@ def run(out: Path) -> dict[str, Any]:
         })
     numeric.sort(key=lambda x: (-float(x["absolute_relative_separation"]), str(x["axis"])))
 
-    categorical = []
+    categorical: list[dict[str, Any]] = []
     for key in ("session", "symbol"):
         value, n = Counter(str(x.get(key)) for x in fresh_losses).most_common(1)[0]
         loss_share = n / len(fresh_losses)
-        winner_share = sum(1 for x in dev_winners if str(x.get(key)) == value) / len(dev_winners)
+        winner_share = sum(1 for x in dev_winners if str(x.get(key)) == value) / max(1, len(dev_winners))
         categorical.append({
             "axis": key.upper(), "value": value, "fresh_loss_share": loss_share,
             "development_winner_share": winner_share, "delta_share": loss_share - winner_share,
@@ -168,16 +171,18 @@ def run(out: Path) -> dict[str, Any]:
         })
     categorical.sort(key=lambda x: (-float(x["delta_share"]), str(x["axis"])))
 
-    strong_num = [x for x in numeric if float(x["absolute_relative_separation"]) >= 0.25]
-    strong_cat = [x for x in categorical if float(x["fresh_loss_share"]) >= 0.75 and float(x["delta_share"]) >= 0.25]
-    parent_long_overlap = overlap(parent_rows, bad_rows)
+    strong_numeric = [x for x in numeric if float(x["absolute_relative_separation"]) >= 0.25]
+    strong_categorical = [x for x in categorical if float(x["fresh_loss_share"]) >= 0.75 and float(x["delta_share"]) >= 0.25]
+    roots = strong_categorical + strong_numeric
+    root = roots[0] if roots else None
+
+    chase_long_overlap = overlap(chase_rows, bad_rows)
     chase_ema_overlap = overlap(bad_rows, ema_rows)
     shared_parent_failure = (
-        parent_long_overlap["left_overlap_pct"] >= 80.0
+        chase_long_overlap["left_overlap_pct"] >= 80.0
         and chase_ema_overlap["left_overlap_pct"] >= 70.0
         and int(ema_target.get("metrics", {}).get("wins") or 0) <= 1
     )
-    root = (strong_cat + strong_num)[0] if (strong_cat or strong_num) else None
     if root is not None and shared_parent_failure:
         state = "SHARED_PARENT_REGIME_SEPARATOR_FOUND"
         nxt = f"SEARCH_PREEXISTING_NON_OUTCOME_FITTED_GEOMETRY:{root['axis']}"
@@ -193,18 +198,24 @@ def run(out: Path) -> dict[str, Any]:
         "ema_spread_atr", "ema_fast_slope_atr", "ema_slow_slope_atr", "hist_atr", "hist_delta_atr",
     )} for x in fresh_losses]
     result = {
-        "schema_version": SCHEMA, "state": state, "strategy_id": "trend_ma_macd",
-        "bad_child_identity": bad.get("candidate_identity"), "bad_child_T": len(bad_rows),
+        "schema_version": SCHEMA,
+        "state": state,
+        "strategy_id": "trend_ma_macd",
+        "bad_child_identity": bad.get("candidate_identity"),
+        "bad_child_T": len(bad_rows),
         "bad_child_wins": int(bad.get("metrics", {}).get("wins") or 0),
         "bad_child_net_bps": float(bad.get("net_pnl_bps") or 0.0),
         "bad_child_pf": float(bad.get("profit_factor") or 0.0),
-        "fresh_loss_T": len(fresh_losses), "fresh_loss_reason_counts": dict(Counter(str(x.get("reason")) for x in fresh_losses)),
-        "development_long_reference_T": len(long_dev), "development_winner_T": len(dev_winners),
-        "development_reference_boundary_utc": boundary,
+        "fresh_loss_T": len(fresh_losses),
+        "fresh_loss_reason_counts": dict(Counter(str(x.get("reason")) for x in fresh_losses)),
+        "exact_parent_current_T": len(parent_all),
+        "frozen_native_reference_T": len(parent_frozen),
+        "development_long_reference_T": len(long_dev),
+        "development_winner_T": len(dev_winners),
         "development_frozen_end_utc": development_end_utc,
         "development_frozen_end_source": "a1_top6_trend_ma_macd_fresh_oos_latest.prospective_boundary_utc",
-        "current_replay_long_T_before_frozen_cut": len(long_all),
-        "parent_vs_long_child_overlap": parent_long_overlap,
+        "comparator_source": "A1_EXACT25_GENERIC_EVALUATOR_V2_TERMINAL_REPLAY_EXACT_PARENT_TRADES",
+        "chase_parent_vs_long_child_overlap": chase_long_overlap,
         "chase_vs_ema_fast_overlap": chase_ema_overlap,
         "shared_parent_failure_supported": shared_parent_failure,
         "numeric_preentry_separation": numeric,
@@ -217,6 +228,7 @@ def run(out: Path) -> dict[str, Any]:
         "numeric_threshold_sweep": False,
         "outcome_fitted_cutoff_forbidden": True,
         "fresh_child_created": False,
+        "integrity_defects": [],
         "next": nxt,
         **AUTH,
     }
@@ -238,16 +250,19 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--parent", type=Path)
     ap.add_argument("--out", type=Path, default=Path("out/a1_trendma_fresh9_preentry_forensic_latest.json"))
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    r = run(args.out)
+    if args.parent is None:
+        raise SystemExit("--parent required")
+    r = run(args.parent, args.out)
     print(json.dumps({
         "state": r["state"], "root": r["actionable_root_cause"],
-        "parent_overlap": r["parent_vs_long_child_overlap"], "ema_overlap": r["chase_vs_ema_fast_overlap"],
-        "next": r["next"],
+        "chase_long_overlap": r["chase_parent_vs_long_child_overlap"],
+        "ema_overlap": r["chase_vs_ema_fast_overlap"], "next": r["next"],
     }, sort_keys=True))
     return 0
 

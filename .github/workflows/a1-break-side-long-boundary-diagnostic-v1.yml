@@ -1,0 +1,45 @@
+name: A1 Break Side Long Boundary Diagnostic V1
+
+on:
+  push:
+    branches: [a1-break-side-long-fresh-child-v1]
+    paths:
+      - '.github/workflows/a1-break-side-long-boundary-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate corrected lineage and frozen fresh contract
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          src=json.loads(Path('backend/research/rebuild/a1_recent_loss_cluster_actionable_latest.json').read_text())
+          reg=json.loads(Path('backend/research/rebuild/a1_break_side_long_fresh_prereg_v1.json').read_text())
+          x=[r for r in src['targets'] if r.get('strategy_id')=='break_and_continue'][0]
+          root=x['actionable_root_cause']; losses=x['loss_streak_trades']; last=max(losses,key=lambda t:int(t['exit_ts']))
+          assert reg['registration']['freeze_commit']=='6d3f03afbadfd00820b1645fe62e8fc0c931e255'
+          assert reg['registration']['freeze_tree']=='e4099d2de6bf6e479ca86832d64d2e94d3e66e90'
+          assert reg['registration']['source_receipt_sha256']==src['receipt_sha256']
+          assert reg['registration']['target_receipt_sha256']==x['receipt_sha256']
+          assert reg['strategy_id']=='break_and_continue' and reg['changed_axis']=='SIDE' and reg['changed_value']=='long'
+          assert root['axis']=='SIDE' and root['value']=='long'
+          assert reg['boundary']['fresh_boundary_exit_ts_ms']==int(last['exit_ts'])==1787925600000
+          assert reg['boundary']['freshness_rule']=='SIGNAL_TS_STRICTLY_AFTER_BOUNDARY_EXIT_TS'
+          assert reg['current_state']['fresh_accepted_T']==0
+          assert reg['strict_success_contract']['minimum_fresh_long_trades']==25
+          assert reg['strict_success_contract']['minimum_distinct_symbols']==3
+          assert reg['strict_success_contract']['retrospective_append_forbidden'] is True
+          g=reg['governance']
+          assert g['production_strategy_change'] is False and g['canonical_ledger_mutated'] is False
+          assert g['execution_authority']=='NONE' and g['order_authority']=='BLOCKED' and g['live_trade_authority']=='BLOCKED'
+          assert g['protected_mutations']==0 and g['exchange_order_submitted'] is False
+          print(json.dumps({'state':reg['state'],'lineage':'PASS','source_parity':'PASS','boundary':'PASS','fresh_T':0,'target_T':25,'authority':'BLOCKED'},sort_keys=True))
+          PY

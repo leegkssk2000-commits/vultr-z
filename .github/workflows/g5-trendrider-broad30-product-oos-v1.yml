@@ -8,6 +8,7 @@ on:
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
       - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
+      - 'backend/research/prep/rr_exit_fresh6_observer_v2.py'
       - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
   push:
     branches: [master]
@@ -16,6 +17,7 @@ on:
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
       - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
+      - 'backend/research/prep/rr_exit_fresh6_observer_v2.py'
       - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
   workflow_dispatch:
   schedule:
@@ -46,9 +48,11 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
-            backend/research/prep/rr_exit_fresh6_observer_v1.py
+            backend/research/prep/rr_exit_fresh6_observer_v1.py \
+            backend/research/prep/rr_exit_fresh6_observer_v2.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
           python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
+          python -m backend.research.prep.rr_exit_fresh6_observer_v2 --self-test
 
   evaluate:
     if: github.event_name != 'pull_request'
@@ -67,9 +71,11 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
-            backend/research/prep/rr_exit_fresh6_observer_v1.py
+            backend/research/prep/rr_exit_fresh6_observer_v1.py \
+            backend/research/prep/rr_exit_fresh6_observer_v2.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
           python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
+          python -m backend.research.prep.rr_exit_fresh6_observer_v2 --self-test
       - name: Run product OOS / walk-forward / stress
         run: |
           set -euo pipefail
@@ -98,7 +104,7 @@ jobs:
       - name: Run frozen RR prospective fresh6 observer
         run: |
           set -euo pipefail
-          python -m backend.research.prep.rr_exit_fresh6_observer_v1 \
+          python -m backend.research.prep.rr_exit_fresh6_observer_v2 \
             --out out/rr_exit_fresh6_observer_latest.json
           python - <<'PY'
           import json
@@ -110,6 +116,8 @@ jobs:
           assert r['skip_unresolved_prefix_trade_forbidden'] is True
           assert r['fresh_candidate_reoptimization_forbidden'] is True
           assert r['fresh_validation_used_to_select_candidate'] is False
+          assert r['compact_policy_receipt_snapshot_used_for_rr_simulation'] is False
+          assert r['funding_rows_rehydrated_from_same_cost_authority'] is True
           assert r['duplicate_count']==0
           assert r['integrity_defects']==[]
           assert r['leakage_lookahead']==0

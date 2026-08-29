@@ -119,7 +119,7 @@ def run(out: Path) -> dict[str, Any]:
         raise RuntimeError("BAD_RECEIPT_INTEGRITY_NOT_CLEAN")
 
     boundary = str(long_ref.get("boundary_utc") or "")
-    development_end_utc = str(fresh_oos.get("boundary_utc") or "")
+    development_end_utc = str(fresh_oos.get("prospective_boundary_utc") or "")
     if not boundary or not development_end_utc:
         raise RuntimeError("LONG_REFERENCE_BOUNDARIES_REQUIRED")
     development_end_ms = ab.parse_boundary(development_end_utc)
@@ -202,7 +202,7 @@ def run(out: Path) -> dict[str, Any]:
         "development_long_reference_T": len(long_dev), "development_winner_T": len(dev_winners),
         "development_reference_boundary_utc": boundary,
         "development_frozen_end_utc": development_end_utc,
-        "development_frozen_end_source": "a1_top6_trend_ma_macd_fresh_oos_latest.boundary_utc",
+        "development_frozen_end_source": "a1_top6_trend_ma_macd_fresh_oos_latest.prospective_boundary_utc",
         "current_replay_long_T_before_frozen_cut": len(long_all),
         "parent_vs_long_child_overlap": parent_long_overlap,
         "chase_vs_ema_fast_overlap": chase_ema_overlap,

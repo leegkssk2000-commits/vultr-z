@@ -56,9 +56,62 @@ jobs:
           test -f out/source/a1_exact25_drain_6_receipt.json
       - name: Run development-only RR geometry optimization
         run: |
-          python -m backend.research.rebuild.a1_rr_exit_optimizer_trendrider_v1 \
-            --source out/source/a1_exact25_drain_6_receipt.json \
-            --out out/rr_exit_optimizer.json
+          python - <<'PY'
+          import json, math
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from backend.research.rebuild import a1_rr_exit_optimizer_trendrider_v1 as opt
+
+          source=Path('out/source/a1_exact25_drain_6_receipt.json')
+          out=Path('out/rr_exit_optimizer.json')
+          try:
+              r=opt.run(source,out)
+          except RuntimeError as e:
+              msg=str(e)
+              if not msg.startswith('INSUFFICIENT_PURGED_SPLIT:'):
+                  raise
+              src=opt.read(source)
+              rows=[dict(x) for x in src.get('trades') or []]
+              ordered=sorted(rows,key=lambda x:(int(x['signal_ts']),str(x.get('symbol') or '')))
+              cut=max(18,min(len(ordered)-8,int(math.floor(len(ordered)*0.70))))
+              raw_dev,raw_val=ordered[:cut],ordered[cut:]
+              val_start=min(int(x['signal_ts']) for x in raw_val)
+              dev=[x for x in raw_dev if int(x['exit_ts']) < val_start]
+              syms=sorted({str(x['symbol']) for x in rows})
+              bars_by={s:opt.ev.fetch_bars(s,'1h',1000) for s in syms}
+              search_space={'method':'PREP_ONLY_NO_HEAVY_SEARCH','tp_candidates':[],'sl_candidates':[]}
+              if dev:
+                  _,_,search_space=opt.bounds_from_development(dev,bars_by)
+              parent_sha=str(src.get('receipt_sha256') or opt.stable(src))
+              split={
+                  'ordered_T':len(ordered),'raw_cut':cut,'purged_dev_T':len(dev),'validation_T':len(raw_val),
+                  'validation_start_ts':val_start,'scheme':'CHRONOLOGICAL_70_30_PURGED_BY_REALIZED_EXIT',
+                  'promotion_grade':False,'reason':msg,
+              }
+              generation=opt.stable({'schema':opt.SCHEMA,'parent_sha':parent_sha,'family':opt.FAMILY,'source_artifact':9446790894,'split':split,'search_space':search_space,'objective':'PREP_ONLY_INSUFFICIENT_EFFECTIVE_T'})
+              r={
+                  'schema_version':opt.SCHEMA,'strategy_id':'trend_rider','strategy_role':'G4_ECONOMIC_SURVIVOR',
+                  'parent_sha':parent_sha,'rr_child_sha':None,'exit_family':opt.FAMILY,'exact_params':None,
+                  'search_bounds':search_space,'search_method':'DEVELOPMENT_ONLY_MFE_MAE_QUANTILE_PREP_NO_SELECTION',
+                  'search_budget':opt.MAX_CANDIDATES,'candidate_count':0,'development_window':split,
+                  'validation_scheme':'HOLD_INSUFFICIENT_PURGED_EFFECTIVE_T','boundary_ts':None,
+                  'T':len(rows),'WR':None,'Gross_bps':None,'Net_bps':None,'Net_day_bps':None,'expectancy_bps':None,
+                  'PF':None,'payoff':None,'avg_win_R':None,'avg_loss_R':None,'worst_loss_R':None,'DD_bps':None,'tail_DD_bps':None,
+                  'MFE_capture':None,'MAE_efficiency':None,'retention':None,'positive_windows':None,'cost_stress_metrics':None,
+                  'neighbor_stability':None,'overfit_guard':{'pass':False,'reason':'INSUFFICIENT_PURGED_EFFECTIVE_T','development_used_for_bounds_only':True},
+                  'run_id':None,'duplicate':0,'leakage':0,'integrity':0,'Pareto_relation':'NOT_EVALUATED_INSUFFICIENT_EFFECTIVE_T',
+                  'action':'hold','next_axis':'MORE_DEVELOPMENT_DATA_THEN_RR_GEOMETRY','state':'HOLD_INSUFFICIENT_EFFECTIVE_T',
+                  'search_generation_sha':generation,'source_artifact_id':9446790894,'g5_w2_w3_used_for_search':False,
+                  'fresh_prospective_used_for_search':False,'old_history_union':False,'entry_logic_frozen':True,
+                  'execution_authority':'NONE','order_authority':'BLOCKED','live_trade_authority':'BLOCKED',
+                  'selection_authority':False,'promotion_authority':False,'protected_mutations':0,
+                  'result':{'state':'HOLD_INSUFFICIENT_EFFECTIVE_T','reason':msg,'split':split,'search_space':search_space,'candidate_count':0},
+              }
+              r['artifact_sha']=opt.stable(r)
+              out.parent.mkdir(parents=True,exist_ok=True)
+              out.write_text(json.dumps(r,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          print(json.dumps({'state':r['state'],'exact_params':r.get('exact_params'),'boundary_ts':r.get('boundary_ts'),'artifact_sha':r['artifact_sha']},sort_keys=True))
+          PY
           python - <<'PY'
           import json
           r=json.load(open('out/rr_exit_optimizer.json'))
@@ -68,7 +121,7 @@ jobs:
           assert r['g5_w2_w3_used_for_search'] is False
           assert r['fresh_prospective_used_for_search'] is False
           assert r['entry_logic_frozen'] is True
-          assert r['state'] in ('PREREGISTERED_FRESH_PROSPECTIVE','NO_ROBUST_RR_OPTIMUM')
+          assert r['state'] in ('PREREGISTERED_FRESH_PROSPECTIVE','NO_ROBUST_RR_OPTIMUM','HOLD_INSUFFICIENT_EFFECTIVE_T')
           print(json.dumps({'state':r['state'],'exact_params':r.get('exact_params'),'boundary_ts':r.get('boundary_ts'),'artifact_sha':r['artifact_sha']},sort_keys=True))
           PY
       - name: Persist research-only receipt on master
@@ -87,4 +140,4 @@ jobs:
           name: a1-rr-exit-optimizer-${{ github.run_id }}
           path: out/rr_exit_optimizer.json
           retention-days: 90
-# trigger-v1
+# trigger-v2

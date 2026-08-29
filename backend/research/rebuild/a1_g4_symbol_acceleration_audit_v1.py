@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from backend.research.architecture_factory import a1_gen2_generic_dev_econ_v1 as dev
+from backend.research.architecture_factory import a1_top5_replacement_primitive_tournament_v1 as tournament
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_top5_replacement_child_prospective_v1 as child
 
@@ -17,8 +19,10 @@ ROLLING = ROOT / "backend/research/rebuild/a1_production_highwr_rolling_closed_l
 COST = ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
 SCHEMA = "zel.a1.g4.symbol_acceleration_audit.v1"
 CORE = ("BTC-USDT", "ETH-USDT")
-COST_CAP_BPS = 14.0
-MIN_CLOSED_BARS = 240
+# New V2 cohort, if justified, is charged a conservative fixed 20 bps/trade.
+# This is a cost-model tightening, not an alpha threshold change.
+EXPANDED_FIXED_COST_BPS = 20.0
+MIN_CLOSED_BARS = 239
 MIN_ACCELERATION_MULTIPLIER = 1.25
 AUTH = {
     "selection_authority": False,
@@ -76,8 +80,40 @@ def closed_event_count(rows: list[dict[str, float]], spec: Mapping[str, Any], bo
         if exit_i >= len(rows) or int(rows[exit_i]["ts"]) >= boundary_ms:
             break
         count += 1
+        # Match prospective collector's one-position-per-symbol time-stop ownership.
         i = exit_i + 1
     return count
+
+
+def development_cost_rebudget() -> dict[str, Any]:
+    old_cost, old_symbols = dev.COST_BPS, dev.SYMBOLS
+    try:
+        dev.COST_BPS = EXPANDED_FIXED_COST_BPS
+        dev.SYMBOLS = CORE
+        r = dev.evaluate_queue(tournament.candidates())
+    finally:
+        dev.COST_BPS, dev.SYMBOLS = old_cost, old_symbols
+    rows = [dict(x) for x in r.get("rows") or [] if isinstance(x, Mapping)]
+    return {
+        "fixed_cost_bps": EXPANDED_FIXED_COST_BPS,
+        "core_symbols": list(CORE),
+        "candidate_count": int(r.get("candidate_count") or 0),
+        "economic_pass_count": int(r.get("economic_pass_count") or 0),
+        "economic_fail_count": int(r.get("economic_fail_count") or 0),
+        "insufficient_event_count": int(r.get("insufficient_event_count") or 0),
+        "rows": [
+            {
+                "candidate_id": x.get("candidate_id"),
+                "state": x.get("state"),
+                "economic_pass": x.get("economic_pass"),
+                "metrics": x.get("metrics"),
+            }
+            for x in rows
+        ],
+        "all_three_pass": int(r.get("economic_pass_count") or 0) == 3 and int(r.get("candidate_count") or 0) == 3,
+        "uses_symbol_specific_outcomes_for_universe_selection": False,
+        "purpose": "Verify the already-frozen architectures remain development-economic-positive under the more conservative expanded-universe cost budget.",
+    }
 
 
 def run(output: Path) -> dict[str, Any]:
@@ -95,20 +131,23 @@ def run(output: Path) -> dict[str, Any]:
     if boundary_ms <= 0:
         raise RuntimeError("BOUNDARY_REQUIRED")
 
+    rebudget = development_cost_rebudget()
     symbols = operational_symbols(rolling)
     symbol_rows: dict[str, Any] = {}
     eligible: list[str] = []
+    bars_by_symbol: dict[str, list[dict[str, float]]] = {}
     for symbol in symbols:
         row: dict[str, Any] = {"symbol": symbol, "source": "PREEXISTING_OPERATIONAL_ROLLING_UNIVERSE"}
         try:
             bars = child._bars(symbol, "4h", boundary_ms, boundary_ms)
+            bars_by_symbol[symbol] = bars
             row["closed_4h_bars_preboundary"] = len(bars)
             snap = ev.fetch_execution_snapshot(symbol, authority)
             cost = float(snap["pretrade_verified_cost_bps"])
             row["pretrade_verified_cost_bps"] = cost
             row["cost_snapshot_sha256"] = snap["snapshot_sha256"]
             row["data_ok"] = len(bars) >= MIN_CLOSED_BARS
-            row["cost_ok"] = cost <= COST_CAP_BPS
+            row["cost_ok"] = cost <= EXPANDED_FIXED_COST_BPS
             row["eligible"] = bool(row["data_ok"] and row["cost_ok"])
             if row["eligible"]:
                 eligible.append(symbol)
@@ -127,9 +166,9 @@ def run(output: Path) -> dict[str, Any]:
             raise RuntimeError("CHILD_SPEC_REQUIRED")
         core_count = expanded_count = 0
         per_symbol: dict[str, int] = {}
-        for symbol in sorted(set(CORE) | set(eligible)):
+        for symbol in symbols:
             try:
-                bars = child._bars(symbol, "4h", boundary_ms, boundary_ms)
+                bars = bars_by_symbol.get(symbol) or child._bars(symbol, "4h", boundary_ms, boundary_ms)
                 n = closed_event_count(bars, spec, boundary_ms)
             except Exception:
                 n = 0
@@ -152,13 +191,16 @@ def run(output: Path) -> dict[str, Any]:
         (bool(x["arrival_rate_multiplier_infinite"]) or float(x["arrival_rate_multiplier"] or 0.0) >= MIN_ACCELERATION_MULTIPLIER)
         for x in lane_rates.values()
     )
-    can_refreeze = bool(core_ok and extra and all_lanes_accelerate and int(current.get("total_closed_T") or 0) == 0)
+    can_refreeze = bool(
+        rebudget["all_three_pass"] and core_ok and extra and all_lanes_accelerate
+        and int(current.get("total_closed_T") or 0) == 0
+    )
     state = "PASS_G4_SYMBOL_EXPANSION_REFREEZE_ELIGIBLE" if can_refreeze else "HOLD_G4_SYMBOL_EXPANSION_NOT_JUSTIFIED"
     result = {
         "schema_version": SCHEMA,
         "state": state,
         "observed_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "purpose": "Reduce G4 calendar time without using PnL outcomes or modifying any lane after fresh child evidence exists.",
+        "purpose": "Reduce G4 calendar time without using symbol PnL outcomes or modifying any lane after fresh child evidence exists.",
         "current_child_total_closed_T": int(current.get("total_closed_T") or 0),
         "current_child_boundary_utc": current.get("boundary_utc"),
         "candidate_universe_source": "UNIQUE_SYMBOLS_ALREADY_PRESENT_IN_PREEXISTING_ROLLING_CLOSED_LEDGER_PLUS_CORE",
@@ -166,9 +208,11 @@ def run(output: Path) -> dict[str, Any]:
         "core_symbols": list(CORE),
         "eligible_symbols": sorted(eligible),
         "extra_eligible_symbols": extra,
+        "development_cost_rebudget": rebudget,
         "eligibility": {
             "min_closed_4h_bars": MIN_CLOSED_BARS,
-            "max_pretrade_verified_cost_bps": COST_CAP_BPS,
+            "max_pretrade_verified_cost_bps": EXPANDED_FIXED_COST_BPS,
+            "prospective_v2_fixed_cost_bps": EXPANDED_FIXED_COST_BPS,
             "uses_trade_pnl": False,
             "uses_post_boundary_outcomes": False,
             "symbol_rows": symbol_rows,
@@ -180,7 +224,11 @@ def run(output: Path) -> dict[str, Any]:
             "lanes": lane_rates,
         },
         "can_refreeze_g4_population": can_refreeze,
-        "refreeze_semantics": "ONLY_NEW_CHILD_VERSION_AND_NEW_POST_MERGE_BOUNDARY; CURRENT_V1_RETIRED_WITH_ZERO_CONSUMED_T" if can_refreeze else None,
+        "refreeze_semantics": (
+            "CREATE_V2_CHILDREN_WITH_IDENTICAL_ALPHA_DSL; FIXED_20BPS_COST; ELIGIBLE_SYMBOL_SET_FROZEN; "
+            "NEW_POST_MERGE_BOUNDARY; RETIRE_V1_WITH_ZERO_CONSUMED_T"
+            if can_refreeze else None
+        ),
         "g5_broad_population_change_allowed": False,
         "g5_reason": "CURRENT_G5_W2_ALREADY_CONTAINS_4_CLOSED_T; MIDWINDOW_SYMBOL_EXPANSION_WOULD_INVALIDATE_FROZEN_POPULATION",
         "paid_provider_calls": 0,
@@ -195,7 +243,8 @@ def run(output: Path) -> dict[str, Any]:
 def self_test() -> int:
     fake = {"lanes": {"a": {"closed_trades": [{"symbol": "SOL-USDT"}, {"symbol": "BTC-USDT"}]}}}
     assert operational_symbols(fake) == ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-    assert COST_CAP_BPS == 14.0 and MIN_ACCELERATION_MULTIPLIER == 1.25
+    assert EXPANDED_FIXED_COST_BPS == 20.0 and MIN_CLOSED_BARS == 239
+    assert MIN_ACCELERATION_MULTIPLIER == 1.25
     print("PASS_A1_G4_SYMBOL_ACCELERATION_AUDIT_V1_SELF_TEST")
     print("PASS_OUTCOME_BLIND_SYMBOL_ELIGIBILITY_AND_G5_POPULATION_LOCK")
     return 0
@@ -213,6 +262,7 @@ def main() -> int:
         "state": r["state"],
         "eligible_symbols": r["eligible_symbols"],
         "extra_eligible_symbols": r["extra_eligible_symbols"],
+        "development_cost_rebudget": r["development_cost_rebudget"],
         "can_refreeze": r["can_refreeze_g4_population"],
         "lane_rates": r["arrival_rate_rule"]["lanes"],
         "receipt": r["receipt_sha256"],

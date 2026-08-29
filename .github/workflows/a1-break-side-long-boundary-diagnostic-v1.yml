@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Extract authoritative Break boundary only
+      - name: Extract authoritative Break target shape and boundary inputs
         run: |
           python - <<'PY'
           import json
@@ -34,30 +34,29 @@ jobs:
           assert x.get('execution_authority')=='NONE'
           assert x.get('order_authority')=='BLOCKED'
           assert x.get('live_trade_authority')=='BLOCKED'
-          ledger=x.get('preentry_trade_ledger') or []
-          losses=x.get('loss_streak_trades') or []
-          assert ledger and losses
-          def mx(key, rows):
-              vals=[int(t.get(key) or 0) for t in rows]
-              return max(vals) if vals else 0
-          out={
-            'strategy_id':'break_and_continue',
-            'completed_trades':x.get('completed_trades'),
-            'current_loss_streak':x.get('current_loss_streak'),
-            'root':root,
-            'recommended_route':x.get('recommended_route'),
-            'ledger_count':len(ledger),
-            'loss_streak_count':len(losses),
-            'boundary_signal_ts':mx('signal_ts',ledger),
-            'boundary_entry_ts':mx('entry_ts',ledger),
-            'boundary_exit_ts':mx('exit_ts',ledger),
-            'loss_boundary_exit_ts':mx('exit_ts',losses),
-            'source_receipt_sha256':r.get('receipt_sha256'),
-            'authority':{
-              'execution':x.get('execution_authority'),
-              'order':x.get('order_authority'),
-              'live':x.get('live_trade_authority')
-            }
-          }
-          print('BREAK_BOUNDARY='+json.dumps(out,sort_keys=True,separators=(',',':')))
+
+          print('BREAK_KEYS='+json.dumps(sorted(x.keys())))
+          shapes={}
+          for k,v in x.items():
+              if isinstance(v,list): shapes[k]={'type':'list','len':len(v)}
+              elif isinstance(v,dict): shapes[k]={'type':'dict','keys':sorted(v.keys())}
+          print('BREAK_SHAPES='+json.dumps(shapes,sort_keys=True,separators=(',',':')))
+
+          scalars={}
+          for k,v in x.items():
+              if isinstance(v,(str,int,float,bool)) or v is None:
+                  scalars[k]=v
+          scalars['source_receipt_sha256']=r.get('receipt_sha256')
+          scalars['root']=root
+          print('BREAK_SCALARS='+json.dumps(scalars,sort_keys=True,separators=(',',':')))
+
+          for k,v in x.items():
+              if not isinstance(v,list) or not v:
+                  continue
+              if all(isinstance(t,dict) for t in v):
+                  ts=[]
+                  for t in v:
+                      ts.append({q:t.get(q) for q in ('signal_ts','entry_ts','exit_ts','side','symbol','net_bps') if q in t})
+                  if any(t for t in ts):
+                      print('BREAK_LIST_'+k+'='+json.dumps(ts,sort_keys=True,separators=(',',':')))
           PY

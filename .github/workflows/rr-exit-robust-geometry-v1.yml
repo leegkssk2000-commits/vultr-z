@@ -1,0 +1,111 @@
+name: RR Exit Robust Geometry V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/rr_exit_robust_geometry_v1.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v2.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v3.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v4_prospective.py'
+      - '.github/workflows/rr-exit-robust-geometry-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/rr_exit_robust_geometry_v1.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v2.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v3.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v4_prospective.py'
+      - '.github/workflows/rr-exit-robust-geometry-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/prep/rr_exit_robust_geometry_v1.py \
+            backend/research/prep/rr_exit_robust_geometry_v2.py \
+            backend/research/prep/rr_exit_robust_geometry_v3.py \
+            backend/research/prep/rr_exit_robust_geometry_v4_prospective.py
+          python -m backend.research.prep.rr_exit_robust_geometry_v1 --self-test
+          python -m backend.research.prep.rr_exit_robust_geometry_v2 --self-test
+          python -m backend.research.prep.rr_exit_robust_geometry_v3 --self-test
+          python -m backend.research.prep.rr_exit_robust_geometry_v4_prospective --self-test
+      - name: Download frozen development sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+      - name: Preregister full-development local-plateau RR candidate
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.rr_exit_robust_geometry_v4_prospective \
+            --trend70-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/rr_exit_robust_geometry_v4_prospective.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/rr_exit_robust_geometry_v4_prospective.json'))
+          assert r['development_T']==30
+          assert r['historical_internal_holdout_claimed'] is False
+          assert r['development_overlap_episode_sizes']==[30]
+          assert r['selection_uses_fresh_outcomes'] is False
+          assert r['fresh_candidate_reoptimization_forbidden'] is True
+          assert r['fresh_validation_used_to_select_candidate'] is False
+          assert r['required_fresh_T']==6
+          assert r['promotion_authority'] is False and r['selection_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          if r['selected'] is not None:
+              assert r['selected']['plateau_supported'] is True
+              assert r['selected']['positive_adjacent_count'] >= 2
+              assert r['fresh_child_preregistration_allowed'] is True
+          print(json.dumps({'state':r['state'],'development_T':r['development_T'],'selected':r['selected'],'required_fresh_T':r['required_fresh_T'],'boundary':r['development_max_exit_ts'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - name: Persist latest on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          target=backend/research/prep/rr_exit_robust_geometry_latest.json
+          cp out/rr_exit_robust_geometry_v4_prospective.json "$target"
+          git config user.name 'rr-exit-robust-geometry'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'research: persist robust RR geometry receipt [skip ci]'
+          git pull --rebase origin master
+          git push origin HEAD:master
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rr-exit-robust-geometry-${{ github.run_id }}
+          path: out/rr_exit_robust_geometry_v4_prospective.json
+          if-no-files-found: error
+          retention-days: 90

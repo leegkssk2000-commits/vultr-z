@@ -1,0 +1,132 @@
+name: A1 Terminal Repair Swarm V7 Constrained Economic Planner
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v7.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v7.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v7.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v7.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and constrained compiler self-test without paid AI
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v7.py
+          env -u OPENAI_API_KEY -u GEMINI_API_KEY \
+            python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v7 --self-test
+
+  economic-rebuild:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Require paid OpenAI planner
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY:-}"
+          echo PASS_OPENAI_CONSTRAINED_PLANNER_AVAILABLE
+
+      - name: Compile and constrained compiler self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v7.py
+          env -u OPENAI_API_KEY \
+            python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v7 --self-test
+
+      - name: Run V7 constrained economic planner and executable replay
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v7 \
+            --output out/a1_terminal_repair_swarm_v7_latest.json
+
+      - name: Verify compiler closure, economic truth, and safety
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v7_latest.json'))
+          assert r.get('schema_version')=='zel.a1_terminal_repair_swarm.v7'
+          assert float(r.get('cost_bps_per_trade'))==14.0
+          assert (r.get('compiler') or {}).get('free_form_dsl_from_ai') is False
+          assert (r.get('compiler') or {}).get('ai_can_invent_thresholds') is False
+          assert (r.get('compiler') or {}).get('ai_can_invent_exit_logic') is False
+          assert (r.get('compiler') or {}).get('spec_reject_closed') is True
+          ai=r.get('ai_planner') or {}
+          assert int(ai.get('paid_request_count') or 0)==1
+          assert int(ai.get('accepted_plan_count') or 0)>=1
+          assert r.get('selection_authority') is False and r.get('promotion_authority') is False
+          assert r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+          assert r.get('exchange_order_submitted') is False and int(r.get('protected_mutations') or 0)==0
+          print(json.dumps({
+            'compiler_parity_pass_count':r.get('compiler_parity_pass_count'),
+            'ai_development_economic_pass_count':r.get('development_economic_pass_count'),
+            'economic_summary':r.get('economic_summary'),
+            'compiler_parity_summary':(r.get('compiler_parity') or {}).get('summary'),
+            'ai_planner':ai,
+            'next':r.get('next'),
+          },sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-v7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_terminal_repair_swarm_v7_latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist V7 economic receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v7_latest.json
+          generated=/tmp/a1_terminal_repair_swarm_v7_generated.json
+          cp out/a1_terminal_repair_swarm_v7_latest.json "$generated"
+          git config user.name 'a1-terminal-repair-swarm-v7'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            cp "$generated" "$target"
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1 economics: persist constrained V7 receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

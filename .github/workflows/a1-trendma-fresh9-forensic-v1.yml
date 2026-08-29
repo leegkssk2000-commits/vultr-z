@@ -1,0 +1,65 @@
+name: A1 TrendMA Fresh9 Forensic V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trendma_fresh9_preentry_forensic_v1.py'
+      - '.github/workflows/a1-trendma-fresh9-forensic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendma_fresh9_preentry_forensic_v1.py
+          python backend/research/rebuild/a1_trendma_fresh9_preentry_forensic_v1.py --self-test
+      - name: Run read-only fresh9 forensic
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trendma_fresh9_preentry_forensic_v1 \
+            --out out/a1_trendma_fresh9_preentry_forensic_latest.json
+          cat out/a1_trendma_fresh9_preentry_forensic_latest.json
+      - name: Verify authority and no post-outcome retune
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendma_fresh9_preentry_forensic_latest.json'))
+          assert r['strategy_id']=='trend_ma_macd',r
+          assert r['bad_child_T']==9 and r['bad_child_wins']==1,r
+          assert r['fresh_loss_T']==8,r
+          assert r['numeric_threshold_sweep'] is False,r
+          assert r['outcome_fitted_cutoff_forbidden'] is True,r
+          assert r['fresh_child_created'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert not r['integrity_defects'] if 'integrity_defects' in r else True
+          print('PASS_TRENDMA_FRESH9_FORENSIC_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendma-fresh9-forensic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendma_fresh9_preentry_forensic_latest.json
+          if-no-files-found: warn
+          retention-days: 30

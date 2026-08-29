@@ -10,7 +10,6 @@ from typing import Any, Mapping
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_top5_additive_entry_union_v1 as addu
 from backend.research.rebuild import a1_trend_ma_macd_ablation_child_v1 as ab
-from backend.research.rebuild import a1_trendma52_top5_salvage_v1 as salvage
 from backend.research.rebuild import trend_policy_batch_v1 as policy
 from backend.research.rebuild.a1_exact25_generic_evaluator_v1 import stable_sha
 
@@ -18,8 +17,14 @@ ROOT = Path(__file__).resolve().parents[3]
 COST = ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
 SCHEMA = "zel.a1.supertrend.atr_adverse_veto.prospective_shadow.v1"
 STRATEGY = "supertrend_pullback"
-SYMBOLS = salvage.SYMBOLS
+SYMBOLS = [
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "1INCH-USDT", "ETHFI-USDT",
+    "HYPE-USDT", "BCH-USDT", "APE-USDT", "1000PEPE-USDT", "DOGE-USDT", "LINK-USDT",
+]
 PROSPECTIVE_BOUNDARY_UTC = "2026-08-29T11:57:00Z"
+POLICY_SOURCE_SHA = "5212f92a0b181e523c235dc546b64ea2852045e7"
+SOURCE_TRANSFER_RUN_ID = 33248726780
+SOURCE_TRANSFER_RECEIPT_SHA256 = "3333ef40f3610d1ee11b00afef9dfc7a3c6a81f4013bde37f567c9827260e2ec"
 FROZEN_AXIS = {
     "origin_commit": "051ff7015e6456410073b1a42dc0c201876c1958",
     "name": "long_above_sma50_and_shock_ge_1x_atr14_veto_only",
@@ -57,7 +62,9 @@ def atr14(bars: list[dict[str, Any]], i: int) -> float:
     return sum(vals) / len(vals)
 
 
-def _exit_for_side(*, side: str, low: float, high: float, sl: float | None, tp: float | None) -> tuple[float | None, str | None]:
+def _exit_for_side(
+    *, side: str, low: float, high: float, sl: float | None, tp: float | None
+) -> tuple[float | None, str | None]:
     if side == "long":
         if sl is not None and low <= sl:
             return sl, "SL"
@@ -78,29 +85,28 @@ def replay(
     boundary_ms: int,
     bars_by: Mapping[str, list[dict[str, Any]]],
     snapshots: Mapping[str, Mapping[str, Any]],
-    policy_sha: str,
     veto_enabled: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     cfg = policy.TrendPolicyConfig()
     timeframe_ms = 3_600_000
     trades: list[dict[str, Any]] = []
     vetoed: list[dict[str, Any]] = []
+    native_signal_count = 0
 
     for symbol in SYMBOLS:
         bars = list(bars_by[symbol])
         snap = snapshots[symbol]
         blocked_until_ts = -1
-        for i in range(64, len(bars) - 1):
+        first_i = next((i for i, bar in enumerate(bars) if int(bar["ts_ms"]) >= boundary_ms), len(bars))
+        for i in range(max(64, first_i), len(bars) - 1):
             signal_ts = int(bars[i]["ts_ms"])
-            if signal_ts < boundary_ms:
-                continue
             try:
                 feature = policy.compute_supertrend_pullback_feature(
                     bars[: i + 1], symbol=symbol, now_ts_ms=signal_ts, config=cfg
                 )
                 intent = policy.build_supertrend_pullback_intent(
                     feature,
-                    policy_source_sha=policy_sha,
+                    policy_source_sha=POLICY_SOURCE_SHA,
                     verified_round_trip_cost_bps=float(snap["pretrade_verified_cost_bps"]),
                     config=cfg,
                 )
@@ -111,6 +117,7 @@ def replay(
             if bool(getattr(intent, "no_trade")):
                 continue
 
+            native_signal_count += 1
             side = str(getattr(intent, "side"))
             a = atr14(bars, i)
             shock = abs(float(bars[i]["close"]) - float(bars[i - 1]["close"]))
@@ -197,10 +204,11 @@ def replay(
                 + float(snap["impact_bps"])
                 + ev.funding_cost(entry_ts, int(exit_ts), list(snap["funding_rows"]))
             )
-            if side == "long":
-                gross = (float(exit_px) - entry) / entry * 10000.0
-            else:
-                gross = (entry - float(exit_px)) / entry * 10000.0
+            gross = (
+                (float(exit_px) - entry) / entry * 10000.0
+                if side == "long"
+                else (entry - float(exit_px)) / entry * 10000.0
+            )
             trades.append(
                 {
                     "symbol": symbol,
@@ -219,7 +227,7 @@ def replay(
                     "veto_hit": veto_hit,
                 }
             )
-    return trades, vetoed
+    return trades, vetoed, native_signal_count
 
 
 def _pf_ge(candidate: Mapping[str, Any], base: Mapping[str, Any]) -> bool:
@@ -245,84 +253,43 @@ def compare(base_trades: list[dict[str, Any]], candidate_trades: list[dict[str, 
             or (c["net_expectancy_bps"] is not None and float(c["net_expectancy_bps"]) >= float(b["net_expectancy_bps"]))
         ),
         "win_rate_non_decrease": (
-            b["win_rate"] is None or (c["win_rate"] is not None and float(c["win_rate"]) >= float(b["win_rate"]))
+            b["win_rate"] is None
+            or (c["win_rate"] is not None and float(c["win_rate"]) >= float(b["win_rate"]))
         ),
         "profit_factor_non_decrease": _pf_ge(c, b),
         "drawdown_non_increase": float(c["drawdown_bps"] or 0.0) <= float(b["drawdown_bps"] or 0.0),
     }
-    return {
-        "base": b,
-        "candidate": c,
-        "checks": checks,
-        "all_quality_checks_pass": all(checks.values()),
-    }
+    return {"base": b, "candidate": c, "checks": checks, "all_quality_checks_pass": all(checks.values())}
 
 
 def trade_key(row: Mapping[str, Any]) -> tuple[str, int, int, str]:
     return str(row["symbol"]), int(row["signal_ts"]), int(row["entry_ts"]), str(row["side"])
 
 
-def run(parent_path: Path, out: Path) -> dict[str, Any]:
-    parent = read(parent_path)
-    if str(parent.get("strategy_id")) != STRATEGY:
-        raise RuntimeError("SUPERTREND_PARENT_REQUIRED")
-    if parent.get("integrity_defects"):
-        raise RuntimeError("SUPERTREND_PARENT_INTEGRITY_DEFECT")
-    if int(parent.get("leakage_lookahead") or 0) != 0:
-        raise RuntimeError("SUPERTREND_PARENT_LOOKAHEAD_NONZERO")
-
+def run(out: Path) -> dict[str, Any]:
     authority = read(COST)
-    bars_by, _maps, fetched = ab.load_shared_inputs(SYMBOLS, authority)
-    public = parent.get("execution_snapshots") or {}
-    snapshots = {
-        symbol: salvage._snapshot_with_exact_cost(fetched[symbol], dict(public.get(symbol) or {}))
-        for symbol in SYMBOLS
-    }
-    policy_sha = str(parent.get("policy_sha") or "")
-    if not policy_sha:
-        raise RuntimeError("SUPERTREND_POLICY_SHA_REQUIRED")
+    if authority.get("state") != "FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY":
+        raise RuntimeError("COST_AUTHORITY_NOT_FROZEN")
+    bars_by, _maps, snapshots = ab.load_shared_inputs(SYMBOLS, authority)
+    boundary_ms = parse_boundary(PROSPECTIVE_BOUNDARY_UTC)
 
-    historical_boundary_utc = str(parent.get("boundary_utc") or "")
-    if not historical_boundary_utc:
-        raise RuntimeError("SUPERTREND_HISTORICAL_BOUNDARY_REQUIRED")
-
-    historical_base, _ = replay(
-        boundary_ms=parse_boundary(historical_boundary_utc),
+    fresh_base, _unused, base_signal_count = replay(
+        boundary_ms=boundary_ms,
         bars_by=bars_by,
         snapshots=snapshots,
-        policy_sha=policy_sha,
         veto_enabled=False,
     )
-    historical_candidate, historical_vetoed = replay(
-        boundary_ms=parse_boundary(historical_boundary_utc),
+    fresh_candidate, fresh_vetoed, candidate_signal_count = replay(
+        boundary_ms=boundary_ms,
         bars_by=bars_by,
         snapshots=snapshots,
-        policy_sha=policy_sha,
-        veto_enabled=True,
-    )
-    historical = compare(historical_base, historical_candidate)
-
-    fresh_base, _ = replay(
-        boundary_ms=parse_boundary(PROSPECTIVE_BOUNDARY_UTC),
-        bars_by=bars_by,
-        snapshots=snapshots,
-        policy_sha=policy_sha,
-        veto_enabled=False,
-    )
-    fresh_candidate, fresh_vetoed = replay(
-        boundary_ms=parse_boundary(PROSPECTIVE_BOUNDARY_UTC),
-        bars_by=bars_by,
-        snapshots=snapshots,
-        policy_sha=policy_sha,
         veto_enabled=True,
     )
     prospective = compare(fresh_base, fresh_candidate)
 
     base_keys = {trade_key(x) for x in fresh_base}
     candidate_keys = {trade_key(x) for x in fresh_candidate}
-    fresh_base_t = len(fresh_base)
-    fresh_candidate_t = len(fresh_candidate)
-    if fresh_base_t == 0:
+    if len(fresh_base) == 0:
         state = "CONNECTED_SHADOW_WAIT_NEW_T"
     elif prospective["all_quality_checks_pass"]:
         state = "CONNECTED_SHADOW_FRESH_IMPROVING"
@@ -336,21 +303,28 @@ def run(parent_path: Path, out: Path) -> dict[str, Any]:
         "shadow_connected": True,
         "connection_target": "SUPERTREND_NATIVE_PREENTRY_FILTER_SHADOW",
         "frozen_axis": FROZEN_AXIS,
-        "historical_diagnostic_only": {
-            "authority": False,
-            "boundary_utc": historical_boundary_utc,
-            "comparison": historical,
-            "veto_signal_T": len(historical_vetoed),
+        "source_transfer_evidence": {
+            "run_id": SOURCE_TRANSFER_RUN_ID,
+            "receipt_sha256": SOURCE_TRANSFER_RECEIPT_SHA256,
+            "historical_donor_trade_attachment_strict_pass": False,
+            "historical_donor_trade_attachment_abandoned": True,
+            "replacement_path": "TRANSFER_LOGIC_NOT_TRADES",
         },
         "prospective": {
             "boundary_utc": PROSPECTIVE_BOUNDARY_UTC,
-            "base_T": fresh_base_t,
-            "candidate_T": fresh_candidate_t,
+            "base_native_signal_T": base_signal_count,
+            "candidate_native_signal_T": candidate_signal_count,
+            "base_completed_T": len(fresh_base),
+            "candidate_completed_T": len(fresh_candidate),
             "veto_signal_T": len(fresh_vetoed),
             "trade_ids_removed_T": len(base_keys - candidate_keys),
             "trade_ids_added_after_ownership_release_T": len(candidate_keys - base_keys),
             "comparison": prospective,
         },
+        "cost_snapshot_sha256_by_symbol": {
+            symbol: str(snapshots[symbol].get("snapshot_sha256") or "") for symbol in SYMBOLS
+        },
+        "policy_source_sha": POLICY_SOURCE_SHA,
         "policy": {
             "historical_donor_trade_attachment": False,
             "parent_trade_rewrite": False,
@@ -360,6 +334,7 @@ def run(parent_path: Path, out: Path) -> dict[str, Any]:
             "future_information_used": False,
             "fresh_only_for_decision": True,
             "production_execution_unchanged": True,
+            "hourly_observer": True,
         },
         "selection_authority": False,
         "promotion_authority": False,
@@ -389,7 +364,6 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parent", type=Path)
     ap.add_argument(
         "--out",
         type=Path,
@@ -399,20 +373,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    if args.parent is None:
-        raise RuntimeError("--parent required")
-    result = run(args.parent, args.out)
-    print(
-        json.dumps(
-            {
-                "state": result["state"],
-                "historical": result["historical_diagnostic_only"]["comparison"],
-                "prospective": result["prospective"],
-                "next": result["next"],
-            },
-            sort_keys=True,
-        )
-    )
+    result = run(args.out)
+    print(json.dumps({"state": result["state"], "prospective": result["prospective"], "next": result["next"]}, sort_keys=True))
     return 0
 
 

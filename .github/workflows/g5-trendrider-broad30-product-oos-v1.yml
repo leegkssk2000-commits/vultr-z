@@ -7,6 +7,7 @@ on:
       - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
+      - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
       - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
   push:
     branches: [master]
@@ -14,6 +15,7 @@ on:
       - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
+      - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
       - '.github/workflows/g5-trendrider-broad30-product-oos-v1.yml'
   workflow_dispatch:
   schedule:
@@ -42,8 +44,11 @@ jobs:
       - name: Compile and self-test
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          python -m py_compile \
+            backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
+            backend/research/prep/rr_exit_fresh6_observer_v1.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
+          python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
 
   evaluate:
     if: github.event_name != 'pull_request'
@@ -57,11 +62,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify G4 seal and G5 manifest
+      - name: Verify G4 seal, G5 manifest, and frozen RR observer
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          python -m py_compile \
+            backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
+            backend/research/prep/rr_exit_fresh6_observer_v1.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
+          python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
       - name: Run product OOS / walk-forward / stress
         run: |
           set -euo pipefail
@@ -87,16 +95,50 @@ jobs:
               'receipt':r['receipt_sha256'],
           },sort_keys=True))
           PY
-      - name: Persist latest product G5 receipt
+      - name: Run frozen RR prospective fresh6 observer
         run: |
           set -euo pipefail
-          target=backend/research/prep/g5_trendrider_broad30_product_latest.json
-          cp out/g5_trendrider_broad30_product_latest.json "$target"
+          python -m backend.research.prep.rr_exit_fresh6_observer_v1 \
+            --out out/rr_exit_fresh6_observer_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/rr_exit_fresh6_observer_latest.json'))
+          assert r['strategy_id']=='trend_rider'
+          assert r['lane_id']=='trend_rider_broad_wr7000'
+          assert r['required_fresh_T']==6
+          assert r['first_six_prefix_frozen'] is True
+          assert r['skip_unresolved_prefix_trade_forbidden'] is True
+          assert r['fresh_candidate_reoptimization_forbidden'] is True
+          assert r['fresh_validation_used_to_select_candidate'] is False
+          assert r['duplicate_count']==0
+          assert r['integrity_defects']==[]
+          assert r['leakage_lookahead']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+              'state':r['state'],
+              'raw_T':r['raw_postboundary_closed_T'],
+              'mature_prefix_T':r['candidate_mature_prefix_T'],
+              'validation_T':r['validation_T'],
+              'native':r['native_control'],
+              'candidate':r['candidate'],
+              'checks':r['strict_checks'],
+              'next':r['next'],
+              'receipt':r['receipt_sha256'],
+          },sort_keys=True))
+          PY
+      - name: Persist latest product and RR observer receipts
+        run: |
+          set -euo pipefail
+          product_target=backend/research/prep/g5_trendrider_broad30_product_latest.json
+          rr_target=backend/research/prep/rr_exit_fresh6_observer_latest.json
+          cp out/g5_trendrider_broad30_product_latest.json "$product_target"
+          cp out/rr_exit_fresh6_observer_latest.json "$rr_target"
           git config user.name 'g5-trendrider-product-oos'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
+          git add "$product_target" "$rr_target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5 TrendRider: persist product OOS receipt [skip ci]'
+          git commit -m 'G5 TrendRider: persist product and RR fresh6 receipts [skip ci]'
           for n in 1 2 3; do
             git pull --rebase origin master && git push origin HEAD:master && exit 0
             sleep 3
@@ -106,6 +148,8 @@ jobs:
         if: always()
         with:
           name: g5-trendrider-broad30-product-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/g5_trendrider_broad30_product_latest.json
+          path: |
+            out/g5_trendrider_broad30_product_latest.json
+            out/rr_exit_fresh6_observer_latest.json
           if-no-files-found: error
           retention-days: 90

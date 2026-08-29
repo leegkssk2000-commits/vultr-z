@@ -1,0 +1,47 @@
+name: A1 Supertrend ETH Symbol Boundary Diagnostic V1
+
+on:
+  push:
+    branches: [a1-supertrend-eth-symbol-fresh-child-v1]
+    paths:
+      - '.github/workflows/a1-supertrend-eth-symbol-boundary-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract authoritative Supertrend target only
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          src=json.loads(Path('backend/research/rebuild/a1_recent_loss_cluster_actionable_latest.json').read_text())
+          rows=[x for x in src.get('targets',[]) if x.get('strategy_id')=='supertrend_pullback']
+          assert len(rows)==1, f'SUPERTREND_TARGET_COUNT={len(rows)}'
+          x=rows[0]
+          root=x.get('actionable_root_cause') or {}
+          assert root.get('axis')=='SYMBOL' and root.get('value')=='ETH-USDT', root
+          assert x.get('fresh_child_boundary_required') is True
+          assert x.get('recommended_route')=='PREREGISTER_PREENTRY_CONTEXT_CHILD:SYMBOL:ETH-USDT:ONE_AXIS_ONLY', x.get('recommended_route')
+          assert x.get('execution_authority')=='NONE' and x.get('order_authority')=='BLOCKED' and x.get('live_trade_authority')=='BLOCKED'
+          print('ST_KEYS='+json.dumps(sorted(x.keys())))
+          shapes={}
+          for k,v in x.items():
+              if isinstance(v,list): shapes[k]={'type':'list','len':len(v)}
+              elif isinstance(v,dict): shapes[k]={'type':'dict','keys':sorted(v.keys())}
+          print('ST_SHAPES='+json.dumps(shapes,sort_keys=True,separators=(',',':')))
+          scalars={k:v for k,v in x.items() if isinstance(v,(str,int,float,bool)) or v is None}
+          scalars['source_receipt_sha256']=src.get('receipt_sha256')
+          scalars['root']=root
+          print('ST_SCALARS='+json.dumps(scalars,sort_keys=True,separators=(',',':')))
+          for k,v in x.items():
+              if isinstance(v,list) and v and all(isinstance(t,dict) for t in v):
+                  slim=[{q:t.get(q) for q in ('signal_ts','entry_ts','exit_ts','side','symbol','net_bps') if q in t} for t in v]
+                  if any(slim): print('ST_LIST_'+k+'='+json.dumps(slim,sort_keys=True,separators=(',',':')))
+          PY

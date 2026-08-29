@@ -5,11 +5,13 @@ on:
     branches: [master]
     paths:
       - 'backend/research/prep/rr_exit_robust_geometry_v1.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v2.py'
       - '.github/workflows/rr-exit-robust-geometry-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/prep/rr_exit_robust_geometry_v1.py'
+      - 'backend/research/prep/rr_exit_robust_geometry_v2.py'
       - '.github/workflows/rr-exit-robust-geometry-v1.yml'
   workflow_dispatch:
 
@@ -36,8 +38,11 @@ jobs:
       - name: Compile and self-test
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/prep/rr_exit_robust_geometry_v1.py
+          python -m py_compile \
+            backend/research/prep/rr_exit_robust_geometry_v1.py \
+            backend/research/prep/rr_exit_robust_geometry_v2.py
           python -m backend.research.prep.rr_exit_robust_geometry_v1 --self-test
+          python -m backend.research.prep.rr_exit_robust_geometry_v2 --self-test
       - name: Download frozen development sources
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,17 +58,22 @@ jobs:
       - name: Search development-only empirical RR geometry
         run: |
           set -euo pipefail
-          python -m backend.research.prep.rr_exit_robust_geometry_v1 \
+          python -m backend.research.prep.rr_exit_robust_geometry_v2 \
             --trend70-source out/trend70/a1_exact25_drain_6_receipt.json \
             --a4-source-dir out/a4 \
             --break-source-dir out/break \
-            --out out/rr_exit_robust_geometry_v1.json
+            --out out/rr_exit_robust_geometry_v2.json
           python - <<'PY'
           import json
-          r=json.load(open('out/rr_exit_robust_geometry_v1.json'))
+          r=json.load(open('out/rr_exit_robust_geometry_v2.json'))
           assert r['parent_T']==30
           assert r['temporal_nonoverlap'] is True
           assert r['max_development_exit_ts'] < r['min_validation_signal_ts']
+          assert r['development_T'] >= 12 and r['validation_T'] >= 6
+          assert r['cutoff_selection_uses_pnl'] is False
+          assert r['cutoff_selection_uses_win_loss'] is False
+          assert r['cutoff_selection_uses_mfe_mae'] is False
+          assert r['cutoff_selection_uses_candidate_economics'] is False
           assert r['old_fixed_cells_retested'] is False
           assert r['fresh_outcome_used_for_search'] is False
           assert r['g5_W2_W3_used_for_search'] is False
@@ -80,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           target=backend/research/prep/rr_exit_robust_geometry_latest.json
-          cp out/rr_exit_robust_geometry_v1.json "$target"
+          cp out/rr_exit_robust_geometry_v2.json "$target"
           git config user.name 'rr-exit-robust-geometry'
           git config user.email 'actions@users.noreply.github.com'
           git add "$target"
@@ -92,6 +102,6 @@ jobs:
         if: always()
         with:
           name: rr-exit-robust-geometry-${{ github.run_id }}
-          path: out/rr_exit_robust_geometry_v1.json
+          path: out/rr_exit_robust_geometry_v2.json
           if-no-files-found: error
           retention-days: 90

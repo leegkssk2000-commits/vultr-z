@@ -1,0 +1,78 @@
+name: A1 TrendMA ATR Adverse Veto Salvage V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trendma_atr_adverse_veto_top5_salvage_v1.py'
+      - '.github/workflows/a1-trendma-atr-adverse-veto-salvage-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  salvage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendma_atr_adverse_veto_top5_salvage_v1.py
+          python -m backend.research.rebuild.a1_trendma_atr_adverse_veto_top5_salvage_v1 --self-test
+      - name: Rebuild exact TrendMA 52T
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --terminal-replay --strategy-id trend_ma_macd --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' --out out/trend_ma_macd_exact_parent.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/trend_ma_macd_exact_parent.json'))
+          assert len(r.get('trades') or [])==52 and not r.get('integrity_defects') and int(r.get('leakage_lookahead') or 0)==0
+          print('PASS_EXACT_TRENDMA52')
+          PY
+      - name: Download frozen Top5 parent artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/t.zip && unzip -q out/t.zip -d out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a.zip && unzip -q out/a.zip -d out/a4
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/b.zip && unzip -q out/b.zip -d out/break
+      - name: Run frozen ATR adverse-veto transfer
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendma_atr_adverse_veto_top5_salvage_v1 --parent out/trend_ma_macd_exact_parent.json --trend70-source out/trend70/a1_exact25_drain_6_receipt.json --a4-source-dir out/a4 --break-source-dir out/break --out out/a1_trendma_atr_adverse_veto_top5_salvage_latest.json
+          cat out/a1_trendma_atr_adverse_veto_top5_salvage_latest.json
+      - name: Verify authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendma_atr_adverse_veto_top5_salvage_latest.json'))
+          assert r['state']=='PASS_TRENDMA_ATR_ADVERSE_VETO_SALVAGE'
+          assert r['frozen_axis']['origin_commit']=='051ff7015e6456410073b1a42dc0c201876c1958'
+          assert r['threshold_sweep'] is False and r['outcome_selected'] is False
+          assert r['attachable_now'] is False and r['top5_ssot_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print('PASS_ATR_VETO_SALVAGE_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendma-atr-adverse-veto-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendma_atr_adverse_veto_top5_salvage_latest.json
+          if-no-files-found: warn
+          retention-days: 30

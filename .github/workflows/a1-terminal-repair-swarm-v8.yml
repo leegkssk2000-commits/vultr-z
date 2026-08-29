@@ -1,0 +1,116 @@
+name: A1 Terminal Repair Swarm V8 Prospective OOS
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v8.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v8.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v8.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v8.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and OOS contract self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v8.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v8 --self-test
+
+  prospective-oos:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and OOS contract self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v8.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v8 --self-test
+      - name: Run genuine post-boundary OOS economics
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v8 \
+            --output out/a1_terminal_repair_swarm_v8_latest.json
+      - name: Verify frozen OOS contract and safety
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v8_latest.json'))
+          c=r.get('frozen_validation_contract') or {}
+          assert r.get('schema_version')=='zel.a1_terminal_repair_swarm.v8'
+          assert float(r.get('cost_bps_per_trade'))==14.0
+          assert int(r.get('candidate_count') or 0)==4
+          assert int(r.get('reject_count') or 0)==0
+          assert c.get('candidate_set_frozen_from_v7') is True
+          assert c.get('formula_retuning') is False and c.get('threshold_retuning') is False and c.get('horizon_retuning') is False
+          assert c.get('candidate_reselection_from_oos') is False
+          assert c.get('only_closed_bars_and_closed_horizons_count') is True
+          assert r.get('selection_authority') is False and r.get('promotion_authority') is False
+          assert r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+          assert r.get('exchange_order_submitted') is False and int(r.get('protected_mutations') or 0)==0
+          print(json.dumps({
+            'candidate_count':r.get('candidate_count'),
+            'oos_pass_count':r.get('oos_pass_count'),
+            'oos_fail_count':r.get('oos_fail_count'),
+            'wait_new_t_count':r.get('wait_new_t_count'),
+            'economic_summary':r.get('economic_summary'),
+            'next':r.get('next'),
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-v8-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_terminal_repair_swarm_v8_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist V8 OOS receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v8_latest.json
+          generated=/tmp/a1_terminal_repair_swarm_v8_generated.json
+          cp out/a1_terminal_repair_swarm_v8_latest.json "$generated"
+          git config user.name 'a1-terminal-repair-swarm-v8'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            cp "$generated" "$target"
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1 economics: persist genuine V8 OOS receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

@@ -1,0 +1,99 @@
+name: A1 Top5 Supertrend Exact Parent ATR Veto V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_supertrend_exact_parent_atr_veto_v1.py'
+      - '.github/workflows/a1-top5-supertrend-exact-parent-atr-veto-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_supertrend_exact_parent_atr_veto_v1.py
+          python -m backend.research.rebuild.a1_top5_supertrend_exact_parent_atr_veto_v1 --self-test
+      - name: Download immutable Supertrend broad artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out/source
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/supertrend.zip
+          unzip -q out/supertrend.zip -d out/source
+          test -f out/source/supertrend_pullback_exact_parent.json
+      - name: Verify exact frozen Top5 Supertrend 11T authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from backend.research.rebuild.a1_top5_highamp_rescue_scan_v1 import select_semantic_parent
+          from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import metrics
+          broad=json.load(open('out/source/supertrend_pullback_exact_parent.json'))
+          incumbent=json.load(open('backend/research/rebuild/a1_supertrend_5455_research_incumbent_v1.json'))
+          assert broad['strategy_id']=='supertrend_pullback'
+          assert int(broad['completed_trades'])==56 and len(broad['trades'])==56
+          assert broad['receipt_sha256']=='66bf7d78ab960527ec7e7f3578c1f6dbf103dacf2de0db7f20762a7bebd5fb21'
+          assert incumbent['receipt_sha256']=='035d5e0159b62ddfbf40bb479dc447c17d486035bf8bd2692184e5de1520c647'
+          assert not broad.get('integrity_defects') and int(broad.get('leakage_lookahead') or 0)==0
+          parent=select_semantic_parent(broad,incumbent); m=metrics(parent)
+          assert len(parent)==11 and abs(float(m['win_rate'])-6/11)<1e-12
+          assert abs(float(m['net_pnl_bps'])-8987.160536440786)<0.1
+          assert abs(float(m['net_expectancy_bps'])-817.0145942218896)<0.1
+          assert abs(float(m['profit_factor'])-12.301261556184716)<1e-6
+          assert abs(float(m['drawdown_bps'])-245.7358707597723)<0.1
+          print('PASS_EXACT_TOP5_SUPERTREND_FROZEN_PARENT_11T')
+          PY
+      - name: Evaluate frozen ATR-veto architecture on exact Top5 Supertrend parent
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_supertrend_exact_parent_atr_veto_v1 \
+            --source out/source/supertrend_pullback_exact_parent.json \
+            --out out/a1_top5_supertrend_exact_parent_atr_veto_v1.json
+          cat out/a1_top5_supertrend_exact_parent_atr_veto_v1.json
+      - name: Verify fail-closed research authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_supertrend_exact_parent_atr_veto_v1.json'))
+          assert r['scope']=='TOP5_FROZEN_SUPERTREND_PARENT_ONLY'
+          assert r['source_artifact_id']==9614562185 and r['exact_parent_T']==11
+          assert r['architecture']['numeric_threshold_sweep'] is False
+          assert r['architecture']['outcome_fitted_cutoff'] is False
+          assert r['architecture']['frozen_axis']['origin_commit']=='051ff7015e6456410073b1a42dc0c201876c1958'
+          assert r['parent_deleted_or_rewritten'] is False
+          assert r['historical_donor_is_development_only'] is True
+          assert r['fresh_prospective_required_before_any_promotion'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['protected_mutations'])==0
+          print('PASS_TOP5_SUPERTREND_EXACT_PARENT_ATR_VETO_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-supertrend-exact-parent-atr-veto-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_supertrend_exact_parent_atr_veto_v1.json
+          if-no-files-found: error
+          retention-days: 90

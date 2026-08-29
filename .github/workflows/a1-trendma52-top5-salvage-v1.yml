@@ -1,0 +1,104 @@
+name: A1 TrendMA52 Top5 Salvage V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trendma52_top5_salvage_v1.py'
+      - '.github/workflows/a1-trendma52-top5-salvage-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  salvage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendma52_top5_salvage_v1.py
+          python -m backend.research.rebuild.a1_trendma52_top5_salvage_v1 --self-test
+      - name: Rebuild exact TrendMA 52T parent read-only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id trend_ma_macd \
+            --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' \
+            --out out/trend_ma_macd_exact_parent.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/trend_ma_macd_exact_parent.json'))
+          assert r['strategy_id']=='trend_ma_macd'
+          assert len(r.get('trades') or [])==52,r.get('completed_trades')
+          assert not r.get('integrity_defects')
+          assert int(r.get('leakage_lookahead') or 0)==0
+          print('PASS_EXACT_TRENDMA_52_PARENT')
+          PY
+      - name: Download immutable Top5 parent artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          test -f out/trend70/a1_exact25_drain_6_receipt.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          test -f out/a4/keltner_trend_exact_parent.json
+          test -f out/a4/supertrend_pullback_exact_parent.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Run chronology-clean root and Top5 donor salvage forensic
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendma52_top5_salvage_v1 \
+            --parent out/trend_ma_macd_exact_parent.json \
+            --trend70-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_trendma52_top5_salvage_latest.json
+          cat out/a1_trendma52_top5_salvage_latest.json
+      - name: Verify fail-closed authority and chronology contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendma52_top5_salvage_latest.json'))
+          assert r['state']=='PASS_TRENDMA52_TOP5_SALVAGE_FORENSIC'
+          assert r['exact_parent_T']==52
+          f=r['fresh9_root_forensic']
+          assert f['historical_recorded_native_T']==52 and f['historical_recorded_long_T']==33
+          assert f['chronology_clean_preboundary_native_T']==51 and f['chronology_clean_preboundary_long_T']==32
+          assert f['chronology_contamination_T']==1 and f['chronology_long_contamination_T']==1
+          assert r['interpretation']['outcome_oracle_is_ceiling_only'] is True
+          assert r['interpretation']['top5_ssot_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['protected_mutations']==0
+          print('PASS_TRENDMA52_TOP5_SALVAGE_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendma52-top5-salvage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendma52_top5_salvage_latest.json
+          if-no-files-found: warn
+          retention-days: 30

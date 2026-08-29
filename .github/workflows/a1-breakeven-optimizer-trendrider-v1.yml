@@ -1,0 +1,91 @@
+name: A1 Breakeven Optimizer TrendRider V1
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_breakeven_optimizer_trendrider_v1.py'
+      - '.github/workflows/a1-breakeven-optimizer-trendrider-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+jobs:
+  breakeven:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fail closed if another heavy run is active
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          repo=os.environ['GITHUB_REPOSITORY']; this=int(os.environ['GITHUB_RUN_ID'])
+          raw=subprocess.check_output(['gh','api',f'repos/{repo}/actions/runs?status=in_progress&per_page=100'],text=True)
+          runs=json.loads(raw).get('workflow_runs',[]); heavy=[]
+          for r in runs:
+              if int(r['id'])==this: continue
+              n=(r.get('name') or '').lower(); p=(r.get('path') or '').lower()
+              if any(k in n or k in p for k in ('exact parent repair','economic evaluator','heavy','synthesis','rr exit optimizer','time stop optimizer','breakeven optimizer')):
+                  heavy.append({'id':r['id'],'name':r.get('name'),'path':r.get('path')})
+          if heavy:
+              print(json.dumps({'state':'WAIT_HEAVY_SLOT','active':heavy},sort_keys=True)); raise SystemExit(75)
+          print('PASS_GLOBAL_HEAVY_SLOT_FREE')
+          PY
+      - name: Compile and self-test
+        run: |
+          python -m py_compile backend/research/rebuild/a1_breakeven_optimizer_trendrider_v1.py
+          python -m backend.research.rebuild.a1_breakeven_optimizer_trendrider_v1 --self-test
+      - name: Download immutable G4 TrendRider broad30 source
+        run: |
+          mkdir -p out/source
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/source.zip
+          unzip -q out/source.zip -d out/source
+          test -f out/source/a1_exact25_drain_6_receipt.json
+      - name: Run development-only breakeven optimization
+        run: |
+          python -m backend.research.rebuild.a1_breakeven_optimizer_trendrider_v1 \
+            --source out/source/a1_exact25_drain_6_receipt.json \
+            --out out/breakeven_optimizer.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/breakeven_optimizer.json'))
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['g5_w2_w3_used_for_search'] is False
+          assert r['fresh_prospective_used_for_search'] is False
+          assert r['entry_logic_frozen'] is True
+          assert r['stop_geometry_frozen'] is True
+          assert r['rr_geometry_frozen'] is True
+          assert r['timeout_geometry_frozen'] is True
+          assert r['state'] in ('PREREGISTERED_TRUE_PROSPECTIVE_BREAKEVEN','NO_ROBUST_BREAKEVEN_OPTIMUM')
+          print(json.dumps({'state':r['state'],'exact_params':r.get('exact_params'),'boundary_ts':r.get('boundary_ts'),'artifact_sha':r['artifact_sha']},sort_keys=True))
+          PY
+      - name: Persist research-only receipt on master
+        run: |
+          cp out/breakeven_optimizer.json backend/research/prep/breakeven_optimizer_latest.json
+          git config user.name a1-breakeven-optimizer
+          git config user.email actions@users.noreply.github.com
+          git add backend/research/prep/breakeven_optimizer_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'research: persist breakeven optimizer result [skip ci]'
+          git pull --rebase origin master
+          git push origin HEAD:master
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-breakeven-optimizer-${{ github.run_id }}
+          path: out/breakeven_optimizer.json
+          retention-days: 90

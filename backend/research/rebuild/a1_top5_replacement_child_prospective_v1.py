@@ -267,7 +267,7 @@ def run(output: Path, previous_path: Path | None = None, now_ms: int | None = No
         raise RuntimeError("EXACT_THREE_CHILDREN_REQUIRED")
     if len({str(x.get("lane_id")) for x in children if isinstance(x, Mapping)}) != 3:
         raise RuntimeError("DISTINCT_CHILD_LANES_REQUIRED")
-    if any(int((x or {}).get("prospective_child_T_at_freeze") or -1) != 0 for x in children if isinstance(x, Mapping)):
+    if any(int((x or {}).get("prospective_child_T_at_freeze", -1)) != 0 for x in children if isinstance(x, Mapping)):
         raise RuntimeError("CHILD_MUST_START_AT_ZERO")
 
     current_ms = int(now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000)

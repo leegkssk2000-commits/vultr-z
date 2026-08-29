@@ -98,17 +98,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Persist semantic child receipt on master
+      - name: Persist semantic child receipt on master without stale overwrite
         if: github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
           target=backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json
-          rm -f /tmp/a1-child-persist
-          python - <<'PY'
+          generated=/tmp/a1_top5_replacement_child_generated.json
+          cp out/a1_top5_replacement_child_prospective_latest.json "$generated"
+          git config user.name 'a1-top5-replacement-child-prospective-v1'
+          git config user.email 'actions@users.noreply.github.com'
+
+          for n in 1 2 3; do
+            echo "PERSIST_ATTEMPT=$n"
+            git fetch origin master
+            git reset --hard origin/master
+            rm -f /tmp/a1-child-safe-write /tmp/a1-child-stale-skip
+
+            python - "$target" "$generated" <<'PY'
+          import copy
           import json
+          import sys
+          from datetime import datetime
           from pathlib import Path
+
+          target=Path(sys.argv[1])
+          generated=Path(sys.argv[2])
+          new=json.loads(generated.read_text())
+          old=json.loads(target.read_text()) if target.is_file() else None
+
+          def parse_ts(v):
+              if not v:
+                  return None
+              try:
+                  return datetime.fromisoformat(str(v).replace('Z','+00:00'))
+              except Exception:
+                  return None
+
           def semantic(x):
-              y=dict(x)
+              y=copy.deepcopy(x)
               y.pop('observed_at_utc',None)
               y.pop('receipt_sha256',None)
               for lane in (y.get('lanes') or {}).values():
@@ -117,23 +144,65 @@ jobs:
                       lane.pop('new_closed_T',None)
               y.pop('total_new_closed_T',None)
               return y
-          target=Path('backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json')
-          new=json.load(open('out/a1_top5_replacement_child_prospective_latest.json'))
-          old=json.loads(target.read_text()) if target.is_file() else None
-          if old is None or semantic(old)!=semantic(new):
-              Path('/tmp/a1-child-persist').write_text('1\n')
-          else:
-              print('NO_SEMANTIC_DELTA_NO_MASTER_COMMIT')
+
+          if old is not None:
+              assert old.get('schema_version')==new.get('schema_version')=='zel.a1.top5.replacement_child.prospective.receipt.v1'
+              assert int(old.get('boundary_ms') or 0)==int(new.get('boundary_ms') or 0)==1788030000000
+              assert old.get('boundary_utc')==new.get('boundary_utc')=='2026-08-29T19:00:00Z'
+              old_lanes=old.get('lanes') or {}
+              new_lanes=new.get('lanes') or {}
+              assert set(old_lanes)==set(new_lanes)
+
+              stale_reasons=[]
+              if old.get('boundary_reached') is True and new.get('boundary_reached') is not True:
+                  stale_reasons.append('BOUNDARY_STATE_REGRESSION')
+              for lane_id in sorted(old_lanes):
+                  o=old_lanes[lane_id]
+                  z=new_lanes[lane_id]
+                  if str(o.get('child_id') or '') != str(z.get('child_id') or ''):
+                      raise SystemExit(f'CHILD_ID_DRIFT:{lane_id}')
+                  old_ids={str(t.get('closed_trade_id')) for t in o.get('closed_trades') or [] if isinstance(t,dict) and t.get('closed_trade_id')}
+                  new_ids={str(t.get('closed_trade_id')) for t in z.get('closed_trades') or [] if isinstance(t,dict) and t.get('closed_trade_id')}
+                  if not old_ids.issubset(new_ids):
+                      stale_reasons.append(f'APPEND_ONLY_REGRESSION:{lane_id}')
+                  if int(o.get('closed_T') or 0) > int(z.get('closed_T') or 0):
+                      stale_reasons.append(f'T_COUNT_REGRESSION:{lane_id}')
+
+              old_ts=parse_ts(old.get('observed_at_utc'))
+              new_ts=parse_ts(new.get('observed_at_utc'))
+              if old_ts and new_ts and old_ts >= new_ts and semantic(old) != semantic(new):
+                  stale_reasons.append('OLDER_OR_EQUAL_GENERATED_OBSERVATION')
+
+              if stale_reasons:
+                  print('STALE_GENERATED_RECEIPT_SKIP:' + ','.join(stale_reasons))
+                  Path('/tmp/a1-child-stale-skip').write_text('1\n')
+                  raise SystemExit(0)
+              if semantic(old)==semantic(new):
+                  print('NO_SEMANTIC_DELTA_NO_MASTER_COMMIT')
+                  Path('/tmp/a1-child-stale-skip').write_text('1\n')
+                  raise SystemExit(0)
+
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)+'\n')
+          Path('/tmp/a1-child-safe-write').write_text('1\n')
+          print('SAFE_GENERATED_RECEIPT_READY_TO_COMMIT')
           PY
-          if [[ ! -f /tmp/a1-child-persist ]]; then exit 0; fi
-          cp out/a1_top5_replacement_child_prospective_latest.json "$target"
-          git config user.name 'a1-top5-replacement-child-prospective-v1'
-          git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist replacement child prospective receipt [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
+
+            if [[ -f /tmp/a1-child-stale-skip ]]; then
+              exit 0
+            fi
+            test -f /tmp/a1-child-safe-write
+            git add "$target"
+            if git diff --cached --quiet; then
+              echo NO_GIT_DELTA_NO_MASTER_COMMIT
+              exit 0
+            fi
+            git commit -m 'A1: persist replacement child prospective receipt [skip ci]'
+            if git push origin HEAD:master; then
+              exit 0
+            fi
+            echo "PUSH_RACE_RETRY=$n"
             sleep 3
           done
+          echo PERSIST_RETRY_EXHAUSTED
           exit 1

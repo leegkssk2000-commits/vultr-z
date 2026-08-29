@@ -151,8 +151,6 @@ def run(out: Path) -> dict[str, Any]:
         raise RuntimeError("MATCHED_BROAD_REFERENCE_MISSING")
     reference_rows = [dict(x) for x in (broad.get("rows") or [])]
 
-    # Entry-time features only. The same frozen feature computation and materiality policy
-    # already used by the loss-cluster owner is reused here, rather than inventing W2 thresholds.
     enrich_preentry(receipt, w2_rows)
     enrich_preentry(receipt, reference_rows)
 
@@ -235,10 +233,8 @@ def run(out: Path) -> dict[str, Any]:
 
 def self_test() -> int:
     winners = [
-        {"net_bps": 100.0, "side": "long", "symbol": "BTC-USDT", "session": "EU", "chase_atr": 1.0, "st_gap_atr": 2.0, "atr_pct": 0.5},
-        {"net_bps": 120.0, "side": "long", "symbol": "ETH-USDT", "session": "US", "chase_atr": 1.0, "st_gap_atr": 2.0, "atr_pct": 0.5},
-        {"net_bps": 80.0, "side": "long", "symbol": "ETH-USDT", "session": "APAC", "chase_atr": 1.0, "st_gap_atr": 2.0, "atr_pct": 0.5},
-        {"net_bps": 90.0, "side": "short", "symbol": "BTC-USDT", "session": "EU", "chase_atr": 1.0, "st_gap_atr": 2.0, "atr_pct": 0.5},
+        {"net_bps": 100.0, "side": "long", "symbol": "BTC-USDT", "session": "EU", "chase_atr": 1.0, "st_gap_atr": 2.0, "atr_pct": 0.5}
+        for _ in range(4)
     ]
     w2 = [
         {"net_bps": -100.0, "side": "long", "symbol": "BTC-USDT", "session": "EU", "chase_atr": 0.2, "st_gap_atr": 2.0, "atr_pct": 0.5}

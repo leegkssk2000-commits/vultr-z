@@ -1,0 +1,108 @@
+name: A1 TrendRider ATR PCT G4 Backport Prep V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_trendrider_atr_pct_g4_backport_prep_v1.json'
+      - 'backend/research/prep/g5_trendrider_w2_forensic_latest.json'
+      - 'backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'
+      - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
+      - '.github/workflows/a1-trendrider-atr-pct-g4-backport-prep-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify dormant outcome-blind G4 causal backport prep
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python - <<'PY'
+          import json
+          prep=json.load(open('backend/research/contracts/a1_trendrider_atr_pct_g4_backport_prep_v1.json'))
+          f=json.load(open('backend/research/prep/g5_trendrider_w2_forensic_latest.json'))
+          b=json.load(open('backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'))
+          p=json.load(open('backend/research/contracts/a1_paid_ai_routing_policy_v1.json'))
+
+          assert prep['state']=='PREP_ONLY_DORMANT_UNTIL_G5_TERMINAL'
+          assert prep['source_lane_id']=='trend_rider_broad_wr7000'
+          assert prep['source_strategy_id']=='trend_rider'
+          assert prep['source_stage']=='G5'
+          assert prep['selected_causal_axis']==f['selected_causal_axis']=='ATR_PCT'
+          assert prep['forensic_receipt_sha256']==f['receipt_sha256']
+          assert prep['source_w2_observed_T_at_prep']==int(f['w2_observed_T'])==4
+          assert prep['source_w2_target_T']==int(f['w2_target_T'])==12
+          assert f['parent_state']=='WAIT_G5_W2_12'
+          assert f['causal_policy']['four_T_is_forensic_not_terminal'] is True
+          assert f['causal_policy']['parent_W2_continues_to_12T'] is True
+          assert f['causal_policy']['parent_retune_forbidden'] is True
+          assert f['causal_policy']['child_requires_fresh_boundary'] is True
+
+          axis=prep['axis_selection_basis']
+          forensic_axis=next(x for x in f['preentry_ranked_hypotheses'] if x['axis']=='ATR_PCT')
+          for k in ('loss_streak_mean','reference_mean','relative_delta','diagnostic_score'):
+              assert abs(float(axis[k])-float(forensic_axis[k]))<1e-12
+
+          feat=prep['preentry_feature_definition']
+          assert feat['formula']=='ATR(14) / close * 100'
+          assert feat['observable_at']=='closed signal bar'
+          assert feat['lookahead_required'] is False
+
+          one=prep['one_axis_contract']
+          assert one['changed_axis']=='ATR_PCT_ONLY'
+          assert one['parent_entry_geometry_other_than_atr_pct_context']=='MUST_REMAIN_IDENTICAL'
+          assert one['parent_exit_geometry']=='MUST_REMAIN_IDENTICAL'
+          assert one['parent_risk_geometry']=='MUST_REMAIN_IDENTICAL'
+          assert one['parent_timeout']=='MUST_REMAIN_IDENTICAL'
+          assert one['symbol_side_session_filters']=='FORBIDDEN_IN_THIS_CHILD'
+          assert one['chase_atr_or_st_gap_atr_changes']=='FORBIDDEN_IN_THIS_CHILD'
+          assert one['fee_or_cost_model_changes']=='FORBIDDEN'
+          assert one['best_horizon_selection'] is False
+          assert one['post_outcome_trade_deletion'] is False
+          assert one['multi_axis_repair'] is False
+
+          th=prep['threshold_policy']
+          assert th['threshold_now'] is None and th['runtime_rule_now'] is None
+          assert th['w2_outcome_derived_threshold_forbidden'] is True
+          assert th['numeric_threshold_sweep_forbidden'] is True
+          assert th['activation_requires_threshold_authority_receipt'] is True
+
+          gate=prep['activation_gate']
+          assert gate['active_now'] is False
+          assert gate['requires_g5_terminal_failure'] is True
+          assert gate['requires_g5_w2_or_later_gate_complete'] is True
+          assert gate['requires_parent_retune_remain_false'] is True
+          assert gate['requires_fresh_child_boundary_after_activation'] is True
+          assert gate['requires_threshold_frozen_before_child_outcomes'] is True
+          assert gate['forbid_reusing_current_w2_rows_as_child_prospective_T'] is True
+          assert gate['forbid_backdating_child_boundary'] is True
+
+          current=b['current_g5']['trend_rider_broad_wr7000']
+          assert current['state']=='WAIT_G5_W2_12'
+          assert int(current['w2_observed_T'])==4
+          assert current['selected_causal_axis']=='ATR_PCT'
+          assert current['parent_retune_forbidden'] is True
+          rule=p['active_stage_rules']['trend_rider_broad_wr7000']
+          assert rule['stage']=='G5' and rule['state']=='WAIT_G5_W2_12'
+          assert rule['if_terminal_g5_fail']=='HANDOFF_G4_CAUSAL_WITH_FRESH_CHILD_BOUNDARY'
+
+          assert prep['parent_mutated'] is False
+          assert prep['child_created'] is False
+          assert prep['child_frozen'] is False
+          assert prep['prospective_T_credit']==0
+          assert prep['economic_roi_credit'] is False
+          assert prep['selection_authority'] is False and prep['promotion_authority'] is False
+          assert prep['execution_authority']=='NONE' and prep['order_authority']=='BLOCKED' and prep['live_trade_authority']=='BLOCKED'
+          assert prep['protected_mutations']==0 and prep['action']=='hold'
+          print('PASS_A1_TRENDRIDER_ATR_PCT_G4_BACKPORT_PREP_DORMANT')
+          PY

@@ -24,7 +24,9 @@ def q(values: list[float], p: float) -> float:
     if not ys:
         raise RuntimeError("EMPTY_QUANTILE_INPUT")
     i = (len(ys) - 1) * p
-    lo = int(i); hi = min(lo + 1, len(ys) - 1); w = i - lo
+    lo = int(i)
+    hi = min(lo + 1, len(ys) - 1)
+    w = i - lo
     return float(ys[lo] * (1.0 - w) + ys[hi] * w)
 
 
@@ -42,27 +44,53 @@ def econ(metrics: Mapping[str, Any], payoff: float | None) -> bool:
     exp = float(metrics.get("net_expectancy_bps") or 0.0)
     wr = float(metrics.get("win_rate") or 0.0)
     pf = finite_pf(metrics.get("profit_factor"), metrics)
-    # An all-win validation slice has no loss denominator, so payoff/PF may be null.
-    # Treat that as positive economics, not as a failure. It still must beat the native
-    # validation profit below before any fresh child is allowed.
     payoff_ok = wr == 1.0 or float(payoff or 0.0) >= 1.0
     return bool(trades > 0 and net > 0 and exp > 0 and pf >= 1.0 and payoff_ok)
 
 
 def objective(metrics: Mapping[str, Any], payoff: float | None) -> float:
-    # Profit is primary; PF/payoff/DD are constraints/tiebreak quality, not substitutes for profit.
     return float(metrics.get("net_expectancy_bps") or -1e18)
 
 
 def metrics_pack(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
-    m = rr.metrics(rows); p = rr.payoff(rows)
+    m = rr.metrics(rows)
+    p = rr.payoff(rows)
     return {"metrics": m, "payoff": p, "economic_positive": econ(m, p)}
 
 
 def neighbors(cells: list[dict[str, Any]], chosen: dict[str, Any], tp_vals: list[float], sl_vals: list[float]) -> list[dict[str, Any]]:
-    ti = tp_vals.index(chosen["tp_r"]); si = sl_vals.index(chosen["sl_r"])
+    ti = tp_vals.index(chosen["tp_r"])
+    si = sl_vals.index(chosen["sl_r"])
     coords = {(ti - 1, si), (ti + 1, si), (ti, si - 1), (ti, si + 1)}
     return [c for c in cells if (tp_vals.index(c["tp_r"]), sl_vals.index(c["sl_r"])) in coords]
+
+
+def temporal_split(base_rows: list[dict[str, Any]], path_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Chronological holdout with purge: all development outcomes finish before validation starts."""
+    if len(base_rows) != len(path_rows):
+        raise RuntimeError("RR_PATH_ROW_PARITY")
+    nominal = max(12, int(len(base_rows) * 0.70))
+    nominal = min(nominal, len(base_rows) - 6)
+    cutoff = int(base_rows[nominal]["signal_ts"])
+    dev_base: list[dict[str, Any]] = []
+    dev_paths: list[dict[str, Any]] = []
+    val_base: list[dict[str, Any]] = []
+    purged: list[dict[str, Any]] = []
+    for row, path in zip(base_rows, path_rows):
+        signal_ts = int(row.get("signal_ts") or 0)
+        exit_ts = int(row.get("exit_ts") or 0)
+        if signal_ts >= cutoff:
+            val_base.append(row)
+        elif exit_ts < cutoff:
+            dev_base.append(row)
+            dev_paths.append(path)
+        else:
+            purged.append(row)
+    if len(dev_base) < 12 or len(val_base) < 6:
+        raise RuntimeError(f"RR_TEMPORAL_SPLIT_SUPPORT_INSUFFICIENT:DEV={len(dev_base)}:VAL={len(val_base)}")
+    if max(int(x.get("exit_ts") or 0) for x in dev_base) >= min(int(x.get("signal_ts") or 0) for x in val_base):
+        raise RuntimeError("RR_TEMPORAL_SPLIT_LEAKAGE")
+    return dev_base, dev_paths, val_base, purged, cutoff
 
 
 def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, Any]:
@@ -79,21 +107,20 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
     snaps = {s: ev.fetch_execution_snapshot(s, authority) for s in symbols}
     path_rows = [matched.row_path(row, bars_by[str(row["symbol"])]) for row in base_rows]
 
-    split = max(12, int(len(base_rows) * 0.70)); split = min(split, len(base_rows) - 6)
-    dev_base, val_base = base_rows[:split], base_rows[split:]
-    dev_paths = path_rows[:split]
+    dev_base, dev_paths, val_base, purged, validation_start_signal_ts = temporal_split(base_rows, path_rows)
     dev_winners = [x for x in dev_paths if float(x["net_bps"]) > 0]
     dev_losers = [x for x in dev_paths if float(x["net_bps"]) < 0]
     if len(dev_winners) < 3 or len(dev_losers) < 3:
         raise RuntimeError("RR_ROBUST_DEV_WIN_LOSS_SUPPORT_INSUFFICIENT")
 
     ps = (0.25, 0.50, 0.75, 0.90)
-    tp_vals = sorted({round(q([float(x["mfe_r"]) for x in dev_winners], p), 4) for p in ps if q([float(x["mfe_r"]) for x in dev_winners], p) > 0})
-    sl_vals = sorted({round(q([float(x["mae_r"]) for x in dev_losers], p), 4) for p in ps if q([float(x["mae_r"]) for x in dev_losers], p) > 0})
+    winner_mfe = [float(x["mfe_r"]) for x in dev_winners]
+    loser_mae = [float(x["mae_r"]) for x in dev_losers]
+    tp_vals = sorted({round(q(winner_mfe, p), 4) for p in ps if q(winner_mfe, p) > 0})
+    sl_vals = sorted({round(q(loser_mae, p), 4) for p in ps if q(loser_mae, p) > 0})
     if len(tp_vals) < 2 or len(sl_vals) < 2:
         raise RuntimeError("RR_ROBUST_EMPIRICAL_BOUNDS_DEGENERATE")
 
-    # Search only the development slice. Do not expose every candidate to validation.
     cells: list[dict[str, Any]] = []
     for tp_r in tp_vals:
         for sl_r in sl_vals:
@@ -114,7 +141,6 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
     positive_neighbors = [x for x in adjacent if x["development"]["economic_positive"]]
     plateau_supported = len(positive_neighbors) >= 2
 
-    # Exactly one development-selected candidate touches validation.
     selected_val_rows = rr.simulate(val_base, chosen["tp_r"], chosen["sl_r"], bars_by, snaps)
     selected_full_rows = rr.simulate(base_rows, chosen["tp_r"], chosen["sl_r"], bars_by, snaps)
     selected_val = metrics_pack(selected_val_rows)
@@ -123,7 +149,9 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
     chosen["validation"] = selected_val
     chosen["full_diagnostic"] = selected_full
 
-    native_dev = metrics_pack(dev_base); native_val = metrics_pack(val_base); native_full = metrics_pack(base_rows)
+    native_dev = metrics_pack(dev_base)
+    native_val = metrics_pack(val_base)
+    native_full = metrics_pack(base_rows)
     validation_positive = bool(selected_val["economic_positive"])
     cand_val_exp = float(selected_val["metrics"].get("net_expectancy_bps") or 0.0)
     native_val_exp = float(native_val["metrics"].get("net_expectancy_bps") or 0.0)
@@ -134,13 +162,7 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
     validation_net_delta_bps_per_trade = cand_val_exp - native_val_exp
     validation_net_delta_pct = None if native_val_exp == 0 else validation_net_delta_bps_per_trade / abs(native_val_exp)
 
-    robust = bool(
-        dev_state == "DEVELOPMENT_RR_CANDIDATE_SELECTED"
-        and plateau_supported
-        and validation_positive
-        and validation_net_noninferior
-        and validation_dd_noninferior
-    )
+    robust = bool(dev_state == "DEVELOPMENT_RR_CANDIDATE_SELECTED" and plateau_supported and validation_positive and validation_net_noninferior and validation_dd_noninferior)
     if robust:
         state = "ROBUST_RR_GEOMETRY_CANDIDATE_READY"
         next_action = "PREREGISTER_FRESH_RR_GEOMETRY_CHILD"
@@ -151,6 +173,8 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
         state = dev_state
         next_action = "NO_FRESH_CHILD_KEEP_NATIVE_EXIT_AND_ROUTE_NEXT_EXIT_FAMILY"
 
+    max_dev_exit = max(int(x.get("exit_ts") or 0) for x in dev_base)
+    min_val_signal = min(int(x.get("signal_ts") or 0) for x in val_base)
     result = {
         "schema_version": SCHEMA,
         "state": state,
@@ -160,11 +184,16 @@ def run(trend_path: Path, a4dir: Path, breakdir: Path, out: Path) -> dict[str, A
         "parent_reference": broad["reference"],
         "parent_T": len(base_rows),
         "search_family": "RR_GEOMETRY",
-        "search_method": "DEVELOPMENT_ONLY_EMPIRICAL_QUANTILE_GRID_THEN_SINGLE_CANDIDATE_NONSELECTIVE_VALIDATION",
+        "search_method": "PURGED_TEMPORAL_DEVELOPMENT_EMPIRICAL_QUANTILE_GRID_THEN_SINGLE_CANDIDATE_NONSELECTIVE_VALIDATION",
         "historical_fixed_rr_examples_are_seeds_only": True,
         "old_fixed_cells_retested": False,
         "development_T": len(dev_base),
         "validation_T": len(val_base),
+        "purged_overlap_T": len(purged),
+        "validation_start_signal_ts": validation_start_signal_ts,
+        "max_development_exit_ts": max_dev_exit,
+        "min_validation_signal_ts": min_val_signal,
+        "temporal_nonoverlap": max_dev_exit < min_val_signal,
         "development_fraction": len(dev_base) / len(base_rows),
         "search_quantiles": list(ps),
         "tp_r_candidates_from_dev_winner_mfe": tp_vals,
@@ -212,19 +241,31 @@ def self_test() -> int:
     all_win = {"trades": 5, "net_pnl_bps": 10, "net_expectancy_bps": 2, "profit_factor": None, "drawdown_bps": 0, "win_rate": 1.0}
     assert econ(all_win, None)
     assert objective(fake, 1.2) == 2
+    rows = [{"signal_ts": 2*i+1, "exit_ts": 2*i+2} for i in range(20)]
+    rows[12]["exit_ts"] = 40
+    paths = [dict(x) for x in rows]
+    dev, _, val, purged, cutoff = temporal_split(rows, paths)
+    assert len(dev) >= 12 and len(val) >= 6 and len(purged) == 1
+    assert max(x["exit_ts"] for x in dev) < min(x["signal_ts"] for x in val)
+    assert cutoff == min(x["signal_ts"] for x in val)
     print("PASS_RR_EXIT_ROBUST_GEOMETRY_V1_SELF_TEST")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--trend70-source", type=Path); ap.add_argument("--a4-source-dir", type=Path); ap.add_argument("--break-source-dir", type=Path)
-    ap.add_argument("--out", type=Path, default=Path("out/rr_exit_robust_geometry_v1.json")); ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--trend70-source", type=Path)
+    ap.add_argument("--a4-source-dir", type=Path)
+    ap.add_argument("--break-source-dir", type=Path)
+    ap.add_argument("--out", type=Path, default=Path("out/rr_exit_robust_geometry_v1.json"))
+    ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
-    if a.self_test: return self_test()
-    if None in (a.trend70_source, a.a4_source_dir, a.break_source_dir): raise SystemExit("sources required")
+    if a.self_test:
+        return self_test()
+    if None in (a.trend70_source, a.a4_source_dir, a.break_source_dir):
+        raise SystemExit("sources required")
     r = run(a.trend70_source, a.a4_source_dir, a.break_source_dir, a.out)
-    print(json.dumps({"state": r["state"], "T": r["parent_T"], "dev_T": r["development_T"], "val_T": r["validation_T"], "selected": {"tp_r": r["selected"]["tp_r"], "sl_r": r["selected"]["sl_r"], "rr": r["selected"]["nominal_rr"]}, "plateau": r["plateau"], "validation": r["validation"], "robust": r["robust_candidate_ready"], "receipt": r["receipt_sha256"]}, sort_keys=True))
+    print(json.dumps({"state": r["state"], "T": r["parent_T"], "dev_T": r["development_T"], "val_T": r["validation_T"], "purged_T": r["purged_overlap_T"], "temporal_nonoverlap": r["temporal_nonoverlap"], "selected": {"tp_r": r["selected"]["tp_r"], "sl_r": r["selected"]["sl_r"], "rr": r["selected"]["nominal_rr"]}, "plateau": r["plateau"], "validation": r["validation"], "robust": r["robust_candidate_ready"], "receipt": r["receipt_sha256"]}, sort_keys=True))
     return 0
 
 

@@ -1,0 +1,133 @@
+name: A1 Paid AI ROI Audit V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_paid_ai_spend_baseline_v1.json'
+      - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
+      - 'backend/research/architecture_factory/a1_paid_ai_roi_audit_v1.py'
+      - '.github/workflows/a1-paid-ai-roi-audit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_paid_ai_spend_baseline_v1.json'
+      - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
+      - 'backend/research/architecture_factory/a1_a5_economic_improvement_latest.json'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v5_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - 'backend/research/rebuild/a1_top5_g4_terminal_latest.json'
+      - 'backend/research/architecture_factory/a1_paid_ai_roi_audit_v1.py'
+      - '.github/workflows/a1-paid-ai-roi-audit-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 5 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-paid-ai-roi-audit-v1
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert audit has no provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_SECRET_IN_AUDIT
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_paid_ai_roi_audit_v1.py
+          python -m backend.research.architecture_factory.a1_paid_ai_roi_audit_v1 --self-test
+
+      - name: Build repository-attributed ROI receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_paid_ai_roi_audit_v1 \
+            --output out/a1_paid_ai_roi_audit_latest.json
+
+      - name: Verify fail-closed ROI semantics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_paid_ai_roi_audit_latest.json'))
+          assert r['schema_version']=='zel.a1.paid_ai_roi_audit.v1'
+          assert r['state']=='PASS_PAID_AI_ROI_AUDIT_COMPLETE'
+          assert abs(float(r['reported_spend']['total_eur'])-180.0)<1e-9
+          assert abs(float(r['reported_spend']['gemini_eur'])-150.0)<1e-9
+          assert abs(float(r['reported_spend']['openai_eur'])-30.0)<1e-9
+          assert r['reported_spend']['api_metered'] is False
+          assert r['reported_spend']['scope_matched_to_repository_events'] is False
+          assert r['reported_spend']['recovered_spend_eur'] is None
+          assert r['reported_spend']['wasted_spend_eur'] is None
+          for p in ('gemini','openai'):
+              assert r['providers'][p]['cost_per_economic_pass_eur'] is None
+              assert r['providers'][p]['recovered_spend_eur'] is None
+              assert r['providers'][p]['wasted_spend_eur'] is None
+          assert r['current_cost_control_evidence']['identical_input_signature_cache_required'] is True
+          assert r['current_cost_control_evidence']['identical_input_paid_recall'] is False
+          assert abs(float(r['current_cost_control_evidence']['cosine_dedup_threshold'])-0.85)<1e-12
+          assert r['current_cost_control_evidence']['broad_paid_fanout_allowed'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'verdict':r['verdict'],'spend':r['reported_spend'],'economic':r['current_economic_evidence']},sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-paid-ai-roi-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_paid_ai_roi_audit_latest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist semantic audit delta on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_paid_ai_roi_audit_latest.json
+          rm -f /tmp/a1-paid-ai-audit-persist
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def semantic(x):
+              y=dict(x)
+              y.pop('observed_at_utc',None)
+              y.pop('receipt_sha256',None)
+              return y
+          target=Path('backend/research/architecture_factory/a1_paid_ai_roi_audit_latest.json')
+          new=json.load(open('out/a1_paid_ai_roi_audit_latest.json'))
+          old=json.loads(target.read_text()) if target.is_file() else None
+          if old is None or semantic(old)!=semantic(new):
+              Path('/tmp/a1-paid-ai-audit-persist').write_text('1\n')
+          else:
+              print('NO_SEMANTIC_DELTA_NO_MASTER_COMMIT')
+          PY
+          if [[ ! -f /tmp/a1-paid-ai-audit-persist ]]; then exit 0; fi
+          cp out/a1_paid_ai_roi_audit_latest.json "$target"
+          git config user.name 'a1-paid-ai-roi-audit-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist paid AI ROI audit receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

@@ -16,6 +16,8 @@ ROLLING = ROOT / "backend/research/rebuild/a1_production_highwr_rolling_closed_l
 PRIMARY_CONTRACT = ROOT / "backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_contract_v1.json"
 BROAD_G5_MANIFEST = ROOT / "backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json"
 BROAD_G5_LATEST = ROOT / "backend/research/prep/g5_trendrider_broad30_product_latest.json"
+REPLACEMENT_FREEZE = ROOT / "backend/research/contracts/a1_top5_replacement_child_freeze_v1.json"
+REPLACEMENT_CHILD_LATEST = ROOT / "backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json"
 LATEST = ROOT / "backend/research/rebuild/a1_top5_parallel_prospective_latest.json"
 SCHEMA = "zel.a1.top5.parallel_prospective.receipt.v1"
 EXPECTED_LANES = (
@@ -185,6 +187,36 @@ def _previous_raw_ids(previous: Mapping[str, Any] | None, lane_id: str) -> list[
     return [str(x) for x in lane.get("raw_observer_closed_trade_ids") or [] if str(x)]
 
 
+def _freeze_rows(freeze: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(freeze, Mapping):
+        return {}
+    if freeze.get("schema_version") != "zel.a1.top5.replacement_child_freeze.v1":
+        raise RuntimeError("REPLACEMENT_FREEZE_SCHEMA_DRIFT")
+    if freeze.get("state") != "FROZEN_REPLACEMENT_CHILDREN_PRE_PROSPECTIVE":
+        raise RuntimeError("REPLACEMENT_FREEZE_STATE_DRIFT")
+    _assert_blocked(freeze, "REPLACEMENT_FREEZE")
+    rows = {
+        str(row.get("lane_id")): dict(row)
+        for row in freeze.get("children") or []
+        if isinstance(row, Mapping) and row.get("lane_id")
+    }
+    if set(rows) != set(REPLACEMENT_LANES):
+        raise RuntimeError(f"REPLACEMENT_FREEZE_LANE_SET_DRIFT:{sorted(rows)}")
+    return rows
+
+
+def _child_rows(child_latest: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(child_latest, Mapping):
+        return {}
+    if child_latest.get("schema_version") != "zel.a1.top5.replacement_child.prospective.receipt.v1":
+        raise RuntimeError("REPLACEMENT_CHILD_RECEIPT_SCHEMA_DRIFT")
+    _assert_blocked(child_latest, "REPLACEMENT_CHILD_RECEIPT")
+    rows = child_latest.get("lanes")
+    if not isinstance(rows, Mapping):
+        raise RuntimeError("REPLACEMENT_CHILD_LANES_MISSING")
+    return {str(k): dict(v) for k, v in rows.items() if isinstance(v, Mapping)}
+
+
 def run(output: Path, previous_path: Path | None = None, rolling_path: Path = ROLLING) -> dict[str, Any]:
     contract = _read(CONTRACT)
     ssot = _read(SSOT)
@@ -193,6 +225,8 @@ def run(output: Path, previous_path: Path | None = None, rolling_path: Path = RO
     primary_contract = _read(PRIMARY_CONTRACT)
     broad_manifest = _read(BROAD_G5_MANIFEST)
     broad_latest = _read(BROAD_G5_LATEST)
+    freeze = _read(REPLACEMENT_FREEZE) if REPLACEMENT_FREEZE.is_file() else None
+    child_latest = _read(REPLACEMENT_CHILD_LATEST) if REPLACEMENT_CHILD_LATEST.is_file() else None
     previous = _read(previous_path) if previous_path and previous_path.is_file() else (_read(LATEST) if LATEST.is_file() else None)
 
     if contract.get("schema_version") != "zel.a1.top5.parallel_prospective.v1":
@@ -261,10 +295,62 @@ def run(output: Path, previous_path: Path | None = None, rolling_path: Path = RO
         },
     }
 
+    freeze_rows = _freeze_rows(freeze)
+    child_rows = _child_rows(child_latest)
+    retired_count = 0
+    child_owner_count = 0
     for lane_id in REPLACEMENT_LANES:
         lane = rolling_lanes[lane_id]
         current_delta = [str(x) for x in lane.get("new_closed_trade_ids") or [] if str(x)]
         known = _previous_raw_ids(previous, lane_id)
+        freeze_row = freeze_rows.get(lane_id)
+        if freeze_row:
+            burned = [str(x) for x in freeze_row.get("burned_parent_raw_observer_closed_trade_ids") or [] if str(x)]
+            burned_set = set(burned)
+            if len(burned) != int(freeze_row.get("burned_parent_raw_observer_T") or 0) or len(burned) != len(burned_set):
+                raise RuntimeError(f"BURNED_PARENT_RAW_SET_DRIFT:{lane_id}")
+            extra_previous = sorted(set(known) - burned_set)
+            if extra_previous:
+                raise RuntimeError(f"POSTFREEZE_PARENT_RAW_HISTORY_CONTAMINATION:{lane_id}:{','.join(extra_previous[:3])}")
+            missing_previous = sorted(set(known) - burned_set)
+            if missing_previous:
+                raise RuntimeError(f"UNREACHABLE_PREVIOUS_RAW_MISMATCH:{lane_id}")
+            postfreeze_delta = [x for x in current_delta if x not in burned_set]
+            child = child_rows.get(lane_id, {})
+            if child and child.get("replacement_child_frozen") is not True:
+                raise RuntimeError(f"CHILD_RECEIPT_NOT_FROZEN:{lane_id}")
+            if child and int(child.get("old_parent_raw_observer_consumed_T") or 0) != 0:
+                raise RuntimeError(f"CHILD_RECEIPT_PARENT_CONSUMPTION_DRIFT:{lane_id}")
+            expected_child_id = str(freeze_row.get("child_id") or "")
+            if child and str(child.get("child_id") or "") != expected_child_id:
+                raise RuntimeError(f"CHILD_ID_DRIFT:{lane_id}")
+            retired_count += 1
+            if child:
+                child_owner_count += 1
+            lane_out[lane_id] = {
+                "terminal_state": "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED",
+                "clock_state": "PARENT_RAW_OBSERVER_RETIRED_CHILD_PROSPECTIVE_OWNS_FRESH_EVIDENCE",
+                "replacement_seed": c_lanes[lane_id].get("replacement_seed"),
+                "replacement_child_frozen": True,
+                "replacement_child_id": expected_child_id,
+                "replacement_child_boundary_ms": int(((freeze or {}).get("prospective_boundary") or {}).get("ms") or 0),
+                "replacement_child_boundary_utc": str(((freeze or {}).get("prospective_boundary") or {}).get("utc") or ""),
+                "replacement_child_closed_T": int(child.get("closed_T") or 0) if child else 0,
+                "replacement_child_state": str((child_latest or {}).get("state") or "MISSING_CHILD_RECEIPT"),
+                "fresh_evidence_owner": str(REPLACEMENT_CHILD_LATEST.relative_to(ROOT)),
+                "old_architecture_trade_use": "PREFREEZE_RAW_OBSERVER_AUDIT_ONLY_NOT_G4_OR_G5_OR_CHILD_EVIDENCE",
+                "raw_observer_retired": True,
+                "raw_observer_frozen_T": len(burned),
+                "raw_observer_delta_T": 0,
+                "raw_observer_closed_trade_ids": burned,
+                "postfreeze_parent_rolling_delta_ignored_T": len(postfreeze_delta),
+                "consumable_g4_T": 0,
+                "consumable_g5_T": 0,
+                "consumable_child_T": 0,
+                "next": "FRESH_REPLACEMENT_CHILD_PROSPECTIVE_COLLECTOR_OWNS_COLLECTION",
+            }
+            continue
+
         combined = list(dict.fromkeys([*known, *current_delta]))
         lane_out[lane_id] = {
             "terminal_state": "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED",
@@ -287,10 +373,14 @@ def run(output: Path, previous_path: Path | None = None, rolling_path: Path = RO
         "terminal_source_path": str(TERMINAL.relative_to(ROOT)),
         "rolling_source_path": str(rolling_path.relative_to(ROOT)) if rolling_path.is_relative_to(ROOT) else str(rolling_path),
         "rolling_source_receipt_sha256": rolling.get("receipt_sha256"),
+        "replacement_freeze_source_path": str(REPLACEMENT_FREEZE.relative_to(ROOT)) if freeze_rows else None,
+        "replacement_child_source_path": str(REPLACEMENT_CHILD_LATEST.relative_to(ROOT)) if child_rows else None,
         "calendar_parallelism": True,
         "capture_stage_separation": True,
         "same_closed_trade_g4_g5_reuse_count": 0,
         "old_architecture_union_into_replacement_child": False,
+        "replacement_parent_raw_observer_retired_lane_count": retired_count,
+        "replacement_child_fresh_evidence_owner_count": child_owner_count,
         "lanes": lane_out,
         **AUTH,
     }
@@ -312,9 +402,17 @@ def self_test() -> int:
     second = _allocate_primary(refs, previous)
     assert [x["stage_tag"] for x in second] == ["G4_CONSUMABLE_PRIMARY", "G5_ESCROW_UNOPENED", "G5_ESCROW_UNOPENED"]
     assert len({x["closed_trade_id"] for x in second}) == 3
+    fake_freeze = {
+        "schema_version": "zel.a1.top5.replacement_child_freeze.v1",
+        "state": "FROZEN_REPLACEMENT_CHILDREN_PRE_PROSPECTIVE",
+        "children": [{"lane_id": x} for x in REPLACEMENT_LANES],
+        **AUTH,
+    }
+    assert set(_freeze_rows(fake_freeze)) == set(REPLACEMENT_LANES)
     assert AUTH["execution_authority"] == "NONE" and AUTH["order_authority"] == "BLOCKED" and AUTH["live_trade_authority"] == "BLOCKED"
     print("PASS_A1_TOP5_PARALLEL_PROSPECTIVE_V1_SELF_TEST")
     print("PASS_PRIMARY_G4_BURN_AND_G5_ESCROW_NO_DOUBLE_USE")
+    print("PASS_REPLACEMENT_PARENT_RAW_CLOCK_RETIREMENT_AFTER_CHILD_FREEZE")
     return 0
 
 
@@ -333,6 +431,8 @@ def main() -> int:
         "primary_g4_T": result["lanes"]["trend_rider_primary_wr8125"]["g4_consumable_T"],
         "primary_g5_escrow_T": result["lanes"]["trend_rider_primary_wr8125"]["g5_escrow_T"],
         "broad_g5_T": result["lanes"]["trend_rider_broad_wr7000"]["g5_postlock_closed_T"],
+        "retired_parent_raw_lanes": result["replacement_parent_raw_observer_retired_lane_count"],
+        "child_owner_lanes": result["replacement_child_fresh_evidence_owner_count"],
         "receipt": result["receipt_sha256"],
     }, sort_keys=True))
     return 0

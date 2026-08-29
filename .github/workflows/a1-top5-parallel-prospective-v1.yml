@@ -6,6 +6,8 @@ on:
       - 'backend/research/contracts/a1_top5_parallel_prospective_v1.json'
       - 'backend/research/rebuild/a1_top5_parallel_prospective_v1.py'
       - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
       - '.github/workflows/a1-top5-parallel-prospective-v1.yml'
   push:
     branches: [master]
@@ -18,6 +20,8 @@ on:
       - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
       - 'backend/research/contracts/a1_top5_parallel_prospective_v1.json'
       - 'backend/research/rebuild/a1_top5_parallel_prospective_v1.py'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
       - '.github/workflows/a1-top5-parallel-prospective-v1.yml'
   workflow_dispatch:
   schedule:
@@ -48,7 +52,7 @@ jobs:
           python -m py_compile backend/research/rebuild/a1_top5_parallel_prospective_v1.py
           python -m backend.research.rebuild.a1_top5_parallel_prospective_v1 --self-test
 
-      - name: Allocate outcome-blind G4/G5 stages
+      - name: Allocate outcome-blind G4/G5 stages and reconcile replacement ownership
         run: |
           set -euo pipefail
           mkdir -p out
@@ -61,7 +65,7 @@ jobs:
           fi
           python -m backend.research.rebuild.a1_top5_parallel_prospective_v1 "${args[@]}"
 
-      - name: Verify no cross-stage reuse and blocked authorities
+      - name: Verify stage separation, retired parent clocks, and blocked authorities
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -82,13 +86,24 @@ jobs:
           assert p['g5_escrow_open'] is False
           b=r['lanes']['trend_rider_broad_wr7000']
           assert b['clock_state']=='G5_NATIVE_ACTIVE' and b['g4_trade_reuse'] is False
+          assert int(r['replacement_parent_raw_observer_retired_lane_count'])==3
+          assert int(r['replacement_child_fresh_evidence_owner_count'])==3
+          assert r['replacement_freeze_source_path']=='backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
+          assert r['replacement_child_source_path']=='backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
+          burned_total=0
           for lane_id in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
               x=r['lanes'][lane_id]
               assert x['terminal_state']=='FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'
-              assert x['old_architecture_trade_use']=='RAW_OBSERVER_ONLY_NOT_G4_OR_G5_EVIDENCE'
-              assert x['replacement_child_frozen'] is False
-              assert int(x['consumable_g4_T'])==0 and int(x['consumable_g5_T'])==0
-          print(json.dumps({'state':r['state'],'primary_g4_T':p['g4_consumable_T'],'primary_escrow_T':p['g5_escrow_T'],'broad_g5_T':b['g5_postlock_closed_T']},sort_keys=True))
+              assert x['clock_state']=='PARENT_RAW_OBSERVER_RETIRED_CHILD_PROSPECTIVE_OWNS_FRESH_EVIDENCE'
+              assert x['old_architecture_trade_use']=='PREFREEZE_RAW_OBSERVER_AUDIT_ONLY_NOT_G4_OR_G5_OR_CHILD_EVIDENCE'
+              assert x['replacement_child_frozen'] is True
+              assert x['raw_observer_retired'] is True
+              assert int(x['raw_observer_delta_T'])==0
+              assert int(x['consumable_g4_T'])==0 and int(x['consumable_g5_T'])==0 and int(x['consumable_child_T'])==0
+              assert x['fresh_evidence_owner']=='backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
+              burned_total += int(x['raw_observer_frozen_T'])
+          assert burned_total==15
+          print(json.dumps({'state':r['state'],'primary_g4_T':p['g4_consumable_T'],'primary_escrow_T':p['g5_escrow_T'],'broad_g5_T':b['g5_postlock_closed_T'],'retired_parent_raw_lanes':r['replacement_parent_raw_observer_retired_lane_count'],'child_owner_lanes':r['replacement_child_fresh_evidence_owner_count']},sort_keys=True))
           PY
 
       - uses: actions/upload-artifact@v4

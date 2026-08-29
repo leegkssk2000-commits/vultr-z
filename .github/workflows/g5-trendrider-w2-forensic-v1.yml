@@ -12,6 +12,10 @@ on:
       - 'backend/research/prep/g5_trendrider_w2_forensic_v1.py'
       - '.github/workflows/g5-trendrider-w2-forensic-v1.yml'
   workflow_dispatch:
+  # Product OOS runs at :37 on 01/05/09/13/17/21 UTC with a 35m timeout.
+  # Run forensic 40m later so each persisted [skip ci] product cycle is consumed.
+  schedule:
+    - cron: '17 2,6,10,14,18,22 * * *'
 
 permissions:
   contents: write
@@ -51,9 +55,10 @@ jobs:
           assert r['parity']['leakage_lookahead']==0
           assert r['causal_policy']['parent_retune_forbidden'] is True
           assert r['causal_policy']['parent_W2_continues_to_12T'] is True
+          assert r['causal_policy']['reuse_frozen_preentry_materiality'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({'w2_T':r['w2_observed_T'],'status':r['causal_status'],'axis':r['selected_causal_axis'],'route':r['recommended_route'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'w2_T':r['w2_observed_T'],'status':r['causal_status'],'axis':r['selected_causal_axis'],'route':r['recommended_route'],'top_preentry':(r['preentry_ranked_hypotheses'] or [None])[0],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
       - name: Persist latest on master
         if: github.event_name != 'pull_request'

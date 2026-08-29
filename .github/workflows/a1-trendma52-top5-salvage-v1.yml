@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'backend/research/rebuild/a1_trendma52_top5_salvage_v1.py'
+      - 'backend/research/rebuild/a1_trendma_slow_ablation_true_long_salvage_v1.py'
       - '.github/workflows/a1-trendma52-top5-salvage-v1.yml'
   workflow_dispatch:
 
@@ -32,8 +33,11 @@ jobs:
       - name: Compile and self-test
         run: |
           set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_trendma52_top5_salvage_v1.py
+          python -m py_compile \
+            backend/research/rebuild/a1_trendma52_top5_salvage_v1.py \
+            backend/research/rebuild/a1_trendma_slow_ablation_true_long_salvage_v1.py
           python -m backend.research.rebuild.a1_trendma52_top5_salvage_v1 --self-test
+          python -m backend.research.rebuild.a1_trendma_slow_ablation_true_long_salvage_v1 --self-test
       - name: Rebuild exact TrendMA 52T parent read-only
         run: |
           set -euo pipefail
@@ -76,6 +80,16 @@ jobs:
             --break-source-dir out/break \
             --out out/a1_trendma52_top5_salvage_latest.json
           cat out/a1_trendma52_top5_salvage_latest.json
+      - name: Run slow-EMA ablation to ownership-correct true-long gen2
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendma_slow_ablation_true_long_salvage_v1 \
+            --parent out/trend_ma_macd_exact_parent.json \
+            --trend70-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_trendma_slow_ablation_true_long_salvage_latest.json
+          cat out/a1_trendma_slow_ablation_true_long_salvage_latest.json
       - name: Verify fail-closed authority and chronology contract
         run: |
           set -euo pipefail
@@ -88,17 +102,25 @@ jobs:
           assert f['historical_recorded_native_T']==52 and f['historical_recorded_long_T']==33
           assert f['chronology_clean_preboundary_native_T']==51 and f['chronology_clean_preboundary_long_T']==32
           assert f['chronology_contamination_T']==1 and f['chronology_long_contamination_T']==1
+          assert r['ownership_correct_long_only']['lost_recorded_long_T']==0
           assert r['interpretation']['outcome_oracle_is_ceiling_only'] is True
           assert r['interpretation']['top5_ssot_mutated'] is False
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['protected_mutations']==0
+          g=json.load(open('out/a1_trendma_slow_ablation_true_long_salvage_latest.json'))
+          assert g['state']=='PASS_TRENDMA_SLOW_EMA_ABLATION_TRUE_LONG_SALVAGE'
+          assert g['attachable_now'] is False
+          assert g['top5_ssot_mutated'] is False
+          for x in (r,g):
+            assert x['selection_authority'] is False and x['promotion_authority'] is False
+            assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED' and x['live_trade_authority']=='BLOCKED'
+            assert x['protected_mutations']==0
           print('PASS_TRENDMA52_TOP5_SALVAGE_AUTHORITY')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: a1-trendma52-top5-salvage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_trendma52_top5_salvage_latest.json
+          path: |
+            out/a1_trendma52_top5_salvage_latest.json
+            out/a1_trendma_slow_ablation_true_long_salvage_latest.json
           if-no-files-found: warn
           retention-days: 30

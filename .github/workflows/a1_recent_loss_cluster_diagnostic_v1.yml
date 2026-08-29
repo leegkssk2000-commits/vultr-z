@@ -5,14 +5,12 @@ on:
     paths:
       - 'backend/research/rebuild/a1_recent_loss_cluster_diagnostic_v1.py'
       - 'backend/research/rebuild/a1_recent_loss_cluster_actionable_v2.py'
-      - 'backend/research/rebuild/a1_trendrider_primary_parent_child_fresh_source_diag_v1.py'
       - '.github/workflows/a1_recent_loss_cluster_diagnostic_v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_recent_loss_cluster_diagnostic_v1.py'
       - 'backend/research/rebuild/a1_recent_loss_cluster_actionable_v2.py'
-      - 'backend/research/rebuild/a1_trendrider_primary_parent_child_fresh_source_diag_v1.py'
       - '.github/workflows/a1_recent_loss_cluster_diagnostic_v1.yml'
   schedule:
     - cron: '7 * * * *'
@@ -37,9 +35,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Self test
-        run: |
-          python -m backend.research.rebuild.a1_recent_loss_cluster_actionable_v2 --self-test
-          python -m backend.research.rebuild.a1_trendrider_primary_parent_child_fresh_source_diag_v1 --self-test
+        run: python -m backend.research.rebuild.a1_recent_loss_cluster_actionable_v2 --self-test
       - name: Diagnose and select only pre-entry repair axes
         run: python -m backend.research.rebuild.a1_recent_loss_cluster_actionable_v2 --out out/a1_recent_loss_cluster_actionable_latest.json
       - name: Verify fail-closed authority and actionable routing
@@ -58,23 +54,6 @@ jobs:
                   assert root['axis'] not in forbidden
               assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED'
           print(json.dumps({'state':r['state'],'triggered':r['triggered_strategy_ids'],'routes':{x['strategy_id']:x['recommended_route'] for x in r['targets']}},sort_keys=True))
-          PY
-      - name: One-shot compare canonical Primary parent vs transition child fresh source
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          python -m backend.research.rebuild.a1_trendrider_primary_parent_child_fresh_source_diag_v1 \
-            --out out/a1_trendrider_primary_parent_child_fresh_source_diag_latest.json
-          python - <<'PY'
-          import json
-          r=json.load(open('out/a1_trendrider_primary_parent_child_fresh_source_diag_latest.json'))
-          assert r['diagnostic_role']=='READ_ONLY_SOURCE_OWNER_ATTRIBUTION_BEFORE_CHASE_FILTER'
-          assert r['outcome_metrics_read_for_source_decision'] is False
-          assert r['numeric_threshold_sweep'] is False and r['policy_retune'] is False
-          assert r['old_history_union'] is False and r['retroactive_promotion_forbidden'] is True
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({'state':r['state'],'counts':r['counts'],'preemption':r['source_owner_preemption_for_chase_confirmed'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
       - name: Refresh preregistered TrendRider CHASE_ATR fresh25 receipt
         if: github.event_name != 'pull_request'
@@ -111,7 +90,6 @@ jobs:
           set -euo pipefail
           target=backend/research/rebuild/a1_recent_loss_cluster_actionable_latest.json
           chase_target=backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_latest.json
-          source_diag_target=backend/research/rebuild/a1_trendrider_primary_parent_child_fresh_source_diag_latest.json
           cp out/a1_recent_loss_cluster_actionable_latest.json "$target"
           git config user.name 'a1-loss-cluster-actionable-v2'
           git config user.email 'actions@users.noreply.github.com'
@@ -119,10 +97,6 @@ jobs:
           if [ -f out/a1_trendrider_primary_chase_cooling_fresh25_latest.json ]; then
             cp out/a1_trendrider_primary_chase_cooling_fresh25_latest.json "$chase_target"
             git add "$chase_target"
-          fi
-          if [ -f out/a1_trendrider_primary_parent_child_fresh_source_diag_latest.json ]; then
-            cp out/a1_trendrider_primary_parent_child_fresh_source_diag_latest.json "$source_diag_target"
-            git add "$source_diag_target"
           fi
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'A1: persist actionable loss-cluster diagnostic [skip ci]'

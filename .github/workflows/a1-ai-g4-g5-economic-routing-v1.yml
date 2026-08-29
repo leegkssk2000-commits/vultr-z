@@ -5,6 +5,10 @@ on:
     paths:
       - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
       - 'backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'
+      - 'backend/research/architecture_factory/a1_paid_ai_target_gate_v1.py'
+      - 'backend/research/architecture_factory/openai_generator_hardened_v1.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v6-manual.yml'
       - '.github/workflows/a1-ai-g4-g5-economic-routing-v1.yml'
   workflow_dispatch:
 
@@ -25,8 +29,19 @@ jobs:
           set -euo pipefail
           test -z "${OPENAI_API_KEY:-}"
           test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/architecture_factory/a1_paid_ai_target_gate_v1.py
+          python -m py_compile backend/research/architecture_factory/openai_generator_hardened_v1.py
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py
+          python -m backend.research.architecture_factory.a1_paid_ai_target_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
           python - <<'PY'
           import json
+          import os
+          from unittest.mock import patch
+          from backend.research.architecture_factory import a1_paid_ai_target_gate_v1 as gate
+          from backend.research.architecture_factory import a1_terminal_repair_swarm_v6 as v6
+          from backend.research.architecture_factory import openai_generator_hardened_v1 as hardened
+
           p=json.load(open('backend/research/contracts/a1_paid_ai_routing_policy_v1.json'))
           b=json.load(open('backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'))
           s=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
@@ -50,7 +65,39 @@ jobs:
               assert int(b['current_g4'][lane]['prospective_closed_T'])==0
               assert b['current_g4'][lane]['next_ai_trigger']=='ONLY_IF_FROZEN_CHILD_IS_FALSIFIED'
           assert all(x['economic_roi_credit'] is False for x in b['retired_detached_ai_outputs'])
+
+          for name in (gate.ENV_LANE, gate.ENV_STAGE, gate.ENV_GATE):
+              os.environ.pop(name, None)
+          os.environ['OPENAI_API_KEY']='CI_MUST_NEVER_REACH_NETWORK'
+          with patch('urllib.request.urlopen') as urlopen:
+              try:
+                  hardened.call_openai_generator('should fail before provider network')
+              except RuntimeError as exc:
+                  assert 'TARGET_LANE_ID_REQUIRED_BEFORE_PROVIDER_CALL' in str(exc)
+              else:
+                  raise AssertionError('missing target unexpectedly allowed OpenAI call')
+              urlopen.assert_not_called()
+          os.environ.pop('OPENAI_API_KEY', None)
+
+          with patch.object(v6.gemini, 'call_gemini_generator') as gemini_call:
+              try:
+                  v6._call_gemini_bound('should fail before provider network')
+              except RuntimeError as exc:
+                  assert 'TARGET_LANE_ID_REQUIRED_BEFORE_PROVIDER_CALL' in str(exc)
+              else:
+                  raise AssertionError('missing target unexpectedly allowed Gemini call')
+              gemini_call.assert_not_called()
+
+          target=gate.validate_target_binding('trend_rider_broad_wr7000','G5','W2_FORENSIC_CAUSAL_ANALYSIS')
+          assert target['target_strategy_id']=='trend_rider'
+          try:
+              gate.validate_target_binding('break_and_continue_main','G4','G4_CAUSAL_REPAIR')
+          except RuntimeError as exc:
+              assert 'FRESH_SAMPLE_WAIT_BLOCKED' in str(exc)
+          else:
+              raise AssertionError('fresh G4 child wait unexpectedly triggered paid AI')
+
           assert p['selection_authority'] is False and p['promotion_authority'] is False
           assert p['execution_authority']=='NONE' and p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
-          print('PASS_A1_AI_G4_G5_ONLY_ECONOMIC_ROUTING')
+          print('PASS_A1_AI_G4_G5_CALLER_HARD_GATE_BEFORE_NETWORK')
           PY

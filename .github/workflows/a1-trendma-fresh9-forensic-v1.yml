@@ -17,7 +17,7 @@ concurrency:
 jobs:
   forensic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       PYTHONPATH: .
     steps:
@@ -32,11 +32,20 @@ jobs:
           set -euo pipefail
           python -m py_compile backend/research/rebuild/a1_trendma_fresh9_preentry_forensic_v1.py
           python backend/research/rebuild/a1_trendma_fresh9_preentry_forensic_v1.py --self-test
-      - name: Run read-only fresh9 forensic
+      - name: Rebuild exact TrendMA parent read-only
         run: |
           set -euo pipefail
           mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id trend_ma_macd \
+            --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' \
+            --out out/trend_ma_macd_exact_parent.json
+      - name: Run read-only fresh9 forensic
+        run: |
+          set -euo pipefail
           python -m backend.research.rebuild.a1_trendma_fresh9_preentry_forensic_v1 \
+            --parent out/trend_ma_macd_exact_parent.json \
             --out out/a1_trendma_fresh9_preentry_forensic_latest.json
           cat out/a1_trendma_fresh9_preentry_forensic_latest.json
       - name: Verify authority and no post-outcome retune
@@ -48,12 +57,14 @@ jobs:
           assert r['strategy_id']=='trend_ma_macd',r
           assert r['bad_child_T']==9 and r['bad_child_wins']==1,r
           assert r['fresh_loss_T']==8,r
+          assert r['frozen_native_reference_T']==52,r
+          assert r['development_long_reference_T']==33,r
           assert r['numeric_threshold_sweep'] is False,r
           assert r['outcome_fitted_cutoff_forbidden'] is True,r
           assert r['fresh_child_created'] is False,r
+          assert r['integrity_defects']==[],r
           assert r['selection_authority'] is False and r['promotion_authority'] is False,r
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
-          assert not r['integrity_defects'] if 'integrity_defects' in r else True
           print('PASS_TRENDMA_FRESH9_FORENSIC_AUTHORITY')
           PY
       - uses: actions/upload-artifact@v4

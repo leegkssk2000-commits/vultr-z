@@ -1,0 +1,39 @@
+name: A1 TrendMA52 Top5 Salvage Verify V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_trendma52_top5_salvage_v1.py'
+      - 'backend/research/rebuild/a1_trendma_slow_ablation_true_long_salvage_v1.py'
+      - '.github/workflows/a1-trendma52-top5-salvage-*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test only
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_trendma52_top5_salvage_v1.py \
+            backend/research/rebuild/a1_trendma_slow_ablation_true_long_salvage_v1.py
+          python -m backend.research.rebuild.a1_trendma52_top5_salvage_v1 --self-test
+          python -m backend.research.rebuild.a1_trendma_slow_ablation_true_long_salvage_v1 --self-test
+      - name: Static authority contract
+        run: |
+          set -euo pipefail
+          grep -q 'selection_authority.*False' backend/research/rebuild/a1_trendma52_top5_salvage_v1.py
+          grep -q 'promotion_authority.*False' backend/research/rebuild/a1_trendma52_top5_salvage_v1.py
+          grep -q 'execution_authority.*NONE' backend/research/rebuild/a1_trendma52_top5_salvage_v1.py
+          grep -q 'top5_ssot_mutated.*False' backend/research/rebuild/a1_trendma_slow_ablation_true_long_salvage_v1.py
+          echo PASS_TRENDMA52_SALVAGE_STATIC_AUTHORITY

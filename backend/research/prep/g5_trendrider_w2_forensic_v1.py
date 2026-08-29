@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import statistics
+import tempfile
+from pathlib import Path
+from typing import Any, Mapping
+
+from backend.research.prep import g5_trendrider_broad30_product_oos_v1 as g5
+from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
+from backend.research.rebuild import a1_top5_matched_exit_attribution_v1 as matched
+
+ROOT = Path(__file__).resolve().parents[3]
+MANIFEST = ROOT / "backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json"
+PRODUCT = ROOT / "backend/research/prep/g5_trendrider_broad30_product_latest.json"
+MATCHED = ROOT / "backend/research/rebuild/a1_top5_matched_exit_attribution_latest.json"
+SCHEMA = "zel.g5.trendrider.w2_forensic.v1"
+
+
+def stable(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str).encode()
+    ).hexdigest()
+
+
+def read(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"OBJECT_REQUIRED:{path}")
+    return value
+
+
+def med(values: list[float]) -> float | None:
+    return None if not values else float(statistics.median(values))
+
+
+def counts(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "UNKNOWN")
+        out[value] = out.get(value, 0) + 1
+    return dict(sorted(out.items()))
+
+
+def shares(rows: list[Mapping[str, Any]], key: str) -> dict[str, float]:
+    c = counts(rows, key)
+    total = max(1, len(rows))
+    return {k: v / total for k, v in c.items()}
+
+
+def forensic_axis(w2: list[dict[str, Any]], ref: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return (status, axis, route). Diagnostic classification only; never promotion authority."""
+    if len(w2) < 4:
+        return "INSUFFICIENT_CAUSAL_EVIDENCE", "NONE", "COLLECT_MORE_W2"
+
+    reasons = counts(w2, "reason")
+    mfe = med([float(x["mfe_r"]) for x in w2])
+    mae = med([float(x["mae_r"]) for x in w2])
+    giveback = med([float(x["giveback_r"]) for x in w2])
+
+    # Natural R-unit diagnostic buckets only; these are not economic/promotion thresholds.
+    if reasons == {"SL": len(w2)} and mfe is not None and mae is not None:
+        if mfe >= 1.0 and giveback is not None and giveback >= 1.0:
+            return "DETERMINISTIC_FORENSIC_CANDIDATE", "SL_AFTER_FAVORABLE_EXCURSION", "HANDOFF_RR_EXIT"
+        if mfe < 0.5 and mae >= 1.0:
+            return "DETERMINISTIC_FORENSIC_CANDIDATE", "LOW_MFE_STOP_CLUSTER", "HANDOFF_G4_CAUSAL"
+
+    for key, axis in (("side", "SIDE"), ("symbol", "SYMBOL")):
+        wshare = shares(w2, key)
+        rshare = shares(ref, key)
+        if len(wshare) == 1:
+            value = next(iter(wshare))
+            if rshare.get(value, 0.0) < 1.0:
+                return "DETERMINISTIC_FORENSIC_CANDIDATE", f"{axis}={value}", "HANDOFF_G4_CAUSAL"
+
+    return "INSUFFICIENT_CAUSAL_EVIDENCE", "NONE", "COLLECT_MORE_W2"
+
+
+def run(out: Path) -> dict[str, Any]:
+    manifest, product, matched_receipt = read(MANIFEST), read(PRODUCT), read(MATCHED)
+    if manifest.get("state") != "FROZEN_G5_PRODUCT_MANIFEST":
+        raise RuntimeError("G5_MANIFEST_NOT_FROZEN")
+    if product.get("strategy_id") != "trend_rider" or product.get("lane_id") != "trend_rider_broad_wr7000":
+        raise RuntimeError("G5_PRODUCT_IDENTITY_MISMATCH")
+
+    with tempfile.TemporaryDirectory(prefix="g5-w2-forensic-") as td:
+        replay_path = Path(td) / "current_policy.json"
+        receipt = g5.current_policy_replay(out_path=replay_path, boundary_utc=str(manifest["prospective_boundary_utc"]))
+
+    boundary_ms = int(manifest["prospective_boundary_ms"])
+    raw = sorted(
+        [
+            dict(x)
+            for x in (receipt.get("trades") or [])
+            if int(x.get("signal_ts") or 0) > boundary_ms and int(x.get("exit_ts") or 0) > boundary_ms
+        ],
+        key=lambda x: (int(x["signal_ts"]), str(x["symbol"]), str(x["side"])),
+    )
+    dedup: dict[tuple[str, int, int, str], dict[str, Any]] = {}
+    for row in raw:
+        dedup[g5.trade_key(row)] = row
+    raw = list(dedup.values())
+    target = int(manifest["windows"]["W2"]["target_closed_trades"])
+    w2_src = raw[:target]
+
+    bars_by = {symbol: ev.fetch_bars(symbol, "1h", 1000) for symbol in sorted({str(x["symbol"]) for x in w2_src})}
+    w2_rows = [matched.row_path(row, bars_by[str(row["symbol"])]) for row in w2_src]
+
+    broad = next((x for x in (matched_receipt.get("lanes") or []) if x.get("lane") == "trend_rider_broad"), None)
+    if not isinstance(broad, dict):
+        raise RuntimeError("MATCHED_BROAD_REFERENCE_MISSING")
+    reference_rows = [dict(x) for x in (broad.get("rows") or [])]
+
+    status, axis, route = forensic_axis(w2_rows, reference_rows)
+    w2_summary = matched.summary(w2_rows)
+    ref_summary = matched.summary(reference_rows)
+    result = {
+        "schema_version": SCHEMA,
+        "state": "PASS_W2_FORENSIC_COMPLETE" if w2_rows else "WAIT_W2_FORENSIC_T",
+        "strategy_id": "trend_rider",
+        "lane_id": "trend_rider_broad_wr7000",
+        "parent_stage": "G5",
+        "parent_state": product.get("state"),
+        "parent_receipt_sha256": product.get("receipt_sha256"),
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "boundary_ms": boundary_ms,
+        "boundary_utc": manifest.get("prospective_boundary_utc"),
+        "w2_target_T": target,
+        "w2_observed_T": len(w2_rows),
+        "w2_product_T": int(((product.get("windows") or {}).get("W2") or {}).get("metrics", {}).get("trades") or 0),
+        "parity": {
+            "w2_count_matches_product": len(w2_rows) == int(((product.get("windows") or {}).get("W2") or {}).get("metrics", {}).get("trades") or 0),
+            "duplicate": len(raw) - len(dedup),
+            "integrity_defects": list(receipt.get("integrity_defects") or []),
+            "leakage_lookahead": int(receipt.get("leakage_lookahead") or 0),
+        },
+        "w2": {
+            "summary": w2_summary,
+            "reason_counts": counts(w2_rows, "reason"),
+            "side_counts": counts(w2_rows, "side"),
+            "symbol_counts": counts(w2_rows, "symbol"),
+            "net_bps": sum(float(x["net_bps"]) for x in w2_rows),
+            "mfe_r_median": med([float(x["mfe_r"]) for x in w2_rows]),
+            "mae_r_median": med([float(x["mae_r"]) for x in w2_rows]),
+            "giveback_r_median": med([float(x["giveback_r"]) for x in w2_rows]),
+            "rows": w2_rows,
+        },
+        "g4_reference": {
+            "T": len(reference_rows),
+            "summary": ref_summary,
+            "reason_counts": counts(reference_rows, "reason"),
+            "side_counts": counts(reference_rows, "side"),
+            "symbol_counts": counts(reference_rows, "symbol"),
+        },
+        "causal_status": status,
+        "selected_causal_axis": axis,
+        "recommended_route": route,
+        "causal_policy": {
+            "four_T_is_forensic_not_terminal": True,
+            "post_outcome_axis_not_runtime_entry_filter": True,
+            "parent_retune_forbidden": True,
+            "parent_W2_continues_to_12T": True,
+            "child_requires_fresh_boundary": True,
+        },
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "protected_mutations": 0,
+        "action": "hold",
+    }
+    if not result["parity"]["w2_count_matches_product"]:
+        raise RuntimeError("W2_PRODUCT_REPLAY_PARITY_MISMATCH")
+    if result["parity"]["duplicate"] != 0 or result["parity"]["integrity_defects"] or result["parity"]["leakage_lookahead"] != 0:
+        raise RuntimeError("W2_FORENSIC_INTEGRITY_FAIL")
+    result["receipt_sha256"] = stable(result)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return result
+
+
+def self_test() -> int:
+    ref = [
+        {"reason": "TIMEOUT", "side": "long", "symbol": "BTC-USDT", "mfe_r": 2.0, "mae_r": 0.3, "giveback_r": 0.4},
+        {"reason": "SL", "side": "short", "symbol": "ETH-USDT", "mfe_r": 0.3, "mae_r": 1.1, "giveback_r": 1.4},
+    ]
+    w2 = [
+        {"reason": "SL", "side": "long", "symbol": "BTC-USDT", "mfe_r": 1.5, "mae_r": 1.1, "giveback_r": 1.2}
+        for _ in range(4)
+    ]
+    status, axis, route = forensic_axis(w2, ref)
+    assert status == "DETERMINISTIC_FORENSIC_CANDIDATE"
+    assert axis == "SL_AFTER_FAVORABLE_EXCURSION"
+    assert route == "HANDOFF_RR_EXIT"
+    print("PASS_G5_TRENDRIDER_W2_FORENSIC_V1_SELF_TEST")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", type=Path, default=Path("out/g5_trendrider_w2_forensic_v1.json"))
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        return self_test()
+    result = run(args.out)
+    print(json.dumps({
+        "state": result["state"],
+        "w2_T": result["w2_observed_T"],
+        "causal_status": result["causal_status"],
+        "axis": result["selected_causal_axis"],
+        "route": result["recommended_route"],
+        "receipt": result["receipt_sha256"],
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

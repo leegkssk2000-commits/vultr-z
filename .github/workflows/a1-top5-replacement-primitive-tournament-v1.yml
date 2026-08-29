@@ -1,0 +1,92 @@
+name: A1 Top5 Replacement Primitive Tournament V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_top5_replacement_primitive_tournament_v1.json'
+      - 'backend/research/architecture_factory/a1_top5_replacement_primitive_tournament_v1.py'
+      - '.github/workflows/a1-top5-replacement-primitive-tournament-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-top5-replacement-primitive-tournament-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert zero paid-provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_top5_replacement_primitive_tournament_v1.py
+          python -m backend.research.architecture_factory.a1_top5_replacement_primitive_tournament_v1 --self-test
+
+      - name: Run deterministic public-market development tournament
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_top5_replacement_primitive_tournament_v1 \
+            --output out/a1_top5_replacement_primitive_tournament_latest.json
+
+      - name: Verify tournament integrity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_replacement_primitive_tournament_latest.json'))
+          assert r['schema_version']=='zel.a1.top5.replacement_primitive_tournament.receipt.v1'
+          assert r['state']=='PASS_REPLACEMENT_PRIMITIVE_TOURNAMENT_COMPLETE'
+          assert int(r['candidate_count'])==3
+          assert int(r['source_skip_count'])==0, r
+          assert int(r['spec_reject_count'])==0, r
+          assert int(r['paid_provider_calls'])==0
+          assert int(r['openai_calls'])==0 and int(r['gemini_calls'])==0
+          assert r['development_only'] is True and r['prospective'] is False
+          assert abs(float(r['cost_bps_per_trade'])-14.0)<1e-12
+          assert r['automatic_child_freeze'] is False
+          assert r['separate_post_result_contract_required'] is True
+          assert r['old_failed_lane_trade_union'] is False
+          assert r['parallel_raw_observer_selection_use'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          for lane_id in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              x=r['lanes'][lane_id]
+              assert x['terminal_state_before']=='FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'
+              assert x['raw_observer_consumed_for_tournament'] is False
+              assert x['replacement_child_frozen'] is False
+              assert int(x['prospective_child_T'])==0
+          print(json.dumps({
+              'economic_pass_count':r['economic_pass_count'],
+              'economic_fail_count':r['economic_fail_count'],
+              'insufficient_event_count':r['insufficient_event_count'],
+              'freeze_eligible_lanes':r['freeze_eligible_lanes'],
+              'lanes':{k:{'state':v['evaluation'].get('state'),'metrics':v['evaluation'].get('metrics')} for k,v in r['lanes'].items()},
+          },ensure_ascii=False,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-replacement-primitive-tournament-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_replacement_primitive_tournament_latest.json
+          if-no-files-found: warn
+          retention-days: 90

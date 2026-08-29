@@ -1,0 +1,63 @@
+name: A1 Break Side Long Boundary Diagnostic V1
+
+on:
+  push:
+    branches: [a1-break-side-long-fresh-child-v1]
+    paths:
+      - '.github/workflows/a1-break-side-long-boundary-diagnostic-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract authoritative Break boundary only
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p=Path('backend/research/rebuild/a1_recent_loss_cluster_actionable_latest.json')
+          r=json.loads(p.read_text())
+          rows=[x for x in r.get('targets',[]) if x.get('strategy_id')=='break_and_continue']
+          assert len(rows)==1, f'BREAK_TARGET_COUNT={len(rows)}'
+          x=rows[0]
+          root=x.get('actionable_root_cause') or {}
+          assert root.get('axis')=='SIDE' and str(root.get('value','')).lower()=='long', root
+          assert x.get('fresh_child_boundary_required') is True
+          assert x.get('recommended_route')=='PREREGISTER_PREENTRY_CONTEXT_CHILD:SIDE:long:ONE_AXIS_ONLY', x.get('recommended_route')
+          assert x.get('execution_authority')=='NONE'
+          assert x.get('order_authority')=='BLOCKED'
+          assert x.get('live_trade_authority')=='BLOCKED'
+          ledger=x.get('preentry_trade_ledger') or []
+          losses=x.get('loss_streak_trades') or []
+          assert ledger and losses
+          def mx(key, rows):
+              vals=[int(t.get(key) or 0) for t in rows]
+              return max(vals) if vals else 0
+          out={
+            'strategy_id':'break_and_continue',
+            'completed_trades':x.get('completed_trades'),
+            'current_loss_streak':x.get('current_loss_streak'),
+            'root':root,
+            'recommended_route':x.get('recommended_route'),
+            'ledger_count':len(ledger),
+            'loss_streak_count':len(losses),
+            'boundary_signal_ts':mx('signal_ts',ledger),
+            'boundary_entry_ts':mx('entry_ts',ledger),
+            'boundary_exit_ts':mx('exit_ts',ledger),
+            'loss_boundary_exit_ts':mx('exit_ts',losses),
+            'source_receipt_sha256':r.get('receipt_sha256'),
+            'authority':{
+              'execution':x.get('execution_authority'),
+              'order':x.get('order_authority'),
+              'live':x.get('live_trade_authority')
+            }
+          }
+          print('BREAK_BOUNDARY='+json.dumps(out,sort_keys=True,separators=(',',':')))
+          PY

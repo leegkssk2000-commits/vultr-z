@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import a1_top5_additive_entry_union_v1 as addu
 from backend.research.rebuild import a1_top5_highamp_rescue_scan_v1 as rescue
 from backend.research.rebuild import a1_trend_ma_macd_ablation_child_v1 as ab
@@ -23,7 +24,7 @@ LONG_REF = ROOT / "backend/research/rebuild/a1_top6_trend_ma_macd_long_rebound_l
 FRESH_OOS = ROOT / "backend/research/rebuild/a1_top6_trend_ma_macd_fresh_oos_latest.json"
 PRIMARY = ROOT / "backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json"
 COST = ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
-SCHEMA = "zel.a1.trendma52.top5_salvage.v1"
+SCHEMA = "zel.a1.trendma52.top5_salvage.v2"
 SYMBOLS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "1INCH-USDT", "ETHFI-USDT",
     "HYPE-USDT", "BCH-USDT", "APE-USDT", "1000PEPE-USDT", "DOGE-USDT", "LINK-USDT",
@@ -92,6 +93,125 @@ def enrich(rows: list[dict[str, Any]], bars_by: dict[str, list[dict[str, Any]]],
         })
 
 
+def _snapshot_with_exact_cost(fetched: Mapping[str, Any], exact_public: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(fetched)
+    for key in ("fee_bps", "spread_bps", "impact_bps", "pretrade_verified_cost_bps"):
+        if key in exact_public:
+            out[key] = float(exact_public[key])
+    return out
+
+
+def replay_with_side_admission(
+    *,
+    mode: str,
+    boundary_ms: int,
+    bars_by: Mapping[str, list[dict[str, Any]]],
+    snapshots: Mapping[str, Mapping[str, Any]],
+    policy_sha: str,
+) -> list[dict[str, Any]]:
+    if mode not in ("BOTH", "LONG_ONLY"):
+        raise RuntimeError(f"UNKNOWN_SIDE_ADMISSION_MODE:{mode}")
+    cfg = policy.TrendPolicyConfig()
+    timeframe_ms = 3600 * 1000
+    trades: list[dict[str, Any]] = []
+    for symbol in SYMBOLS:
+        blocked_until_ts = -1
+        bars = list(bars_by[symbol])
+        snap = snapshots[symbol]
+        warmup = int(getattr(cfg, "warmup_bars", 64))
+        for i in range(max(1, warmup), len(bars) - 1):
+            if int(bars[i]["ts_ms"]) < boundary_ms:
+                continue
+            try:
+                feature = policy.compute_trend_ma_macd_feature(
+                    bars[: i + 1], symbol=symbol, now_ts_ms=int(bars[i]["ts_ms"]), config=cfg,
+                )
+                intent = policy.build_trend_ma_macd_intent(
+                    feature,
+                    policy_source_sha=policy_sha,
+                    verified_round_trip_cost_bps=float(snap["pretrade_verified_cost_bps"]),
+                    config=cfg,
+                )
+            except ValueError as exc:
+                if str(exc).startswith(("WARMUP_", "WINDOW_", "ATR_")):
+                    continue
+                raise
+            if bool(getattr(intent, "no_trade")):
+                continue
+            side_name = str(getattr(intent, "side"))
+            if side_name not in ("long", "short"):
+                raise RuntimeError(f"UNSUPPORTED_SIDE:{side_name}")
+            # Critical ownership-correct qualifier: suppress shorts before they can own the symbol.
+            if mode == "LONG_ONLY" and side_name == "short":
+                continue
+            entry_bar = bars[i + 1]
+            entry_ts = int(entry_bar["ts_ms"])
+            owns_position, cooldown_bars = ev.execution_ownership_policy(intent)
+            if owns_position and ev.ownership_blocked(entry_ts, blocked_until_ts):
+                continue
+            entry_px = float(entry_bar["open"])
+            side = 1 if side_name == "long" else -1
+            timeout = getattr(intent, "timeout", {}) or {}
+            timeout_bars = int(timeout.get("bars", getattr(cfg, "timeout_bars", 1)))
+            sl, tp = getattr(intent, "sl", None), getattr(intent, "tp", None)
+            if sl is None and tp is None:
+                raise RuntimeError("EXIT_GEOMETRY_UNSUPPORTED_NO_SL_TP")
+            exit_px = exit_ts = reason = None
+            last_j = min(len(bars) - 1, i + 1 + max(1, timeout_bars))
+            for j in range(i + 1, last_j + 1):
+                bar = bars[j]
+                low, high = float(bar["low"]), float(bar["high"])
+                if sl is not None and ((side == 1 and low <= float(sl)) or (side == -1 and high >= float(sl))):
+                    exit_px, exit_ts, reason = float(sl), int(bar["ts_ms"]), "SL"
+                    break
+                if tp is not None and ((side == 1 and high >= float(tp)) or (side == -1 and low <= float(tp))):
+                    exit_px, exit_ts, reason = float(tp), int(bar["ts_ms"]), "TP"
+                    break
+            if exit_px is None:
+                if last_j >= len(bars) - 1:
+                    if owns_position:
+                        blocked_until_ts = max(
+                            blocked_until_ts,
+                            ev.reserve_position_ownership(
+                                exit_ts=None,
+                                open_horizon_ts=int(bars[-1]["ts_ms"]),
+                                cooldown_bars=cooldown_bars,
+                                timeframe_ms=timeframe_ms,
+                            ),
+                        )
+                    continue
+                exit_px, exit_ts, reason = float(bars[last_j]["close"]), int(bars[last_j]["ts_ms"]), "TIMEOUT"
+            if owns_position:
+                blocked_until_ts = max(
+                    blocked_until_ts,
+                    ev.reserve_position_ownership(
+                        exit_ts=int(exit_ts), open_horizon_ts=None,
+                        cooldown_bars=cooldown_bars, timeframe_ms=timeframe_ms,
+                    ),
+                )
+            cost = (
+                float(snap["fee_bps"]) + float(snap["spread_bps"]) + float(snap["impact_bps"])
+                + ev.funding_cost(entry_ts, int(exit_ts), list(snap["funding_rows"]))
+            )
+            gross = side * (float(exit_px) - entry_px) / entry_px * 10_000
+            trades.append({
+                "symbol": symbol,
+                "signal_ts": int(getattr(intent, "signal_ts")),
+                "entry_ts": entry_ts,
+                "exit_ts": int(exit_ts),
+                "side": side_name,
+                "entry": entry_px,
+                "exit": float(exit_px),
+                "reason": reason,
+                "gross_bps": gross,
+                "realized_cost_bps": cost,
+                "net_bps": gross - cost,
+                "policy_sha": policy_sha,
+                "side_admission_mode": mode,
+            })
+    return trades
+
+
 def near_overlap(parent: list[dict[str, Any]], donor: list[dict[str, Any]], hours: int = 3) -> dict[str, Any]:
     horizon = hours * 3600 * 1000
     matched = 0
@@ -144,7 +264,7 @@ def fresh_evidence() -> dict[str, dict[str, Any]]:
     fresh = read(FRESH_OOS)
     ema = ((bundle.get("targets") or {}).get("trend_ma_macd_ema_fast_up_good_v1") or {})
     return {
-        "LONG_ONLY_PREEXISTING": {
+        "LONG_ONLY_RECORDED_SUBSET": {
             "state": fresh.get("state"),
             "T": int(fresh.get("post_boundary_long_child_T") or 0),
             "metrics": fresh.get("pilot_metrics") or {},
@@ -259,20 +379,42 @@ def run(parent_path: Path, trend70_path: Path, a4_dir: Path, break_dir: Path, ou
         raise RuntimeError("TRENDMA_PARENT_INTEGRITY_DEFECT")
 
     authority = read(COST)
-    bars_by, maps, _ = ab.load_shared_inputs(SYMBOLS, authority)
+    bars_by, maps, fetched_snapshots = ab.load_shared_inputs(SYMBOLS, authority)
+    exact_public = exact.get("execution_snapshots") or {}
+    snapshots = {
+        symbol: _snapshot_with_exact_cost(fetched_snapshots[symbol], dict(exact_public.get(symbol) or {}))
+        for symbol in SYMBOLS
+    }
+    boundary_ms = ab.parse_boundary(str(exact.get("boundary_utc") or ""))
+    true_long = replay_with_side_admission(
+        mode="LONG_ONLY", boundary_ms=boundary_ms, bars_by=bars_by, snapshots=snapshots,
+        policy_sha=str(exact.get("policy_sha") or ""),
+    )
+    recorded_long = [dict(x) for x in parent_all if str(x.get("side")).lower() == "long"]
+    true_ids = {(str(x["symbol"]), int(x["signal_ts"]), str(x["side"])) for x in true_long}
+    recorded_ids = {(str(x["symbol"]), int(x["signal_ts"]), str(x["side"])) for x in recorded_long}
+    restored_long = [x for x in true_long if (str(x["symbol"]), int(x["signal_ts"]), str(x["side"])) not in recorded_ids]
+    missing_recorded = [x for x in recorded_long if (str(x["symbol"]), int(x["signal_ts"]), str(x["side"])) not in true_ids]
+    if missing_recorded:
+        raise RuntimeError(f"TRUE_LONG_ONLY_LOST_RECORDED_LONG:{len(missing_recorded)}")
+
     enriched = [dict(x) for x in parent_all]
     enrich(enriched, bars_by, maps)
+    true_long_enriched = [dict(x) for x in true_long]
+    enrich(true_long_enriched, bars_by, maps)
 
     cohorts: dict[str, dict[str, Any]] = {
         "ALL52_DIAGNOSTIC": {"rows": enriched, "preexisting": True, "promotable_from_history": False},
-        "LONG_ONLY_PREEXISTING": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long"], "preexisting": True, "promotable_from_history": False},
+        "LONG_ONLY_RECORDED_SUBSET": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long"], "preexisting": True, "promotable_from_history": False},
+        "TRUE_LONG_ONLY_OWNERSHIP_REPLAY": {"rows": true_long_enriched, "preexisting": True, "promotable_from_history": False, "fresh_evidence_required": True},
+        "RESTORED_LONGS_FROM_SHORT_OWNERSHIP_RELEASE": {"rows": restored_long, "preexisting": False, "promotable_from_history": False, "diagnostic_only": True},
         "LONG_EMA_FAST_UP_PREEXISTING": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and bool(x.get("ema_fast_up"))], "preexisting": True, "promotable_from_history": False},
         "LONG_CHASE_ATR_UP_PREEXISTING": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and bool(x.get("chase_atr_up"))], "preexisting": True, "promotable_from_history": False},
         "LONG_EMA_AND_CHASE_EXPLORATORY": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and bool(x.get("ema_fast_up")) and bool(x.get("chase_atr_up"))], "preexisting": False, "promotable_from_history": False},
-        "LONG_EU_CONTEXT_SEED": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and x.get("session") == "EU"], "preexisting": False, "promotable_from_history": False},
-        "LONG_APAC_CONTEXT_SEED": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and x.get("session") == "APAC"], "preexisting": False, "promotable_from_history": False},
-        "LONG_US_CONTEXT_SEED": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and x.get("session") == "US"], "preexisting": False, "promotable_from_history": False},
-        "OUTCOME_ORACLE_LONG_WINNERS": {"rows": [x for x in enriched if str(x.get("side")).lower() == "long" and float(x.get("net_bps") or 0.0) > 0.0], "preexisting": False, "promotable_from_history": False, "outcome_selected_oracle": True},
+        "LONG_EU_CONTEXT_SEED": {"rows": [x for x in true_long_enriched if x.get("session") == "EU"], "preexisting": False, "promotable_from_history": False},
+        "LONG_APAC_CONTEXT_SEED": {"rows": [x for x in true_long_enriched if x.get("session") == "APAC"], "preexisting": False, "promotable_from_history": False},
+        "LONG_US_CONTEXT_SEED": {"rows": [x for x in true_long_enriched if x.get("session") == "US"], "preexisting": False, "promotable_from_history": False},
+        "OUTCOME_ORACLE_TRUE_LONG_WINNERS": {"rows": [x for x in true_long_enriched if float(x.get("net_bps") or 0.0) > 0.0], "preexisting": False, "promotable_from_history": False, "outcome_selected_oracle": True},
     }
     fwd = fresh_evidence()
     lanes = parent_lanes(trend70_path, a4_dir, break_dir)
@@ -300,10 +442,10 @@ def run(parent_path: Path, trend70_path: Path, a4_dir: Path, break_dir: Path, ou
                 "failed_checks": u["failed_checks"],
                 "near_overlap": near,
             }
-            if name == "OUTCOME_ORACLE_LONG_WINNERS" and u["state"] == "PASS_ADD_ONLY_ENTRY_LANE":
+            if name == "OUTCOME_ORACLE_TRUE_LONG_WINNERS" and u["state"] == "PASS_ADD_ONLY_ENTRY_LANE":
                 latent_by_lane[lane_id].append(name)
             fresh_pass = bool(evidence and evidence.get("fresh_pass"))
-            if meta.get("preexisting") and name != "ALL52_DIAGNOSTIC" and u["state"] == "PASS_ADD_ONLY_ENTRY_LANE" and fresh_pass:
+            if meta.get("preexisting") and name not in ("ALL52_DIAGNOSTIC", "TRUE_LONG_ONLY_OWNERSHIP_REPLAY") and u["state"] == "PASS_ADD_ONLY_ENTRY_LANE" and fresh_pass:
                 attachable_now.append({"lane_id": lane_id, "cohort": name})
         cohort_out[name] = {
             "historical_metrics": m,
@@ -317,14 +459,25 @@ def run(parent_path: Path, trend70_path: Path, a4_dir: Path, break_dir: Path, ou
     root = root_forensic(parent_all, bars_by, maps)
     side = {
         "all52": addu.metrics(enriched),
-        "long": addu.metrics([x for x in enriched if str(x.get("side")).lower() == "long"]),
+        "recorded_long_subset": addu.metrics([x for x in enriched if str(x.get("side")).lower() == "long"]),
         "short": addu.metrics([x for x in enriched if str(x.get("side")).lower() == "short"]),
+        "true_long_only_ownership_replay": addu.metrics(true_long_enriched),
+        "restored_longs_from_short_ownership_release": addu.metrics(restored_long),
     }
     result = {
         "schema_version": SCHEMA,
         "state": "PASS_TRENDMA52_TOP5_SALVAGE_FORENSIC",
         "strategy_id": "trend_ma_macd",
         "exact_parent_T": len(parent_all),
+        "ownership_correct_long_only": {
+            "recorded_long_subset_T": len(recorded_long),
+            "true_long_only_T": len(true_long),
+            "restored_long_T": len(restored_long),
+            "recorded_long_retained_T": len(recorded_ids & true_ids),
+            "lost_recorded_long_T": len(missing_recorded),
+            "review_root": "SHORTS_MUST_BE_SUPPRESSED_BEFORE_OWNERSHIP_AND_COOLDOWN_RESERVATION",
+            "historical_subset_not_equivalent_to_true_long_only": len(restored_long) > 0,
+        },
         "side_decomposition": side,
         "fresh9_root_forensic": root,
         "cohorts": cohort_out,
@@ -333,13 +486,14 @@ def run(parent_path: Path, trend70_path: Path, a4_dir: Path, break_dir: Path, ou
         "latent_oracle_ceiling_by_lane": latent_by_lane,
         "interpretation": {
             "direct_attach_requires_preexisting_axis_and_strict_add_only_pass_and_fresh_pass": True,
+            "true_long_only_requires_new_prospective_boundary_before_attachment": True,
             "outcome_oracle_is_ceiling_only": True,
             "context_seeds_require_new_preregistered_prospective_child": True,
             "parent_trade_delete_or_rewrite_forbidden": True,
             "top5_ssot_mutated": False,
             "strategy_runtime_mutated": False,
         },
-        "next": "IF_DIRECT_ATTACH_ZERO_USE_ROOT_AXIS_TO_BUILD_ONE_NON_OUTCOME_FITTED_LONG_CONFIRMATION_CHILD_THEN_FRESH_PROSPECTIVE; OTHERWISE_VALIDATE_ATTACHABLE_CHILD",
+        "next": "IF_TRUE_LONG_ONLY_POSITIVE_FREEZE_OWNERSHIP_CORRECT_POLICY_AND_START_FRESH_PROSPECTIVE; USE_ROOT_AXIS_FOR_ONE_CONFIRMATION_CHILD_ONLY_IF_TRUE_LONG_ONLY_FRESH_DEGRADES",
         **AUTH,
     }
     result["receipt_sha256"] = stable_sha(result)
@@ -355,7 +509,8 @@ def self_test() -> int:
     p = [{"symbol": "BTC", "signal_ts": 0, "side": "long"}]
     d = [{"symbol": "BTC", "signal_ts": 2 * 3600 * 1000, "side": "long"}]
     assert near_overlap(p, d)["near_overlap_pct"] == 100.0
-    print("PASS_A1_TRENDMA52_TOP5_SALVAGE_V1_SELF_TEST")
+    assert SCHEMA.endswith(".v2")
+    print("PASS_A1_TRENDMA52_TOP5_SALVAGE_V2_SELF_TEST")
     return 0
 
 
@@ -378,6 +533,7 @@ def main() -> int:
         "direct_attach_now_count": r["direct_attach_now_count"],
         "attachable_now": r["attachable_now"],
         "side": r["side_decomposition"],
+        "true_long": r["ownership_correct_long_only"],
         "root": r["fresh9_root_forensic"]["top_root_axis"],
         "latent": r["latent_oracle_ceiling_by_lane"],
     }, sort_keys=True))

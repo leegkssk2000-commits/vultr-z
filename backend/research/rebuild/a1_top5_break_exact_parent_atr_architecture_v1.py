@@ -13,7 +13,7 @@ from backend.research.rebuild.a1_a4_exact_parent_repair_batch_v1 import (
     stable,
 )
 from backend.research.rebuild.a1_top5_highamp_rescue_scan_v1 import select_break_parent
-from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import metrics, strict, trade_key
+from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import metrics, payoff, strict, trade_key
 
 SCHEMA = "zel.a1.top5.break.exact_parent_atr_architecture.v1"
 STRATEGY_ID = "break_and_continue"
@@ -53,18 +53,19 @@ def _close(a: Any, b: float, tol: float = 1e-6) -> bool:
 
 def _assert_parent(parent: list[dict[str, Any]]) -> dict[str, Any]:
     m = metrics(parent)
+    parent_payoff = payoff(parent)
     checks = {
         "T": int(m["trades"]) == EXPECTED_PARENT_T,
         "WR": _close(m["win_rate"], EXPECTED_PARENT_WR, 1e-12),
         "NET": _close(m["net_pnl_bps"], EXPECTED_PARENT_NET, 0.1),
         "EXPECTANCY": _close(m["net_expectancy_bps"], EXPECTED_PARENT_EXPECTANCY, 0.1),
         "PF": _close(m["profit_factor"], EXPECTED_PARENT_PF, 1e-6),
-        "PAYOFF": _close(m["payoff"], EXPECTED_PARENT_PAYOFF, 1e-6),
+        "PAYOFF": _close(parent_payoff, EXPECTED_PARENT_PAYOFF, 1e-6),
         "DD": _close(m["drawdown_bps"], EXPECTED_PARENT_DD, 0.1),
     }
     if not all(checks.values()):
-        raise RuntimeError(f"TOP5_BREAK_FROZEN_PARENT_MISMATCH:{checks}:{m}")
-    return m
+        raise RuntimeError(f"TOP5_BREAK_FROZEN_PARENT_MISMATCH:{checks}:{m}:payoff={parent_payoff}")
+    return {**m, "payoff": parent_payoff}
 
 
 def _candidate(name: str, parent: list[dict[str, Any]], donor: list[dict[str, Any]], broad: dict[str, Any], bars_by: dict[str, list[dict[str, Any]]], maps: dict[str, dict[int, int]]) -> dict[str, Any]:

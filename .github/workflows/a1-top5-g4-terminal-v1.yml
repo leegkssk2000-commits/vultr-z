@@ -1,0 +1,39 @@
+name: A1 Top5 G4 Terminal V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_top5_g4_terminal_latest.json'
+      - 'backend/research/rebuild/a1_top5_g4_terminal_v1.py'
+      - '.github/workflows/a1-top5-g4-terminal-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-terminal-receipt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_top5_g4_terminal_v1.py
+      - name: Validate terminal target set
+        run: python -m backend.research.rebuild.a1_top5_g4_terminal_v1 --self-test
+      - name: Authority guard
+        run: |
+          python - <<'PY'
+          import json
+          p='backend/research/rebuild/a1_top5_g4_terminal_latest.json'
+          r=json.load(open(p))
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['protected_mutations']==0
+          assert r['summary']['unresolved']==0
+          print('PASS_G4_TERMINAL_AUTHORITY_GUARD')
+          PY

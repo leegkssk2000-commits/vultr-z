@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
+from backend.research.architecture_factory import a1_paid_ai_target_gate_v1 as paid_gate
 from backend.research.architecture_factory import a1_strategy_architecture_factory_v1 as base
 
 DEFAULT_MODEL = "gpt-5-mini"
@@ -135,7 +136,13 @@ def _incomplete_reason(payload: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-def _lineage(prompt: str, text: str, payload: Mapping[str, Any], requested_model: str) -> dict[str, str]:
+def _lineage(
+    prompt: str,
+    text: str,
+    payload: Mapping[str, Any],
+    requested_model: str,
+    target: Mapping[str, Any],
+) -> dict[str, str]:
     return {
         "prompt_sha": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "response_sha": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -147,11 +154,20 @@ def _lineage(prompt: str, text: str, payload: Mapping[str, Any], requested_model
         "output_chars": str(len(text)),
         "max_output_tokens": str(MAX_OUTPUT_TOKENS),
         "max_candidates": str(MAX_CANDIDATES),
+        "target_lane_id": str(target.get("target_lane_id") or ""),
+        "target_stage": str(target.get("target_stage") or ""),
+        "target_gate": str(target.get("target_gate") or ""),
+        "target_strategy_id": str(target.get("target_strategy_id") or ""),
         **_usage(payload),
     }
 
 
 def call_openai_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, str]]:
+    bound, target = paid_gate.bound_prompt(
+        prompt,
+        provider="openai",
+        purpose="STRUCTURED_EXECUTABLE_G4_OR_G5_BUILDER",
+    )
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     model = os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_MODEL
     if not key:
@@ -162,7 +178,7 @@ def call_openai_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
         f"{MAX_CANDIDATES} total candidates, prioritized by causal/economic leverage. "
         "Keep prose fields concise and deterministic. Every candidate must include a complete "
         "EXECUTABLE_DSL_V1 executable_spec. Do not spend output on restating the prompt.\n"
-        + prompt
+        + bound
     )
     body = {
         "model": model,
@@ -197,7 +213,7 @@ def call_openai_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
         raise RuntimeError(f"OPENAI_FACTORY_HTTP_{exc.code}:{detail}") from exc
 
     text = base.extract_openai_text(payload)
-    lineage = _lineage(roi_prompt, text, payload, model)
+    lineage = _lineage(roi_prompt, text, payload, model, target)
     if str(payload.get("status") or "").lower() == "incomplete":
         raise RuntimeError(
             "OPENAI_FACTORY_INCOMPLETE:"
@@ -217,6 +233,7 @@ def call_openai_generator(prompt: str) -> tuple[str, dict[str, Any], dict[str, s
         ) from exc
     if not isinstance(parsed, dict) or not isinstance(parsed.get("candidates"), list):
         raise RuntimeError("OPENAI_FACTORY_SCHEMA_OBJECT_REQUIRED")
+    parsed = paid_gate.filter_generator_payload(parsed, target)
     return model, parsed, lineage
 
 
@@ -231,6 +248,7 @@ def self_test() -> int:
     u = _usage(fake)
     assert u == {"input_tokens": "123", "output_tokens": "45", "total_tokens": "168"}
     assert _incomplete_reason({"incomplete_details": {"reason": "max_output_tokens"}}) == "max_output_tokens"
+    assert paid_gate.self_test() == 0
     print("PASS_OPENAI_GENERATOR_HARDENED_V1_SELF_TEST")
     return 0
 

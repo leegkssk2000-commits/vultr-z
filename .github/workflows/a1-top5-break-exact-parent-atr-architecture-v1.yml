@@ -1,0 +1,98 @@
+name: A1 Top5 Break Exact Parent ATR Architecture V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_break_exact_parent_atr_architecture_v1.py'
+      - '.github/workflows/a1-top5-break-exact-parent-atr-architecture-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_break_exact_parent_atr_architecture_v1.py
+          python -m backend.research.rebuild.a1_top5_break_exact_parent_atr_architecture_v1 --self-test
+      - name: Download immutable Break broad artifact used by PR1051 Top5 reconstruction
+        run: |
+          set -euo pipefail
+          mkdir -p out/source
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/source
+          test -f out/source/break_and_continue_exact_parent.json
+      - name: Verify exact Top5 Break parent before architecture evaluation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from backend.research.rebuild.a1_top5_highamp_rescue_scan_v1 import select_break_parent
+          from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import metrics
+          p='out/source/break_and_continue_exact_parent.json'
+          r=json.load(open(p))
+          assert r['strategy_id']=='break_and_continue'
+          assert int(r['completed_trades'])==51 and len(r['trades'])==51
+          assert r['receipt_sha256']=='401cc362e0ad9a4fc0f7d076c9827b5cfdb8e1ae8713918890605bb40069ecaf'
+          assert not r.get('integrity_defects') and int(r.get('leakage_lookahead') or 0)==0
+          parent=select_break_parent(r)
+          m=metrics(parent)
+          assert len(parent)==9 and abs(float(m['win_rate'])-5/9)<1e-12
+          assert abs(float(m['net_pnl_bps'])-9063.67059948244)<0.1
+          print('PASS_EXACT_TOP5_BREAK_FROZEN_PARENT_9T')
+          PY
+      - name: Evaluate preregistered ATR-root architecture candidates on exact Top5 parent
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_break_exact_parent_atr_architecture_v1 \
+            --source out/source/break_and_continue_exact_parent.json \
+            --out out/a1_top5_break_exact_parent_atr_architecture_v1.json
+          cat out/a1_top5_break_exact_parent_atr_architecture_v1.json
+      - name: Verify research-only authority and no lineage drift
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_break_exact_parent_atr_architecture_v1.json'))
+          assert r['scope']=='TOP5_FROZEN_BREAK_PARENT_ONLY'
+          assert r['source_artifact_id']==9603011773
+          assert r['exact_parent_T']==9
+          assert r['numeric_threshold_sweep'] is False
+          assert r['outcome_fitted_atr_pct_cutoff'] is False
+          assert r['frozen_parent_deleted_or_rewritten'] is False
+          assert r['historical_donor_union_promotable'] is False
+          assert r['fresh_prospective_required_before_any_promotion'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['protected_mutations'])==0
+          print('PASS_TOP5_BREAK_EXACT_PARENT_ARCHITECTURE_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-break-exact-parent-atr-architecture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_break_exact_parent_atr_architecture_v1.json
+          if-no-files-found: error
+          retention-days: 90

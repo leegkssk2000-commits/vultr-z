@@ -1,0 +1,90 @@
+name: A1 Terminal Repair Swarm V6 Manual
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: a1-terminal-repair-swarm-v6-manual
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile deterministic hardening checks
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/openai_generator_hardened_v1.py
+          python -m backend.research.architecture_factory.openai_generator_hardened_v1
+          python -m py_compile backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
+
+      - name: Run one ROI-gated hardened paid cascade
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+          GEMINI_ECONOMIC_REBUILD_ENABLED: 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 \
+            --output out/a1_terminal_repair_swarm_v6.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v6.json'))
+          roi=r.get('api_roi') or {}
+          h=r.get('openai_output_hardening') or {}
+          assert h.get('state')=='ACTIVE_MANUAL_V6'
+          assert h.get('automatic_paid_execution') is False
+          assert int(h.get('max_output_tokens') or 0)==8000
+          assert int(h.get('max_candidates') or 0)==6
+          assert h.get('strict_full_json_schema') is True
+          assert roi.get('paid_execution_mode')=='MANUAL_V6_ONLY'
+          assert roi.get('automatic_paid_execution') is False
+          assert int(roi.get('paid_request_count') or 0) <= 3
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED' and r['exchange_order_submitted'] is False
+          assert int(r['protected_mutations'])==0
+          print(json.dumps({'mode':r.get('run_mode'),'paid':roi.get('paid_request_count'),'economic_pass':r.get('development_economic_pass_count'),'hardening':h},sort_keys=True))
+          PY
+
+      - name: Persist V6 cache only
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v6_latest.json
+          cp out/a1_terminal_repair_swarm_v6.json "$target"
+          git config user.name 'a1-paid-ai-v6-manual'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist manual hardened paid-AI V6 receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-v6-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_terminal_repair_swarm_v6.json
+          if-no-files-found: error
+          retention-days: 90

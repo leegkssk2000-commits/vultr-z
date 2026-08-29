@@ -1,0 +1,148 @@
+name: A1 Terminal Repair Swarm V6 Hardened Economic AI
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py'
+      - 'backend/research/architecture_factory/openai_generator_hardened_v1.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v6.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py'
+      - 'backend/research/architecture_factory/openai_generator_hardened_v1.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py'
+      - 'backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py'
+      - '.github/workflows/a1-terminal-repair-swarm-v6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and hardened self-test without paid AI
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py \
+            backend/research/architecture_factory/openai_generator_hardened_v1.py \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py
+          env -u OPENAI_API_KEY -u GEMINI_API_KEY \
+            python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
+
+  economic-rebuild:
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_ECONOMIC_REBUILD_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Require paid OpenAI builder
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY:-}"
+          echo PASS_OPENAI_PRIMARY_BUILDER_AVAILABLE
+
+      - name: Compile and hardened self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v6.py \
+            backend/research/architecture_factory/openai_generator_hardened_v1.py \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v5.py \
+            backend/research/architecture_factory/a1_terminal_repair_swarm_v4.py
+          env -u OPENAI_API_KEY -u GEMINI_API_KEY \
+            python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 --self-test
+
+      - name: Run hardened paid AI economic rebuild
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_terminal_repair_swarm_v6 \
+            --output out/a1_terminal_repair_swarm_v6_latest.json
+
+      - name: Verify economic truth and safety
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_terminal_repair_swarm_v6_latest.json'))
+          h=r.get('openai_output_hardening') or {}
+          roi=r.get('api_roi') or {}
+          assert h.get('state')=='ACTIVE_MANUAL_V6'
+          assert h.get('strict_full_json_schema') is True
+          assert h.get('response_status_checked') is True
+          assert h.get('incomplete_reason_checked') is True
+          assert int(roi.get('paid_request_count') or 0) >= 1
+          assert int(roi.get('paid_request_count') or 0) <= int(roi.get('max_paid_requests') or 3)
+          assert r.get('selection_authority') is False and r.get('promotion_authority') is False
+          assert r.get('execution_authority')=='NONE' and r.get('order_authority')=='BLOCKED' and r.get('live_trade_authority')=='BLOCKED'
+          assert r.get('exchange_order_submitted') is False and int(r.get('protected_mutations') or 0)==0
+          print(json.dumps({
+            'development_economic_pass_count':r.get('development_economic_pass_count'),
+            'machine_replayable_count':r.get('machine_replayable_count'),
+            'paid_requests':roi.get('paid_request_count'),
+            'request_counts':roi.get('request_counts'),
+            'token_usage':roi.get('token_usage'),
+            'provider_state':r.get('provider_state'),
+            'launch':r.get('launch'),
+          },sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-terminal-repair-swarm-v6-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_terminal_repair_swarm_v6_latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist V6 economic receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/a1_terminal_repair_swarm_v6_latest.json
+          generated=/tmp/a1_terminal_repair_swarm_v6_generated.json
+          cp out/a1_terminal_repair_swarm_v6_latest.json "$generated"
+          git config user.name 'a1-terminal-repair-swarm-v6'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            cp "$generated" "$target"
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1 economics: persist hardened V6 receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

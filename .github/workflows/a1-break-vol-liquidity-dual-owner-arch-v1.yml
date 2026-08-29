@@ -1,0 +1,55 @@
+name: A1 Break Vol-Liquidity Dual Owner Architecture V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_break_vol_liquidity_dual_owner_arch_v1.py'
+      - '.github/workflows/a1-break-vol-liquidity-dual-owner-arch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    concurrency:
+      group: a1-global-heavy-economic-evaluator-v1
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_break_vol_liquidity_dual_owner_arch_v1.py
+          python -m backend.research.rebuild.a1_break_vol_liquidity_dual_owner_arch_v1 --self-test
+      - name: Rebuild exact Break parent
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 \
+            --terminal-replay \
+            --strategy-id break_and_continue \
+            --symbols 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,1INCH-USDT,ETHFI-USDT,HYPE-USDT,BCH-USDT,APE-USDT,1000PEPE-USDT,DOGE-USDT,LINK-USDT' \
+            --out out/break_exact_parent.json
+      - name: Evaluate dual-owner architecture
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_break_vol_liquidity_dual_owner_arch_v1 \
+            --parent out/break_exact_parent.json \
+            --out out/a1_break_vol_liquidity_dual_owner_arch_v1.json
+          cat out/a1_break_vol_liquidity_dual_owner_arch_v1.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-vol-liquidity-dual-owner-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/break_exact_parent.json
+            out/a1_break_vol_liquidity_dual_owner_arch_v1.json
+          if-no-files-found: warn
+          retention-days: 90

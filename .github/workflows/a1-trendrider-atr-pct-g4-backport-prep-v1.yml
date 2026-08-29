@@ -5,6 +5,8 @@ on:
     paths:
       - 'backend/research/contracts/a1_trendrider_atr_pct_g4_backport_prep_v1.json'
       - 'backend/research/prep/g5_trendrider_w2_forensic_latest.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'
       - 'backend/research/contracts/a1_paid_ai_routing_policy_v1.json'
       - '.github/workflows/a1-trendrider-atr-pct-g4-backport-prep-v1.yml'
@@ -28,11 +30,46 @@ jobs:
           test -z "${OPENAI_API_KEY:-}"
           test -z "${GEMINI_API_KEY:-}"
           python - <<'PY'
-          import json
+          import hashlib, json
+
+          def stable(v):
+              return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),allow_nan=False,default=str).encode()).hexdigest()
+
           prep=json.load(open('backend/research/contracts/a1_trendrider_atr_pct_g4_backport_prep_v1.json'))
           f=json.load(open('backend/research/prep/g5_trendrider_w2_forensic_latest.json'))
+          product=json.load(open('backend/research/prep/g5_trendrider_broad30_product_latest.json'))
+          ssot=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
           b=json.load(open('backend/research/contracts/a1_ai_g4_g5_economic_bridge_v1.json'))
           p=json.load(open('backend/research/contracts/a1_paid_ai_routing_policy_v1.json'))
+          lane=next(x for x in ssot['top5'] if x['lane_id']=='trend_rider_broad_wr7000')
+          g5=lane['g5']
+
+          f_core=dict(f); f_receipt=f_core.pop('receipt_sha256')
+          product_core=dict(product); product_receipt=product_core.pop('receipt_sha256')
+          assert f_receipt==stable(f_core)
+          assert product_receipt==stable(product_core)
+
+          assert ssot['state']=='CURRENT_TOP5_ONLY'
+          assert product['stage']=='G5'
+          assert product['strategy_id']=='trend_rider' and product['lane_id']=='trend_rider_broad_wr7000'
+          assert product['policy_retune'] is False and product['threshold_retune'] is False
+          assert product['old_history_union'] is False
+          assert int(product['postlock_closed_T'])==4
+          assert int(product['windows']['W2']['metrics']['trades'])==4
+          assert int(product['windows']['W3']['metrics']['trades'])==0
+          assert product['receipt_sha256']==g5['source_receipt_sha256']
+          assert product['source_receipt_sha256']==g5['source_input_receipt_sha256']
+          assert int(product['postlock_closed_T'])==int(g5['postlock_closed_T'])
+
+          assert f['parent_receipt_sha256']==product['receipt_sha256']==g5['source_receipt_sha256']
+          assert f['parent_source_receipt_sha256']==product['source_receipt_sha256']==g5['source_input_receipt_sha256']
+          assert f['parent_top5_binding']['source_receipt_sha256']==g5['source_receipt_sha256']
+          assert f['parent_top5_binding']['source_input_receipt_sha256']==g5['source_input_receipt_sha256']
+          assert int(f['parent_top5_binding']['postlock_closed_T'])==int(g5['postlock_closed_T'])
+          assert f['parity']['parent_product_matches_top5'] is True
+          assert f['parity']['parent_receipt_matches_top5'] is True
+          assert f['parity']['parent_input_receipt_matches_top5'] is True
+          assert f['parity']['w2_count_matches_product'] is True
 
           assert prep['state']=='PREP_ONLY_DORMANT_UNTIL_G5_TERMINAL'
           assert prep['source_lane_id']=='trend_rider_broad_wr7000'
@@ -40,6 +77,19 @@ jobs:
           assert prep['source_stage']=='G5'
           assert prep['selected_causal_axis']==f['selected_causal_axis']=='ATR_PCT'
           assert prep['forensic_receipt_sha256']==f['receipt_sha256']
+          assert prep['source_product_authority']=='backend/research/prep/g5_trendrider_broad30_product_latest.json'
+          assert prep['source_product_receipt_sha256']==product['receipt_sha256']==g5['source_receipt_sha256']
+          assert prep['source_product_input_receipt_sha256']==product['source_receipt_sha256']==g5['source_input_receipt_sha256']
+          assert prep['source_top5_authority']=='backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+          lineage=prep['source_lineage']
+          assert lineage['forensic_parent_matches_product'] is True
+          assert lineage['forensic_parent_matches_top5'] is True
+          assert lineage['forensic_parent_input_matches_product'] is True
+          assert lineage['forensic_parent_input_matches_top5'] is True
+          assert lineage['product_matches_top5'] is True
+          assert lineage['lineage_verified_before_prep_sync'] is True
+          assert int(lineage['postlock_closed_T'])==int(product['postlock_closed_T'])==4
+          assert int(lineage['w2_product_T'])==int(product['windows']['W2']['metrics']['trades'])==4
           assert prep['source_w2_observed_T_at_prep']==int(f['w2_observed_T'])==4
           assert prep['source_w2_target_T']==int(f['w2_target_T'])==12
           assert f['parent_state']=='WAIT_G5_W2_12'
@@ -104,5 +154,5 @@ jobs:
           assert prep['selection_authority'] is False and prep['promotion_authority'] is False
           assert prep['execution_authority']=='NONE' and prep['order_authority']=='BLOCKED' and prep['live_trade_authority']=='BLOCKED'
           assert prep['protected_mutations']==0 and prep['action']=='hold'
-          print('PASS_A1_TRENDRIDER_ATR_PCT_G4_BACKPORT_PREP_DORMANT')
+          print('PASS_A1_TRENDRIDER_ATR_PCT_G4_BACKPORT_TOP5_LINEAGE_DORMANT')
           PY

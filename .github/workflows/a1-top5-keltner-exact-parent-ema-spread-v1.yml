@@ -1,0 +1,99 @@
+name: A1 Top5 Keltner Exact Parent EMA Spread V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_keltner_exact_parent_ema_spread_v1.py'
+      - '.github/workflows/a1-top5-keltner-exact-parent-ema-spread-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_keltner_exact_parent_ema_spread_v1.py
+          python -m backend.research.rebuild.a1_top5_keltner_exact_parent_ema_spread_v1 --self-test
+      - name: Download immutable Keltner broad artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out/source
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/keltner.zip
+          unzip -q out/keltner.zip -d out/source
+          test -f out/source/keltner_trend_exact_parent.json
+      - name: Verify exact frozen Top5 Keltner 12T authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from backend.research.rebuild.a1_top5_highamp_rescue_scan_v1 import select_semantic_parent
+          from backend.research.rebuild.a1_trendrider_8125_fresh2_highamp_rescue_v1 import metrics
+          broad=json.load(open('out/source/keltner_trend_exact_parent.json'))
+          incumbent=json.load(open('backend/research/rebuild/a1_keltner_58pct_research_incumbent_v1.json'))
+          assert broad['strategy_id']=='keltner_trend'
+          assert int(broad['completed_trades'])==60 and len(broad['trades'])==60
+          assert broad['receipt_sha256']=='66a477f40f0d71a6f90513aecde150427692345e4872c6d9820e7e871e781c38'
+          assert incumbent['receipt_sha256']=='641c5b384c3251063a46f5fe0c6f42e48eafe0884368d4bc8ba6e4256bf04717'
+          assert not broad.get('integrity_defects') and int(broad.get('leakage_lookahead') or 0)==0
+          parent=select_semantic_parent(broad,incumbent); m=metrics(parent)
+          assert len(parent)==12 and abs(float(m['win_rate'])-7/12)<1e-12
+          assert abs(float(m['net_pnl_bps'])-16213.02695520102)<0.1
+          assert abs(float(m['net_expectancy_bps'])-1351.0855796000849)<0.1
+          assert abs(float(m['profit_factor'])-31.35081608201582)<1e-6
+          assert abs(float(m['drawdown_bps'])-212.6882556068265)<0.1
+          print('PASS_EXACT_TOP5_KELTNER_FROZEN_PARENT_12T')
+          PY
+      - name: Evaluate EMA spread architecture on exact Top5 Keltner parent
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_keltner_exact_parent_ema_spread_v1 \
+            --source out/source/keltner_trend_exact_parent.json \
+            --out out/a1_top5_keltner_exact_parent_ema_spread_v1.json
+          cat out/a1_top5_keltner_exact_parent_ema_spread_v1.json
+      - name: Verify fail-closed research authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_keltner_exact_parent_ema_spread_v1.json'))
+          assert r['scope']=='TOP5_FROZEN_KELTNER_PARENT_ONLY'
+          assert r['source_artifact_id']==9614562185 and r['exact_parent_T']==12
+          assert r['architecture']['numeric_threshold_sweep'] is False
+          assert r['architecture']['outcome_fitted_cutoff'] is False
+          assert r['parent_deleted_or_rewritten'] is False
+          assert r['historical_donor_is_development_only'] is True
+          assert r['fresh_prospective_required_before_any_promotion'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['protected_mutations'])==0
+          print('PASS_TOP5_KELTNER_EXACT_PARENT_EMA_SPREAD_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-keltner-exact-parent-ema-spread-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_keltner_exact_parent_ema_spread_v1.json
+          if-no-files-found: error
+          retention-days: 90

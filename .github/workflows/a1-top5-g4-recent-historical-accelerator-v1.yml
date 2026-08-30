@@ -1,0 +1,160 @@
+name: A1 Top5 G4 Recent Historical Accelerator V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_recent_historical_accelerator_v1.json'
+      - 'backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_v1.py'
+      - '.github/workflows/a1-top5-g4-recent-historical-accelerator-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_recent_historical_accelerator_v1.json'
+      - 'backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_v1.py'
+      - '.github/workflows/a1-top5-g4-recent-historical-accelerator-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-g4-recent-historical-accelerator-v1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert zero paid-provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and preregistration guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_v1.py
+          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_top5_g4_recent_historical_accelerator_v1.json'))
+          assert c['state']=='PREREGISTERED_BEFORE_RECENT_HISTORICAL_RESULTS'
+          assert c['scope']['include_lane_ids']==['trend_rider_primary_wr8125','break_and_continue_main','keltner_trend_main','supertrend_pullback_main']
+          assert c['scope']['exclude_lane_ids']==['trend_rider_broad_wr7000']
+          assert c['scope']['broad_g4_survivor_or_g5_mutation_forbidden'] is True
+          assert c['scope']['break_salvage_fresh6_mutation_forbidden'] is True
+          assert c['evidence_semantics']['historical_trade_credit_to_fresh_g4_T']==0
+          assert c['evidence_semantics']['historical_trade_credit_to_g5_T']==0
+          assert c['evidence_semantics']['existing_fresh_collectors_continue_unchanged'] is True
+          assert c['evidence_semantics']['post_result_retune'] is False
+          assert c['evidence_semantics']['threshold_sweep'] is False
+          assert c['evidence_semantics']['window_sweep'] is False
+          assert c['fresh_authority_guards']['break_salvage_minimum_fresh_T']==6
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print('PASS_TOP5_G4_HISTORICAL_ACCELERATOR_PRE_RESULT_LOCK')
+          PY
+
+      - name: Run recent historical accelerator
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 \
+            --out out/a1_top5_g4_recent_historical_accelerator_v1.json \
+            --escrow-out out/a1_top5_g5_prep_escrow_v1.json
+
+      - name: Verify result authority isolation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1.json'))
+          e=json.load(open('out/a1_top5_g5_prep_escrow_v1.json'))
+          assert r['state']=='PASS_RECENT_HISTORICAL_ACCELERATOR_COMPLETE'
+          assert r['lane_count']==4
+          assert set(r['lanes'])=={'trend_rider_primary_wr8125','break_and_continue_main','keltner_trend_main','supertrend_pullback_main'}
+          assert r['historical_trade_credit_to_fresh_g4_T']==0
+          assert r['historical_trade_credit_to_g5_T']==0
+          assert r['fresh_authority_unchanged'] is True
+          assert r['broad_g5_mutated'] is False
+          assert r['break_salvage_fresh6']['activation_id']=='g4.break.reclaim_breakout.20260830T160000Z.v1'
+          assert r['break_salvage_fresh6']['cohort_id']=='g4.break.reclaim_breakout.fresh.20260830.v1'
+          assert r['break_salvage_fresh6']['boundary_utc']=='2026-08-30T16:00:00Z'
+          assert r['break_salvage_fresh6']['minimum_fresh_T_before_gate']==6
+          assert r['break_salvage_fresh6']['unchanged'] is True
+          assert r['paid_provider_calls']==0 and r['openai_calls']==0 and r['gemini_calls']==0
+          for lane,row in r['lanes'].items():
+              assert row['historical_credit_to_fresh_g4_T']==0 and row['historical_credit_to_g5_T']==0
+              assert row['formal_g4_pass'] is False and row['formal_g5_pass'] is False
+              assert len(row['windows'])==2
+          assert e['formal_g5_T']==0 and e['historical_credit_to_g4_T']==0 and e['historical_credit_to_g5_T']==0
+          assert e['broad_g5_mutated'] is False
+          assert e['promotion_authority'] is False and e['execution_authority']=='NONE'
+          print(json.dumps({
+            'lane_states':{k:v['state'] for k,v in r['lanes'].items()},
+            'metrics':{k:v['aggregate'] for k,v in r['lanes'].items()},
+            'strong_pass':r['strong_pass_lane_ids'],
+            'escrow_entries':sorted(e['entries'])
+          },sort_keys=True))
+          PY
+
+      - name: Verify deterministic rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 \
+            --out out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json \
+            --escrow-out out/a1_top5_g5_prep_escrow_v1_rerun.json
+          python - <<'PY'
+          import json
+          a=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1.json'))
+          b=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json'))
+          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
+          assert {k:v['trade_identity_sha256'] for k,v in a['lanes'].items()}=={k:v['trade_identity_sha256'] for k,v in b['lanes'].items()}
+          assert {k:v['aggregate'] for k,v in a['lanes'].items()}=={k:v['aggregate'] for k,v in b['lanes'].items()}
+          print('PASS_TOP5_G4_RECENT_HISTORICAL_DETERMINISTIC_RERUN')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-g4-recent-historical-accelerator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_g4_recent_historical_accelerator_v1.json
+            out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json
+            out/a1_top5_g5_prep_escrow_v1.json
+            out/a1_top5_g5_prep_escrow_v1_rerun.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist receipt and contingent G5 prep escrow on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_latest.json
+          escrow=backend/research/prep/a1_top5_g5_prep_escrow_latest.json
+          cp out/a1_top5_g4_recent_historical_accelerator_v1.json "$target"
+          mkdir -p backend/research/prep
+          cp out/a1_top5_g5_prep_escrow_v1.json "$escrow"
+          git config user.name 'a1-top5-g4-recent-historical-accelerator'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target" "$escrow"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Top5 G4 recent historical accelerator [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

@@ -1,0 +1,119 @@
+name: A1 G5 TrendRider ATR_PCT Shadow Probe V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/a1_g5_trendrider_atr_pct_shadow_probe_v1.json'
+      - 'backend/research/rebuild/a1_g5_trendrider_atr_pct_shadow_probe_v1.py'
+      - '.github/workflows/a1-g5-trendrider-atr-pct-shadow-probe-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/g5_trendrider_w2_forensic_latest.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/contracts/a1_g5_trendrider_atr_pct_shadow_probe_v1.json'
+      - 'backend/research/rebuild/a1_g5_trendrider_atr_pct_shadow_probe_v1.py'
+      - '.github/workflows/a1-g5-trendrider-atr-pct-shadow-probe-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '27 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-g5-trendrider-atr-pct-shadow-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  shadow-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert zero paid-provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_g5_trendrider_atr_pct_shadow_probe_v1.py
+          python -m backend.research.rebuild.a1_g5_trendrider_atr_pct_shadow_probe_v1 --self-test
+
+      - name: Evaluate fresh ATR_PCT shadow evidence only
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_g5_trendrider_atr_pct_shadow_probe_v1 \
+            --out out/a1_g5_trendrider_atr_pct_shadow_probe_latest.json
+
+      - name: Verify no parent mutation or stale-row reuse
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_g5_trendrider_atr_pct_shadow_probe_latest.json'))
+          assert r['schema_version']=='zel.g5.trendrider.atr_pct.shadow_probe.receipt.v1'
+          assert r['lane_id']=='trend_rider_broad_wr7000'
+          assert r['stage']=='G5_SHADOW_CAUSAL'
+          assert r['probe_boundary_utc']=='2026-08-30T02:00:00Z'
+          assert r['g4_backport_activation_gate_unchanged'] is True
+          assert int(r['current_w2_rows_reused_as_shadow_T'])==0
+          assert r['parent_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert int(r['paid_provider_calls'])==0
+          print('PASS_G5_ATR_PCT_SHADOW_PROBE_SAFETY')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-g5-trendrider-atr-pct-shadow-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_g5_trendrider_atr_pct_shadow_probe_latest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist semantic delta on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          src=Path('out/a1_g5_trendrider_atr_pct_shadow_probe_latest.json')
+          dst=Path('backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json')
+          new=json.loads(src.read_text())
+          old=json.loads(dst.read_text()) if dst.exists() else None
+          def sem(x):
+              if x is None: return None
+              y=dict(x); y.pop('receipt_sha256',None); return y
+          if sem(old)==sem(new):
+              print('NO_SEMANTIC_DELTA')
+              raise SystemExit(0)
+          dst.parent.mkdir(parents=True,exist_ok=True)
+          dst.write_text(json.dumps(new,indent=2,sort_keys=True,allow_nan=False)+'\n')
+          Path('/tmp/persist-shadow-probe').write_text('1\n')
+          PY
+          if [[ ! -f /tmp/persist-shadow-probe ]]; then exit 0; fi
+          git config user.name 'a1-g5-trendrider-atr-pct-shadow-probe'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          git commit -m 'G5 TrendRider: persist ATR_PCT shadow probe [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

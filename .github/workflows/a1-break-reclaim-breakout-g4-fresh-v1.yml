@@ -1,0 +1,214 @@
+name: A1 Break Reclaim Breakout Fresh G4 V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_reclaim_breakout_g4_fresh_v1.json'
+      - 'backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_v1.py'
+      - '.github/workflows/a1-break-reclaim-breakout-g4-fresh-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_reclaim_breakout_g4_fresh_v1.json'
+      - 'backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_v1.py'
+      - '.github/workflows/a1-break-reclaim-breakout-g4-fresh-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '37 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-break-reclaim-breakout-g4-fresh-v1
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert no paid-provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and freeze self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_v1.py
+          python -m backend.research.rebuild.a1_break_reclaim_breakout_g4_fresh_v1 --self-test
+
+      - name: Collect genuine fresh G4 CLOSED T
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=(--output out/a1_break_reclaim_breakout_g4_fresh_latest.json)
+          if [[ -f backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_latest.json ]]; then
+            args+=(--previous backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_latest.json)
+          fi
+          python -m backend.research.rebuild.a1_break_reclaim_breakout_g4_fresh_v1 "${args[@]}"
+
+      - name: Verify fresh G4 contamination guards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_break_reclaim_breakout_g4_fresh_latest.json'))
+          assert r['schema_version']=='zel.a1.break.reclaim_breakout_g4_fresh.receipt.v1'
+          assert r['state'] in {'WAIT_FRESH_G4_BOUNDARY','G4_FRESH_ACTIVE_WAIT_MIN_T','G4_FRESH_MIN_SAMPLE_REACHED_PENDING_CANONICAL_GATE'}
+          assert r['activation_id']=='g4.break.reclaim_breakout.20260830T160000Z.v1'
+          assert r['cohort_id']=='g4.break.reclaim_breakout.fresh.20260830.v1'
+          assert r['challenger_id']=='break_reclaim_latched_breakout50_independent_4h_h6_v1'
+          assert r['prospective_boundary_utc']=='2026-08-30T16:00:00Z'
+          assert int(r['prospective_boundary_ms'])==1788105600000
+          assert r['frozen_symbol_universe']==['1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT']
+          assert abs(float(r['fixed_cost_bps_per_trade'])-20.0)<1e-12
+          assert int(r['historical_seed_credit_T'])==0
+          assert int(r['development_credit_T'])==0
+          assert int(r['existing_v2_child_credit_T'])==0
+          assert int(r['g4_credit_T'])==int(r['fresh_g4_T'])==int(r['metrics']['closed_T'])
+          assert int(r['minimum_fresh_T_before_gate'])==6
+          assert r['old_history_union'] is False
+          assert r['post_result_retune'] is False and r['threshold_sweep'] is False and r['state_rule_variant_sweep'] is False
+          assert r['existing_break_v2_collector_consumed_or_reset'] is False
+          assert r['g5_mutated'] is False and r['rr_or_exit_mutated'] is False
+          assert int(r['paid_provider_calls'])==0 and int(r['openai_calls'])==0 and int(r['gemini_calls'])==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          for t in r['closed_trades']:
+              assert int(t['signal_ts'])>=1788105600000
+              assert t['activation_id']==r['activation_id']
+              assert t['cohort_id']==r['cohort_id']
+              assert t['symbol'] in r['frozen_symbol_universe']
+          print(json.dumps({
+              'state':r['state'],
+              'activation_id':r['activation_id'],
+              'cohort_id':r['cohort_id'],
+              'boundary_reached':r['boundary_reached'],
+              'fresh_g4_T':r['fresh_g4_T'],
+              'metrics':r['metrics'],
+          },sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-reclaim-breakout-g4-fresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_break_reclaim_breakout_g4_fresh_latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist append-only fresh G4 receipt and Top5 SSOT
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_break_reclaim_breakout_g4_fresh_latest.json
+          ssot=backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+          generated=/tmp/a1_break_reclaim_breakout_g4_fresh_generated.json
+          cp out/a1_break_reclaim_breakout_g4_fresh_latest.json "$generated"
+          git config user.name 'a1-break-reclaim-breakout-g4-fresh'
+          git config user.email 'actions@users.noreply.github.com'
+
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            rm -f /tmp/g4-write /tmp/g4-skip
+
+            python - "$target" "$ssot" "$generated" <<'PY'
+          import copy,json,sys
+          from datetime import datetime
+          from pathlib import Path
+
+          target=Path(sys.argv[1]); ssot_path=Path(sys.argv[2]); generated=Path(sys.argv[3])
+          new=json.loads(generated.read_text())
+          old=json.loads(target.read_text()) if target.is_file() else None
+
+          def parse_ts(v):
+              try:return datetime.fromisoformat(str(v).replace('Z','+00:00'))
+              except Exception:return None
+
+          def semantic(x):
+              y=copy.deepcopy(x)
+              for k in ('observed_at_utc','receipt_sha256','new_closed_trade_ids','new_closed_T','source_summary'):
+                  y.pop(k,None)
+              return y
+
+          if old is not None:
+              assert old.get('schema_version')==new.get('schema_version')=='zel.a1.break.reclaim_breakout_g4_fresh.receipt.v1'
+              for k in ('activation_id','cohort_id','challenger_id','prospective_boundary_utc','prospective_boundary_ms'):
+                  if old.get(k)!=new.get(k): raise SystemExit(f'FRESH_G4_IDENTITY_DRIFT:{k}')
+              old_ids={str(t['closed_trade_id']) for t in old.get('closed_trades') or []}
+              new_ids={str(t['closed_trade_id']) for t in new.get('closed_trades') or []}
+              stale=[]
+              if not old_ids.issubset(new_ids): stale.append('APPEND_ONLY_REGRESSION')
+              if int(old.get('fresh_g4_T') or 0)>int(new.get('fresh_g4_T') or 0): stale.append('T_REGRESSION')
+              if old.get('boundary_reached') is True and new.get('boundary_reached') is not True: stale.append('BOUNDARY_REGRESSION')
+              ots,nts=parse_ts(old.get('observed_at_utc')),parse_ts(new.get('observed_at_utc'))
+              if ots and nts and ots>=nts and semantic(old)!=semantic(new): stale.append('OLDER_OR_EQUAL_OBSERVATION')
+              if stale:
+                  print('FRESH_G4_STALE_SKIP:'+','.join(stale))
+                  Path('/tmp/g4-skip').write_text('1\n')
+                  raise SystemExit(0)
+              if semantic(old)==semantic(new):
+                  print('FRESH_G4_NO_SEMANTIC_DELTA')
+                  Path('/tmp/g4-skip').write_text('1\n')
+                  raise SystemExit(0)
+
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)+'\n')
+
+          ssot=json.loads(ssot_path.read_text())
+          rows=[x for x in ssot.get('top5') or [] if isinstance(x,dict)]
+          matches=[x for x in rows if x.get('lane_id')=='break_and_continue_main']
+          if len(matches)!=1: raise SystemExit(f'BREAK_SSOT_ROW_DRIFT:{len(matches)}')
+          row=matches[0]
+          row['parallel_g4_salvage_challenger']={
+              'state':new['state'],
+              'challenger_id':new['challenger_id'],
+              'activation_id':new['activation_id'],
+              'cohort_id':new['cohort_id'],
+              'prospective_boundary_utc':new['prospective_boundary_utc'],
+              'prospective_boundary_ms':new['prospective_boundary_ms'],
+              'source_development_receipt_sha256':new['source_development_receipt_sha256'],
+              'historical_seed_credit_T':0,
+              'development_credit_T':0,
+              'existing_v2_child_credit_T':0,
+              'fresh_g4_T':new['fresh_g4_T'],
+              'minimum_fresh_T_before_gate':new['minimum_fresh_T_before_gate'],
+              'metrics':copy.deepcopy(new['metrics']),
+              'next':new['next'],
+              'selection_authority':False,
+              'promotion_authority':False,
+          }
+          policy=ssot.setdefault('record_policy',{})
+          policy['break_reclaim_breakout_142T_development_is_not_g4_credit']=True
+          policy['break_reclaim_breakout_g4_credit_requires_post_20260830T160000Z_closed_T']=True
+          ssot_path.write_text(json.dumps(ssot,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
+          Path('/tmp/g4-write').write_text('1\n')
+          print('FRESH_G4_RECEIPT_AND_SSOT_READY')
+          PY
+
+            if [[ -f /tmp/g4-skip ]]; then exit 0; fi
+            test -f /tmp/g4-write
+            git add "$target" "$ssot"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1 Break: persist fresh G4 salvage challenger [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

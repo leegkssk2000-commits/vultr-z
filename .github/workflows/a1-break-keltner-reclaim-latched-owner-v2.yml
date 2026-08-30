@@ -1,0 +1,118 @@
+name: A1 Break Keltner Reclaim Latched Owner V2
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_keltner_reclaim_latched_owner_v2.json'
+      - 'backend/research/rebuild/a1_break_keltner_reclaim_latched_owner_v2.py'
+      - '.github/workflows/a1-break-keltner-reclaim-latched-owner-v2.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_keltner_reclaim_latched_owner_v2.json'
+      - 'backend/research/rebuild/a1_break_keltner_reclaim_latched_owner_v2.py'
+      - '.github/workflows/a1-break-keltner-reclaim-latched-owner-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-break-keltner-reclaim-latched-owner-v2
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and final-variant preregistration guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_break_keltner_reclaim_latched_owner_v2.py
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_latched_owner_v2 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_break_keltner_reclaim_latched_owner_v2.json'))
+          assert c['state']=='PREREGISTERED_DEVELOPMENT_REPLAY_BEFORE_RESULT'
+          assert c['immutability']['this_is_final_reclaim_persistence_variant'] is True
+          m=c['architecture']['state_machine']
+          assert m['numeric_threshold_added'] is False and m['ttl_or_hold_window_added'] is False
+          assert m['price_pullback_disarm_removed_from_v1'] is True
+          assert c['prior_attempt']['prior_result_credit_to_g4_T']==0
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print('PASS_RECLAIM_LATCHED_OWNER_V2_FROZEN_BEFORE_RESULT')
+          PY
+      - name: Download immutable Break parent source
+        run: |
+          set -euo pipefail
+          mkdir -p out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Execute final reclaim-family salvage replay
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_latched_owner_v2 \
+            --immutable-break-source out/break/break_and_continue_exact_parent.json \
+            --out out/a1_break_keltner_reclaim_latched_owner_v2.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_break_keltner_reclaim_latched_owner_v2.json')); c=r['cell']; m=c['metrics']
+          assert r['prior_attempt_credit_to_g4_T']==0 and r['development_T_credit_to_g4']==0 and r['fresh_g4_T']==0
+          assert r['new_g4_activation_created'] is False and r['new_g4_cohort_created'] is False
+          assert c['native_parent_payload_preserved'] and not c['new_trade_admission'] and not c['parent_exit_mutated'] and not c['cost_rededucted']
+          assert int(m['trades']) + int(c['rejected_T']) == 9
+          if c['development_gate_pass']:
+              assert r['state']=='PASS_DEVELOPMENT_ELIGIBLE_FOR_NEW_G4_CHALLENGER'
+          else:
+              assert r['state']=='FALSIFIED_RECLAIM_FAMILY_EXHAUSTED_FOR_BREAK'
+          print(json.dumps({'state':r['state'],'T':m['trades'],'wins':m['wins'],'losses':m['losses'],'retention_pct':c['retention_pct'],'net_pnl_bps':m['net_pnl_bps'],'expectancy':m['net_expectancy_bps'],'pf':m['profit_factor'],'payoff':m['payoff'],'failed':c['failed_development_checks']},sort_keys=True))
+          PY
+      - name: Verify deterministic rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_latched_owner_v2 \
+            --immutable-break-source out/break/break_and_continue_exact_parent.json \
+            --out out/a1_break_keltner_reclaim_latched_owner_v2_rerun.json
+          python - <<'PY'
+          import json
+          a=json.load(open('out/a1_break_keltner_reclaim_latched_owner_v2.json')); b=json.load(open('out/a1_break_keltner_reclaim_latched_owner_v2_rerun.json'))
+          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
+          assert a['receipt_sha256']==b['receipt_sha256']
+          assert a['cell']==b['cell']
+          print('PASS_RECLAIM_LATCHED_OWNER_V2_DETERMINISTIC_RERUN')
+          PY
+      - name: Persist V2 receipt on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          cp out/a1_break_keltner_reclaim_latched_owner_v2.json backend/research/rebuild/a1_break_keltner_reclaim_latched_owner_v2_latest.json
+          git config user.name 'a1-break-reclaim-latched-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_break_keltner_reclaim_latched_owner_v2_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Break: persist latched reclaim-owner V2 replay [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 3; done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-keltner-reclaim-latched-owner-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_break_keltner_reclaim_latched_owner_v2.json
+            out/a1_break_keltner_reclaim_latched_owner_v2_rerun.json
+          if-no-files-found: error
+          retention-days: 90

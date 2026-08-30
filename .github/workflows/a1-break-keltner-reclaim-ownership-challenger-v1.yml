@@ -1,0 +1,131 @@
+name: A1 Break Keltner Reclaim Ownership Challenger V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_keltner_reclaim_ownership_challenger_v1.json'
+      - 'backend/research/rebuild/a1_break_keltner_reclaim_ownership_challenger_v1.py'
+      - '.github/workflows/a1-break-keltner-reclaim-ownership-challenger-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_keltner_reclaim_ownership_challenger_v1.json'
+      - 'backend/research/rebuild/a1_break_keltner_reclaim_ownership_challenger_v1.py'
+      - '.github/workflows/a1-break-keltner-reclaim-ownership-challenger-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-break-keltner-reclaim-ownership-challenger-v1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and preregistration guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_break_keltner_reclaim_ownership_challenger_v1.py
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_ownership_challenger_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_break_keltner_reclaim_ownership_challenger_v1.json'))
+          assert c['state']=='PREREGISTERED_DEVELOPMENT_REPLAY_BEFORE_RESULT'
+          assert c['seed_evidence']['source_result_was_selection_aware'] is True
+          assert c['seed_evidence']['source_result_is_not_g4_promotion_evidence'] is True
+          m=c['architecture']['state_machine']
+          assert m['numeric_threshold_added'] is False and m['ttl_or_hold_window_added'] is False
+          assert c['immutability']['parent_exit_unchanged'] is True
+          assert c['immutability']['cost_rededuction'] is False
+          assert c['immutability']['historical_backfill_to_g4'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print('PASS_RECLAIM_OWNERSHIP_PREREGISTERED_BEFORE_RESULT')
+          PY
+      - name: Download immutable Break parent source
+        run: |
+          set -euo pipefail
+          mkdir -p out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Execute single-axis salvage replay
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_ownership_challenger_v1 \
+            --immutable-break-source out/break/break_and_continue_exact_parent.json \
+            --out out/a1_break_keltner_reclaim_ownership_challenger_v1.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_break_keltner_reclaim_ownership_challenger_v1.json'))
+          c=r['cell']; m=c['metrics']
+          assert r['selection_aware_seed_credit_to_g4']==0 and r['development_T_credit_to_g4']==0
+          assert r['new_g4_activation_created'] is False and r['new_g4_cohort_created'] is False and r['fresh_g4_T']==0
+          assert c['native_parent_payload_preserved'] and not c['new_trade_admission'] and not c['parent_exit_mutated'] and not c['cost_rededucted']
+          assert int(m['trades']) <= 9 and int(c['rejected_T']) + int(m['trades']) == 9
+          for scope in ('parent_metrics','metrics'):
+              for value in c[scope].values():
+                  if isinstance(value,(int,float)):
+                      assert math.isfinite(value)
+          if c['development_gate_pass']:
+              assert r['state']=='PASS_DEVELOPMENT_ELIGIBLE_FOR_NEW_G4_CHALLENGER'
+              assert r['next']=='FREEZE_NEW_G4_CHALLENGER_WITH_FRESH_BOUNDARY'
+          else:
+              assert r['state']=='FALSIFIED_RECLAIM_OWNERSHIP_REDESIGN_V1'
+              assert r['next']=='STOP_RECLAIM_OWNERSHIP_V1_AND_REQUIRE_NEW_ARCHITECTURE_SEED'
+          print(json.dumps({'state':r['state'],'T':m['trades'],'wins':m['wins'],'losses':m['losses'],'retention_pct':c['retention_pct'],'net_pnl_bps':m['net_pnl_bps'],'expectancy':m['net_expectancy_bps'],'pf':m['profit_factor'],'failed':c['failed_development_checks']},sort_keys=True))
+          PY
+      - name: Verify deterministic rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_break_keltner_reclaim_ownership_challenger_v1 \
+            --immutable-break-source out/break/break_and_continue_exact_parent.json \
+            --out out/a1_break_keltner_reclaim_ownership_challenger_v1_rerun.json
+          python - <<'PY'
+          import json
+          a=json.load(open('out/a1_break_keltner_reclaim_ownership_challenger_v1.json'))
+          b=json.load(open('out/a1_break_keltner_reclaim_ownership_challenger_v1_rerun.json'))
+          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
+          assert a['receipt_sha256']==b['receipt_sha256']
+          assert a['cell']==b['cell']
+          print('PASS_RECLAIM_OWNERSHIP_DETERMINISTIC_RERUN')
+          PY
+      - name: Persist challenger receipt on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          cp out/a1_break_keltner_reclaim_ownership_challenger_v1.json backend/research/rebuild/a1_break_keltner_reclaim_ownership_challenger_latest.json
+          git config user.name 'a1-break-reclaim-ownership'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_break_keltner_reclaim_ownership_challenger_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Break: persist reclaim-ownership challenger replay [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-keltner-reclaim-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_break_keltner_reclaim_ownership_challenger_v1.json
+            out/a1_break_keltner_reclaim_ownership_challenger_v1_rerun.json
+          if-no-files-found: error
+          retention-days: 90

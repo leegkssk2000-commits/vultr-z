@@ -1,0 +1,156 @@
+name: A1 Top5 Entry Transplant Replay V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_entry_transplant_replay_v1.json'
+      - 'backend/research/rebuild/a1_top5_entry_transplant_replay_v1.py'
+      - '.github/workflows/a1-top5-entry-transplant-replay-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_entry_transplant_replay_v1.json'
+      - 'backend/research/rebuild/a1_top5_entry_transplant_replay_v1.py'
+      - '.github/workflows/a1-top5-entry-transplant-replay-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-top5-entry-transplant-replay-v1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and preregistration self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_entry_transplant_replay_v1.py
+          python -m backend.research.rebuild.a1_top5_entry_transplant_replay_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_top5_entry_transplant_replay_v1.json'))
+          assert c['state']=='PREREGISTERED_TOP5_X_V2_ENTRY_TRANSPLANT_REPLAY'
+          assert len(c['expected_parent_lanes'])==5 and c['expected_architecture_count']==3 and c['expected_cell_count']==15
+          s=c['transplant_semantics']
+          assert s['parent_rr_unchanged'] and s['parent_exit_unchanged'] and s['native_parent_realized_cost_unchanged']
+          assert s['architecture_standalone_cost_not_rededucted'] and s['future_bar_access'] is False
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print('PASS_TRANSPLANT_PREREGISTRATION_FROZEN_BEFORE_RESULTS')
+          PY
+      - name: Download immutable Top5 parent sources
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend30 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend30.zip
+          unzip -q out/trend30.zip -d out/trend30
+          test -f out/trend30/a1_exact25_drain_6_receipt.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          test -f out/a4/keltner_trend_exact_parent.json
+          test -f out/a4/supertrend_pullback_exact_parent.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Execute exact 15-cell replay
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_entry_transplant_replay_v1 \
+            --trend30-source out/trend30/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_top5_entry_transplant_replay_v1.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_top5_entry_transplant_replay_v1.json'))
+          assert r['cell_count']==15 and len(r['cells'])==15
+          assert r['parent_count']==5 and r['architecture_count']==3
+          assert r['integrity']['state']=='PASS'
+          assert r['integrity']['cost_rededuction_count']==0
+          assert r['integrity']['new_trade_admission_count']==0
+          assert r['integrity']['future_bar_access_count']==0
+          assert all(x['native_parent_payload_preserved'] and not x['parent_exit_mutated'] for x in r['cells'])
+          pairs={(x['parent_lane_id'],x['architecture_id']) for x in r['cells']}
+          assert len(pairs)==15
+          for x in r['cells']:
+              for scope in ('parent_metrics','metrics'):
+                  for value in x[scope].values():
+                      if isinstance(value,(int,float)):
+                          assert math.isfinite(value)
+          if r['winner'] is None:
+              assert r['state']=='FALSIFIED_NO_ELIGIBLE_TRANSPLANT_WINNER'
+          else:
+              assert r['state']=='PASS_15_CELL_REPLAY_WINNER_FROZEN_FOR_G4_CANDIDATE_ONLY'
+              assert r['winner']['eligible'] is True
+              assert sum(1 for x in r['cells'] if x['decision']=='WINNER_FOR_FRESH_G4_CANDIDATE_ONLY')==1
+          print(json.dumps({'state':r['state'],'eligible':r['eligible_cell_count'],'winner':None if r['winner'] is None else [r['winner']['parent_lane_id'],r['winner']['architecture_id']],'result_sha':r['deterministic_result_sha256']},sort_keys=True))
+          PY
+      - name: Verify deterministic rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_entry_transplant_replay_v1 \
+            --trend30-source out/trend30/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_top5_entry_transplant_replay_v1_rerun.json
+          python - <<'PY'
+          import json
+          a=json.load(open('out/a1_top5_entry_transplant_replay_v1.json'))
+          b=json.load(open('out/a1_top5_entry_transplant_replay_v1_rerun.json'))
+          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
+          assert a['receipt_sha256']==b['receipt_sha256']
+          assert a['cells']==b['cells'] and a['winner']==b['winner']
+          print('PASS_15_CELL_DETERMINISTIC_RERUN')
+          PY
+      - name: Persist immutable replay receipt on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, shutil
+          src=pathlib.Path('out/a1_top5_entry_transplant_replay_v1.json')
+          dst=pathlib.Path('backend/research/rebuild/a1_top5_entry_transplant_replay_latest.json')
+          new=json.load(src.open())
+          old=json.load(dst.open()) if dst.exists() else None
+          if old and old.get('deterministic_result_sha256')==new.get('deterministic_result_sha256'):
+              print('NO_SEMANTIC_REPLAY_DELTA')
+          else:
+              shutil.copyfile(src,dst)
+              print('PERSIST_REPLAY_DELTA')
+          PY
+          git config user.name 'a1-top5-entry-transplant-replay'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_entry_transplant_replay_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Top5: persist 15-cell entry transplant replay [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-entry-transplant-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_entry_transplant_replay_v1.json
+            out/a1_top5_entry_transplant_replay_v1_rerun.json
+          if-no-files-found: error
+          retention-days: 90

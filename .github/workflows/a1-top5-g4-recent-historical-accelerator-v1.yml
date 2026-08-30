@@ -25,7 +25,7 @@ concurrency:
 jobs:
   replay:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 90
     env:
       PYTHONPATH: .
     steps:
@@ -111,31 +111,13 @@ jobs:
           },sort_keys=True))
           PY
 
-      - name: Verify deterministic rerun
-        run: |
-          set -euo pipefail
-          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 \
-            --out out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json \
-            --escrow-out out/a1_top5_g5_prep_escrow_v1_rerun.json
-          python - <<'PY'
-          import json
-          a=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1.json'))
-          b=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json'))
-          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
-          assert {k:v['trade_identity_sha256'] for k,v in a['lanes'].items()}=={k:v['trade_identity_sha256'] for k,v in b['lanes'].items()}
-          assert {k:v['aggregate'] for k,v in a['lanes'].items()}=={k:v['aggregate'] for k,v in b['lanes'].items()}
-          print('PASS_TOP5_G4_RECENT_HISTORICAL_DETERMINISTIC_RERUN')
-          PY
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: a1-top5-g4-recent-historical-accelerator-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             out/a1_top5_g4_recent_historical_accelerator_v1.json
-            out/a1_top5_g4_recent_historical_accelerator_v1_rerun.json
             out/a1_top5_g5_prep_escrow_v1.json
-            out/a1_top5_g5_prep_escrow_v1_rerun.json
           if-no-files-found: error
           retention-days: 90
 

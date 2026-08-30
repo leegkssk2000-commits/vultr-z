@@ -41,6 +41,7 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
     assert prospective["g5_broad_population_mutated"] is False
     assert g5["state"] == "WAIT_G5_W2_12"
     assert g5["policy_retune"] is False and g5["threshold_retune"] is False
+    assert int(g5["postlock_closed_T"]) == int(g5["windows"]["W2"]["metrics"]["trades"])
 
     out["replacement_child_sync"] = {
         "state": "THREE_DEVELOPMENT_PASS_CHILDREN_V2_FROZEN_FOR_FRESH_PROSPECTIVE_COLLECTION",
@@ -107,11 +108,11 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
             row["g5"] = {
                 "state": g5["state"],
                 "postlock_closed_T": g5["postlock_closed_T"],
-                "W2_target_T": g5["W2_target_T"],
-                "W3_target_T": g5["W3_target_T"],
+                "W2_target_T": g5["windows"]["W2"]["target_T"],
+                "W3_target_T": g5["windows"]["W3"]["target_T"],
                 "source_path": "backend/research/prep/g5_trendrider_broad30_product_latest.json",
                 "source_receipt_sha256": g5.get("receipt_sha256"),
-                "source_input_receipt_sha256": g5.get("source_input_receipt_sha256"),
+                "source_input_receipt_sha256": g5.get("source_receipt_sha256"),
                 "policy_retune": g5["policy_retune"],
                 "threshold_retune": g5["threshold_retune"],
             }
@@ -149,7 +150,8 @@ def sync(ssot: dict[str, Any], freeze: dict[str, Any], prospective: dict[str, An
 
 
 def self_test() -> int:
-    assert True
+    assert DEFAULT_FREEZE.name == "a1_top5_replacement_child_freeze_v2.json"
+    assert DEFAULT_PROSPECTIVE.name == "a1_top5_replacement_child_prospective_v2_latest.json"
     print("PASS_TOP5_LATEST_ONLY_SSOT_SYNC_V2_SELF_TEST")
     return 0
 

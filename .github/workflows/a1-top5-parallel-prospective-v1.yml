@@ -1,150 +1,28 @@
-name: A1 Top5 Parallel Prospective V1
+name: A1 Top5 Parallel Prospective V1 Retired
 
 on:
-  pull_request:
-    paths:
-      - 'backend/research/contracts/a1_top5_parallel_prospective_v1.json'
-      - 'backend/research/rebuild/a1_top5_parallel_prospective_v1.py'
-      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
-      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
-      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
-      - '.github/workflows/a1-top5-parallel-prospective-v1.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json'
-      - 'backend/research/rebuild/a1_top5_g4_terminal_latest.json'
-      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
-      - 'backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_contract_v1.json'
-      - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
-      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
-      - 'backend/research/contracts/a1_top5_parallel_prospective_v1.json'
-      - 'backend/research/rebuild/a1_top5_parallel_prospective_v1.py'
-      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
-      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
-      - '.github/workflows/a1-top5-parallel-prospective-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '17 */2 * * *'
 
 permissions:
-  contents: write
-
-concurrency:
-  group: a1-top5-parallel-prospective-v1
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  allocate:
+  retirement-audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Compile and self-test
-        run: |
-          set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_top5_parallel_prospective_v1.py
-          python -m backend.research.rebuild.a1_top5_parallel_prospective_v1 --self-test
-
-      - name: Allocate outcome-blind G4/G5 stages and reconcile replacement ownership
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          args=(
-            --rolling backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json
-            --out out/a1_top5_parallel_prospective_latest.json
-          )
-          if [[ -f backend/research/rebuild/a1_top5_parallel_prospective_latest.json ]]; then
-            args+=(--previous backend/research/rebuild/a1_top5_parallel_prospective_latest.json)
-          fi
-          python -m backend.research.rebuild.a1_top5_parallel_prospective_v1 "${args[@]}"
-
-      - name: Verify stage separation, retired parent clocks, and blocked authorities
+      - name: Assert V2 fresh-evidence owner exists
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_top5_parallel_prospective_latest.json'))
-          assert r['schema_version']=='zel.a1.top5.parallel_prospective.receipt.v1'
-          assert r['state']=='PASS_TOP5_PARALLEL_PROSPECTIVE_ACTIVE'
-          assert r['calendar_parallelism'] is True
-          assert r['capture_stage_separation'] is True
-          assert int(r['same_closed_trade_g4_g5_reuse_count'])==0
-          assert r['old_architecture_union_into_replacement_child'] is False
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          p=r['lanes']['trend_rider_primary_wr8125']
-          g4={x['closed_trade_id'] for x in p['assignments'] if x['stage_tag']=='G4_CONSUMABLE_PRIMARY'}
-          g5={x['closed_trade_id'] for x in p['assignments'] if x['stage_tag']=='G5_ESCROW_UNOPENED'}
-          assert len(g4)<=1 and not (g4 & g5)
-          assert p['g5_escrow_open'] is False
-          b=r['lanes']['trend_rider_broad_wr7000']
-          assert b['clock_state']=='G5_NATIVE_ACTIVE' and b['g4_trade_reuse'] is False
-          assert int(r['replacement_parent_raw_observer_retired_lane_count'])==3
-          assert int(r['replacement_child_fresh_evidence_owner_count'])==3
-          assert r['replacement_freeze_source_path']=='backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
-          assert r['replacement_child_source_path']=='backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
-          burned_total=0
-          for lane_id in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
-              x=r['lanes'][lane_id]
-              assert x['terminal_state']=='FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'
-              assert x['clock_state']=='PARENT_RAW_OBSERVER_RETIRED_CHILD_PROSPECTIVE_OWNS_FRESH_EVIDENCE'
-              assert x['old_architecture_trade_use']=='PREFREEZE_RAW_OBSERVER_AUDIT_ONLY_NOT_G4_OR_G5_OR_CHILD_EVIDENCE'
-              assert x['replacement_child_frozen'] is True
-              assert x['raw_observer_retired'] is True
-              assert int(x['raw_observer_delta_T'])==0
-              assert int(x['consumable_g4_T'])==0 and int(x['consumable_g5_T'])==0 and int(x['consumable_child_T'])==0
-              assert x['fresh_evidence_owner']=='backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'
-              burned_total += int(x['raw_observer_frozen_T'])
-          assert burned_total==15
-          print(json.dumps({'state':r['state'],'primary_g4_T':p['g4_consumable_T'],'primary_escrow_T':p['g5_escrow_T'],'broad_g5_T':b['g5_postlock_closed_T'],'retired_parent_raw_lanes':r['replacement_parent_raw_observer_retired_lane_count'],'child_owner_lanes':r['replacement_child_fresh_evidence_owner_count']},sort_keys=True))
+          v1=json.load(open('backend/research/rebuild/a1_top5_parallel_prospective_latest.json'))
+          v2=json.load(open('backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json'))
+          assert v1['schema_version']=='zel.a1.top5.parallel_prospective.receipt.v1'
+          assert v2['schema_version']=='zel.a1.top5.replacement_child.prospective.receipt.v2'
+          assert v2['state']=='PASS_PROSPECTIVE_V2_CHILD_COLLECTION_ACTIVE'
+          assert v2['predecessor_v1_retired'] is True
+          assert int(v2['predecessor_v1_total_closed_T'])==0
+          print('PASS_V1_TOP5_PARALLEL_WRITER_RETIRED_V2_OWNER_READY')
           PY
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: a1-top5-parallel-prospective-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_top5_parallel_prospective_latest.json
-          if-no-files-found: warn
-          retention-days: 90
-
-      - name: Persist semantic delta on master
-        if: github.ref == 'refs/heads/master'
-        run: |
-          set -euo pipefail
-          target=backend/research/rebuild/a1_top5_parallel_prospective_latest.json
-          rm -f /tmp/a1-top5-parallel-persist
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          def semantic(x):
-              y=dict(x)
-              y.pop('observed_at_utc',None)
-              y.pop('receipt_sha256',None)
-              return y
-          target=Path('backend/research/rebuild/a1_top5_parallel_prospective_latest.json')
-          new=json.load(open('out/a1_top5_parallel_prospective_latest.json'))
-          old=json.loads(target.read_text()) if target.is_file() else None
-          if old is None or semantic(old)!=semantic(new):
-              Path('/tmp/a1-top5-parallel-persist').write_text('1\n')
-          else:
-              print('NO_SEMANTIC_DELTA_NO_MASTER_COMMIT')
-          PY
-          if [[ ! -f /tmp/a1-top5-parallel-persist ]]; then exit 0; fi
-          cp out/a1_top5_parallel_prospective_latest.json "$target"
-          git config user.name 'a1-top5-parallel-prospective-v1'
-          git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1: persist Top5 parallel prospective receipt [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
-            sleep 3
-          done
-          exit 1

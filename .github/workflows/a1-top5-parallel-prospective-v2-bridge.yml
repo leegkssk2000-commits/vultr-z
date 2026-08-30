@@ -1,0 +1,173 @@
+name: A1 Top5 Parallel Prospective V2 Bridge
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_top5_parallel_prospective_v2_bridge.py'
+      - '.github/workflows/a1-top5-parallel-prospective-v2-bridge.yml'
+      - '.github/workflows/a1-top5-parallel-prospective-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json'
+      - 'backend/research/rebuild/a1_top5_g4_terminal_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - 'backend/research/rebuild/a1_trendrider_primary_chase_cooling_fresh25_contract_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/contracts/a1_top5_parallel_prospective_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json'
+      - 'backend/research/rebuild/a1_top5_parallel_prospective_v2_bridge.py'
+      - '.github/workflows/a1-top5-parallel-prospective-v2-bridge.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '19 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-parallel-prospective-v2-bridge
+  cancel-in-progress: false
+
+jobs:
+  allocate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert no paid provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and self-test V2 owner bridge
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_parallel_prospective_v2_bridge.py
+          python -m backend.research.rebuild.a1_top5_parallel_prospective_v2_bridge --self-test
+
+      - name: Reconcile Primary G4, Broad G5, replacement V2 G4 clocks
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=(
+            --rolling backend/research/rebuild/a1_production_highwr_rolling_closed_latest.json
+            --out out/a1_top5_parallel_prospective_latest.json
+          )
+          if [[ -f backend/research/rebuild/a1_top5_parallel_prospective_latest.json ]]; then
+            args+=(--previous backend/research/rebuild/a1_top5_parallel_prospective_latest.json)
+          fi
+          python -m backend.research.rebuild.a1_top5_parallel_prospective_v2_bridge "${args[@]}"
+
+      - name: Verify V2 fresh owner and G5 population lock
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_parallel_prospective_latest.json'))
+          assert r['schema_version']=='zel.a1.top5.parallel_prospective.receipt.v1'
+          assert r['state']=='PASS_TOP5_PARALLEL_PROSPECTIVE_ACTIVE'
+          assert r['replacement_owner_generation']=='V2_EXPANDED_FROZEN_SYMBOL_UNIVERSE'
+          assert r['replacement_predecessor_v1_retired_zero_evidence'] is True
+          assert r['replacement_freeze_source_path']=='backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+          assert r['replacement_child_source_path']=='backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json'
+          assert r['replacement_boundary_ms']==1788048000000
+          assert r['replacement_boundary_utc']=='2026-08-30T00:00:00Z'
+          assert r['replacement_frozen_symbol_universe']==['1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT']
+          assert abs(float(r['replacement_fixed_cost_bps_per_trade'])-20.0)<1e-12
+          assert r['g5_broad_population_mutated'] is False
+          assert int(r['paid_provider_calls'])==0
+          assert int(r['same_closed_trade_g4_g5_reuse_count'])==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          p=r['lanes']['trend_rider_primary_wr8125']
+          b=r['lanes']['trend_rider_broad_wr7000']
+          assert b['clock_state']=='G5_NATIVE_ACTIVE' and b['g4_trade_reuse'] is False
+          burned_total=0
+          for lane_id in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              x=r['lanes'][lane_id]
+              assert x['fresh_evidence_owner_generation']=='V2'
+              assert x['fresh_evidence_owner']=='backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json'
+              assert x['replacement_child_frozen'] is True
+              assert x['frozen_symbol_universe']==r['replacement_frozen_symbol_universe']
+              assert abs(float(x['fixed_cost_bps_per_trade'])-20.0)<1e-12
+              assert int(x['predecessor_v1_consumed_T'])==0
+              assert int(x['raw_observer_delta_T'])==0
+              assert int(x['consumable_g4_T'])==0 and int(x['consumable_g5_T'])==0 and int(x['consumable_child_T'])==0
+              burned_total += int(x['raw_observer_frozen_T'])
+          assert burned_total==15
+          print(json.dumps({'state':r['state'],'primary_g4_T':p['g4_consumable_T'],'broad_g5_T':b['g5_postlock_closed_T'],'replacement_T':{k:r['lanes'][k]['replacement_child_closed_T'] for k in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main')}},sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-parallel-v2-bridge-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_parallel_prospective_latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist semantic delta on master without stale overwrite
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top5_parallel_prospective_latest.json
+          generated=/tmp/a1_top5_parallel_v2_generated.json
+          cp out/a1_top5_parallel_prospective_latest.json "$generated"
+          git config user.name 'a1-top5-parallel-prospective-v2-bridge'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            rm -f /tmp/parallel-v2-write /tmp/parallel-v2-skip
+            python - "$target" "$generated" <<'PY'
+          import copy,json,sys
+          from datetime import datetime
+          from pathlib import Path
+          target=Path(sys.argv[1]); generated=Path(sys.argv[2])
+          new=json.loads(generated.read_text()); old=json.loads(target.read_text()) if target.is_file() else None
+          def parse(v):
+              try:return datetime.fromisoformat(str(v).replace('Z','+00:00'))
+              except Exception:return None
+          def semantic(x):
+              y=copy.deepcopy(x); y.pop('observed_at_utc',None); y.pop('receipt_sha256',None); return y
+          if old is not None:
+              assert old.get('schema_version')==new.get('schema_version')=='zel.a1.top5.parallel_prospective.receipt.v1'
+              stale=[]
+              for lane_id in ('trend_rider_primary_wr8125','break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+                  o=(old.get('lanes') or {}).get(lane_id) or {}; z=(new.get('lanes') or {}).get(lane_id) or {}
+                  if lane_id=='trend_rider_primary_wr8125':
+                      old_ids={x.get('closed_trade_id') for x in o.get('assignments') or []}
+                      new_ids={x.get('closed_trade_id') for x in z.get('assignments') or []}
+                      if not old_ids.issubset(new_ids): stale.append('PRIMARY_ASSIGNMENT_REGRESSION')
+                  elif o.get('fresh_evidence_owner_generation')=='V2':
+                      if int(o.get('replacement_child_closed_T') or 0)>int(z.get('replacement_child_closed_T') or 0): stale.append(f'V2_T_REGRESSION:{lane_id}')
+              if old.get('replacement_owner_generation')=='V2_EXPANDED_FROZEN_SYMBOL_UNIVERSE' and new.get('replacement_owner_generation')!='V2_EXPANDED_FROZEN_SYMBOL_UNIVERSE': stale.append('OWNER_GENERATION_REGRESSION')
+              if parse(old.get('observed_at_utc')) and parse(new.get('observed_at_utc')) and parse(old['observed_at_utc'])>=parse(new['observed_at_utc']) and semantic(old)!=semantic(new): stale.append('OLDER_OBSERVATION')
+              if stale or semantic(old)==semantic(new):
+                  print('PARALLEL_V2_SKIP:' + ','.join(stale or ['NO_SEMANTIC_DELTA']))
+                  Path('/tmp/parallel-v2-skip').write_text('1\n'); raise SystemExit(0)
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)+'\n')
+          Path('/tmp/parallel-v2-write').write_text('1\n')
+          PY
+            if [[ -f /tmp/parallel-v2-skip ]]; then exit 0; fi
+            test -f /tmp/parallel-v2-write
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1: persist Top5 parallel V2 owner receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

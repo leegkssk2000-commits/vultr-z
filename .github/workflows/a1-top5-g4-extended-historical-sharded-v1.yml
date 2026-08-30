@@ -1,0 +1,136 @@
+name: A1 Top5 G4 Extended Historical Sharded V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-top5-g4-extended-historical-sharded-v1.yml'
+      - 'backend/research/rebuild/a1_top5_g4_extended_historical_lane_shard_v1.py'
+      - 'backend/research/rebuild/a1_top5_g4_extended_historical_shard_aggregate_v1.py'
+      - 'backend/research/contracts/a1_top5_g4_extended_historical_fasttrack_v1.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-g4-extended-historical-sharded-v1
+  cancel-in-progress: false
+
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        lane_id:
+          - trend_rider_primary_wr8125
+          - break_and_continue_main
+          - keltner_trend_main
+          - supertrend_pullback_main
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert no paid AI and compile
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_extended_historical_lane_shard_v1.py
+          python -m py_compile backend/research/rebuild/a1_top5_g4_extended_historical_shard_aggregate_v1.py
+      - name: Run one lane shard
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_extended_historical_lane_shard_v1 \
+            --lane-id '${{ matrix.lane_id }}' \
+            --out 'out/${{ matrix.lane_id }}.json'
+      - name: Upload completed lane checkpoint
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: a1-top5-g4-lane-${{ matrix.lane_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/${{ matrix.lane_id }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download persisted lane checkpoints
+        uses: actions/download-artifact@v4
+        with:
+          pattern: a1-top5-g4-lane-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shards
+          merge-multiple: true
+      - name: Aggregate 3M/6M economics and donor shortlist
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_extended_historical_shard_aggregate_v1 \
+            --shard-dir shards \
+            --out out/a1_top5_g4_extended_historical_fasttrack_v1.json \
+            --prep-out out/a1_top5_g5_fasttrack_prep_v1.json
+      - name: Verify final economics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_extended_historical_fasttrack_v1.json'))
+          p=json.load(open('out/a1_top5_g5_fasttrack_prep_v1.json'))
+          assert r['state']=='PASS_G4_EXTENDED_3M_6M_FASTTRACK_COMPLETE'
+          assert r['lane_count']==4
+          assert r['fresh_authority_unchanged'] is True
+          assert r['fasttrack_semantics']['historical_credit_to_fresh_g4_T']==0
+          assert r['fasttrack_semantics']['historical_credit_to_g5_T']==0
+          assert r['break_salvage_fresh6']['minimum_fresh_T_before_gate']==6
+          assert r['paid_provider_calls']==0 and r['openai_calls']==0 and r['gemini_calls']==0
+          print(json.dumps({
+            'historical_survivors':r['historical_survivor_lane_ids'],
+            'mixed_donors':r['mixed_donor_lane_ids'],
+            'architecture_replacement':r['architecture_replacement_lane_ids'],
+            'transplant_candidates':r['transplant_candidates'],
+            'lane_summary':{k:{'state':v['fasttrack_state'],'m3':v['recent_3m'],'m6':v['recent_6m']} for k,v in r['lanes'].items()},
+            'prep_state':p['state'],
+            'prep_entries':sorted(p['entries'])
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-extended-historical-sharded-final-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_g4_extended_historical_fasttrack_v1.json
+            out/a1_top5_g5_fasttrack_prep_v1.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist final fasttrack and donor shortlist
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_g4_extended_historical_fasttrack_v1.json backend/research/rebuild/a1_top5_g4_extended_historical_fasttrack_latest.json
+          mkdir -p backend/research/prep
+          cp out/a1_top5_g5_fasttrack_prep_v1.json backend/research/prep/a1_top5_g5_fasttrack_prep_latest.json
+          git config user.name 'a1-top5-g4-extended-historical-sharded'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_g4_extended_historical_fasttrack_latest.json backend/research/prep/a1_top5_g5_fasttrack_prep_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist sharded Top5 G4 3M/6M fasttrack [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 3; done
+          exit 1

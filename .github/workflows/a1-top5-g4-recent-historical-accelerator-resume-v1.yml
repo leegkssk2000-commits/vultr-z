@@ -1,0 +1,95 @@
+name: A1 Top5 G4 Recent Historical Accelerator Resume V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-top5-g4-recent-historical-accelerator-resume-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-g4-recent-historical-accelerator-resume-v1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert frozen contract and no paid AI
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_v1.py
+          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_top5_g4_recent_historical_accelerator_v1.json'))
+          assert c['state']=='PREREGISTERED_BEFORE_RECENT_HISTORICAL_RESULTS'
+          assert c['historical_windows']==[
+            {'window_id':'RECENT_W1_20260615_20260715','start_utc':'2026-06-15T00:00:00Z','end_utc':'2026-07-15T00:00:00Z'},
+            {'window_id':'RECENT_W2_20260715_20260815','start_utc':'2026-07-15T00:00:00Z','end_utc':'2026-08-15T00:00:00Z'}]
+          assert c['fresh_authority_guards']['break_salvage_minimum_fresh_T']==6
+          assert c['evidence_semantics']['historical_trade_credit_to_fresh_g4_T']==0
+          assert c['evidence_semantics']['historical_trade_credit_to_g5_T']==0
+          print('PASS_FROZEN_HISTORICAL_ACCELERATOR_RESUME_GUARD')
+          PY
+      - name: Run accelerator once with extended wall clock
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_recent_historical_accelerator_v1 \
+            --out out/a1_top5_g4_recent_historical_accelerator_v1.json \
+            --escrow-out out/a1_top5_g5_prep_escrow_v1.json
+      - name: Verify isolation and print economics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_recent_historical_accelerator_v1.json'))
+          e=json.load(open('out/a1_top5_g5_prep_escrow_v1.json'))
+          assert r['state']=='PASS_RECENT_HISTORICAL_ACCELERATOR_COMPLETE'
+          assert r['lane_count']==4
+          assert r['historical_trade_credit_to_fresh_g4_T']==0
+          assert r['historical_trade_credit_to_g5_T']==0
+          assert r['fresh_authority_unchanged'] is True
+          assert r['break_salvage_fresh6']['minimum_fresh_T_before_gate']==6
+          assert r['break_salvage_fresh6']['unchanged'] is True
+          assert r['broad_g5_mutated'] is False
+          assert r['paid_provider_calls']==0 and r['openai_calls']==0 and r['gemini_calls']==0
+          print(json.dumps({'lane_states':{k:v['state'] for k,v in r['lanes'].items()},'metrics':{k:v['aggregate'] for k,v in r['lanes'].items()},'windows':{k:v['windows'] for k,v in r['lanes'].items()},'strong_pass':r['strong_pass_lane_ids'],'escrow_entries':sorted(e['entries'])},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-g4-recent-historical-accelerator-resume-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_g4_recent_historical_accelerator_v1.json
+            out/a1_top5_g5_prep_escrow_v1.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist accelerator and contingent G5 prep escrow
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_g4_recent_historical_accelerator_v1.json backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_latest.json
+          mkdir -p backend/research/prep
+          cp out/a1_top5_g5_prep_escrow_v1.json backend/research/prep/a1_top5_g5_prep_escrow_latest.json
+          git config user.name 'a1-top5-g4-recent-historical-accelerator-resume'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_g4_recent_historical_accelerator_latest.json backend/research/prep/a1_top5_g5_prep_escrow_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Top5 recent historical accelerator [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 3; done
+          exit 1

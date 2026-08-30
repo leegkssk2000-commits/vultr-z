@@ -1,0 +1,125 @@
+name: A1 Top5 Latest-Only SSOT Sync V2
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_sync_v2.py'
+      - '.github/workflows/a1-top5-latest-only-ssot-sync-v2.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json'
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/prep/g5_trendrider_atr_pct_shadow_probe_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_sync_v2.py'
+      - '.github/workflows/a1-top5-latest-only-ssot-sync-v2.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '42 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-latest-only-ssot-sync-v2
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_latest_only_ssot_sync_v2.py
+          python -m backend.research.rebuild.a1_top5_latest_only_ssot_sync_v2 --self-test
+
+      - name: Build current Top5 SSOT snapshot
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_latest_only_ssot_sync_v2 \
+            --out out/a1_top5_latest_only_ssot_v1.json
+
+      - name: Verify V2 owner and G5 isolation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_latest_only_ssot_v1.json'))
+          assert r['state']=='CURRENT_TOP5_ONLY'
+          assert r['reporting_rules']['replacement_child_current_owner']=='V2_ONLY'
+          s=r['replacement_child_sync']
+          assert s['freeze_contract_path'].endswith('a1_top5_replacement_child_freeze_v2.json')
+          assert s['prospective_collector_path'].endswith('a1_top5_replacement_child_prospective_v2_latest.json')
+          assert s['prospective_boundary_utc']=='2026-08-30T00:00:00Z'
+          assert int(s['frozen_symbol_count'])==7
+          assert float(s['fixed_cost_bps_per_trade'])==20.0
+          lanes={x['lane_id']:x for x in r['top5']}
+          for lid in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              c=lanes[lid]['replacement_child']
+              assert c['child_id'].endswith('_v2')
+              assert c['prospective_boundary_utc']=='2026-08-30T00:00:00Z'
+              assert float(c['fixed_cost_bps_per_trade'])==20.0
+              assert int(c['predecessor_v1_consumed_T'])==0
+              assert int(c['old_parent_raw_observer_consumed_T'])==0
+              assert c['promotion_authority'] is False
+          g5=lanes['trend_rider_broad_wr7000']['g5']
+          assert int(g5['postlock_closed_T'])==4
+          assert g5['policy_retune'] is False and g5['threshold_retune'] is False
+          sh=g5.get('causal_shadow')
+          assert sh is not None and sh['axis']=='ATR_PCT'
+          assert int(sh['shadow_accepted_T'])==0
+          assert sh['economic_roi_credit'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print('PASS_TOP5_SSOT_V2_OWNER_AND_G5_ISOLATION')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-latest-only-ssot-sync-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_latest_only_ssot_v1.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist semantic delta on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+          cp out/a1_top5_latest_only_ssot_v1.json "$target.new"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          old=Path('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json')
+          new=Path('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json.new')
+          a=json.loads(old.read_text())
+          b=json.loads(new.read_text())
+          if a==b:
+              print('NO_SEMANTIC_DELTA')
+              new.unlink()
+              raise SystemExit(0)
+          new.replace(old)
+          Path('/tmp/persist-top5-ssot-v2').write_text('1\n')
+          PY
+          if [[ ! -f /tmp/persist-top5-ssot-v2 ]]; then exit 0; fi
+          git config user.name 'a1-top5-latest-only-ssot-sync-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          git commit -m 'A1: sync Top5 SSOT to V2 and G5 shadow [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

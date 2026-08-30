@@ -1,208 +1,29 @@
-name: A1 Top5 Replacement Child Prospective V1
+name: A1 Top5 Replacement Child Prospective V1 Retired
 
 on:
-  pull_request:
-    paths:
-      - 'backend/research/rebuild/a1_top5_replacement_primitive_tournament_verified_v1.json'
-      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
-      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
-      - '.github/workflows/a1-top5-replacement-child-prospective-v1.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'backend/research/rebuild/a1_top5_replacement_primitive_tournament_verified_v1.json'
-      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v1.json'
-      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
-      - '.github/workflows/a1-top5-replacement-child-prospective-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '33 */2 * * *'
 
 permissions:
-  contents: write
-
-concurrency:
-  group: a1-top5-replacement-child-prospective-v1
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  collect:
+  retirement-audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Assert no paid provider credentials
-        run: |
-          set -euo pipefail
-          test -z "${OPENAI_API_KEY:-}"
-          test -z "${GEMINI_API_KEY:-}"
-          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
-
-      - name: Compile and freeze-integrity self-test
-        run: |
-          set -euo pipefail
-          python -m py_compile backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py
-          python -m backend.research.rebuild.a1_top5_replacement_child_prospective_v1 --self-test
-
-      - name: Collect closed prospective child trades
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          args=(--output out/a1_top5_replacement_child_prospective_latest.json)
-          if [[ -f backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json ]]; then
-            args+=(--previous backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json)
-          fi
-          python -m backend.research.rebuild.a1_top5_replacement_child_prospective_v1 "${args[@]}"
-
-      - name: Verify prospective boundary and contamination guards
+      - name: Assert V1 retired with zero consumed evidence
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          r=json.load(open('out/a1_top5_replacement_child_prospective_latest.json'))
-          assert r['schema_version']=='zel.a1.top5.replacement_child.prospective.receipt.v1'
-          assert r['state'] in {'WAIT_PROSPECTIVE_BOUNDARY','PASS_PROSPECTIVE_CHILD_COLLECTION_ACTIVE'}
-          assert int(r['boundary_ms'])==1788030000000
-          assert r['boundary_utc']=='2026-08-29T19:00:00Z'
-          assert int(r['lane_count'])==3
-          assert int(r['parent_observer_consumed_T'])==0
-          assert r['old_history_union'] is False
-          assert r['post_result_retune'] is False
-          assert int(r['paid_provider_calls'])==0 and int(r['openai_calls'])==0 and int(r['gemini_calls'])==0
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
-          burned_total=0
-          for lane_id in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
-              x=r['lanes'][lane_id]
-              assert x['replacement_child_frozen'] is True
-              assert int(x['old_parent_raw_observer_consumed_T'])==0
-              burned_total += int(x['old_parent_raw_observer_burned_T'])
-              for t in x['closed_trades']:
-                  assert int(t['signal_ts']) >= int(r['boundary_ms'])
-          assert burned_total==15
-          print(json.dumps({'state':r['state'],'boundary_reached':r['boundary_reached'],'lane_T':{k:v['closed_T'] for k,v in r['lanes'].items()},'total_closed_T':r['total_closed_T']},sort_keys=True))
+          old=json.load(open('backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json'))
+          new=json.load(open('backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'))
+          assert old['schema_version']=='zel.a1.top5.replacement_child.prospective.receipt.v1'
+          assert int(old['total_closed_T'])==0
+          assert old['receipt_sha256']=='0159e1d1c86bb4dc1ce0a557310459b6d0c0ea5baa9a00c9eda7529de81d6ef3'
+          assert new['v1_retirement']['state']=='RETIRED_ZERO_EVIDENCE_SUPERSEDED_BY_V2'
+          assert int(new['v1_retirement']['total_consumed_T'])==0
+          assert new['v1_retirement']['economic_evidence_lost'] is False
+          print('PASS_V1_RETIRED_ZERO_EVIDENCE_NO_SCHEDULE_NO_PERSIST_WRITER')
           PY
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: a1-top5-replacement-child-prospective-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/a1_top5_replacement_child_prospective_latest.json
-          if-no-files-found: warn
-          retention-days: 90
-
-      - name: Persist semantic child receipt on master without stale overwrite
-        if: github.ref == 'refs/heads/master'
-        run: |
-          set -euo pipefail
-          target=backend/research/rebuild/a1_top5_replacement_child_prospective_latest.json
-          generated=/tmp/a1_top5_replacement_child_generated.json
-          cp out/a1_top5_replacement_child_prospective_latest.json "$generated"
-          git config user.name 'a1-top5-replacement-child-prospective-v1'
-          git config user.email 'actions@users.noreply.github.com'
-
-          for n in 1 2 3; do
-            echo "PERSIST_ATTEMPT=$n"
-            git fetch origin master
-            git reset --hard origin/master
-            rm -f /tmp/a1-child-safe-write /tmp/a1-child-stale-skip
-
-            python - "$target" "$generated" <<'PY'
-          import copy
-          import json
-          import sys
-          from datetime import datetime
-          from pathlib import Path
-
-          target=Path(sys.argv[1])
-          generated=Path(sys.argv[2])
-          new=json.loads(generated.read_text())
-          old=json.loads(target.read_text()) if target.is_file() else None
-
-          def parse_ts(v):
-              if not v:
-                  return None
-              try:
-                  return datetime.fromisoformat(str(v).replace('Z','+00:00'))
-              except Exception:
-                  return None
-
-          def semantic(x):
-              y=copy.deepcopy(x)
-              y.pop('observed_at_utc',None)
-              y.pop('receipt_sha256',None)
-              for lane in (y.get('lanes') or {}).values():
-                  if isinstance(lane,dict):
-                      lane.pop('new_closed_trade_ids',None)
-                      lane.pop('new_closed_T',None)
-              y.pop('total_new_closed_T',None)
-              return y
-
-          if old is not None:
-              assert old.get('schema_version')==new.get('schema_version')=='zel.a1.top5.replacement_child.prospective.receipt.v1'
-              assert int(old.get('boundary_ms') or 0)==int(new.get('boundary_ms') or 0)==1788030000000
-              assert old.get('boundary_utc')==new.get('boundary_utc')=='2026-08-29T19:00:00Z'
-              old_lanes=old.get('lanes') or {}
-              new_lanes=new.get('lanes') or {}
-              assert set(old_lanes)==set(new_lanes)
-
-              stale_reasons=[]
-              if old.get('boundary_reached') is True and new.get('boundary_reached') is not True:
-                  stale_reasons.append('BOUNDARY_STATE_REGRESSION')
-              for lane_id in sorted(old_lanes):
-                  o=old_lanes[lane_id]
-                  z=new_lanes[lane_id]
-                  if str(o.get('child_id') or '') != str(z.get('child_id') or ''):
-                      raise SystemExit(f'CHILD_ID_DRIFT:{lane_id}')
-                  old_ids={str(t.get('closed_trade_id')) for t in o.get('closed_trades') or [] if isinstance(t,dict) and t.get('closed_trade_id')}
-                  new_ids={str(t.get('closed_trade_id')) for t in z.get('closed_trades') or [] if isinstance(t,dict) and t.get('closed_trade_id')}
-                  if not old_ids.issubset(new_ids):
-                      stale_reasons.append(f'APPEND_ONLY_REGRESSION:{lane_id}')
-                  if int(o.get('closed_T') or 0) > int(z.get('closed_T') or 0):
-                      stale_reasons.append(f'T_COUNT_REGRESSION:{lane_id}')
-
-              old_ts=parse_ts(old.get('observed_at_utc'))
-              new_ts=parse_ts(new.get('observed_at_utc'))
-              if old_ts and new_ts and old_ts >= new_ts and semantic(old) != semantic(new):
-                  stale_reasons.append('OLDER_OR_EQUAL_GENERATED_OBSERVATION')
-
-              if stale_reasons:
-                  print('STALE_GENERATED_RECEIPT_SKIP:' + ','.join(stale_reasons))
-                  Path('/tmp/a1-child-stale-skip').write_text('1\n')
-                  raise SystemExit(0)
-              if semantic(old)==semantic(new):
-                  print('NO_SEMANTIC_DELTA_NO_MASTER_COMMIT')
-                  Path('/tmp/a1-child-stale-skip').write_text('1\n')
-                  raise SystemExit(0)
-
-          target.parent.mkdir(parents=True,exist_ok=True)
-          target.write_text(json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)+'\n')
-          Path('/tmp/a1-child-safe-write').write_text('1\n')
-          print('SAFE_GENERATED_RECEIPT_READY_TO_COMMIT')
-          PY
-
-            if [[ -f /tmp/a1-child-stale-skip ]]; then
-              exit 0
-            fi
-            test -f /tmp/a1-child-safe-write
-            git add "$target"
-            if git diff --cached --quiet; then
-              echo NO_GIT_DELTA_NO_MASTER_COMMIT
-              exit 0
-            fi
-            git commit -m 'A1: persist replacement child prospective receipt [skip ci]'
-            if git push origin HEAD:master; then
-              exit 0
-            fi
-            echo "PUSH_RACE_RETRY=$n"
-            sleep 3
-          done
-          echo PERSIST_RETRY_EXHAUSTED
-          exit 1

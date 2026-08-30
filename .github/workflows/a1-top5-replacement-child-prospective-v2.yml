@@ -1,0 +1,157 @@
+name: A1 Top5 Replacement Child Prospective V2
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_g4_symbol_acceleration_verified_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v2.py'
+      - '.github/workflows/a1-top5-replacement-child-prospective-v2.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_g4_symbol_acceleration_verified_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v2.py'
+      - '.github/workflows/a1-top5-replacement-child-prospective-v2.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '13 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-replacement-child-prospective-v2
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert no paid provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_replacement_child_prospective_v2.py
+          python -m backend.research.rebuild.a1_top5_replacement_child_prospective_v2 --self-test
+
+      - name: Collect expanded-universe fresh CLOSED T
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=(--output out/a1_top5_replacement_child_prospective_v2_latest.json)
+          if [[ -f backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json ]]; then
+            args+=(--previous backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json)
+          fi
+          python -m backend.research.rebuild.a1_top5_replacement_child_prospective_v2 "${args[@]}"
+
+      - name: Verify V2 population freeze and contamination guards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_replacement_child_prospective_v2_latest.json'))
+          assert r['schema_version']=='zel.a1.top5.replacement_child.prospective.receipt.v2'
+          assert r['state'] in {'WAIT_PROSPECTIVE_V2_BOUNDARY','PASS_PROSPECTIVE_V2_CHILD_COLLECTION_ACTIVE'}
+          assert int(r['boundary_ms'])==1788048000000
+          assert r['boundary_utc']=='2026-08-30T00:00:00Z'
+          assert r['frozen_symbol_universe']==['1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT']
+          assert int(r['frozen_symbol_count'])==7
+          assert abs(float(r['fixed_cost_bps_per_trade'])-20.0)<1e-12
+          assert int(r['predecessor_v1_total_closed_T'])==0 and r['predecessor_v1_retired'] is True
+          assert r['old_history_union'] is False and r['post_result_retune'] is False
+          assert r['g5_broad_population_mutated'] is False
+          assert int(r['paid_provider_calls'])==0 and int(r['openai_calls'])==0 and int(r['gemini_calls'])==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          for lane_id,x in r['lanes'].items():
+              assert x['replacement_child_frozen'] is True
+              assert x['alpha_dsl_identical_to_v1'] is True
+              assert int(x['predecessor_v1_consumed_T'])==0
+              assert abs(float(x['metrics']['cost_bps_per_trade'])-20.0)<1e-12
+              for t in x['closed_trades']:
+                  assert int(t['signal_ts'])>=1788048000000
+                  assert t['symbol'] in r['frozen_symbol_universe']
+          print(json.dumps({'state':r['state'],'boundary_reached':r['boundary_reached'],'symbols':r['frozen_symbol_count'],'lane_T':{k:v['closed_T'] for k,v in r['lanes'].items()}},sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-replacement-child-prospective-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_replacement_child_prospective_v2_latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist append-only V2 receipt on master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json
+          generated=/tmp/a1_top5_replacement_child_v2_generated.json
+          cp out/a1_top5_replacement_child_prospective_v2_latest.json "$generated"
+          git config user.name 'a1-top5-replacement-child-prospective-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            rm -f /tmp/v2-write /tmp/v2-skip
+            python - "$target" "$generated" <<'PY'
+          import copy,json,sys
+          from datetime import datetime
+          from pathlib import Path
+          target=Path(sys.argv[1]); generated=Path(sys.argv[2])
+          new=json.loads(generated.read_text()); old=json.loads(target.read_text()) if target.is_file() else None
+          def ts(v):
+              try:return datetime.fromisoformat(str(v).replace('Z','+00:00'))
+              except Exception:return None
+          def semantic(x):
+              y=copy.deepcopy(x); y.pop('observed_at_utc',None); y.pop('receipt_sha256',None); y.pop('total_new_closed_T',None)
+              for lane in (y.get('lanes') or {}).values():
+                  lane.pop('new_closed_trade_ids',None); lane.pop('new_closed_T',None)
+              return y
+          if old is not None:
+              assert old.get('schema_version')==new.get('schema_version')=='zel.a1.top5.replacement_child.prospective.receipt.v2'
+              assert old.get('boundary_ms')==new.get('boundary_ms')==1788048000000
+              assert old.get('frozen_symbol_universe')==new.get('frozen_symbol_universe')
+              stale=[]
+              if old.get('boundary_reached') is True and new.get('boundary_reached') is not True: stale.append('BOUNDARY_REGRESSION')
+              for lane_id,o in (old.get('lanes') or {}).items():
+                  z=(new.get('lanes') or {})[lane_id]
+                  if o.get('child_id')!=z.get('child_id'): raise SystemExit(f'CHILD_ID_DRIFT:{lane_id}')
+                  old_ids={t['closed_trade_id'] for t in o.get('closed_trades') or []}
+                  new_ids={t['closed_trade_id'] for t in z.get('closed_trades') or []}
+                  if not old_ids.issubset(new_ids): stale.append(f'APPEND_ONLY_REGRESSION:{lane_id}')
+                  if int(o.get('closed_T') or 0)>int(z.get('closed_T') or 0): stale.append(f'T_REGRESSION:{lane_id}')
+              if ts(old.get('observed_at_utc')) and ts(new.get('observed_at_utc')) and ts(old['observed_at_utc'])>=ts(new['observed_at_utc']) and semantic(old)!=semantic(new): stale.append('OLDER_OBSERVATION')
+              if stale or semantic(old)==semantic(new):
+                  print('V2_SKIP:' + ','.join(stale or ['NO_SEMANTIC_DELTA']))
+                  Path('/tmp/v2-skip').write_text('1\n'); raise SystemExit(0)
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(new,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)+'\n')
+          Path('/tmp/v2-write').write_text('1\n')
+          PY
+            if [[ -f /tmp/v2-skip ]]; then exit 0; fi
+            test -f /tmp/v2-write
+            git add "$target"
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'A1: persist expanded-universe G4 child V2 receipt [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

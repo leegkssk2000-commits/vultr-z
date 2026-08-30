@@ -1,0 +1,121 @@
+name: A1 Break Reclaim Breakout Independent Challenger V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_reclaim_breakout_independent_challenger_v1.json'
+      - 'backend/research/architecture_factory/a1_break_reclaim_breakout_independent_challenger_v1.py'
+      - '.github/workflows/a1-break-reclaim-breakout-independent-challenger-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_break_reclaim_breakout_independent_challenger_v1.json'
+      - 'backend/research/architecture_factory/a1_break_reclaim_breakout_independent_challenger_v1.py'
+      - '.github/workflows/a1-break-reclaim-breakout-independent-challenger-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-break-reclaim-breakout-independent-challenger-v1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert zero paid-provider credentials
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          echo PASS_NO_PAID_PROVIDER_CREDENTIALS
+      - name: Compile and pre-result contract guard
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_break_reclaim_breakout_independent_challenger_v1.py
+          python -m backend.research.architecture_factory.a1_break_reclaim_breakout_independent_challenger_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_break_reclaim_breakout_independent_challenger_v1.json'))
+          assert c['state']=='PREREGISTERED_INDEPENDENT_DEVELOPMENT_REPLAY_BEFORE_RESULT'
+          assert c['seed_lineage']['prior_reclaim_parent_filter_family_state']=='FALSIFIED_RECLAIM_FAMILY_EXHAUSTED_FOR_BREAK'
+          assert c['development_policy']['independent_of_seed_parent_cohort'] is True
+          assert c['development_policy']['threshold_sweep'] is False
+          assert c['development_policy']['state_rule_variant_sweep'] is False
+          assert c['development_policy']['post_result_retune'] is False
+          assert c['development_policy']['paid_ai_calls']==0
+          assert c['architecture']['ownership_state']['rule_hash_semantics']=='EXACT_REUSE_OF_BREAK_KELTNER_RECLAIM_LATCHED_OWNER_V2_NO_PARAMETER_CHANGE'
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print('PASS_INDEPENDENT_RECLAIM_BREAKOUT_PRE_RESULT_LOCK')
+          PY
+      - name: Run independent population generalization
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_break_reclaim_breakout_independent_challenger_v1 \
+            --out out/a1_break_reclaim_breakout_independent_challenger_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_break_reclaim_breakout_independent_challenger_v1.json'))
+          assert r['population_independence']['strict_non_overlap'] is True
+          assert r['population_independence']['seed_min_signal_ts'] >= r['population_independence']['development_cutoff_ts']
+          assert r['paid_provider_calls']==0 and r['openai_calls']==0 and r['gemini_calls']==0
+          assert r['historical_seed_credit_to_g4_T']==0 and r['development_credit_to_g4_T']==0 and r['fresh_g4_T']==0
+          assert r['new_g4_activation_created'] is False and r['new_g4_cohort_created'] is False
+          assert set(r['source_summary'])=={'1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT'}
+          if r['state']=='PASS_DEVELOPMENT_ELIGIBLE_FOR_NEW_G4_CHALLENGER':
+              assert r['generic_development_pass'] is True and r['baseline_quality_improvement_pass'] is True
+              assert r['next']=='FREEZE_NEW_G4_CHALLENGER_WITH_FRESH_BOUNDARY'
+          else:
+              assert r['state']=='FALSIFIED_RECLAIM_BREAKOUT_GENERALIZATION_V1'
+              assert r['next']=='STOP_RECLAIM_BREAKOUT_GENERALIZATION_WITHOUT_RULE_CHANGE'
+          print(json.dumps({'state':r['state'],'metrics':r['metrics'],'improvements':r['baseline_quality_improvements'],'delta':r['delta_vs_break_v2'],'independence':r['population_independence']},sort_keys=True))
+          PY
+      - name: Verify deterministic rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.a1_break_reclaim_breakout_independent_challenger_v1 \
+            --out out/a1_break_reclaim_breakout_independent_challenger_v1_rerun.json
+          python - <<'PY'
+          import json
+          a=json.load(open('out/a1_break_reclaim_breakout_independent_challenger_v1.json'))
+          b=json.load(open('out/a1_break_reclaim_breakout_independent_challenger_v1_rerun.json'))
+          assert a['deterministic_result_sha256']==b['deterministic_result_sha256']
+          assert a['receipt_sha256']==b['receipt_sha256']
+          assert a['metrics']==b['metrics'] and a['trade_identity_sha256']==b['trade_identity_sha256']
+          print('PASS_INDEPENDENT_RECLAIM_BREAKOUT_DETERMINISTIC_RERUN')
+          PY
+      - name: Persist receipt on master
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          cp out/a1_break_reclaim_breakout_independent_challenger_v1.json backend/research/architecture_factory/a1_break_reclaim_breakout_independent_challenger_latest.json
+          git config user.name 'a1-break-reclaim-breakout-independent'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/architecture_factory/a1_break_reclaim_breakout_independent_challenger_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Break: persist independent reclaim-breakout replay [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 3; done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-break-reclaim-breakout-independent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_break_reclaim_breakout_independent_challenger_v1.json
+            out/a1_break_reclaim_breakout_independent_challenger_v1_rerun.json
+          if-no-files-found: error
+          retention-days: 90

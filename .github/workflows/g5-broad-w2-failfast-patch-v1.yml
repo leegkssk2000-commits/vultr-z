@@ -2,7 +2,7 @@ name: G5 Broad W2 Failfast Patch V1
 
 on:
   push:
-    branches: [research/g5-broad-w2-failfast-v1]
+    branches: [research/g5-broad-w2-failfast-v1, master]
     paths:
       - 'backend/research/contracts/g5_broad_w2_failfast_v1.json'
       - 'backend/research/prep/g5_broad_w2_failfast_patch_v1.py'
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: g5-broad-w2-failfast-patch-v1
+  group: g5-broad-w2-failfast-patch-v1-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -27,7 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/g5-broad-w2-failfast-v1
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -81,7 +80,7 @@ jobs:
           path: out/g5_trendrider_broad30_product_failfast_probe.json
           if-no-files-found: warn
           retention-days: 90
-      - name: Persist target patch to branch
+      - name: Persist target patch to current branch
         shell: bash
         run: |
           set -euo pipefail
@@ -90,5 +89,6 @@ jobs:
           git add backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'G5 Broad: stop W3 after terminal W2 economic fail [skip ci]'
-          git pull --rebase origin research/g5-broad-w2-failfast-v1
-          git push origin HEAD:research/g5-broad-w2-failfast-v1
+          branch="${GITHUB_REF_NAME}"
+          git pull --rebase origin "$branch"
+          git push origin "HEAD:${branch}"

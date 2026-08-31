@@ -1,0 +1,116 @@
+name: A1 G4 Top5 Preliminary Survivor G5 V1
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_g4_top5_preliminary_survivor_g5_v1.json'
+      - 'backend/research/rebuild/a1_g4_top5_preliminary_survivor_g5_v1.py'
+      - 'backend/research/rebuild/a1_g4_g5_parallel_conveyor_v1_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - '.github/workflows/a1-g4-top5-preliminary-survivor-g5-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '43 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-g4-top5-preliminary-survivor-g5-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  advance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert safe scope and contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_g4_top5_preliminary_survivor_g5_v1.py
+          python -m backend.research.rebuild.a1_g4_top5_preliminary_survivor_g5_v1 --self-test
+      - name: Advance exact Top5 to G5 preliminary cohort
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_g4_top5_preliminary_survivor_g5_v1 \
+            --out out/a1_g4_top5_preliminary_survivor_g5_v1_latest.json
+      - name: Verify G4 to G5 forward progress and credit isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_g4_top5_preliminary_survivor_g5_v1_latest.json'))
+          assert r['schema_version']=='zel.a1.g4_top5.preliminary_survivor_g5.receipt.v1'
+          assert r['state']=='G4_TOP5_PRELIMINARY_SURVIVOR_G5_PARALLEL_ACTIVE'
+          assert r['current_stage']=='G5' and r['current_transition']=='G4_TO_G5'
+          assert r['g6_or_later_unlocked'] is False
+          s=r['summary']
+          assert s['exact_top5']==5
+          assert s['preliminary_survivor_g5_enrolled']==5
+          assert s['formal_g5_active']==1
+          assert s['preliminary_g5_shadow_paper_active']==3
+          assert s['g4_deficit_T_parallel_collectors']==3
+          assert s['replacement_required_g5_enrolled']==1
+          assert s['formal_g5_credit_leaked_from_pre_g4']==0
+          assert s['roadmap_blocking_on_missing_g4_T'] is False
+          assert r['lanes']['trend_rider_broad_wr7000']['g5_mode']=='FORMAL_G5_EXISTING'
+          for lane in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              x=r['lanes'][lane]
+              assert x['roadmap_status']=='PRELIMINARY_SURVIVOR_G5_ENROLLED'
+              assert x['g5_mode']=='PRELIMINARY_G5_SHADOW_PAPER_WITH_G4_T_PARALLEL'
+              assert x['missing_g4_T_collects_in_parallel'] is True
+              assert x['formal_g5_T']==0 and x['formal_g5_credit_from_pre_g4']==0
+              assert x['paper_sim']['mode']=='PAPER_SIM_ONLY'
+              assert x['paper_sim']['order_submission'] is False
+          p=r['lanes']['trend_rider_primary_wr8125']
+          assert p['roadmap_status']=='PRELIMINARY_SURVIVOR_G5_ENROLLED'
+          assert p['g5_mode']=='PRELIMINARY_G5_DIAGNOSTIC_REPLACEMENT_REQUIRED'
+          assert p['formal_g5_T']==0 and p['formal_g5_credit_from_pre_g4']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='PAPER_SIM_ONLY'
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          print(json.dumps({'state':r['state'],'summary':s},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-g4-top5-preliminary-survivor-g5-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_g4_top5_preliminary_survivor_g5_v1_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist latest receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_g4_top5_preliminary_survivor_g5_v1_latest.json
+          cp out/a1_g4_top5_preliminary_survivor_g5_v1_latest.json "$target"
+          git config user.name 'a1-g4-top5-preliminary-survivor-g5-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Top5 preliminary survivor G5 receipt [skip ci]'
+          for n in 1 2 3; do
+            if git push origin HEAD:master; then exit 0; fi
+            git fetch origin master
+            git rebase origin/master
+            sleep 2
+          done
+          exit 1

@@ -1,0 +1,94 @@
+name: G5 Broad W2 Failfast Patch V1
+
+on:
+  push:
+    branches: [research/g5-broad-w2-failfast-v1, master]
+    paths:
+      - 'backend/research/contracts/g5_broad_w2_failfast_v1.json'
+      - 'backend/research/prep/g5_broad_w2_failfast_patch_v1.py'
+      - '.github/workflows/g5-broad-w2-failfast-patch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5-broad-w2-failfast-patch-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify preregistration and safe scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/prep/g5_broad_w2_failfast_patch_v1.py
+          python -m backend.research.prep.g5_broad_w2_failfast_patch_v1
+      - name: Apply W2 terminal fail-fast sequencing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m backend.research.prep.g5_broad_w2_failfast_patch_v1 --apply
+          python -m py_compile backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/research/prep/g5_trendrider_broad30_product_oos_v1.py')
+          t=p.read_text()
+          assert 'elif not checks["w2_economics_nonfail"]:' in t
+          assert 'state = "FAIL_G5_W2_ECONOMICS_STOP_W3"' in t
+          assert '"w3_required_only_if_w2_economics_nonfail": True' in t
+          print('PASS_W2_FAILFAST_TARGET_VERIFY')
+          PY
+      - name: Verify current 6T remains WAIT not premature fail
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 \
+            --out out/g5_trendrider_broad30_product_failfast_probe.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5_trendrider_broad30_product_failfast_probe.json'))
+          assert r['windows']['W2']['metrics']['trades']==6
+          assert r['state']=='WAIT_G5_W2_12'
+          assert r['stage_stop_policy']['w2_terminal_failfast_enabled'] is True
+          assert r['stage_stop_policy']['w3_required_only_if_w2_economics_nonfail'] is True
+          assert r['policy_retune'] is False and r['threshold_retune'] is False
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print('PASS_CURRENT_6T_CONTROL_ONLY_WAIT')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-broad-w2-failfast-patch-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_trendrider_broad30_product_failfast_probe.json
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Persist target patch to current branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'g5-broad-w2-failfast-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/prep/g5_trendrider_broad30_product_oos_v1.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5 Broad: stop W3 after terminal W2 economic fail [skip ci]'
+          branch="${GITHUB_REF_NAME}"
+          git pull --rebase origin "$branch"
+          git push origin "HEAD:${branch}"

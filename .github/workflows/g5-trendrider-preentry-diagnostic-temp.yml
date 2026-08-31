@@ -1,0 +1,35 @@
+name: G5 TrendRider Preentry Diagnostic Temp
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
+      - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
+      - '.github/workflows/g5-trendrider-preentry-diagnostic-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build diagnostic receipt without promotion assertion
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 \
+            --out out/g5_trendrider_preentry_interaction_child_latest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5-preentry-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_trendrider_preentry_interaction_child_latest.json
+          retention-days: 7

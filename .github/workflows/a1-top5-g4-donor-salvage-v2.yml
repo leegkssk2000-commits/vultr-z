@@ -1,0 +1,86 @@
+name: A1 Top5 G4 Donor Salvage V2
+
+on:
+  push:
+    branches: [research/top5-donor-transplant-fasttrack-v1]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_donor_salvage_v2.json'
+      - 'backend/research/rebuild/a1_top5_g4_donor_salvage_v2.py'
+      - '.github/workflows/a1-top5-g4-donor-salvage-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: a1-top5-g4-donor-salvage-v2
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and verify frozen salvage contract
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_g4_donor_salvage_v2.py
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_top5_g4_donor_salvage_v2.json'))
+          assert c['state']=='PREREGISTERED_DONOR_SALVAGE_V2_DEVELOPMENT_ONLY'
+          assert len(c['experiments'])==7
+          assert c['semantics']['formal_g4_credit']==0 and c['semantics']['formal_g5_credit']==0 and c['semantics']['fresh_credit']==0
+          assert c['semantics']['promotion_authority'] is False and c['semantics']['execution_authority']=='NONE' and c['semantics']['order_authority']=='BLOCKED'
+          print('PASS_SALVAGE_V2_PREREGISTRATION')
+          PY
+      - name: Download immutable completed 6M parent shards
+        run: |
+          set -euo pipefail
+          mkdir -p out/break out/supertrend
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9737664717/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9737664833/zip > out/supertrend.zip
+          unzip -q out/supertrend.zip -d out/supertrend
+          test -f out/break/break_and_continue_main.json
+          test -f out/supertrend/supertrend_pullback_main.json
+      - name: Execute fixed 7-cell salvage replay
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_g4_donor_salvage_v2 \
+            --break-json out/break/break_and_continue_main.json \
+            --supertrend-json out/supertrend/supertrend_pullback_main.json \
+            --out out/a1_top5_g4_donor_salvage_v2.json
+      - name: Verify authority and finite outputs
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_top5_g4_donor_salvage_v2.json'))
+          assert r['state']=='PASS_DONOR_SALVAGE_V2_COMPLETE' and r['cell_count']==7
+          assert r['formal_g4_credit']==0 and r['formal_g5_credit']==0 and r['fresh_credit']==0
+          assert r['promotion_authority'] is False and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          assert all(x['kept_T']+x['vetoed_T'] <= (77 if x['recipient']=='break_and_continue_main' else 138) for x in r['cells'])
+          for x in r['cells']:
+            for scope in ('parent_metrics','metrics_6m','metrics_recent3m'):
+              for v in x[scope].values():
+                if isinstance(v,(int,float)): assert math.isfinite(v)
+          print(json.dumps({'candidate_count':r['candidate_count'],'risk_filter_count':r['risk_filter_count'],'decisions':[[x['experiment_id'],x['decision'],x['kept_T'],x['metrics_6m']['net_pnl_bps'],x['metrics_6m']['profit_factor']] for x in r['cells']]},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-donor-salvage-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_g4_donor_salvage_v2.json
+          if-no-files-found: error
+          retention-days: 90

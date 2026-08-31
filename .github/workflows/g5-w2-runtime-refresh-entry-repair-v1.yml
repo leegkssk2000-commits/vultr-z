@@ -1,0 +1,82 @@
+name: G5 W2 Runtime Refresh Entry Repair V1
+
+on:
+  push:
+    branches:
+      - 'research/g5-w2-refresh-entry-repair-v1'
+    paths:
+      - 'backend/research/prep/g5_w2_runtime_refresh_diagnostic_v1.py'
+      - 'backend/research/prep/g5_trendrider_w2_entry_regime_repair_contract_v1.json'
+      - '.github/workflows/g5-w2-runtime-refresh-entry-repair-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g5-w2-runtime-refresh-entry-repair-v1
+  cancel-in-progress: true
+
+jobs:
+  refresh-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify immutable scope
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/prep/g5_w2_runtime_refresh_diagnostic_v1.py
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/prep/g5_trendrider_w2_entry_regime_repair_contract_v1.json'))
+          assert c['parent']['mutation_forbidden'] is True
+          assert c['parent']['threshold_retune_forbidden'] is True
+          assert c['parent']['continues_to_terminal_T'] is True
+          assert c['authority']['selection_authority'] is False
+          assert c['authority']['promotion_authority'] is False
+          assert c['authority']['execution_authority']=='NONE'
+          assert c['authority']['order_authority']=='BLOCKED'
+          assert c['authority']['live_trade_authority']=='BLOCKED'
+          print('PASS_G5_W2_ENTRY_REPAIR_CONTRACT')
+          PY
+      - name: Refresh current W2 prefix and forensic ranking
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.g5_w2_runtime_refresh_diagnostic_v1 \
+            --out out/g5_w2_runtime_refresh_diagnostic_v1.json
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/g5_w2_runtime_refresh_diagnostic_v1.json'))
+          assert r['canonical_parent_mutated'] is False
+          assert r['integrity']['duplicate_count']==0
+          assert r['integrity']['integrity_defects']==[]
+          assert r['integrity']['leakage_lookahead']==0
+          assert r['w2']['observed_T'] >= 6
+          assert r['w2']['observed_T'] <= r['w2']['target_T']==12
+          print(json.dumps({
+            'state':r['state'],
+            'W2_T':r['w2']['observed_T'],
+            'net_pnl_bps':r['w2']['net_pnl_bps'],
+            'net_expectancy_bps':r['w2']['net_expectancy_bps'],
+            'win_rate':r['w2']['win_rate'],
+            'profit_factor':r['w2']['profit_factor'],
+            'required_avg_remaining_bps':r['w2']['required_average_bps_per_remaining_trade_to_cross_zero'],
+            'selected_axis':r['forensic']['selected_axis'],
+            'top3':r['forensic']['ranked_preentry_hypotheses'][:3],
+            'early_futility':r['early_futility'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-w2-runtime-refresh-entry-repair-${{ github.run_id }}
+          path: out/g5_w2_runtime_refresh_diagnostic_v1.json
+          if-no-files-found: error
+          retention-days: 90

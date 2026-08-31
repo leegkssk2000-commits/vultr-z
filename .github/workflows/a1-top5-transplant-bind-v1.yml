@@ -1,0 +1,141 @@
+name: A1 Top5 Transplant Bind V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_transplant_bind_sync_v1.py'
+      - 'backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_v1.py'
+      - 'backend/research/rebuild/a1_top5_g4_donor_salvage_decision_v3.json'
+      - 'backend/research/contracts/a1_break_supertrend_mom_filter_salvage_freeze_v1.json'
+      - 'backend/research/contracts/a1_supertrend_union_veto_g5_shadow_freeze_v1.json'
+      - '.github/workflows/a1-top5-transplant-bind-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_top5_transplant_bind_sync_v1.py'
+      - 'backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_v1.py'
+      - 'backend/research/rebuild/a1_top5_g4_donor_salvage_decision_v3.json'
+      - 'backend/research/contracts/a1_break_supertrend_mom_filter_salvage_freeze_v1.json'
+      - 'backend/research/contracts/a1_supertrend_union_veto_g5_shadow_freeze_v1.json'
+      - '.github/workflows/a1-top5-transplant-bind-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-transplant-bind-v1
+  cancel-in-progress: false
+
+jobs:
+  bind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Assert no paid-provider credentials and compile
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_transplant_bind_sync_v1.py
+          python -m py_compile backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_v1.py
+          python -m backend.research.rebuild.a1_top5_transplant_bind_sync_v1 --self-test
+          python -m backend.research.rebuild.a1_break_supertrend_mom_filter_salvage_fresh_v1 --self-test
+
+      - name: Collect transplanted Break salvage fresh T
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=(--output out/a1_break_supertrend_mom_filter_salvage_fresh_latest.json)
+          if [[ -f backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_latest.json ]]; then
+            args+=(--previous backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_latest.json)
+          fi
+          python -m backend.research.rebuild.a1_break_supertrend_mom_filter_salvage_fresh_v1 "${args[@]}"
+
+      - name: Bind confirmed transplants to current Top5 SSOT
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_transplant_bind_sync_v1 \
+            --break-fresh out/a1_break_supertrend_mom_filter_salvage_fresh_latest.json \
+            --out out/a1_top5_latest_only_ssot_v1.json
+
+      - name: Verify transplant integrity and authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          f=json.load(open('out/a1_break_supertrend_mom_filter_salvage_fresh_latest.json'))
+          r=json.load(open('out/a1_top5_latest_only_ssot_v1.json'))
+          assert f['schema_version']=='zel.a1.break.supertrend_mom_filter_salvage.fresh.receipt.v1'
+          assert f['child_id']=='break_supertrend_mom1p00_filter_long_4h_h6_salvage_v1'
+          assert f['historical_credit_T']==0 and f['formal_g5_credit_T']==0
+          assert f['roadmap_blocking'] is False
+          assert f['post_confirmation_retune'] is False and f['threshold_sweep'] is False
+          assert f['execution_authority']=='NONE' and f['order_authority']=='BLOCKED'
+          assert r['state']=='CURRENT_TOP5_ONLY'
+          assert r['donor_transplant_sync']['state']=='CONFIRMED_DONORS_BOUND_TO_TOP5_WITHOUT_PROMOTION'
+          lanes={x['lane_id']:x for x in r['top5']}
+          b=lanes['break_and_continue_main']['salvage_child']
+          assert b['child_id']==f['child_id']
+          assert b['fresh_collector']['fresh_T']==f['fresh_T']
+          assert b['historical_is_not_formal_g4_pass'] is True
+          s=lanes['supertrend_pullback_main']['g5_risk_overlay']
+          assert s['selected']['overlay_id']=='supertrend_breakout50_or_keltner_reclaim_union_veto_v1'
+          assert s['shadow_policy']['g5_shadow_only'] is True
+          assert s['formal_g4_credit']==0 and s['formal_g5_credit']==0
+          k=lanes['keltner_trend_main']['donor_exports']['to_supertrend_g5_shadow']
+          assert k['state']=='CONFIRMED_RISK_FILTER_DONOR_ONLY'
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'break_transplant':b['child_id'],
+            'break_fresh_state':f['state'],
+            'break_fresh_T':f['fresh_T'],
+            'supertrend_overlay':s['selected']['overlay_id'],
+            'top5_bound':True,
+          },sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-transplant-bind-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_break_supertrend_mom_filter_salvage_fresh_latest.json
+            out/a1_top5_latest_only_ssot_v1.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist fresh receipt and Top5 SSOT semantic delta
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          cp out/a1_break_supertrend_mom_filter_salvage_fresh_latest.json backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_latest.json
+          cp out/a1_top5_latest_only_ssot_v1.json backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+          git config user.name 'a1-top5-transplant-bind-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_break_supertrend_mom_filter_salvage_fresh_latest.json backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+          if git diff --cached --quiet; then
+            echo NO_SEMANTIC_DELTA
+            exit 0
+          fi
+          git commit -m 'A1: sync confirmed donor transplants into Top5 [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

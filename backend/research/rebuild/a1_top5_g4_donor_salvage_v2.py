@@ -12,8 +12,8 @@ CONTRACT=ROOT/'backend/research/contracts/a1_top5_g4_donor_salvage_v2.json'
 FREEZE=ROOT/'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
 ORIG=ROOT/'backend/research/contracts/a1_top5_entry_transplant_replay_v1.json'
 INTERVAL_MS=14_400_000
-RECENT3_START=1778796000000  # 2026-05-15T00:00:00Z approx aligned usage by prior fasttrack
-RECENT3_END=1786744800000    # 2026-08-15T00:00:00Z approx aligned usage by prior fasttrack
+RECENT3_START=1778803200000  # 2026-05-15T00:00:00Z
+RECENT3_END=1786752000000    # 2026-08-15T00:00:00Z
 
 
 def rd(p): return json.loads(Path(p).read_text())
@@ -76,13 +76,11 @@ def main(a):
     min_ts=min(int(x['signal_ts']) for x in allrows); max_ts=max(int(x['signal_ts']) for x in allrows)
     symbols=sorted({str(x['symbol']) for x in allrows})
     bars={s:child_eval._bars(s,'4h',min_ts,max_ts+INTERVAL_MS) for s in symbols}
-    # Supertrend feature engine supports the nested relaxed thresholds; exact donor engines support veto tests.
     super_arch=archs['supertrend_replacement_highvol_mom_long_4h_h12_v2']
     engines={}
     for s,b in bars.items():
-        _,e=child_eval._features(b,super_arch['spec']);
+        _,e=child_eval._features(b,super_arch['spec'])
         for expr in [x['rule'] for x in c['experiments'] if x.get('rule')]: e.validate(expr)
-        # Keltner veto rule uses only EMA features already present in the supertrend engine.
         for expr in [x['veto_rule'] for x in c['experiments'] if x.get('veto_rule')]: e.validate(expr)
         engines[('custom',s)]=e
     for aid in ['break_replacement_breakout50_long_4h_h6_v2','keltner_replacement_trend_pull_long_4h_h12_v2']:

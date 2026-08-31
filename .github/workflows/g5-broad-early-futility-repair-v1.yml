@@ -1,0 +1,94 @@
+name: G5 Broad Early Futility Repair V1
+
+on:
+  push:
+    branches: [research/g5-broad-futility-repair-v1]
+    paths:
+      - 'backend/research/contracts/g5_broad_early_futility_repair_v1.json'
+      - 'backend/research/prep/g5_broad_early_futility_repair_v1.py'
+      - '.github/workflows/g5-broad-early-futility-repair-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5-broad-early-futility-repair-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  diagnose-and-repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g5-broad-futility-repair-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert safe scope and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/prep/g5_broad_early_futility_repair_v1.py
+          python -m backend.research.prep.g5_broad_early_futility_repair_v1 --self-test
+      - name: Evaluate 6T futility and six fixed structural repair cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.prep.g5_broad_early_futility_repair_v1 \
+            --out out/g5_broad_early_futility_repair_latest.json
+      - name: Verify parent isolation and repair semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5_broad_early_futility_repair_latest.json'))
+          assert r['schema_version']=='zel.g5.trendrider_broad.early_futility_repair.receipt.v1'
+          assert r['state']=='G5_BROAD_EARLY_FUTILITY_RED_REPAIR_PARALLEL_ACTIVE'
+          assert r['early_futility']['triggered'] is True
+          assert r['early_futility']['first6_metrics']['trades']==6
+          assert r['early_futility']['first6_metrics']['wins']==0
+          assert r['formal_parent']['mutated'] is False
+          assert r['formal_parent']['role']=='FORMAL_CONTROL_ONLY_CONTINUE_TO_12T'
+          assert r['repair_screen']['cell_count']==6
+          assert r['repair_screen']['formal_g4_credit']==0
+          assert r['repair_screen']['formal_g5_credit']==0
+          assert r['repair_screen']['fresh_prospective_required'] is True
+          assert r['integrity']['threshold_sweep'] is False
+          assert r['integrity']['symbol_sweep'] is False
+          assert r['integrity']['exit_retune'] is False
+          assert r['integrity']['cost_retune'] is False
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'repair_state':r['repair_screen']['state'],'winner_count':r['repair_screen']['winner_count'],'selected':r['repair_screen']['selected_cell_id'],'next':r['next']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-broad-early-futility-repair-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_broad_early_futility_repair_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist repair receipt to research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp out/g5_broad_early_futility_repair_latest.json \
+            backend/research/prep/g5_broad_early_futility_repair_latest.json
+          git config user.name 'g5-broad-early-futility-repair-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/prep/g5_broad_early_futility_repair_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5 Broad: persist early-futility repair result [skip ci]'
+          git pull --rebase origin research/g5-broad-futility-repair-v1
+          git push origin HEAD:research/g5-broad-futility-repair-v1

@@ -1,0 +1,229 @@
+name: ZEL EMA Close Only Semantics V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py
+      - backend/tools/zel_ema_path_semantics_reconciliation_v1.py
+      - .github/workflows/zel-ema-close-only-semantics-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-close-only-semantics-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
+            backend/tools/zel_ema_path_semantics_reconciliation_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run pinned close-only semantics tournament
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          remote="/tmp/zel-ema-close-semantics-${GITHUB_RUN_ID}"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "mkdir -p '$remote'"
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
+            backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
+            "$VPS_USER@$VPS_HOST:$remote/"
+          timeout 5100s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=30 \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail
+             test \"\$(sha256sum /var/lib/zel-research/data-b-1m-v2/trades.jsonl.gz | awk '{print \$1}')\" = '62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3'
+             test \"\$(sha256sum /opt/zel/research-runtime/data-b-v2/zel_historical_oos_exact25_replay_v1.py | awk '{print \$1}')\" = '14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50'
+             cd '$remote'
+             PYTHONPATH='$remote' /home/z/z/.venv/bin/python \
+               zel_ema_path_semantics_reconciliation_v1.py \
+               --out reconciliation.json" > out/remote.stdout 2>out/remote.stderr
+          scp -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST:$remote/reconciliation.json" out/reconciliation.json
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "rm -rf '$remote'"
+          python -m json.tool out/reconciliation.json >/dev/null
+
+      - name: Extract close-only candidates and deterministic decision
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/reconciliation.json'))
+          candidates=[value for value in row.get('top_candidates',[]) if value.get('price_mode')=='close']
+          candidates.sort(key=lambda value:(-int(value.get('coverage_count') or 0),float(value.get('combined_mean_abs_error_R') or 1e9),str(value.get('candidate_id'))))
+          complete=[value for value in candidates if int(value.get('coverage_count') or 0)==424]
+          best=min(complete,key=lambda value:float(value.get('combined_mean_abs_error_R') or 1e9),default=None)
+          exact=bool(best and float(best.get('mfe_mean_abs_error_R') or 1e9)<=0.05 and float(best.get('mae_mean_abs_error_R') or 1e9)<=0.05)
+          result={
+            'schema_version':'zel.ema.close_only_semantics.receipt.v1',
+            'state':'PASS_EMA_CLOSE_ONLY_SEMANTICS_IDENTIFIED' if exact else 'HOLD_EMA_CLOSE_ONLY_SEMANTICS_NOT_EXACT',
+            'source_reconciliation_state':row.get('state'),
+            'trade_count':row.get('trade_count'),
+            'best_close_only_candidate':best,
+            'close_only_candidate_count':len(candidates),
+            'exact_threshold_R':0.05,
+            'exact_match':exact,
+            'all_close_only_candidates':candidates,
+            'source_blockers':row.get('blockers'),
+            'terminal_trades_sha256':'62a7d51a02b75ebfee5765d81d955d583d442c995604bb9d4a8a5e7e7a4e2fe3',
+            'engine_sha256':'14fc2600f3ca0dae4bf17e9768461661cf07ef7f1aa5934c317baac95b52fc50',
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'formal_ledger_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+            'next':'RUN_CLOSE_ONLY_TRAILING_COUNTERFACTUAL' if exact else 'TRACE_CLOSE_ONLY_UPDATE_ORDER_AND_RISK_UNIT',
+          }
+          json.dump(result,open('out/close_only.json','w'),indent=2,sort_keys=True)
+          print({
+            'state':result['state'],
+            'best':best,
+            'next':result['next'],
+          })
+          PY
+          python -m json.tool out/close_only.json >/dev/null
+
+      - name: Gemini close-only causal review and red-team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python - <<'PY'
+          import json, os, time, urllib.request
+          result=json.load(open('out/close_only.json'))
+          evidence={
+            'state':result['state'],
+            'best_close_only_candidate':result['best_close_only_candidate'],
+            'candidate_count':result['close_only_candidate_count'],
+            'candidates':result['all_close_only_candidates'],
+            'exact_threshold_R':result['exact_threshold_R'],
+            'source_blockers':result['source_blockers'],
+            'known_writer_semantics':'max_favorable_usdt/max_adverse_usdt updated from close-only unrealized PnL then divided by initial_risk_usdt',
+            'constraints':{
+              '424_trade_full_coverage_required':True,
+              'one_semantics_axis_only':True,
+              'no_strategy_selection':True,
+              'no_runtime_mutation':True,
+            },
+          }
+          prompt=(
+            'You are an independent causal auditor. Use only aggregate candidate errors. '
+            'Return JSON with keys verdict, diagnosis, next_single_test, falsification. '
+            'verdict must be PASS, HOLD, or REJECT. '
+            'Determine whether close-only semantics are exact; if not, choose exactly one remaining cause among '
+            'UPDATE_ORDER, EXIT_BAR_TIMING, ENTRY_BAR_TIMING, RISK_UNIT, or QUANTITY_SIGN. '
+            'Do not propose combined changes and do not authorize production. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+          )
+          payload={'contents':[{'parts':[{'text':prompt}]}], 'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          parsed=None; used=None; last=None
+          for model in models:
+            try:
+              url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
+              req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=90) as response: body=json.load(response)
+              parsed=json.loads(body['candidates'][0]['content']['parts'][0]['text']); used=model; break
+            except Exception as exc:
+              last=f'{type(exc).__name__}:{exc}'; time.sleep(2)
+          if parsed is None: raise RuntimeError('GEMINI_FAILED:'+str(last))
+          valid=(parsed.get('verdict') in {'PASS','HOLD','REJECT'} and parsed.get('next_single_test') in {'UPDATE_ORDER','EXIT_BAR_TIMING','ENTRY_BAR_TIMING','RISK_UNIT','QUANTITY_SIGN'} and isinstance(parsed.get('diagnosis'),str) and isinstance(parsed.get('falsification'),str))
+          receipt={
+            'schema_version':'zel.ema.close_only.gemini_review.v1',
+            'state':'PASS_GEMINI_CLOSE_ONLY_NEXT_TEST_READY' if valid else 'HOLD_GEMINI_CLOSE_ONLY_RESPONSE_INVALID',
+            'model':used,
+            'response':parsed,
+            'response_valid':valid,
+            'deterministic_exact_match':result['exact_match'],
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_review.json','w'),indent=2,sort_keys=True)
+          print({'state':receipt['state'],'response':parsed})
+          PY
+          python -m json.tool out/gemini_review.json >/dev/null
+
+      - name: Verify safety and summarize
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          result=json.load(open('out/close_only.json'))
+          gemini=json.load(open('out/gemini_review.json'))
+          for row in (result,gemini):
+              assert row['canonical_mutated'] is False and row['runtime_mutated'] is False,row
+              assert row['selection_authority'] is False and row['promotion_authority'] is False,row
+              assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+              assert row['action']=='hold',row
+          print({
+            'state':result['state'],
+            'best_close_only_candidate':result['best_close_only_candidate'],
+            'gemini':gemini['response'],
+            'next':result['next'],
+          })
+          PY
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-close-only-semantics-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

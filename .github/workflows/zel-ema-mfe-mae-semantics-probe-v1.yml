@@ -1,0 +1,117 @@
+name: ZEL EMA MFE MAE Semantics Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+      - .github/workflows/zel-ema-mfe-mae-semantics-probe-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-mfe-mae-semantics-probe-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: python -m py_compile backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Trace MFE MAE writers read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          set +e
+          timeout 900s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --stdout' \
+            < backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py \
+            > out/semantics.json \
+            2> out/semantics.stderr
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > out/probe_rc.txt
+          if test -s out/semantics.json; then
+            python -m json.tool out/semantics.json >/dev/null
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          rc=Path('out/probe_rc.txt').read_text().strip()
+          stderr=Path('out/semantics.stderr').read_text(errors='replace') if Path('out/semantics.stderr').exists() else ''
+          print({'rc':rc,'stderr_tail':stderr[-4000:]})
+          PY
+
+      - name: Verify safety and summarize
+        if: always()
+        run: |
+          set -euo pipefail
+          if test -s out/semantics.json; then
+            python - <<'PY'
+          import json
+          row=json.load(open('out/semantics.json'))
+          for key in ('raw_code_published','raw_trade_rows_published','canonical_mutated','runtime_mutated','formal_ledger_mutated','selection_authority','promotion_authority'):
+              assert row[key] is False,(key,row)
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({
+              'state':row['state'],
+              'candidate_counts':row['candidate_counts'],
+              'writer_count':row['writer_count'],
+              'key_counts':row['key_counts'],
+              'semantic_modes':row['semantic_mode_counts'],
+              'blockers':row['blockers'],
+              'next':row['next'],
+          })
+          PY
+          else
+            echo "SEMANTICS_JSON_MISSING"
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-mfe-mae-semantics-probe-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

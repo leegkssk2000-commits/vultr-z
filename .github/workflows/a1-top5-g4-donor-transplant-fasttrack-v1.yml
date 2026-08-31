@@ -1,0 +1,39 @@
+name: A1 Top5 G4 Donor Transplant Fasttrack V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/top5-donor-transplant-fasttrack-v1
+    paths:
+      - 'backend/research/rebuild/a1_top5_g4_donor_transplant_fasttrack_v1.py'
+      - '.github/workflows/a1-top5-g4-donor-transplant-fasttrack-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  freeze-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert no paid AI and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_donor_transplant_fasttrack_v1.py
+      - name: Freeze donor-recipient matrix
+        run: python -m backend.research.rebuild.a1_top5_g4_donor_transplant_fasttrack_v1
+      - name: Upload frozen matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-donor-transplant-matrix-${{ github.run_id }}
+          path: artifacts/research/a1_top5_g4_donor_transplant_fasttrack_v1.json
+          if-no-files-found: error
+          retention-days: 90

@@ -5,10 +5,16 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
-      - 'backend/research/prep/g5_product_latest_monotonic_guard_v1.py'
+      - 'backend/research/prep/g5_production_economic_contract_v1.json'
+      - 'backend/research/prep/g5_production_economic_ssot_v1.py'
+      - 'backend/research/prep/g5_product_durable_guard_v2.py'
+      - 'backend/research/prep/g5_top5_binding_sync_v1.py'
+      - 'backend/research/prep/test_g5_production_economic_ssot_v1.py'
       - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/prep/g5_economic_evidence_ledger_v1.jsonl'
       - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
       - 'backend/research/prep/rr_exit_fresh6_observer_v2.py'
       - 'backend/research/prep/rr_exit_true_fresh6_observer_v1.py'
@@ -17,10 +23,16 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_g4_trendrider_broad30_economic_survivor_v1.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_manifest_v1.json'
       - 'backend/research/prep/g5_trendrider_broad30_product_oos_v1.py'
-      - 'backend/research/prep/g5_product_latest_monotonic_guard_v1.py'
+      - 'backend/research/prep/g5_production_economic_contract_v1.json'
+      - 'backend/research/prep/g5_production_economic_ssot_v1.py'
+      - 'backend/research/prep/g5_product_durable_guard_v2.py'
+      - 'backend/research/prep/g5_top5_binding_sync_v1.py'
+      - 'backend/research/prep/test_g5_production_economic_ssot_v1.py'
       - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/prep/g5_economic_evidence_ledger_v1.jsonl'
       - 'backend/research/prep/rr_exit_fresh6_observer_v1.py'
       - 'backend/research/prep/rr_exit_fresh6_observer_v2.py'
       - 'backend/research/prep/rr_exit_true_fresh6_observer_v1.py'
@@ -41,7 +53,7 @@ jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,41 +61,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile and self-test
+      - name: Compile and self-test G5 current bottleneck closure
         run: |
           set -euo pipefail
           python -m py_compile \
             backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
-            backend/research/prep/g5_product_latest_monotonic_guard_v1.py \
+            backend/research/prep/g5_production_economic_ssot_v1.py \
+            backend/research/prep/g5_product_durable_guard_v2.py \
+            backend/research/prep/g5_top5_binding_sync_v1.py \
+            backend/research/prep/test_g5_production_economic_ssot_v1.py \
             backend/research/prep/rr_exit_fresh6_observer_v1.py \
             backend/research/prep/rr_exit_fresh6_observer_v2.py \
             backend/research/prep/rr_exit_true_fresh6_observer_v1.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
-          python -m backend.research.prep.g5_product_latest_monotonic_guard_v1 --self-test
+          python -m backend.research.prep.g5_production_economic_ssot_v1 --self-test
+          python -m backend.research.prep.g5_product_durable_guard_v2 --self-test
+          python -m backend.research.prep.g5_top5_binding_sync_v1 --self-test
+          python -m unittest backend.research.prep.test_g5_production_economic_ssot_v1 -v
           python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
           python -m backend.research.prep.rr_exit_fresh6_observer_v2 --self-test
           python -m backend.research.prep.rr_exit_true_fresh6_observer_v1 --self-test
-      - name: Verify current product is bound to Top5 SSOT
-        run: |
-          set -euo pipefail
-          python -m backend.research.prep.g5_product_latest_monotonic_guard_v1 \
-            --current backend/research/prep/g5_trendrider_broad30_product_latest.json \
-            --candidate backend/research/prep/g5_trendrider_broad30_product_latest.json \
-            --top5 backend/research/rebuild/a1_top5_latest_only_ssot_v1.json \
-            | tee /tmp/g5_product_guard.json
-          python - <<'PY'
-          import json
-          r=json.load(open('/tmp/g5_product_guard.json'))
-          assert r['decision']=='NOOP_IDENTICAL'
-          assert r['current_T']==4
-          assert r['current_receipt_sha256']=='c294717ba3f56d2297d4839c85d158a72afdffd8cf9d960a6d5ac4db67d1f739'
-          print('PASS_G5_PRODUCT_TOP5_RECEIPT_BINDING')
-          PY
 
   evaluate:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,38 +94,81 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify G4 seal, G5 manifest, frozen RR observers, and latest guard
+      - name: Verify G5 SSOT, sync guard, and RR observers
         run: |
           set -euo pipefail
           python -m py_compile \
             backend/research/prep/g5_trendrider_broad30_product_oos_v1.py \
-            backend/research/prep/g5_product_latest_monotonic_guard_v1.py \
+            backend/research/prep/g5_production_economic_ssot_v1.py \
+            backend/research/prep/g5_product_durable_guard_v2.py \
+            backend/research/prep/g5_top5_binding_sync_v1.py \
+            backend/research/prep/test_g5_production_economic_ssot_v1.py \
             backend/research/prep/rr_exit_fresh6_observer_v1.py \
             backend/research/prep/rr_exit_fresh6_observer_v2.py \
             backend/research/prep/rr_exit_true_fresh6_observer_v1.py
           python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 --self-test
-          python -m backend.research.prep.g5_product_latest_monotonic_guard_v1 --self-test
+          python -m backend.research.prep.g5_production_economic_ssot_v1 --self-test
+          python -m backend.research.prep.g5_product_durable_guard_v2 --self-test
+          python -m backend.research.prep.g5_top5_binding_sync_v1 --self-test
+          python -m unittest backend.research.prep.test_g5_production_economic_ssot_v1 -v
           python -m backend.research.prep.rr_exit_fresh6_observer_v1 --self-test
           python -m backend.research.prep.rr_exit_fresh6_observer_v2 --self-test
           python -m backend.research.prep.rr_exit_true_fresh6_observer_v1 --self-test
-      - name: Run product OOS / walk-forward / stress
+
+      - name: Build and self-reconcile hardened G5 economic candidate
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.prep.g5_trendrider_broad30_product_oos_v1 \
-            --out out/g5_trendrider_broad30_product_latest.json
+          product_current=backend/research/prep/g5_trendrider_broad30_product_latest.json
+          ledger_current=backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
+
+          python -m backend.research.prep.g5_production_economic_ssot_v1 \
+            --out out/g5_product_provisional.json \
+            --durable-current "$product_current" \
+            --ledger-current "$ledger_current" \
+            --ledger-out out/g5_ledger_provisional.jsonl
+
+          python -m backend.research.prep.g5_production_economic_ssot_v1 \
+            --out out/g5_trendrider_broad30_product_latest.json \
+            --durable-current out/g5_product_provisional.json \
+            --ledger-current out/g5_ledger_provisional.jsonl \
+            --ledger-out out/g5_economic_evidence_ledger_v1.jsonl
+
           python - <<'PY'
           import json
-          r=json.load(open('out/g5_trendrider_broad30_product_latest.json'))
-          assert r['stage']=='G5'
-          assert r['strategy_id']=='trend_rider'
-          assert r['lane_id']=='trend_rider_broad_wr7000'
-          assert r['policy_retune'] is False and r['threshold_retune'] is False
-          assert r['old_history_union'] is False
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print(json.dumps({'state':r['state'],'postlock_closed_T':r['postlock_closed_T'],'W2_T':r['windows']['W2']['metrics']['trades'],'W3_T':r['windows']['W3']['metrics']['trades'],'combined':r['combined_oos'],'receipt':r['receipt_sha256']},sort_keys=True))
+          a=json.load(open('out/g5_product_provisional.json'))
+          b=json.load(open('out/g5_trendrider_broad30_product_latest.json'))
+          ea=a['economic_ssot']; eb=b['economic_ssot']; gate=b['ai_gate']
+          assert ea['runtime_trade_count']==a['postlock_closed_T']
+          assert eb['runtime_trade_count']==b['postlock_closed_T']
+          assert ea['runtime_trade_set_sha256']==eb['runtime_trade_set_sha256'], 'RUNTIME_SET_MOVED_DURING_SELF_RECONCILE'
+          assert eb['durable_trade_count']==eb['runtime_trade_count']
+          assert eb['durable_trade_set_sha256']==eb['runtime_trade_set_sha256']
+          assert eb['durable_matches_runtime'] is True
+          assert b['policy_retune'] is False and b['threshold_retune'] is False
+          assert b['old_history_union'] is False
+          assert b['selection_authority'] is False and b['promotion_authority'] is False
+          assert b['execution_authority']=='NONE' and b['order_authority']=='BLOCKED' and b['live_trade_authority']=='BLOCKED'
+          assert gate['scope']=='G5_ONLY'
+          assert gate['proxy_replay_production_pass_forbidden'] is True
+          if eb['replay_or_proxy_T']:
+              assert eb['production_grade_ready'] is False
+              assert gate['production_grade_claim_eligible'] is False
+              assert gate['g6_promotion_eligible'] is False
+              assert gate['g6_promotion_forbidden'] is True
+          print(json.dumps({
+              'state':b['state'],
+              'research_state':b['research_state'],
+              'runtime_T':eb['runtime_trade_count'],
+              'durable_T':eb['durable_trade_count'],
+              'trade_set':eb['runtime_trade_set_sha256'],
+              'production_grade_T':eb['production_grade_T'],
+              'proxy_T':eb['replay_or_proxy_T'],
+              'g6_eligible':gate['g6_promotion_eligible'],
+              'receipt':b['receipt_sha256'],
+          },sort_keys=True))
           PY
+
       - name: Run post-development pre-prereg RR holdout corroboration
         run: |
           set -euo pipefail
@@ -140,8 +185,9 @@ jobs:
           assert r['old_history_retroactive_promotion_forbidden'] is True
           assert r['fresh_candidate_reoptimization_forbidden'] is True
           assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'state':r['state'],'raw_T':r['raw_postboundary_closed_T'],'validation_T':r['validation_T'],'native':r['native_control'],'candidate':r['candidate'],'checks':r['strict_checks'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'state':r['state'],'raw_T':r['raw_postboundary_closed_T'],'validation_T':r['validation_T'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
+
       - name: Run true post-prereg RR prospective fresh6 observer
         run: |
           set -euo pipefail
@@ -160,29 +206,31 @@ jobs:
           assert r['integrity_defects']==[]
           assert r['leakage_lookahead']==0
           assert r['selection_authority'] is False and r['promotion_authority'] is False
-          print(json.dumps({'state':r['state'],'raw_T':r['raw_postfreeze_closed_T'],'mature_prefix_T':r['candidate_mature_prefix_T'],'validation_T':r['validation_T'],'native':r['native_control'],'candidate':r['candidate'],'checks':r['strict_checks'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
+          print(json.dumps({'state':r['state'],'raw_T':r['raw_postfreeze_closed_T'],'validation_T':r['validation_T'],'next':r['next'],'receipt':r['receipt_sha256']},sort_keys=True))
           PY
-      - name: Persist latest product and RR observer receipts without stale replay
+
+      - name: Persist one current G5 chain atomically
         run: |
           set -euo pipefail
           product_target=backend/research/prep/g5_trendrider_broad30_product_latest.json
           product_candidate=out/g5_trendrider_broad30_product_latest.json
+          ledger_target=backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
+          ledger_candidate=out/g5_economic_evidence_ledger_v1.jsonl
           top5_target=backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
           rr_holdout_target=backend/research/prep/rr_exit_fresh6_observer_latest.json
           rr_true_target=backend/research/prep/rr_exit_true_fresh6_observer_latest.json
 
-          git config user.name 'g5-trendrider-product-oos'
+          git config user.name 'g5-current-ssot-writer'
           git config user.email 'actions@users.noreply.github.com'
 
-          # Rebase BEFORE touching canonical receipts. Never replay a generated
-          # receipt commit over a master that moved after this run started.
+          # Resolve master before the canonical decision. Generated evidence is
+          # never blindly replayed over a master that moved during evaluation.
           git fetch origin master
           git rebase origin/master
 
-          guard_json="$(python -m backend.research.prep.g5_product_latest_monotonic_guard_v1 \
+          guard_json="$(python -m backend.research.prep.g5_product_durable_guard_v2 \
             --current "$product_target" \
-            --candidate "$product_candidate" \
-            --top5 "$top5_target")"
+            --candidate "$product_candidate")"
           echo "$guard_json"
           guard_decision="$(GUARD_JSON="$guard_json" python - <<'PY'
           import json, os
@@ -191,14 +239,15 @@ jobs:
           )"
 
           case "$guard_decision" in
-            BLOCK_T_REGRESSION|BLOCK_SAME_T_RECEIPT_REWRITE)
-              echo "G5_PRODUCT_PERSIST_SKIPPED_MONOTONIC_GUARD=$guard_decision"
-              exit 0
-              ;;
-            NOOP_IDENTICAL)
-              ;;
-            ALLOW_STRICT_T_ADVANCE)
+            ALLOW_STRICT_T_ADVANCE|ALLOW_SAME_T_SCHEMA_HARDENING|ALLOW_SAME_T_DURABLE_RECONCILIATION)
               cp "$product_candidate" "$product_target"
+              ;;
+            NOOP_IDENTICAL|BLOCK_SAME_T_RECEIPT_REWRITE)
+              echo "G5_PRODUCT_PERSIST=$guard_decision"
+              ;;
+            BLOCK_T_REGRESSION)
+              echo "G5_PRODUCT_PERSIST_SKIPPED_NEWER_CURRENT=$guard_decision"
+              exit 0
               ;;
             *)
               echo "UNKNOWN_G5_PRODUCT_GUARD_DECISION=$guard_decision" >&2
@@ -206,24 +255,65 @@ jobs:
               ;;
           esac
 
+          LEDGER_TARGET="$ledger_target" LEDGER_CANDIDATE="$ledger_candidate" python - <<'PY'
+          import os
+          from pathlib import Path
+          from backend.research.prep.g5_production_economic_ssot_v1 import merge_ledger, read_ledger
+          target=Path(os.environ['LEDGER_TARGET'])
+          candidate=Path(os.environ['LEDGER_CANDIDATE'])
+          rows=read_ledger(candidate)
+          tmp=Path('/tmp/g5_economic_evidence_ledger_merged.jsonl')
+          info=merge_ledger(target, rows, tmp)
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(tmp.read_text(encoding='utf-8'), encoding='utf-8')
+          print(info)
+          PY
+
+          python -m backend.research.prep.g5_top5_binding_sync_v1 \
+            --top5 "$top5_target" \
+            --product "$product_target" \
+            --out /tmp/a1_top5_latest_only_ssot_v1.json
+          cp /tmp/a1_top5_latest_only_ssot_v1.json "$top5_target"
+
           cp out/rr_exit_fresh6_observer_latest.json "$rr_holdout_target"
           cp out/rr_exit_true_fresh6_observer_latest.json "$rr_true_target"
-          git add "$product_target" "$rr_holdout_target" "$rr_true_target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5 TrendRider: persist product and RR evidence receipts [skip ci]'
 
-          # One-shot push only. A rejected push means master moved after the
-          # guard decision; do not rebase/replay this generated commit.
+          python - <<'PY'
+          import json
+          p=json.load(open('backend/research/prep/g5_trendrider_broad30_product_latest.json'))
+          t=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
+          lane=next(x for x in t['top5'] if x.get('lane_id')=='trend_rider_broad_wr7000')
+          g=lane['g5']; e=p['economic_ssot']
+          assert g['postlock_closed_T']==p['postlock_closed_T']==e['runtime_trade_count']==e['durable_trade_count']
+          assert e['runtime_trade_set_sha256']==e['durable_trade_set_sha256']
+          assert e['durable_matches_runtime'] is True
+          assert g['source_receipt_sha256']==p['receipt_sha256']
+          assert g['source_input_receipt_sha256']==p['source_receipt_sha256']
+          assert g['economic_ssot']['runtime_trade_set_sha256']==e['runtime_trade_set_sha256']
+          assert g['ai_gate']['g6_promotion_eligible'] is False
+          print('PASS_G5_RUNTIME_DURABLE_TOP5_PARITY')
+          PY
+
+          git add "$product_target" "$ledger_target" "$top5_target" "$rr_holdout_target" "$rr_true_target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5: persist single current economic SSOT chain [skip ci]'
+
+          # One-shot push only. If master moved after the guard decision, do not
+          # rebase/replay the generated evidence commit; the next run recomputes.
           if ! git push origin HEAD:master; then
-            echo 'G5_PRODUCT_PERSIST_SKIPPED_MASTER_MOVED'
+            echo 'G5_ECONOMIC_PERSIST_SKIPPED_MASTER_MOVED'
             exit 0
           fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: g5-trendrider-broad30-product-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            out/g5_product_provisional.json
             out/g5_trendrider_broad30_product_latest.json
+            out/g5_ledger_provisional.jsonl
+            out/g5_economic_evidence_ledger_v1.jsonl
             out/rr_exit_fresh6_observer_latest.json
             out/rr_exit_true_fresh6_observer_latest.json
           if-no-files-found: error

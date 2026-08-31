@@ -1,0 +1,105 @@
+name: A1 G4 G5 Parallel Conveyor V1
+
+on:
+  push:
+    branches: [research/g4-g5-parallel-conveyor-v1, master]
+    paths:
+      - 'backend/research/contracts/a1_g4_g5_parallel_conveyor_v1.json'
+      - 'backend/research/rebuild/a1_g4_g5_parallel_conveyor_v1.py'
+      - '.github/workflows/a1-g4-g5-parallel-conveyor-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '37 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-g4-g5-parallel-conveyor-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  conveyor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert no live or paid-provider scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_g4_g5_parallel_conveyor_v1.py
+          python -m backend.research.rebuild.a1_g4_g5_parallel_conveyor_v1 --self-test
+      - name: Run G4 plus pre-G5 shadow paper conveyor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_g4_g5_parallel_conveyor_v1 \
+            --out out/a1_g4_g5_parallel_conveyor_v1_latest.json
+      - name: Verify stage isolation and parallel enrollment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_g4_g5_parallel_conveyor_v1_latest.json'))
+          assert r['schema_version']=='zel.a1.g4_g5.parallel_conveyor.receipt.v1'
+          assert r['state']=='G4_G5_PARALLEL_CONVEYOR_ACTIVE'
+          assert r['g5_prep_state']=='G5_PREP_READY'
+          assert r['summary']['formal_g5_active_lanes']==1
+          assert r['summary']['pre_g5_shadow_paper_active_lanes']==3
+          assert r['summary']['excluded_falsified_lanes']==1
+          assert r['summary']['formal_g5_credit_leaked_from_pre_g4']==0
+          assert r['summary']['roadmap_blocking'] is False
+          assert r['lanes']['trend_rider_broad_wr7000']['mode']=='FORMAL_G5_EXISTING'
+          assert r['lanes']['trend_rider_primary_wr8125']['mode']=='EXCLUDED_UNTIL_NEW_REPLACEMENT_FROZEN'
+          for lane in ('break_and_continue_main','keltner_trend_main','supertrend_pullback_main'):
+              x=r['lanes'][lane]
+              assert x['mode']=='PRE_G5_SHADOW_PAPER'
+              assert x['formal_g5_T']==0 and x['formal_g5_credit']==0
+              assert x['paper_sim']['mode']=='PAPER_SIM_ONLY'
+              assert x['paper_sim']['order_submission'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='PAPER_SIM_ONLY'
+          assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['exchange_order_submitted'] is False
+          print(json.dumps({'summary':r['summary'],'lane_states':{k:v.get('state',v.get('formal_g5_state')) for k,v in r['lanes'].items()}},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-g4-g5-parallel-conveyor-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_g4_g5_parallel_conveyor_v1_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist conveyor receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_g4_g5_parallel_conveyor_v1_latest.json
+          cp out/a1_g4_g5_parallel_conveyor_v1_latest.json "$target"
+          git config user.name 'a1-g4-g5-parallel-conveyor-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist G4 G5 parallel conveyor receipt [skip ci]'
+          branch="${GITHUB_REF_NAME}"
+          for n in 1 2 3; do
+            if git push origin "HEAD:${branch}"; then exit 0; fi
+            git fetch origin "$branch"
+            git rebase "origin/$branch"
+            sleep 2
+          done
+          exit 1

@@ -55,7 +55,7 @@ jobs:
           assert '"w3_required_only_if_w2_economics_nonfail": True' in t
           print('PASS_W2_FAILFAST_TARGET_VERIFY')
           PY
-      - name: Verify current 6T remains WAIT not premature fail
+      - name: Verify monotonic W2 state while sample grows
         shell: bash
         run: |
           set -euo pipefail
@@ -65,13 +65,24 @@ jobs:
           python - <<'PY'
           import json
           r=json.load(open('out/g5_trendrider_broad30_product_failfast_probe.json'))
-          assert r['windows']['W2']['metrics']['trades']==6
-          assert r['state']=='WAIT_G5_W2_12'
+          t=r['windows']['W2']['metrics']['trades']
+          assert t >= 6
           assert r['stage_stop_policy']['w2_terminal_failfast_enabled'] is True
           assert r['stage_stop_policy']['w3_required_only_if_w2_economics_nonfail'] is True
           assert r['policy_retune'] is False and r['threshold_retune'] is False
           assert r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          print('PASS_CURRENT_6T_CONTROL_ONLY_WAIT')
+          if t < 12:
+              assert r['state']=='WAIT_G5_W2_12'
+          elif not r['checks']['w2_economics_nonfail']:
+              assert r['state']=='FAIL_G5_W2_ECONOMICS_STOP_W3'
+              assert r['windows']['W3']['metrics']['trades']==0
+          else:
+              assert r['state'] in {
+                  'WAIT_G5_W3_12',
+                  'PASS_G5_PRODUCT_OOS_WALK_FORWARD_STRESS',
+                  'HOLD_G5_PRODUCT_VALIDATION_FAIL',
+              }
+          print(f"PASS_MONOTONIC_W2_FAILFAST_CONTROL:t={t}:state={r['state']}")
           PY
       - uses: actions/upload-artifact@v4
         if: always()

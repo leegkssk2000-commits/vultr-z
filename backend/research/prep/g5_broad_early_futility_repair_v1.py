@@ -50,10 +50,6 @@ def stable(value: Any) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def utc_ms(value: str) -> int:
-    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp() * 1000)
-
-
 def metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     vals = [float(x.get("net_bps") or 0.0) for x in rows]
     wins = [x for x in vals if x > 0]
@@ -129,7 +125,7 @@ def early_futility(product: Mapping[str, Any], first6: list[Mapping[str, Any]], 
 def frozen_architectures(freeze: Mapping[str, Any]) -> list[dict[str, Any]]:
     if freeze.get("schema_version") != "zel.a1.top5.replacement_child_freeze.v2":
         raise RuntimeError("V2_FREEZE_REQUIRED")
-    rows = []
+    rows: list[dict[str, Any]] = []
     for child in freeze.get("children") or []:
         if not isinstance(child, Mapping) or not isinstance(child.get("executable_spec"), Mapping):
             continue
@@ -147,20 +143,12 @@ def frozen_architectures(freeze: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def donor_screen(
-    ref30: list[dict[str, Any]],
-    w2rows: list[dict[str, Any]],
-    donors: list[dict[str, Any]],
-    c: Mapping[str, Any],
-) -> dict[str, Any]:
+def donor_screen(ref30: list[dict[str, Any]], w2rows: list[dict[str, Any]], donors: list[dict[str, Any]], c: Mapping[str, Any]) -> dict[str, Any]:
     cfg = c["repair_screen"]
     all_rows = ref30 + w2rows
     symbols = sorted({str(x["symbol"]) for x in all_rows})
-    if not symbols:
-        raise RuntimeError("NO_ROWS_FOR_DONOR_SCREEN")
     start_ms = min(int(x["signal_ts"]) for x in all_rows) - 60 * INTERVAL_MS
     end_ms = max(int(x["exit_ts"]) for x in all_rows) + 2 * INTERVAL_MS
-
     bars: dict[str, list[dict[str, float]]] = {}
     engines: dict[tuple[str, str], Any] = {}
     for symbol in symbols:
@@ -177,29 +165,27 @@ def donor_screen(
     cells: list[dict[str, Any]] = []
     for donor in donors:
         did = donor["architecture_id"]
-        hits_ref: dict[int, bool] = {}
-        hits_w2: dict[int, bool] = {}
+        ref_hits: dict[int, bool] = {}
+        w2_hits: dict[int, bool] = {}
         for row in ref30:
             symbol = str(row["symbol"])
             hit, _ = transplant.architecture_accepts(row, bars[symbol], engines[(did, symbol)], donor["spec"])
-            hits_ref[id(row)] = bool(hit)
+            ref_hits[id(row)] = bool(hit)
         for row in w2rows:
             symbol = str(row["symbol"])
             hit, _ = transplant.architecture_accepts(row, bars[symbol], engines[(did, symbol)], donor["spec"])
-            hits_w2[id(row)] = bool(hit)
-
+            w2_hits[id(row)] = bool(hit)
         for mode in cfg["modes"]:
             if mode == "INCLUSION":
-                kept_ref = [x for x in ref30 if hits_ref[id(x)]]
-                kept_w2 = [x for x in w2rows if hits_w2[id(x)]]
+                kept_ref = [x for x in ref30 if ref_hits[id(x)]]
+                kept_w2 = [x for x in w2rows if w2_hits[id(x)]]
             elif mode == "NEGATIVE_VETO":
-                kept_ref = [x for x in ref30 if not hits_ref[id(x)]]
-                kept_w2 = [x for x in w2rows if not hits_w2[id(x)]]
+                kept_ref = [x for x in ref30 if not ref_hits[id(x)]]
+                kept_w2 = [x for x in w2rows if not w2_hits[id(x)]]
             else:
                 raise RuntimeError(f"UNKNOWN_MODE:{mode}")
-            mr = metrics(kept_ref)
-            mw = metrics(kept_w2)
-            retention = len(kept_ref) / len(ref30) * 100.0 if ref30 else 0.0
+            mr, mw = metrics(kept_ref), metrics(kept_w2)
+            retention = len(kept_ref) / len(ref30) * 100.0
             reduction = loss_reduction_pct(float(parent_w2["net_pnl_bps"] or 0.0), float(mw["net_pnl_bps"] or 0.0))
             checks = {
                 "reference_T": int(mr["trades"]) >= int(cfg["minimum_reference_T"]),
@@ -225,18 +211,10 @@ def donor_screen(
                 "checks": checks,
                 "pass": passed,
             })
-
     if len(cells) != int(cfg["expected_cells"]):
         raise RuntimeError(f"CELL_COUNT_DRIFT:{len(cells)}")
     winners = [x for x in cells if x["pass"]]
-    winners.sort(
-        key=lambda x: (
-            float(x["w2_loss_reduction_pct"]),
-            float(x["reference_metrics"].get("net_expectancy_bps") or -1e30),
-            float(x["reference_retention_pct"]),
-        ),
-        reverse=True,
-    )
+    winners.sort(key=lambda x: (float(x["w2_loss_reduction_pct"]), float(x["reference_metrics"].get("net_expectancy_bps") or -1e30), float(x["reference_retention_pct"])), reverse=True)
     selected = winners[0] if winners else None
     return {
         "state": "REPAIR_CANDIDATE_FOUND_FRESH_PROSPECTIVE_REQUIRED" if selected else "NO_FIXED_DONOR_REPAIR_WINNER",
@@ -253,10 +231,9 @@ def donor_screen(
     }
 
 
-def acquisition_telemetry(prelim: Mapping[str, Any]) -> dict[str, Any]:
-    lanes = prelim.get("lanes") or {}
+def acquisition_telemetry(prelim: Mapping[str, Any], c: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for lane_id, lane in lanes.items():
+    for lane_id, lane in (prelim.get("lanes") or {}).items():
         if not isinstance(lane, Mapping):
             continue
         out[str(lane_id)] = {
@@ -267,127 +244,78 @@ def acquisition_telemetry(prelim: Mapping[str, Any]) -> dict[str, Any]:
             "g5_state": lane.get("g5_state"),
             "next": lane.get("next"),
         }
-    return {
-        "lane_count": len(out),
-        "lanes": out,
-        "fanout_policy": read(CONTRACT)["telemetry"],
-    }
+    return {"lane_count": len(out), "lanes": out, "fanout_policy": c["telemetry"]}
 
 
-def run(out: Path) -> dict[str, Any]:
-    c = read(CONTRACT)
-    seal = read(SEAL)
-    product = read(PRODUCT)
-    manifest = read(MANIFEST)
-    forensic = read(FORENSIC)
-    freeze = read(FREEZE)
-    prelim = read(PRELIM)
+def load_g4_reference(path: Path, seal: Mapping[str, Any]) -> list[dict[str, Any]]:
+    artifact = read(path)
+    if artifact.get("strategy_id") != "trend_rider":
+        raise RuntimeError("G4_ARTIFACT_STRATEGY_DRIFT")
+    rows = sorted([dict(x) for x in artifact.get("trades") or [] if isinstance(x, Mapping)], key=lambda x: (int(x["signal_ts"]), str(x["symbol"]), str(x["side"])))
+    if len(rows) != 30:
+        raise RuntimeError(f"IMMUTABLE_G4_ARTIFACT_30_REQUIRED:{len(rows)}")
+    refm = metrics(rows)
+    sealed = seal["sealed_metrics"]
+    if abs(float(refm["net_pnl_bps"]) - float(sealed["net_pnl_bps"])) > 1e-6:
+        raise RuntimeError(f"G4_ARTIFACT_NET_DRIFT:{refm['net_pnl_bps']}:{sealed['net_pnl_bps']}")
+    return rows
 
+
+def run(out: Path, g4_artifact_receipt: Path) -> dict[str, Any]:
+    c, seal, product, manifest = read(CONTRACT), read(SEAL), read(PRODUCT), read(MANIFEST)
+    forensic, freeze, prelim = read(FORENSIC), read(FREEZE), read(PRELIM)
     if c.get("state") != "PREREGISTERED_EARLY_FUTILITY_AND_FIXED_DONOR_REPAIR_SCREEN":
         raise RuntimeError("CONTRACT_STATE_DRIFT")
     if product.get("lane_id") != c["lane_id"] or product.get("stage") != "G5":
         raise RuntimeError("BROAD_PRODUCT_DRIFT")
-    if int(product.get("postlock_closed_T") or 0) < int(c["early_futility_gate"]["minimum_T"]):
+    if int(product.get("postlock_closed_T") or 0) < 6:
         raise RuntimeError("EARLY_FUTILITY_MIN_T_NOT_REACHED")
     if seal.get("state") != "PASS_G4_ECONOMIC_SURVIVOR":
         raise RuntimeError("G4_SEAL_REQUIRED")
 
+    ref30 = load_g4_reference(g4_artifact_receipt, seal)
+    g5_boundary = str(manifest["prospective_boundary_utc"])
     with tempfile.TemporaryDirectory(prefix="g5-broad-futility-") as td:
-        receipt = broad.current_policy_replay(
-            out_path=Path(td) / "broad_replay.json",
-            boundary_utc=str(c["sources"]["g4_reference_replay_boundary_utc"]),
-        )
-    rows = sorted(
-        [dict(x) for x in receipt.get("trades") or [] if isinstance(x, Mapping)],
-        key=lambda x: (int(x["signal_ts"]), str(x["symbol"]), str(x["side"])),
-    )
-    boundary_ms = int(manifest["prospective_boundary_ms"])
-    ref_candidates = [x for x in rows if int(x["signal_ts"]) <= boundary_ms]
-    w2_all = [x for x in rows if int(x["signal_ts"]) > boundary_ms and int(x["exit_ts"]) > boundary_ms]
-    if len(ref_candidates) < 30:
-        raise RuntimeError(f"G4_REFERENCE_30_NOT_REPRODUCED:{len(ref_candidates)}")
-    ref30 = ref_candidates[:30]
+        current = broad.current_policy_replay(out_path=Path(td) / "g5_replay.json", boundary_utc=g5_boundary)
+    w2_all = sorted([dict(x) for x in current.get("trades") or [] if isinstance(x, Mapping)], key=lambda x: (int(x["signal_ts"]), str(x["symbol"]), str(x["side"])))
     if len(w2_all) < 6:
         raise RuntimeError(f"W2_FIRST6_NOT_REPRODUCED:{len(w2_all)}")
     first6 = w2_all[:6]
-
-    refm = metrics(ref30)
-    sealed = seal["sealed_metrics"]
-    if abs(float(refm["net_pnl_bps"]) - float(sealed["net_pnl_bps"])) > 1e-6:
-        raise RuntimeError(f"G4_REFERENCE_NET_DRIFT:{refm['net_pnl_bps']}:{sealed['net_pnl_bps']}")
+    current6 = metrics(first6)
+    product6 = ((product.get("windows") or {}).get("W2") or {}).get("metrics") or {}
+    if int(product6.get("trades") or 0) != 6 or abs(float(current6["net_pnl_bps"]) - float(product6.get("net_pnl_bps") or 0.0)) > 1e-6:
+        raise RuntimeError(f"W2_CURRENT_PRODUCT_PARITY_FAIL:{current6}:{product6}")
 
     futility = early_futility(product, first6, c)
     if not futility["triggered"]:
         raise RuntimeError(f"EXPECTED_6T_FUTILITY_NOT_TRIGGERED:{futility['checks']}")
-
     screen = donor_screen(ref30, first6, frozen_architectures(freeze), c)
+    atr_rows = (forensic.get("w2") or {}).get("rows") or []
     atr_probe = {
         "source_forensic_state": forensic.get("state"),
         "selected_causal_axis": forensic.get("selected_causal_axis"),
-        "first4_all_atr_cool": bool(
-            len((forensic.get("w2") or {}).get("rows") or []) >= 4
-            and all(bool(x.get("atr_pct_self_normalized_cool")) for x in (forensic.get("w2") or {}).get("rows")[:4])
-        ),
+        "first4_all_atr_cool": bool(len(atr_rows) >= 4 and all(bool(x.get("atr_pct_self_normalized_cool")) for x in atr_rows[:4])),
         "interpretation": "RETIRE_ATR_COOL_AS_SOLE_REPAIR_AXIS_IF_IT_ACCEPTED_ALL_OBSERVED_LOSSES",
     }
-
     result = {
         "schema_version": SCHEMA,
         "state": "G5_BROAD_EARLY_FUTILITY_RED_REPAIR_PARALLEL_ACTIVE",
         "observed_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "lane_id": c["lane_id"],
-        "formal_parent": {
-            "state": product.get("state"),
-            "postlock_closed_T": int(product.get("postlock_closed_T") or 0),
-            "W2_target_T": int(((manifest.get("windows") or {}).get("W2") or {}).get("target_closed_trades") or 12),
-            "mutated": False,
-            "role": "FORMAL_CONTROL_ONLY_CONTINUE_TO_12T",
-        },
+        "formal_parent": {"state": product.get("state"), "postlock_closed_T": int(product.get("postlock_closed_T") or 0), "W2_target_T": 12, "mutated": False, "role": "FORMAL_CONTROL_ONLY_CONTINUE_TO_12T"},
         "early_futility": futility,
         "causal_axis_review": atr_probe,
         "repair_screen": screen,
-        "acquisition_telemetry": acquisition_telemetry(prelim),
-        "roadmap_policy": {
-            "broad_parent_blocks_G5": False,
-            "broad_parent_development_priority": "LOW_CONTROL_ONLY",
-            "other_top5_preliminary_lanes_continue": True,
-            "selected_repair_if_any_requires_new_boundary": True,
-            "screen_credit_g4_T": 0,
-            "screen_credit_g5_T": 0,
-        },
-        "integrity": {
-            "g4_reference_T": len(ref30),
-            "w2_first6_T": len(first6),
-            "threshold_sweep": False,
-            "symbol_sweep": False,
-            "exit_retune": False,
-            "cost_retune": False,
-            "formal_parent_mutation": False,
-            "formal_W2_control_stopped": False,
-        },
+        "acquisition_telemetry": acquisition_telemetry(prelim, c),
+        "roadmap_policy": {"broad_parent_blocks_G5": False, "broad_parent_development_priority": "LOW_CONTROL_ONLY", "other_top5_preliminary_lanes_continue": True, "selected_repair_if_any_requires_new_boundary": True, "screen_credit_g4_T": 0, "screen_credit_g5_T": 0},
+        "integrity": {"g4_reference_T": len(ref30), "g4_reference_source": "IMMUTABLE_GITHUB_ACTION_ARTIFACT", "w2_first6_T": len(first6), "w2_current_product_parity": True, "threshold_sweep": False, "symbol_sweep": False, "exit_retune": False, "cost_retune": False, "formal_parent_mutation": False, "formal_W2_control_stopped": False},
         "next": screen["next"],
         **AUTH,
     }
     result["receipt_sha256"] = stable({k: v for k, v in result.items() if k != "receipt_sha256"})
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({
-        "state": result["state"],
-        "futility": result["early_futility"],
-        "repair_state": screen["state"],
-        "winner_count": screen["winner_count"],
-        "selected": screen["selected_cell_id"],
-        "cells": [{
-            "id": x["cell_id"],
-            "refT": x["reference_metrics"]["trades"],
-            "refNet": x["reference_metrics"]["net_pnl_bps"],
-            "w2T": x["w2_metrics"]["trades"],
-            "w2Net": x["w2_metrics"]["net_pnl_bps"],
-            "lossReduction": x["w2_loss_reduction_pct"],
-            "pass": x["pass"],
-        } for x in screen["cells"]],
-        "out": str(out),
-    }, sort_keys=True))
+    print(json.dumps({"state": result["state"], "futility": futility["triggered"], "repair_state": screen["state"], "winner_count": screen["winner_count"], "selected": screen["selected_cell_id"], "cells": [{"id": x["cell_id"], "refT": x["reference_metrics"]["trades"], "refNet": x["reference_metrics"]["net_pnl_bps"], "w2T": x["w2_metrics"]["trades"], "w2Net": x["w2_metrics"]["net_pnl_bps"], "lossReduction": x["w2_loss_reduction_pct"], "pass": x["pass"]} for x in screen["cells"]], "out": str(out)}, sort_keys=True))
     return result
 
 
@@ -405,11 +333,14 @@ def self_test() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=LATEST)
+    ap.add_argument("--g4-artifact-receipt", type=Path)
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
-    run(args.out)
+    if args.g4_artifact_receipt is None:
+        raise SystemExit("--g4-artifact-receipt required")
+    run(args.out, args.g4_artifact_receipt)
     return 0
 
 

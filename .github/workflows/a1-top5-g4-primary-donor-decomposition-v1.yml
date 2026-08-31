@@ -1,0 +1,95 @@
+name: A1 Top5 G4 Primary Donor Decomposition V1
+
+on:
+  push:
+    branches: [research/primary-donor-decomposition-v1]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_primary_donor_decomposition_v1.json'
+      - 'backend/research/rebuild/a1_top5_g4_primary_donor_decomposition_v1.py'
+      - '.github/workflows/a1-top5-g4-primary-donor-decomposition-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-g4-primary-donor-decomposition-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/primary-donor-decomposition-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert frozen no-paid-AI scope and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_primary_donor_decomposition_v1.py
+          python -m backend.research.rebuild.a1_top5_g4_primary_donor_decomposition_v1 --self-test
+      - name: Evaluate exact Primary 224T against four fixed donor cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_primary_donor_decomposition_v1 \
+            --out out/a1_top5_g4_primary_donor_decomposition_v1_latest.json
+      - name: Verify integrity and zero authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p='out/a1_top5_g4_primary_donor_decomposition_v1_latest.json'
+          r=json.load(open(p))
+          assert r['schema_version']=='zel.a1.top5.g4.primary_donor_decomposition.receipt.v1'
+          assert r['state'] in {'HISTORICAL_PRIMARY_SALVAGE_CANDIDATE_FRESH_REQUIRED','FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'}
+          assert r['integrity']['parent_trade_count']==224
+          assert r['integrity']['unique_parent_trade_ids'] is True
+          assert r['integrity']['fixed_cell_count'] is True
+          assert r['integrity']['threshold_sweep'] is False
+          assert r['integrity']['symbol_sweep'] is False
+          assert r['integrity']['post_result_retune'] is False
+          assert r['integrity']['parent_mutation'] is False
+          assert r['integrity']['exit_mutation'] is False
+          assert r['integrity']['cost_rededuction'] is False
+          assert r['formal_credit']=={'fresh_g4_T':0,'g5_T':0}
+          assert r['minimum_fresh_T_if_selected']==6
+          assert r['fresh_6T_is_not_automatic_pass'] is True
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'winner_count':r['winner_count'],'selected':r['selected_cell_id'],'cells':[[x['cell_id'],x['metrics_6m']['closed_T'],x['metrics_6m']['net_pnl_bps'],x['metrics_recent3m']['closed_T'],x['metrics_recent3m']['net_pnl_bps'],x['pass']] for x in r['cells']]},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-g4-primary-donor-decomposition-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_g4_primary_donor_decomposition_v1_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist result to research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_g4_primary_donor_decomposition_v1_latest.json \
+            backend/research/rebuild/a1_top5_g4_primary_donor_decomposition_v1_latest.json
+          git config user.name 'a1-primary-donor-decomposition-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_g4_primary_donor_decomposition_v1_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 Primary: persist fixed donor decomposition result [skip ci]'
+          git pull --rebase origin research/primary-donor-decomposition-v1
+          git push origin HEAD:research/primary-donor-decomposition-v1

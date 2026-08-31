@@ -1,0 +1,75 @@
+name: A1 Top5 G4 Primary Falsification Sync V1
+
+on:
+  push:
+    branches: [research/g4-terminal-primary-falsification-sync-v1]
+    paths:
+      - 'backend/research/rebuild/a1_top5_g4_primary_falsification_sync_v1.py'
+      - '.github/workflows/a1-top5-g4-primary-falsification-sync-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-g4-primary-falsification-sync-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g4-terminal-primary-falsification-sync-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and verify evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_g4_primary_falsification_sync_v1.py
+          python -m backend.research.rebuild.a1_top5_g4_primary_falsification_sync_v1
+      - name: Apply terminal and SSOT sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_g4_primary_falsification_sync_v1 --apply
+      - name: Verify terminal invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          t=json.load(open('backend/research/rebuild/a1_top5_g4_terminal_latest.json'))
+          s=json.load(open('backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'))
+          p=next(x for x in t['targets'] if x.get('strategy')=='TrendRider Primary')
+          sp=next(x for x in s['top5'] if x.get('lane_id')=='trend_rider_primary_wr8125')
+          assert p['terminal_state']=='FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'
+          assert sp['terminal_state']=='FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED'
+          assert t['summary']['target_wait_new_t']==0
+          assert t['summary']['target_architecture_replacement_required']==5
+          assert s['g4_terminal_sync']['unresolved']==0
+          assert sp['historical_robustness_falsification']['donor_winners']==0
+          assert sp['historical_robustness_falsification']['formal_credit']=={'fresh_g4_T':0,'g5_T':0}
+          print('PASS_PRIMARY_TERMINAL_SSOT_SYNC')
+          PY
+      - name: Persist synced authorities to research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'a1-primary-terminal-sync-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_g4_terminal_latest.json \
+                  backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 G4: seal Primary architecture replacement terminal [skip ci]'
+          git pull --rebase origin research/g4-terminal-primary-falsification-sync-v1
+          git push origin HEAD:research/g4-terminal-primary-falsification-sync-v1

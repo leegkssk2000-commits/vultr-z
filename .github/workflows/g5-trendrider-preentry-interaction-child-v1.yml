@@ -1,16 +1,23 @@
-name: G5 TrendRider Preentry Interaction Child V1
+name: G5 TrendRider Causal Research Loop V1
 
 on:
   pull_request:
-    paths:
-      - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
-      - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
-      - '.github/workflows/g5-trendrider-preentry-interaction-child-v1.yml'
-  push:
     branches: [master]
     paths:
       - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
       - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
+      - 'backend/research/prep/g5_trendrider_causal_web_research_v1.py'
+      - 'backend/research/prep/g5_trendrider_w2_forensic_v1.py'
+      - '.github/workflows/g5-trendrider-preentry-interaction-child-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/prep/g5_trendrider_broad30_product_latest.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
+      - 'backend/research/prep/g5_trendrider_w2_forensic_v1.py'
+      - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
+      - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
+      - 'backend/research/prep/g5_trendrider_causal_web_research_v1.py'
       - '.github/workflows/g5-trendrider-preentry-interaction-child-v1.yml'
   schedule:
     - cron: '17 * * * *'
@@ -18,16 +25,17 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
-  group: g5-trendrider-preentry-interaction-child-v1
+  group: g5-trendrider-causal-research-loop-v1
   cancel-in-progress: false
 
 jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,49 +43,67 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify frozen child contract and development evaluator
+      - name: Verify deterministic forensic, failed screen, and grounded-research controller
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m py_compile backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py
+          python -m py_compile \
+            backend/research/prep/g5_trendrider_w2_forensic_v1.py \
+            backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py \
+            backend/research/prep/g5_trendrider_causal_web_research_v1.py
+          python -m backend.research.prep.g5_trendrider_w2_forensic_v1 --self-test
           python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_causal_web_research_v1 --self-test
+
+          python -m backend.research.prep.g5_trendrider_w2_forensic_v1 \
+            --out out/g5_trendrider_w2_forensic_latest.json
           python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 \
             --out out/g5_trendrider_preentry_interaction_child_latest.json
+
           python - <<'PY'
           import json
-          r=json.load(open('out/g5_trendrider_preentry_interaction_child_latest.json'))
-          assert r['stage']=='G5_CHILD_PROSPECTIVE'
-          assert r['preentry_only'] is True
-          assert r['numeric_threshold_sweep'] is False
-          assert r['outcome_optimized_cutoff'] is False
-          assert r['symbol_sweep'] is False
-          assert r['existing_W2_formal_child_credit']==0
-          assert r['parent']['mutated'] is False
-          assert r['integrity']['source_integrity_defects']==[]
-          assert r['integrity']['leakage_lookahead']==0
-          assert r['selection_authority'] is False and r['promotion_authority'] is False
-          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert r['g6_promotion_eligible'] is False
-          assert set(r['children'])=={'trend_rider_elevatedvol_cooling_veto_v1','trend_rider_elevatedvol_reconfirmation_v1'}
-          assert any(v['development_viable'] for v in r['children'].values()), 'NO_VIABLE_CHILD_AFTER_BOUNDED_DEVELOPMENT'
+          f=json.load(open('out/g5_trendrider_w2_forensic_latest.json'))
+          c=json.load(open('out/g5_trendrider_preentry_interaction_child_latest.json'))
+          assert f['w2_observed_T']==c['parent']['current_W2_T']
+          assert f['parity']['parent_product_matches_top5'] is True
+          assert f['parity']['parent_receipt_matches_top5'] is True
+          assert f['parity']['duplicate']==0 and f['parity']['integrity_defects']==[] and f['parity']['leakage_lookahead']==0
+          assert c['stage']=='G5_CHILD_PROSPECTIVE'
+          assert c['preentry_only'] is True
+          assert c['numeric_threshold_sweep'] is False and c['outcome_optimized_cutoff'] is False and c['symbol_sweep'] is False
+          assert c['existing_W2_formal_child_credit']==0 and c['parent']['mutated'] is False
+          assert c['integrity']['source_integrity_defects']==[] and c['integrity']['leakage_lookahead']==0
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          assert c['g6_promotion_eligible'] is False
+          # Development failure is an allowed and important result. It must route to grounded mechanism reselection,
+          # not be converted into a fake PASS merely to make CI green.
+          if not any(v['development_viable'] for v in c['children'].values()):
+              assert c['state']=='FAIL_DEVELOPMENT_MECHANISM_RESELECT'
+              assert c['next']=='RESELECT_PREENTRY_MECHANISM_WITHOUT_NUMERIC_SWEEP'
           print(json.dumps({
-            'state':r['state'],
-            'parent':r['parent'],
-            'w2_audit':r['W2_preentry_audit'],
-            'children':{k:{'development_viable':v['development_viable'],'reference':v['historical_reference_development'],'w2':v['existing_W2_diagnostic_only'],'fresh':v['fresh']} for k,v in r['children'].items()},
-            'receipt':r['receipt_sha256']
+            'forensic_T':f['w2_observed_T'],
+            'axis':f['selected_causal_axis'],
+            'screen_state':c['state'],
+            'screen_children':{k:v['development_viable'] for k,v in c['children'].items()},
+            'forensic_receipt':f['receipt_sha256'],
+            'screen_receipt':c['receipt_sha256'],
           },sort_keys=True))
           PY
+
       - uses: actions/upload-artifact@v4
         with:
-          name: g5-trendrider-preentry-child-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/g5_trendrider_preentry_interaction_child_latest.json
-          retention-days: 90
+          name: g5-causal-loop-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/g5_trendrider_w2_forensic_latest.json
+            out/g5_trendrider_preentry_interaction_child_latest.json
+          if-no-files-found: error
+          retention-days: 30
 
   collect:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,60 +112,163 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Recompute true-fresh child receipt
+
+      - name: Verify causal-loop code before any paid network call
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/prep/g5_trendrider_w2_forensic_v1.py \
+            backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py \
+            backend/research/prep/g5_trendrider_causal_web_research_v1.py
+          python -m backend.research.prep.g5_trendrider_w2_forensic_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_causal_web_research_v1 --self-test
+
+      - name: Refresh current W2 forensic and bounded child development screen
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m py_compile backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py
-          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_w2_forensic_v1 \
+            --out out/g5_trendrider_w2_forensic_latest.json
           python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 \
             --out out/g5_trendrider_preentry_interaction_child_latest.json
-      - name: Persist monotonic child receipt
+          python - <<'PY'
+          import json
+          f=json.load(open('out/g5_trendrider_w2_forensic_latest.json'))
+          c=json.load(open('out/g5_trendrider_preentry_interaction_child_latest.json'))
+          assert f['w2_observed_T']==c['parent']['current_W2_T']
+          assert f['parity']['parent_product_matches_top5'] is True
+          assert f['parity']['parent_receipt_matches_top5'] is True
+          assert f['parity']['duplicate']==0 and f['parity']['integrity_defects']==[] and f['parity']['leakage_lookahead']==0
+          assert c['integrity']['source_integrity_defects']==[] and c['integrity']['leakage_lookahead']==0
+          assert c['selection_authority'] is False and c['promotion_authority'] is False
+          assert c['execution_authority']=='NONE' and c['order_authority']=='BLOCKED' and c['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'forensic_T':f['w2_observed_T'],'axis':f['selected_causal_axis'],'screen_state':c['state']},sort_keys=True))
+          PY
+
+      - name: Run delta-gated Gemini Google-Search causal research and selected-child collector
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_WEB_RESEARCH_MODEL: ${{ vars.GEMINI_WEB_RESEARCH_MODEL }}
+          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
         run: |
           set -euo pipefail
-          target=backend/research/prep/g5_trendrider_preentry_interaction_child_latest.json
-          candidate=out/g5_trendrider_preentry_interaction_child_latest.json
-          CANDIDATE="$candidate" TARGET="$target" python - <<'PY'
+          current=backend/research/prep/g5_trendrider_causal_web_research_latest.json
+          python -m backend.research.prep.g5_trendrider_causal_web_research_v1 \
+            --forensic out/g5_trendrider_w2_forensic_latest.json \
+            --screen out/g5_trendrider_preentry_interaction_child_latest.json \
+            --current "$current" \
+            --out out/g5_trendrider_causal_web_research_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5_trendrider_causal_web_research_latest.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['g6_promotion_eligible'] is False
+          assert r.get('numeric_threshold_sweep') is False
+          assert r.get('symbol_session_side_sweep') is False
+          assert r.get('parent_mutation') is False
+          assert r.get('exit_risk_cost_mutation') is False
+          assert int(r.get('existing_W2_formal_child_credit') or 0)==0
+          selected=r.get('selected_candidate')
+          if selected:
+              assert selected['historical_or_existing_W2_formal_credit']==0
+              assert selected['boundary_rule']=='STRICT_SIGNAL_AND_EXIT_AFTER_BOUNDARY'
+              assert selected['development']['development_viable'] is True
+          if r.get('provider_call_this_run'):
+              assert r['provider']['provider']=='gemini'
+              assert int(r['provider']['request_count'])==1
+              assert int(r['provider']['source_count']) >= int(r['grounding_min_sources_required'])
+              assert r['source_grounding_pass'] is True
+          print(json.dumps({
+            'state':r['state'],
+            'provider_call':r.get('provider_call_this_run'),
+            'cache_hit':r.get('cache_hit'),
+            'queries':len((r.get('provider') or {}).get('web_search_queries') or []),
+            'sources':(r.get('provider') or {}).get('source_count'),
+            'selected':(selected or {}).get('mechanism_id'),
+            'fresh_T':(r.get('fresh') or {}).get('child_closed_T'),
+            'next':r['next'],
+          },sort_keys=True))
+          PY
+
+      - name: Persist one causal research chain without stale replay
+        run: |
+          set -euo pipefail
+          forensic_target=backend/research/prep/g5_trendrider_w2_forensic_latest.json
+          screen_target=backend/research/prep/g5_trendrider_preentry_interaction_child_latest.json
+          research_target=backend/research/prep/g5_trendrider_causal_web_research_latest.json
+
+          FORENSIC_CANDIDATE=out/g5_trendrider_w2_forensic_latest.json \
+          FORENSIC_TARGET="$forensic_target" \
+          SCREEN_CANDIDATE=out/g5_trendrider_preentry_interaction_child_latest.json \
+          SCREEN_TARGET="$screen_target" \
+          RESEARCH_CANDIDATE=out/g5_trendrider_causal_web_research_latest.json \
+          RESEARCH_TARGET="$research_target" python - <<'PY'
           import json, os, shutil
           from pathlib import Path
-          c=json.load(open(os.environ['CANDIDATE']))
-          t=Path(os.environ['TARGET'])
-          if t.exists():
-              old=json.load(open(t))
-              if old.get('schema_version') != c.get('schema_version'):
-                  raise SystemExit('CHILD_RECEIPT_SCHEMA_DRIFT')
-              for cid in c['children']:
-                  old_ids=list(old['children'][cid]['fresh']['trade_ids'])
-                  new_ids=list(c['children'][cid]['fresh']['trade_ids'])
-                  if len(new_ids) < len(old_ids):
-                      raise SystemExit(f'CHILD_T_REGRESSION:{cid}:{len(new_ids)}<{len(old_ids)}')
-                  if len(new_ids) == len(old_ids) and new_ids != old_ids:
-                      raise SystemExit(f'CHILD_SAME_T_IDENTITY_REWRITE:{cid}')
-                  if not set(old_ids).issubset(set(new_ids)):
-                      raise SystemExit(f'CHILD_TRADE_SET_NONMONOTONIC:{cid}')
-          t.parent.mkdir(parents=True, exist_ok=True)
-          shutil.copyfile(os.environ['CANDIDATE'], t)
-          print('PASS_G5_CHILD_MONOTONIC_PERSIST')
+
+          def load(p):
+              return json.load(open(p))
+
+          def copy_if_semantic_delta(candidate, target, drop=()):
+              c=load(candidate); t=Path(target)
+              if not t.exists():
+                  t.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(candidate, target); return True
+              old=load(target)
+              def norm(x):
+                  x=dict(x)
+                  x.pop('receipt_sha256', None)
+                  for k in drop: x.pop(k, None)
+                  return x
+              if norm(old)==norm(c):
+                  return False
+              shutil.copyfile(candidate, target); return True
+
+          fc=os.environ['FORENSIC_CANDIDATE']; ft=os.environ['FORENSIC_TARGET']
+          fnew=load(fc); ftp=Path(ft)
+          if ftp.exists():
+              fold=load(ft)
+              if int(fnew.get('w2_observed_T') or 0) < int(fold.get('w2_observed_T') or 0):
+                  raise SystemExit('FORENSIC_T_REGRESSION')
+              if int(fnew.get('w2_observed_T') or 0) == int(fold.get('w2_observed_T') or 0):
+                  old_parent=str(fold.get('parent_receipt_sha256') or '')
+                  new_parent=str(fnew.get('parent_receipt_sha256') or '')
+                  if old_parent and new_parent and old_parent != new_parent:
+                      raise SystemExit('FORENSIC_SAME_T_PARENT_REWRITE')
+          copy_if_semantic_delta(fc, ft)
+          copy_if_semantic_delta(os.environ['SCREEN_CANDIDATE'], os.environ['SCREEN_TARGET'])
+          copy_if_semantic_delta(
+              os.environ['RESEARCH_CANDIDATE'], os.environ['RESEARCH_TARGET'],
+              drop=('last_refresh_utc','provider_call_this_run','cache_hit')
+          )
+          print('PASS_G5_CAUSAL_CHAIN_SEMANTIC_PERSIST_PREP')
           PY
-          git config user.name 'g5-child-collector'
+
+          git config user.name 'g5-causal-research-writer'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5: persist preentry interaction child receipt [skip ci]'
-          git fetch origin master
-          if ! git rebase origin/master; then
-            git rebase --abort || true
-            echo 'G5_CHILD_PERSIST_SKIPPED_MASTER_MOVED'
+          git add "$forensic_target" "$screen_target" "$research_target"
+          if git diff --cached --quiet; then
+            echo 'G5_CAUSAL_CHAIN_NO_SEMANTIC_DELTA'
             exit 0
           fi
+          git commit -m 'G5: persist forensic web-research child chain [skip ci]'
+          # Never rebase generated evidence onto a master that moved during the run.
+          # A non-fast-forward push is a safe skip; the next push/schedule recomputes from new authority.
           if ! git push origin HEAD:master; then
-            echo 'G5_CHILD_PERSIST_SKIPPED_PUSH_RACE'
+            echo 'G5_CAUSAL_CHAIN_PERSIST_SKIPPED_MASTER_MOVED'
             exit 0
           fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: g5-trendrider-preentry-child-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/g5_trendrider_preentry_interaction_child_latest.json
+          name: g5-causal-loop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/g5_trendrider_w2_forensic_latest.json
+            out/g5_trendrider_preentry_interaction_child_latest.json
+            out/g5_trendrider_causal_web_research_latest.json
           if-no-files-found: error
           retention-days: 90

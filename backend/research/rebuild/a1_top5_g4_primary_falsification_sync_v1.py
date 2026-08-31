@@ -28,7 +28,7 @@ def apply() -> tuple[dict[str, Any], dict[str, Any]]:
     e = read(EVIDENCE)
     t = read(TERMINAL)
     s = read(SSOT)
-    if e.get("state") != "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED" or int(e.get("winner_count") or -1) != 0:
+    if e.get("state") != "FALSIFIED_ARCHITECTURE_REPLACEMENT_REQUIRED" or int(e.get("winner_count", -1)) != 0:
         raise RuntimeError("PRIMARY_FALSIFICATION_EVIDENCE_NOT_FINAL")
     if int((e.get("parent_metrics_6m") or {}).get("closed_T") or 0) != 224:
         raise RuntimeError("PRIMARY_224T_EVIDENCE_REQUIRED")

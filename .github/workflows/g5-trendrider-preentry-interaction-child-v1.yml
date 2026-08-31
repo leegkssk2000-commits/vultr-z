@@ -1,0 +1,138 @@
+name: G5 TrendRider Preentry Interaction Child V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
+      - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
+      - '.github/workflows/g5-trendrider-preentry-interaction-child-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json'
+      - 'backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py'
+      - '.github/workflows/g5-trendrider-preentry-interaction-child-v1.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5-trendrider-preentry-interaction-child-v1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen child contract and development evaluator
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 \
+            --out out/g5_trendrider_preentry_interaction_child_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5_trendrider_preentry_interaction_child_latest.json'))
+          assert r['stage']=='G5_CHILD_PROSPECTIVE'
+          assert r['preentry_only'] is True
+          assert r['numeric_threshold_sweep'] is False
+          assert r['outcome_optimized_cutoff'] is False
+          assert r['symbol_sweep'] is False
+          assert r['existing_W2_formal_child_credit']==0
+          assert r['parent']['mutated'] is False
+          assert r['integrity']['source_integrity_defects']==[]
+          assert r['integrity']['leakage_lookahead']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['g6_promotion_eligible'] is False
+          assert set(r['children'])=={'trend_rider_highvol_weakimpulse_veto_v1','trend_rider_highvol_reconfirmation_v1'}
+          print(json.dumps({'state':r['state'],'parent':r['parent'],'children':{k:v['fresh'] for k,v in r['children'].items()},'receipt':r['receipt_sha256']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5-trendrider-preentry-child-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_trendrider_preentry_interaction_child_latest.json
+          retention-days: 90
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recompute true-fresh child receipt
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m py_compile backend/research/prep/g5_trendrider_preentry_interaction_child_v1.py
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 --self-test
+          python -m backend.research.prep.g5_trendrider_preentry_interaction_child_v1 \
+            --out out/g5_trendrider_preentry_interaction_child_latest.json
+      - name: Persist monotonic child receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/prep/g5_trendrider_preentry_interaction_child_latest.json
+          candidate=out/g5_trendrider_preentry_interaction_child_latest.json
+          CANDIDATE="$candidate" TARGET="$target" python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          c=json.load(open(os.environ['CANDIDATE']))
+          t=Path(os.environ['TARGET'])
+          if t.exists():
+              old=json.load(open(t))
+              if old.get('schema_version') != c.get('schema_version'):
+                  raise SystemExit('CHILD_RECEIPT_SCHEMA_DRIFT')
+              for cid in c['children']:
+                  old_ids=list(old['children'][cid]['fresh']['trade_ids'])
+                  new_ids=list(c['children'][cid]['fresh']['trade_ids'])
+                  if len(new_ids) < len(old_ids):
+                      raise SystemExit(f'CHILD_T_REGRESSION:{cid}:{len(new_ids)}<{len(old_ids)}')
+                  if len(new_ids) == len(old_ids) and new_ids != old_ids:
+                      raise SystemExit(f'CHILD_SAME_T_IDENTITY_REWRITE:{cid}')
+                  if not set(old_ids).issubset(set(new_ids)):
+                      raise SystemExit(f'CHILD_TRADE_SET_NONMONOTONIC:{cid}')
+          t.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copyfile(os.environ['CANDIDATE'], t)
+          print('PASS_G5_CHILD_MONOTONIC_PERSIST')
+          PY
+          git config user.name 'g5-child-collector'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5: persist preentry interaction child receipt [skip ci]'
+          git fetch origin master
+          if ! git rebase origin/master; then
+            git rebase --abort || true
+            echo 'G5_CHILD_PERSIST_SKIPPED_MASTER_MOVED'
+            exit 0
+          fi
+          if ! git push origin HEAD:master; then
+            echo 'G5_CHILD_PERSIST_SKIPPED_PUSH_RACE'
+            exit 0
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-trendrider-preentry-child-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_trendrider_preentry_interaction_child_latest.json
+          if-no-files-found: error
+          retention-days: 90

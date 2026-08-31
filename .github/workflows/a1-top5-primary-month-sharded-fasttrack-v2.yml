@@ -1,0 +1,131 @@
+name: A1 Top5 Primary Month-Sharded Fasttrack V2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_primary_month_sharded_fasttrack_v2.json'
+      - 'backend/research/rebuild/a1_top5_g4_primary_month_shard_v2.py'
+      - 'backend/research/rebuild/a1_top5_g4_primary_month_aggregate_v2.py'
+      - '.github/workflows/a1-top5-primary-month-sharded-fasttrack-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-top5-primary-month-sharded-fasttrack-v2
+  cancel-in-progress: false
+
+jobs:
+  primary_month:
+    name: Primary ${{ matrix.symbol }} ${{ matrix.window }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        symbol: [BTC-USDT, ETH-USDT]
+        window:
+          - M1_20260215_20260315
+          - M2_20260315_20260415
+          - M3_20260415_20260515
+          - M4_20260515_20260615
+          - M5_20260615_20260715
+          - M6_20260715_20260815
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile frozen shard runner
+        run: |
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_g4_primary_month_shard_v2.py \
+            backend/research/rebuild/a1_top5_g4_primary_month_aggregate_v2.py
+      - name: Run one preregistered symbol-month shard
+        run: |
+          mkdir -p out/shards
+          python -m backend.research.rebuild.a1_top5_g4_primary_month_shard_v2 \
+            --symbol '${{ matrix.symbol }}' \
+            --window-id '${{ matrix.window }}' \
+            --out 'out/shards/primary_${{ matrix.symbol }}_${{ matrix.window }}.json'
+      - name: Guard no formal/fresh credit
+        run: |
+          python - <<'PY'
+          import glob, json
+          paths=glob.glob('out/shards/*.json')
+          assert len(paths)==1, paths
+          x=json.load(open(paths[0]))
+          assert x['state']=='PRIMARY_MONTH_SHARD_OK'
+          assert x['formal_credit']=={'fresh_g4_T':0,'g5_T':0}
+          assert x['integrity']['strategy_semantics_changed'] is False
+          assert x['integrity']['threshold_sweep'] is False
+          assert x['integrity']['window_sweep'] is False
+          assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED'
+          print('PASS_PRIMARY_MONTH_SHARD_GUARDS', x['symbol'], x['window_id'], x['metrics']['closed_T'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-primary-${{ matrix.symbol }}-${{ matrix.window }}
+          path: out/shards/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    name: Aggregate Primary 12 shards
+    needs: primary_month
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: a1-primary-*
+          path: out/downloaded
+          merge-multiple: true
+      - name: Aggregate exact 12 shards
+        run: |
+          python -m backend.research.rebuild.a1_top5_g4_primary_month_aggregate_v2 \
+            --input-dir out/downloaded \
+            --out out/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json
+      - name: Verify aggregate integrity and authority
+        run: |
+          python - <<'PY'
+          import json
+          p='out/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json'
+          x=json.load(open(p))
+          assert x['shard_count']==12 and x['expected_shard_count']==12 and x['shards_complete'] is True
+          assert x['integrity']['exact_12_shards'] is True
+          assert x['integrity']['unique_symbol_window_pairs'] is True
+          assert x['integrity']['unique_trade_ids'] is True
+          assert x['integrity']['historical_credit_to_fresh_g4_T']==0
+          assert x['integrity']['historical_credit_to_g5_T']==0
+          assert x['formal_credit']=={'fresh_g4_T':0,'g5_T':0}
+          assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED'
+          print('PASS_PRIMARY_12_SHARD_AGGREGATE', x['state'])
+          print('3M', x['recent_3m']['metrics'])
+          print('6M', x['recent_6m']['metrics'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-primary-month-sharded-fasttrack-v2-final
+          path: out/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Persist final receipt to master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git config user.name 'a1-primary-month-sharded-fasttrack-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          git fetch origin master
+          git rebase origin/master
+          cp out/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json \
+            backend/research/rebuild/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json
+          git add backend/research/rebuild/a1_top5_g4_primary_month_sharded_fasttrack_v2_latest.json
+          git diff --cached --quiet || git commit -m 'A1 Primary: persist 12-shard historical fasttrack result [skip ci]'
+          git push origin HEAD:master

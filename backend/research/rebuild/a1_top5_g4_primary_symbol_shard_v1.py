@@ -17,6 +17,7 @@ BREAK_FRESH = ROOT / "backend/research/rebuild/a1_break_reclaim_breakout_g4_fres
 SCHEMA = "zel.a1.top5.g4.primary_symbol_shard.receipt.v1"
 LANE_ID = "trend_rider_primary_wr8125"
 ALLOWED_SYMBOLS = ("BTC-USDT", "ETH-USDT")
+# Exact equivalence to the old Primary lane: ownership is symbol-local, so BTC/ETH can be replayed independently and merged losslessly.
 
 
 def read(path: Path) -> dict[str, Any]:

@@ -239,6 +239,8 @@ def evaluate(receipt: Mapping[str, Any], seal: Mapping[str, Any], manifest: Mapp
     }
     if not w2_ready:
         state = "WAIT_G5_W2_12"
+    elif not checks["w2_economics_nonfail"]:
+        state = "FAIL_G5_W2_ECONOMICS_STOP_W3"
     elif not w3_ready:
         state = "WAIT_G5_W3_12"
     elif all(checks.values()):
@@ -264,6 +266,13 @@ def evaluate(receipt: Mapping[str, Any], seal: Mapping[str, Any], manifest: Mapp
         },
         "combined_oos": cm,
         "stress": stress,
+        "stage_stop_policy": {
+            "contract": "backend/research/contracts/g5_broad_w2_failfast_v1.json",
+            "w2_terminal_failfast_enabled": True,
+            "w2_target_T": 12,
+            "w3_required_only_if_w2_economics_nonfail": True,
+            "terminal_fail_state": "FAIL_G5_W2_ECONOMICS_STOP_W3",
+        },
         "checks": checks,
         "strict_g5_reference_contract": "backend/research/prep/g5_validation_contract_v1.json",
         "strict_g5_reference_is_nonblocking_product_path": True,

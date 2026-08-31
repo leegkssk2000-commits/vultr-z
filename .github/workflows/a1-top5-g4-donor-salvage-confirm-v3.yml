@@ -1,0 +1,74 @@
+name: A1 Top5 G4 Donor Salvage Confirm V3
+
+on:
+  push:
+    branches: [research/top5-donor-transplant-fasttrack-v1]
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_donor_salvage_confirm_v3.json'
+      - 'backend/research/rebuild/a1_top5_g4_donor_salvage_confirm_v3.py'
+      - '.github/workflows/a1-top5-g4-donor-salvage-confirm-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a1-top5-g4-donor-salvage-confirm-v3
+  cancel-in-progress: false
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify frozen no-more-retune contract
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_donor_salvage_confirm_v3.py
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/a1_top5_g4_donor_salvage_confirm_v3.json'))
+          assert c['state']=='PREREGISTERED_9M_SALVAGE_CONFIRM_NO_MORE_RETUNE'
+          assert c['semantics']['no_more_threshold_retune_after_v2'] is True
+          assert c['semantics']['only_time_horizon_expands'] is True
+          assert c['semantics']['historical_formal_g4_credit']==0 and c['semantics']['historical_formal_g5_credit']==0
+          assert c['semantics']['promotion_authority'] is False and c['semantics']['execution_authority']=='NONE' and c['semantics']['order_authority']=='BLOCKED'
+          print('PASS_9M_SALVAGE_CONFIRM_FROZEN')
+          PY
+      - name: Execute 9M frozen confirmation
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_donor_salvage_confirm_v3 --out out/a1_top5_g4_donor_salvage_confirm_v3.json
+      - name: Verify receipt
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math
+          r=json.load(open('out/a1_top5_g4_donor_salvage_confirm_v3.json'))
+          assert r['state']=='PASS_9M_SALVAGE_CONFIRM_COMPLETE' and r['cell_count']==4
+          assert r['historical_formal_g4_credit']==0 and r['historical_formal_g5_credit']==0 and r['fresh_credit']==0
+          assert r['promotion_authority'] is False and r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED'
+          for x in r['cells']:
+            for scope in ('parent_9m','metrics_9m','parent_prior6m','metrics_prior6m','metrics_extension3m'):
+              for v in x[scope].values():
+                if isinstance(v,(int,float)): assert math.isfinite(v)
+          print(json.dumps({'confirmed_count':r['confirmed_count'],'decisions':[[x['test_id'],x['decision'],x['kept_T'],x['metrics_9m']['net_pnl_bps'],x['metrics_9m']['profit_factor'],x['loss_reduction_9m_pct']] for x in r['cells']]},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-donor-salvage-confirm-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_g4_donor_salvage_confirm_v3.json
+          if-no-files-found: error
+          retention-days: 90

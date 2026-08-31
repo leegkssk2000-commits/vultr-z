@@ -1,0 +1,83 @@
+name: A1 Top5 G4 Partial Donor Transplant V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/top5-donor-transplant-fasttrack-v1
+    paths:
+      - 'backend/research/contracts/a1_top5_g4_partial_donor_transplant_v1.json'
+      - 'backend/research/rebuild/a1_top5_g4_partial_donor_transplant_v1.py'
+      - '.github/workflows/a1-top5-g4-partial-donor-transplant-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert no paid AI and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_partial_donor_transplant_v1.py
+      - name: Download immutable Top5 parent sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend30 out/a4 out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend30.zip
+          unzip -q out/trend30.zip -d out/trend30
+          test -f out/trend30/a1_exact25_drain_6_receipt.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9614562185/zip > out/a4.zip
+          unzip -q out/a4.zip -d out/a4
+          test -f out/a4/keltner_trend_exact_parent.json
+          test -f out/a4/supertrend_pullback_exact_parent.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9603011773/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          test -f out/break/break_and_continue_exact_parent.json
+      - name: Execute 9-cell non-Primary donor transplant screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_top5_g4_partial_donor_transplant_v1 \
+            --trend30-source out/trend30/a1_exact25_drain_6_receipt.json \
+            --a4-source-dir out/a4 \
+            --break-source-dir out/break \
+            --out out/a1_top5_g4_partial_donor_transplant_v1.json
+      - name: Verify contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_partial_donor_transplant_v1.json'))
+          assert r['state']=='PASS_PARTIAL_DONOR_SCREEN_COMPLETE'
+          assert r['primary_deferred'] is True
+          assert r['cell_count']==9
+          assert r['fresh_g4_credit']==0 and r['formal_g5_credit']==0
+          assert all(not x['parent_exit_mutated'] and not x['new_trade_admission'] and not x['cost_rededucted'] for x in r['cells'])
+          print({'promising_count':r['promising_count'],'promising':[[x['parent_lane_id'],x['donor_id']] for x in r['promising']]})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-g4-partial-donor-transplant-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_g4_partial_donor_transplant_v1.json
+          if-no-files-found: error
+          retention-days: 90

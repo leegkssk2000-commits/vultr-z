@@ -1,0 +1,65 @@
+name: A1 Top5 G4 Donor Transplant 6M V1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/top5-donor-transplant-fasttrack-v1]
+    paths:
+      - 'backend/research/rebuild/a1_top5_g4_donor_transplant_6m_v1.py'
+      - '.github/workflows/a1-top5-g4-donor-transplant-6m-v1.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONPATH: .
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Compile
+        run: python -m py_compile backend/research/rebuild/a1_top5_g4_donor_transplant_6m_v1.py
+      - name: Download completed 6M lane shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/break out/keltner out/super
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9737664717/zip > out/break.zip
+          unzip -q out/break.zip -d out/break
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9737665112/zip > out/keltner.zip
+          unzip -q out/keltner.zip -d out/keltner
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9737664833/zip > out/super.zip
+          unzip -q out/super.zip -d out/super
+          find out -name '*.json' -print
+      - name: Run 6M cross-lane transplant replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          B=$(find out/break -name '*.json' | head -1)
+          K=$(find out/keltner -name '*.json' | head -1)
+          S=$(find out/super -name '*.json' | head -1)
+          python -m backend.research.rebuild.a1_top5_g4_donor_transplant_6m_v1 --break-json "$B" --keltner-json "$K" --supertrend-json "$S" --out out/a1_top5_g4_donor_transplant_6m_v1.json
+      - name: Verify
+        run: |
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_donor_transplant_6m_v1.json'))
+          assert r['state']=='PASS_6M_DONOR_TRANSPLANT_REPLAY_COMPLETE'
+          assert r['cell_count']==6
+          assert r['fresh_g4_credit']==0 and r['formal_g5_credit']==0
+          print({'winner_count':r['winner_count'],'winners':[[x['parent_lane_id'],x['donor_id']] for x in r['winners']]})
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-top5-g4-donor-transplant-6m-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_g4_donor_transplant_6m_v1.json
+          if-no-files-found: error
+          retention-days: 90

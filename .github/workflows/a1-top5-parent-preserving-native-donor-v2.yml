@@ -1,0 +1,50 @@
+name: A1 Top5 Parent Preserving Native Donor V2
+on:
+  push:
+    branches: [research/top5-parent-preserving-native-donor-v2]
+    paths:
+      - 'backend/research/contracts/a1_top5_parent_preserving_native_donor_v2.json'
+      - 'backend/research/rebuild/a1_top5_parent_preserving_native_donor_v2.py'
+      - '.github/workflows/a1-top5-parent-preserving-native-donor-v2.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/top5-parent-preserving-native-donor-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile and evaluate
+        run: |
+          python -m py_compile backend/research/rebuild/a1_top5_parent_preserving_native_donor_v2.py
+          python -m backend.research.rebuild.a1_top5_parent_preserving_native_donor_v2 --out out/a1_top5_parent_preserving_native_donor_v2_latest.json
+      - name: Guard authority and contamination
+        run: |
+          python - <<'PY'
+          import json
+          x=json.load(open('out/a1_top5_parent_preserving_native_donor_v2_latest.json'))
+          assert not x['whole_development_population_consumed']
+          assert not x['threshold_sweep'] and not x['post_result_retune']
+          assert x['parent_exit_mutation_count']==0 and x['cost_rededuction_count']==0
+          assert x['execution_authority']=='NONE' and x['order_authority']=='BLOCKED'
+          for y in x['lanes'].values():
+            assert y['original_parent_preserved'] and y['formal_g4_credit_T']==0 and y['formal_g5_credit_T']==0
+          print('PASS_NATIVE_DONOR_PARENT_GUARDS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-parent-preserving-native-donor-v2
+          path: out/a1_top5_parent_preserving_native_donor_v2_latest.json
+      - name: Persist receipt
+        run: |
+          cp out/a1_top5_parent_preserving_native_donor_v2_latest.json backend/research/rebuild/a1_top5_parent_preserving_native_donor_v2_latest.json
+          git config user.name 'a1-top5-parent-preserving-native-donor-v2'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_parent_preserving_native_donor_v2_latest.json
+          git diff --cached --quiet || (git commit -m 'A1: persist native donor parent replay [skip ci]' && git push origin HEAD:research/top5-parent-preserving-native-donor-v2)

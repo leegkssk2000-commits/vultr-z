@@ -1,0 +1,95 @@
+name: A1 Supertrend Union Veto G5 Shadow V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_v1.py'
+      - 'backend/research/contracts/a1_supertrend_union_veto_g5_shadow_freeze_v1.json'
+      - '.github/workflows/a1-supertrend-union-veto-g5-shadow-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_v1.py'
+      - 'backend/research/contracts/a1_supertrend_union_veto_g5_shadow_freeze_v1.json'
+      - '.github/workflows/a1-supertrend-union-veto-g5-shadow-v1.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '27 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-supertrend-union-veto-g5-shadow-v1
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and authority self-test
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_v1.py
+          python -m backend.research.rebuild.a1_supertrend_union_veto_g5_shadow_v1 --self-test
+      - name: Collect fresh Supertrend parent overlay shadow
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          args=(--out out/a1_supertrend_union_veto_g5_shadow_latest.json)
+          if [[ -f backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_latest.json ]]; then
+            args+=(--previous backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_latest.json)
+          fi
+          python -m backend.research.rebuild.a1_supertrend_union_veto_g5_shadow_v1 "${args[@]}"
+      - name: Verify shadow-only semantics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_supertrend_union_veto_g5_shadow_latest.json'))
+          assert r['schema_version']=='zel.a1.supertrend.union_veto_g5_shadow.receipt.v1'
+          assert r['state'] in {'WAIT_FRESH_SUPERTREND_PARENT_T','PASS_G5_SHADOW_OVERLAY_ACTIVE'}
+          assert r['overlay_id']=='supertrend_breakout50_or_keltner_reclaim_union_veto_v1'
+          assert r['parent_closed_T']==r['shadow_kept_T']+r['shadow_vetoed_T']
+          assert r['new_trade_admission_count']==0
+          assert r['parent_payload_mutation_count']==0 and r['parent_exit_mutation_count']==0
+          assert r['cost_rededuction_count']==0
+          assert r['historical_formal_g4_credit']==0 and r['historical_formal_g5_credit']==0 and r['fresh_formal_g5_credit']==0
+          assert r['economic_roi_credit'] is False and r['roadmap_blocking'] is False
+          assert r['post_confirmation_retune'] is False and r['threshold_sweep'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'parent_T':r['parent_closed_T'],'kept_T':r['shadow_kept_T'],'vetoed_T':r['shadow_vetoed_T'],'metrics':r['shadow_metrics']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-supertrend-union-veto-g5-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_supertrend_union_veto_g5_shadow_latest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist append-only shadow receipt
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          cp out/a1_supertrend_union_veto_g5_shadow_latest.json backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_latest.json
+          git config user.name 'a1-supertrend-union-veto-g5-shadow-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_supertrend_union_veto_g5_shadow_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Supertrend union-veto G5 shadow [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin master && git push origin HEAD:master && exit 0; sleep 3; done
+          exit 1

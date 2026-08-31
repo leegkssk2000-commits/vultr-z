@@ -1,0 +1,187 @@
+name: A1 Top5 G4 Primary Symbol Sharded Fasttrack V1
+
+on:
+  push:
+    branches: [research/top5-primary-symbol-sharded-fasttrack-v1]
+    paths:
+      - 'backend/research/rebuild/a1_top5_g4_primary_symbol_shard_v1.py'
+      - 'backend/research/rebuild/a1_top5_g4_primary_symbol_aggregate_v1.py'
+      - '.github/workflows/a1-top5-g4-primary-symbol-sharded-fasttrack-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: a1-top5-g4-primary-symbol-sharded-fasttrack-v1
+  cancel-in-progress: false
+
+jobs:
+  fast_lanes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        lane_id:
+          - break_and_continue_main
+          - keltner_trend_main
+          - supertrend_pullback_main
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run fast lane
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_extended_historical_lane_shard_v1.py
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_extended_historical_lane_shard_v1 \
+            --lane-id '${{ matrix.lane_id }}' \
+            --out 'out/${{ matrix.lane_id }}.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-fast-lane-${{ matrix.lane_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/${{ matrix.lane_id }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  primary_symbols:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTC-USDT, ETH-USDT]
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run one Primary symbol shard
+        run: |
+          set -euo pipefail
+          test -z "${OPENAI_API_KEY:-}"
+          test -z "${GEMINI_API_KEY:-}"
+          python -m py_compile backend/research/rebuild/a1_top5_g4_primary_symbol_shard_v1.py
+          mkdir -p out
+          safe=$(echo '${{ matrix.symbol }}' | tr '-' '_')
+          python -m backend.research.rebuild.a1_top5_g4_primary_symbol_shard_v1 \
+            --symbol '${{ matrix.symbol }}' \
+            --out "out/primary_${safe}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-primary-symbol-${{ matrix.symbol }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/primary_*.json
+          if-no-files-found: error
+          retention-days: 90
+
+  primary_lane:
+    needs: primary_symbols
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: a1-top5-g4-primary-symbol-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: primary-symbols
+          merge-multiple: true
+      - name: Aggregate exact Primary symbol shards
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_top5_g4_primary_symbol_aggregate_v1.py
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_primary_symbol_aggregate_v1 \
+            --shard-dir primary-symbols \
+            --out out/trend_rider_primary_wr8125.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-primary-lane-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/trend_rider_primary_wr8125.json
+          if-no-files-found: error
+          retention-days: 90
+
+  final_aggregate:
+    needs: [fast_lanes, primary_lane]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: a1-top5-g4-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shards
+          merge-multiple: true
+      - name: Aggregate all four lanes and derive G5 prep
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_g4_extended_historical_shard_aggregate_v1 \
+            --shard-dir shards \
+            --out out/a1_top5_g4_extended_historical_fasttrack_v1.json \
+            --prep-out out/a1_top5_g5_fasttrack_prep_v1.json
+      - name: Verify final economics and authority
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_top5_g4_extended_historical_fasttrack_v1.json'))
+          p=json.load(open('out/a1_top5_g5_fasttrack_prep_v1.json'))
+          assert r['state']=='PASS_G4_EXTENDED_3M_6M_FASTTRACK_COMPLETE'
+          assert r['lane_count']==4
+          assert 'trend_rider_primary_wr8125' in r['lanes']
+          assert r['fresh_authority_unchanged'] is True
+          assert r['fasttrack_semantics']['historical_credit_to_fresh_g4_T']==0
+          assert r['fasttrack_semantics']['historical_credit_to_g5_T']==0
+          assert r['paid_provider_calls']==0 and r['openai_calls']==0 and r['gemini_calls']==0
+          print(json.dumps({'survivors':r['historical_survivor_lane_ids'],'mixed':r['mixed_donor_lane_ids'],'replacement':r['architecture_replacement_lane_ids'],'primary':r['lanes']['trend_rider_primary_wr8125'],'prep_state':p['state'],'prep_entries':sorted(p['entries'])},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a1-top5-g4-primary-symbol-sharded-final-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/a1_top5_g4_extended_historical_fasttrack_v1.json
+            out/a1_top5_g5_fasttrack_prep_v1.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist final fasttrack to research branch
+        run: |
+          set -euo pipefail
+          cp out/a1_top5_g4_extended_historical_fasttrack_v1.json backend/research/rebuild/a1_top5_g4_extended_historical_fasttrack_latest.json
+          mkdir -p backend/research/prep
+          cp out/a1_top5_g5_fasttrack_prep_v1.json backend/research/prep/a1_top5_g5_fasttrack_prep_latest.json
+          git config user.name 'a1-primary-symbol-sharded-fasttrack-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_top5_g4_extended_historical_fasttrack_latest.json backend/research/prep/a1_top5_g5_fasttrack_prep_latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1: persist Primary symbol-sharded 3M/6M fasttrack [skip ci]'
+          for n in 1 2 3; do git pull --rebase origin '${GITHUB_REF_NAME}' && git push origin HEAD:'${GITHUB_REF_NAME}' && exit 0; sleep 3; done
+          exit 1

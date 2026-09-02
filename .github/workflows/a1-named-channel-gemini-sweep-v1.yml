@@ -15,8 +15,11 @@ on:
       - 'backend/research/architecture_factory/a1_research_factory_named_channel_bridge_v1.py'
       - '.github/workflows/a1-named-channel-gemini-sweep-v1.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '17 * * * *'
+    inputs:
+      blocker:
+        description: 'Named current strategy blocker to solve; generic Gemini mining is forbidden'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -27,14 +30,15 @@ concurrency:
 
 jobs:
   mine-named-channels:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       PYTHONPATH: .
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      A1_NAMED_CHANNEL_SEARCHES_PER_RUN: '9'
-      A1_NAMED_CHANNEL_VIDEO_REVIEWS_PER_RUN: '18'
+      A1_NAMED_CHANNEL_SEARCHES_PER_RUN: '3'
+      A1_NAMED_CHANNEL_VIDEO_REVIEWS_PER_RUN: '3'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +47,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Enforce blocker-scoped paid-AI run
+        env:
+          BLOCKER_CONTEXT: ${{ inputs.blocker }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          blocker=(os.environ.get('BLOCKER_CONTEXT') or '').strip()
+          assert blocker, 'NAMED_CURRENT_STRATEGY_BLOCKER_REQUIRED'
+          assert int(os.environ['A1_NAMED_CHANNEL_SEARCHES_PER_RUN']) <= 3
+          assert int(os.environ['A1_NAMED_CHANNEL_VIDEO_REVIEWS_PER_RUN']) <= 3
+          print('PASS_BLOCKER_SCOPED_GEMINI_BUDGET')
+          PY
       - name: Install multi-route YouTube evidence dependencies
         run: |
           set -euo pipefail
@@ -64,7 +81,7 @@ jobs:
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v5 --self-test
           python -m backend.research.architecture_factory.a1_named_channel_gemini_sweep_v6 --self-test
           python -m backend.research.architecture_factory.a1_research_factory_named_channel_bridge_v1 --self-test
-      - name: Deep-discover and analyze videos fairly across all nine channels
+      - name: Deep-discover and analyze blocker-relevant videos with bounded Gemini budget
         run: |
           set -euo pipefail
           mkdir -p out
@@ -83,6 +100,7 @@ jobs:
           assert r['discovery_policy']=='ALL_9_CHANNELS_ROUND_ROBIN__MOST_VIEWED_NEWEST_ARCHIVE_MECHANISM_DENSE'
           assert r['normalization_integrity']['v2_v4_recursion_guard'] is True
           assert r['metrics']['configured_channel_count']==9
+          assert int(r['metrics'].get('reviewed_now') or 0) <= 3
           p=r['video_evidence_recovery_policy']
           assert p['oembed_prevalidation_enabled'] is True
           assert p['youtube_transcript_api_enabled'] is True
@@ -123,17 +141,17 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add "$named_target" "$bridge_target"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 Gemini: persist named-channel evidence and V5 bridge lane [skip ci]'
+          git commit -m 'A1 Gemini: persist blocker-scoped named-channel evidence and V5 bridge [skip ci]'
           for n in 1 2 3 4; do
             git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
             sleep 4
           done
           exit 1
-      - name: Assert hourly sweep has no canonical Research Factory write target
+      - name: Assert blocker-scoped sweep has no canonical Research Factory write target
         run: |
           set -euo pipefail
           test ! -e out/a1_research_factory_latest.json
-          echo 'PASS_NAMED_SWEEP_LANE_SCOPED_CANONICAL_OWNER_V6_DAILY_ONLY'
+          echo 'PASS_NAMED_SWEEP_BLOCKER_SCOPED_NO_CANONICAL_OWNER'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

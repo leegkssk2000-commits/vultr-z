@@ -1,0 +1,35 @@
+{
+  "schema_version": "zel.g5.clean_runner.state_machine.v1",
+  "state_key": "strategy_id|child_id|symbol|bar_close_ts",
+  "bar_key": "symbol|4h|bar_close_ts",
+  "initial": null,
+  "states": [
+    "NEW",
+    "EVALUATED",
+    "TRADE_OPENED",
+    "TRADE_CLOSED",
+    "LEDGER_WRITTEN",
+    "FRESH_ACCEPTED"
+  ],
+  "transitions": [
+    {"from": null, "to": "NEW", "outcome": "NEW_EVALUATION"},
+    {"from": "NEW", "to": "EVALUATED", "outcome": "NEW_APPEND"},
+    {"from": "EVALUATED", "to": "TRADE_OPENED", "outcome": "NEW_APPEND"},
+    {"from": "TRADE_OPENED", "to": "TRADE_CLOSED", "outcome": "NEW_APPEND"},
+    {"from": "TRADE_CLOSED", "to": "LEDGER_WRITTEN", "outcome": "NEW_APPEND"},
+    {"from": "LEDGER_WRITTEN", "to": "FRESH_ACCEPTED", "outcome": "NEW_APPEND"}
+  ],
+  "repeat_same_payload": "IDEMPOTENT_NOOP",
+  "repeat_conflicting_payload": "CONFLICT_FAIL",
+  "regression": "CONFLICT_FAIL",
+  "skip": "CONFLICT_FAIL",
+  "out_of_order": "CONFLICT_FAIL",
+  "durability": {
+    "local": "exclusive_flock+O_APPEND+flush+fsync",
+    "cross_workflow": "single GitHub Actions concurrency owner",
+    "cross_restart": "append-only state JSONL persisted to master",
+    "record_integrity": "monotonic sequence+previous record SHA+record SHA"
+  },
+  "no_signal_terminal_state": "EVALUATED",
+  "formal_credit_before_FRESH_ACCEPTED": 0
+}

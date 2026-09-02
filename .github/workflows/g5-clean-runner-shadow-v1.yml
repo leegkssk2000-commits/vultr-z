@@ -8,6 +8,8 @@ on:
       - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
+      - 'backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_real_failure_collector_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_strategy_freeze_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
@@ -19,6 +21,8 @@ on:
       - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
+      - 'backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_real_failure_collector_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_strategy_freeze_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
@@ -64,10 +68,13 @@ jobs:
             backend/research/rebuild/g5_clean_runner_v1.py \
             backend/research/rebuild/test_g5_clean_runner_v1.py \
             backend/research/rebuild/g5_data_stale_evidence_v1.py \
-            backend/research/rebuild/test_g5_data_stale_evidence_v1.py
+            backend/research/rebuild/test_g5_data_stale_evidence_v1.py \
+            backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py \
+            backend/research/rebuild/test_g5_data_stale_real_failure_collector_v1.py
           python -m unittest \
             backend.research.rebuild.test_g5_clean_runner_v1 \
-            backend.research.rebuild.test_g5_data_stale_evidence_v1 -v
+            backend.research.rebuild.test_g5_data_stale_evidence_v1 \
+            backend.research.rebuild.test_g5_data_stale_real_failure_collector_v1 -v
           python -m backend.research.rebuild.g5_clean_runner_v1 \
             --self-test \
             --preflight \
@@ -118,6 +125,49 @@ jobs:
               'complete_telemetry':telemetry['complete_tuples'],
               'formal_credit':0,
           },sort_keys=True))
+          PY
+
+      - name: Collect observed real DATA_STALE failure or stall evidence
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.g5_data_stale_real_failure_collector_v1 \
+            --state-log out/g5_clean_runner_state_events_v1.jsonl \
+            --output out/g5_data_stale_real_failure_evidence_v1.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence=json.loads(Path('out/g5_data_stale_real_failure_evidence_v1.json').read_text())
+          assert evidence['state'] in {
+              'REAL_FAILURE_COLLECTION_ACTIVE_NO_EVENTS',
+              'REAL_FAILURE_INCIDENT_OBSERVED_NO_THRESHOLD_TELEMETRY',
+              'REAL_FAILURE_EVIDENCE_AVAILABLE',
+          }
+          assert evidence['scope']=='FULL_CLEAN_RUNNER_APPEND_ONLY_STATE_LOG'
+          assert evidence['timestamp_integrity']=='PASS'
+          assert evidence['authority_value'] is None
+          assert evidence['authority_created'] is False
+          assert evidence['ssot_mutated'] is False
+          assert evidence['contract_mutation'] is False
+          assert evidence['strategy_mutation'] is False
+          assert evidence['economic_mutation'] is False
+          assert evidence['fresh_credit'] == 0
+          if evidence['threshold_eligible_failure_N'] > 0:
+              assert evidence['state']=='REAL_FAILURE_EVIDENCE_AVAILABLE'
+              assert evidence['next']=='COMPUTE_THRESHOLD_SURFACE_FROM_OBSERVED_CLASSES'
+          elif evidence['real_failure_N'] > 0:
+              assert evidence['state']=='REAL_FAILURE_INCIDENT_OBSERVED_NO_THRESHOLD_TELEMETRY'
+              assert evidence['next']=='WAIT_FOR_LATE_EVALUATION_WITH_COMPLETE_TELEMETRY'
+          else:
+              assert evidence['state']=='REAL_FAILURE_COLLECTION_ACTIVE_NO_EVENTS'
+              assert evidence['next']=='WAIT_FOR_OBSERVED_REAL_FAILURE_OR_STALL'
+          print(json.dumps({
+              'state': evidence['state'],
+              'evaluated_N': evidence['evaluated_N'],
+              'real_failure_N': evidence['real_failure_N'],
+              'threshold_eligible_failure_N': evidence['threshold_eligible_failure_N'],
+              'next': evidence['next'],
+              'fresh_credit': 0,
+          }, sort_keys=True))
           PY
 
       - name: Classify DATA_STALE evidence without authority mutation
@@ -175,6 +225,7 @@ jobs:
             g5_clean_runner_cutover_receipt_v1.json
             g5_clean_runner_post_cutover_3bar_v1.json
             g5_clean_runner_run_latest_v1.json
+            g5_data_stale_real_failure_evidence_v1.json
             g5_data_stale_evidence_v1.json
           )
           for name in "${targets[@]}"; do cp "out/$name" "$packet/$name"; done
@@ -201,6 +252,14 @@ jobs:
                       raise SystemExit('SHADOW_EVALUATION_REGRESSION')
                   if int(new.get('complete_bar_count') or 0)<int(old.get('complete_bar_count') or 0):
                       raise SystemExit('SHADOW_BAR_REGRESSION')
+              elif name=='g5_data_stale_real_failure_evidence_v1.json':
+                  value=json.loads(src.read_text())
+                  if value.get('authority_value') is not None or value.get('authority_created') is not False:
+                      raise SystemExit('REAL_FAILURE_COLLECTOR_AUTHORITY_MUTATION_FORBIDDEN')
+                  if int(value.get('fresh_credit') or 0) != 0:
+                      raise SystemExit('REAL_FAILURE_COLLECTOR_FRESH_CREDIT_FORBIDDEN')
+                  if any(event.get('observed_not_synthetic') is not True for event in value.get('events', [])):
+                      raise SystemExit('SYNTHETIC_EVENT_FORBIDDEN_IN_REAL_FAILURE_COLLECTOR')
               elif name=='g5_data_stale_evidence_v1.json':
                   value=json.loads(src.read_text())
                   if value.get('authority_value') is not None or value.get('authority_created') is not False:

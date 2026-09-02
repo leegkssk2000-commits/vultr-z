@@ -32,7 +32,11 @@ STAGES = [
 def read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
@@ -40,7 +44,11 @@ def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
         return [], 1
     rows: list[dict[str, Any]] = []
     errors = 0
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return [], 1
+    for raw in lines:
         if not raw.strip():
             continue
         try:
@@ -63,7 +71,14 @@ def git_blob_sha_bytes(data: bytes) -> str:
 def git_blob_sha(path: Path) -> str | None:
     if not path.exists():
         return None
-    return git_blob_sha_bytes(path.read_bytes())
+    try:
+        return git_blob_sha_bytes(path.read_bytes())
+    except OSError:
+        return None
+
+
+def numeric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def finish(
@@ -116,27 +131,33 @@ def terminal_receipt_passes(terminal: dict[str, Any], gate: dict[str, Any]) -> b
         if terminal.get(key) is not False:
             return False
 
-    integrity = terminal.get("integrity", {})
+    integrity = terminal.get("integrity")
+    if not isinstance(integrity, dict):
+        return False
     for key, expected in gate.get("integrity_equals", {}).items():
         if integrity.get(key) != expected:
             return False
 
     limits = gate.get("economic_window_thresholds", {})
-    windows = terminal.get("windows", {})
+    windows = terminal.get("windows")
+    if not isinstance(windows, dict):
+        return False
+    checks = (
+        ("net_r", "net_r_gt", lambda a, b: a > b),
+        ("pf", "pf_gte", lambda a, b: a >= b),
+        ("expectancy", "expectancy_gt", lambda a, b: a > b),
+        ("payoff", "payoff_gte", lambda a, b: a >= b),
+        ("retention_pct", "retention_pct_gte", lambda a, b: a >= b),
+    )
     for window in ("W1", "W2", "W3"):
         metric = windows.get(window)
         if not isinstance(metric, dict):
             return False
-        if not metric.get("net_r", float("-inf")) > limits.get("net_r_gt", 0):
-            return False
-        if not metric.get("pf", float("-inf")) >= limits.get("pf_gte", 1):
-            return False
-        if not metric.get("expectancy", float("-inf")) > limits.get("expectancy_gt", 0):
-            return False
-        if not metric.get("payoff", float("-inf")) >= limits.get("payoff_gte", 1):
-            return False
-        if not metric.get("retention_pct", float("-inf")) >= limits.get("retention_pct_gte", 60):
-            return False
+        for metric_key, limit_key, comparator in checks:
+            value = metric.get(metric_key)
+            limit = limits.get(limit_key)
+            if not numeric(value) or not numeric(limit) or not comparator(value, limit):
+                return False
     return True
 
 
@@ -157,12 +178,14 @@ def evaluate(
 
     if (
         contract.get("schema_version") != "zel.g5_g14.shared_validation_contract.v2"
+        or manifest.get("schema_version") != "zel.g5_g14.shared_validation_manifest.v2"
         or contract.get("generation_unlock_rule") != "G(n+1)_ALLOWED_IFF_G(n)_TERMINAL_PASS"
         or contract.get("cutover", {}).get("automatic") is not False
         or contract.get("shared_invariants", {}).get("fresh_credit_fail_closed") is not True
     ):
-        return finish(state="HARD_FAIL_CONTRACT", next_action="repair_contract_only", completed=completed,
-                      failed_gate=STAGES[0], observed_hashes=observed_hashes, manifest=manifest)
+        return finish(state="HARD_FAIL_CONTRACT_OR_MANIFEST", next_action="repair_contract_or_manifest_only",
+                      completed=completed, failed_gate=STAGES[0], observed_hashes=observed_hashes,
+                      manifest=manifest)
     completed.append(STAGES[0])
 
     specs = manifest.get("authority_files", {})
@@ -177,7 +200,9 @@ def evaluate(
             return finish(state="HARD_FAIL_AUTHORITY_INPUT", next_action=f"restore_exact_{name}_authority",
                           completed=completed, failed_gate=STAGES[1], observed_hashes=observed_hashes,
                           manifest=manifest)
-    if observed_hashes.get("economic_ledger") is None or ledger_parse_errors:
+    ledger_schema = specs["economic_ledger"].get("schema_version")
+    ledger_schema_error = any(row.get("schema_version") != ledger_schema for row in ledger_rows)
+    if observed_hashes.get("economic_ledger") is None or ledger_parse_errors or ledger_schema_error:
         return finish(state="HARD_FAIL_ECONOMIC_LEDGER", next_action="repair_economic_ledger_integrity",
                       completed=completed, failed_gate=STAGES[1], observed_hashes=observed_hashes,
                       manifest=manifest)
@@ -207,8 +232,9 @@ def evaluate(
     completed.append(STAGES[3])
 
     telemetry = records["telemetry"] or {}
-    if not (telemetry.get("missing_tuples") == 0 and isinstance(telemetry.get("complete_tuples"), int)
-            and telemetry.get("complete_tuples", 0) > 0):
+    complete_tuples = telemetry.get("complete_tuples")
+    if not (telemetry.get("missing_tuples") == 0 and isinstance(complete_tuples, int)
+            and not isinstance(complete_tuples, bool) and complete_tuples > 0):
         return finish(state="WAIT_COMPLETE_TELEMETRY", next_action="collect_complete_telemetry_no_credit",
                       completed=completed, failed_gate=STAGES[4], observed_hashes=observed_hashes,
                       manifest=manifest)
@@ -219,8 +245,7 @@ def evaluate(
     stale_ok = (
         stale.get("authority_created") is True
         and stale.get("data_stale_authority_allowed") is True
-        and isinstance(authority_value, (int, float))
-        and not isinstance(authority_value, bool)
+        and numeric(authority_value)
         and authority_value > 0
         and stale.get("authority_unit") == "ms"
         and stale.get("timestamp_integrity") == "PASS"
@@ -246,7 +271,12 @@ def evaluate(
                       manifest=manifest)
     completed.append(STAGES[6])
 
-    genuine_rows = sum(1 for row in ledger_rows if row.get("production_grade") is True)
+    proxy_rows_do_not_count = contract.get("genuine_economic_t", {}).get("proxy_rows_do_not_count") is True
+    genuine_rows = sum(
+        1 for row in ledger_rows
+        if row.get("production_grade") is True
+        and (not proxy_rows_do_not_count or "PROXY" not in str(row.get("economic_origin", "")).upper())
+    )
     min_rows = int(contract.get("genuine_economic_t", {}).get("min_production_grade_rows", 1))
     if genuine_rows < min_rows:
         return finish(state="WAIT_GENUINE_ECONOMIC_T",
@@ -268,10 +298,9 @@ def evaluate(
                       failed_gate=STAGES[8], observed_hashes=observed_hashes, manifest=manifest,
                       genuine_rows=genuine_rows)
     if terminal_blob_sha != pinned_terminal_sha:
-        return finish(state="HARD_FAIL_G5_TERMINAL_SHA_DRIFT",
-                      next_action="reject_unpinned_terminal_receipt", completed=completed,
-                      failed_gate=STAGES[8], observed_hashes=observed_hashes, manifest=manifest,
-                      genuine_rows=genuine_rows)
+        return finish(state="HARD_FAIL_G5_TERMINAL_SHA_DRIFT", next_action="reject_unpinned_terminal_receipt",
+                      completed=completed, failed_gate=STAGES[8], observed_hashes=observed_hashes,
+                      manifest=manifest, genuine_rows=genuine_rows)
     if not terminal_receipt_passes(terminal, contract.get("g5_terminal_gate", {})):
         return finish(state="WAIT_G5_TERMINAL_PASS",
                       next_action="record_G5_FAIL_or_continue_only_approved_validation_axis", completed=completed,

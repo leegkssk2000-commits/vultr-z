@@ -80,8 +80,18 @@ def synthetic_inputs():
             "W3": {"net_r": 1.0, "pf": 1.2, "expectancy": 0.1, "payoff": 1.1, "retention_pct": 60}
         }
     }
-    ledger = [{"schema_version": "zel.g5.economic_evidence_row.v1", "production_grade": True}]
+    ledger = [{
+        "schema_version": "zel.g5.economic_evidence_row.v1",
+        "production_grade": True,
+        "economic_origin": "GENUINE_EXECUTION"
+    }]
     return contract, manifest, records, hashes, terminal, ledger
+
+
+def run_eval(contract, manifest, records, hashes, terminal, ledger, terminal_sha="terminal"):
+    return mod.evaluate(contract=contract, manifest=manifest, records=records, ledger_rows=ledger,
+                        ledger_parse_errors=0, observed_hashes=hashes, terminal=terminal,
+                        terminal_blob_sha=terminal_sha)
 
 
 def test_contract_is_fail_closed_and_maps_g6():
@@ -104,33 +114,50 @@ def test_current_pinned_snapshot_is_nonterminal_and_g6_closed():
     assert receipt["fresh_credit_granted"] is False
 
 
+def test_manifest_schema_drift_hard_fails():
+    contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
+    manifest["schema_version"] = "drift"
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
+    assert receipt["state"] == "HARD_FAIL_CONTRACT_OR_MANIFEST"
+    assert receipt["g6_allowed"] is False
+
+
 def test_authority_sha_drift_hard_fails():
     contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
-    hashes = deepcopy(hashes)
     hashes["shadow"] = "drift"
-    receipt = mod.evaluate(contract=contract, manifest=manifest, records=records, ledger_rows=ledger,
-                           ledger_parse_errors=0, observed_hashes=hashes, terminal=terminal,
-                           terminal_blob_sha="terminal")
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
     assert receipt["state"] == "HARD_FAIL_AUTHORITY_SHA_DRIFT"
+    assert receipt["g6_allowed"] is False
+
+
+def test_proxy_row_never_counts_as_genuine_T():
+    contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
+    ledger[0]["economic_origin"] = "REPLAY_CURRENT_PROXY"
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
+    assert receipt["state"] == "WAIT_GENUINE_ECONOMIC_T"
+    assert receipt["genuine_economic_rows"] == 0
     assert receipt["g6_allowed"] is False
 
 
 def test_terminal_receipt_must_be_pinned():
     contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
-    manifest = deepcopy(manifest)
     manifest["terminal_receipt"]["blob_sha"] = None
-    receipt = mod.evaluate(contract=contract, manifest=manifest, records=records, ledger_rows=ledger,
-                           ledger_parse_errors=0, observed_hashes=hashes, terminal=terminal,
-                           terminal_blob_sha="terminal")
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
     assert receipt["state"] == "WAIT_G5_TERMINAL_RECEIPT_PIN"
+    assert receipt["g6_allowed"] is False
+
+
+def test_malformed_terminal_metric_fails_closed():
+    contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
+    terminal["windows"]["W2"]["pf"] = None
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
+    assert receipt["state"] == "WAIT_G5_TERMINAL_PASS"
     assert receipt["g6_allowed"] is False
 
 
 def test_complete_nine_gate_terminal_path_unlocks_g6():
     contract, manifest, records, hashes, terminal, ledger = synthetic_inputs()
-    receipt = mod.evaluate(contract=contract, manifest=manifest, records=records, ledger_rows=ledger,
-                           ledger_parse_errors=0, observed_hashes=hashes, terminal=terminal,
-                           terminal_blob_sha="terminal")
+    receipt = run_eval(contract, manifest, records, hashes, terminal, ledger)
     assert receipt["state"] == "G5_TERMINAL_PASS"
     assert receipt["completed_stage_count"] == 9
     assert receipt["next_gate"] is None
@@ -142,8 +169,11 @@ def main():
     tests = [
         test_contract_is_fail_closed_and_maps_g6,
         test_current_pinned_snapshot_is_nonterminal_and_g6_closed,
+        test_manifest_schema_drift_hard_fails,
         test_authority_sha_drift_hard_fails,
+        test_proxy_row_never_counts_as_genuine_T,
         test_terminal_receipt_must_be_pinned,
+        test_malformed_terminal_metric_fails_closed,
         test_complete_nine_gate_terminal_path_unlocks_g6,
     ]
     for test in tests:

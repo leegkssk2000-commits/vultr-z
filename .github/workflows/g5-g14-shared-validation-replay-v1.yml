@@ -1,0 +1,74 @@
+name: G5-G14 Shared Validation Replay V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
+      - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/g5_g14_shared_validation_replay_receipt_v1.json'
+      - 'backend/research/rebuild/test_g5_g14_generation_controller_v1.py'
+      - '.github/workflows/g5-g14-shared-validation-replay-v1.yml'
+  push:
+    branches:
+      - master
+      - g5-g14-shared-validation-lock
+    paths:
+      - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
+      - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/g5_g14_shared_validation_replay_receipt_v1.json'
+      - 'backend/research/rebuild/test_g5_g14_generation_controller_v1.py'
+      - '.github/workflows/g5-g14-shared-validation-replay-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Guard paid AI off
+        run: |
+          test -z "$GEMINI_API_KEY"
+          test -z "$OPENAI_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+      - name: Compile
+        run: |
+          python -m py_compile backend/research/rebuild/g5_g14_generation_controller_v1.py
+          python -m py_compile backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+      - name: Deterministic replay tests
+        run: python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+      - name: Derive pinned current snapshot
+        run: |
+          python backend/research/rebuild/g5_g14_generation_controller_v1.py --write
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('backend/research/rebuild/g5_g14_generation_controller_receipt_v1.json')
+          r = json.loads(p.read_text())
+          assert r['state'] == 'WAIT_DATA_STALE_AUTHORITY', r
+          assert r['completed_stage_count'] == 5, r
+          assert r['next_gate'] == 'DATA_STALE_AUTHORITY_VALID', r
+          assert r['g6_allowed'] is False, r
+          print('CURRENT_SNAPSHOT_REPLAY=PASS')
+          PY
+      - name: Confirm no protected mutation
+        run: |
+          git diff --exit-code -- backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
+          git diff --exit-code -- backend/research/rebuild/g5_clean_runner_shadow_v1.json
+          git diff --exit-code -- backend/research/rebuild/g5_clean_runner_telemetry_v1.json
+          git diff --exit-code -- backend/research/rebuild/g5_data_stale_evidence_v1.json
+          git diff --exit-code -- backend/research/rebuild/g5_clean_runner_cutover_receipt_v1.json

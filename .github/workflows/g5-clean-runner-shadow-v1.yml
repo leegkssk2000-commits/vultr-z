@@ -6,6 +6,8 @@ on:
       - 'backend/research/contracts/g5_clean_runner_contract_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
       - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_strategy_freeze_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
@@ -15,6 +17,8 @@ on:
       - 'backend/research/contracts/g5_clean_runner_contract_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
       - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_strategy_freeze_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
@@ -58,8 +62,12 @@ jobs:
           mkdir -p out
           python -m py_compile \
             backend/research/rebuild/g5_clean_runner_v1.py \
-            backend/research/rebuild/test_g5_clean_runner_v1.py
-          python -m unittest backend.research.rebuild.test_g5_clean_runner_v1 -v
+            backend/research/rebuild/test_g5_clean_runner_v1.py \
+            backend/research/rebuild/g5_data_stale_evidence_v1.py \
+            backend/research/rebuild/test_g5_data_stale_evidence_v1.py
+          python -m unittest \
+            backend.research.rebuild.test_g5_clean_runner_v1 \
+            backend.research.rebuild.test_g5_data_stale_evidence_v1 -v
           python -m backend.research.rebuild.g5_clean_runner_v1 \
             --self-test \
             --preflight \
@@ -112,6 +120,39 @@ jobs:
           },sort_keys=True))
           PY
 
+      - name: Classify DATA_STALE evidence without authority mutation
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.g5_data_stale_evidence_v1 \
+            --shadow out/g5_clean_runner_shadow_v1.json \
+            --state-log out/g5_clean_runner_state_events_v1.jsonl \
+            --output out/g5_data_stale_evidence_v1.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence=json.loads(Path('out/g5_data_stale_evidence_v1.json').read_text())
+          assert evidence['state']=='AUTHORITY_EVIDENCE_PARTIAL_SYNTHETIC_ONLY'
+          assert evidence['normal_N'] >= 63
+          assert evidence['real_failure_N'] == 0
+          assert evidence['synthetic_failure_N'] == evidence['normal_N']
+          assert evidence['timestamp_integrity']=='PASS'
+          assert evidence['authority_value'] is None
+          assert evidence['authority_created'] is False
+          assert evidence['ssot_mutated'] is False
+          assert evidence['fresh_credit'] == 0
+          assert evidence['threshold_surface_allowed'] is False
+          assert evidence['data_stale_authority_allowed'] is False
+          assert evidence['first_blocker']=='REAL_LABELED_FAILURE_MISSING'
+          print(json.dumps({
+              'state': evidence['state'],
+              'normal_N': evidence['normal_N'],
+              'real_failure_N': evidence['real_failure_N'],
+              'first_blocker': evidence['first_blocker'],
+              'authority_value': None,
+              'fresh_credit': 0,
+          }, sort_keys=True))
+          PY
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -134,6 +175,7 @@ jobs:
             g5_clean_runner_cutover_receipt_v1.json
             g5_clean_runner_post_cutover_3bar_v1.json
             g5_clean_runner_run_latest_v1.json
+            g5_data_stale_evidence_v1.json
           )
           for name in "${targets[@]}"; do cp "out/$name" "$packet/$name"; done
           git config user.name 'g5-clean-runner-shadow-v1'
@@ -159,6 +201,12 @@ jobs:
                       raise SystemExit('SHADOW_EVALUATION_REGRESSION')
                   if int(new.get('complete_bar_count') or 0)<int(old.get('complete_bar_count') or 0):
                       raise SystemExit('SHADOW_BAR_REGRESSION')
+              elif name=='g5_data_stale_evidence_v1.json':
+                  value=json.loads(src.read_text())
+                  if value.get('authority_value') is not None or value.get('authority_created') is not False:
+                      raise SystemExit('DATA_STALE_AUTHORITY_MUTATION_FORBIDDEN')
+                  if int(value.get('fresh_credit') or 0) != 0:
+                      raise SystemExit('FRESH_CREDIT_FORBIDDEN')
               dst.parent.mkdir(parents=True,exist_ok=True)
               dst.write_bytes(src.read_bytes())
           PY

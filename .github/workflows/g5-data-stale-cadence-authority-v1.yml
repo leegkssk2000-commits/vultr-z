@@ -1,0 +1,131 @@
+name: G5 DATA_STALE Cadence Authority V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/g5_data_stale_cadence_authority_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_cadence_authority_v1.py'
+      - '.github/workflows/g5-data-stale-cadence-authority-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_data_stale_cadence_authority_v1.py'
+      - 'backend/research/rebuild/test_g5_data_stale_cadence_authority_v1.py'
+      - '.github/workflows/g5-data-stale-cadence-authority-v1.yml'
+  workflow_run:
+    workflows: ['G5 Clean Runner Shadow V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5_DATA_STALE_CADENCE_AUTHORITY_V1
+  cancel-in-progress: false
+
+jobs:
+  authority:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && 'master' || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Guard paid AI off
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"
+          test -z "$GOOGLE_API_KEY"
+          test -z "$OPENAI_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+          test -z "$GROQ_API_KEY"
+          echo SKIP_PAID_AI
+
+      - name: Compile and unit test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/g5_data_stale_cadence_authority_v1.py \
+            backend/research/rebuild/test_g5_data_stale_cadence_authority_v1.py
+          python -m unittest backend.research.rebuild.test_g5_data_stale_cadence_authority_v1 -v
+
+      - name: Derive cadence authority only after corrected 3-bar PASS
+        id: derive
+        run: |
+          set -euo pipefail
+          if python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('backend/research/rebuild/g5_clean_runner_shadow_v1.json')
+          r=json.loads(p.read_text())
+          ok=(r.get('state')=='CLEAN_RUNNER_SHADOW_PASS' and r.get('shadow_3bar_pass') is True and int(r.get('consecutive_complete_bar_count') or 0)>=3)
+          raise SystemExit(0 if ok else 1)
+          PY
+          then
+            python -m backend.research.rebuild.g5_data_stale_cadence_authority_v1
+            echo 'applied=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'applied=false' >> "$GITHUB_OUTPUT"
+            echo WAIT_CORRECTED_CLEAN_RUNNER_3BAR
+          fi
+
+      - name: Verify fail-closed authority semantics
+        if: steps.derive.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('backend/research/rebuild/g5_data_stale_evidence_v1.json').read_text())
+          assert r['state']=='DATA_STALE_AUTHORITY_PASS_CADENCE_LOCK', r
+          assert r['authority_value']==14400000, r
+          assert r['authority_unit']=='ms', r
+          assert r['authority_source']=='CONTRACT_GENUINE_CADENCE_LOCK', r
+          assert r['authority_created'] is True, r
+          assert r['data_stale_authority_allowed'] is True, r
+          assert r['authority_empirical_fit'] is False, r
+          assert r['threshold_surface_allowed'] is False, r
+          assert r['timestamp_integrity']=='PASS', r
+          assert r['fresh_credit']==0, r
+          assert r['formal_credit']==0, r
+          assert r['strategy_mutation'] is False, r
+          assert r['economic_mutation'] is False, r
+          assert r['contract_mutation'] is False, r
+          print('PASS_DATA_STALE_CADENCE_AUTHORITY')
+          PY
+
+      - name: Persist authority receipt on master
+        if: >-
+          steps.derive.outputs.applied == 'true' &&
+          (github.event_name == 'workflow_run' || (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch')
+        run: |
+          set -euo pipefail
+          git config user.name 'g5-data-stale-cadence-authority-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/g5_data_stale_evidence_v1.json
+          if git diff --cached --quiet; then
+            echo NO_CHANGE
+            exit 0
+          fi
+          git commit -m 'G5: persist cadence DATA_STALE authority [skip ci]'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:master; then exit 0; fi
+            git fetch origin master
+            git rebase origin/master
+          done
+          exit 1

@@ -1,4 +1,4 @@
-name: G5-G14 Shared Validation Replay V1
+name: G5-G14 Governance + Shared Validation CI V2
 
 on:
   workflow_dispatch:
@@ -9,26 +9,35 @@ on:
       - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
       - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
+      - 'backend/research/rebuild/g5_g14_experiment_lineage_v1.jsonl'
       - 'backend/research/rebuild/g5_g14_shared_validation_replay_receipt_v1.json'
       - 'backend/research/rebuild/test_g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/test_g5_g14_governance_validator_v1.py'
       - '.github/workflows/g5-g14-shared-validation-replay-v1.yml'
   push:
     branches:
       - master
+      - research/g5-g14-roadmap-hardening-v1
       - g5-g14-shared-validation-lock
     paths:
       - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
       - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
+      - 'backend/research/rebuild/g5_g14_experiment_lineage_v1.jsonl'
       - 'backend/research/rebuild/g5_g14_shared_validation_replay_receipt_v1.json'
       - 'backend/research/rebuild/test_g5_g14_generation_controller_v1.py'
+      - 'backend/research/rebuild/test_g5_g14_governance_validator_v1.py'
       - '.github/workflows/g5-g14-shared-validation-replay-v1.yml'
 
 permissions:
   contents: read
 
 jobs:
-  replay:
+  governance-and-replay:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -37,35 +46,76 @@ jobs:
       OPENROUTER_API_KEY: ''
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Guard paid AI off
         run: |
           test -z "$GEMINI_API_KEY"
           test -z "$OPENAI_API_KEY"
           test -z "$OPENROUTER_API_KEY"
-      - name: Compile
+
+      - name: Compile shared control plane
         run: |
           python -m py_compile backend/research/rebuild/g5_g14_generation_controller_v1.py
+          python -m py_compile backend/research/rebuild/g5_g14_governance_validator_v1.py
           python -m py_compile backend/research/rebuild/test_g5_g14_generation_controller_v1.py
-      - name: Deterministic replay tests
+          python -m py_compile backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+
+      - name: G5 terminal-controller regression tests
         run: python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
-      - name: Derive pinned current snapshot
+
+      - name: G5-G14 governance tests
+        run: python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+
+      - name: Append-only lineage and governance validation
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python backend/research/rebuild/g5_g14_governance_validator_v1.py --base-ref origin/master --write
+          else
+            python backend/research/rebuild/g5_g14_governance_validator_v1.py --write
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r = json.loads(Path('backend/research/rebuild/g5_g14_governance_validation_receipt_v1.json').read_text())
+          assert r['state'] == 'PASS_G5_G14_GOVERNANCE_LOCK', r
+          assert r['diagnostic_checkpoint_t'] == 6, r
+          assert r['qualification_checkpoint_t'] == 12, r
+          assert r['qualification_is_terminal'] is False, r
+          assert r['g5_responsibility'] == 'EDGE_QUALIFICATION', r
+          assert r['g5_rr_formal_credit'] == 0, r
+          assert r['g6_responsibility'] == 'TRADE_METHOD_EXIT_LIFECYCLE_ROBUSTNESS', r
+          assert r['g9_pass_x_pass_required'] is True, r
+          assert r['g14_auto_live_forbidden'] is True, r
+          assert r['order_authority'] == 'BLOCKED', r
+          assert r['live_authority'] == 'BLOCKED', r
+          print('GOVERNANCE_LOCK=PASS')
+          PY
+
+      - name: Derive current G5 snapshot without pinning runtime churn
         run: |
           python backend/research/rebuild/g5_g14_generation_controller_v1.py --write
           python - <<'PY'
           import json
           from pathlib import Path
-          p = Path('backend/research/rebuild/g5_g14_generation_controller_receipt_v1.json')
-          r = json.loads(p.read_text())
-          assert r['state'] == 'WAIT_DATA_STALE_AUTHORITY', r
-          assert r['completed_stage_count'] == 5, r
-          assert r['next_gate'] == 'DATA_STALE_AUTHORITY_VALID', r
-          assert r['g6_allowed'] is False, r
-          print('CURRENT_SNAPSHOT_REPLAY=PASS')
+          r = json.loads(Path('backend/research/rebuild/g5_g14_generation_controller_receipt_v1.json').read_text())
+          assert not r['state'].startswith('HARD_FAIL'), r
+          assert r['fresh_credit_granted'] is False, r
+          assert r['authority_created_by_controller'] is False, r
+          assert r['g5_rr_formal_credit_allowed'] is False, r
+          assert r['g6_fresh_formal_credit_required'] is True, r
+          if r['g5_terminal_pass'] is False:
+              assert r['g6_allowed'] is False, r
+          print(f"CURRENT_G5_STATE={r['state']}")
           PY
-      - name: Confirm no protected mutation
+
+      - name: Confirm protected runtime evidence was not mutated
         run: |
           git diff --exit-code -- backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
           git diff --exit-code -- backend/research/rebuild/g5_clean_runner_shadow_v1.json

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic fail-closed G5 -> G6 gate controller.
 
-Creates no trading/economic authority. It validates pinned evidence and unlocks
-G6 only after an explicit, pinned G5 terminal PASS receipt.
+Creates no trading/economic authority. Runtime evidence is allowed to evolve
+under schema/content validation; only terminal acceptance is exact-blob pinned.
+G6 unlocks only after an explicit, independently reviewed G5 terminal PASS.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ OUT = REBUILD / "g5_g14_generation_controller_receipt_v1.json"
 STAGES = [
     "CONTRACT_VALID",
     "AUTHORITY_INPUTS_PRESENT",
-    "AUTHORITY_SHA_LOCK_VALID",
+    "AUTHORITY_BINDING_POLICY_VALID",
     "CLEAN_RUNNER_SHADOW_PASS",
     "TELEMETRY_COMPLETE",
     "DATA_STALE_AUTHORITY_VALID",
@@ -27,6 +28,12 @@ STAGES = [
     "GENUINE_ECONOMIC_T_PRESENT",
     "G5_TERMINAL_PASS",
 ]
+
+RUNTIME_PIN_POLICIES = {
+    "RUNTIME_MUTABLE_SCHEMA_AND_INTERNAL_INTEGRITY",
+    "APPENDABLE_EVIDENCE_SCHEMA_AND_ROW_INTEGRITY",
+}
+EXACT_PIN_POLICY = "EXACT_GIT_BLOB"
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -96,7 +103,7 @@ def finish(
     ).hexdigest()
     terminal = state == "G5_TERMINAL_PASS"
     return {
-        "schema_version": "zel.g5_g14.generation_controller_receipt.v2",
+        "schema_version": "zel.g5_g14.generation_controller_receipt.v3",
         "controller_mode": "DETERMINISTIC_NO_PAID_AI_FAIL_CLOSED",
         "current_generation": 5,
         "state": state,
@@ -107,6 +114,9 @@ def finish(
         "g5_terminal_pass": terminal,
         "g6_allowed": terminal,
         "g6_stage": "TRADE_METHOD_STANDALONE",
+        "g5_responsibility": "EDGE_QUALIFICATION",
+        "g5_rr_formal_credit_allowed": False,
+        "g6_fresh_formal_credit_required": True,
         "fresh_credit_granted": False,
         "strategy_mutated": False,
         "rr_mutated": False,
@@ -161,6 +171,26 @@ def terminal_receipt_passes(terminal: dict[str, Any], gate: dict[str, Any]) -> b
     return True
 
 
+def validate_binding_policies(
+    specs: dict[str, Any],
+    required: tuple[str, ...],
+    observed_hashes: dict[str, str | None],
+) -> list[str]:
+    errors: list[str] = []
+    for name in required:
+        spec = specs.get(name, {})
+        policy = spec.get("pin_policy")
+        if policy in RUNTIME_PIN_POLICIES:
+            continue
+        if policy == EXACT_PIN_POLICY:
+            expected = spec.get("blob_sha")
+            if not expected or observed_hashes.get(name) != expected:
+                errors.append(name)
+            continue
+        errors.append(name)
+    return errors
+
+
 def evaluate(
     *,
     contract: dict[str, Any] | None,
@@ -178,43 +208,67 @@ def evaluate(
 
     if (
         contract.get("schema_version") != "zel.g5_g14.shared_validation_contract.v2"
-        or manifest.get("schema_version") != "zel.g5_g14.shared_validation_manifest.v2"
+        or manifest.get("schema_version") != "zel.g5_g14.shared_validation_manifest.v3"
         or contract.get("generation_unlock_rule") != "G(n+1)_ALLOWED_IFF_G(n)_TERMINAL_PASS"
         or contract.get("cutover", {}).get("automatic") is not False
         or contract.get("shared_invariants", {}).get("fresh_credit_fail_closed") is not True
     ):
-        return finish(state="HARD_FAIL_CONTRACT_OR_MANIFEST", next_action="repair_contract_or_manifest_only",
-                      completed=completed, failed_gate=STAGES[0], observed_hashes=observed_hashes,
-                      manifest=manifest)
+        return finish(
+            state="HARD_FAIL_CONTRACT_OR_MANIFEST",
+            next_action="repair_contract_or_manifest_only",
+            completed=completed,
+            failed_gate=STAGES[0],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[0])
 
     specs = manifest.get("authority_files", {})
     required = ("shadow", "telemetry", "data_stale", "cutover", "economic_ledger")
     if any(name not in specs for name in required):
-        return finish(state="HARD_FAIL_MANIFEST", next_action="repair_manifest_only", completed=completed,
-                      failed_gate=STAGES[1], observed_hashes=observed_hashes, manifest=manifest)
+        return finish(
+            state="HARD_FAIL_MANIFEST",
+            next_action="repair_manifest_only",
+            completed=completed,
+            failed_gate=STAGES[1],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
 
     for name in ("shadow", "telemetry", "data_stale", "cutover"):
         rec = records.get(name)
         if not isinstance(rec, dict) or rec.get("schema_version") != specs[name].get("schema_version"):
-            return finish(state="HARD_FAIL_AUTHORITY_INPUT", next_action=f"restore_exact_{name}_authority",
-                          completed=completed, failed_gate=STAGES[1], observed_hashes=observed_hashes,
-                          manifest=manifest)
+            return finish(
+                state="HARD_FAIL_AUTHORITY_INPUT",
+                next_action=f"restore_exact_{name}_authority",
+                completed=completed,
+                failed_gate=STAGES[1],
+                observed_hashes=observed_hashes,
+                manifest=manifest,
+            )
     ledger_schema = specs["economic_ledger"].get("schema_version")
     ledger_schema_error = any(row.get("schema_version") != ledger_schema for row in ledger_rows)
     if observed_hashes.get("economic_ledger") is None or ledger_parse_errors or ledger_schema_error:
-        return finish(state="HARD_FAIL_ECONOMIC_LEDGER", next_action="repair_economic_ledger_integrity",
-                      completed=completed, failed_gate=STAGES[1], observed_hashes=observed_hashes,
-                      manifest=manifest)
+        return finish(
+            state="HARD_FAIL_ECONOMIC_LEDGER",
+            next_action="repair_economic_ledger_integrity",
+            completed=completed,
+            failed_gate=STAGES[1],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[1])
 
-    drift = [name for name in required if not specs[name].get("blob_sha") or
-             observed_hashes.get(name) != specs[name].get("blob_sha")]
-    if drift:
-        return finish(state="HARD_FAIL_AUTHORITY_SHA_DRIFT",
-                      next_action="rebaseline_only_after_authority_review:" + ",".join(sorted(drift)),
-                      completed=completed, failed_gate=STAGES[2], observed_hashes=observed_hashes,
-                      manifest=manifest)
+    binding_errors = validate_binding_policies(specs, required, observed_hashes)
+    if binding_errors:
+        return finish(
+            state="HARD_FAIL_AUTHORITY_BINDING_POLICY",
+            next_action="repair_authority_binding_policy:" + ",".join(sorted(binding_errors)),
+            completed=completed,
+            failed_gate=STAGES[2],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[2])
 
     shadow = records["shadow"] or {}
@@ -226,18 +280,32 @@ def evaluate(
         and shadow.get("duplicate") == 0
         and shadow.get("lookahead") == 0
     ):
-        return finish(state="WAIT_CLEAN_RUNNER_SHADOW_PASS", next_action="continue_clean_runner_shadow_no_credit",
-                      completed=completed, failed_gate=STAGES[3], observed_hashes=observed_hashes,
-                      manifest=manifest)
+        return finish(
+            state="WAIT_CLEAN_RUNNER_SHADOW_PASS",
+            next_action="continue_clean_runner_shadow_no_credit",
+            completed=completed,
+            failed_gate=STAGES[3],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[3])
 
     telemetry = records["telemetry"] or {}
     complete_tuples = telemetry.get("complete_tuples")
-    if not (telemetry.get("missing_tuples") == 0 and isinstance(complete_tuples, int)
-            and not isinstance(complete_tuples, bool) and complete_tuples > 0):
-        return finish(state="WAIT_COMPLETE_TELEMETRY", next_action="collect_complete_telemetry_no_credit",
-                      completed=completed, failed_gate=STAGES[4], observed_hashes=observed_hashes,
-                      manifest=manifest)
+    if not (
+        telemetry.get("missing_tuples") == 0
+        and isinstance(complete_tuples, int)
+        and not isinstance(complete_tuples, bool)
+        and complete_tuples > 0
+    ):
+        return finish(
+            state="WAIT_COMPLETE_TELEMETRY",
+            next_action="collect_complete_telemetry_no_credit",
+            completed=completed,
+            failed_gate=STAGES[4],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[4])
 
     stale = records["data_stale"] or {}
@@ -251,10 +319,16 @@ def evaluate(
         and stale.get("timestamp_integrity") == "PASS"
     )
     if not stale_ok:
-        return finish(state="WAIT_DATA_STALE_AUTHORITY",
-                      next_action=stale.get("next", "collect_real_labeled_failure_evidence_before_threshold_surface"),
-                      completed=completed, failed_gate=STAGES[5], observed_hashes=observed_hashes,
-                      manifest=manifest)
+        return finish(
+            state="WAIT_DATA_STALE_AUTHORITY",
+            next_action=stale.get(
+                "next", "collect_real_labeled_failure_evidence_before_threshold_surface"
+            ),
+            completed=completed,
+            failed_gate=STAGES[5],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[5])
 
     cutover = records["cutover"] or {}
@@ -265,52 +339,99 @@ def evaluate(
         and cutover.get("production_ready") is True
         and shadow.get("post_cutover_3bar_pass") is True
     ):
-        return finish(state="WAIT_CUTOVER_OR_POST_CUTOVER_3BAR",
-                      next_action="manual_cutover_then_collect_3_post_cutover_genuine_bars",
-                      completed=completed, failed_gate=STAGES[6], observed_hashes=observed_hashes,
-                      manifest=manifest)
+        return finish(
+            state="WAIT_CUTOVER_OR_POST_CUTOVER_3BAR",
+            next_action="manual_cutover_then_collect_3_post_cutover_genuine_bars",
+            completed=completed,
+            failed_gate=STAGES[6],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+        )
     completed.append(STAGES[6])
 
     proxy_rows_do_not_count = contract.get("genuine_economic_t", {}).get("proxy_rows_do_not_count") is True
     genuine_rows = sum(
-        1 for row in ledger_rows
+        1
+        for row in ledger_rows
         if row.get("production_grade") is True
         and (not proxy_rows_do_not_count or "PROXY" not in str(row.get("economic_origin", "")).upper())
     )
     min_rows = int(contract.get("genuine_economic_t", {}).get("min_production_grade_rows", 1))
     if genuine_rows < min_rows:
-        return finish(state="WAIT_GENUINE_ECONOMIC_T",
-                      next_action="accumulate_production_grade_genuine_economic_T", completed=completed,
-                      failed_gate=STAGES[7], observed_hashes=observed_hashes, manifest=manifest,
-                      genuine_rows=genuine_rows)
+        return finish(
+            state="WAIT_GENUINE_ECONOMIC_T",
+            next_action="accumulate_production_grade_genuine_economic_T",
+            completed=completed,
+            failed_gate=STAGES[7],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
     completed.append(STAGES[7])
 
     terminal_spec = manifest.get("terminal_receipt", {})
     pinned_terminal_sha = terminal_spec.get("blob_sha")
     if terminal is None:
-        return finish(state="WAIT_G5_TERMINAL_RECEIPT",
-                      next_action="run_independent_OOS_walk_forward_stress_validation", completed=completed,
-                      failed_gate=STAGES[8], observed_hashes=observed_hashes, manifest=manifest,
-                      genuine_rows=genuine_rows)
+        return finish(
+            state="WAIT_G5_TERMINAL_RECEIPT",
+            next_action="run_independent_OOS_walk_forward_stress_validation",
+            completed=completed,
+            failed_gate=STAGES[8],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
+    if terminal_spec.get("pin_policy") != "EXACT_GIT_BLOB_AFTER_INDEPENDENT_REVIEW":
+        return finish(
+            state="HARD_FAIL_G5_TERMINAL_PIN_POLICY",
+            next_action="restore_exact_terminal_pin_policy",
+            completed=completed,
+            failed_gate=STAGES[8],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
     if not pinned_terminal_sha:
-        return finish(state="WAIT_G5_TERMINAL_RECEIPT_PIN",
-                      next_action="review_and_pin_terminal_receipt_blob_sha", completed=completed,
-                      failed_gate=STAGES[8], observed_hashes=observed_hashes, manifest=manifest,
-                      genuine_rows=genuine_rows)
+        return finish(
+            state="WAIT_G5_TERMINAL_RECEIPT_PIN",
+            next_action="review_and_pin_terminal_receipt_blob_sha",
+            completed=completed,
+            failed_gate=STAGES[8],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
     if terminal_blob_sha != pinned_terminal_sha:
-        return finish(state="HARD_FAIL_G5_TERMINAL_SHA_DRIFT", next_action="reject_unpinned_terminal_receipt",
-                      completed=completed, failed_gate=STAGES[8], observed_hashes=observed_hashes,
-                      manifest=manifest, genuine_rows=genuine_rows)
+        return finish(
+            state="HARD_FAIL_G5_TERMINAL_SHA_DRIFT",
+            next_action="reject_unpinned_terminal_receipt",
+            completed=completed,
+            failed_gate=STAGES[8],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
     if not terminal_receipt_passes(terminal, contract.get("g5_terminal_gate", {})):
-        return finish(state="WAIT_G5_TERMINAL_PASS",
-                      next_action="record_G5_FAIL_or_continue_only_approved_validation_axis", completed=completed,
-                      failed_gate=STAGES[8], observed_hashes=observed_hashes, manifest=manifest,
-                      genuine_rows=genuine_rows)
+        return finish(
+            state="WAIT_G5_TERMINAL_PASS",
+            next_action="record_G5_FAIL_or_continue_only_approved_validation_axis",
+            completed=completed,
+            failed_gate=STAGES[8],
+            observed_hashes=observed_hashes,
+            manifest=manifest,
+            genuine_rows=genuine_rows,
+        )
 
     completed.append(STAGES[8])
-    return finish(state="G5_TERMINAL_PASS", next_action="enter_G6_trade_method_standalone",
-                  completed=completed, failed_gate=None, observed_hashes=observed_hashes,
-                  manifest=manifest, genuine_rows=genuine_rows)
+    return finish(
+        state="G5_TERMINAL_PASS",
+        next_action="enter_G6_trade_method_standalone_with_fresh_candidate_freeze_boundary",
+        completed=completed,
+        failed_gate=None,
+        observed_hashes=observed_hashes,
+        manifest=manifest,
+        genuine_rows=genuine_rows,
+    )
 
 
 def derive(root: Path = ROOT) -> dict[str, Any]:
@@ -338,9 +459,16 @@ def derive(root: Path = ROOT) -> dict[str, Any]:
     terminal = read_json(terminal_path)
     terminal_blob_sha = git_blob_sha(terminal_path)
 
-    return evaluate(contract=contract, manifest=manifest, records=records, ledger_rows=ledger_rows,
-                    ledger_parse_errors=ledger_errors, observed_hashes=observed_hashes,
-                    terminal=terminal, terminal_blob_sha=terminal_blob_sha)
+    return evaluate(
+        contract=contract,
+        manifest=manifest,
+        records=records,
+        ledger_rows=ledger_rows,
+        ledger_parse_errors=ledger_errors,
+        observed_hashes=observed_hashes,
+        terminal=terminal,
+        terminal_blob_sha=terminal_blob_sha,
+    )
 
 
 def main() -> int:

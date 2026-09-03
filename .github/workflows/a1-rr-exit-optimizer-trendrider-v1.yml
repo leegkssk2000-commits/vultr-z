@@ -1,17 +1,25 @@
 name: A1 RR Exit Optimizer TrendRider V1
+
 on:
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/a1_rr_exit_optimizer_trendrider_v1.py'
+      - 'backend/research/rebuild/g5_clean_runner_economic_ledger_v1.jsonl'
       - '.github/workflows/a1-rr-exit-optimizer-trendrider-v1.yml'
+  workflow_run:
+    workflows: ['G5 Clean Runner Shadow V1']
+    types: [completed]
   workflow_dispatch:
+
 permissions:
   contents: write
   actions: read
+
 concurrency:
   group: a1-global-heavy-economic-evaluator-v1
   cancel-in-progress: false
+
 jobs:
   rr-geometry:
     runs-on: ubuntu-latest
@@ -24,10 +32,107 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Detect fresh G5 economic input and dedupe
+        id: trigger
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+
+          ledger = Path('backend/research/rebuild/g5_clean_runner_economic_ledger_v1.jsonl')
+          state_path = Path('backend/research/prep/rr_exit_optimizer_trigger_state_v1.json')
+          workflow_path = '.github/workflows/a1-rr-exit-optimizer-trendrider-v1.yml'
+          optimizer_path = 'backend/research/rebuild/a1_rr_exit_optimizer_trendrider_v1.py'
+          event_name = os.environ.get('GITHUB_EVENT_NAME', '')
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+
+          if not ledger.exists():
+              raise SystemExit('G5_ECONOMIC_LEDGER_MISSING')
+
+          input_sha = hashlib.sha256(ledger.read_bytes()).hexdigest()
+          prior_sha = None
+          if state_path.exists():
+              try:
+                  prior_sha = json.loads(state_path.read_text()).get('input_sha')
+              except Exception as exc:
+                  raise SystemExit(f'RR_TRIGGER_STATE_INVALID:{exc}')
+
+          allowed = True
+          reason = 'FORCED_MANUAL_OR_CODE_CHANGE'
+          changed = []
+
+          if event_name == 'workflow_run':
+              wr = event.get('workflow_run') or {}
+              conclusion = str(wr.get('conclusion') or '')
+              head_branch = str(wr.get('head_branch') or '')
+              if conclusion != 'success' or head_branch != 'master':
+                  allowed = False
+                  reason = f'IGNORE_WORKFLOW_RUN:{head_branch}:{conclusion}'
+              elif prior_sha == input_sha:
+                  allowed = False
+                  reason = 'NOOP_SAME_ECONOMIC_INPUT_SHA'
+              else:
+                  reason = 'FRESH_G5_ECONOMIC_INPUT_AFTER_CLEAN_RUNNER'
+
+          elif event_name == 'push':
+              before = str(event.get('before') or '')
+              after = str(event.get('after') or os.environ.get('GITHUB_SHA') or '')
+              try:
+                  if before and after and set(before) != {'0'}:
+                      changed = subprocess.check_output(
+                          ['git', 'diff', '--name-only', before, after], text=True
+                      ).splitlines()
+              except Exception:
+                  changed = []
+              force_paths = {workflow_path, optimizer_path}
+              force = bool(force_paths.intersection(changed)) or not changed
+              if not force and prior_sha == input_sha:
+                  allowed = False
+                  reason = 'NOOP_SAME_ECONOMIC_INPUT_SHA'
+              elif force:
+                  reason = 'FORCED_CODE_OR_WORKFLOW_CHANGE'
+              else:
+                  reason = 'FRESH_G5_ECONOMIC_INPUT_PUSH'
+
+          elif event_name == 'workflow_dispatch':
+              reason = 'FORCED_WORKFLOW_DISPATCH'
+
+          else:
+              allowed = False
+              reason = f'UNSUPPORTED_EVENT:{event_name}'
+
+          receipt = {
+              'schema_version': 'rr_trigger_check_v1',
+              'event_name': event_name,
+              'input_path': str(ledger),
+              'input_sha': input_sha,
+              'prior_input_sha': prior_sha,
+              'changed_paths': changed,
+              'should_run': allowed,
+              'reason': reason,
+              'source_commit': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+          }
+          Path('out/rr_trigger_check.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + '\n'
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"should_run={'true' if allowed else 'false'}\n")
+              fh.write(f"input_sha={input_sha}\n")
+              fh.write(f"reason={reason}\n")
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+
       - name: Fail closed if another heavy run is active
+        if: steps.trigger.outputs.should_run == 'true'
         run: |
           python - <<'PY'
           import json, os, subprocess
@@ -44,21 +149,26 @@ jobs:
               print(json.dumps({'state':'WAIT_HEAVY_SLOT','active':heavy},sort_keys=True)); raise SystemExit(75)
           print('PASS_GLOBAL_HEAVY_SLOT_FREE')
           PY
+
       - name: Compile and self-test
+        if: steps.trigger.outputs.should_run == 'true'
         run: |
           python -m py_compile backend/research/rebuild/a1_rr_exit_optimizer_trendrider_v1.py
           python -m backend.research.rebuild.a1_rr_exit_optimizer_trendrider_v1 --self-test
+
       - name: Download immutable G4 TrendRider broad30 source
+        if: steps.trigger.outputs.should_run == 'true'
         run: |
           mkdir -p out/source
           gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/source.zip
           unzip -q out/source.zip -d out/source
           test -f out/source/a1_exact25_drain_6_receipt.json
+
       - name: Run development-only RR geometry optimization
+        if: steps.trigger.outputs.should_run == 'true'
         run: |
           python - <<'PY'
           import json, math
-          from datetime import datetime, timezone
           from pathlib import Path
           from backend.research.rebuild import a1_rr_exit_optimizer_trendrider_v1 as opt
 
@@ -124,20 +234,56 @@ jobs:
           assert r['state'] in ('PREREGISTERED_FRESH_PROSPECTIVE','NO_ROBUST_RR_OPTIMUM','HOLD_INSUFFICIENT_EFFECTIVE_T')
           print(json.dumps({'state':r['state'],'exact_params':r.get('exact_params'),'boundary_ts':r.get('boundary_ts'),'artifact_sha':r['artifact_sha']},sort_keys=True))
           PY
-      - name: Persist research-only receipt on master
+
+      - name: Persist research-only receipt and trigger state on master
+        if: steps.trigger.outputs.should_run == 'true'
+        env:
+          RR_INPUT_SHA: ${{ steps.trigger.outputs.input_sha }}
+          RR_TRIGGER_REASON: ${{ steps.trigger.outputs.reason }}
         run: |
+          set -euo pipefail
           cp out/rr_exit_optimizer.json backend/research/prep/rr_exit_optimizer_latest.json
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          value={
+              'schema_version':'rr_auto_retrigger_state_v1',
+              'input_path':'backend/research/rebuild/g5_clean_runner_economic_ledger_v1.jsonl',
+              'input_sha':os.environ['RR_INPUT_SHA'],
+              'trigger_reason':os.environ['RR_TRIGGER_REASON'],
+              'source_commit':os.environ.get('GITHUB_SHA'),
+              'run_id':os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'processed_at':datetime.now(timezone.utc).isoformat(),
+              'heavy_replay_count':1,
+              'paid_ai_calls':0,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+              'live_trade_authority':'BLOCKED',
+          }
+          Path('backend/research/prep/rr_exit_optimizer_trigger_state_v1.json').write_text(
+              json.dumps(value,indent=2,sort_keys=True)+'\n'
+          )
+          print(json.dumps(value,sort_keys=True))
+          PY
           git config user.name a1-rr-exit-optimizer
           git config user.email actions@users.noreply.github.com
-          git add backend/research/prep/rr_exit_optimizer_latest.json
+          git add \
+            backend/research/prep/rr_exit_optimizer_latest.json \
+            backend/research/prep/rr_exit_optimizer_trigger_state_v1.json
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'research: persist RR exit optimizer result [skip ci]'
           git pull --rebase origin master
           git push origin HEAD:master
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: a1-rr-exit-optimizer-${{ github.run_id }}
-          path: out/rr_exit_optimizer.json
+          path: |
+            out/rr_trigger_check.json
+            out/rr_exit_optimizer.json
           retention-days: 90
-# trigger-v2
+
+# trigger-v3: workflow_run + economic-ledger SHA dedupe

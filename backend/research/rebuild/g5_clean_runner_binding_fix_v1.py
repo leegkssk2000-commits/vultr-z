@@ -16,7 +16,7 @@ BASE_FREEZE_PATH = ROOT / "backend/research/rebuild/g5_clean_runner_strategy_fre
 CANONICAL_V2_PATH = ROOT / "backend/research/contracts/a1_top5_replacement_child_freeze_v2.json"
 TOP5_SSOT_PATH = ROOT / "backend/research/rebuild/a1_top5_latest_only_ssot_v1.json"
 PROSPECTIVE_V2_PATH = ROOT / "backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json"
-PRE_FIX_RUN_PATH = ROOT / "backend/research/rebuild/g5_clean_runner_run_latest_v1.json"
+PRE_FIX_RUN_PATH = ROOT / "backend/research/rebuild/g5_clean_runner_binding_fix_v1.json"
 
 BINDING_EPOCH = "KELTNER_V2_BINDING_FIX_V1"
 KELTNER_ID = "keltner_trend"

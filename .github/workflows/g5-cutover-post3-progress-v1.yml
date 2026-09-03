@@ -1,0 +1,128 @@
+name: G5 Cutover Post3 Progress V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/g5_clean_runner_cutover_progress_v1.py'
+      - 'backend/research/rebuild/g5_clean_runner_post_cutover_shadow_bind_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_cutover_progress_v1.py'
+      - '.github/workflows/g5-cutover-post3-progress-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_clean_runner_cutover_progress_v1.py'
+      - 'backend/research/rebuild/g5_clean_runner_post_cutover_shadow_bind_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_cutover_progress_v1.py'
+      - '.github/workflows/g5-cutover-post3-progress-v1.yml'
+  workflow_run:
+    workflows: ['G5 Clean Runner Shadow V1', 'G5 DATA_STALE Cadence Authority V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5_CUTOVER_POST3_PROGRESS_V1
+  cancel-in-progress: false
+
+jobs:
+  progress:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && 'master' || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Guard paid AI and trading authority off
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"
+          test -z "$GOOGLE_API_KEY"
+          test -z "$OPENAI_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+          test -z "$GROQ_API_KEY"
+          echo SKIP_PAID_AI
+
+      - name: Compile and unit test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/g5_clean_runner_cutover_progress_v1.py \
+            backend/research/rebuild/g5_clean_runner_post_cutover_shadow_bind_v1.py \
+            backend/research/rebuild/test_g5_clean_runner_cutover_progress_v1.py
+          python -m unittest backend.research.rebuild.test_g5_clean_runner_cutover_progress_v1 -v
+
+      - name: Execute approved non-live cutover or advance genuine post bars
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.g5_clean_runner_cutover_progress_v1
+          python -m backend.research.rebuild.g5_clean_runner_post_cutover_shadow_bind_v1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cut=json.loads(Path('backend/research/rebuild/g5_clean_runner_cutover_receipt_v1.json').read_text())
+          post=json.loads(Path('backend/research/rebuild/g5_clean_runner_post_cutover_3bar_v1.json').read_text())
+          assert cut['automatic_cutover'] is False
+          assert cut['executed'] is True
+          assert cut['clean_runner_authority'] is True
+          assert cut['formal_credit']==0
+          assert cut['selection_authority'] is False
+          assert cut['promotion_authority'] is False
+          assert cut['execution_authority']=='NONE'
+          assert cut['order_authority']=='BLOCKED'
+          assert cut['live_trade_authority']=='BLOCKED'
+          assert post['cutover_executed'] is True
+          assert post['formal_credit']==0
+          if post['post_cutover_bars'] < 3:
+              assert post['production_ready'] is False
+              assert post['post_cutover_3bar_pass'] is False
+          else:
+              assert post['post_cutover_bars']==3
+              assert post['production_ready'] is True
+              assert post['post_cutover_3bar_pass'] is True
+              shadow=json.loads(Path('backend/research/rebuild/g5_clean_runner_shadow_v1.json').read_text())
+              assert shadow['post_cutover_3bar_pass'] is True
+              assert shadow['production_ready'] is True
+          print('PASS_CUTOVER_PROGRESS_FAIL_CLOSED')
+          PY
+
+      - name: Persist cutover progress on master
+        if: >-
+          github.event_name == 'workflow_run' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+          github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git config user.name 'g5-cutover-post3-progress-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            backend/research/rebuild/g5_clean_runner_cutover_anchor_v1.json \
+            backend/research/rebuild/g5_clean_runner_cutover_receipt_v1.json \
+            backend/research/rebuild/g5_clean_runner_post_cutover_3bar_v1.json \
+            backend/research/rebuild/g5_clean_runner_shadow_v1.json
+          if git diff --cached --quiet; then
+            echo NO_CHANGE
+            exit 0
+          fi
+          git commit -m 'G5: persist cutover post-3bar progress [skip ci]'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:master; then exit 0; fi
+            git fetch origin master
+            git rebase origin/master
+          done
+          exit 1

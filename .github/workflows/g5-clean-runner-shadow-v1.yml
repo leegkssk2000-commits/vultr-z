@@ -7,6 +7,7 @@ on:
       - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
       - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
@@ -23,6 +24,7 @@ on:
       - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
       - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
       - 'backend/research/rebuild/g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
@@ -72,6 +74,7 @@ jobs:
           mkdir -p out
           python -m py_compile \
             backend/research/rebuild/g5_clean_runner_v1.py \
+            backend/research/rebuild/test_g5_clean_runner_v1.py \
             backend/research/rebuild/g5_clean_runner_binding_fix_v1.py \
             backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py \
             backend/research/rebuild/g5_data_stale_evidence_v1.py \
@@ -79,6 +82,7 @@ jobs:
             backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py \
             backend/research/rebuild/test_g5_data_stale_real_failure_collector_v1.py
           python -m unittest \
+            backend.research.rebuild.test_g5_clean_runner_v1 \
             backend.research.rebuild.test_g5_clean_runner_binding_fix_v1 \
             backend.research.rebuild.test_g5_data_stale_evidence_v1 \
             backend.research.rebuild.test_g5_data_stale_real_failure_collector_v1 -v
@@ -191,13 +195,50 @@ jobs:
               assert evidence['next']=='WAIT_FOR_OBSERVED_REAL_FAILURE_OR_STALL'
           PY
 
-      - name: Classify DATA_STALE evidence without authority mutation
+      - name: Classify DATA_STALE only after corrected 3-bar gate
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.g5_data_stale_evidence_v1 \
-            --shadow out/g5_clean_runner_shadow_v1.json \
-            --state-log out/g5_clean_runner_state_events_v1.jsonl \
-            --output out/g5_data_stale_evidence_v1.json
+          if python - <<'PY'
+          import json
+          from pathlib import Path
+          shadow=json.loads(Path('out/g5_clean_runner_shadow_v1.json').read_text())
+          raise SystemExit(0 if shadow.get('shadow_3bar_pass') is True else 1)
+          PY
+          then
+            python -m backend.research.rebuild.g5_data_stale_evidence_v1 \
+              --contract out/g5_clean_runner_contract_effective_v1.json \
+              --shadow out/g5_clean_runner_shadow_v1.json \
+              --state-log out/g5_clean_runner_state_events_v1.jsonl \
+              --output out/g5_data_stale_evidence_v1.json
+          else
+            python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          out=Path('out')
+          shadow=json.loads((out/'g5_clean_runner_shadow_v1.json').read_text())
+          core={
+              'schema_version':'zel.g5.data_stale.evidence.v1',
+              'generated_at_utc':shadow.get('generated_at_utc'),
+              'state':'WAIT_CLEAN_RUNNER_3BAR',
+              'first_blocker':'SHADOW_3BAR_PASS_REQUIRED',
+              'binding_epoch':'KELTNER_V2_BINDING_FIX_V1',
+              'complete_bar_count':int(shadow.get('complete_bar_count') or 0),
+              'shadow_3bar_pass':False,
+              'timestamp_integrity':'PASS',
+              'authority_value':None,
+              'authority_created':False,
+              'ssot_mutated':False,
+              'fresh_credit':0,
+              'formal_credit':0,
+              'threshold_surface_allowed':False,
+              'data_stale_authority_allowed':False,
+              'next':'WAIT_FOR_CORRECTED_CLEAN_RUNNER_3BAR',
+          }
+          payload=json.dumps(core,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          core['receipt_sha256']=hashlib.sha256(payload).hexdigest()
+          (out/'g5_data_stale_evidence_v1.json').write_text(json.dumps(core,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
+          PY
+          fi
           python - <<'PY'
           import json
           from pathlib import Path
@@ -208,6 +249,11 @@ jobs:
           assert evidence['ssot_mutated'] is False
           assert evidence['fresh_credit'] == 0
           assert evidence['data_stale_authority_allowed'] is False
+          if evidence['state']=='WAIT_CLEAN_RUNNER_3BAR':
+              assert evidence['first_blocker']=='SHADOW_3BAR_PASS_REQUIRED'
+              assert evidence['binding_epoch']=='KELTNER_V2_BINDING_FIX_V1'
+              assert evidence['shadow_3bar_pass'] is False
+              assert evidence['complete_bar_count'] < 3
           PY
 
       - uses: actions/upload-artifact@v4

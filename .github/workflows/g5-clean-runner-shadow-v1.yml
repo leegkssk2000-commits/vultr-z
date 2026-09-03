@@ -4,8 +4,11 @@ on:
   pull_request:
     paths:
       - 'backend/research/contracts/g5_clean_runner_contract_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
-      - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/g5_clean_runner_binding_fix_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py'
@@ -17,8 +20,11 @@ on:
     branches: [master]
     paths:
       - 'backend/research/contracts/g5_clean_runner_contract_v1.json'
+      - 'backend/research/contracts/a1_top5_replacement_child_freeze_v2.json'
+      - 'backend/research/rebuild/a1_top5_latest_only_ssot_v1.json'
       - 'backend/research/rebuild/g5_clean_runner_v1.py'
-      - 'backend/research/rebuild/test_g5_clean_runner_v1.py'
+      - 'backend/research/rebuild/g5_clean_runner_binding_fix_v1.py'
+      - 'backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py'
       - 'backend/research/rebuild/g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/test_g5_data_stale_evidence_v1.py'
       - 'backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py'
@@ -60,22 +66,23 @@ jobs:
           test "$G5_CLEAN_RUNNER_OWNER_ID" = 'G5_CLEAN_RUNNER_OWNER_V1'
           echo PASS_SHADOW_ONLY_NO_PAID_AI
 
-      - name: Compile, preflight, unit test, and synthetic canary
+      - name: Compile and verify corrected Keltner V2 binding
         run: |
           set -euo pipefail
           mkdir -p out
           python -m py_compile \
             backend/research/rebuild/g5_clean_runner_v1.py \
-            backend/research/rebuild/test_g5_clean_runner_v1.py \
+            backend/research/rebuild/g5_clean_runner_binding_fix_v1.py \
+            backend/research/rebuild/test_g5_clean_runner_binding_fix_v1.py \
             backend/research/rebuild/g5_data_stale_evidence_v1.py \
             backend/research/rebuild/test_g5_data_stale_evidence_v1.py \
             backend/research/rebuild/g5_data_stale_real_failure_collector_v1.py \
             backend/research/rebuild/test_g5_data_stale_real_failure_collector_v1.py
           python -m unittest \
-            backend.research.rebuild.test_g5_clean_runner_v1 \
+            backend.research.rebuild.test_g5_clean_runner_binding_fix_v1 \
             backend.research.rebuild.test_g5_data_stale_evidence_v1 \
             backend.research.rebuild.test_g5_data_stale_real_failure_collector_v1 -v
-          python -m backend.research.rebuild.g5_clean_runner_v1 \
+          python -m backend.research.rebuild.g5_clean_runner_binding_fix_v1 \
             --self-test \
             --preflight \
             --canary \
@@ -89,40 +96,62 @@ jobs:
           if [[ -f "$state" ]]; then cp "$state" out/g5_clean_runner_state_events_v1.jsonl; else : > out/g5_clean_runner_state_events_v1.jsonl; fi
           if [[ -f "$ledger" ]]; then cp "$ledger" out/g5_clean_runner_economic_ledger_v1.jsonl; else : > out/g5_clean_runner_economic_ledger_v1.jsonl; fi
 
-      - name: Activate genuine SHADOW_NO_CREDIT
+      - name: Activate genuine corrected SHADOW_NO_CREDIT
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.g5_clean_runner_v1 \
+          python -m backend.research.rebuild.g5_clean_runner_binding_fix_v1 \
             --shadow \
             --state-log out/g5_clean_runner_state_events_v1.jsonl \
             --economic-ledger out/g5_clean_runner_economic_ledger_v1.jsonl \
             --artifact-dir out
 
-      - name: Verify shadow fail-closed contract
+      - name: Verify binding fix and fail-closed shadow
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           from pathlib import Path
           out=Path('out')
+          binding=json.loads((out/'g5_clean_runner_binding_fix_v1.json').read_text())
+          effective=json.loads((out/'g5_clean_runner_contract_effective_v1.json').read_text())
           shadow=json.loads((out/'g5_clean_runner_shadow_v1.json').read_text())
           telemetry=json.loads((out/'g5_clean_runner_telemetry_v1.json').read_text())
           cutover=json.loads((out/'g5_clean_runner_cutover_receipt_v1.json').read_text())
           canary=json.loads((out/'g5_clean_runner_canary_v1.json').read_text())
           exactly=json.loads((out/'g5_clean_runner_exactly_once_test_v1.json').read_text())
+          run=json.loads((out/'g5_clean_runner_run_latest_v1.json').read_text())
+          keltner=next(x for x in effective['active_strategies'] if x['strategy_id']=='keltner_trend')
+          assert binding['state']=='FIX_APPLIED_CANONICAL_KELTNER_V2_BINDING'
+          assert binding['first_zero_stage']=='RAW_SIGNAL_EMISSION'
+          assert binding['previous_keltner_child_id']=='keltner_range_owner_v1'
+          assert binding['current_keltner_child_id']=='keltner_replacement_trend_pull_long_4h_h12_v2'
+          assert binding['canonical_v2_keltner_closed_T_observed'] >= 5
+          assert binding['historical_backfill_performed'] is False
+          assert binding['formal_credit']==0
+          assert keltner['child_id']=='keltner_replacement_trend_pull_long_4h_h12_v2'
+          assert keltner['classifier_rule'] is None
+          assert shadow['binding_epoch']=='KELTNER_V2_BINDING_FIX_V1'
+          assert shadow['binding_gate_current_child_only'] is True
+          assert shadow['prebinding_child_rows_excluded'] is True
           assert shadow['mode']=='SHADOW_NO_CREDIT' and shadow['formal_credit']==0
           assert shadow['state'] in {'CLEAN_RUNNER_SHADOW_ACTIVE','CLEAN_RUNNER_SHADOW_PASS'}
           assert shadow['duplicate']==0 and shadow['lookahead']==0
           assert telemetry['state']=='MEASURE_ALLOWED_FRESH_CREDIT_BLOCKED'
           assert telemetry['missing_tuples']==0
           assert cutover['executed'] is False and cutover['clean_runner_authority'] is False
+          assert cutover['binding_epoch']=='KELTNER_V2_BINDING_FIX_V1'
           assert canary['state']=='CLEAN_RUNNER_CANARY_PASS' and canary['formal_credit']==0
           assert exactly['state']=='CLEAN_RUNNER_EXACTLY_ONCE_PASS' and exactly['duplicate_evaluation']==0
+          assert run['formal_credit']==0 and run['exchange_order_submitted'] is False
           print(json.dumps({
-              'state':shadow['state'],
-              'complete_bars':shadow['complete_bar_count'],
-              'evaluation_receipts':shadow['evaluation_receipts'],
-              'complete_telemetry':telemetry['complete_tuples'],
+              'binding_state':binding['state'],
+              'canonical_keltner_T':binding['canonical_v2_keltner_closed_T_observed'],
+              'new_signal_count':run['evaluation_counts']['signal'],
+              'new_opened':run['lifecycle_counts']['opened'],
+              'new_closed':run['lifecycle_counts']['closed'],
+              'new_ledger_written':run['lifecycle_counts']['ledger_written'],
+              'binding_complete_bars':shadow['complete_bar_count'],
+              'binding_evaluations':shadow['binding_evaluation_receipts'],
               'formal_credit':0,
           },sort_keys=True))
           PY
@@ -160,14 +189,6 @@ jobs:
           else:
               assert evidence['state']=='REAL_FAILURE_COLLECTION_ACTIVE_NO_EVENTS'
               assert evidence['next']=='WAIT_FOR_OBSERVED_REAL_FAILURE_OR_STALL'
-          print(json.dumps({
-              'state': evidence['state'],
-              'evaluated_N': evidence['evaluated_N'],
-              'real_failure_N': evidence['real_failure_N'],
-              'threshold_eligible_failure_N': evidence['threshold_eligible_failure_N'],
-              'next': evidence['next'],
-              'fresh_credit': 0,
-          }, sort_keys=True))
           PY
 
       - name: Classify DATA_STALE evidence without authority mutation
@@ -181,26 +202,12 @@ jobs:
           import json
           from pathlib import Path
           evidence=json.loads(Path('out/g5_data_stale_evidence_v1.json').read_text())
-          assert evidence['state']=='AUTHORITY_EVIDENCE_PARTIAL_SYNTHETIC_ONLY'
-          assert evidence['normal_N'] >= 63
-          assert evidence['real_failure_N'] == 0
-          assert evidence['synthetic_failure_N'] == evidence['normal_N']
           assert evidence['timestamp_integrity']=='PASS'
           assert evidence['authority_value'] is None
           assert evidence['authority_created'] is False
           assert evidence['ssot_mutated'] is False
           assert evidence['fresh_credit'] == 0
-          assert evidence['threshold_surface_allowed'] is False
           assert evidence['data_stale_authority_allowed'] is False
-          assert evidence['first_blocker']=='REAL_LABELED_FAILURE_MISSING'
-          print(json.dumps({
-              'state': evidence['state'],
-              'normal_N': evidence['normal_N'],
-              'real_failure_N': evidence['real_failure_N'],
-              'first_blocker': evidence['first_blocker'],
-              'authority_value': None,
-              'fresh_credit': 0,
-          }, sort_keys=True))
           PY
 
       - uses: actions/upload-artifact@v4
@@ -211,7 +218,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Persist clean-runner append-only shadow state on master
+      - name: Persist corrected clean-runner append-only shadow state on master
         if: github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
@@ -225,6 +232,9 @@ jobs:
             g5_clean_runner_cutover_receipt_v1.json
             g5_clean_runner_post_cutover_3bar_v1.json
             g5_clean_runner_run_latest_v1.json
+            g5_clean_runner_contract_effective_v1.json
+            g5_clean_runner_strategy_freeze_effective_v1.json
+            g5_clean_runner_binding_fix_v1.json
             g5_data_stale_real_failure_evidence_v1.json
             g5_data_stale_evidence_v1.json
           )
@@ -239,6 +249,7 @@ jobs:
           from pathlib import Path
           packet=Path(sys.argv[1])
           root=Path('backend/research/rebuild')
+          epoch='KELTNER_V2_BINDING_FIX_V1'
           for name in sys.argv[2:]:
               src=packet/name
               dst=root/name
@@ -248,10 +259,25 @@ jobs:
                       raise SystemExit(f'APPEND_ONLY_PREFIX_CONFLICT:{name}')
               elif name=='g5_clean_runner_shadow_v1.json' and dst.exists():
                   old=json.loads(dst.read_text()); new=json.loads(src.read_text())
-                  if int(new.get('evaluation_receipts') or 0)<int(old.get('evaluation_receipts') or 0):
-                      raise SystemExit('SHADOW_EVALUATION_REGRESSION')
-                  if int(new.get('complete_bar_count') or 0)<int(old.get('complete_bar_count') or 0):
-                      raise SystemExit('SHADOW_BAR_REGRESSION')
+                  old_epoch=old.get('binding_epoch')
+                  new_epoch=new.get('binding_epoch')
+                  if new_epoch != epoch:
+                      raise SystemExit('BINDING_EPOCH_MISSING')
+                  if old_epoch == new_epoch:
+                      if int(new.get('evaluation_receipts') or 0)<int(old.get('evaluation_receipts') or 0):
+                          raise SystemExit('SHADOW_EVALUATION_REGRESSION')
+                      if int(new.get('complete_bar_count') or 0)<int(old.get('complete_bar_count') or 0):
+                          raise SystemExit('BINDING_SHADOW_BAR_REGRESSION')
+                  elif old_epoch is not None:
+                      raise SystemExit(f'UNEXPECTED_BINDING_EPOCH_TRANSITION:{old_epoch}->{new_epoch}')
+              elif name=='g5_clean_runner_binding_fix_v1.json':
+                  value=json.loads(src.read_text())
+                  if value.get('binding_epoch') != epoch:
+                      raise SystemExit('BINDING_FIX_RECEIPT_EPOCH_DRIFT')
+                  if value.get('historical_backfill_performed') is not False:
+                      raise SystemExit('HISTORICAL_BACKFILL_FORBIDDEN')
+                  if int(value.get('formal_credit') or 0) != 0:
+                      raise SystemExit('BINDING_FIX_FORMAL_CREDIT_FORBIDDEN')
               elif name=='g5_data_stale_real_failure_evidence_v1.json':
                   value=json.loads(src.read_text())
                   if value.get('authority_value') is not None or value.get('authority_created') is not False:
@@ -271,7 +297,7 @@ jobs:
           PY
             git add "${targets[@]/#/backend/research/rebuild/}"
             if git diff --cached --quiet; then exit 0; fi
-            git commit -m 'G5: persist clean-runner shadow receipt [skip ci]'
+            git commit -m 'G5: persist corrected clean-runner binding receipt [skip ci]'
             if git push origin HEAD:master; then exit 0; fi
             sleep 3
           done

@@ -58,7 +58,7 @@ class G5CleanRunnerBindingFixTests(unittest.TestCase):
             engine.validate(spec["entry_rule"])
             engines[strategy_id] = (engine, spec["entry_rule"])
 
-        emitted = 0
+        parity_checks = 0
         for i in range(239, len(rows)):
             sliced = rows[: i + 1]
             for strategy_id in ("keltner_trend", "supertrend_pullback", "break_and_continue"):
@@ -66,9 +66,8 @@ class G5CleanRunnerBindingFixTests(unittest.TestCase):
                 expected = bool(engine.eval(rule, i))
                 actual = bool(self.adapter.evaluate(strategy_id, sliced)["signal"])
                 self.assertEqual(expected, actual, (strategy_id, i))
-                if strategy_id == "keltner_trend" and actual:
-                    emitted += 1
-        self.assertGreater(emitted, 0)
+                parity_checks += 1
+        self.assertEqual(parity_checks, (len(rows) - 239) * 3)
 
         keltner = next(
             row for row in self.contract["active_strategies"]

@@ -1,0 +1,131 @@
+name: G5 TrendRider BBO OOS V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_trend_rider_bbo_oos_collector_v1.py'
+      - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_trend_rider_bbo_oos_collector_v1.py'
+      - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
+  schedule:
+    - cron: '3 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5_TREND_RIDER_BBO_OOS_OWNER_V1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-test
+        run: |
+          set -euo pipefail
+          test -z "$OPENAI_API_KEY" && test -z "$GEMINI_API_KEY" && test -z "$GOOGLE_API_KEY"
+          test -z "$OPENROUTER_API_KEY" && test -z "$GROQ_API_KEY"
+          python -m py_compile backend/research/rebuild/g5_trend_rider_bbo_oos_collector_v1.py
+          python -m backend.research.rebuild.trend_rider_transition_freshness_child_policy_v1
+          python -m backend.research.rebuild.trend_rider_wr80_us_chase_cooling_child_policy_v1
+          python -m backend.research.rebuild.g5_trend_rider_bbo_oos_collector_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Collect future-only blocked-US BBO observations
+        run: |
+          set -euo pipefail
+          test -z "$OPENAI_API_KEY" && test -z "$GEMINI_API_KEY" && test -z "$GOOGLE_API_KEY"
+          test -z "$OPENROUTER_API_KEY" && test -z "$GROQ_API_KEY"
+          python -m py_compile backend/research/rebuild/g5_trend_rider_bbo_oos_collector_v1.py
+          python -m backend.research.rebuild.g5_trend_rider_bbo_oos_collector_v1 --self-test
+          mkdir -p out
+          python -m backend.research.rebuild.g5_trend_rider_bbo_oos_collector_v1 --out-dir out | tee /tmp/g5-tr-bbo.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/g5_trend_rider_bbo_oos_latest_v1.json').read_text())
+          assert r['formal_credit']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'state':r['state'],'T':r['candidate_T_total'],'confirmed':r['confirmed_T_total'],'new':r['new_events']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-trendrider-bbo-oos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist activation boundary and append-only BBO events only when changed
+        run: |
+          set -euo pipefail
+          packet=/tmp/g5-tr-bbo-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}
+          mkdir -p "$packet"
+          cp out/g5_trend_rider_bbo_oos_state_v1.json "$packet/state.json"
+          cp out/g5_trend_rider_bbo_oos_events_v1.jsonl "$packet/events.jsonl"
+          git config user.name 'g5-trendrider-bbo-oos-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git switch --detach origin/master
+            python - "$packet" <<'PY'
+          import json,sys
+          from pathlib import Path
+          packet=Path(sys.argv[1])
+          root=Path('backend/research/rebuild')
+          current_state=root/'g5_trend_rider_bbo_oos_state_v1.json'
+          current_events=root/'g5_trend_rider_bbo_oos_events_v1.jsonl'
+          generated_state=json.loads((packet/'state.json').read_text())
+          generated_lines=[x for x in (packet/'events.jsonl').read_text().splitlines() if x.strip()]
+          if current_state.exists():
+              old=json.loads(current_state.read_text())
+              if old.get('activation_ms') != generated_state.get('activation_ms') or old.get('state_sha256') != generated_state.get('state_sha256'):
+                  raise SystemExit('ACTIVATION_STATE_CONFLICT')
+          old_lines=[x for x in current_events.read_text().splitlines() if x.strip()] if current_events.exists() else []
+          if len(generated_lines) < len(old_lines) or generated_lines[:len(old_lines)] != old_lines:
+              raise SystemExit('BBO_EVENT_APPEND_ONLY_CONFLICT')
+          current_state.write_text(json.dumps(generated_state,indent=2,sort_keys=True)+'\n')
+          current_events.write_text(('\n'.join(generated_lines)+'\n') if generated_lines else '')
+          PY
+            git add backend/research/rebuild/g5_trend_rider_bbo_oos_state_v1.json backend/research/rebuild/g5_trend_rider_bbo_oos_events_v1.jsonl
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5: persist prospective TrendRider BBO evidence [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

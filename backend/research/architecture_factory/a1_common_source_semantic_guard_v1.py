@@ -68,6 +68,25 @@ def _semantic_blockers(candidate: Mapping[str, Any]) -> list[str]:
     return [f"COMMON_SOURCE_UNOBSERVABLE_SEMANTIC:{term}" for term in hits]
 
 
+def _seal_alpha_proof_boundary(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Demote architecture-review quorum to Alpha-Proof input only.
+
+    The upstream factory historically named its >=2-review flag
+    eligible_for_preregistration. That flag is review credit only; it cannot
+    authorize preregistration or replay until the source-bound Alpha Proof
+    P0-P6 receipt passes.
+    """
+    row = dict(candidate)
+    row["architecture_factory_review_quorum_eligible"] = row.get("eligible_for_preregistration") is True
+    row["eligible_for_preregistration"] = False
+    row["alpha_proof_required"] = True
+    row["alpha_proof_state"] = "NOT_EVALUATED"
+    row["deterministic_replay_authorized"] = False
+    row["g5b_fresh_boundary_created"] = False
+    row["queue_role"] = "ALPHA_PROOF_INPUT_ONLY"
+    return row
+
+
 def apply(receipt: Mapping[str, Any]) -> dict[str, Any]:
     out = json.loads(json.dumps(dict(receipt)))
     ready_in = [dict(x) for x in (out.get("new_architecture_ready_queue") or []) if isinstance(x, Mapping)]
@@ -75,7 +94,8 @@ def apply(receipt: Mapping[str, Any]) -> dict[str, Any]:
     held: list[dict[str, Any]] = []
     blockers_by_id: dict[str, list[str]] = {}
 
-    for row in ready_in:
+    for raw in ready_in:
+        row = _seal_alpha_proof_boundary(raw)
         blockers = _semantic_blockers(row)
         if blockers:
             row["mechanism_first_guard_pass"] = False
@@ -105,11 +125,20 @@ def apply(receipt: Mapping[str, Any]) -> dict[str, Any]:
         diagnostics.append(row)
 
     out["candidate_guard_diagnostics"] = diagnostics
+    # Compatibility alias retained, but its semantics are now explicit:
+    # source-ready architecture candidates awaiting Alpha Proof, not replay-ready.
     out["new_architecture_ready_queue"] = ready
     out["new_architecture_ready_count"] = len(ready)
+    out["new_architecture_ready_queue_semantics"] = "ALPHA_PROOF_INPUT_ONLY_NOT_PREREGISTRATION_OR_REPLAY_READY"
+    out["new_architecture_alpha_proof_input_queue"] = ready
+    out["new_architecture_alpha_proof_input_count"] = len(ready)
     out["new_architecture_semantic_hold_queue"] = held
     out["new_architecture_semantic_hold_count"] = len(held)
     out["next_experiment_candidate"] = ready[0] if ready else None
+    out["alpha_proof_required"] = True
+    out["deterministic_replay_authorized"] = False
+    out["g5b_fresh_boundary_created"] = False
+    out["next"] = "RUN_G5A_ALPHA_PROOF_P0_P6_PRECHECK" if ready else "WAIT_FOR_SOURCE_READY_G5A_CANDIDATE"
     out["common_source_semantic_guard"] = {
         "schema_version": SCHEMA,
         "state": "PASS_COMMON_SOURCE_SEMANTIC_GUARD" if not held else "HOLD_UNOBSERVABLE_COMMON_SOURCE_SEMANTICS",
@@ -121,7 +150,7 @@ def apply(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "source_authority_relaxed": False,
     }
     out["state"] = (
-        "PASS_MECHANISM_FIRST_NEW_ARCHITECTURE_READY"
+        "PASS_MECHANISM_FIRST_ALPHA_PROOF_INPUT_READY"
         if ready
         else "HOLD_MECHANISM_FIRST_NO_SOURCE_READY_NEW_ARCHITECTURE"
     )
@@ -150,11 +179,13 @@ def self_test() -> int:
                 "candidate_id": "bad",
                 "required_sources": ["ohlcv", "volume"],
                 "entry_event": "aggressive-side volume surge at session overlap",
+                "eligible_for_preregistration": True,
             },
             {
                 "candidate_id": "good",
                 "required_sources": ["ohlcv", "volume"],
                 "entry_event": "completed-bar close breaks prior range while total volume expands",
+                "eligible_for_preregistration": True,
             },
         ],
         "candidate_guard_diagnostics": [
@@ -171,10 +202,17 @@ def self_test() -> int:
         "protected_mutations": 0,
     }
     guarded = apply(base)
+    assert guarded["state"] == "PASS_MECHANISM_FIRST_ALPHA_PROOF_INPUT_READY"
     assert guarded["new_architecture_ready_count"] == 1
     assert guarded["next_experiment_candidate"]["candidate_id"] == "good"
     assert guarded["new_architecture_semantic_hold_count"] == 1
     assert guarded["new_architecture_semantic_hold_queue"][0]["candidate_id"] == "bad"
+    assert guarded["next_experiment_candidate"]["architecture_factory_review_quorum_eligible"] is True
+    assert guarded["next_experiment_candidate"]["eligible_for_preregistration"] is False
+    assert guarded["next_experiment_candidate"]["alpha_proof_required"] is True
+    assert guarded["next_experiment_candidate"]["deterministic_replay_authorized"] is False
+    assert guarded["deterministic_replay_authorized"] is False
+    assert guarded["g5b_fresh_boundary_created"] is False
     assert _semantic_blockers({"required_sources": ["funding", "basis"], "entry_event": "order flow"}) == []
     print("PASS_A1_COMMON_SOURCE_SEMANTIC_GUARD_V1_SELF_TEST")
     return 0
@@ -193,9 +231,10 @@ def main() -> int:
     result = run(args.input, args.output)
     print(json.dumps({
         "state": result.get("state"),
-        "ready": result.get("new_architecture_ready_count"),
+        "alpha_proof_input": result.get("new_architecture_alpha_proof_input_count"),
         "semantic_hold": result.get("new_architecture_semantic_hold_count"),
         "next": (result.get("next_experiment_candidate") or {}).get("candidate_id"),
+        "replay_authorized": result.get("deterministic_replay_authorized"),
         "receipt": result.get("receipt_sha256"),
     }, sort_keys=True))
     return 0

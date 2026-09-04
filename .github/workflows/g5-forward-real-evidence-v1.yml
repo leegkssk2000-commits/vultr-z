@@ -1,0 +1,211 @@
+name: G5 Forward Real Evidence V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5_forward_real_evidence_contract_v1.json'
+      - 'backend/research/rebuild/g5_forward_real_producer_audit_v1.json'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v1.py'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v2.py'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v3.py'
+      - 'backend/research/rebuild/test_g5_forward_real_evidence_bridge_v1.py'
+      - 'backend/research/rebuild/test_g5_forward_real_evidence_bridge_v3.py'
+      - '.github/workflows/g5-forward-real-evidence-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5_forward_real_evidence_contract_v1.json'
+      - 'backend/research/rebuild/g5_forward_real_producer_audit_v1.json'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v1.py'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v2.py'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v3.py'
+      - 'backend/research/rebuild/test_g5_forward_real_evidence_bridge_v1.py'
+      - 'backend/research/rebuild/test_g5_forward_real_evidence_bridge_v3.py'
+      - '.github/workflows/g5-forward-real-evidence-v1.yml'
+  workflow_run:
+    workflows: ['G5 Clean Runner Shadow V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5_FORWARD_REAL_EVIDENCE_OWNER_V1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert paid AI disabled
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"
+          test -z "$GOOGLE_API_KEY"
+          test -z "$OPENAI_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+          test -z "$GROQ_API_KEY"
+      - name: Compile and run deterministic bridge tests
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v1.py \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v2.py \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v3.py \
+            backend/research/rebuild/test_g5_forward_real_evidence_bridge_v1.py \
+            backend/research/rebuild/test_g5_forward_real_evidence_bridge_v3.py
+          python -m unittest \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v3 -v
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v1 --self-test
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v2 --self-test
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v3 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert zero paid-AI path and compile
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"
+          test -z "$GOOGLE_API_KEY"
+          test -z "$OPENAI_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+          test -z "$GROQ_API_KEY"
+          python -m py_compile \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v1.py \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v2.py \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v3.py \
+            backend/research/rebuild/test_g5_forward_real_evidence_bridge_v1.py \
+            backend/research/rebuild/test_g5_forward_real_evidence_bridge_v3.py
+          python -m unittest \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v3 -v
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v3 --self-test
+      - name: Run future-only forward-real evidence bridge
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v3 --out-dir out | tee /tmp/g5-forward-real.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/g5_forward_real_bridge_latest_v1.json').read_text())
+          assert r['historical_backfill'] is False
+          assert r['selection_authority'] is False
+          assert r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE'
+          assert r['order_authority']=='BLOCKED'
+          assert r['live_trade_authority']=='BLOCKED'
+          assert r['post_cutover_authority_ready'] is True
+          assert r['entry_capture_retry_safe'] is True
+          if 'strategy_mutation' in r:
+              assert r['strategy_mutation'] is False
+          if 'threshold_mutation' in r:
+              assert r['threshold_mutation'] is False
+          if 'rr_mutation' in r:
+              assert r['rr_mutation'] is False
+          print(json.dumps({
+              'state':r['state'],
+              'open_T':r['bridge_open_T'],
+              'new_production_grade_T':r['new_production_grade_T'],
+              'production_grade_T_total':r['production_grade_T_total'],
+              'entry_capture_retry_safe':r['entry_capture_retry_safe'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-forward-real-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist append-only bridge state and production evidence
+        run: |
+          set -euo pipefail
+          packet=/tmp/g5-forward-real-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}
+          mkdir -p "$packet"
+          cp out/g5_forward_real_bridge_state_v1.jsonl "$packet/bridge_state.jsonl"
+          cp out/g5_forward_real_evidence_ledger_v1.jsonl "$packet/bridge_ledger.jsonl"
+          cp out/g5_economic_evidence_ledger_v1.jsonl "$packet/canonical_ledger.jsonl"
+          cp out/g5_forward_real_bridge_latest_v1.json "$packet/latest.json"
+          git config user.name 'g5-forward-real-evidence-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git switch --detach origin/master
+            python - "$packet" <<'PY'
+          import json,sys
+          from pathlib import Path
+          packet=Path(sys.argv[1])
+          rebuild=Path('backend/research/rebuild')
+          prep=Path('backend/research/prep')
+          rebuild.mkdir(parents=True,exist_ok=True); prep.mkdir(parents=True,exist_ok=True)
+
+          def lines(path):
+              return [x for x in path.read_text().splitlines() if x.strip()] if path.exists() else []
+
+          def append_only_prefix(current, generated, label):
+              old=lines(current); new=lines(generated)
+              if len(new)<len(old) or new[:len(old)]!=old:
+                  raise SystemExit(f'APPEND_ONLY_PREFIX_CONFLICT:{label}')
+              current.write_text(('\n'.join(new)+'\n') if new else '')
+
+          append_only_prefix(rebuild/'g5_forward_real_bridge_state_v1.jsonl', packet/'bridge_state.jsonl', 'bridge_state')
+          append_only_prefix(rebuild/'g5_forward_real_evidence_ledger_v1.jsonl', packet/'bridge_ledger.jsonl', 'bridge_ledger')
+
+          current=prep/'g5_economic_evidence_ledger_v1.jsonl'
+          cur=[json.loads(x) for x in lines(current)]
+          gen=[json.loads(x) for x in lines(packet/'canonical_ledger.jsonl')]
+          known={str(x.get('evidence_row_sha256') or '') for x in cur}
+          if '' in known:
+              raise SystemExit('CANONICAL_LEDGER_ROW_SHA_MISSING')
+          for row in gen:
+              sha=str(row.get('evidence_row_sha256') or '')
+              if not sha:
+                  raise SystemExit('GENERATED_CANONICAL_ROW_SHA_MISSING')
+              if sha not in known:
+                  cur.append(row); known.add(sha)
+          current.write_text(''.join(json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False)+'\n' for x in cur))
+          (rebuild/'g5_forward_real_bridge_latest_v1.json').write_bytes((packet/'latest.json').read_bytes())
+          PY
+            git add \
+              backend/research/rebuild/g5_forward_real_bridge_state_v1.jsonl \
+              backend/research/rebuild/g5_forward_real_evidence_ledger_v1.jsonl \
+              backend/research/rebuild/g5_forward_real_bridge_latest_v1.json \
+              backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5: persist future-only forward-real evidence [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

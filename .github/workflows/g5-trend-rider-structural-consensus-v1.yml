@@ -1,0 +1,101 @@
+name: G5 TrendRider Structural Consensus V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5_trend_rider_structural_consensus_prereg_v1.json'
+      - 'backend/research/rebuild/trend_rider_wr8125_structural_consensus_child_policy_v1.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_structural_consensus_attribution_v1.py'
+      - '.github/workflows/g5-trend-rider-structural-consensus-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g5-trend-rider-structural-consensus-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert preregistration and zero paid AI
+        run: |
+          set -euo pipefail
+          test -z "$OPENAI_API_KEY"
+          test -z "$GEMINI_API_KEY"
+          test -z "$GOOGLE_API_KEY"
+          test -z "$OPENROUTER_API_KEY"
+          test -z "$GROQ_API_KEY"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('backend/research/contracts/g5_trend_rider_structural_consensus_prereg_v1.json').read_text())
+          assert p['state']=='PREREGISTERED_BEFORE_CANDIDATE_EVALUATION'
+          assert p['candidate']['architecture_id']=='TR_STRUCTURAL_CONSENSUS_EDGE_V1'
+          assert p['candidate']['numeric_thresholds_added']==0
+          assert p['candidate']['numeric_threshold_sweep'] is False
+          assert p['candidate']['candidate_family_sweep'] is False
+          assert p['candidate']['outcome_data_used_to_define_axis'] is False
+          assert p['candidate']['rr_exit_mutation_allowed'] is False
+          assert p['candidate']['historical_union_allowed'] is False
+          assert p['discovery_gate']['candidate_count']==1
+          assert p['execution_authority']=='NONE'
+          assert p['order_authority']=='BLOCKED' and p['live_trade_authority']=='BLOCKED'
+          print('G5_TREND_RIDER_STRUCTURAL_CONSENSUS_PREREG=PASS')
+          PY
+      - name: Compile and self-test fixed candidate
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/trend_rider_wr8125_structural_consensus_child_policy_v1.py \
+            backend/research/rebuild/a1_trend_rider_wr8125_structural_consensus_attribution_v1.py
+          python -m backend.research.rebuild.trend_rider_wr8125_structural_consensus_child_policy_v1
+          python -m backend.research.rebuild.a1_trend_rider_wr8125_structural_consensus_attribution_v1 --self-test
+      - name: Run one-shot frozen24 structural-consensus attribution
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_trend_rider_wr8125_structural_consensus_attribution_v1 \
+            --out out/a1_trend_rider_wr8125_structural_consensus_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_wr8125_structural_consensus_latest.json'))
+          assert r['authority_match'] is True, r
+          assert r['candidate_count']==1, r
+          assert r['historical_union_allowed'] is False, r
+          assert r['formal_credit']==0, r
+          assert r['numeric_threshold_sweep'] is False, r
+          assert r['candidate_family_sweep'] is False, r
+          assert r['outcome_used_for_runtime'] is False, r
+          assert r['rr_exit_mutated'] is False, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          print('STATE='+str(r['state']))
+          print('CANDIDATE='+json.dumps(r.get('candidate'),sort_keys=True))
+          print('SELECTED='+json.dumps(r.get('selected_incremental_identities'),sort_keys=True))
+          print('NEXT='+str(r.get('next')))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-trend-rider-structural-consensus-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_wr8125_structural_consensus_latest.json
+          if-no-files-found: warn
+          retention-days: 30

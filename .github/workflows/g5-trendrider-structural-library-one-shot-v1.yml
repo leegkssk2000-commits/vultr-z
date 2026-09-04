@@ -1,0 +1,59 @@
+name: G5 TrendRider Structural Library One-Shot V1
+
+on:
+  push:
+    branches:
+      - research/g5-paid-ai-one-shot-v1
+    paths:
+      - '.github/workflows/g5-trendrider-structural-library-one-shot-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g5-paid-ai-one-shot-v1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Self-test zero-cost library
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_structural_library_v1.py
+          python backend/research/rebuild/a1_trend_rider_wr8125_structural_library_v1.py --self-test
+      - name: Screen structural entry library
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/rebuild/a1_trend_rider_wr8125_structural_library_v1.py \
+            --out out/a1_trend_rider_wr8125_structural_library_v1.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_wr8125_structural_library_v1.json'))
+          assert r['historical_union_allowed'] is False
+          assert r['historical_metrics_formal_credit'] == 0
+          assert r['rr_exit_mutated'] is False
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print('STATE='+r['state'])
+          print('STRICT='+str(r['strict_candidate_count']))
+          print('NEXT='+r['next'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5-trendrider-structural-library-${{ github.run_id }}
+          path: out/a1_trend_rider_wr8125_structural_library_v1.json
+          if-no-files-found: error
+          retention-days: 30

@@ -75,6 +75,13 @@ def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.write_text("".join(json.dumps(dict(x), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n" for x in rows), encoding="utf-8")
 
 
+def rehash_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(state)
+    row.pop("state_sha256", None)
+    row["state_sha256"] = stable(row)
+    return row
+
+
 def validate_state(state: Mapping[str, Any]) -> None:
     if state.get("schema_version") != STATE_SCHEMA:
         raise RuntimeError("BBO_OOS_STATE_SCHEMA_MISMATCH")
@@ -84,6 +91,8 @@ def validate_state(state: Mapping[str, Any]) -> None:
         raise RuntimeError("BBO_OOS_ACTIVATION_REQUIRED")
     if state.get("future_only") is not True or state.get("historical_backfill") is not False:
         raise RuntimeError("BBO_OOS_FUTURE_ONLY_DRIFT")
+    if int(state.get("last_scanned_closed_1h_ms") or 0) < 0:
+        raise RuntimeError("BBO_OOS_SCAN_CURSOR_INVALID")
     for key, expected in AUTHORITY.items():
         if state.get(key) != expected:
             raise RuntimeError(f"BBO_OOS_AUTHORITY_DRIFT:{key}")
@@ -180,12 +189,7 @@ def candidate_probe(symbol: str, bars: Sequence[Mapping[str, Any]], current_ms: 
         return None
 
     cost = ev.fetch_execution_snapshot(symbol, dict(cost_authority))
-    intent = transition_policy.build_trend_rider_intent(
-        feature,
-        policy_source_sha=ev.git_blob_sha(TRANSITION_POLICY_PATH),
-        verified_round_trip_cost_bps=float(cost["pretrade_verified_cost_bps"]),
-        config=cfg,
-    )
+    intent = transition_policy.build_trend_rider_intent(feature, policy_source_sha=ev.git_blob_sha(TRANSITION_POLICY_PATH), verified_round_trip_cost_bps=float(cost["pretrade_verified_cost_bps"]), config=cfg)
     if bool(getattr(intent, "no_trade")):
         return None
     side = str(getattr(intent, "side"))
@@ -214,20 +218,19 @@ def candidate_probe(symbol: str, bars: Sequence[Mapping[str, Any]], current_ms: 
 
 
 def make_state(current_ms: int) -> dict[str, Any]:
-    row = {
+    return rehash_state({
         "schema_version": STATE_SCHEMA,
         "state": "ACTIVE_FUTURE_ONLY_BBO_COLLECTION",
         "architecture_id": ARCHITECTURE_ID,
         "parent_identity": PARENT_IDENTITY,
         "activation_ms": int(current_ms),
+        "last_scanned_closed_1h_ms": 0,
         "future_only": True,
         "historical_backfill": False,
         "candidate_rule": "US_BASELINE_BLOCKED_ONLY__LONG_BID_QTY_GT_ASK_QTY__SHORT_ASK_QTY_GT_BID_QTY",
         "symbols": list(SYMBOLS),
         **AUTHORITY,
-    }
-    row["state_sha256"] = stable(row)
-    return row
+    })
 
 
 def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_ms: int) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -239,6 +242,7 @@ def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_m
             "state": "ACTIVATED_FUTURE_ONLY_T0",
             "architecture_id": ARCHITECTURE_ID,
             "activation_ms": int(state["activation_ms"]),
+            "last_scanned_closed_1h_ms": 0,
             "candidate_T_total": len(events),
             "confirmed_T_total": sum(1 for x in events if x.get("bbo_confirm") is True),
             "new_events": 0,
@@ -256,6 +260,7 @@ def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_m
 
     scanned: list[dict[str, Any]] = []
     new_events = 0
+    max_scanned_closed_ms = int(state.get("last_scanned_closed_1h_ms") or 0)
     for symbol in SYMBOLS:
         bars = latest_closed_bars(symbol, current_ms)
         if not bars:
@@ -263,6 +268,7 @@ def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_m
             continue
         signal_ts = int(bars[-1]["ts_ms"])
         signal_close_ms = signal_ts + HOUR_MS
+        max_scanned_closed_ms = max(max_scanned_closed_ms, signal_close_ms)
         if signal_close_ms <= activation_ms:
             scanned.append({"symbol": symbol, "latest_closed_signal_ts": signal_ts, "result": "PRE_ACTIVATION"})
             continue
@@ -297,6 +303,10 @@ def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_m
         new_events += 1
         scanned.append({"symbol": symbol, "latest_closed_signal_ts": signal_ts, "result": "BBO_CAPTURED", "bbo_confirm": bool(confirmed)})
 
+    if max_scanned_closed_ms < int(state.get("last_scanned_closed_1h_ms") or 0):
+        raise RuntimeError("BBO_OOS_SCAN_CURSOR_REGRESSION")
+    state = rehash_state({**state, "last_scanned_closed_1h_ms": max_scanned_closed_ms})
+    validate_state(state)
     validate_chain(events)
     status = {
         "schema_version": STATUS_SCHEMA,
@@ -304,6 +314,7 @@ def run(*, state: dict[str, Any] | None, events: list[dict[str, Any]], current_m
         "architecture_id": ARCHITECTURE_ID,
         "activation_ms": activation_ms,
         "generated_at_ms": int(current_ms),
+        "last_scanned_closed_1h_ms": max_scanned_closed_ms,
         "candidate_T_total": len(events),
         "confirmed_T_total": sum(1 for x in events if x.get("bbo_confirm") is True),
         "rejected_T_total": sum(1 for x in events if x.get("bbo_confirm") is False),
@@ -331,6 +342,13 @@ def self_test() -> int:
     state = make_state(123456789)
     validate_state(state)
     assert state["historical_backfill"] is False and state["formal_credit"] == 0
+    legacy = dict(state)
+    legacy.pop("last_scanned_closed_1h_ms", None)
+    legacy = rehash_state(legacy)
+    validate_state(legacy)
+    advanced = rehash_state({**legacy, "last_scanned_closed_1h_ms": 123456790})
+    validate_state(advanced)
+    assert int(advanced["last_scanned_closed_1h_ms"]) > int(legacy.get("last_scanned_closed_1h_ms") or 0)
     print("PASS_G5_TREND_RIDER_BBO_OOS_COLLECTOR_V1")
     return 0
 

@@ -1,20 +1,30 @@
-name: G5 Pipeline Watchdog V1
+name: G5 Pipeline Watchdog V2
 
 on:
   pull_request:
     branches: [master]
     paths:
       - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/g5_pipeline_watchdog_v2.py'
       - 'backend/research/rebuild/test_g5_pipeline_watchdog_v1.py'
       - 'backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json'
+      - 'backend/research/contracts/g5_exit_research_contract_v1.json'
+      - 'backend/research/rebuild/g5_exit_feature_ledger_v1.py'
+      - 'backend/research/rebuild/g5_exit_family_lab_v1.py'
+      - 'backend/research/rebuild/g5_exit_ai_research_v2.py'
       - '.github/workflows/g5-pipeline-watchdog-v1.yml'
       - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/g5_pipeline_watchdog_v2.py'
       - 'backend/research/rebuild/test_g5_pipeline_watchdog_v1.py'
       - 'backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json'
+      - 'backend/research/contracts/g5_exit_research_contract_v1.json'
+      - 'backend/research/rebuild/g5_exit_feature_ledger_v1.py'
+      - 'backend/research/rebuild/g5_exit_family_lab_v1.py'
+      - 'backend/research/rebuild/g5_exit_ai_research_v2.py'
       - '.github/workflows/g5-pipeline-watchdog-v1.yml'
       - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
   schedule:
@@ -25,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: G5_PIPELINE_WATCHDOG_V1
+  group: G5_PIPELINE_WATCHDOG_V2
   cancel-in-progress: true
 
 jobs:
@@ -45,20 +55,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Assert zero paid AI and run deterministic watchdog
+      - name: Assert zero paid AI and run deterministic root-cause watchdog
         run: |
           set -euo pipefail
           test -z "$OPENAI_API_KEY" && test -z "$GEMINI_API_KEY" && test -z "$GOOGLE_API_KEY"
           test -z "$OPENROUTER_API_KEY" && test -z "$GROQ_API_KEY"
-          python -m py_compile backend/research/rebuild/g5_pipeline_watchdog_v1.py backend/research/rebuild/test_g5_pipeline_watchdog_v1.py
+          python -m py_compile \
+            backend/research/rebuild/g5_pipeline_watchdog_v1.py \
+            backend/research/rebuild/g5_pipeline_watchdog_v2.py \
+            backend/research/rebuild/test_g5_pipeline_watchdog_v1.py
           python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --self-test
+          python -m backend.research.rebuild.g5_pipeline_watchdog_v2 --self-test
           python -m backend.research.rebuild.test_g5_pipeline_watchdog_v1
           mkdir -p out
-          python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --output out/g5_pipeline_watchdog_latest_v1.json
+          python -m backend.research.rebuild.g5_pipeline_watchdog_v2 --output out/g5_pipeline_watchdog_latest_v2.json
           python - <<'PY'
           import json
           from pathlib import Path
-          r=json.loads(Path('out/g5_pipeline_watchdog_latest_v1.json').read_text())
+          r=json.loads(Path('out/g5_pipeline_watchdog_latest_v2.json').read_text())
           c=json.loads(Path('backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json').read_text())
           assert r['formal_credit']==0
           assert r['selection_authority'] is False and r['promotion_authority'] is False
@@ -67,13 +81,16 @@ jobs:
           assert r['guards']['strategy_retune'] is False
           assert r['guards']['rr_exit_mutation'] is False
           assert r['guards']['g6_advance'] is False
+          assert r['legacy_rr_geometry']['automatic_trigger'] is False
+          assert r['legacy_rr_geometry']['write_authority'] is False
+          assert r['exit_research']['formal_credit']==0 and r['paid_ai']['formal_credit']==0
           assert c['guards']['g6_advance'] is False and c['trendrider_bbo']['historical_backfill'] is False
-          print(json.dumps({'state':r['state'],'bottlenecks':r['bottlenecks'],'clean':r['clean_runner'],'forward':r['forward_real'],'bbo':r['trendrider_bbo'],'replacement':r['replacement_lanes']},sort_keys=True))
+          print(json.dumps({'state':r['state'],'root':r['root_bottlenecks'],'dependent':r['dependent_waits'],'economic':r['economic_failures'],'clean':r['clean_runner'],'forward':r['forward_real'],'exit':r['exit_research'],'paid_ai':r['paid_ai'],'bbo':r['trendrider_bbo'],'replacement':r['replacement_lanes']},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: g5-pipeline-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/g5_pipeline_watchdog_latest_v1.json
+          name: g5-pipeline-watchdog-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_pipeline_watchdog_latest_v2.json
           if-no-files-found: error
           retention-days: 90

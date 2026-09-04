@@ -1,0 +1,79 @@
+name: G5 Pipeline Watchdog V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - '.github/workflows/g5-pipeline-watchdog-v1.yml'
+      - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - '.github/workflows/g5-pipeline-watchdog-v1.yml'
+      - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
+  schedule:
+    - cron: '27 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: G5_PIPELINE_WATCHDOG_V1
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || 'master' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert zero paid AI and run deterministic watchdog
+        run: |
+          set -euo pipefail
+          test -z "$OPENAI_API_KEY" && test -z "$GEMINI_API_KEY" && test -z "$GOOGLE_API_KEY"
+          test -z "$OPENROUTER_API_KEY" && test -z "$GROQ_API_KEY"
+          python -m py_compile backend/research/rebuild/g5_pipeline_watchdog_v1.py
+          python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --self-test
+          mkdir -p out
+          python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --output out/g5_pipeline_watchdog_latest_v1.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('out/g5_pipeline_watchdog_latest_v1.json').read_text())
+          assert r['formal_credit']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert r['guards']['historical_backfill'] is False
+          assert r['guards']['strategy_retune'] is False
+          assert r['guards']['rr_exit_mutation'] is False
+          assert r['guards']['g6_advance'] is False
+          print(json.dumps({
+            'state':r['state'],
+            'bottlenecks':r['bottlenecks'],
+            'clean':r['clean_runner'],
+            'forward':r['forward_real'],
+            'bbo':r['trendrider_bbo'],
+            'replacement':r['replacement_lanes'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-pipeline-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/g5_pipeline_watchdog_latest_v1.json
+          if-no-files-found: error
+          retention-days: 90

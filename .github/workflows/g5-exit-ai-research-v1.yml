@@ -1,4 +1,4 @@
-name: G5 Exit AI Research V1
+name: G5 Exit AI Research V2
 
 on:
   pull_request:
@@ -6,12 +6,14 @@ on:
     paths:
       - 'backend/research/contracts/g5_exit_research_contract_v1.json'
       - 'backend/research/rebuild/g5_exit_ai_research_v1.py'
+      - 'backend/research/rebuild/g5_exit_ai_research_v2.py'
       - '.github/workflows/g5-exit-ai-research-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/contracts/g5_exit_research_contract_v1.json'
       - 'backend/research/rebuild/g5_exit_ai_research_v1.py'
+      - 'backend/research/rebuild/g5_exit_ai_research_v2.py'
       - '.github/workflows/g5-exit-ai-research-v1.yml'
   workflow_dispatch:
 
@@ -19,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: G5_EXIT_AI_RESEARCH_V1
+  group: G5_EXIT_AI_RESEARCH_V2
   cancel-in-progress: false
 
 jobs:
@@ -39,15 +41,19 @@ jobs:
         run: |
           set -euo pipefail
           test -z "$GEMINI_API_KEY"; test -z "$GOOGLE_API_KEY"
-          python -m py_compile backend/research/rebuild/g5_exit_ai_research_v1.py
+          python -m py_compile \
+            backend/research/rebuild/g5_exit_ai_research_v1.py \
+            backend/research/rebuild/g5_exit_ai_research_v2.py
           python -m backend.research.rebuild.g5_exit_ai_research_v1 --self-test
+          python -m backend.research.rebuild.g5_exit_ai_research_v2 --self-test
           python - <<'PY'
           import json
           c=json.load(open('backend/research/contracts/g5_exit_research_contract_v1.json'))
           assert c['paid_ai_gate']['automatic_periodic_paid_calls'] is False
+          assert c['paid_ai_gate']['same_signature_paid_recall'] is False
           assert c['paid_ai_gate']['max_gemini_requests_per_signature']==2
           assert c['paid_ai_gate']['ai_output_formal_credit']==0
-          print('PASS_G5_EXIT_AI_COST_GATE')
+          print('PASS_G5_EXIT_AI_COST_GATE_V2')
           PY
 
   research:
@@ -61,6 +67,7 @@ jobs:
       GEMINI_WEB_RESEARCH_MODEL: ${{ vars.GEMINI_WEB_RESEARCH_MODEL }}
       GEMINI_EXIT_RESEARCH_MODEL: ${{ vars.GEMINI_EXIT_RESEARCH_MODEL }}
       GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+      G5_EXIT_AI_FORCE_RETRY: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,22 +76,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: One failure signature -> at most two grounded Gemini requests
+      - name: One failure signature -> bounded grounded Gemini, no automatic same-signature recall
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.rebuild.g5_exit_ai_research_v1 --output out/g5_exit_ai_research_latest.json
+          extra=''
+          if [ "$G5_EXIT_AI_FORCE_RETRY" = '1' ]; then extra='--force-retry'; fi
+          python -m backend.research.rebuild.g5_exit_ai_research_v2 \
+            --output out/g5_exit_ai_research_latest.json $extra
           python - <<'PY'
-          import json
+          import json,os
           r=json.load(open('out/g5_exit_ai_research_latest.json'))
           assert r['formal_credit']==0 and r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           p=r.get('provider') or {}
           assert int(p.get('request_count') or 0) <= 2
+          if r.get('provider_call_this_run'):
+              assert r.get('request_level_attempt_telemetry_complete') is True
+          if r.get('cache_hit') and r.get('paid_recall_blocked'):
+              assert r.get('provider_call_this_run') is False
           if r['state']=='PASS_SOURCE_GROUNDED_EXIT_MECHANISM_RESEARCH':
               assert int(p.get('source_count') or 0) >= 2
               assert isinstance((r.get('research') or {}).get('ranked_families'),list)
-          print(json.dumps({'state':r['state'],'provider_call':r.get('provider_call_this_run'),'request_count':p.get('request_count'),'source_count':p.get('source_count'),'usage':p.get('usage'),'cache_hit':r.get('cache_hit')},sort_keys=True))
+          print(json.dumps({'state':r['state'],'provider_call':r.get('provider_call_this_run'),'request_count':p.get('request_count'),'attempts':p.get('attempts'),'source_count':p.get('source_count'),'usage':p.get('usage'),'cache_hit':r.get('cache_hit'),'paid_recall_blocked':r.get('paid_recall_blocked'),'force_retry':r.get('force_retry')},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -97,11 +111,11 @@ jobs:
         run: |
           set -euo pipefail
           cp out/g5_exit_ai_research_latest.json backend/research/prep/g5_exit_ai_research_latest.json
-          git config user.name 'g5-exit-ai-research-v1'
+          git config user.name 'g5-exit-ai-research-v2'
           git config user.email 'actions@users.noreply.github.com'
           git add backend/research/prep/g5_exit_ai_research_latest.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5: persist bounded source-grounded exit AI research [skip ci]'
+          git commit -m 'G5: persist bounded exit AI research v2 [skip ci]'
           for attempt in 1 2 3; do
             if git pull --rebase origin master && git push origin HEAD:master; then exit 0; fi
             sleep 3

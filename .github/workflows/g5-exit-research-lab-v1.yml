@@ -1,0 +1,121 @@
+name: G5 Exit Research Lab V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5_exit_research_contract_v1.json'
+      - 'backend/research/rebuild/g5_forward_real_evidence_bridge_v4.py'
+      - 'backend/research/rebuild/g5_exit_microstructure_observer_v1.py'
+      - 'backend/research/rebuild/g5_exit_feature_ledger_v1.py'
+      - 'backend/research/rebuild/g5_exit_family_lab_v1.py'
+      - '.github/workflows/g5-exit-research-lab-v1.yml'
+  workflow_run:
+    workflows: ['G5 Forward Real Evidence V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5_EXIT_RESEARCH_LAB_V1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify deterministic exit-research stack
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"; test -z "$GOOGLE_API_KEY"; test -z "$OPENAI_API_KEY"; test -z "$OPENROUTER_API_KEY"; test -z "$GROQ_API_KEY"
+          python -m py_compile \
+            backend/research/rebuild/g5_forward_real_evidence_bridge_v4.py \
+            backend/research/rebuild/g5_exit_microstructure_observer_v1.py \
+            backend/research/rebuild/g5_exit_feature_ledger_v1.py \
+            backend/research/rebuild/g5_exit_family_lab_v1.py
+          python -m backend.research.rebuild.g5_forward_real_evidence_bridge_v4 --self-test
+          python -m backend.research.rebuild.g5_exit_microstructure_observer_v1 --self-test
+          python -m backend.research.rebuild.g5_exit_feature_ledger_v1 --self-test
+          python -m backend.research.rebuild.g5_exit_family_lab_v1 --self-test
+          python - <<'PY'
+          import json
+          c=json.load(open('backend/research/contracts/g5_exit_research_contract_v1.json'))
+          assert c['stage_boundary']['G5']=='EDGE_QUALIFICATION__EXIT_RESEARCH_OBSERVER_NO_CREDIT'
+          assert c['stage_boundary']['g5_exit_formal_credit']==0
+          assert c['search_rules']['legacy_rr_geometry_family_rejected'] is True
+          assert c['paid_ai_gate']['automatic_periodic_paid_calls'] is False
+          assert c['invariants']['execution_authority']=='NONE' and c['invariants']['order_authority']=='BLOCKED' and c['invariants']['live_trade_authority']=='BLOCKED'
+          print('PASS_G5_EXIT_RESEARCH_CONTRACT_V1')
+          PY
+
+  collect:
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build forward-real exit feature ledger and distinct family diagnostics
+        run: |
+          set -euo pipefail
+          test -z "$GEMINI_API_KEY"; test -z "$GOOGLE_API_KEY"; test -z "$OPENAI_API_KEY"; test -z "$OPENROUTER_API_KEY"; test -z "$GROQ_API_KEY"
+          mkdir -p out
+          python -m backend.research.rebuild.g5_exit_feature_ledger_v1 --output out/g5_exit_feature_ledger_latest_v1.json
+          python -m backend.research.rebuild.g5_exit_family_lab_v1 --input out/g5_exit_feature_ledger_latest_v1.json --output out/g5_exit_family_lab_latest_v1.json
+          python - <<'PY'
+          import json
+          f=json.load(open('out/g5_exit_feature_ledger_latest_v1.json'))
+          l=json.load(open('out/g5_exit_family_lab_latest_v1.json'))
+          assert f['formal_credit']==0 and l['formal_credit']==0
+          assert f['selection_authority'] is False and l['selection_authority'] is False
+          assert l['legacy_rr_geometry_rejected'] is True and l['same_family_numeric_resweep'] is False
+          assert l['execution_authority']=='NONE' and l['order_authority']=='BLOCKED' and l['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'feature_state':f['state'],'production_T':f['production_forward_real_T'],'complete_T':f['feature_complete_T'],'micro_samples':f['microstructure_sample_T'],'lab_state':l['state'],'leader':l['research_leader_non_authoritative'],'g6_candidate':l['g6_preregister_candidate_non_authoritative']},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-exit-research-lab-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist observer-only receipts
+        run: |
+          set -euo pipefail
+          cp out/g5_exit_feature_ledger_latest_v1.json backend/research/rebuild/g5_exit_feature_ledger_latest_v1.json
+          cp out/g5_exit_family_lab_latest_v1.json backend/research/rebuild/g5_exit_family_lab_latest_v1.json
+          git config user.name 'g5-exit-research-lab-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/g5_exit_feature_ledger_latest_v1.json backend/research/rebuild/g5_exit_family_lab_latest_v1.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5: persist no-credit exit research diagnostics [skip ci]'
+          for attempt in 1 2 3; do
+            if git pull --rebase origin master && git push origin HEAD:master; then exit 0; fi
+            sleep 3
+          done
+          exit 1

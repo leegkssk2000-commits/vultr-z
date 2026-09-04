@@ -5,12 +5,16 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/test_g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json'
       - '.github/workflows/g5-pipeline-watchdog-v1.yml'
       - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
   push:
     branches: [master]
     paths:
       - 'backend/research/rebuild/g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/test_g5_pipeline_watchdog_v1.py'
+      - 'backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json'
       - '.github/workflows/g5-pipeline-watchdog-v1.yml'
       - '.github/workflows/g5-trend-rider-bbo-oos-v1.yml'
   schedule:
@@ -46,14 +50,16 @@ jobs:
           set -euo pipefail
           test -z "$OPENAI_API_KEY" && test -z "$GEMINI_API_KEY" && test -z "$GOOGLE_API_KEY"
           test -z "$OPENROUTER_API_KEY" && test -z "$GROQ_API_KEY"
-          python -m py_compile backend/research/rebuild/g5_pipeline_watchdog_v1.py
+          python -m py_compile backend/research/rebuild/g5_pipeline_watchdog_v1.py backend/research/rebuild/test_g5_pipeline_watchdog_v1.py
           python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --self-test
+          python -m pytest -q backend/research/rebuild/test_g5_pipeline_watchdog_v1.py
           mkdir -p out
           python -m backend.research.rebuild.g5_pipeline_watchdog_v1 --output out/g5_pipeline_watchdog_latest_v1.json
           python - <<'PY'
           import json
           from pathlib import Path
           r=json.loads(Path('out/g5_pipeline_watchdog_latest_v1.json').read_text())
+          c=json.loads(Path('backend/research/rebuild/g5_pipeline_bottleneck_closure_contract_v1.json').read_text())
           assert r['formal_credit']==0
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
@@ -61,6 +67,7 @@ jobs:
           assert r['guards']['strategy_retune'] is False
           assert r['guards']['rr_exit_mutation'] is False
           assert r['guards']['g6_advance'] is False
+          assert c['guards']['g6_advance'] is False and c['trendrider_bbo']['historical_backfill'] is False
           print(json.dumps({'state':r['state'],'bottlenecks':r['bottlenecks'],'clean':r['clean_runner'],'forward':r['forward_real'],'bbo':r['trendrider_bbo'],'replacement':r['replacement_lanes']},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4

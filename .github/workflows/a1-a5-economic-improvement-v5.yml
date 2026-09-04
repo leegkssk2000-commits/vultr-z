@@ -1,52 +1,41 @@
-name: A1 Top5 Economic Improvement V9
+name: A1 Top5 Economic Improvement V10 Manual-Cost
 
 on:
   pull_request:
     branches: [master]
     paths:
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v1.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v2.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v3.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v4.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v5.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v6.py'
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v7.py'
       - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
-      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
-      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py'
-      - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
-      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
-      - '.github/workflows/a1-a5-economic-improvement-v5.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'backend/research/architecture_factory/a1_a5_economic_improvement_v8.py'
-      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py'
-      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py'
-      - 'backend/research/architecture_factory/a1_named_channel_gemini_latest.json'
-      - 'backend/research/contracts/a1_a5_no_idle_research_v1.json'
-      - 'backend/research/rebuild/a1_strategy25_improvement_league_latest.json'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v2.py'
+      - 'backend/research/rebuild/a1_trend_rider_wr8125_frozen24_source_v1.json'
+      - 'backend/research/contracts/g5_entry_fusion_rescue_v1.json'
       - '.github/workflows/a1-a5-economic-improvement-v5.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '47 * * * *'
+    inputs:
+      paid_gemini:
+        description: 'Allow one blocker-scoped Gemini transport rescue in this manual run'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
-  issues: write
+  issues: read
 
 concurrency:
-  group: a1-top5-economic-improvement-v9
+  group: a1-top5-economic-improvement-v10-manual-cost
   cancel-in-progress: true
 
 jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,21 +44,68 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile and self-test V8 plus WR81 dynamic HTF
+      - name: Compile and self-test without paid AI
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/a1_a5_economic_improvement_v8.py
           python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --self-test
-          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py
-          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py
-          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v1.py --self-test
+          python -m py_compile backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v2.py
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v2.py --self-test
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('backend/research/contracts/g5_entry_fusion_rescue_v1.json').read_text())
+          assert c['trend_rider']['historical_union_allowed'] is False
+          assert c['trend_rider']['historical_metrics_formal_credit'] == 0
+          assert c['trend_rider']['rr_exit_mutation_allowed'] is False
+          assert c['trend_rider']['new_fresh_boundary_required'] is True
+          p=c['paid_ai_policy']
+          assert p['automatic_paid_schedule_allowed'] is False
+          assert p['manual_blocker_scoped_only'] is True
+          assert p['max_paid_requests_per_manual_invocation'] == 1
+          assert p['paid_ai_output_is_formal_credit'] is False
+          assert c['authorities']['order_authority']=='BLOCKED'
+          assert c['authorities']['live_trade_authority']=='BLOCKED'
+          print('G5_ENTRY_FUSION_RESCUE_CONTRACT=PASS')
+          PY
+      - name: Run immutable frozen24 dynamic HTF rescue
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v2.py \
+            --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json'))
+          assert r['authority_match'] is True, r
+          assert r['historical_union_allowed'] is False, r
+          assert r['g5_formal_credit_before_fresh'] == 0, r
+          assert r['rr_exit_mutated'] is False, r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          print('TREND_RIDER_FROZEN24_RESCUE_STATE='+str(r['state']))
+          print('STRICT='+str(r.get('strict_candidate_count')))
+          print('RECOMMENDED='+json.dumps(r.get('recommended_discovery_child'),sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5-entry-fusion-rescue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json
+          if-no-files-found: error
+          retention-days: 30
 
-  improve:
-    if: github.event_name != 'pull_request'
+  manual-research:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
       PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GEMINI_API_KEY: ${{ inputs.paid_gemini && (secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY) || '' }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+      GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,140 +114,54 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run Top5 V8 plus exact WR81 dynamic trendline HTF attribution
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          GEMINI_API_BASE: ${{ vars.GEMINI_API_BASE }}
+      - name: Run deterministic TrendRider rescue first
         run: |
           set -euo pipefail
           mkdir -p out
-          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 --output out/a1_a5_economic_improvement_v8.json
-          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_safe_runner_v1.py --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
+          python backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_attribution_v2.py \
+            --out out/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json
+      - name: Run Top5 AI builder only when explicitly paid-enabled
+        if: inputs.paid_gemini == true
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python -m backend.research.architecture_factory.a1_a5_economic_improvement_v8 \
+            --output out/a1_a5_economic_improvement_v8.json
           python - <<'PY'
           import json
           r=json.load(open('out/a1_a5_economic_improvement_v8.json'))
-          d=json.load(open('out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json'))
-          league=json.load(open('backend/research/rebuild/a1_strategy25_improvement_league_latest.json'))
-          b=r['named_channel_executable_bridge']
-          risk=r['named_channel_risk_sizing_evaluator']
-          assert r['performance_focus_order']==league['active_top5'], (r['performance_focus_order'],league['active_top5'])
-          assert len(r['performance_focus_order'])==5 and len(set(r['performance_focus_order']))==5
-          assert r['direct_improvement_scope']=='PERFORMANCE_TOP5_ONLY_IN_CURRENT_ORDER'
-          assert r['non_top5_direct_repair_enabled'] is False
-          assert r['policy']['performance_top5_only_direct_improvement'] is True
-          assert r['policy']['non_top5_direct_repair_forbidden'] is True
-          assert r['policy']['named_channel_mechanisms_must_enter_top5_economic_replay'] is True
-          assert r['policy']['named_channel_account_equity_risk_pipe_opened'] is True
-          assert b['state']=='PASS_NAMED_CHANNEL_TO_TOP5_ECONOMIC_REPLAY_BOUND'
-          assert int(b['eligible_axis_count']) > 0
-          assert b['creator_numeric_threshold_imported'] is False
-          assert b['creator_performance_claim_imported'] is False
-          assert risk['state'] in {'PASS_RISK_SIZING_EVALUATOR_EXECUTED','HOLD_NO_RISK_SIZING_SUBSTRATE'}, risk
-          assert int(risk['hypothesis_count']) > 0
-          if risk['state']=='PASS_RISK_SIZING_EVALUATOR_EXECUTED':
-              assert int(risk['evaluated_count']) > 0
-          else:
-              assert int(risk['evaluated_count']) == 0
-              assert (risk.get('substrate_strategy_ids') or []) == []
-          assert risk['creator_numeric_threshold_imported'] is False
-          assert risk['creator_performance_claim_imported'] is False
-          assert risk['risk_fraction_absolute_value_imported'] is False
-          assert risk['same_signal_and_exit_events_required'] is True
-          assert risk['no_outcome_threshold_sweep'] is True
-          assert d['canonical_head']=='trend_rider_wr80_us_chase_cooling_v1'
-          if d['state']=='HOLD_FROZEN_24_UNAVAILABLE':
-              assert d['authority_match'] is False
-              assert int(d['observed_current_completed_trades']) < int(d['required_frozen_trade_count']) == 24
-              assert d['base_wr8125'] is None
-          else:
-              assert d['authority_match'] is True, d
-              assert d['base_wr8125']['trades']==16 and d['base_wr8125']['wins']==13
-              assert abs(d['base_wr8125']['win_rate']-0.8125) < 1e-12
-          assert d['numeric_threshold_sweep'] is False
-          assert d['creator_numeric_threshold_imported'] is False
-          assert d['outcome_used_at_runtime'] is False
-          assert set((r.get('by_strategy') or {}).keys()).issubset(set(r['performance_focus_order']))
-          assert int(r['paid_request_count']) <= 3
+          p=r.get('providers') or {}
+          gem=p.get('gemini_transport_rescue') or {}
+          # OpenAI is deliberately uncredentialed. At most the single Gemini transport-rescue call can be billable.
+          assert not bool((p.get('openai_initial') or {}).get('successful')), p
+          assert int(gem.get('request_count') or 0) <= 1, gem
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
-          assert d['execution_authority']=='NONE' and d['order_authority']=='BLOCKED' and d['live_trade_authority']=='BLOCKED'
-          assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0
-          print(json.dumps({
-            'state':r.get('state'),'focus':r['performance_focus_order'],
-            'development_pass':r.get('development_economic_pass_count'),
-            'yt_eligible':b.get('eligible_axis_count'),'yt_attempted':b.get('attempted_named_axis_count'),
-            'risk_hypotheses':risk.get('hypothesis_count'),'risk_evaluated':risk.get('evaluated_count'),
-            'risk_pass':risk.get('economic_pass_count'),'risk_control_improved':risk.get('risk_control_improvement_count'),
-            'wr8125_dynamic_state':d.get('state'),'wr8125_dynamic_strict':d.get('strict_candidate_count'),
-            'wr8125_dynamic_recommended':d.get('recommended_discovery_child'),
-            'paid':r.get('paid_request_count'),'receipt':r.get('receipt_sha256')
-          },sort_keys=True))
+          print('BLOCKER_SCOPED_GEMINI_REQUESTS='+str(gem.get('request_count',0)))
           PY
-      - name: Persist focused economic and WR81 dynamic HTF receipts
+      - name: Persist deterministic rescue receipt
         run: |
           set -euo pipefail
-          cp out/a1_a5_economic_improvement_v8.json backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
-          cp out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
-          git config user.name 'a1-top5-economic-improvement-v9'
+          cp out/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json \
+            backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json
+          if [ -f out/a1_a5_economic_improvement_v8.json ]; then
+            cp out/a1_a5_economic_improvement_v8.json \
+              backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
+          fi
+          git config user.name 'a1-top5-economic-improvement-v10-manual-cost'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/research/architecture_factory/a1_a5_economic_improvement_latest.json backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
+          git add backend/research/rebuild/a1_trend_rider_wr8125_dynamic_trendline_htf_v2_latest.json
+          if [ -f out/a1_a5_economic_improvement_v8.json ]; then
+            git add backend/research/architecture_factory/a1_a5_economic_improvement_latest.json
+          fi
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 A5: persist V9 WR81 dynamic HTF receipt [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
-            sleep 3
-          done
-          exit 1
-      - name: Publish focus state to issue 566
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os, urllib.request
-          r=json.load(open('out/a1_a5_economic_improvement_v8.json'))
-          d=json.load(open('out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json'))
-          b=r['named_channel_executable_bridge']
-          risk=r['named_channel_risk_sizing_evaluator']
-          marker='<!-- A1_TOP5_ECONOMIC_IMPROVEMENT_V9 -->'
-          rows=[]
-          for sid in r['performance_focus_order']:
-              x=(r.get('by_strategy') or {}).get(sid,{})
-              yt=','.join((b.get('attempted_named_axes_by_strategy') or {}).get(sid,[])) or '-'
-              rows.append(f"{sid}:attempts={x.get('attempt_count',0)},dev_pass={x.get('development_economic_pass_count',0)},yt={yt},next={x.get('next')}")
-          lines=[
-            marker,'## A1 Top5 Economic Improvement V9',
-            f"run={os.environ['RUN_ID']}|state={r.get('state')}|receipt={r.get('receipt_sha256')}",
-            'focus_order='+','.join(r['performance_focus_order']),
-            f"development_pass={r.get('development_economic_pass_count')}|paid={r.get('paid_request_count')}/{r.get('paid_request_cap')}",
-            f"named_channel_eligible_axes={b.get('eligible_axis_count')}|attempted={b.get('attempted_named_axis_count')}|evidence={b.get('eligible_evidence_count')}",
-            f"risk_hypotheses={risk.get('hypothesis_count')}|evaluated={risk.get('evaluated_count')}|economic_pass={risk.get('economic_pass_count')}|risk_control_improved={risk.get('risk_control_improvement_count')}",
-            f"wr8125_dynamic_htf_state={d.get('state')}|strict={d.get('strict_candidate_count')}|canonical={d.get('canonical_head')}",
-            *rows,
-            'POLICY=WR81.25 canonical Trend Rider is the only Trend Rider host for dynamic trendline/HTF restoration; creator thresholds/performance claims are not imported; fresh/OOS required before promotion',
-            'selection=false|promotion=false|execution=NONE|order/live=BLOCKED|protected_mutations=0'
-          ]
-          body='\n'.join(lines)
-          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
-          url=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=20) as resp: comments=json.load(resp)
-          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
-          target=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
-          req=urllib.request.Request(target,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST')
-          with urllib.request.urlopen(req,timeout=20): pass
-          print('PASS_A1_TOP5_ECONOMIC_IMPROVEMENT_V9_PUBLISHED')
-          PY
+          git commit -m 'G5 rescue: persist manual-cost entry research [skip ci]'
+          git pull --rebase --depth=20 origin master
+          git push origin HEAD:master
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: a1-top5-economic-improvement-v9-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            out/a1_a5_economic_improvement_v8.json
-            out/a1_trend_rider_wr8125_dynamic_trendline_htf_latest.json
+          name: a1-top5-economic-improvement-v10-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/*.json
           if-no-files-found: error
           retention-days: 30

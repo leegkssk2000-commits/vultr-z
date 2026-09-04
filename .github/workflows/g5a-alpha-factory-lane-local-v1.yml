@@ -1,0 +1,143 @@
+name: G5A Alpha Factory Lane-Local V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json'
+      - '.github/workflows/g5a-alpha-factory-lane-local-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json'
+      - '.github/workflows/g5a-alpha-factory-lane-local-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5a-alpha-factory-lane-local-v1
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify lane-local profit contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p='backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json'
+          c=json.load(open(p))
+          assert c['state']=='FROZEN_LANE_LOCAL_PROFIT_ROADMAP', c
+          assert c['progression_model']['lane_local_through']=='G8', c
+          assert c['progression_model']['global_join_begins_at']=='G9', c
+          assert c['progression_model']['global_generation_barrier_before_G9'] is False, c
+          assert c['legacy_top5']['legacy_repair_is_primary_profit_engine'] is False, c
+          assert c['g5b_edge_qualification']['checkpoints']['T6']=='EARLY_KILL_OR_CONTINUE', c
+          assert c['g5b_edge_qualification']['checkpoints']['T12']=='FORMAL_EDGE_QUALIFICATION', c
+          assert c['authorities']['execution_authority']=='NONE', c
+          assert c['authorities']['order_authority']=='BLOCKED', c
+          assert c['authorities']['live_trade_authority']=='BLOCKED', c
+          print('PASS_G5A_G5B_LANE_LOCAL_PROFIT_CONTRACT')
+          PY
+      - name: Compile existing mechanism-first alpha factory
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/architecture_factory/a1_research_depth_retry_guard_v1.py \
+            backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py \
+            backend/research/architecture_factory/a1_mechanism_first_research_v1.py \
+            backend/research/architecture_factory/a1_mechanism_first_research_v2.py \
+            backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py
+          python -m backend.research.architecture_factory.a1_strategy_architecture_factory_v1 --self-test
+          python -m backend.research.architecture_factory.a1_mechanism_first_research_v2 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+
+  research:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install review dependency
+        run: python -m pip install --disable-pip-version-check groq
+      - name: Run one-shot G5A mechanism-first generation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          GROQ_FALLBACK_MODEL: allam-2-7b
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_AI_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_AI_TOKEN }}
+          WORKERS_AI_MODEL: ${{ vars.WORKERS_AI_MODEL }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.a1_mechanism_first_research_v2 \
+            --output out/g5a_alpha_factory_raw.json
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 \
+            --input out/g5a_alpha_factory_raw.json \
+            --output out/g5a_alpha_factory_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5a_alpha_factory_latest.json'))
+          assert r['research_direction']=='NEW_ARCHITECTURE_PRIMARY', r
+          assert r['automatic_legacy_a5_repair_primary'] is False, r
+          assert r['legacy_repair_lane']=='SECONDARY_MANUAL_OR_FALLBACK_ONLY', r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          print(json.dumps({
+            'state':r.get('state'),
+            'new_ready':r.get('new_architecture_ready_count'),
+            'source_wait':r.get('new_architecture_source_wait_count'),
+            'semantic_hold':r.get('new_architecture_semantic_hold_count',0),
+            'next':r.get('next_experiment_candidate'),
+            'receipt':r.get('receipt_sha256')
+          }, sort_keys=True))
+          PY
+      - name: Persist G5A alpha factory receipt
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/g5a_alpha_factory_latest.json
+          cp out/g5a_alpha_factory_latest.json "$target"
+          git config user.name 'g5a-alpha-factory-lane-local-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5A: persist lane-local alpha factory receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5a-alpha-factory-lane-local-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/g5a_alpha_factory_raw.json
+            out/g5a_alpha_factory_latest.json
+          if-no-files-found: error
+          retention-days: 30

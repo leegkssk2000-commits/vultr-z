@@ -10,11 +10,13 @@ from backend.research.rebuild import g5_forward_real_evidence_bridge_v1 as ev
 
 ROOT = Path(__file__).resolve().parents[3]
 CANONICAL = ROOT / "backend/research/prep/g5_economic_evidence_ledger_v1.jsonl"
+BRIDGE_STATE = ROOT / "backend/research/rebuild/g5_forward_real_bridge_state_v1.jsonl"
 CONTRACT = ROOT / "backend/research/contracts/g5_exit_research_contract_v1.json"
 SCHEMA = "zel.g5.exit_feature_ledger.v1"
 ONE_HOUR_MS = 3_600_000
 FOUR_HOURS_MS = 14_400_000
 FIVE_MIN_MS = 300_000
+SAMPLE_KIND = "OPEN_MICROSTRUCTURE_SAMPLE"
 
 REQUIRED = (
     "hold_min", "MFE_bps", "MAE_bps", "time_to_MFE_min", "time_to_MAE_min",
@@ -33,6 +35,27 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             raise RuntimeError(f"OBJECT_REQUIRED:{path}:{n}")
         out.append(row)
+    return out
+
+
+def microstructure_index(bridge_rows: Sequence[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in bridge_rows:
+        if row.get("kind") != SAMPLE_KIND:
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+        tid = str(payload.get("trade_id") or "")
+        if not tid:
+            continue
+        item = {
+            "observed_at_ms": int(payload.get("observed_at_ms") or row.get("event_ts_ms") or 0),
+            "book_imbalance": payload.get("book_imbalance"),
+            "mid": payload.get("mid"),
+            "snapshot_sha256": payload.get("snapshot_sha256"),
+        }
+        out.setdefault(tid, []).append(item)
+    for tid in out:
+        out[tid] = sorted(out[tid], key=lambda x: int(x["observed_at_ms"]))
     return out
 
 
@@ -102,23 +125,29 @@ def production_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return sorted(out, key=lambda x: (int((x.get("trade") or {}).get("entry_ts") or 0), str(x.get("trade_id") or "")))
 
 
-def build(rows: Sequence[Mapping[str, Any]], *, provider: ev.MarketProvider | None, current_ms: int) -> dict[str, Any]:
+def build(
+    rows: Sequence[Mapping[str, Any]], *, bridge_rows: Sequence[Mapping[str, Any]], provider: ev.MarketProvider | None, current_ms: int
+) -> dict[str, Any]:
     prod = production_rows(rows)
+    samples = microstructure_index(bridge_rows)
     features: list[dict[str, Any]] = []
     missing_feature_T = 0
     post_exit_complete_T = 0
+    microstructure_sample_T = 0
     for row in prod:
         trade = row.get("trade") if isinstance(row.get("trade"), Mapping) else {}
+        tid = str(row["trade_id"])
         f = row.get("exit_research_features") if isinstance(row.get("exit_research_features"), Mapping) else None
         if f is None:
             missing_feature_T += 1
             features.append({
-                "trade_id": row["trade_id"],
+                "trade_id": tid,
                 "strategy_id": row.get("strategy_id"),
                 "child_id": row.get("child_id"),
                 "symbol": trade.get("symbol"),
                 "side": trade.get("side"),
                 "state": "MISSING_V4_EXIT_RESEARCH_FEATURES__DO_NOT_BACKFILL_AS_FRESH",
+                "microstructure_samples": samples.get(tid, []),
                 "formal_credit": 0,
             })
             continue
@@ -128,8 +157,10 @@ def build(rows: Sequence[Mapping[str, Any]], *, provider: ev.MarketProvider | No
         complete = all(feature.get(k) is not None for k in REQUIRED)
         post_complete = feature.get("post_exit_1h_directional_bps") is not None and feature.get("post_exit_4h_directional_bps") is not None
         post_exit_complete_T += int(post_complete)
+        mid_samples = samples.get(tid, [])
+        microstructure_sample_T += len(mid_samples)
         item = {
-            "trade_id": str(row["trade_id"]),
+            "trade_id": tid,
             "strategy_id": str(row.get("strategy_id") or ""),
             "child_id": str(row.get("child_id") or ""),
             "symbol": str(trade.get("symbol") or ""),
@@ -145,6 +176,8 @@ def build(rows: Sequence[Mapping[str, Any]], *, provider: ev.MarketProvider | No
             "feature_complete": complete,
             "post_exit_complete": post_complete,
             "features": feature,
+            "microstructure_samples": mid_samples,
+            "microstructure_sample_count": len(mid_samples),
             "source_evidence_row_sha256": row.get("evidence_row_sha256"),
             "formal_credit": 0,
         }
@@ -164,6 +197,7 @@ def build(rows: Sequence[Mapping[str, Any]], *, provider: ev.MarketProvider | No
         "feature_complete_T": complete_T,
         "missing_v4_feature_T": missing_feature_T,
         "post_exit_complete_T": post_exit_complete_T,
+        "microstructure_sample_T": microstructure_sample_T,
         "minimum_T_for_family_ranking": 6,
         "minimum_T_for_stability_view": 12,
         "rows": features,
@@ -192,9 +226,12 @@ def self_test() -> int:
         "trade": {"symbol": "BTC-USDT", "side": "long", "signal_ts": 1, "entry_ts": 2, "exit_ts": 3, "gross_bps": 10, "net_bps": 5, "fee_bps": 2, "slippage_bps": 2, "funding_bps": 1, "exit": 100.0},
         "exit_research_features": {"hold_min": 10, "MFE_bps": 20, "MAE_bps": 5, "time_to_MFE_min": 8, "time_to_MAE_min": 2, "MFE_before_MAE": False, "path_efficiency": 0.5, "realized_path_vol_bps": 9, "post_exit_1h_directional_bps": 1, "post_exit_4h_directional_bps": -2},
     }
-    out = build([fake], provider=None, current_ms=10)
+    bridge = [{"kind": SAMPLE_KIND, "event_ts_ms": 4, "payload": {"trade_id": "t1", "observed_at_ms": 4, "book_imbalance": -0.1, "mid": 99, "snapshot_sha256": "m"}}]
+    out = build([fake], bridge_rows=bridge, provider=None, current_ms=10)
     assert out["production_forward_real_T"] == 1
     assert out["feature_complete_T"] == 1
+    assert out["microstructure_sample_T"] == 1
+    assert out["rows"][0]["microstructure_sample_count"] == 1
     assert out["formal_credit"] == 0 and out["selection_authority"] is False
     assert directional_return("long", 100, 101) > 0
     assert directional_return("short", 100, 99) > 0
@@ -205,6 +242,7 @@ def self_test() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=Path, default=CANONICAL)
+    ap.add_argument("--bridge-state", type=Path, default=BRIDGE_STATE)
     ap.add_argument("--output", type=Path, default=Path("out/g5_exit_feature_ledger_latest_v1.json"))
     ap.add_argument("--no-network", action="store_true")
     ap.add_argument("--self-test", action="store_true")
@@ -212,11 +250,12 @@ def main() -> int:
     if args.self_test:
         return self_test()
     rows = read_jsonl(args.input)
+    bridge_rows = read_jsonl(args.bridge_state)
     provider = None if args.no_network else ev.PublicBingXProvider()
-    out = build(rows, provider=provider, current_ms=ev.now_ms())
+    out = build(rows, bridge_rows=bridge_rows, provider=provider, current_ms=ev.now_ms())
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({k: out[k] for k in ("state", "production_forward_real_T", "feature_complete_T", "post_exit_complete_T")}, sort_keys=True))
+    print(json.dumps({k: out[k] for k in ("state", "production_forward_real_T", "feature_complete_T", "post_exit_complete_T", "microstructure_sample_T")}, sort_keys=True))
     return 0
 
 

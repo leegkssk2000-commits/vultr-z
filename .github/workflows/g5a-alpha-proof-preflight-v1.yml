@@ -1,0 +1,97 @@
+name: G5A Alpha Proof Preflight V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/g5a_alpha_proof_preflight_v1.py'
+      - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
+      - '.github/workflows/g5a-alpha-proof-preflight-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/g5a_alpha_proof_preflight_v1.py'
+      - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
+      - '.github/workflows/g5a-alpha-proof-preflight-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5a-alpha-proof-preflight-v1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: ${{ github.event_name == 'push' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and deterministic self-tests
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/alpha_proof/a1_alpha_proof_gate_v1.py \
+            backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py \
+            backend/research/architecture_factory/g5a_alpha_proof_preflight_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          python -m backend.research.architecture_factory.g5a_alpha_proof_preflight_v1 --self-test
+      - name: Evaluate current canonical G5A candidate fail-closed
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.architecture_factory.g5a_alpha_proof_preflight_v1 \
+            --input backend/research/architecture_factory/g5a_alpha_factory_latest.json \
+            --output out/g5a_alpha_proof_preflight_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/g5a_alpha_proof_preflight_latest.json'))
+          assert r['selection_authority'] is False and r['promotion_authority'] is False, r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED', r
+          assert r['exchange_order_submitted'] is False and int(r['protected_mutations'])==0, r
+          assert r['g5b_fresh_boundary_created'] is False and r['g5b_entry_authorized'] is False, r
+          if r['state']!='PASS_G5A_ALPHA_PROOF_READY_FOR_DETERMINISTIC_REPLAY':
+              assert r['deterministic_replay_authorized'] is False, r
+              assert r['failed_gates'], r
+          print(json.dumps({
+            'state':r['state'],
+            'candidate':r.get('source_candidate_id'),
+            'alpha_proof_state':r.get('alpha_proof_state'),
+            'failed_gates':r.get('failed_gates'),
+            'replay_authorized':r.get('deterministic_replay_authorized'),
+            'g5b_entered':r.get('g5b_entry_authorized'),
+            'receipt':r.get('receipt_sha256'),
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5a-alpha-proof-preflight-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: error
+          path: out/g5a_alpha_proof_preflight_latest.json
+      - name: Persist current G5A alpha-proof boundary receipt
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          target=backend/research/architecture_factory/g5a_alpha_proof_preflight_latest.json
+          cp out/g5a_alpha_proof_preflight_latest.json "$target"
+          git config user.name 'g5a-alpha-proof-preflight-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'G5A: persist alpha-proof replay boundary receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1

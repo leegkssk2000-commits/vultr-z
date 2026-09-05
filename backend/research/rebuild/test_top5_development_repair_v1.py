@@ -1,4 +1,6 @@
 import copy
+import gzip
+import hashlib
 from dataclasses import asdict
 import json
 import math
@@ -62,6 +64,22 @@ class NativeParity(unittest.TestCase):
 
 
 class FourHourParity(unittest.TestCase):
+    def test_fixed_hold_trade_geometry_matches_original_owner(self):
+        rows=fixture(410,14400000);start=239*14400000;end=410*14400000
+        for child in repair.read(repair.FREEZE)['children']:
+            with patch.object(owner,'paged_bars',lambda *a:rows):
+                reference,_=owner.v2_trades(child,start,end,['TEST'])
+            reference=[t for t in reference if t['exit_ts']+14400000<end]
+            _,engine=repair.dsl._features(rows,child['executable_spec'])
+            signals=[i for i in range(239,len(rows)) if bool(engine.eval(child['executable_spec']['entry_rule'],i))]
+            actual=repair.common.evaluate_development_events(rows,signals,split_start_ms=0,split_end_ms=end,interval_ms=14400000,hold_bars=child['executable_spec']['max_hold_bars'])['trades']
+            self.assertEqual(len(actual),len(reference))
+            for a,b in zip(actual,reference):
+                self.assertEqual(a['signal_ts'],b['signal_ts']+14400000)
+                self.assertEqual(a['entry_ts'],b['entry_ts']);self.assertEqual(a['exit_ts'],b['exit_ts']+14400000)
+                self.assertEqual(a['entry_price'],b['entry_px']);self.assertEqual(a['exit_price'],b['exit_px'])
+                self.assertAlmostEqual(a['gross_bps'],b['gross_bps'])
+
     def test_all_three_current_native_signal_parity(self):
         rows=fixture(350,14400000)
         c=repair.read('backend/research/rebuild/g5_clean_runner_contract_effective_v1.json')
@@ -99,6 +117,66 @@ class FourHourParity(unittest.TestCase):
             self.assertEqual(probe.prefix_rows(p,1),[{'x':1}])
             with probe.io_boundary([p],root/'own'):
                 with self.assertRaises(RuntimeError):(root/'production-ledger.json').read_text()
+
+
+@unittest.skipUnless((repair.ROOT/repair.OUTPUT/'comparison/receipt.json').exists(),'First comparison not yet committed')
+class DurableEvidence(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root=repair.ROOT/repair.OUTPUT
+        cls.result=json.loads((cls.root/'comparison/receipt.json').read_text())
+        cls.trades=[json.loads(x) for x in gzip.decompress((cls.root/'comparison/trades.jsonl.gz').read_bytes()).splitlines()]
+
+    def test_parent_immutable_and_comparison_baseline_identical(self):
+        p=repair.read(repair.POLICY);a=json.loads((self.root/'baseline/receipt.json').read_text())
+        for path,sha in p['immutable_files_sha256'].items():self.assertEqual(repair.file_sha(repair.ROOT/path),sha)
+        for lane in repair.LANES:self.assertEqual(a['lanes'][lane]['metrics']['base'],self.result['lanes'][lane]['metrics']['base'])
+
+    def test_independent_arithmetic_cost_ledger_exactly_once(self):
+        keys=set()
+        for t in self.trades:
+            key=(t['lane_id'],t['scenario'],t['identity']);self.assertNotIn(key,keys);keys.add(key)
+            self.assertAlmostEqual(t['net_bps'],t['gross_bps']-t['cost_bps'])
+            self.assertAlmostEqual(t['cost2x_net_bps'],t['gross_bps']-2*t['cost_bps'])
+            self.assertGreaterEqual(t['cost_bps'],20)
+            self.assertEqual(t['formal_credit'],0);self.assertEqual(t['execution_authority'],'NONE')
+        for lane,v in self.result['lanes'].items():
+            for scenario in ['base','child']:
+                ts=[t for t in self.trades if t['lane_id']==lane and t['scenario']==scenario];xs=[t['net_bps'] for t in ts]
+                m=v['metrics'][scenario]['base_cost'];self.assertEqual(len(xs),m['completed_T'])
+                self.assertAlmostEqual(sum(xs),m['net_bps'],places=7)
+                self.assertAlmostEqual(sum(x for x in xs if x>0)/-sum(x for x in xs if x<0),m['PF'])
+                self.assertAlmostEqual(sum(x>0 for x in xs)/len(xs),m['win_rate'])
+
+    def test_child_native_geometry_and_population_separation(self):
+        events=[json.loads(x) for x in gzip.decompress((self.root/'comparison/events.jsonl.gz').read_bytes()).splitlines()]
+        parents={(e['lane_id'],e['symbol'],e['signal_ts']):e for e in events if e['scenario']=='base'}
+        for e in events:
+            if e['scenario']!='child':continue
+            p=parents[(e['lane_id'],e['symbol'],e['signal_ts'])]
+            for k in ['sl','tp','timeout','risk_size','exposure']:
+                self.assertEqual(e.get(k),p.get(k))
+        self.assertFalse(self.result['new_g5b_boundary']);self.assertEqual(self.result['production_grade_credit'],0)
+        self.assertEqual(self.result['validation_rows_decoded'],0);self.assertEqual(self.result['OOS_rows_decoded'],0)
+
+    def test_durable_seals_and_hashes(self):
+        probe.verify_seal(self.result,'RESULT')
+        for a in self.result['artifacts'].values():self.assertEqual(repair.file_sha(repair.ROOT/a['path']),a['file_sha256'])
+        child=repair.read(repair.CHILDREN);probe.verify_seal(child,'CHILDREN')
+        self.assertFalse(child['child_outcomes_observed_at_freeze'])
+        self.assertEqual(set(child['lanes']),set(repair.LANES))
+        for lane,c in child['lanes'].items():
+            self.assertEqual(c['parent_sha256'],repair.read(repair.POLICY)['parents'][lane]['sha256'])
+            self.assertEqual(c['trial_budget_remaining_after_run'],0)
+
+    def test_research_registry_never_changes_operational_authority(self):
+        registry=json.loads((self.root/'research_registry.json').read_text());probe.verify_seal(registry,'REGISTRY')
+        self.assertFalse(registry['operating_G5B_version_changed']);self.assertEqual(registry['formal_credit_transferred'],0)
+        for lane,entry in registry['lanes'].items():
+            result=self.result['lanes'][lane];promising=result['comparison']['decision']=='DEV_PROMISING'
+            self.assertEqual(entry['research_version_increment'],int(promising))
+            self.assertEqual(entry['current_research_version'],result['child_id'] if promising else result['parent_id'])
+            self.assertFalse(entry['formal_PASS'])
 
 
 if __name__=='__main__':unittest.main()

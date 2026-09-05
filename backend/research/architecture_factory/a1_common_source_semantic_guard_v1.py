@@ -15,6 +15,7 @@ FORBIDDEN_COMMON_SEMANTICS = (
     "aggressor",
     "taker buy",
     "taker sell",
+    "taker volume",
     "buy volume",
     "sell volume",
     "signed volume",
@@ -23,6 +24,7 @@ FORBIDDEN_COMMON_SEMANTICS = (
     "cumulative volume delta",
     "cvd",
     "order flow",
+    "orderflow",
     "trade flow",
     "order book",
     "orderbook",
@@ -214,6 +216,9 @@ def self_test() -> int:
     assert guarded["deterministic_replay_authorized"] is False
     assert guarded["g5b_fresh_boundary_created"] is False
     assert _semantic_blockers({"required_sources": ["funding", "basis"], "entry_event": "order flow"}) == []
+    for spelling in ("order flow", "orderflow", "taker volume", "aggressor flow", "CVD"):
+        assert _semantic_blockers({"required_sources": ["ohlcv", "volume"], "mechanism": spelling})
+    assert not _semantic_blockers({"required_sources": ["ohlcv", "volume"], "mechanism": "total volume and closed-bar continuation"})
     print("PASS_A1_COMMON_SOURCE_SEMANTIC_GUARD_V1_SELF_TEST")
     return 0
 

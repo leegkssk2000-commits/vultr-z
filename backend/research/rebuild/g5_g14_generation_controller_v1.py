@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,48 @@ RUNTIME_PIN_POLICIES = {
     "APPENDABLE_EVIDENCE_SCHEMA_AND_ROW_INTEGRITY",
 }
 EXACT_PIN_POLICY = "EXACT_GIT_BLOB"
+UNLOCK_RULE = "LANE_LOCAL_G5B_G6_G7_THROUGH_G8_GLOBAL_FROM_G9"
+INDEPENDENCE_FIELDS = ("N_raw", "N_effective", "unique_signal_days", "unique_symbols", "regime_count", "largest_same_window_cluster")
+
+
+def independence_audit_passes(audit: Any) -> bool:
+    if not isinstance(audit, dict) or audit.get("validated") is not True:
+        return False
+    if not audit.get("source_sha256") or not audit.get("cluster_method"):
+        return False
+    if any(not numeric(audit.get(k)) or not math.isfinite(audit[k]) or audit[k] < 0 for k in INDEPENDENCE_FIELDS):
+        return False
+    n = audit["N_raw"]
+    if any(audit[k] > n for k in INDEPENDENCE_FIELDS[1:]):
+        return False
+    if any(not isinstance(audit[k], int) for k in INDEPENDENCE_FIELDS if k != "N_effective"):
+        return False
+    if n > 0 and any(audit[k] <= 0 for k in INDEPENDENCE_FIELDS[1:]):
+        return False
+    # The largest correlated cluster can contribute at most one independent T.
+    if n > 0 and audit["N_effective"] > n - audit["largest_same_window_cluster"] + 1:
+        return False
+    return True
+
+
+def lane_terminal_errors(terminal: Any, *, lane_identity: dict[str, Any], stage: str,
+                         gate: dict[str, Any], reviewed_blob_sha: str | None,
+                         observed_blob_sha: str | None) -> list[str]:
+    if not isinstance(terminal, dict):
+        return ["EXPLICIT_TERMINAL_RECEIPT_MISSING"]
+    errors = []
+    if not reviewed_blob_sha or observed_blob_sha != reviewed_blob_sha:
+        errors.append("TERMINAL_REVIEW_PIN_MISSING_OR_DRIFT")
+    if terminal.get("stage") != stage or gate.get("stage") != stage:
+        errors.append("TERMINAL_STAGE_MISMATCH")
+    for key in ("lane_id", "candidate_id", "boundary_id"):
+        if not lane_identity.get(key) or terminal.get(key) != lane_identity[key]:
+            errors.append("TERMINAL_IDENTITY_MISMATCH:" + key)
+    if not gate or not terminal_receipt_passes(terminal, gate):
+        errors.append("FROZEN_TERMINAL_GATE_NOT_PASS")
+    if not independence_audit_passes(terminal.get("independence_audit")):
+        errors.append("INDEPENDENCE_AUDIT_MISSING_OR_INVALID")
+    return errors
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -85,7 +128,7 @@ def git_blob_sha(path: Path) -> str | None:
 
 
 def numeric(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def finish(
@@ -112,7 +155,9 @@ def finish(
         "next_gate": failed_gate,
         "next_action": next_action,
         "g5_terminal_pass": terminal,
-        "g6_allowed": terminal,
+        "g6_allowed": terminal and bool(manifest.get("lane_identity")),
+        "lane_identity": manifest.get("lane_identity"),
+        "unlock_scope": "SAME_LANE_ONLY",
         "g6_stage": "TRADE_METHOD_STANDALONE",
         "g5_responsibility": "EDGE_QUALIFICATION",
         "g5_rr_formal_credit_allowed": False,
@@ -126,6 +171,9 @@ def finish(
         "source_master_commit": manifest.get("source_master_commit"),
         "observed_blob_shas": observed_hashes,
         "input_fingerprint": fingerprint,
+        "selection_authority": False, "promotion_authority": False,
+        "execution_authority": "NONE", "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED", "exchange_order_submitted": False,
     }
 
 
@@ -209,7 +257,7 @@ def evaluate(
     if (
         contract.get("schema_version") != "zel.g5_g14.shared_validation_contract.v2"
         or manifest.get("schema_version") != "zel.g5_g14.shared_validation_manifest.v3"
-        or contract.get("generation_unlock_rule") != "G(n+1)_ALLOWED_IFF_G(n)_TERMINAL_PASS"
+        or contract.get("generation_unlock_rule") != UNLOCK_RULE
         or contract.get("cutover", {}).get("automatic") is not False
         or contract.get("shared_invariants", {}).get("fresh_credit_fail_closed") is not True
     ):
@@ -355,6 +403,7 @@ def evaluate(
         for row in ledger_rows
         if row.get("production_grade") is True
         and (not proxy_rows_do_not_count or "PROXY" not in str(row.get("economic_origin", "")).upper())
+        and (not manifest.get("lane_identity") or all(row.get(k) == v for k, v in manifest["lane_identity"].items()))
     )
     min_rows = int(contract.get("genuine_economic_t", {}).get("min_production_grade_rows", 1))
     if genuine_rows < min_rows:
@@ -422,6 +471,16 @@ def evaluate(
             genuine_rows=genuine_rows,
         )
 
+    lane_errors = lane_terminal_errors(
+        terminal, lane_identity=manifest.get("lane_identity") or {}, stage="G5B",
+        gate=contract.get("g5_terminal_gate", {}), reviewed_blob_sha=pinned_terminal_sha,
+        observed_blob_sha=terminal_blob_sha,
+    )
+    if lane_errors:
+        return finish(state="WAIT_LANE_BOUND_G5B_TERMINAL", next_action=";".join(lane_errors),
+                      completed=completed, failed_gate=STAGES[8], observed_hashes=observed_hashes,
+                      manifest=manifest, genuine_rows=genuine_rows)
+
     completed.append(STAGES[8])
     return finish(
         state="G5_TERMINAL_PASS",
@@ -432,6 +491,17 @@ def evaluate(
         manifest=manifest,
         genuine_rows=genuine_rows,
     )
+
+
+def evaluate_lanes(inputs_by_lane: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Each lane consumes its own frozen identity, terminal pin and ledger slice."""
+    results = {}
+    for lane, inputs in inputs_by_lane.items():
+        if inputs.get("manifest", {}).get("lane_identity", {}).get("lane_id") != lane:
+            results[lane] = {"state": "HARD_FAIL_LANE_IDENTITY", "g6_allowed": False}
+        else:
+            results[lane] = evaluate(**inputs)
+    return results
 
 
 def derive(root: Path = ROOT) -> dict[str, Any]:

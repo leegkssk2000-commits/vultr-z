@@ -11,10 +11,14 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from backend.research.rebuild import g5_g14_generation_controller_v1 as controller
 REBUILD = ROOT / "backend" / "research" / "rebuild"
 CONTRACT_PATH = REBUILD / "g5_g14_governance_contract_v1.json"
 LINEAGE_PATH = REBUILD / "g5_g14_experiment_lineage_v1.jsonl"
@@ -90,6 +94,18 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
         errors.append("G6_FRESH_BOUNDARY_NOT_REQUIRED")
     if g6.get("g5_rr_observations_inherited_as_formal_credit") is not False:
         errors.append("G6_INHERITS_G5_RR")
+    g7 = generations.get("G7", {})
+    exit_ops = {"SL_STOP_POLICY", "TP_PAYOFF_POLICY", "TIME_DECAY_EXIT", "VOLATILITY_ADAPTIVE_EXIT", "PARTIAL_EXIT", "TRAILING", "MFE_RUNNER", "REGIME_CONDITIONED_EXIT", "TRADE_LIFECYCLE_MONEY_EXTRACTION"}
+    position_ops = {"SCALE_IN", "PYRAMIDING", "CONDITIONAL_DCA", "RISK_NORMALIZED_SIZING", "POSITION_CONSTRUCTION"}
+    if set(g6.get("owned_operations", [])) != exit_ops or set(g7.get("owned_operations", [])) != position_ops:
+        errors.append("G6_G7_OWNERSHIP")
+    progression = contract.get("lane_progression", {})
+    if contract.get("authority", {}).get("generation_unlock_rule") != controller.UNLOCK_RULE:
+        errors.append("LANE_UNLOCK_RULE")
+    if any(progression.get(k) is not False for k in ("other_lane_wait_or_fail_blocks", "g5a_development_pass_unlocks_g6", "t6_continue_unlocks_g6", "t12_qualification_unlocks_g6")):
+        errors.append("LANE_UNLOCK_BOUNDARY")
+    if progression.get("lane_local_through") != "G8" or progression.get("global_join_begins_at") != "G9":
+        errors.append("LANE_GLOBAL_JOIN")
 
     stats = contract.get("statistics_contract", {})
     if stats.get("sample_unit") != "GENUINE_PRODUCTION_GRADE_CLOSED_T":
@@ -102,6 +118,11 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
         errors.append("STAT_12T_AUTO_TERMINAL")
     if stats.get("terminal_requires_explicit_terminal_receipt") is not True:
         errors.append("STAT_TERMINAL_RECEIPT")
+    audit = stats.get("independence_audit", {})
+    if set(audit.get("required_fields", [])) != set(controller.INDEPENDENCE_FIELDS) or audit.get("missing_or_unvalidated_audit") != "BLOCK_TERMINAL":
+        errors.append("STAT_INDEPENDENCE_AUDIT")
+    if audit.get("N_effective_terminal_threshold") is not None and not audit.get("threshold_authority"):
+        errors.append("STAT_UNAUTHORIZED_EFFECTIVE_THRESHOLD")
 
     credit = contract.get("credit_contract", {})
     if credit.get("generation_credit_inheritance_forbidden") is not True:
@@ -114,8 +135,14 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
     g9 = generations.get("G9", {})
     if g9.get("pass_x_pass_required") is not True:
         errors.append("G9_PASS_X_PASS")
-    if g9.get("all_components_standalone_terminal_pass_required") is not True:
+    if g9.get("all_components_standalone_terminal_pass_required") is not False:
         errors.append("G9_COMPONENT_PASS")
+    if g9.get("pass_x_pass_scope") != "ALPHA_PRODUCERS" or g9.get("component_type_gates") != {
+        "ALPHA_PRODUCER": "STANDALONE_TERMINAL_ECONOMIC_PASS",
+        "TRADE_MODIFIER": "SAME_BASELINE_INCREMENTAL_AB_PASS",
+        "RISK_OR_ADVISOR": "NO_NET_EXPECTANCY_DAMAGE_AND_DD_CVAR_ERROR_COST_IMPROVEMENT",
+    }:
+        errors.append("G9_TYPED_COMPONENT_GATE")
     if g9.get("component_credit_inheritance_forbidden") is not True:
         errors.append("G9_CREDIT_INHERITANCE")
 
@@ -209,7 +236,10 @@ def checkpoint_state(generation: int, closed_t: int, *, explicit_terminal_pass: 
     return "QUALIFICATION_12T_NOT_TERMINAL"
 
 
-def validate_transition(current_generation: int, next_generation: int, current_terminal_pass: bool) -> list[str]:
+def validate_transition(current_generation: int, next_generation: int, current_terminal_pass: bool,
+                        *, terminal: dict[str, Any] | None = None, lane_identity: dict[str, Any] | None = None,
+                        gate: dict[str, Any] | None = None, reviewed_blob_sha: str | None = None,
+                        observed_blob_sha: str | None = None, global_bundle_pass: bool = False) -> list[str]:
     errors: list[str] = []
     if current_generation < 5 or current_generation >= 14:
         errors.append("TRANSITION_CURRENT_RANGE")
@@ -217,6 +247,13 @@ def validate_transition(current_generation: int, next_generation: int, current_t
         errors.append("TRANSITION_ORDER")
     if current_terminal_pass is not True:
         errors.append("TRANSITION_WITHOUT_TERMINAL_PASS")
+    if current_generation in (5, 6, 7):
+        stage = "G5B" if current_generation == 5 else f"G{current_generation}"
+        errors.extend(controller.lane_terminal_errors(terminal, lane_identity=lane_identity or {},
+                      stage=stage, gate=gate or {}, reviewed_blob_sha=reviewed_blob_sha,
+                      observed_blob_sha=observed_blob_sha))
+    elif next_generation >= 9 and global_bundle_pass is not True:
+        errors.append("GLOBAL_BUNDLE_INTEGRATION_REQUIRED")
     return errors
 
 
@@ -254,8 +291,27 @@ def validate_g9_bundle(bundle: dict[str, Any]) -> list[str]:
     components = bundle.get("components")
     if not isinstance(components, list) or len(components) < 2:
         return ["G9_COMPONENT_COUNT"]
-    if any(not isinstance(c, dict) or c.get("standalone_terminal_pass") is not True for c in components):
-        errors.append("G9_PASS_X_PASS_REQUIRED")
+    for component in components:
+        if not isinstance(component, dict):
+            errors.append("G9_COMPONENT_TYPE_REQUIRED")
+            continue
+        kind = component.get("component_type")
+        if kind == "ALPHA_PRODUCER":
+            if component.get("standalone_terminal_pass") is not True or not component.get("terminal_receipt_sha"):
+                errors.append("G9_PASS_X_PASS_REQUIRED")
+        elif kind in ("TRADE_MODIFIER", "RISK_OR_ADVISOR"):
+            proof = component.get("incremental_receipt") or {}
+            if (not proof.get("receipt_sha") or not bundle.get("baseline_sha") or
+                proof.get("baseline_sha") != bundle["baseline_sha"] or not bundle.get("evaluation_data_sha") or
+                proof.get("evaluation_data_sha") != bundle["evaluation_data_sha"]):
+                errors.append("G9_INCREMENTAL_BASELINE_OR_DATA_PARITY")
+            if kind == "TRADE_MODIFIER" and proof.get("incremental_ab_pass") is not True:
+                errors.append("G9_MODIFIER_INCREMENTAL_AB_REQUIRED")
+            if kind == "RISK_OR_ADVISOR":
+                if proof.get("net_expectancy_not_worse") is not True or not any(proof.get(k) is True for k in ("dd_improved", "cvar_improved", "error_cost_improved")):
+                    errors.append("G9_RISK_INCREMENTAL_PASS_REQUIRED")
+        else:
+            errors.append("G9_COMPONENT_TYPE_REQUIRED")
     if bundle.get("fresh_interaction_boundary") is not True:
         errors.append("G9_FRESH_BOUNDARY")
     if bundle.get("component_formal_credit_inherited", 0) not in (0, False):
@@ -295,6 +351,14 @@ def derive(*, base_ref: str | None = None, root: Path = ROOT) -> dict[str, Any]:
         return {"schema_version": "zel.g5_g14.governance_validation_receipt.v1", "state": "HARD_FAIL_PARSE", "errors": [str(exc)], "generation_range": [5, 14], "formal_credit_granted": False, "order_authority": "BLOCKED", "live_authority": "BLOCKED"}
 
     errors = validate_contract(contract)
+    roadmap = load_json(root / "backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json")
+    shared = load_json(rebuild / "g5_g14_shared_validation_contract_v1.json")
+    if shared.get("lane_progression") != contract.get("lane_progression"):
+        errors.append("SHARED_LANE_CONTRACT_PARITY")
+    if any(roadmap.get("progression_model", {}).get(k) != v for k, v in contract.get("lane_progression", {}).items()):
+        errors.append("ROADMAP_LANE_CONTRACT_PARITY")
+    if roadmap.get("g5b_edge_qualification", {}).get("checkpoints", {}).get("T12") != "PROVISIONAL_QUALIFICATION":
+        errors.append("ROADMAP_T12_NOT_TERMINAL")
     errors.extend(validate_lineage(rows, contract))
     append_only_checked = False
     if base_ref:
@@ -303,7 +367,7 @@ def derive(*, base_ref: str | None = None, root: Path = ROOT) -> dict[str, Any]:
             append_only_checked = True
             errors.extend(check_append_only(lineage_path.read_text(encoding="utf-8").splitlines(), base_lines))
 
-    return {
+    receipt = {
         "schema_version": "zel.g5_g14.governance_validation_receipt.v1",
         "state": "PASS_G5_G14_GOVERNANCE_LOCK" if not errors else "HARD_FAIL_G5_G14_GOVERNANCE",
         "errors": errors,
@@ -325,7 +389,18 @@ def derive(*, base_ref: str | None = None, root: Path = ROOT) -> dict[str, Any]:
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "live_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED", "exchange_order_submitted": False,
+        "lane_scoped_unlock": not any("LANE" in e for e in errors),
+        "g6_owned_operations": contract.get("generation_contract", {}).get("G6", {}).get("owned_operations"),
+        "g7_owned_operations": contract.get("generation_contract", {}).get("G7", {}).get("owned_operations"),
+        "g9_component_type_gates": contract.get("generation_contract", {}).get("G9", {}).get("component_type_gates"),
+        "source_files_sha256": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [
+            contract_path, rebuild / "g5_g14_shared_validation_contract_v1.json",
+            root / "backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json",
+            rebuild / "g5_g14_generation_controller_v1.py", rebuild / "g5_g14_governance_validator_v1.py", lineage_path]},
     }
+    receipt["receipt_sha256"] = hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    return receipt
 
 
 def main() -> int:

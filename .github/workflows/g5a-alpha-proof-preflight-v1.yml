@@ -6,12 +6,20 @@ on:
     paths:
       - 'backend/research/architecture_factory/g5a_alpha_proof_preflight_v1.py'
       - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/g5a_ma001_alpha_proof_bundle_v1.json'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.json'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.py'
       - '.github/workflows/g5a-alpha-proof-preflight-v1.yml'
   push:
-    branches: [master]
+    branches: [master, research/g5a-g5b-profit-remote-seal-v1]
     paths:
       - 'backend/research/architecture_factory/g5a_alpha_proof_preflight_v1.py'
       - 'backend/research/architecture_factory/a1_common_source_semantic_guard_v1.py'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/g5a_ma001_alpha_proof_bundle_v1.json'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.json'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.py'
       - '.github/workflows/g5a-alpha-proof-preflight-v1.yml'
   workflow_dispatch:
 
@@ -31,7 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: ${{ github.event_name == 'push' }}
+          fetch-depth: 0
+          persist-credentials: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -45,6 +54,42 @@ jobs:
           python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
           python -m backend.research.architecture_factory.g5a_alpha_proof_preflight_v1 --self-test
+      - name: Offline G5 state and ledger integration tests
+        run: |
+          python -m unittest \
+            backend.research.rebuild.test_g5_clean_runner_v1 \
+            backend.research.rebuild.test_g5_clean_runner_binding_fix_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v3 \
+            backend.research.rebuild.test_g5_data_stale_evidence_v1 \
+            backend.research.prep.test_g5_production_economic_ssot_v1
+      - name: Regenerate current status from checked-out sources
+        run: |
+          python -m backend.research.architecture_factory.g5a_g5b_profit_status_v1 \
+            --source-master-sha "$(git rev-parse origin/master)" \
+            --output out/g5a_g5b_profit_status_v1.json
+      - name: Verify frozen MA001 gap evidence without replay or provider calls
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from backend.research.alpha_proof import a1_alpha_proof_gate_v1 as alpha
+          root=Path('backend/research/architecture_factory')
+          bundle=json.loads((root/'g5a_ma001_alpha_proof_bundle_v1.json').read_text())
+          status=json.loads(Path('out/g5a_g5b_profit_status_v1.json').read_text())
+          assert bundle['bundle_sha256']==alpha.sha({k:v for k,v in bundle.items() if k!='bundle_sha256'})
+          assert status['receipt_sha256']==alpha.sha({k:v for k,v in status.items() if k!='receipt_sha256'})
+          assert status['bundle_sha256']==bundle['bundle_sha256']
+          proof=alpha.evaluate_bundle(bundle)
+          assert proof==status['alpha_proof_receipt']
+          assert proof['state']=='HOLD_ALPHA_PROOF'
+          assert status['generation_complete'] is False
+          assert status['G5B_operational_complete'] is False
+          assert status['G5B_economic_terminal'] is False
+          assert status['order_authority']=='BLOCKED' and status['live_trade_authority']=='BLOCKED'
+          assert all(row['supports_mechanism'] is False for row in bundle['primary_evidence']['audited_references'])
+          print('PASS_MA001_SOURCE_BOUND_GAP_PACKET_NO_ECONOMIC_CREDIT')
+          PY
       - name: Evaluate current canonical G5A candidate fail-closed
         run: |
           set -euo pipefail
@@ -78,20 +123,27 @@ jobs:
           name: g5a-alpha-proof-preflight-v1-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 90
           if-no-files-found: error
-          path: out/g5a_alpha_proof_preflight_latest.json
+          path: |
+            out/g5a_alpha_proof_preflight_latest.json
+            out/g5a_g5b_profit_status_v1.json
       - name: Persist current G5A alpha-proof boundary receipt
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
-          target=backend/research/architecture_factory/g5a_alpha_proof_preflight_latest.json
-          cp out/g5a_alpha_proof_preflight_latest.json "$target"
           git config user.name 'g5a-alpha-proof-preflight-v1'
           git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'G5A: persist alpha-proof replay boundary receipt [skip ci]'
           for n in 1 2 3; do
-            git pull --rebase --depth=10 origin master && git push origin HEAD:master && exit 0
-            sleep 3
+            git pull --rebase origin master
+            python -m backend.research.architecture_factory.g5a_alpha_proof_preflight_v1 \
+              --input backend/research/architecture_factory/g5a_alpha_factory_latest.json \
+              --output backend/research/architecture_factory/g5a_alpha_proof_preflight_latest.json
+            python -m backend.research.architecture_factory.g5a_g5b_profit_status_v1 \
+              --source-master-sha "$(git rev-parse origin/master)" \
+              --output backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
+            git add backend/research/architecture_factory/g5a_alpha_proof_preflight_latest.json \
+              backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5A: persist current remote-seal boundary receipts [skip ci]'
+            git push origin HEAD:master && exit 0
           done
           exit 1

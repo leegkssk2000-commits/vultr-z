@@ -15,7 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
-from backend.production.zel_production_openai_critic_v1 import call_openai_critic
+from backend.production.zel_production_openai_critic_v1 import call_openai_critic, critic_prompt
 
 ROOT = Path(__file__).resolve().parents[3]
 LEDGER = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
@@ -300,8 +300,15 @@ def openai_critic(c: Mapping[str, Any]) -> dict[str, Any]:
         "expected_horizon": c.get("native_horizon")}]} 
     model = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-5-mini"
     actual, receipt = call_openai_critic(os.environ.get("OPENAI_API_KEY", "").strip(), model, proposer, timeout_sec=60, max_output_tokens=1000)
-    return {"successful": True, "model": actual, "decision": receipt.get("decision"), "reason": receipt.get("reason"),
-            "input_sha": receipt.get("input_sha"), "prompt_sha": receipt.get("prompt_sha"), "response_sha": receipt.get("response_sha")}
+    # The production critic returns a validated receipt, not lineage fields.
+    # Preserve the actual returned object and explicitly identify the hash scope;
+    # this is not a reconstruction of previously discarded provider responses.
+    return {"successful": True, "model": actual, "decision": receipt.get("decision"),
+            "reason": receipt.get("causal_critique"), "critic_receipt": receipt,
+            "input_sha": sha(proposer),
+            "prompt_sha": hashlib.sha256(critic_prompt(proposer).encode("utf-8")).hexdigest(),
+            "response_sha": sha(receipt),
+            "response_sha_scope": "VALIDATED_CRITIC_RECEIPT_CANONICAL_JSON"}
 
 
 def subprocess_review(script: str, c: Mapping[str, Any], work: Path, env: Mapping[str, str], kind: str) -> dict[str, Any]:

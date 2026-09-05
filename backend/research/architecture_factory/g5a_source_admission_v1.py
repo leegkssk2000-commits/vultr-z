@@ -73,7 +73,8 @@ def inventory(*, native_ref, as_of_ms, root=ROOT):
         bars[key] = p
     last = max((p["bar_close_ts"] for p in bars.values()), default=0)
     cadence = stale.get("authority_value") if stale.get("authority_created") is True and stale.get("authority_unit") == "ms" else None
-    fresh = bool(cadence and 0 <= as_of_ms - last < cadence)
+    per_symbol_last = {s: max((p["bar_close_ts"] for p in bars.values() if p["symbol"] == s), default=0) for s in effective["source"]["symbols"]}
+    fresh = bool(cadence and all(0 <= as_of_ms - t < cadence for t in per_symbol_last.values()))
     observations = {}
     for feature in ("premium_index", "open_interest"):
         streams = []
@@ -126,18 +127,41 @@ def inventory(*, native_ref, as_of_ms, root=ROOT):
         sources.append(source)
     paths = [STATE_PATH, "backend/research/rebuild/g5_clean_runner_contract_effective_v1.json", "backend/research/rebuild/g5_data_stale_evidence_v1.json", "backend/research/rebuild/g5_forward_real_bridge_state_v1.jsonl", "backend/research/p3_prospective_native_feature_collector.py", "backend/research/architecture_factory/g5a_source_admission_v1.py"]
     paths.append("backend/research/rebuild/g5_trend_rider_bbo_oos_events_v1.jsonl")
+    stage_path = "backend/research/architecture_factory/g5a_stage_admission_latest_v1.json"
+    development = None
+    if (root / stage_path).exists():
+        from backend.research.architecture_factory.g5a_stage_admission_v1 import require_development
+        stage = read(stage_path, root)
+        if stage.get("receipt_sha256") != alpha.sha({k:v for k,v in stage.items() if k != "receipt_sha256"}):
+            raise RuntimeError("STAGE_ADMISSION_RECEIPT_DRIFT")
+        development = require_development(stage, root)
+        paths.append(stage_path)
+    for row in sources:
+        row["G5A_DEVELOPMENT_READY"] = bool(development and row["source"] in development["allowed_sources"])
+        row["G5B_FRESH_READY"] = row["decision"] == "PASS" and row["fresh"] is True
+        row["PRODUCTION_GRADE_READY"] = False
     return seal({"schema_version": "zel.g5a.source_capability_registry.v1", "as_of_ms": as_of_ms,
                  "native_source_ref": native_ref, "sources": sources, "native_observations": observations,
                  "source_files_sha256": {p: file_sha(root / p) for p in paths},
                  "candidate_generation_sources": [s["source"] for s in sources if s["decision"] == "PASS"],
-                 "verified_round_trip_cost_bps": None, "candidate_cost_binding": "NOT_BOUND",
+                 "verified_round_trip_cost_bps": development["reference_round_trip_cost_bps"] if development else None,
+                 "candidate_cost_binding": "BOUND" if development else "NOT_BOUND",
+                 "development_binding": development, "development_generation_sources": development["allowed_sources"] if development else [],
+                 "development_cost_model": "RESEARCH_ONLY_DEVELOPMENT_COST" if development else "NOT_BOUND",
+                 "production_cost_lineage": "TRADE_TIME_PROVENANCE_REQUIRED; NO_DEVELOPMENT_CREDIT",
                  "ohlcv_volume_is_directional_flow": False, "wick_is_liquidation": False,
                  "snapshot_book_is_historical_book": False, **AUTH})
 
 
-def generation_sources(registry, *, now_ms, root=ROOT):
+def generation_sources(registry, *, now_ms, root=ROOT, stage="G5B_FRESH"):
     if registry.get("receipt_sha256") != alpha.sha({k: v for k, v in registry.items() if k != "receipt_sha256"}):
         raise RuntimeError("SOURCE_CAPABILITY_RECEIPT_DRIFT")
+    if stage == "G5A_DEVELOPMENT":
+        from backend.research.architecture_factory.g5a_stage_admission_v1 import require_development
+        dev = require_development({"development": registry.get("development_binding")}, root)
+        return dev["allowed_sources"]
+    if stage != "G5B_FRESH":
+        raise RuntimeError("UNKNOWN_SOURCE_ADMISSION_STAGE")
     hashes = registry.get("source_files_sha256") or {}
     if not hashes or any(not (root / p).is_file() or file_sha(root / p) != sha for p, sha in hashes.items()):
         raise RuntimeError("SOURCE_CAPABILITY_INPUT_PARITY")

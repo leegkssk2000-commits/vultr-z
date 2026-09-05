@@ -47,7 +47,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile source-only acquisition
-        run: python -m py_compile backend/research/architecture_factory/g5a_development_data_v1.py
+        run: |
+          python -m py_compile backend/research/architecture_factory/g5a_development_data_v1.py backend/research/architecture_factory/g5a_stage_admission_v1.py backend/research/architecture_factory/g5a_stage_candidate_v1.py
+          python -m unittest backend.research.architecture_factory.test_g5a_stage_admission_v1 -q
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
       - name: Restore immutable data if already acquired
         run: |
           set -euo pipefail
@@ -98,3 +101,18 @@ jobs:
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "G5A: freeze development data and clean native epoch ${GITHUB_RUN_ID} [skip ci]"
           git push origin "$DATA_BRANCH"
+      - name: Verify stage admission and the frozen candidate terminal from durable data
+        run: |
+          set -euo pipefail
+          git fetch origin "$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
+          mkdir -p /tmp/g5a-durable-input
+          git archive "origin/$DATA_BRANCH" research/data/g5a_stage_v1 | tar -x -C /tmp/g5a-durable-input
+          python -m backend.research.architecture_factory.g5a_stage_admission_v1 --data-dir /tmp/g5a-durable-input/research/data/g5a_stage_v1 --data-ref "$(git rev-parse origin/$DATA_BRANCH)"
+          python -m backend.research.architecture_factory.g5a_stage_candidate_v1
+          git diff --exit-code -- backend/research/architecture_factory/g5a_stage_candidate_terminal_v1.json backend/research/architecture_factory/g5a_alpha_factory_latest.json backend/research/architecture_factory/g5a_ma001_alpha_proof_bundle_v1.json backend/research/rebuild/g5_clean_runner_contract_effective_v1.json backend/research/rebuild/g5_forward_real_bridge_state_v1.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5a-stage-admission-${{ github.run_id }}
+          path: |
+            backend/research/architecture_factory/g5a_stage_admission_latest_v1.json
+            backend/research/architecture_factory/g5a_stage_candidate_terminal_v1.json

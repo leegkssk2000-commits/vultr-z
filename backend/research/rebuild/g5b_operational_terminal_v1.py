@@ -22,11 +22,19 @@ ECONOMIC_REPORTS = ("base_replay", "realistic_cost", "cost2x", "purged_oos", "ch
                     "symbol_decomposition", "regime_decomposition", "parameter_neighbor_stability", "negative_controls")
 
 
-def freeze_boundary(bundle, economics, identity, *, now_ms):
+def freeze_boundary(bundle, economics, identity, *, now_ms, fresh_receipt=None):
     """Pure constructor; the caller must persist a reviewed PASS before collecting."""
     proof = alpha.evaluate_bundle(bundle)
     if not proof["p0_p6_passed"]:
         raise RuntimeError("G5A_ALPHA_PROOF_REQUIRED")
+    if (bundle.get("source_implementation_reality") or {}).get("admission_stage") == "G5A_DEVELOPMENT":
+        if not fresh_receipt or fresh_receipt.get("receipt_sha256") != alpha.sha({k:v for k,v in fresh_receipt.items() if k != "receipt_sha256"}):
+            raise RuntimeError("G5B_FRESH_RECEIPT_REQUIRED")
+        fresh = fresh_receipt.get("fresh") or {}
+        if fresh.get("G5B_FRESH_READY") is not True or fresh.get("duplicate") != 0 or fresh.get("exactly_once_state") is not True:
+            raise RuntimeError("G5B_FRESH_SOURCE_REQUIRED")
+        if not 0 <= now_ms - fresh_receipt.get("as_of_ms", 0) < fresh.get("stale_threshold_ms", 0):
+            raise RuntimeError("G5B_FRESH_RECEIPT_STALE")
     if economics.get("receipt_sha256") != alpha.sha({k: v for k, v in economics.items() if k != "receipt_sha256"}):
         raise RuntimeError("G5A_ECONOMIC_RECEIPT_HASH")
     if economics.get("candidate_sha256") != proof["candidate_sha256"] or economics.get("alpha_proof_receipt_sha") != proof["receipt_sha256"]:

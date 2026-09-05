@@ -34,7 +34,7 @@ class SourceAdmissionTests(unittest.TestCase):
 
     def test_modified_registry_cannot_generate(self):
         registry = admission.read("backend/research/architecture_factory/g5a_source_capability_registry_v1.json")
-        registry["candidate_cost_binding"] = "BOUND"
+        registry["candidate_cost_binding"] = "TAMPERED"
         with self.assertRaisesRegex(RuntimeError, "RECEIPT_DRIFT"):
             admission.generation_sources(registry, now_ms=registry["as_of_ms"])
 

@@ -156,6 +156,8 @@ def verify_dataset(output, c):
         raise RuntimeError("IMMUTABLE_MANIFEST_DRIFT")
     if sha(m["dataset_files"]) != m["dataset_sha256"]:
         raise RuntimeError("DATASET_SHA_DRIFT")
+    if m["collection_finished_ms"] <= c["frozen_at_ms"] or c["historical_cutoff_close_ms"] > c["prospective_boundary_ms"] or any(p["received_ms"] <= c["frozen_at_ms"] for stream in m["sources"].values() for p in stream["pages"]):
+        raise RuntimeError("DATA_OR_SPLIT_NOT_FROZEN_BEFORE_COLLECTION")
     for p, h in m["dataset_files"].items():
         if file_sha(output / p) != h:
             raise RuntimeError("DATASET_FILE_DRIFT")
@@ -182,10 +184,17 @@ def append_native_epoch(output, epoch, records):
         key = record["feature"] + "__" + record["symbol"].replace("-", "")
         path = output / (key + ".jsonl"); path.parent.mkdir(parents=True, exist_ok=True)
         prior = [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+        for i, old in enumerate(prior):
+            if old.get("epoch_id") != epoch["epoch_id"] or old.get("prospective_only") is not True or native.canonical_sha(old.get("raw_payload")) != old.get("source_payload_sha256"):
+                raise RuntimeError("OLD_NATIVE_ROW_NOT_CLEAN_EPOCH")
+            if not 0 < old["source_timestamp_ms"] <= old["collected_at_ms"] or old["collected_at_ms"] <= epoch["boundary_ms"] or (i and old["collected_at_ms"] <= prior[i-1]["collected_at_ms"]):
+                raise RuntimeError("OLD_NATIVE_EPOCH_CLOCK")
         ident = (record["source_timestamp_ms"], record["source_payload_sha256"])
         seen = {(x["source_timestamp_ms"], x["source_payload_sha256"]) for x in prior}
+        if len(seen) != len(prior):
+            raise RuntimeError("NATIVE_EXISTING_DUPLICATE")
         if ident in seen:
-            results.append({"stream": key, "rows": len(prior), "added": 0}); continue
+            results.append({"stream": key, "rows": len(prior), "added": 0, "sha256": file_sha(path)}); continue
         if prior and record["collected_at_ms"] <= prior[-1]["collected_at_ms"]:
             raise RuntimeError("NATIVE_COLLECTED_NOT_STRICT_MONOTONIC")
         row = {**record, "epoch_id": epoch["epoch_id"], "formal_credit": 0, "funding_role": "STATE_SNAPSHOT_NOT_SETTLEMENT" if record["feature"] == "premium_index" else None}

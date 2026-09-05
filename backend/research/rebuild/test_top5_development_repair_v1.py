@@ -178,5 +178,14 @@ class DurableEvidence(unittest.TestCase):
             self.assertEqual(entry['current_research_version'],result['child_id'] if promising else result['parent_id'])
             self.assertFalse(entry['formal_PASS'])
 
+    def test_no_credit_path_endpoints_match_measured_ledger(self):
+        path=json.loads((self.root/'path_audit/receipt.json').read_text());probe.verify_seal(path,'PATH')
+        self.assertFalse(path['exit_optimization']);self.assertEqual(path['exit_candidates_tested'],0)
+        for lane,v in self.result['lanes'].items():
+            for scenario in ['base','child']:
+                rows=[x for x in path['rows'] if x['lane_id']==lane and x['scenario']==scenario]
+                self.assertEqual(sum(x['trades_ending_in_this_bar'] for x in rows),v['metrics'][scenario]['base_cost']['completed_T'])
+                self.assertAlmostEqual(sum((x['ending_trade_mean_net_bps'] or 0)*x['trades_ending_in_this_bar'] for x in rows),v['metrics'][scenario]['base_cost']['net_bps'],places=7)
+
 
 if __name__=='__main__':unittest.main()

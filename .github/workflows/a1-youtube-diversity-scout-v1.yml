@@ -10,13 +10,17 @@ on:
   workflow_dispatch:
     inputs:
       blocker:
-        description: 'Named current strategy blocker to solve; generic scouting is forbidden'
+        description: 'JSON: blocker/lane/candidate/failure_signature/required_sources/development_evidence_ref/implementation_sha256/buckets'
         required: true
+        type: string
+      existing_receipt:
+        description: 'Committed previous scoped receipt path for cache/resume; ingest prior artifact through PR before a repeat run'
+        required: true
+        default: 'backend/research/architecture_factory/a1_youtube_diversity_latest.json'
         type: string
 
 permissions:
-  contents: write
-  issues: write
+  contents: read
 
 concurrency:
   group: a1-youtube-diversity-scout-v1
@@ -68,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.ref }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -84,6 +88,11 @@ jobs:
           policy=json.load(open('backend/research/architecture_factory/a1_gemini_youtube_roi_policy_v1.json'))
           econ=json.load(open('backend/research/architecture_factory/a1_a5_economic_improvement_latest.json'))
           assert blocker, 'NAMED_STRATEGY_BLOCKER_REQUIRED'
+          from backend.research.architecture_factory.a1_youtube_diversity_scout_v1 import validate_context
+          from pathlib import Path
+          context=validate_context(json.loads(blocker))
+          Path("out").mkdir(exist_ok=True)
+          Path("out/blocker_context.json").write_text(json.dumps(context))
           assert policy['automatic_collection_enabled'] is False
           assert policy['manual_dispatch_enabled'] is True
           assert policy['manual_blocker_required'] is True
@@ -99,15 +108,17 @@ jobs:
       - name: Review at most three blocker-relevant videos with Gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
-          A1_YOUTUBE_GEMINI_MODELS: 'models/gemini-3.6-flash,models/gemini-3.1-pro-preview'
+          A1_YOUTUBE_GEMINI_MODELS: 'models/gemini-3.6-flash'
           YOUTUBE_DIVERSITY_SEARCH_GROUP_SIZE: '3'
           YOUTUBE_DIVERSITY_MAX_VIDEO_REVIEWS: '3'
           YOUTUBE_DIVERSITY_MAX_POOL: '30'
+          EXISTING_RECEIPT: ${{ inputs.existing_receipt }}
         run: |
           set -euo pipefail
           mkdir -p out
           python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 \
-            --existing backend/research/architecture_factory/a1_youtube_diversity_latest.json \
+            --context out/blocker_context.json \
+            --existing "$EXISTING_RECEIPT" \
             --registry backend/research/zel_manual_video_registry_v1.json \
             --output out/a1_youtube_diversity_scout_v1.json
           python - <<'PY'
@@ -117,54 +128,13 @@ jobs:
           assert r['selection_authority'] is False and r['promotion_authority'] is False
           assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
           assert int(r['protected_mutations'])==0 and r['factory_blocking'] is False
-          assert len(r['buckets'])==15
+          assert 1<=len(r['buckets'])<=3
+          assert r['request_audit']['generation_requests']<=4
           assert int(r['metrics']['candidate_pool_count']) <= 30
           assert int(r['metrics'].get('reviewed_now') or 0) <= 3
           assert all(x['accepted_for_hypothesis_only'] is True and x['direct_video_analysis'] is True for x in r.get('accepted_sources') or [])
           assert all(x['evidence_authority']=='HYPOTHESIS_ONLY_REQUIRES_LOCAL_REPLAY' for x in r.get('factory_sources') or [])
           print(json.dumps({'state':r['state'],**r['metrics']},sort_keys=True))
-          PY
-      - name: Persist diversity sidecar
-        run: |
-          set -euo pipefail
-          target=backend/research/architecture_factory/a1_youtube_diversity_latest.json
-          cp out/a1_youtube_diversity_scout_v1.json "$target"
-          git config user.name 'a1-youtube-diversity-scout'
-          git config user.email 'actions@users.noreply.github.com'
-          git add "$target"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'A1 YouTube: persist on-demand blocker scout receipt [skip ci]'
-          for n in 1 2 3; do
-            git pull --rebase origin master && git push origin HEAD:master && exit 0
-            sleep $((n * 3))
-          done
-          exit 1
-      - name: Publish compact on-demand ROI status to issue 566
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          BLOCKER_CONTEXT: ${{ inputs.blocker }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,os,pathlib,urllib.request
-          p=pathlib.Path('out/a1_youtube_diversity_scout_v1.json')
-          marker='<!-- A1_YOUTUBE_DIVERSITY_SCOUT_V1 -->'
-          blocker=(os.environ.get('BLOCKER_CONTEXT') or '').strip()
-          if p.exists():
-              r=json.load(open(p)); m=r.get('metrics') or {}
-              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state={r.get('state')}|mode=MANUAL_BLOCKER_ONLY",f"blocker={blocker}",f"pool={m.get('candidate_pool_count')}|accepted={m.get('accepted_source_count')}|factory_sources={m.get('factory_source_count')}",f"reviewed_now={m.get('reviewed_now')}|search_calls={m.get('search_call_count')}",'KPI=economic_pass_and_metric_delta|video_count_not_kpi','selection=false|promotion=false|execution=NONE|order/live=BLOCKED']
-          else:
-              lines=[marker,'## A1 YouTube Diversity Scout V1',f"run={os.environ['RUN_ID']}|state=WORKFLOW_FAILED_BEFORE_RECEIPT|mode=MANUAL_BLOCKER_ONLY",f"blocker={blocker}"]
-          body='\n'.join(lines); headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}
-          base=f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments?per_page=100"
-          with urllib.request.urlopen(urllib.request.Request(base,headers=headers),timeout=20) as resp: comments=json.load(resp)
-          old=next((c for c in comments if marker in str(c.get('body') or '')),None)
-          url=old.get('url') if old else f"https://api.github.com/repos/{os.environ['REPO']}/issues/566/comments"
-          with urllib.request.urlopen(urllib.request.Request(url,data=json.dumps({'body':body}).encode(),headers=headers,method='PATCH' if old else 'POST'),timeout=20): pass
-          print('PASS_YOUTUBE_DIVERSITY_STATUS_PUBLISHED')
           PY
       - uses: actions/upload-artifact@v4
         if: always()

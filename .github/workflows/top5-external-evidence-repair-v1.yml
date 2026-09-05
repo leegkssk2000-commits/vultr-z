@@ -1,0 +1,81 @@
+name: Top5 External Evidence Repair V1
+on:
+  push:
+    branches: [master, research/top5-external-evidence-repair-v1]
+    paths:
+      - 'backend/research/rebuild/*top5_external*.py'
+      - 'backend/research/rebuild/*top5_break_validation*.py'
+      - 'backend/research/contracts/top5_external*.json'
+      - 'backend/research/contracts/top5_break_validation*.json'
+      - 'backend/research/architecture_factory/*a1_manual_research_budget*.py'
+      - 'research/development_evidence/TOP5_EXTERNAL_20260905_V1/**'
+      - 'research/development_evidence/BREAK_VALIDATION_20260905_V1/**'
+      - '.github/workflows/top5-external-evidence-repair-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*top5_external*.py'
+      - 'backend/research/rebuild/*top5_break_validation*.py'
+      - 'backend/research/contracts/top5_external*.json'
+      - 'backend/research/contracts/top5_break_validation*.json'
+      - 'backend/research/architecture_factory/*a1_manual_research_budget*.py'
+      - 'research/development_evidence/TOP5_EXTERNAL_20260905_V1/**'
+      - 'research/development_evidence/BREAK_VALIDATION_20260905_V1/**'
+      - '.github/workflows/top5-external-evidence-repair-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-external-evidence-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile, native parity and boundary regressions
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest backend.research.rebuild.test_top5_development_repair_v1 backend.research.architecture_factory.test_g5a_development_probe_v1 backend.research.architecture_factory.test_g5a_development_event_evaluator_v1 backend.research.rebuild.test_top5_external_repair_v1 backend.research.rebuild.test_top5_break_validation_v1 backend.research.architecture_factory.test_a1_manual_research_budget_v1 -v
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reproduce sealed evidence without acquiring data or calling AI
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/top5-ext-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-ext-input
+          python -m backend.research.rebuild.top5_development_repair_v1 --stage baseline --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_development_repair_v1 --stage comparison --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_external_diagnostics_v1 --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_external_repair_v1 --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_external_charts_v1 --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_break_validation_v1 --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_external_seal_v1
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-external-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            research/development_evidence/TOP5_EXTERNAL_20260905_V1
+            research/development_evidence/BREAK_VALIDATION_20260905_V1
+          retention-days: 90

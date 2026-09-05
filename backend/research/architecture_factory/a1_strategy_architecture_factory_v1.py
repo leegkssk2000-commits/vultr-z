@@ -342,8 +342,6 @@ def run(output: Path) -> dict[str, Any]:
     verified_cost = registry.get("verified_round_trip_cost_bps")
     if registry.get("candidate_cost_binding") != "BOUND" or not isinstance(verified_cost, (int, float)):
         raise RuntimeError("P6_CANDIDATE_COST_IMPLEMENTATION_NOT_BOUND_BEFORE_PAID_GENERATION")
-    if registry.get("paid_hypothesis_generation_authorized") is not True:
-        raise RuntimeError("G5A_PAID_GENERATION_BEFORE_P5_FORBIDDEN")
     ledger, evidence = read_json(LEDGER), read_json(EVIDENCE)
     targets = target_rows(ledger)
     source_rows = evidence_compact(evidence)

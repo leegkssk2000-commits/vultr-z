@@ -15,13 +15,17 @@ from backend.research.rebuild import g5_clean_runner_v1 as runner
 OUT = "backend/research/architecture_factory/g5a_stage_admission_latest_v1.json"
 
 
-def fresh_readiness(events, symbols, as_of_ms, stale):
+def fresh_readiness(events, symbols, as_of_ms, stale, *, strategies):
     expected = as_of_ms // runner.INTERVAL_MS * runner.INTERVAL_MS
-    latest = {s: 0 for s in symbols}; keys = set(); defects = []
+    latest = {s: 0 for s in symbols}; keys = set(); new_keys = set(); defects = []
+    expected_keys = {runner.state_key(strategy, symbol, expected) for strategy in strategies for symbol in symbols}
     for event in events:
         p = event["payload"]
         if event["status"] == "NEW":
             runner.validate_bar(p)
+            if event["state_key"] in new_keys:
+                defects.append("DUPLICATE_NEW")
+            new_keys.add(event["state_key"])
             if p["bar_close_ts"] > as_of_ms:
                 defects.append("FUTURE_BAR")
             if p.get("symbol") in latest:
@@ -33,13 +37,21 @@ def fresh_readiness(events, symbols, as_of_ms, stale):
             keys.add(key)
             if p.get("duplicate") != 0 or p.get("lookahead") != 0 or p.get("closed_bar") is not True:
                 defects.append("EVALUATION_INTEGRITY")
+    missing_new = expected_keys - new_keys
+    missing_evaluated = (expected_keys | new_keys) - keys
+    if not expected_keys or missing_new:
+        defects.append("INCOMPLETE_CURRENT_BAR_STATE")
+    if missing_evaluated:
+        defects.append("INCOMPLETE_EVALUATION_STATE")
     authority = stale.get("authority_created") is True and stale.get("authority_value") == runner.INTERVAL_MS and stale.get("authority_unit") == "ms"
     fresh = authority and not defects and all(t == expected and 0 <= as_of_ms - t < runner.INTERVAL_MS for t in latest.values())
     return {"G5B_FRESH_READY": bool(fresh), "expected_latest_closed_ms": expected,
             "last_persisted_bar_by_symbol": latest, "stale_threshold_ms": runner.INTERVAL_MS,
             "stale_authority_bound": authority, "duplicate": defects.count("DUPLICATE_EVALUATION"),
             "integrity_defects": defects, "closed_bar_integrity": not defects,
-            "exactly_once_state": not defects and bool(keys), "decision": "PASS" if fresh else "HOLD_G5B_SOURCE_FRESHNESS"}
+            "expected_current_evaluations": len(expected_keys), "missing_current_states": sorted(missing_new),
+            "missing_evaluations": sorted(missing_evaluated),
+            "exactly_once_state": not defects and bool(expected_keys), "decision": "PASS" if fresh else "HOLD_G5B_SOURCE_FRESHNESS"}
 
 
 def production_ready(receipt):
@@ -86,7 +98,7 @@ def derive(dataset_dir, data_ref, *, as_of_ms, root=ROOT):
     events = runner.HashChainLog(root / STATE_PATH).records()
     effective_path = "backend/research/rebuild/g5_clean_runner_contract_effective_v1.json"
     stale_path = "backend/research/rebuild/g5_data_stale_evidence_v1.json"
-    fresh = fresh_readiness(events, read(effective_path, root)["source"]["symbols"], as_of_ms, read(stale_path, root))
+    fresh = fresh_readiness(events, read(effective_path, root)["source"]["symbols"], as_of_ms, read(stale_path, root), strategies=read(effective_path, root)["active_strategies"])
     epoch = read(data.EPOCH, root)
     native_receipt = json.loads((dataset_dir / "native_epoch/latest.json").read_text())
     if native_receipt["receipt_sha256"] != sha({k:v for k,v in native_receipt.items() if k != "receipt_sha256"}) or native_receipt["epoch_id"] != epoch["epoch_id"] or native_receipt["boundary_ms"] != epoch["boundary_ms"]:

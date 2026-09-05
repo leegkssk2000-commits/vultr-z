@@ -91,17 +91,28 @@ class StageTests(unittest.TestCase):
         b=self.bundle();b["source_implementation_reality"]["sources"][0]["source_sha"]="different"
         self.assertFalse(alpha.evaluate_p6(b)["passed"])
 
-    def test_fresh_requires_every_symbol_and_exactly_once(self):
+    def test_fresh_requires_every_strategy_symbol_and_completed_evaluation(self):
         t=1_700_006_400_000
+        strategies=[{"strategy_id":"s1","child_id":"c1"},{"strategy_id":"s2","child_id":"c2"}]
         events=[]
-        for symbol in ("A","B"):
-            p={**bars(1,start=t-14_400_000)[0],"symbol":symbol}
-            events += [{"status":"NEW","payload":p}, {"status":"EVALUATED","state_key":symbol,"payload":{"duplicate":0,"lookahead":0,"closed_bar":True}}]
+        for strategy in strategies:
+            for symbol in ("A","B"):
+                p={**bars(1,start=t-14_400_000)[0],"symbol":symbol}
+                key=admission.runner.state_key(strategy,symbol,t)
+                events += [{"status":"NEW","state_key":key,"payload":p},
+                           {"status":"EVALUATED","state_key":key,"payload":{"duplicate":0,"lookahead":0,"closed_bar":True}}]
         stale={"authority_created":True,"authority_value":14_400_000,"authority_unit":"ms"}
-        self.assertTrue(admission.fresh_readiness(events,["A","B"],t+1,stale)["G5B_FRESH_READY"])
-        self.assertFalse(admission.fresh_readiness(events,["A","B"],t+14_400_000,stale)["G5B_FRESH_READY"])
-        self.assertFalse(admission.fresh_readiness(events[:2],["A","B"],t+1,stale)["G5B_FRESH_READY"])
-        self.assertFalse(admission.fresh_readiness(events+events[-1:],["A","B"],t+1,stale)["G5B_FRESH_READY"])
+        def check(rows, now=t+1):
+            return admission.fresh_readiness(rows,["A","B"],now,stale,strategies=strategies)
+        self.assertTrue(check(events)["G5B_FRESH_READY"])
+        self.assertFalse(check(events,t+14_400_000)["G5B_FRESH_READY"])
+        self.assertFalse(check(events[:4])["G5B_FRESH_READY"])
+        self.assertFalse(check(events+events[-1:])["G5B_FRESH_READY"])
+        # Source collection is complete, but the last evaluation crashed.
+        partial=check(events[:-1])
+        self.assertFalse(partial["G5B_FRESH_READY"])
+        self.assertFalse(partial["exactly_once_state"])
+        self.assertEqual(len(partial["missing_evaluations"]),1)
 
     def test_no_cost_binding_blocks_candidate_generation(self):
         dev=source.seal({"G5A_DEVELOPMENT_READY":True,"dataset_sha256":"d","development_cost_model_bound":False})

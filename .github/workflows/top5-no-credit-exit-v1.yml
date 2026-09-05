@@ -1,0 +1,70 @@
+name: Top5 No-Credit Exit V1
+on:
+  push:
+    branches: [master, research/top5-no-credit-exit-v1]
+    paths:
+      - 'backend/research/rebuild/*top5_no_credit_exit*.py'
+      - 'backend/research/contracts/top5_no_credit_exit_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
+      - 'research/development_evidence/TOP5_EXIT_20260906_V1/**'
+      - '.github/workflows/top5-no-credit-exit-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*top5_no_credit_exit*.py'
+      - 'backend/research/contracts/top5_no_credit_exit_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
+      - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
+      - 'research/development_evidence/TOP5_EXIT_20260906_V1/**'
+      - '.github/workflows/top5-no-credit-exit-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-no-credit-exit-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Causal timing, risk, cost, immutable history and formal gates
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest backend.research.rebuild.test_top5_development_repair_v1 backend.research.architecture_factory.test_g5a_development_probe_v1 backend.research.architecture_factory.test_g5a_development_event_evaluator_v1 backend.research.rebuild.test_top5_external_repair_v1 backend.research.rebuild.test_top5_break_validation_v1 backend.research.architecture_factory.test_a1_manual_research_budget_v1 backend.research.rebuild.test_top5_state_repair_v1 backend.research.rebuild.test_top5_no_credit_exit_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reproduce fixed entries and full lifecycle from DEV only
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/top5-exit-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-exit-input
+          python -m backend.research.rebuild.top5_no_credit_exit_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
+          python -m backend.research.rebuild.top5_external_seal_v1
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: top5-no-credit-exit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/TOP5_EXIT_20260906_V1
+          retention-days: 90

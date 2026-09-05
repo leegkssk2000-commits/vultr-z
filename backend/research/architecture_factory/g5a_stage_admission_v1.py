@@ -7,7 +7,7 @@ import math
 import subprocess
 from pathlib import Path
 
-from backend.research.architecture_factory.g5a_source_admission_v1 import ROOT, AUTH, read, seal, file_sha, STATE_PATH
+from backend.research.architecture_factory.g5a_source_admission_v1 import ROOT, AUTH, read, seal, file_sha, STATE_PATH, require_development
 from backend.research.architecture_factory import g5a_development_data_v1 as data
 from backend.research.alpha_proof.a1_alpha_proof_gate_v1 import sha
 from backend.research.rebuild import g5_clean_runner_v1 as runner
@@ -79,18 +79,6 @@ def development_binding(dataset_dir, root=ROOT):
                  "funding_settlements_reserved_for_frozen_hold": settlements,
                  "source_files_sha256": {p: file_sha(root / p) for p in paths}, "formal_production_credit": 0, **AUTH})
 
-
-def require_development(receipt, root=ROOT):
-    dev = receipt.get("development") or {}
-    if dev.get("receipt_sha256") != sha({k:v for k,v in dev.items() if k != "receipt_sha256"}):
-        raise RuntimeError("DEVELOPMENT_BINDING_HASH")
-    if dev.get("G5A_DEVELOPMENT_READY") is not True or not dev.get("dataset_sha256"):
-        raise RuntimeError("HOLD_DEVELOPMENT_DATA_AUTHORITY")
-    if dev.get("development_cost_model_bound") is not True or not dev.get("cost_by_symbol"):
-        raise RuntimeError("HOLD_COST_AUTHORITY")
-    if any(file_sha(root / p) != h for p,h in dev["source_files_sha256"].items()):
-        raise RuntimeError("DEVELOPMENT_AUTHORITY_PARITY")
-    return dev
 
 
 def derive(dataset_dir, data_ref, *, as_of_ms, root=ROOT):

@@ -33,6 +33,19 @@ def seal(value):
     return {**value, "receipt_sha256": alpha.sha(value)}
 
 
+def require_development(receipt, root=ROOT):
+    dev = receipt.get("development") or {}
+    if dev.get("receipt_sha256") != alpha.sha({k:v for k,v in dev.items() if k != "receipt_sha256"}):
+        raise RuntimeError("DEVELOPMENT_BINDING_HASH")
+    if dev.get("G5A_DEVELOPMENT_READY") is not True or not dev.get("dataset_sha256"):
+        raise RuntimeError("HOLD_DEVELOPMENT_DATA_AUTHORITY")
+    if dev.get("development_cost_model_bound") is not True or not dev.get("cost_by_symbol"):
+        raise RuntimeError("HOLD_COST_AUTHORITY")
+    if any(file_sha(root / p) != h for p,h in dev["source_files_sha256"].items()):
+        raise RuntimeError("DEVELOPMENT_AUTHORITY_PARITY")
+    return dev
+
+
 def git_data(ref, path, root=ROOT):
     return subprocess.check_output(["git", "show", f"{ref}:{path}"], cwd=root)
 
@@ -130,7 +143,6 @@ def inventory(*, native_ref, as_of_ms, root=ROOT):
     stage_path = "backend/research/architecture_factory/g5a_stage_admission_latest_v1.json"
     development = None
     if (root / stage_path).exists():
-        from backend.research.architecture_factory.g5a_stage_admission_v1 import require_development
         stage = read(stage_path, root)
         if stage.get("receipt_sha256") != alpha.sha({k:v for k,v in stage.items() if k != "receipt_sha256"}):
             raise RuntimeError("STAGE_ADMISSION_RECEIPT_DRIFT")
@@ -157,7 +169,6 @@ def generation_sources(registry, *, now_ms, root=ROOT, stage="G5B_FRESH"):
     if registry.get("receipt_sha256") != alpha.sha({k: v for k, v in registry.items() if k != "receipt_sha256"}):
         raise RuntimeError("SOURCE_CAPABILITY_RECEIPT_DRIFT")
     if stage == "G5A_DEVELOPMENT":
-        from backend.research.architecture_factory.g5a_stage_admission_v1 import require_development
         dev = require_development({"development": registry.get("development_binding")}, root)
         return dev["allowed_sources"]
     if stage != "G5B_FRESH":

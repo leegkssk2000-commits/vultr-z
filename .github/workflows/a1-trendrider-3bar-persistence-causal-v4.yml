@@ -1,0 +1,84 @@
+name: A1 TrendRider 3Bar Persistence Causal V4
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_trendrider_3bar_persistence_causal_v4.py'
+      - '.github/workflows/a1-trendrider-3bar-persistence-causal-v4.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+
+concurrency:
+  group: a1-trendrider-3bar-causal-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile fixed 3bar causal evaluator
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/a1_trendrider_3bar_persistence_causal_v4.py
+      - name: Download immutable broad30 authority
+        run: |
+          set -euo pipefail
+          mkdir -p out/trend70
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/trend70.zip
+          unzip -q out/trend70.zip -d out/trend70
+          test -f out/trend70/a1_exact25_drain_6_receipt.json
+      - name: Test one preregistered 3bar persistence mechanism
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.a1_trendrider_3bar_persistence_causal_v4 \
+            --broad-source out/trend70/a1_exact25_drain_6_receipt.json \
+            --out out/a1_trendrider_3bar_persistence_causal_v4.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_trendrider_3bar_persistence_causal_v4.json'))
+          assert r['predicate']['id']=='PREENTRY_3BAR_DIRECTIONAL_PERSISTENCE_TRUE'
+          assert r['predicate']['numeric_threshold_sweep'] is False
+          assert r['predicate']['alternative_rule_sweep'] is False
+          assert r['policy']['historical_outcome_used_to_choose_predicate'] is False
+          assert r['primary']['parent_T']==16
+          assert r['broad30']['parent_T']==30
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          print(json.dumps({
+            'state':r['state'],
+            'primary_hist_T':r['primary']['historical_selected_T'],
+            'primary_hist_pass':r['primary']['historical_strict_pass'],
+            'primary_holdout_T':r['primary']['holdout_selected_T'],
+            'primary_holdout_pass':r['primary']['holdout_extended_strict_pass'],
+            'primary_preregisterable':r['primary']['causal_gate_preregisterable'],
+            'broad_hist_T':r['broad30']['historical_selected_T'],
+            'broad_hist_metrics':r['broad30']['historical_selected_metrics'],
+            'broad_hist_payoff':r['broad30']['historical_selected_payoff'],
+            'broad_hist_pass':r['broad30']['historical_profile_pass'],
+            'broad_holdout_T':r['broad30']['holdout_selected_T'],
+            'broad_holdout_pass':r['broad30']['holdout_add_only_strict_pass'],
+            'broad_preregisterable':r['broad30']['causal_gate_preregisterable'],
+            'next':r['next'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-trendrider-3bar-persistence-causal-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_trendrider_3bar_persistence_causal_v4.json
+          if-no-files-found: error
+          retention-days: 90

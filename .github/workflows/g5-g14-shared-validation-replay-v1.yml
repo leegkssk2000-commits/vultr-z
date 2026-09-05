@@ -6,6 +6,7 @@ on:
     branches:
       - master
     paths:
+      - 'backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
       - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
@@ -19,9 +20,11 @@ on:
   push:
     branches:
       - master
+      - research/g5-g14-roadmap-v2-boundary-seal
       - research/g5-g14-roadmap-hardening-v1
       - g5-g14-shared-validation-lock
     paths:
+      - 'backend/research/contracts/g5a_g5b_lane_local_profit_roadmap_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_shared_validation_manifest_v1.json'
       - 'backend/research/rebuild/g5_g14_generation_controller_v1.py'
@@ -34,7 +37,11 @@ on:
       - '.github/workflows/g5-g14-shared-validation-replay-v1.yml'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: g5-g14-boundary-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   governance-and-replay:
@@ -48,6 +55,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - uses: actions/setup-python@v5
         with:
@@ -122,3 +130,26 @@ jobs:
           git diff --exit-code -- backend/research/rebuild/g5_clean_runner_telemetry_v1.json
           git diff --exit-code -- backend/research/rebuild/g5_data_stale_evidence_v1.json
           git diff --exit-code -- backend/research/rebuild/g5_clean_runner_cutover_receipt_v1.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5-g14-boundary-${{ github.run_id }}
+          path: |
+            backend/research/rebuild/g5_g14_governance_validation_receipt_v1.json
+            backend/research/rebuild/g5_g14_generation_controller_receipt_v1.json
+      - name: Persist current governance receipt
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          git config user.name 'g5-g14-boundary-seal'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git restore -- backend/research/rebuild/g5_g14_governance_validation_receipt_v1.json 2>/dev/null || true
+            git pull --rebase origin master
+            python backend/research/rebuild/g5_g14_governance_validator_v1.py --write
+            git add -f backend/research/rebuild/g5_g14_governance_validation_receipt_v1.json
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5-G14: persist validated boundary contract receipt [skip ci]'
+            git push origin HEAD:master && exit 0
+          done
+          exit 1

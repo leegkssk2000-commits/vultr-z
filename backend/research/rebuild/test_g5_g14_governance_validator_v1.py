@@ -23,7 +23,7 @@ def valid_g6_claim():
 
 
 def valid_g9_bundle():
-    return {"components": [{"id": "a", "standalone_terminal_pass": True}, {"id": "b", "standalone_terminal_pass": True}], "fresh_interaction_boundary": True, "component_formal_credit_inherited": 0}
+    return {"components": [{"id": "a", "component_type":"ALPHA_PRODUCER", "terminal_receipt_sha":"a-proof", "standalone_terminal_pass": True}, {"id": "b", "component_type":"ALPHA_PRODUCER", "terminal_receipt_sha":"b-proof", "standalone_terminal_pass": True}], "fresh_interaction_boundary": True, "component_formal_credit_inherited": 0}
 
 
 def test_01_contract_passes():
@@ -79,7 +79,7 @@ def test_13_transition_cannot_skip_generation():
 
 
 def test_14_valid_transition_passes():
-    assert mod.validate_transition(5, 6, True) == []
+    assert "EXPLICIT_TERMINAL_RECEIPT_MISSING" in mod.validate_transition(5, 6, True)
 
 
 def test_15_g5_rr_zero_credit_is_valid():
@@ -209,6 +209,47 @@ def test_41_governance_derive_passes_repository_files():
     assert receipt["g14_auto_live_forbidden"] is True
     assert receipt["order_authority"] == "BLOCKED"
     assert receipt["live_authority"] == "BLOCKED"
+
+
+
+def test_42_exit_and_position_ownership_disjoint():
+    c=load_contract()["generation_contract"]
+    assert not set(c["G6"]["owned_operations"]) & set(c["G7"]["owned_operations"])
+    assert {"PARTIAL_EXIT","TRAILING","MFE_RUNNER"} <= set(c["G6"]["owned_operations"])
+
+
+def test_43_risk_advisor_can_pass_without_standalone_alpha():
+    b=valid_g9_bundle(); b.update(baseline_sha="baseline",evaluation_data_sha="data")
+    b["components"][1]={"id":"risk", "component_type":"RISK_OR_ADVISOR", "incremental_receipt":{"receipt_sha":"risk-proof","baseline_sha":"baseline","evaluation_data_sha":"data","net_expectancy_not_worse":True,"dd_improved":True}}
+    assert mod.validate_g9_bundle(b)==[]
+    b["components"][1]["incremental_receipt"]["net_expectancy_not_worse"]=False
+    assert "G9_RISK_INCREMENTAL_PASS_REQUIRED" in mod.validate_g9_bundle(b)
+
+
+def test_44_modifier_needs_same_baseline_incremental_ab():
+    b=valid_g9_bundle(); b.update(baseline_sha="baseline",evaluation_data_sha="data")
+    b["components"][1]={"id":"exit", "component_type":"TRADE_MODIFIER", "incremental_receipt":{"receipt_sha":"ab-proof","baseline_sha":"baseline","evaluation_data_sha":"data","incremental_ab_pass":True}}
+    assert mod.validate_g9_bundle(b)==[]
+    b["components"][1]["incremental_receipt"]["baseline_sha"]="different"
+    assert "G9_INCREMENTAL_BASELINE_OR_DATA_PARITY" in mod.validate_g9_bundle(b)
+
+
+def test_45_g9_requires_global_join():
+    assert "GLOBAL_BUNDLE_INTEGRATION_REQUIRED" in mod.validate_transition(8,9,True)
+
+
+def test_46_lane_stage_transition_requires_matching_explicit_receipt():
+    from backend.research.rebuild.test_g5_g14_generation_controller_v1 import synthetic_inputs
+    c,m,r,h,t,l=synthetic_inputs()
+    kwargs=dict(terminal=t,lane_identity=m["lane_identity"],gate=c["g5_terminal_gate"],reviewed_blob_sha="terminal",observed_blob_sha="terminal")
+    assert mod.validate_transition(5,6,True,**kwargs)==[]
+    assert "TERMINAL_STAGE_MISMATCH" in mod.validate_transition(6,7,True,**kwargs)
+    t["stage"]="G6"
+    kwargs["gate"]=dict(kwargs["gate"],stage="G6")
+    assert mod.validate_transition(6,7,True,**kwargs)==[]
+    t["stage"]="G7"
+    kwargs["gate"]=dict(kwargs["gate"],stage="G7")
+    assert mod.validate_transition(7,8,True,**kwargs)==[]
 
 
 def main():

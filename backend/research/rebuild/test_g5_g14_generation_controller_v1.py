@@ -18,6 +18,7 @@ def synthetic_inputs():
     manifest = {
         "schema_version": "zel.g5_g14.shared_validation_manifest.v3",
         "source_master_commit": "synthetic",
+        "lane_identity": {"lane_id":"A", "candidate_id":"test-candidate", "boundary_id":"test-boundary"},
         "authority_files": {
             "shadow": {"pin_policy": "RUNTIME_MUTABLE_SCHEMA_AND_INTERNAL_INTEGRITY", "schema_version": "zel.g5.clean_runner.shadow.v1"},
             "telemetry": {"pin_policy": "RUNTIME_MUTABLE_SCHEMA_AND_INTERNAL_INTEGRITY", "schema_version": "zel.g5.clean_runner.telemetry.v1"},
@@ -46,7 +47,11 @@ def synthetic_inputs():
             "W3": {"net_r": 1.0, "pf": 1.2, "expectancy": 0.1, "payoff": 1.1, "retention_pct": 60},
         },
     }
+    terminal.update(manifest["lane_identity"])
+    terminal["stage"] = "G5B"
+    terminal["independence_audit"] = {"N_raw":1,"N_effective":1,"unique_signal_days":1,"unique_symbols":1,"regime_count":1,"largest_same_window_cluster":1,"validated":True,"source_sha256":"synthetic","cluster_method":"same_bar_and_shock"}
     ledger = [{"schema_version": "zel.g5.economic_evidence_row.v1", "production_grade": True, "economic_origin": "GENUINE_EXECUTION"}]
+    ledger[0].update(manifest["lane_identity"])
     return contract, manifest, records, hashes, terminal, ledger
 
 
@@ -58,7 +63,7 @@ def test_contract_is_fail_closed_and_maps_g6():
     contract = load_contract()
     assert contract["cutover"]["automatic"] is False
     assert contract["shared_invariants"]["fresh_credit_fail_closed"] is True
-    assert contract["generation_unlock_rule"] == "G(n+1)_ALLOWED_IFF_G(n)_TERMINAL_PASS"
+    assert contract["generation_unlock_rule"] == mod.UNLOCK_RULE
     assert contract["stage_authority"]["G6"] == "TRADE_METHOD_STANDALONE"
 
 
@@ -143,6 +148,44 @@ def test_current_repository_snapshot_never_hard_fails_from_runtime_blob_churn():
     assert receipt["g5_rr_formal_credit_allowed"] is False
     if receipt["g5_terminal_pass"] is False:
         assert receipt["g6_allowed"] is False
+
+
+
+def test_lane_a_pass_does_not_wait_for_lane_b():
+    from copy import deepcopy
+    c,m,r,h,t,l=synthetic_inputs()
+    a=dict(contract=c,manifest=m,records=r,observed_hashes=h,terminal=t,ledger_rows=l,ledger_parse_errors=0,terminal_blob_sha="terminal")
+    b=deepcopy(a); b["manifest"]["lane_identity"]["lane_id"]="B"; b["ledger_rows"]=[]; b["terminal"]=None
+    result=mod.evaluate_lanes({"A":a,"B":b})
+    assert result["A"]["g6_allowed"] is True
+    assert result["B"]["g6_allowed"] is False
+    assert result["A"]["order_authority"]==result["B"]["order_authority"]=="BLOCKED"
+
+
+def test_g5a_t6_and_t12_never_substitute_for_terminal():
+    for state in ("G5A_DEVELOPMENT_PASS", "EARLY_KILL_OR_CONTINUE", "PROVISIONAL_QUALIFICATION"):
+        c,m,r,h,t,l=synthetic_inputs(); t["state"]=state
+        assert run_eval(c,m,r,h,t,l)["g6_allowed"] is False
+    c,m,r,h,t,l=synthetic_inputs()
+    assert run_eval(c,m,r,h,None,l)["g6_allowed"] is False
+
+
+def test_another_lane_terminal_cannot_unlock_current_lane():
+    c,m,r,h,t,l=synthetic_inputs(); t["lane_id"]="B"
+    assert run_eval(c,m,r,h,t,l)["g6_allowed"] is False
+
+
+def test_missing_independence_or_inflated_correlated_t_blocks_terminal():
+    c,m,r,h,t,l=synthetic_inputs(); del t["independence_audit"]
+    assert run_eval(c,m,r,h,t,l)["g6_allowed"] is False
+    c,m,r,h,t,l=synthetic_inputs()
+    t["independence_audit"].update(N_raw=6,N_effective=6,largest_same_window_cluster=6)
+    assert run_eval(c,m,r,h,t,l)["g6_allowed"] is False
+
+
+def test_unscoped_legacy_terminal_no_longer_unlocks_global_g6():
+    c,m,r,h,t,l=synthetic_inputs(); del m["lane_identity"]
+    assert run_eval(c,m,r,h,t,l)["g6_allowed"] is False
 
 
 def main():

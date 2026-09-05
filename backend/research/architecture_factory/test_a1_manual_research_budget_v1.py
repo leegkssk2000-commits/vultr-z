@@ -61,6 +61,20 @@ class Requests(unittest.TestCase):
             self.assertFalse(first['sealed_holdout_outcomes_exposed'])
             self.assertFalse(first['selection_authority'])
 
+    def test_push_cannot_run_the_two_paid_observer_jobs(self):
+        root=Path(__file__).resolve().parents[3]
+        for path,job in [('zel-production-external-research-observer-v1.yml','run-on-vps'),('a1-verified-video-gemini-bridge-v1.yml','bridge')]:
+            text=(root/'.github/workflows'/path).read_text()
+            guard=text.split('  '+job+':\n',1)[1].splitlines()[0]
+            self.assertIn("github.event_name == 'workflow_dispatch'",guard)
+            self.assertIn("github.event_name == 'schedule'",guard)
+            self.assertNotIn("'push'",guard)
+        manual=(root/'.github/workflows/a1-youtube-diversity-scout-v1.yml').read_text()
+        self.assertIn('--context out/blocker_context.json',manual)
+        self.assertIn('--existing "$EXISTING_RECEIPT"',manual)
+        self.assertNotIn('\n  schedule:',manual)
+        self.assertNotIn('\n  push:',manual)
+
     def test_prompt_cap_prevents_transport(self):
         b=ManualRequestBudget();b.available=['models/test']
         with patch('urllib.request.urlopen') as call:

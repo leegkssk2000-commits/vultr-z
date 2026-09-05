@@ -57,20 +57,24 @@ class ManualRequestBudget:
                 raise RuntimeError('ONE_ACTUAL_VIDEO_INPUT_REQUIRED')
             videos[0]['videoMetadata'] = {'startOffset': '0s',
                                          'endOffset': f'{self.max_video_seconds}s', 'fps': 0.2}
+        encoded_body = json.dumps(body).encode()
         record = {'kind': kind, 'status': 'ATTEMPTED', 'paid_generation': True,
                   'model': req.full_url.split('/v1beta/')[1].split(':')[0],
                   'at_utc': datetime.now(timezone.utc).isoformat(),
                   'request_sha256': sha(body), 'request_body':body, 'prompt_sha256': sha(prompt),
+                  'raw_request_sha256': hashlib.sha256(encoded_body).hexdigest(),
                   'prompt_bytes': len(prompt.encode()),
                   'max_output_tokens': body['generationConfig']['maxOutputTokens'],
                   'video_window_seconds': self.max_video_seconds if kind == 'video' else None,
                   'video_input': kind == 'video', 'usage': None, 'cost_usd': None}
         self.requests.append(record)  # failed/partial attempts consume budget too
-        bounded = urllib.request.Request(req.full_url, data=json.dumps(body).encode(),
+        bounded = urllib.request.Request(req.full_url, data=encoded_body,
                                          headers=dict(req.header_items()), method='POST')
         try:
             with urllib.request.urlopen(bounded, timeout=timeout) as response:
-                payload = json.load(response)
+                raw_response = response.read()
+                record['raw_response_sha256'] = hashlib.sha256(raw_response).hexdigest()
+                payload = json.loads(raw_response)
             record.update(status='SUCCESS', response_sha256=sha(payload),
                           usage=payload.get('usageMetadata'), model_version=payload.get('modelVersion'), response_payload=payload)
             return payload

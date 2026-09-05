@@ -78,6 +78,15 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
         errors.append("CURRENT_TOP5_OBJECTIVE")
     for key in ("risk", "stop", "cost", "integrity", "explicit_live_approval"):
         if key not in current.get("never_exempt", []): errors.append("SAFETY_CHECK_EXEMPTED:"+key)
+    dev_exit = current.get("development_exit_experiment", {})
+    if dev_exit:
+        if dev_exit.get("scope") != "G5_DEV_NO_CREDIT" or dev_exit.get("maximum_exit_hypotheses_per_lane") != 1:
+            errors.append("DEV_EXIT_SCOPE_OR_BUDGET")
+        for key in ("formal_credit", "G6_authorized", "operating_replacement", "validation_access", "OOS_access"):
+            expected = 0 if key == "formal_credit" else False
+            if dev_exit.get(key) != expected: errors.append("DEV_EXIT_AUTHORITY:"+key)
+        for key in ("entries_fixed", "initial_risk_fixed", "protective_stop_fixed", "all_parent_wins_and_losses", "next_open_fill", "full_lifecycle_required"):
+            if dev_exit.get(key) is not True: errors.append("DEV_EXIT_SAFETY:"+key)
 
     generations = contract.get("generation_contract", {})
     if list(generations.keys()) != list(EXPECTED_STAGES.keys()):

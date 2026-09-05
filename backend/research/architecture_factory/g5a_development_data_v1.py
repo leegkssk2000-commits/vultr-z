@@ -101,9 +101,13 @@ def acquire(root, output):
     authority = read(c["cost_authority_path"], root)
     for symbol in symbols:
         rows, pages, termination = collect_symbol(adapter, symbol, c["historical_cutoff_close_ms"], c["max_capture_pages_per_symbol"])
-        metadata[symbol] = validate_history(rows, c["historical_cutoff_close_ms"])
         path = output / "ohlcv" / (symbol + ".json")
         write_once(path, rows); dataset_files[str(path.relative_to(output))] = file_sha(path)
+        gaps = [{"index": i, "previous_open_ms": a["bar_open_ts"], "next_open_ms": b["bar_open_ts"], "gap_ms": b["bar_open_ts"] - a["bar_open_ts"]} for i, (a, b) in enumerate(zip(rows, rows[1:])) if b["bar_open_ts"] - a["bar_open_ts"] != runner.INTERVAL_MS]
+        if gaps:
+            write_once(output / "history_integrity_failure.json", {"symbol": symbol, "bars": len(rows), "gaps": gaps, "pages": pages})
+            print(json.dumps({"HISTORICAL_GAPS": symbol, "bars": len(rows), "gap_count": len(gaps), "first_gaps": gaps[:8]}), flush=True)
+        metadata[symbol] = validate_history(rows, c["historical_cutoff_close_ms"])
         sources[symbol] = {"pages": pages, "termination": termination, "source_sha256": sha(pages)}
         requests = []; original = costs.request_json
         def capture(url, params):

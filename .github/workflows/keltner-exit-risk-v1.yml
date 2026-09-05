@@ -1,0 +1,82 @@
+name: Keltner Exit Risk Attribution V1
+on:
+  push:
+    branches: [master, research/keltner-exit-risk-attribution-v1]
+    paths:
+      - 'backend/research/rebuild/*keltner_exit_risk*.py'
+      - 'backend/research/contracts/keltner_exit_risk_v1.json'
+      - 'research/development_evidence/KELTNER_EXIT_RISK_20260906_V1/**'
+      - '.github/workflows/keltner-exit-risk-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*keltner_exit_risk*.py'
+      - 'backend/research/contracts/keltner_exit_risk_v1.json'
+      - 'research/development_evidence/KELTNER_EXIT_RISK_20260906_V1/**'
+      - '.github/workflows/keltner-exit-risk-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: keltner-exit-risk-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Causal observation, exact accounting and unchanged formal gates
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest backend.research.rebuild.test_keltner_exit_risk_v1 backend.research.rebuild.test_top5_no_credit_exit_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reproduce existing-ledger analysis with economic replay calls forbidden
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/keltner_exit_risk_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/keltner-risk-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/keltner-risk-input
+          python - <<'PY'
+          from contextlib import ExitStack
+          from unittest.mock import patch
+          from pathlib import Path
+          from backend.research.rebuild import keltner_exit_risk_v1 as k
+          original = k.old.common.evaluate_development_events
+          def data_check_only(rows, signals, **kwargs):
+              if signals:
+                  raise AssertionError('NEW_ECONOMIC_REPLAY_FORBIDDEN')
+              return original(rows, signals, **kwargs)
+          with ExitStack() as stack:
+              for owner, names in [(k.prior, ['run', 'overlay', 'candidate_pool', 'lifecycle']), (k.old, ['one_hour', 'four_hour'])]:
+                  for name in names:
+                      stack.enter_context(patch.object(owner, name, side_effect=AssertionError('OLD_OR_NEW_REPLAY_FORBIDDEN:' + name)))
+              stack.enter_context(patch.object(k.old.common, 'evaluate_development_events', data_check_only))
+              r = k.run(Path('/tmp/keltner-risk-input/research/data/g5a_stage_v1'), verify_only=True)
+              print('PASS_EXISTING_LEDGER_ANALYSIS', r['receipt_sha256'], r['decision'])
+          PY
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keltner-exit-risk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/KELTNER_EXIT_RISK_20260906_V1
+          retention-days: 90

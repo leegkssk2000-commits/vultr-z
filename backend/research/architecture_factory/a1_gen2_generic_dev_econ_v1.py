@@ -243,6 +243,115 @@ def _dd(xs:list[float])->float:
     return mx
 
 
+def evaluate_development_events(
+    rows, signals, *, split_start_ms, split_end_ms, interval_ms,
+    hold_bars, entry_delay_bars=0, side="long",
+):
+    """Model fixed-horizon events from an already isolated development partition.
+
+    A signal is observable at its bar close. Entry is the following bar open,
+    plus an explicitly supplied whole-bar delay; exit is the close of the last
+    of ``hold_bars`` held bars. These prices are modelled fills, never evidence
+    of exchange executions. Exit must precede the partition's exclusive end.
+
+    The shared evaluator's no-overlap convention is retained: a signal on or
+    before an accepted trade's exit bar is excluded, including delayed-entry
+    waiting bars. Every supplied input is validated before calculating any
+    outcome. This helper performs no acquisition, costs, gate decisions,
+    persistence, or authority changes; existing evaluator entrypoints retain
+    their behavior.
+    """
+    integer_inputs = {
+        "split_start_ms": split_start_ms, "split_end_ms": split_end_ms,
+        "interval_ms": interval_ms, "hold_bars": hold_bars,
+        "entry_delay_bars": entry_delay_bars,
+    }
+    if any(type(value) is not int for value in integer_inputs.values()):
+        raise RuntimeError("DEVELOPMENT_INTEGER_INPUT_REQUIRED")
+    if interval_ms != 14_400_000:
+        raise RuntimeError("DEVELOPMENT_FOUR_HOUR_INTERVAL_REQUIRED")
+    if split_start_ms < 0 or split_end_ms <= split_start_ms:
+        raise RuntimeError("DEVELOPMENT_SPLIT_BOUNDS_INVALID")
+    if split_start_ms % interval_ms or split_end_ms % interval_ms:
+        raise RuntimeError("DEVELOPMENT_SPLIT_CLOCK_ALIGNMENT")
+    if hold_bars <= 0 or entry_delay_bars < 0:
+        raise RuntimeError("DEVELOPMENT_HOLD_OR_DELAY_INVALID")
+    if side not in {"long", "short"}:
+        raise RuntimeError("DEVELOPMENT_SIDE_UNSUPPORTED")
+    if not isinstance(rows, (list, tuple)) or not rows:
+        raise RuntimeError("DEVELOPMENT_ROWS_REQUIRED")
+    if not isinstance(signals, (list, tuple)):
+        raise RuntimeError("DEVELOPMENT_SIGNAL_SEQUENCE_REQUIRED")
+
+    previous_open = None
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise RuntimeError("DEVELOPMENT_BAR_OBJECT_REQUIRED")
+        opened, closed = row.get("bar_open_ts"), row.get("bar_close_ts")
+        if type(opened) is not int or type(closed) is not int:
+            raise RuntimeError("DEVELOPMENT_BAR_INTEGER_CLOCK_REQUIRED")
+        if opened % interval_ms or closed != opened + interval_ms:
+            raise RuntimeError("DEVELOPMENT_BAR_CLOCK_INVALID")
+        if opened < split_start_ms or closed > split_end_ms:
+            raise RuntimeError("DEVELOPMENT_PARTITION_ROW_FORBIDDEN")
+        if previous_open is not None and opened != previous_open + interval_ms:
+            raise RuntimeError("DEVELOPMENT_GAP_DUPLICATE_OR_ORDER")
+        previous_open = opened
+        for name in ("open", "high", "low", "close", "volume"):
+            value = row.get(name)
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value)):
+                raise RuntimeError("DEVELOPMENT_NONFINITE_BAR_VALUE:" + name)
+            if value < 0 or (name != "volume" and value == 0):
+                raise RuntimeError("DEVELOPMENT_BAR_VALUE_RANGE:" + name)
+        if not (row["low"] <= min(row["open"], row["close"])
+                <= max(row["open"], row["close"]) <= row["high"]):
+            raise RuntimeError("DEVELOPMENT_OHLC_BOUNDS_INVALID")
+
+    previous_signal = -1
+    for index in signals:
+        if type(index) is not int or not 0 <= index < len(rows):
+            raise RuntimeError("DEVELOPMENT_SIGNAL_INDEX_INVALID")
+        if index <= previous_signal:
+            raise RuntimeError("DEVELOPMENT_SIGNAL_DUPLICATE_OR_ORDER")
+        previous_signal = index
+
+    trades, exclusions = [], []
+    last_exit_index = -1
+    sign = 1.0 if side == "long" else -1.0
+    for index in signals:
+        identity = {"signal_index": index, "signal_ts": rows[index]["bar_close_ts"]}
+        if index <= last_exit_index:
+            exclusions.append({**identity, "reason": "SIGNAL_DURING_OPEN"})
+            continue
+        entry_index = index + 1 + entry_delay_bars
+        exit_index = entry_index + hold_bars - 1
+        if (exit_index >= len(rows)
+                or rows[exit_index]["bar_close_ts"] >= split_end_ms):
+            exclusions.append({**identity, "reason": "SPLIT_END_INCOMPLETE_HOLD"})
+            continue
+        entry = float(rows[entry_index]["open"])
+        exit_price = float(rows[exit_index]["close"])
+        path = rows[entry_index:exit_index + 1]
+        high = max(float(row["high"]) for row in path)
+        low = min(float(row["low"]) for row in path)
+        favorable = (high / entry - 1.0) if side == "long" else (1.0 - low / entry)
+        adverse = (low / entry - 1.0) if side == "long" else (1.0 - high / entry)
+        entry_ts = rows[entry_index]["bar_open_ts"]
+        exit_ts = rows[exit_index]["bar_close_ts"]
+        trades.append({
+            **identity, "entry_index": entry_index, "exit_index": exit_index,
+            "entry_ts": entry_ts, "exit_ts": exit_ts, "side": side,
+            "entry_price": entry, "exit_price": exit_price,
+            "gross_bps": sign * (exit_price / entry - 1.0) * 10_000.0,
+            "mfe_bps": max(0.0, favorable * 10_000.0),
+            "mae_bps": min(0.0, adverse * 10_000.0),
+            "hold_ms": exit_ts - entry_ts,
+        })
+        last_exit_index = exit_index
+    return {"trades": trades, "exclusions": exclusions}
+
+
 def evaluate_candidate(candidate:Mapping[str,Any])->dict[str,Any]:
     cid=str(candidate.get("candidate_id") or ""); req=set(candidate.get("required_sources") or [])
     if not req or not req.issubset(PRICE_SOURCES):return {"candidate_id":cid,"state":"SKIP_HISTORY_SOURCE_NOT_READY","required_sources":sorted(req),"economic_pass":False}

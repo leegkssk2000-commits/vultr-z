@@ -1,0 +1,121 @@
+name: A1 Finalist Liquid6 Fresh No-Idle V1
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_latest.json'
+      - '.github/workflows/a1-finalist-liquid6-fresh-noidle-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py'
+      - 'backend/research/rebuild/a1_finalist_liquid6_fresh_latest.json'
+      - '.github/workflows/a1-finalist-liquid6-fresh-noidle-v1.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  finalist-liquid6-fresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_v1.py \
+            backend/research/rebuild/a1_finalist_liquid6_fresh_noidle_dd_v2.py \
+            backend/research/rebuild/a1_multisymbol_realized_dd_v1.py
+          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_v1 --self-test
+          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_dd_v2 --self-test
+          python -m backend.research.rebuild.a1_multisymbol_realized_dd_v1 --self-test
+      - name: Run retrospective qualifier and frozen Liquid6 fresh lanes
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_finalist_liquid6_fresh_noidle_dd_v2 \
+            --out out/a1_finalist_liquid6_fresh_latest.json
+          python - <<'PY'
+          import json
+          r=json.load(open('out/a1_finalist_liquid6_fresh_latest.json'))
+          assert r['state']=='PASS_LIQUID6_FRESH_NO_IDLE_ROUTER_ACTIVE',r
+          assert r['fixed_liquid6']==['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT'],r
+          assert r['h5_thresholds_reused_not_invented'] is True and r['thresholds_changed'] is False,r
+          assert r['strategy_parameters_changed'] is False,r
+          assert r['canonical_ledger_mutation'] is False and r['canonical_inventory_mutation'] is False,r
+          assert r['selection_authority'] is False and r['promotion_authority'] is False,r
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED',r
+          assert r['drawdown_integrity']['state']=='PASS_MULTISYMBOL_REALIZED_DD_AUTHORITY_BOUND',r
+          assert r['drawdown_integrity']['ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',r
+          assert r['drawdown_integrity']['legacy_symbol_append_dd_used'] is False,r
+          for sid,x in r['targets'].items():
+              assert x['frozen_liquid6_fresh_boundary_utc']=='2026-08-23T16:00:00Z',(sid,x)
+              assert x['boundary_reused_from_previous_receipt'] is True,(sid,x)
+              assert x['retrospective_liquid6_qualifier']['economics_positive'] is True,(sid,x)
+              assert x['retrospective_liquid6_qualifier']['integrity_ok'] is True,(sid,x)
+              assert x['retrospective_liquid6_qualifier']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',(sid,x)
+              assert x['retrospective_liquid6_qualifier']['legacy_symbol_append_dd_used'] is False,(sid,x)
+              assert x['fresh']['integrity_ok'] is True,(sid,x)
+              assert x['fresh']['drawdown_ordering_authority']=='EXIT_TIMESTAMP_BUCKET_ASC',(sid,x)
+              assert x['fresh']['legacy_symbol_append_dd_used'] is False,(sid,x)
+              assert x['canonical_parent_collection_should_continue'] is True,(sid,x)
+              assert x['full_h5_not_claimed'] is True,(sid,x)
+              assert x['strategy_parameters_changed'] is False and x['thresholds_changed'] is False,(sid,x)
+          print(json.dumps({sid:{
+              'state':x['state'],
+              'boundary':x['frozen_liquid6_fresh_boundary_utc'],
+              'retro_trades':x['retrospective_liquid6_qualifier']['completed_trades'],
+              'retro_wr':x['retrospective_liquid6_qualifier']['win_rate'],
+              'retro_pnl_bps':x['retrospective_liquid6_qualifier']['net_pnl_bps'],
+              'retro_realized_dd_bps':x['retrospective_liquid6_qualifier']['realized_exit_bucket_max_drawdown_bps'],
+              'fresh_trades':x['fresh']['completed_trades'],
+              'fresh_realized_dd_bps':x['fresh']['realized_exit_bucket_max_drawdown_bps'],
+              'fresh_streak':x['fresh']['max_consecutive_losses'],
+              'h5_subset':x['h5_symbol_top10_subset_precheck']['state'],
+              'max_symbol_profit_share':x['h5_symbol_top10_subset_precheck']['maximum_single_symbol_profit_share'],
+              'top10_profit_share':x['h5_symbol_top10_subset_precheck']['top10_trade_profit_share'],
+              'stall':x['pace']['sample_stall_triggered'],
+          } for sid,x in r['targets'].items()},sort_keys=True))
+          PY
+      - name: Persist frozen boundaries and latest fresh receipt on master
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          target=backend/research/rebuild/a1_finalist_liquid6_fresh_latest.json
+          cp out/a1_finalist_liquid6_fresh_latest.json "$target"
+          git config user.name 'a1-finalist-liquid6-fresh-noidle-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$target"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'A1 finalists: persist Liquid6 fresh no-idle receipt [skip ci]'
+          for n in 1 2 3; do
+            git pull --rebase origin master && git push origin HEAD:master && exit 0
+            sleep 3
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a1-finalist-liquid6-fresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_finalist_liquid6_fresh_latest.json
+          if-no-files-found: warn
+          retention-days: 30

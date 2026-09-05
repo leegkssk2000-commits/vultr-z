@@ -415,8 +415,9 @@ def call_gemini_search(
     models: Sequence[str],
     prompt: str,
     max_output_tokens: int,
+    *, request_budget=None,
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
-    available = _list_models(api_key, models)
+    available = request_budget.models(api_key, models) if request_budget is not None else _list_models(api_key, models)
     if not available:
         raise RuntimeError("EXTERNAL_RESEARCH_NO_ELIGIBLE_GEMINI_MODEL")
     body = json.dumps(
@@ -439,8 +440,11 @@ def call_gemini_search(
                 headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=90) as response:
-                payload = json.load(response)
+            if request_budget is not None:
+                payload = request_budget.send(req, timeout=90, kind='search')
+            else:
+                with urllib.request.urlopen(req, timeout=90) as response:
+                    payload = json.load(response)
             return model, _parse_json(_parse_text(payload)), _grounding(payload)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
@@ -456,8 +460,9 @@ def call_gemini_video(
     prompt: str,
     youtube_url: str,
     max_output_tokens: int,
+    *, request_budget=None,
 ) -> tuple[str, dict[str, Any]]:
-    available = _list_models(api_key, models)
+    available = request_budget.models(api_key, models) if request_budget is not None else _list_models(api_key, models)
     if not available:
         raise RuntimeError("EXTERNAL_RESEARCH_NO_ELIGIBLE_GEMINI_MODEL")
     body = json.dumps(
@@ -488,8 +493,11 @@ def call_gemini_video(
                 headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=300) as response:
-                payload = json.load(response)
+            if request_budget is not None:
+                payload = request_budget.send(req, timeout=300, kind='video')
+            else:
+                with urllib.request.urlopen(req, timeout=300) as response:
+                    payload = json.load(response)
             return model, _parse_json(_parse_text(payload))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]

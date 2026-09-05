@@ -1,6 +1,13 @@
 name: A1 Research Pipeline Hardening V1
 
 on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/*a1_research_pipeline_hardening_v1.py'
+      - '.github/workflows/a1-a5-economic-improvement-v5.yml'
+      - '.github/workflows/a1-research-pipeline-hardening-v1.yml'
+      - 'backend/research/contracts/g5_entry_fusion_rescue_v1.json'
   push:
     branches: [master]
     paths:
@@ -27,7 +34,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify current manual bridge guards without research calls
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/a1_research_pipeline_hardening_v1.py
+          python -m unittest backend.research.architecture_factory.test_a1_research_pipeline_hardening_v1 -v
+          python -m backend.research.architecture_factory.a1_research_pipeline_hardening_v1 --self-test
+          python -m backend.research.architecture_factory.a1_research_pipeline_hardening_v1 --output /tmp/research-hardening-ci.json
+          python -m backend.research.rebuild.top5_external_seal_v1
+          npm run --prefix frontend/z-os-app-source validate
   audit:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:

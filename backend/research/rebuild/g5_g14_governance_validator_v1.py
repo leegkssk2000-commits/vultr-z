@@ -73,6 +73,11 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
         errors.append("GENERATION_SCOPE")
     if scope.get("reuse_required") is not True or scope.get("rebuild_per_generation_forbidden") is not True:
         errors.append("SHARED_VALIDATOR_REUSE")
+    current = contract.get("effective_development_objective", {})
+    if current.get("primary") != "EXISTING_TOP5_CUMULATIVE_IMPROVEMENT" or current.get("alpha_factory_required") is not False:
+        errors.append("CURRENT_TOP5_OBJECTIVE")
+    for key in ("risk", "stop", "cost", "integrity", "explicit_live_approval"):
+        if key not in current.get("never_exempt", []): errors.append("SAFETY_CHECK_EXEMPTED:"+key)
 
     generations = contract.get("generation_contract", {})
     if list(generations.keys()) != list(EXPECTED_STAGES.keys()):
@@ -236,6 +241,23 @@ def checkpoint_state(generation: int, closed_t: int, *, explicit_terminal_pass: 
     return "QUALIFICATION_12T_NOT_TERMINAL"
 
 
+def optional_stage_applicability(generation: int, evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Review requirements only: no terminal PASS, generation skip, or authority.
+
+    An absence claim alone is insufficient. Bind the inactive/no-coupling check
+    to reviewed code/config and an equal baseline-versus-disabled behaviour hash.
+    """
+    e = evidence or {}
+    hashes = (e.get('code_sha256'), e.get('config_sha256'), e.get('baseline_behaviour_sha256'), e.get('disabled_behaviour_sha256'))
+    valid_hashes = all(isinstance(h,str) and len(h)==64 and all(c in '0123456789abcdef' for c in h) for h in hashes)
+    excluded = (generation in (7,8,9) and e.get('enabled') is False and e.get('bindings') == []
+                and e.get('reviewed') is True and valid_hashes and hashes[2] == hashes[3]
+                and all(e.get('safety_checks',{}).get(k) is True for k in ('risk','stop','cost','integrity','explicit_live_approval')))
+    return {'state':'NOT_APPLICABLE_DISABLED_UNBOUND_PARITY' if excluded else 'REQUIRED_OR_EVIDENCE_MISSING',
+            'implementation_required':not excluded, 'formal_pass':False, 'generation_advance_authorized':False,
+            'execution_authority':'NONE', 'order_authority':'BLOCKED', 'live_trade_authority':'BLOCKED'}
+
+
 def validate_transition(current_generation: int, next_generation: int, current_terminal_pass: bool,
                         *, terminal: dict[str, Any] | None = None, lane_identity: dict[str, Any] | None = None,
                         gate: dict[str, Any] | None = None, reviewed_blob_sha: str | None = None,
@@ -391,6 +413,7 @@ def derive(*, base_ref: str | None = None, root: Path = ROOT) -> dict[str, Any]:
         "live_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED", "exchange_order_submitted": False,
         "lane_scoped_unlock": not any("LANE" in e for e in errors),
+        "effective_development_objective": contract.get("effective_development_objective"),
         "g6_owned_operations": contract.get("generation_contract", {}).get("G6", {}).get("owned_operations"),
         "g7_owned_operations": contract.get("generation_contract", {}).get("G7", {}).get("owned_operations"),
         "g9_component_type_gates": contract.get("generation_contract", {}).get("G9", {}).get("component_type_gates"),

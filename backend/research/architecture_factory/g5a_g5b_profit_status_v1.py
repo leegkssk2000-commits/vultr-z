@@ -87,6 +87,18 @@ def build(source_master_sha: str) -> dict:
         "action": "hold", "G5A_decision": "G5A_SOURCE_BLOCKED", "G5B_decision": "NO_NEW_BOUNDARY_NO_FORMAL_PASS",
         "scope": "REMOTE_SEAL_ONLY_NOT_ECONOMIC_REPLAY_OR_PROMOTION",
     }
+    disposition_path = "backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json"
+    if (ROOT / disposition_path).exists():
+        disposition = read(disposition_path)
+        if disposition["receipt_sha256"] != alpha.sha({k: v for k, v in disposition.items() if k != "receipt_sha256"}):
+            raise RuntimeError("G5A_DISPOSITION_RECEIPT_DRIFT")
+        if disposition["factory_source_sha"] != hashlib.sha256((ROOT / FACTORY).read_bytes()).hexdigest():
+            raise RuntimeError("G5A_DISPOSITION_FACTORY_IDENTITY_DRIFT")
+        result["MA001_state"] = disposition["original_state"]
+        result["G5A_decision"] = disposition["generation_state"]
+        result["G5A_terminal_disposition_receipt_sha"] = disposition["receipt_sha256"]
+        result["source_files_sha256"][disposition_path] = hashlib.sha256((ROOT / disposition_path).read_bytes()).hexdigest()
+        result["scope"] = "CURRENT_G5A_TERMINAL_AND_G5B_CLOSED_AUTHORITY_STATUS"
     result["receipt_sha256"] = alpha.sha(result)
     return result
 

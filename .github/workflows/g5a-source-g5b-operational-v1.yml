@@ -1,0 +1,104 @@
+name: G5A Source Terminal and G5B Operational V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/architecture_factory/g5a_source_*'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.py'
+      - 'backend/research/rebuild/g5b_operational_*'
+      - 'backend/research/rebuild/test_g5a_source_g5b_operational_v1.py'
+      - 'backend/research/p3_prospective_native_feature_collector.py'
+      - '.github/workflows/g5a-source-g5b-operational-v1.yml'
+      - '.github/workflows/g5-forward-real-evidence-v1.yml'
+  push:
+    branches: [master, research/g5a-economic-terminal-g5b-operational-v1]
+    paths:
+      - 'backend/research/architecture_factory/g5a_source_*'
+      - 'backend/research/architecture_factory/a1_strategy_architecture_factory_v1.py'
+      - 'backend/research/architecture_factory/g5a_g5b_profit_status_v1.py'
+      - 'backend/research/rebuild/g5b_operational_*'
+      - 'backend/research/rebuild/test_g5a_source_g5b_operational_v1.py'
+      - 'backend/research/p3_prospective_native_feature_collector.py'
+      - '.github/workflows/g5a-source-g5b-operational-v1.yml'
+      - '.github/workflows/g5-forward-real-evidence-v1.yml'
+  workflow_run:
+    workflows: ['G5 Forward Real Evidence V1']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g5a-source-g5b-operational-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-audit:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && 'master' || github.ref }}
+          persist-credentials: ${{ github.ref == 'refs/heads/master' && github.event_name != 'pull_request' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind native source inventory to an actual data commit
+        run: git fetch --no-tags origin refs/heads/zel-p3-prospective-data:refs/remotes/origin/zel-p3-prospective-data
+      - name: Regenerate source admission and operational audit without replay
+        run: |
+          set -euo pipefail
+          python -m backend.research.architecture_factory.g5a_source_admission_v1 --native-ref origin/zel-p3-prospective-data
+          python -m backend.research.rebuild.g5b_operational_terminal_v1
+          python -m backend.research.architecture_factory.g5a_g5b_profit_status_v1 --source-master-sha "$(git rev-parse origin/master)" --output backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
+      - name: Compile and run source, Alpha Proof, ledger and boundary tests
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/architecture_factory/g5a_source_admission_v1.py backend/research/rebuild/g5b_operational_terminal_v1.py backend/research/p3_prospective_native_feature_collector.py
+          python -m unittest backend.research.rebuild.test_g5a_source_g5b_operational_v1 backend.research.rebuild.test_g5_clean_runner_v1 backend.research.rebuild.test_g5_clean_runner_binding_fix_v1 backend.research.rebuild.test_g5_forward_real_evidence_bridge_v1 backend.research.rebuild.test_g5_forward_real_evidence_bridge_v3 backend.research.rebuild.test_g5_data_stale_evidence_v1 backend.research.prep.test_g5_production_economic_ssot_v1
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          python -m backend.research.architecture_factory.g5a_alpha_proof_preflight_v1 --self-test
+      - name: Verify original candidate, strategy and economic evidence were preserved
+        run: |
+          git diff --exit-code -- backend/research/architecture_factory/g5a_alpha_factory_latest.json backend/research/architecture_factory/g5a_ma001_alpha_proof_bundle_v1.json backend/research/rebuild/g5_clean_runner_contract_effective_v1.json backend/research/rebuild/g5_clean_runner_state_events_v1.jsonl backend/research/rebuild/g5_forward_real_bridge_state_v1.jsonl backend/research/prep/g5_economic_evidence_ledger_v1.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g5a-source-g5b-operational-${{ github.run_id }}
+          path: |
+            backend/research/architecture_factory/g5a_source_capability_registry_v1.json
+            backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json
+            backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
+            backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+      - name: Persist current source terminal and G5B state receipts
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          git config user.name 'g5a-source-g5b-operational'
+          git config user.email 'actions@users.noreply.github.com'
+          for n in 1 2 3; do
+            git restore -- backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+            git pull --rebase origin master
+            python -m backend.research.architecture_factory.g5a_source_admission_v1 --native-ref origin/zel-p3-prospective-data
+            python -m backend.research.rebuild.g5b_operational_terminal_v1
+            python -m backend.research.architecture_factory.g5a_g5b_profit_status_v1 --source-master-sha "$(git rev-parse origin/master)" --output backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
+            git add backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5A/G5B: persist current source and operational boundary receipts [skip ci]'
+            git push origin HEAD:master && exit 0
+          done
+          exit 1

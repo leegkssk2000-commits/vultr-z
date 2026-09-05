@@ -335,16 +335,22 @@ def base_score(c: Mapping[str, Any]) -> float:
 
 
 def run(output: Path) -> dict[str, Any]:
+    # Admission precedes every provider call; vocabulary alone is not availability.
+    from backend.research.architecture_factory import g5a_source_admission_v1 as admission
+    registry = read_json(admission.REGISTRY)
+    ready_sources = admission.generation_sources(registry, now_ms=__import__('time').time_ns() // 1_000_000)
+    verified_cost = registry.get("verified_round_trip_cost_bps")
+    if registry.get("candidate_cost_binding") != "BOUND" or not isinstance(verified_cost, (int, float)):
+        raise RuntimeError("P6_CANDIDATE_COST_IMPLEMENTATION_NOT_BOUND_BEFORE_PAID_GENERATION")
     ledger, evidence = read_json(LEDGER), read_json(EVIDENCE)
     targets = target_rows(ledger)
     source_rows = evidence_compact(evidence)
     source_ids = {str(x.get("id")) for x in source_rows}
     target_ids = {str(x["strategy_id"]) for x in targets}
-    verified_cost = 14.0
     context = {
         "objective": "find first robust after-cost survivor faster; prefer mechanism diversity and larger move/cost geometry",
         "verified_round_trip_cost_bps_reference": verified_cost,
-        "available_source_vocabulary": ["ohlcv", "volume", "funding", "basis", "open_interest", "l2_order_book", "trade_flow"],
+        "available_source_vocabulary": ready_sources,
         "current_failure_targets": targets,
         "external_evidence": source_rows,
         "constraints": {"baseline_mutation": False, "threshold_sweep": False, "best_horizon_cherry_pick": False,
@@ -356,6 +362,7 @@ def run(output: Path) -> dict[str, Any]:
         try:
             model, raw, lineage = fn(prompt)
             got = validate_candidates(raw, provider, source_ids, target_ids)
+            got = [c for c in got if set(c.get("required_sources") or []) <= set(ready_sources)]
             generators[provider] = {"successful": True, "model": model, **lineage, "candidate_count": len(got)}
             candidates.extend(got)
         except Exception as exc:
@@ -367,6 +374,17 @@ def run(output: Path) -> dict[str, Any]:
         for i, c in enumerate(candidates):
             work = root / str(i); work.mkdir()
             provider_reviews: dict[str, Any] = {}
+            # New hypotheses have no source-bound cheap-test bundle yet. P5 is last.
+            from backend.research.alpha_proof import a1_alpha_proof_gate_v1 as alpha
+            bundle = c.get("alpha_proof_bundle") or {}
+            cheap_gates = [alpha.evaluate_p6, alpha.evaluate_p1, alpha.evaluate_p2,
+                           alpha.evaluate_p0, alpha.evaluate_p3, alpha.evaluate_p4]
+            if not bundle or any(not gate(bundle)["passed"] for gate in cheap_gates):
+                reviews.append({**c, "cross_reviews": {}, "independent_passes": 0,
+                                "independent_rejects": 0, "score": base_score(c),
+                                "eligible_for_preregistration": False,
+                                "review_state": "P5_DEFERRED_UNTIL_CHEAP_GATES_PASS"})
+                continue
             # Cross-review: never count the generator provider as the only independent reviewer.
             try:
                 provider_reviews["openai"] = openai_critic(c)

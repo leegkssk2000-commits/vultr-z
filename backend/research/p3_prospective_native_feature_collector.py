@@ -81,6 +81,8 @@ def make_record(feature: str, symbol: str, payload: dict[str, Any], base: str, l
     missing = [key for key in required if payload.get(key) in (None, "")]
     if missing or source_ts is None:
         raise RuntimeError(f"HOLD_SCHEMA:{feature}:{symbol}:missing={missing}:source_ts={source_ts}")
+    if source_ts > collected_ms:
+        raise RuntimeError(f"HOLD_POINT_IN_TIME_CLOCK:{feature}:{symbol}")
     return {
         "schema_version": "zel.p3.prospective_native_feature_record.v1",
         "feature": feature,
@@ -108,12 +110,12 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ns = ap.parse_args()
     observed_at = datetime.now(timezone.utc)
-    collected_ms = int(observed_at.timestamp() * 1000)
     records: list[dict[str, Any]] = []
     for feature in ("premium_index", "open_interest"):
         for symbol in SYMBOLS:
             payload, base, latency_ms = get_json(ENDPOINTS[feature], {"symbol": symbol})
-            records.append(make_record(feature, symbol, payload, base, latency_ms, collected_ms))
+            received_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            records.append(make_record(feature, symbol, payload, base, latency_ms, received_ms))
     keys = {(r["feature"], r["symbol"]) for r in records}
     expected = {(f, s) for f in ENDPOINTS for s in SYMBOLS}
     if keys != expected:

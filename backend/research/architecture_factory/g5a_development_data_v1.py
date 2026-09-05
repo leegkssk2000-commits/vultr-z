@@ -25,7 +25,7 @@ def write_once(path, value):
     path.write_text(raw)
 
 
-def validate_history(rows, cutoff):
+def validate_history(rows, cutoff, *, archive=False):
     if not rows:
         raise RuntimeError("EMPTY_DEVELOPMENT_HISTORY")
     for row in rows:
@@ -35,10 +35,11 @@ def validate_history(rows, cutoff):
     times = [r["bar_open_ts"] for r in rows]
     if len(times) != len(set(times)):
         raise RuntimeError("HISTORICAL_DUPLICATE")
-    if any(b - a != runner.INTERVAL_MS for a, b in zip(times, times[1:])):
+    gaps = [{"previous_open_ms": a, "next_open_ms": b, "missing_bars": (b-a)//runner.INTERVAL_MS-1} for a,b in zip(times,times[1:]) if b-a != runner.INTERVAL_MS]
+    if any(b <= a for a,b in zip(times,times[1:])) or (gaps and not archive):
         raise RuntimeError("HISTORICAL_GAP_OR_ORDER")
     return {"bars": len(rows), "first_open_ms": times[0], "last_close_ms": rows[-1]["bar_close_ts"],
-            "missing": 0, "gap": 0, "duplicate": 0, "lookahead": 0}
+            "missing": sum(g["missing_bars"] for g in gaps), "gap": len(gaps), "gaps": gaps, "duplicate": 0, "lookahead": 0}
 
 
 def collect_symbol(adapter, symbol, cutoff, max_pages):
@@ -97,17 +98,17 @@ def acquire(root, output):
         return json.loads(manifest_path.read_text())
     adapter = runner.BingxSourceAdapter(effective)
     symbols = effective["source"]["symbols"]
-    metadata, sources, dataset_files, snapshots = {}, {}, {}, {}
+    metadata, sources, dataset_files, snapshots, raw_files = {}, {}, {}, {}, {}
     authority = read(c["cost_authority_path"], root)
     for symbol in symbols:
         rows, pages, termination = collect_symbol(adapter, symbol, c["historical_cutoff_close_ms"], c["max_capture_pages_per_symbol"])
-        path = output / "ohlcv" / (symbol + ".json")
-        write_once(path, rows); dataset_files[str(path.relative_to(output))] = file_sha(path)
+        path = output / "raw_ohlcv" / (symbol + ".json")
+        write_once(path, rows); raw_files[str(path.relative_to(output))] = file_sha(path)
         gaps = [{"index": i, "previous_open_ms": a["bar_open_ts"], "next_open_ms": b["bar_open_ts"], "gap_ms": b["bar_open_ts"] - a["bar_open_ts"]} for i, (a, b) in enumerate(zip(rows, rows[1:])) if b["bar_open_ts"] - a["bar_open_ts"] != runner.INTERVAL_MS]
         if gaps:
-            write_once(output / "history_integrity_failure.json", {"symbol": symbol, "bars": len(rows), "gaps": gaps, "pages": pages})
+            write_once(output / "raw_gap_audit" / (symbol + ".json"), {"symbol": symbol, "bars": len(rows), "gaps": gaps, "pages": pages})
             print(json.dumps({"HISTORICAL_GAPS": symbol, "bars": len(rows), "gap_count": len(gaps), "first_gaps": gaps[:8]}), flush=True)
-        metadata[symbol] = validate_history(rows, c["historical_cutoff_close_ms"])
+        metadata[symbol] = validate_history(rows, c["historical_cutoff_close_ms"], archive=True)
         sources[symbol] = {"pages": pages, "termination": termination, "source_sha256": sha(pages)}
         requests = []; original = costs.request_json
         def capture(url, params):
@@ -126,10 +127,21 @@ def acquire(root, output):
         write_once(path, {"snapshot": snapshot, "requests": requests, "scope": c["development_cost_scope"], "formal_credit": 0})
         snapshots[symbol] = {"path": str(path.relative_to(output)), "sha256": file_sha(path),
                              "reference_one_settlement_cost_bps": snapshot["pretrade_verified_cost_bps"]}
+    # The precommitted common-calendar split excludes pre-listing tails by date,
+    # before any strategy outcomes. Preserve all available raw history separately.
+    splits = freeze_split(metadata, c)
+    qualified = {}
+    for symbol in symbols:
+        raw = json.loads((output / "raw_ohlcv" / (symbol + ".json")).read_text())
+        rows = [r for r in raw if splits["development"][0] <= r["bar_open_ts"] < splits["purged_OOS"][1]]
+        qualified[symbol] = validate_history(rows, c["historical_cutoff_close_ms"])
+        path = output / "ohlcv" / (symbol + ".json")
+        write_once(path, rows); dataset_files[str(path.relative_to(output))] = file_sha(path)
     receipt = seal({"schema_version": "zel.g5a.immutable_development_dataset.v1", "dataset_id": c["development_dataset_id"],
                     "collection_started_after_freeze": True, "collection_finished_ms": runner.now_ms(),
                     "contract_sha256": c["receipt_sha256"], "dataset_files": dataset_files, "dataset_sha256": sha(dataset_files),
-                    "symbols": metadata, "sources": sources, "splits": freeze_split(metadata, c),
+                    "symbols": qualified, "raw_symbols": metadata, "raw_dataset_files": raw_files,
+                    "sources": sources, "splits": splits, "pre_common_calendar_rows_role": "AUDIT_ONLY_NEVER_OUTCOME_SELECTED",
                     "cost_snapshots": snapshots, "cost_scope": c["development_cost_scope"],
                     "collection_code_sha256": file_sha(Path(__file__)), "source_adapter_sha256": file_sha(root / "backend/research/rebuild/g5_clean_runner_v1.py"),
                     "cost_authority_sha256": file_sha(root / c["cost_authority_path"]), "cost_ssot_sha256": file_sha(root / c["cost_ssot_path"]),
@@ -151,7 +163,10 @@ def verify_dataset(output, c):
     for row in m["cost_snapshots"].values():
         if file_sha(output / row["path"]) != row["sha256"]:
             raise RuntimeError("COST_SNAPSHOT_DRIFT")
-    if freeze_split(m["symbols"], c) != m["splits"] or m["outcomes_computed"] is not False:
+    for p,h in m["raw_dataset_files"].items():
+        if file_sha(output / p) != h:
+            raise RuntimeError("RAW_ARCHIVE_DRIFT")
+    if freeze_split(m["raw_symbols"], c) != m["splits"] or m["outcomes_computed"] is not False:
         raise RuntimeError("SPLIT_FREEZE_DRIFT")
     return m
 

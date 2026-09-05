@@ -24,7 +24,8 @@ on:
       - '.github/workflows/g5a-source-g5b-operational-v1.yml'
       - '.github/workflows/g5-forward-real-evidence-v1.yml'
   workflow_run:
-    workflows: ['G5 Forward Real Evidence V1']
+    # Cadence authority itself follows successful master Clean Runner completion.
+    workflows: ['G5 DATA_STALE Cadence Authority V1']
     types: [completed]
   workflow_dispatch:
 
@@ -57,6 +58,13 @@ jobs:
           python-version: '3.12'
       - name: Bind native source inventory to an actual data commit
         run: git fetch --no-tags origin refs/heads/zel-p3-prospective-data:refs/remotes/origin/zel-p3-prospective-data
+      - name: Bind immutable development data independently of current freshness
+        run: |
+          set -euo pipefail
+          git fetch origin g5a-stage-development-data-v1:refs/remotes/origin/g5a-stage-development-data-v1
+          mkdir -p /tmp/g5a-stage-input
+          git archive origin/g5a-stage-development-data-v1 research/data/g5a_stage_v1 | tar -x -C /tmp/g5a-stage-input
+          python -m backend.research.architecture_factory.g5a_stage_admission_v1 --data-dir /tmp/g5a-stage-input/research/data/g5a_stage_v1 --data-ref "$(git rev-parse origin/g5a-stage-development-data-v1)"
       - name: Regenerate source admission and operational audit without replay
         run: |
           set -euo pipefail
@@ -84,19 +92,21 @@ jobs:
             backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json
             backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
             backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+            backend/research/architecture_factory/g5a_stage_admission_latest_v1.json
       - name: Persist current source terminal and G5B state receipts
-        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_run'
         run: |
           set -euo pipefail
           git config user.name 'g5a-source-g5b-operational'
           git config user.email 'actions@users.noreply.github.com'
           for n in 1 2 3; do
-            git restore -- backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+            git restore -- backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json backend/research/architecture_factory/g5a_stage_admission_latest_v1.json
             git pull --rebase origin master
+            python -m backend.research.architecture_factory.g5a_stage_admission_v1 --data-dir /tmp/g5a-stage-input/research/data/g5a_stage_v1 --data-ref "$(git rev-parse origin/g5a-stage-development-data-v1)"
             python -m backend.research.architecture_factory.g5a_source_admission_v1 --native-ref origin/zel-p3-prospective-data
             python -m backend.research.rebuild.g5b_operational_terminal_v1
             python -m backend.research.architecture_factory.g5a_g5b_profit_status_v1 --source-master-sha "$(git rev-parse origin/master)" --output backend/research/architecture_factory/g5a_g5b_profit_status_v1.json
-            git add backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json
+            git add backend/research/architecture_factory/g5a_source_capability_registry_v1.json backend/research/architecture_factory/g5a_source_terminal_dispositions_v1.json backend/research/architecture_factory/g5a_g5b_profit_status_v1.json backend/research/rebuild/g5b_operational_terminal_latest_v1.json backend/research/architecture_factory/g5a_stage_admission_latest_v1.json
             if git diff --cached --quiet; then exit 0; fi
             git commit -m 'G5A/G5B: persist current source and operational boundary receipts [skip ci]'
             git push origin HEAD:master && exit 0

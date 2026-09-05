@@ -54,7 +54,8 @@ jobs:
           python -m backend.research.prep.g5_trendrider_causal_persist_v2 --self-test
 
   collect:
-    if: github.event_name != 'pull_request'
+    # Paid research requires an explicit dispatch and current control-plane authority.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -82,6 +83,30 @@ jobs:
           python -m backend.research.prep.g5_trendrider_causal_web_research_v1 --self-test
           python -m backend.research.prep.g5_trendrider_causal_web_research_v2 --self-test
           python -m backend.research.prep.g5_trendrider_causal_persist_v2 --self-test
+
+      - name: Checkout current AI proposal authority
+        uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: ai-authority
+          persist-credentials: false
+      - name: ZEL_AI_CONTROL_GATE_V1 — require current proposal lineage
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          proposal=ai-authority/runtime_results/zel/ai_research_control_plane_v1/latest.json
+          predecessor=backend/research/contracts/g5_trendrider_preentry_interaction_child_v1.json
+          test -s "$proposal"
+          predecessor_sha=$(sha256sum "$predecessor" | awk '{print $1}')
+          epoch=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["gate_context"]["epoch_id"])' "$proposal")
+          test -n "$epoch"
+          python backend/tools/zel_ai_control_gate_v1.py verify \
+            --policy backend/research/zel_ai_research_control_plane_v1.json \
+            --proposal-receipt "$proposal" \
+            --stage-id G5_TRENDRIDER_CAUSAL_RESEARCH_V2 \
+            --epoch-id "$epoch" \
+            --predecessor-receipt-sha256 "$predecessor_sha" \
+            --out out/ai_control_gate.json
 
       - name: Refresh current W2 forensic and bounded child development screen
         run: |

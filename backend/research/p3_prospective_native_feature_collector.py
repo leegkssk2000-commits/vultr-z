@@ -94,6 +94,7 @@ def make_record(feature: str, symbol: str, payload: dict[str, Any], base: str, l
         "latency_ms": latency_ms,
         "values": values,
         "source_payload_sha256": canonical_sha(payload),
+        "raw_payload": payload,
         "prospective_only": True,
         "historical_coverage_claim": False,
         "derived_basis_value_emitted": False,

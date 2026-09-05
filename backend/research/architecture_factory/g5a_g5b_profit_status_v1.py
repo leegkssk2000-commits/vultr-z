@@ -99,6 +99,23 @@ def build(source_master_sha: str) -> dict:
         result["G5A_terminal_disposition_receipt_sha"] = disposition["receipt_sha256"]
         result["source_files_sha256"][disposition_path] = hashlib.sha256((ROOT / disposition_path).read_bytes()).hexdigest()
         result["scope"] = "CURRENT_G5A_TERMINAL_AND_G5B_CLOSED_AUTHORITY_STATUS"
+    stage_path = "backend/research/architecture_factory/g5a_stage_admission_latest_v1.json"
+    candidate_path = "backend/research/architecture_factory/g5a_stage_candidate_terminal_v1.json"
+    if (ROOT / stage_path).exists() and (ROOT / candidate_path).exists():
+        stage, terminal = read(stage_path), read(candidate_path)
+        for value in (stage, terminal):
+            if value.get("receipt_sha256") != alpha.sha({k:v for k,v in value.items() if k != "receipt_sha256"}):
+                raise RuntimeError("STAGE_CANDIDATE_RECEIPT_DRIFT")
+        if terminal["candidate"]["original_MA001_candidate_sha256"] != factory["next_experiment_candidate"]["candidate_sha256"]:
+            raise RuntimeError("STAGE_CANDIDATE_ORIGINAL_LINEAGE_DRIFT")
+        result["G5A_stage_candidate_id"] = terminal["candidate"]["candidate_id"]
+        result["G5A_stage_candidate_gates"] = terminal["gates"]
+        result["G5A_decision"] = terminal["decision"]
+        result["G5A_DEVELOPMENT_READY"] = stage["development"]["G5A_DEVELOPMENT_READY"]
+        result["G5B_FRESH_READY"] = stage["fresh"]["G5B_FRESH_READY"]
+        result["PRODUCTION_GRADE_READY"] = stage["PRODUCTION_GRADE_READY"]
+        for path in (stage_path, candidate_path):
+            result["source_files_sha256"][path] = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
     result["receipt_sha256"] = alpha.sha(result)
     return result
 

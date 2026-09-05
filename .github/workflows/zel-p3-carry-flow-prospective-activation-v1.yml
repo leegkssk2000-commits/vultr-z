@@ -10,6 +10,12 @@ on:
       - 'backend/research/contracts/p3_carry_flow_prospective_native_v1.json'
       - 'tests/test_p3_prospective_native_coverage_gate.py'
       - '.github/workflows/zel-p3-carry-flow-prospective-activation-v1.yml'
+      - 'backend/research/contracts/p3_clean_native_epoch_v1.json'
+      - 'backend/research/architecture_factory/g5a_development_data_v1.py'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/contracts/p3_clean_native_epoch_v1.json'
   workflow_dispatch:
     inputs:
       persist:
@@ -23,7 +29,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: zel-p3-carry-flow-prospective-activation-v1-${{ github.ref }}
+  group: g5a-stage-source-cost-development-v1${{ github.event_name == 'pull_request' && format('-pr-{0}-{1}', github.workflow, github.event.pull_request.number) || '' }}
   cancel-in-progress: false
 
 env:
@@ -91,9 +97,8 @@ jobs:
         run: python backend/research/p3_prospective_native_feature_collector.py --out /tmp/p3_snapshot.json
 
       - name: Pull existing dedicated history only on authorized master persistence runs
-        if: >-
-          (github.event_name == 'schedule' && github.ref == 'refs/heads/master') ||
-          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.persist == 'true')
+        # The old mixed clock epoch is frozen audit-only.
+        if: false
         shell: bash
         run: |
           set -euo pipefail
@@ -161,6 +166,26 @@ jobs:
           print('PASS_P3_PROSPECTIVE_COVERAGE_GATE',g['state'],g['minimum_coverage_progress_ratio'])
           PY
 
+      - name: Append to the new clean native epoch
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          git fetch origin g5a-stage-development-data-v1:refs/remotes/origin/g5a-stage-development-data-v1
+          mkdir -p /tmp/p3_clean
+          git archive origin/g5a-stage-development-data-v1 research/data/g5a_stage_v1/native_epoch | tar -x -C /tmp/p3_clean
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from backend.research.architecture_factory.g5a_development_data_v1 import append_native_epoch, read, EPOCH
+          out=Path('/tmp/p3_clean/research/data/g5a_stage_v1/native_epoch')
+          snapshot=json.load(open('/tmp/p3_snapshot.json'))
+          result=append_native_epoch(out,read(EPOCH),snapshot['records'])
+          (out/'latest.json').write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
+          assert result['candidate_generation_allowed'] is False and result['paid_AI_calls']==0
+          print('PASS_CLEAN_NATIVE_EPOCH',result['clean_native_rows'],result['receipt_sha256'])
+          PY
+
       - name: Upload smoke or persistence evidence
         uses: actions/upload-artifact@v4
         with:
@@ -170,13 +195,12 @@ jobs:
             /tmp/p3_append_receipt.json
             /tmp/p3_coverage_receipt.json
             /tmp/p3_history/*.ndjson
+            /tmp/p3_clean/research/data/g5a_stage_v1/native_epoch/*
           if-no-files-found: error
           retention-days: 90
 
       - name: Persist to dedicated data branch only from master
-        if: >-
-          (github.event_name == 'schedule' && github.ref == 'refs/heads/master') ||
-          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.persist == 'true')
+        if: false
         shell: bash
         run: |
           set -euo pipefail
@@ -205,3 +229,31 @@ jobs:
           fi
           git commit -m "data(p3): append native basis/OI and coverage ${{ github.run_id }}"
           git push origin "${DATA_BRANCH}"
+
+      - name: Persist only the new epoch with append-only prefix checks
+        if: >-
+          github.ref == 'refs/heads/master' &&
+          (github.event_name == 'schedule' || github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.persist == 'true'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/p3_clean_repo origin/g5a-stage-development-data-v1
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('/tmp/p3_clean/research/data/g5a_stage_v1/native_epoch')
+          dst=Path('/tmp/p3_clean_repo/research/data/g5a_stage_v1/native_epoch')
+          for p in src.iterdir():
+              target=dst/p.name
+              if p.suffix=='.jsonl' and target.exists():
+                  assert p.read_bytes().startswith(target.read_bytes()),p.name
+              target.write_bytes(p.read_bytes())
+          PY
+          cd /tmp/p3_clean_repo
+          git config user.name 'p3-clean-native-epoch-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/data/g5a_stage_v1/native_epoch
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "P3: append clean native epoch ${GITHUB_RUN_ID} [skip ci]"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:g5a-stage-development-data-v1

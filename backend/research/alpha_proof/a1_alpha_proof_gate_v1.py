@@ -283,6 +283,15 @@ def evaluate_p6(bundle: Mapping[str, Any]) -> dict[str, Any]:
         rows = []
         failures.append(_fail("P6_SOURCE_LIST_MISSING", "sources list required"))
     available = set()
+    development = reality.get("admission_stage") == "G5A_DEVELOPMENT"
+    if development:
+        for key in ("immutable_history_verified", "split_frozen_before_outcomes", "development_cost_model_bound"):
+            if reality.get(key) is not True:
+                failures.append(_fail("P6_DEVELOPMENT_BINDING_MISSING", key))
+        if not str(reality.get("development_data_sha") or ""):
+            failures.append(_fail("P6_DEVELOPMENT_DATA_SHA_MISSING", "immutable historical dataset required"))
+        if reality.get("formal_production_credit") != 0:
+            failures.append(_fail("P6_DEVELOPMENT_PRODUCTION_CREDIT", "development data cannot carry production credit"))
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -293,7 +302,11 @@ def evaluate_p6(bundle: Mapping[str, Any]) -> dict[str, Any]:
             available.add(name)
         if row.get("proxy") is True and not (row.get("proxy_declared") is True and row.get("proxy_validated") is True):
             failures.append(_fail("P6_UNVALIDATED_PROXY", name))
-        if row.get("fresh") is not True:
+        if development and (row.get("historical_immutable") is not True or row.get("semantic_valid") is not True):
+            failures.append(_fail("P6_DEVELOPMENT_SOURCE_INVALID", name))
+        if development and row.get("source_sha") != reality.get("development_data_sha"):
+            failures.append(_fail("P6_DEVELOPMENT_DATA_PARITY", name))
+        if not development and row.get("fresh") is not True:
             failures.append(_fail("P6_STALE_SOURCE", name))
         if not str(row.get("source_sha") or "").strip():
             failures.append(_fail("P6_SOURCE_SHA_MISSING", name))

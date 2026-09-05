@@ -338,7 +338,7 @@ def run(output: Path) -> dict[str, Any]:
     # Admission precedes every provider call; vocabulary alone is not availability.
     from backend.research.architecture_factory import g5a_source_admission_v1 as admission
     registry = read_json(admission.REGISTRY)
-    ready_sources = admission.generation_sources(registry, now_ms=__import__('time').time_ns() // 1_000_000)
+    ready_sources = admission.generation_sources(registry, now_ms=__import__('time').time_ns() // 1_000_000, stage="G5A_DEVELOPMENT")
     verified_cost = registry.get("verified_round_trip_cost_bps")
     if registry.get("candidate_cost_binding") != "BOUND" or not isinstance(verified_cost, (int, float)):
         raise RuntimeError("P6_CANDIDATE_COST_IMPLEMENTATION_NOT_BOUND_BEFORE_PAID_GENERATION")

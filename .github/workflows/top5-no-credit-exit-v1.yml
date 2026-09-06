@@ -1,12 +1,14 @@
 name: Top5 No-Credit Exit V1
 on:
   push:
-    branches: [master, research/top5-no-credit-exit-v1, research/break-channel-q1-v1, research/break-channel-q2-v1, research/q0-risk-entry-v1]
+    branches: [master, research/top5-no-credit-exit-v1, research/break-channel-q1-v1, research/break-channel-q2-v1, research/q0-risk-entry-v1, research/q0-b-seen-replication-v1]
     paths:
       - 'backend/research/rebuild/*top5_no_credit_exit*.py'
       - 'backend/research/rebuild/*break_channel_q1*.py'
       - 'backend/research/rebuild/*break_channel_q2*.py'
       - 'backend/research/rebuild/*q0_risk_entry*.py'
+      - 'backend/research/rebuild/*q0_b_seen*.py'
+      - 'research/development_evidence/Q0_B_SEEN_2026_V1/**'
       - 'research/development_evidence/Q0_RISK_ENTRY_V1/**'
       - 'research/development_evidence/BREAK_CHANNEL_Q2_DIAGNOSIS_20260906_V1/**'
       - 'research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/**'
@@ -22,6 +24,8 @@ on:
       - 'backend/research/rebuild/*break_channel_q1*.py'
       - 'backend/research/rebuild/*break_channel_q2*.py'
       - 'backend/research/rebuild/*q0_risk_entry*.py'
+      - 'backend/research/rebuild/*q0_b_seen*.py'
+      - 'research/development_evidence/Q0_B_SEEN_2026_V1/**'
       - 'research/development_evidence/Q0_RISK_ENTRY_V1/**'
       - 'research/development_evidence/BREAK_CHANNEL_Q2_DIAGNOSIS_20260906_V1/**'
       - 'research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/**'
@@ -67,8 +71,9 @@ jobs:
           python -m unittest backend.research.rebuild.test_break_channel_q1_structure_v1 backend.research.rebuild.test_break_channel_q1_metrics_v1 backend.research.rebuild.test_break_channel_q1_v1 -v
           python -m unittest backend.research.rebuild.test_break_channel_q2_observability_v1 backend.research.rebuild.test_break_channel_q2_loss_analysis_v1 backend.research.rebuild.test_break_channel_q2_diagnosis_v1 -v
           python -m unittest backend.research.rebuild.test_q0_risk_entry_weights_v1 backend.research.rebuild.test_q0_risk_entry_metrics_v1 backend.research.rebuild.test_q0_risk_entry_v1 -v
+          python -m unittest backend.research.rebuild.test_q0_b_seen_adapter_v1 backend.research.rebuild.test_q0_b_seen_metrics_v1 backend.research.rebuild.test_q0_b_seen_replication_v1 -v
           npm run --prefix frontend/z-os-app-source validate
-      - name: Reproduce fixed entries and full lifecycle from DEV only
+      - name: Reproduce sealed DEV and authorized seen-period results
         run: |
           set -euo pipefail
           data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
@@ -86,6 +91,10 @@ jobs:
           if test -f research/development_evidence/Q0_RISK_ENTRY_V1/receipt.json; then
             python -m backend.research.rebuild.q0_risk_entry_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
           fi
+          python -m backend.research.rebuild.q0_b_seen_replication_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --check-dev-only
+          if test -f research/development_evidence/Q0_B_SEEN_2026_V1/receipt.json; then
+            python -m backend.research.rebuild.q0_b_seen_replication_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
+          fi
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         with:
@@ -95,4 +104,5 @@ jobs:
             research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1
             research/development_evidence/BREAK_CHANNEL_Q2_DIAGNOSIS_20260906_V1
             research/development_evidence/Q0_RISK_ENTRY_V1
+            research/development_evidence/Q0_B_SEEN_2026_V1
           retention-days: 90

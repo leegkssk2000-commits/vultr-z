@@ -18,6 +18,9 @@ on:
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
       - 'backend/research/contracts/g5a_stage_source_cost_contract_v1.json'
+      - 'backend/research/rebuild/q0_prospective*_v1.py'
+      - 'backend/research/rebuild/test_q0_prospective*_v1.py'
+      - 'research/prospective/Q0_FROZEN_20260907_V1/**'
   push:
     branches: [master]
     paths:
@@ -36,6 +39,9 @@ on:
       - 'backend/research/rebuild/g5_clean_runner_state_machine_v1.json'
       - '.github/workflows/g5-clean-runner-shadow-v1.yml'
       - 'backend/research/contracts/g5a_stage_source_cost_contract_v1.json'
+      - 'backend/research/rebuild/q0_prospective*_v1.py'
+      - 'backend/research/rebuild/test_q0_prospective*_v1.py'
+      - 'research/prospective/Q0_FROZEN_20260907_V1/**'
   workflow_dispatch:
   schedule:
     - cron: '50 * * * *'
@@ -105,7 +111,7 @@ jobs:
       - name: Activate genuine corrected SHADOW_NO_CREDIT
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.g5_clean_runner_binding_fix_v1 \
+          python -m backend.research.rebuild.q0_prospective_capture_v1 \
             --shadow \
             --state-log out/g5_clean_runner_state_events_v1.jsonl \
             --economic-ledger out/g5_clean_runner_economic_ledger_v1.jsonl \
@@ -266,6 +272,17 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Retain original Q0 source packet before master checkout
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          source_packet=/tmp/q0-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json
+          if [[ -f out/q0_prospective_source_batch_v1.json ]]; then
+            cp out/q0_prospective_source_batch_v1.json "$source_packet"
+          else
+            echo '::warning::Q0_SOURCE_PACKET_MISSING; existing Clean Runner state persistence continues'
+          fi
+
       - name: Persist corrected clean-runner append-only shadow state on master
         if: github.ref == 'refs/heads/master'
         run: |
@@ -350,3 +367,97 @@ jobs:
             sleep 3
           done
           exit 1
+
+      - name: Verify frozen Q0 research observer and synthetic lifecycle
+        id: q0_verify
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/q0_prospective*_v1.py \
+            backend/research/rebuild/test_q0_prospective*_v1.py
+          python -m unittest -v \
+            backend.research.rebuild.test_q0_prospective_archive_v1 \
+            backend.research.rebuild.test_q0_prospective_capture_v1 \
+            backend.research.rebuild.test_q0_prospective_engine_v1 \
+            backend.research.rebuild.test_q0_prospective_weights_v1 \
+            backend.research.rebuild.test_q0_prospective_accounting_v1 \
+            backend.research.rebuild.test_q0_prospective_observer_v1
+          python -m backend.research.rebuild.q0_prospective_observer_v1 \
+            --verify --root research/prospective/Q0_FROZEN_20260907_V1
+
+      - name: Consume and persist isolated frozen Q0 research observer on master
+        # Source failures must still leave an immutable research failure record.
+        # Failed observer verification can never advance a model checkpoint.
+        if: ${{ always() && !cancelled() && github.ref == 'refs/heads/master' && steps.q0_verify.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          observer_root=research/prospective/Q0_FROZEN_20260907_V1
+          source_packet=/tmp/q0-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json
+          observer_status=out/q0_prospective_observer_status_v1.json
+          git config user.name 'q0-frozen-research-observer-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            # Refresh all current telemetry, then mutate only the Q0 namespace.
+            # A rejected push discards no remote source: the next attempt loads
+            # its newer CURRENT and consumes this same packet without HTTP.
+            git fetch origin master
+            git switch --detach origin/master
+            python -m backend.research.rebuild.q0_prospective_observer_v1 \
+              --verify --root "$observer_root"
+            python - "$observer_root" > /tmp/q0-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt <<'PY'
+          import json,sys
+          from pathlib import Path
+          path=Path(sys.argv[1])/'archive'/'CURRENT.json'
+          print(json.loads(path.read_text())['transaction_sha256'] if path.exists() else '')
+          PY
+            set +e
+            python -m backend.research.rebuild.q0_prospective_observer_v1 \
+              --consume "$source_packet" --root "$observer_root" --status "$observer_status"
+            consumer_rc=$?
+            set -e
+            # A failed consumer may append a failure receipt. Persist it too;
+            # its failure remains visible separately from operating success.
+            python - "$observer_root" /tmp/q0-predecessor-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])/'archive'; previous=Path(sys.argv[2]).read_text().strip()
+          pointer=root/'CURRENT.json'
+          head=json.loads(pointer.read_text())['transaction_sha256'] if pointer.exists() else ''
+          while head and head!=previous:
+              transaction=json.loads((root/'transactions'/(head+'.json')).read_text())
+              head=transaction['previous_sha256'] or ''
+          if head!=previous:
+              raise SystemExit('Q0_ARCHIVE_PREDECESSOR_CONFLICT')
+          PY
+            git add -- "$observer_root" \
+              ":(exclude)$observer_root/**/.writer.lock" \
+              ":(exclude)$observer_root/**/.q0-tmp-*"
+            if git diff --cached --quiet; then exit "$consumer_rc"; fi
+            python - "$observer_root" <<'PY'
+          import subprocess,sys
+          prefix=sys.argv[1]+'/'
+          changed=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          if not changed or any(not name.startswith(prefix) for name in changed):
+              raise SystemExit('Q0_RESEARCH_WRITE_SCOPE_VIOLATION')
+          if any(name.endswith('/.writer.lock') or '/.q0-tmp-' in name for name in changed):
+              raise SystemExit('Q0_TRANSIENT_FILE_STAGE_FORBIDDEN')
+          PY
+            git commit -m 'Q0: persist frozen research source and observer state [skip ci]'
+            if git push origin HEAD:master; then exit "$consumer_rc"; fi
+            sleep 3
+          done
+          echo '::warning::Q0_RESEARCH_PERSISTENCE_FAILED_AFTER_3_ATTEMPTS'
+          exit 1
+
+      - name: Upload Q0 source and observer status independently of operating outcome
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: q0-frozen-observer-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/q0_prospective_source_batch_v1.json
+            out/q0_prospective_observer_status_v1.json
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,11 +1,13 @@
 name: Keltner Exit Risk Attribution V1
 on:
   push:
-    branches: [master, research/keltner-exit-risk-attribution-v1]
+    branches: [master, research/keltner-exit-risk-attribution-v1, research/keltner-opportunity-reservation-v1]
     paths:
       - 'backend/research/rebuild/*keltner_exit_risk*.py'
       - 'backend/research/contracts/keltner_exit_risk_v1.json'
       - 'research/development_evidence/KELTNER_EXIT_RISK_20260906_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/**'
       - '.github/workflows/keltner-exit-risk-v1.yml'
   pull_request:
     branches: [master]
@@ -13,6 +15,8 @@ on:
       - 'backend/research/rebuild/*keltner_exit_risk*.py'
       - 'backend/research/contracts/keltner_exit_risk_v1.json'
       - 'research/development_evidence/KELTNER_EXIT_RISK_20260906_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/**'
       - '.github/workflows/keltner-exit-risk-v1.yml'
 permissions:
   contents: read
@@ -39,17 +43,53 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Route changed Keltner research paths without unrelated replay
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import fnmatch, os, subprocess
+          from pathlib import Path
+          base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+          if not base or set(base) == {'0'}:
+              base = subprocess.check_output(['git', 'rev-parse', head + '^'], text=True).strip()
+          changed = subprocess.check_output(['git', 'diff', '--name-only', base, head], text=True).splitlines()
+          legacy_patterns = (
+              'backend/research/rebuild/*keltner_exit_risk*.py',
+              'backend/research/contracts/keltner_exit_risk_v1.json',
+              'research/development_evidence/KELTNER_EXIT_RISK_20260906_V1/*',
+          )
+          reservation_patterns = (
+              'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py',
+              'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/*',
+          )
+          matches = lambda patterns: any(fnmatch.fnmatch(path, pattern) for path in changed for pattern in patterns)
+          legacy, reservation = matches(legacy_patterns), matches(reservation_patterns)
+          if '.github/workflows/keltner-exit-risk-v1.yml' in changed:
+              legacy = legacy or not reservation
+              reservation = reservation or Path('research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/SPEC.json').is_file()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'legacy={str(legacy).lower()}\n')
+              output.write(f'reservation={str(reservation).lower()}\n')
+          print({'legacy_ledger_analysis_requested': legacy, 'reservation_evidence_requested': reservation})
+          PY
       - name: Causal observation, exact accounting and unchanged formal gates
         run: |
           set -euo pipefail
           python -m compileall -q backend
-          python -m unittest backend.research.rebuild.test_keltner_exit_risk_v1 backend.research.rebuild.test_top5_no_credit_exit_v1 -v
           python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
           python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
           python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
           npm run --prefix frontend/z-os-app-source validate
+      - name: Existing Keltner exit attribution synthetic regressions
+        if: steps.scope.outputs.legacy == 'true'
+        run: python -m unittest backend.research.rebuild.test_keltner_exit_risk_v1 backend.research.rebuild.test_top5_no_credit_exit_v1 -v
       - name: Reproduce existing-ledger analysis with economic replay calls forbidden
+        if: steps.scope.outputs.legacy == 'true'
         run: |
           set -euo pipefail
           data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/keltner_exit_risk_v1.json'))['data_ref'])")
@@ -76,7 +116,31 @@ jobs:
           PY
           git diff --exit-code
       - uses: actions/upload-artifact@v4
+        if: steps.scope.outputs.legacy == 'true'
         with:
           name: keltner-exit-risk-${{ github.run_id }}-${{ github.run_attempt }}
           path: research/development_evidence/KELTNER_EXIT_RISK_20260906_V1
+          retention-days: 90
+      - name: Opportunity reservation causal state and accounting regressions
+        if: steps.scope.outputs.reservation == 'true'
+        run: python -m unittest discover -s backend/research/rebuild -p 'test_keltner_opportunity_reservation*_v1.py' -v
+      - name: Check reservation preregistration without calculating candidate results
+        if: steps.scope.outputs.reservation == 'true' && hashFiles('research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/receipt.json') == ''
+        run: python -m backend.research.rebuild.keltner_opportunity_reservation_v1 --check-only
+      - name: Reproduce the single authorized reservation candidate after its receipt exists
+        if: steps.scope.outputs.reservation == 'true' && hashFiles('research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/keltner-reservation-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/keltner-reservation-input
+          python -m backend.research.rebuild.keltner_opportunity_reservation_v1 --data-dir /tmp/keltner-reservation-input/research/data/g5a_stage_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.reservation == 'true'
+        with:
+          name: keltner-reservation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1
+          if-no-files-found: error
           retention-days: 90

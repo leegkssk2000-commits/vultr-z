@@ -1,9 +1,11 @@
 name: Top5 No-Credit Exit V1
 on:
   push:
-    branches: [master, research/top5-no-credit-exit-v1]
+    branches: [master, research/top5-no-credit-exit-v1, research/break-channel-q1-v1]
     paths:
       - 'backend/research/rebuild/*top5_no_credit_exit*.py'
+      - 'backend/research/rebuild/*break_channel_q1*.py'
+      - 'research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/**'
       - 'backend/research/contracts/top5_no_credit_exit_v1.json'
       - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
@@ -13,6 +15,8 @@ on:
     branches: [master]
     paths:
       - 'backend/research/rebuild/*top5_no_credit_exit*.py'
+      - 'backend/research/rebuild/*break_channel_q1*.py'
+      - 'research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/**'
       - 'backend/research/contracts/top5_no_credit_exit_v1.json'
       - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
       - 'backend/research/rebuild/g5_g14_governance_validator_v1.py'
@@ -52,6 +56,7 @@ jobs:
           python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
           python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          python -m unittest backend.research.rebuild.test_break_channel_q1_structure_v1 backend.research.rebuild.test_break_channel_q1_metrics_v1 backend.research.rebuild.test_break_channel_q1_v1 -v
           npm run --prefix frontend/z-os-app-source validate
       - name: Reproduce fixed entries and full lifecycle from DEV only
         run: |
@@ -62,9 +67,14 @@ jobs:
           git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-exit-input
           python -m backend.research.rebuild.top5_no_credit_exit_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
           python -m backend.research.rebuild.top5_external_seal_v1
+          if test -f research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/receipt.json; then
+            python -m backend.research.rebuild.break_channel_q1_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
+          fi
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         with:
           name: top5-no-credit-exit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: research/development_evidence/TOP5_EXIT_20260906_V1
+          path: |
+            research/development_evidence/TOP5_EXIT_20260906_V1
+            research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1
           retention-days: 90

@@ -1,0 +1,37 @@
+# Keltner N cumulative entry repair — preregistration
+
+P is the original fixed control; D is the unadopted PR1196 trend-invalidation exit workcopy, REJECT in both periods. One conditional new candidate N uses D as its development parent, without promoting D or replacing Q0, any Top5 operating parent, or the prospective observer.
+
+## Evidence and selection before N outcomes
+
+Stored P/D fixed/full ledgers show 77 untriggered losing entries in 2025 and 35 in seen2026, mostly adverse price movement rather than cost-only losses. D cannot intervene before its EMA trend invalidation. The old PR1180 geometry diagnostic already recorded the signal-close lower-half cohort (15 original 2025 P trades, net -2509.2667 trade-bps); it was a diagnostic, not a previously executed Keltner filter. This is a weak reclaim hypothesis based on observed ledgers, not independent economic evidence from an indicator definition.
+
+DIAGNOSIS_PROTOCOL.json was committed at 4a84db9 before calculating the current D feature groups. Exactly one existing feature was examined: close_on_directional_half. Lower-half D closed cohorts have 15 trades/net -2111.6988 in 2025 and 4 trades/net -1063.1187 in seen2026, higher loss rates than the retained group and no D top-decile winner amounts. These satisfy the frozen conditional admission checks. The 2026 sample of four is particularly small. The feature was selected adaptively after prior DEV and seen2026 outcomes; neither period is independent validation. No threshold sweep or alternative feature outcome scan was performed. EMA order/current EMA slopes and price-vs-EMA50 are redundant with the existing reclaim entry; previously measured prior-high, prior-Supertrend and EMA-removal candidates are not rerun. An EMA-spread-change idea was considered in code review only, with no outcome grouping or replay.
+
+## Frozen rule and execution
+
+For every original eligible Keltner V2 completed 4h signal, require close >= (high + low) / 2 on that same signal bar. Equality passes. The completed OHLC observation is known before next-open entry. There is no added numeric parameter. Invalid OHLC is rejected by the existing/data and adapter guards, never interpolated.
+
+Keep original EMA20 reclaim plus EMA20>EMA50 entry; original finite-prefix seed/warmup/index239; next eligible open; one long position per symbol; unchanged D EMA20<=EMA50 held-close invalidation queuing next eligible open and original maximum12-bar close exit. Native timeout has priority. There is no added protective SL, stop revision, hold revision, new indicator, position sizing change or shorting. Signal index <= prior exit index stays occupied, including the exit bar. A vetoed entry may free later original signals, which must be replayed; it is not assigned a synthetic zero-profit trade.
+
+N_COMMON_D admits only original D admitted origins which pass the new predicate, and applies unchanged D paths. This is a common-opportunity ENTRY_FILTER view, not an EXIT_CHANGE claim or an executable full portfolio when independently viewed. N_FULL replays the complete original opportunity sequence, eligibility, occupancy and fills. Both are views of the one candidate. Disabled N must reproduce D exact fills, cost/funding, open marks and opportunity events. P and D are borrowed from the sealed PR1196 ledgers; past verdicts are never recomputed into new verdicts.
+
+## Calendars, input and costs
+
+Use exactly PR1196 Keltner 2025 [2024-12-19T08:00Z,2025-12-29T08:00Z) and seen2026 [2026-05-08T00:00Z,2026-09-05T00:00Z), seven original symbols, source-prefix causal warmup, fresh flat at evaluation start. Every decoded row digest must match the corresponding original record. The bounded original reader must not decode any bar after 2026-09-05T00:00Z. Original partition labels and repeated use remain in source_access. No observer archive/price/cursor or future evaluation data may be loaded. No new validation/OOS.
+
+Identical nominal amounts and original fee/spread/impact/slippage/funding with20bps floor. Funding settlements satisfy entry < settlement <= exit/mark. Cost2 doubles every model cost component. This remains RESEARCH_COST_MODEL, not production signed funding or actual account returns/sizing. Native strict-end no-completion tails remain open; report both favorable and unfavorable hypothetical full-roundtrip-cost marks and exposure, never force liquidation. The same original source/economic rows and data/cost authorities are sealed in SPEC.json.
+
+## Goals and reporting fixed before new economics
+
+Use existing PR1196 numerical DEV comparison criteria, unchanged: at least6 closed trades, positive net/expectancy, PF>1, payoff>=1, cost2 net>0; closed and marked terminal increments positive; grouped closed loss-run and marked daily DD no worse; capped top-decile reference winning amount retention>=90%; paired daily 30-day-block1000-resample seed1178 delta95 lower>0 and no unresolved positions for strong IMPROVED. These are research comparison priors, not modified SSOT/formal gates. Common-D view is descriptive. Report full N versus both D and P, separately in each period. Partial loss/risk/profit-preservation improvements survive an absolute REJECT as observations; no automatic baseline adoption. No universal all-metrics-improve rule is introduced beyond these inherited stated comparison criteria.
+
+First report P/D/N/N-D/N-P, counts/open, win rate, average win/loss, payoff, E, PF, cost2, closed/open/terminal net, exposure, grouped streak loss, daily marked DD/recovery, reference profit and large-win retention. Report common/removed/new opportunities, saved loss/cut profit/additional cost, original P fixed-D harm and N full opportunity bridge, concentration, monthly/symbol contribution, same-calendar DD/loss-run windows and paired block uncertainty. Never subtract worst intervals as causal attribution. In particular retain the observed2025 D gain+4544.6428 and explain N's gain retention; explain 2026 fixed-D -1086.8426 harm using actual common/removed/new contributions. The prior new SOL gain is not a fixed bonus and must survive replay.
+
+## Budget and boundaries
+
+Prior28 candidates and all outcomes preserved. N is ordinal29 only if actually measured: one candidate, two reused periods, four common/full views. Zero remaining automatic candidates. Same-result reproduction and old-ledger diagnosis do not count as new hypotheses. No after-result rule changes, replacement candidate or sweep. Prior seen evaluation1/1 and independent comparison0/1 NOT_RUN preserved. Q0 DEV_INCONCLUSIVE, Q1 DEV_REJECT, Q2 NOT_RUN, B unadopted and PR1196 results unchanged. Formal credit0; execution=NONE; order/live=BLOCKED. No G5B/operating/observer changes, paid external AI or new video run. Gemini actual video NOT_RUN. Future unused validation requires separate eligibility, freeze and authorization, and is not a prerequisite for this DEV measurement.
+
+## Implementation and remote verification
+
+Reuse the original execution, indicator, cost, ledger and comparison modules through a thin entry adapter; three local modules/tests only. Reuse the existing G5A development workflow with changed-path routing so this study does not replay unrelated STAPC economics. Previously sealed workflow/code/results remain byte-identical. Freeze code/spec/diagnosis remotely before N outcomes. Synthetic prefix/timing/occupancy/cost/open/boundary and integration regressions plus existing governance gates, receipt byte reproduction and preserved-file hashes verify code; they do not establish economic adoption.

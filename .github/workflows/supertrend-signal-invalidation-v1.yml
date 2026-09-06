@@ -1,0 +1,64 @@
+name: Supertrend Signal Invalidation V1
+on:
+  push:
+    branches: [master, research/top5-signal-invalidation-v1]
+    paths:
+      - 'backend/research/rebuild/*supertrend_signal_invalidation_v1.py'
+      - 'backend/research/contracts/supertrend_signal_invalidation_v1.json'
+      - 'research/development_evidence/SUPERTREND_INVALIDATION_20260906_V1/**'
+      - '.github/workflows/supertrend-signal-invalidation-v1.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*supertrend_signal_invalidation_v1.py'
+      - 'backend/research/contracts/supertrend_signal_invalidation_v1.json'
+      - 'research/development_evidence/SUPERTREND_INVALIDATION_20260906_V1/**'
+      - '.github/workflows/supertrend-signal-invalidation-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: supertrend-invalidation-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Causal timing and blocked formal authority
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_supertrend_signal_invalidation_v1 backend.research.rebuild.test_top5_no_credit_exit_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m compileall -q backend
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reproduce sealed result only after preregistration
+        if: ${{ hashFiles('research/development_evidence/SUPERTREND_INVALIDATION_20260906_V1/receipt.json') != '' }}
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/supertrend_signal_invalidation_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/supertrend-invalidation-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/supertrend-invalidation-input
+          python -m backend.research.rebuild.supertrend_signal_invalidation_v1 --data-dir /tmp/supertrend-invalidation-input/research/data/g5a_stage_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: ${{ hashFiles('research/development_evidence/SUPERTREND_INVALIDATION_20260906_V1/receipt.json') != '' }}
+        with:
+          name: supertrend-invalidation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/SUPERTREND_INVALIDATION_20260906_V1
+          retention-days: 90

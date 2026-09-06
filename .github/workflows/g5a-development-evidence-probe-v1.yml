@@ -2,7 +2,7 @@ name: G5A Development Evidence Probe V1
 
 on:
   push:
-    branches: [master, research/g5a-development-evidence-probe-v1]
+    branches: [master, research/g5a-development-evidence-probe-v1, research/keltner-cumulative-entry-v1]
     paths:
       - 'backend/research/contracts/g5a_development_evidence_probe_v1.json'
       - 'backend/research/architecture_factory/g5a_development_probe_v1.py'
@@ -10,6 +10,8 @@ on:
       - 'backend/research/architecture_factory/a1_gen2_generic_dev_econ_v1.py'
       - 'backend/research/architecture_factory/g5a_development_p0_methodological_review_v1.json'
       - 'research/development_evidence/G5A_DEV_STAPC001_001/**'
+      - 'backend/research/rebuild/*keltner_cumulative*_v1.py'
+      - 'research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/**'
       - '.github/workflows/g5a-development-evidence-probe-v1.yml'
   pull_request:
     branches: [master]
@@ -20,6 +22,8 @@ on:
       - 'backend/research/architecture_factory/a1_gen2_generic_dev_econ_v1.py'
       - 'backend/research/architecture_factory/g5a_development_p0_methodological_review_v1.json'
       - 'research/development_evidence/G5A_DEV_STAPC001_001/**'
+      - 'backend/research/rebuild/*keltner_cumulative*_v1.py'
+      - 'research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/**'
       - '.github/workflows/g5a-development-evidence-probe-v1.yml'
   workflow_dispatch:
 
@@ -50,7 +54,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Route changed research paths without replaying unrelated experiments
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import fnmatch, os, subprocess
+          from pathlib import Path
+          base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+          if not base or set(base) == {'0'}:
+              base = subprocess.check_output(['git', 'rev-parse', head + '^'], text=True).strip()
+          changed = subprocess.check_output(['git', 'diff', '--name-only', base, head], text=True).splitlines()
+          cumulative_patterns = (
+              'backend/research/rebuild/*keltner_cumulative*_v1.py',
+              'research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/*',
+          )
+          legacy_patterns = (
+              'backend/research/contracts/g5a_development_evidence_probe_v1.json',
+              'backend/research/architecture_factory/g5a_development_probe_v1.py',
+              'backend/research/architecture_factory/test_g5a_development_*.py',
+              'backend/research/architecture_factory/a1_gen2_generic_dev_econ_v1.py',
+              'backend/research/architecture_factory/g5a_development_p0_methodological_review_v1.json',
+              'research/development_evidence/G5A_DEV_STAPC001_001/*',
+          )
+          matches = lambda patterns: any(fnmatch.fnmatch(path, pattern) for path in changed for pattern in patterns)
+          cumulative, legacy = matches(cumulative_patterns), matches(legacy_patterns)
+          workflow_changed = '.github/workflows/g5a-development-evidence-probe-v1.yml' in changed
+          if os.environ['EVENT_NAME'] == 'workflow_dispatch':
+              legacy = True
+              cumulative = Path('research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/SPEC.json').is_file()
+          elif workflow_changed:
+              legacy = legacy or not cumulative
+              cumulative = cumulative or Path('research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/SPEC.json').is_file()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'legacy={str(legacy).lower()}\n')
+              output.write(f'cumulative={str(cumulative).lower()}\n')
+          print({'legacy_evidence_requested': legacy, 'cumulative_evidence_requested': cumulative})
+          PY
       - name: Compile and verify development and formal separation
+        if: steps.scope.outputs.legacy == 'true'
         run: |
           set -euo pipefail
           python -m py_compile backend/research/architecture_factory/g5a_development_probe_v1.py backend/research/architecture_factory/a1_gen2_generic_dev_econ_v1.py
@@ -58,7 +104,7 @@ jobs:
           python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
           python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
       - name: Reproduce existing measured development evidence only
-        if: hashFiles('research/development_evidence/G5A_DEV_STAPC001_001/receipt.json') != ''
+        if: steps.scope.outputs.legacy == 'true' && hashFiles('research/development_evidence/G5A_DEV_STAPC001_001/receipt.json') != ''
         run: |
           set -euo pipefail
           data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/g5a_development_evidence_probe_v1.json'))['data_ref'])")
@@ -68,9 +114,40 @@ jobs:
           python -m backend.research.architecture_factory.g5a_development_probe_v1 --data-dir /tmp/g5a-dev-only-input/research/data/g5a_stage_v1 --verify-only
           git diff --exit-code
       - uses: actions/upload-artifact@v4
-        if: always() && hashFiles('research/development_evidence/G5A_DEV_STAPC001_001/receipt.json') != ''
+        if: always() && steps.scope.outputs.legacy == 'true' && hashFiles('research/development_evidence/G5A_DEV_STAPC001_001/receipt.json') != ''
         with:
           name: g5a-development-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: research/development_evidence/G5A_DEV_STAPC001_001
+          if-no-files-found: error
+          retention-days: 90
+      - name: Keltner cumulative timing, boundaries, accounting and preserved authority
+        if: steps.scope.outputs.cumulative == 'true'
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest discover -s backend/research/rebuild -p 'test_keltner_cumulative*_v1.py' -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Check cumulative preregistration without calculating new candidate results
+        if: steps.scope.outputs.cumulative == 'true' && hashFiles('research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/receipt.json') == ''
+        run: python -m backend.research.rebuild.keltner_cumulative_entry_v1 --check-only
+      - name: Reproduce the single authorized cumulative candidate after its receipt exists
+        if: steps.scope.outputs.cumulative == 'true' && hashFiles('research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/keltner-cumulative-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/keltner-cumulative-input
+          python -m backend.research.rebuild.keltner_cumulative_entry_v1 --data-dir /tmp/keltner-cumulative-input/research/data/g5a_stage_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.cumulative == 'true'
+        with:
+          name: keltner-cumulative-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/KELTNER_CUMULATIVE_ENTRY_20260906_V1
           if-no-files-found: error
           retention-days: 90

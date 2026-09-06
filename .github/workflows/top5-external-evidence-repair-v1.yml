@@ -1,7 +1,7 @@
 name: Top5 External Evidence Repair V1
 on:
   push:
-    branches: [master, research/top5-external-evidence-repair-v1, research/top5-state-repair-v1]
+    branches: [master, research/top5-external-evidence-repair-v1, research/top5-state-repair-v1, research/keltner-m1-signal-low-v1]
     paths:
       - 'backend/research/rebuild/*top5_state*.py'
       - 'backend/research/contracts/top5_state_children_v1.json'
@@ -13,6 +13,21 @@ on:
       - 'backend/research/architecture_factory/*a1_manual_research_budget*.py'
       - 'research/development_evidence/TOP5_EXTERNAL_20260905_V1/**'
       - 'research/development_evidence/BREAK_VALIDATION_20260905_V1/**'
+      - 'backend/research/rebuild/*keltner_m1*_v1.py'
+      - 'research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'backend/research/rebuild/*keltner_cumulative_entry*_v1.py'
+      - 'backend/research/rebuild/*parallel_exit*_v1.py'
+      - 'backend/research/rebuild/*top5_development_repair*_v1.py'
+      - 'backend/research/rebuild/*break_channel_source*_v1.py'
+      - 'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/**'
+      - 'backend/research/rebuild/*break_channel_metrics*_v1.py'
+      - 'backend/research/rebuild/*break_channel_q1_metrics*_v1.py'
+      - 'backend/research/rebuild/*q0_b_seen*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_probe*_v1.py'
+      - 'backend/research/architecture_factory/*a1_gen2_generic_dev_econ*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_event_evaluator*_v1.py'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
       - '.github/workflows/top5-external-evidence-repair-v1.yml'
   pull_request:
     branches: [master]
@@ -27,6 +42,21 @@ on:
       - 'backend/research/architecture_factory/*a1_manual_research_budget*.py'
       - 'research/development_evidence/TOP5_EXTERNAL_20260905_V1/**'
       - 'research/development_evidence/BREAK_VALIDATION_20260905_V1/**'
+      - 'backend/research/rebuild/*keltner_m1*_v1.py'
+      - 'research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'backend/research/rebuild/*keltner_cumulative_entry*_v1.py'
+      - 'backend/research/rebuild/*parallel_exit*_v1.py'
+      - 'backend/research/rebuild/*top5_development_repair*_v1.py'
+      - 'backend/research/rebuild/*break_channel_source*_v1.py'
+      - 'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/**'
+      - 'backend/research/rebuild/*break_channel_metrics*_v1.py'
+      - 'backend/research/rebuild/*break_channel_q1_metrics*_v1.py'
+      - 'backend/research/rebuild/*q0_b_seen*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_probe*_v1.py'
+      - 'backend/research/architecture_factory/*a1_gen2_generic_dev_econ*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_event_evaluator*_v1.py'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
       - '.github/workflows/top5-external-evidence-repair-v1.yml'
 permissions:
   contents: read
@@ -53,7 +83,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Route M1 and legacy changes separately
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PYROUTE'
+          import fnmatch, os, subprocess
+          from pathlib import Path
+          base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+          if not base or set(base)=={'0'}:
+              base=subprocess.check_output(['git','rev-parse',head+'^'],text=True).strip()
+          changed=subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines()
+          m1_patterns=['backend/research/rebuild/*break_channel_source*_v1.py', 'research/development_evidence/KELTNER_OPPORTUNITY_RESERVATION_20260906_V1/**', 'backend/research/rebuild/*keltner_m1*_v1.py', 'research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/**', 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py', 'backend/research/rebuild/*keltner_cumulative_entry*_v1.py', 'backend/research/rebuild/*parallel_exit*_v1.py', 'backend/research/rebuild/*top5_development_repair*_v1.py', 'backend/research/rebuild/*break_channel_metrics*_v1.py', 'backend/research/rebuild/*break_channel_q1_metrics*_v1.py', 'backend/research/rebuild/*q0_b_seen*_v1.py', 'backend/research/architecture_factory/*g5a_development_probe*_v1.py', 'backend/research/architecture_factory/*a1_gen2_generic_dev_econ*_v1.py', 'backend/research/architecture_factory/*g5a_development_event_evaluator*_v1.py', 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py']
+          legacy_patterns=['backend/research/rebuild/*top5_state*.py','backend/research/contracts/top5_state_children_v1.json','research/development_evidence/TOP5_STATE_20260906_V1/*','backend/research/rebuild/*top5_external*.py','backend/research/rebuild/*top5_break_validation*.py','backend/research/contracts/top5_external*.json','backend/research/contracts/top5_break_validation*.json','backend/research/architecture_factory/*a1_manual_research_budget*.py','research/development_evidence/TOP5_EXTERNAL_20260905_V1/*','research/development_evidence/BREAK_VALIDATION_20260905_V1/*']
+          match=lambda pats:any(fnmatch.fnmatch(x,p) for x in changed for p in pats)
+          m1=match(m1_patterns) or '.github/workflows/top5-external-evidence-repair-v1.yml' in changed
+          legacy=match(legacy_patterns)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write(f'm1={str(m1).lower()}\nlegacy={str(legacy).lower()}\n')
+          print({'m1':m1,'legacy_economic_replay':legacy})
+          PYROUTE
       - name: Compile, native parity and boundary regressions
+        if: steps.scope.outputs.legacy == 'true'
         run: |
           set -euo pipefail
           python -m compileall -q backend
@@ -63,6 +115,7 @@ jobs:
           python -m backend.research.architecture_factory.a1_youtube_diversity_scout_v1 --self-test
           npm run --prefix frontend/z-os-app-source validate
       - name: Reproduce sealed evidence without acquiring data or calling AI
+        if: steps.scope.outputs.legacy == 'true'
         run: |
           set -euo pipefail
           data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
@@ -79,11 +132,42 @@ jobs:
           python -m backend.research.rebuild.top5_state_repair_v1 --data-dir /tmp/top5-ext-input/research/data/g5a_stage_v1 --mode verify
           git diff --exit-code
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.scope.outputs.legacy == 'true'
         with:
           name: top5-external-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             research/development_evidence/TOP5_EXTERNAL_20260905_V1
             research/development_evidence/BREAK_VALIDATION_20260905_V1
             research/development_evidence/TOP5_STATE_20260906_V1
+          retention-days: 90
+      - name: M1 synthetic and direct dependency regressions
+        if: steps.scope.outputs.m1 == 'true'
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest backend.research.rebuild.test_keltner_m1_signal_low_v1 backend.research.rebuild.test_keltner_opportunity_reservation_adapter_v1 backend.research.rebuild.test_keltner_opportunity_reservation_metrics_v1 backend.research.rebuild.test_keltner_cumulative_entry_adapter_v1 backend.research.rebuild.test_parallel_exit_keltner_v1 backend.research.rebuild.test_parallel_exit_metrics_v1 backend.research.architecture_factory.test_g5a_development_event_evaluator_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Check M1 code and rule freeze before measurement
+        if: steps.scope.outputs.m1 == 'true' && hashFiles('research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/receipt.json') == ''
+        run: python -m backend.research.rebuild.keltner_m1_study_v1 --check-only
+      - name: Reproduce the single frozen M1 result
+        if: steps.scope.outputs.m1 == 'true' && hashFiles('research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/keltner-m1-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/keltner-m1-input
+          python -m backend.research.rebuild.keltner_m1_study_v1 --data-dir /tmp/keltner-m1-input/research/data/g5a_stage_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.m1 == 'true'
+        with:
+          name: keltner-m1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1
+          if-no-files-found: error
           retention-days: 90

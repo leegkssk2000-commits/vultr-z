@@ -1,8 +1,10 @@
 name: Top5 No-Credit Exit V1
 on:
   push:
-    branches: [master, research/top5-no-credit-exit-v1, research/break-channel-q1-v1, research/break-channel-q2-v1, research/q0-risk-entry-v1, research/q0-b-seen-replication-v1]
+    branches: [master, research/top5-no-credit-exit-v1, research/break-channel-q1-v1, research/break-channel-q2-v1, research/q0-risk-entry-v1, research/q0-b-seen-replication-v1, research/q0-keltner-exit-dev-v1]
     paths:
+      - 'backend/research/rebuild/*parallel_exit*.py'
+      - 'research/development_evidence/PARALLEL_EXIT_DEV_20260906_V1/**'
       - 'backend/research/rebuild/*top5_no_credit_exit*.py'
       - 'backend/research/rebuild/*break_channel_q1*.py'
       - 'backend/research/rebuild/*break_channel_q2*.py'
@@ -20,6 +22,8 @@ on:
   pull_request:
     branches: [master]
     paths:
+      - 'backend/research/rebuild/*parallel_exit*.py'
+      - 'research/development_evidence/PARALLEL_EXIT_DEV_20260906_V1/**'
       - 'backend/research/rebuild/*top5_no_credit_exit*.py'
       - 'backend/research/rebuild/*break_channel_q1*.py'
       - 'backend/research/rebuild/*break_channel_q2*.py'
@@ -59,6 +63,70 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Select changed research family without replaying unrelated experiments
+        id: family
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          new_patterns = (
+              'backend/research/rebuild/*parallel_exit*.py',
+              'research/development_evidence/PARALLEL_EXIT_DEV_20260906_V1/*',
+          )
+          legacy_patterns = (
+              'backend/research/rebuild/*top5_no_credit_exit*.py',
+              'backend/research/rebuild/*break_channel_q1*.py',
+              'backend/research/rebuild/*break_channel_q2*.py',
+              'backend/research/rebuild/*q0_risk_entry*.py',
+              'backend/research/rebuild/*q0_b_seen*.py',
+              'research/development_evidence/Q0_B_SEEN_2026_V1/*',
+              'research/development_evidence/Q0_RISK_ENTRY_V1/*',
+              'research/development_evidence/BREAK_CHANNEL_Q2_DIAGNOSIS_20260906_V1/*',
+              'research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/*',
+              'research/development_evidence/TOP5_EXIT_20260906_V1/*',
+              'backend/research/contracts/*',
+              'backend/research/rebuild/g5_g14_governance_contract_v1.json',
+              'backend/research/rebuild/g5_g14_governance_validator_v1.py',
+          )
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          legacy, parallel = True, False  # Ambiguous ranges retain the legacy gate.
+          try:
+              if os.environ['EVENT_NAME'] == 'pull_request':
+                  head = event['pull_request']['head']['sha']
+                  base = git('merge-base', event['pull_request']['base']['sha'], head)
+              else:
+                  head = event['after']
+                  base = event.get('before', '')
+                  if not base or set(base) == {'0'}:
+                      base = git('merge-base', 'refs/remotes/origin/master', head)
+              paths = git('diff', '--name-only', '--no-renames', base, head).splitlines()
+              is_new = lambda path: any(fnmatch.fnmatchcase(path, pattern) for pattern in new_patterns)
+              parallel = any(is_new(path) for path in paths)
+              legacy_changed = any(
+                  not is_new(path) and (
+                      any(fnmatch.fnmatchcase(path, pattern) for pattern in legacy_patterns)
+                      or (path.startswith('backend/research/') and path.endswith('.py'))
+                  ) for path in paths
+              )
+              # Unrelated collector telemetry does not make a new-family merge a legacy replay.
+              # A workflow-only change remains ambiguous and therefore retains the legacy gate.
+              legacy = not parallel or legacy_changed
+              print(f'Changed research family: parallel={parallel}, legacy={legacy}')
+          except (KeyError, ValueError, subprocess.CalledProcessError) as exc:
+              print(f'Could not classify change range; keeping legacy gate: {type(exc).__name__}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'legacy={str(legacy).lower()}\nparallel={str(parallel).lower()}\n')
+          PY
       - name: Causal timing, risk, cost, immutable history and formal gates
         run: |
           set -euo pipefail
@@ -73,13 +141,22 @@ jobs:
           python -m unittest backend.research.rebuild.test_q0_risk_entry_weights_v1 backend.research.rebuild.test_q0_risk_entry_metrics_v1 backend.research.rebuild.test_q0_risk_entry_v1 -v
           python -m unittest backend.research.rebuild.test_q0_b_seen_adapter_v1 backend.research.rebuild.test_q0_b_seen_metrics_v1 backend.research.rebuild.test_q0_b_seen_replication_v1 -v
           npm run --prefix frontend/z-os-app-source validate
-      - name: Reproduce sealed DEV and authorized seen-period results
+      - name: Two frozen exit candidates, timing and boundary tests
+        if: steps.family.outputs.parallel == 'true'
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_parallel_exit_dev_v1 backend.research.rebuild.test_parallel_exit_q0_v1 backend.research.rebuild.test_parallel_exit_keltner_v1 backend.research.rebuild.test_parallel_exit_metrics_v1 -v
+      - name: Extract the existing frozen development input
         run: |
           set -euo pipefail
           data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
           git fetch --no-tags origin "$data_ref"
           mkdir -p /tmp/top5-exit-input
           git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-exit-input
+      - name: Reproduce sealed DEV and authorized seen-period results
+        if: steps.family.outputs.legacy == 'true'
+        run: |
+          set -euo pipefail
           python -m backend.research.rebuild.top5_no_credit_exit_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
           python -m backend.research.rebuild.top5_external_seal_v1
           if test -f research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1/receipt.json; then
@@ -96,10 +173,21 @@ jobs:
             python -m backend.research.rebuild.q0_b_seen_replication_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
           fi
           git diff --exit-code
+      - name: Verify frozen exit batch or its unmeasured preregistration
+        if: steps.family.outputs.parallel == 'true'
+        run: |
+          set -euo pipefail
+          if test -f research/development_evidence/PARALLEL_EXIT_DEV_20260906_V1/receipt.json; then
+            python -m backend.research.rebuild.parallel_exit_dev_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --verify-only
+          else
+            python -m backend.research.rebuild.parallel_exit_dev_v1 --data-dir /tmp/top5-exit-input/research/data/g5a_stage_v1 --check-only
+          fi
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
         with:
           name: top5-no-credit-exit-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            research/development_evidence/PARALLEL_EXIT_DEV_20260906_V1
             research/development_evidence/TOP5_EXIT_20260906_V1
             research/development_evidence/BREAK_CHANNEL_Q1_20260906_V1
             research/development_evidence/BREAK_CHANNEL_Q2_DIAGNOSIS_20260906_V1

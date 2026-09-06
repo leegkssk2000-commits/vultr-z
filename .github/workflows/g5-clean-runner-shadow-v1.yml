@@ -369,6 +369,8 @@ jobs:
           exit 1
 
       - name: Verify frozen Q0 research observer and synthetic lifecycle
+        id: q0_verify
+        if: ${{ always() && !cancelled() }}
         run: |
           set -euo pipefail
           python -m py_compile \
@@ -385,7 +387,9 @@ jobs:
             --verify --root research/prospective/Q0_FROZEN_20260907_V1
 
       - name: Consume and persist isolated frozen Q0 research observer on master
-        if: github.ref == 'refs/heads/master'
+        # Source failures must still leave an immutable research failure record.
+        # Failed observer verification can never advance a model checkpoint.
+        if: ${{ always() && !cancelled() && github.ref == 'refs/heads/master' && steps.q0_verify.outcome == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail

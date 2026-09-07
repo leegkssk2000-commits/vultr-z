@@ -1,0 +1,60 @@
+name: Top5 Winrate V5
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*primary_entry_quality_v1.py'
+      - 'backend/research/rebuild/*primary_entry_diagnostic_v1.py'
+      - 'backend/research/rebuild/*api_winrate_runtime_v1.py'
+      - 'backend/research/rebuild/*top5_winrate_v1.py'
+      - 'research/development_evidence/TOP5_AFTER_PR1206_WINRATE_FIRST_AI_V1/**'
+      - '.github/workflows/top5-winrate-v5.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*primary_entry_quality_v1.py'
+      - 'backend/research/rebuild/*primary_entry_diagnostic_v1.py'
+      - 'backend/research/rebuild/*api_winrate_runtime_v1.py'
+      - 'backend/research/rebuild/*top5_winrate_v1.py'
+      - 'research/development_evidence/TOP5_AFTER_PR1206_WINRATE_FIRST_AI_V1/**'
+      - '.github/workflows/top5-winrate-v5.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-winrate-v5-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Causal entry tests and free API regression
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_primary_entry_quality_v1 backend.research.rebuild.test_primary_entry_diagnostic_v1 backend.research.rebuild.test_api_winrate_runtime_v1 -v
+          python -m backend.research.rebuild.top5_winrate_v1 --check-only
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Serial exact reproduction of committed TPQ1 only
+        if: hashFiles('research/development_evidence/TOP5_AFTER_PR1206_WINRATE_FIRST_AI_V1/TPQ1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.top5_winrate_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-winrate-v5-${{ github.run_id }}
+          path: research/development_evidence/TOP5_AFTER_PR1206_WINRATE_FIRST_AI_V1
+          retention-days: 90

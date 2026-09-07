@@ -1,0 +1,1 @@
+One sole economic writer, one read-only reviewer. No duplicate market replay. Before outcomes fixed io_boundary spec read and code hash coverage; tests verify cap priority, next-open, immutable anchor, reference/actual slot and censor/funding accounting. Stored-ledger independent findings are preserved in REPORT.md. Final branch is evidence preservation, not strategy adoption.

@@ -1,0 +1,70 @@
+name: Top5 Focused Repair
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*keltner_kr3_v1.py'
+      - 'backend/research/rebuild/*break_br2_v1.py'
+      - 'backend/research/rebuild/*focused_repair*_v1.py'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/**'
+      - '.github/workflows/focused-repair-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*keltner_kr3_v1.py'
+      - 'backend/research/rebuild/*break_br2_v1.py'
+      - 'backend/research/rebuild/*focused_repair*_v1.py'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/**'
+      - '.github/workflows/focused-repair-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: focused-repair-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  focused-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Synthetic timing, slot, accounting and parent preservation
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_focused_repair_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+          python -m backend.research.rebuild.focused_repair_v1 --check-only
+      - name: Serial exact reproduction of committed receipts only
+        if: hashFiles('research/development_evidence/FOCUSED_REPAIR_20260907_V1/*/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/top5-mechanism-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-mechanism-input
+          for candidate in KR3 BR2; do
+            if test -f "research/development_evidence/FOCUSED_REPAIR_20260907_V1/$candidate/receipt.json"; then
+              python -m backend.research.rebuild.focused_repair_v1 --candidate "$candidate" --data-dir /tmp/top5-mechanism-input/research/data/g5a_stage_v1 --verify-only
+            fi
+          done
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: focused-repair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/FOCUSED_REPAIR_20260907_V1
+          if-no-files-found: error
+          retention-days: 90

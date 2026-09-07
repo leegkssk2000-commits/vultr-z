@@ -1,0 +1,208 @@
+{
+  "active": false,
+  "actual_runtime_user_adjustable_numeric_parameters": [],
+  "approval": false,
+  "candidate_id": "KELTNER_KR3_PRIOR_SUPPRESSED_BREACH_EXTENSION_VETO_DEV_V1",
+  "causal_feature_inventory": [
+    {
+      "available": "completed signal close",
+      "condition": "ema_fast>ema_slow and lag(close,1)<=lag(ema_fast,1) and close>ema_fast",
+      "stage": "entry"
+    },
+    {
+      "available": "completed signal close",
+      "condition": "signal_close >= (signal_high+signal_low)/2",
+      "stage": "entry_geometry"
+    },
+    {
+      "available": "completed held bar close",
+      "condition": "first completed close < latched signal_low; if close<ema_slow allow; otherwise suppress permanently for position",
+      "stage": "M2"
+    },
+    {
+      "available": "completed held bar close",
+      "condition": "ema_fast<=ema_slow",
+      "stage": "trend_exit"
+    },
+    {
+      "available": "completed decision close",
+      "condition": "at signal_index+HOLD-1 only; close>entry_open and close>ema_fast>ema_slow",
+      "stage": "KR1_extension"
+    },
+    {
+      "available": "previously observed position state",
+      "condition": "M2 low_exit_state!=SUPPRESSED",
+      "stage": "KR3_extension_veto"
+    },
+    {
+      "available": "completed held bar close",
+      "condition": "extended and held index>=signal_index+HOLD and close<=ema_fast",
+      "stage": "runner_exit"
+    },
+    {
+      "available": "completed cap close",
+      "condition": "observed index==native/final cap; close strictly before evaluation end",
+      "stage": "final_cap"
+    }
+  ],
+  "controls_limitation": "Control definitions and outcome-independent seeds/offsets belong to S4 authority bundle. Existing KR3-disabled ablation maps to KR1 and cannot be falsely counted as a new completed control. No control economics performed.",
+  "controls_required_by_existing_owner": [
+    "direction_flip",
+    "time_shift_placebo",
+    "delayed_entry",
+    "regime_permutation"
+  ],
+  "derived_coordinates": [
+    {
+      "formula": "2*native_hold_bars",
+      "independent_neighbor": false,
+      "name": "extended_cap_offset",
+      "value": 24
+    },
+    {
+      "formula": "native_hold_bars-1",
+      "independent_neighbor": false,
+      "name": "extension_decision_offset",
+      "value": 11
+    }
+  ],
+  "finite_neighbor_proposal": {
+    "center": [
+      20,
+      50,
+      12
+    ],
+    "center_existing_DEV_result_reused": true,
+    "coordinates": [
+      "ema_fast_period",
+      "ema_slow_period",
+      "native_hold_bars"
+    ],
+    "expected_executions_after_explicit_authority": 6,
+    "hold_neighbors_are_sensitivity_not_exit_optimization": true,
+    "one_axis_only": [
+      [
+        19,
+        50,
+        12
+      ],
+      [
+        21,
+        50,
+        12
+      ],
+      [
+        20,
+        49,
+        12
+      ],
+      [
+        20,
+        51,
+        12
+      ],
+      [
+        20,
+        50,
+        11
+      ],
+      [
+        20,
+        50,
+        13
+      ]
+    ],
+    "prior_held_sample_not_recounted_as_new": true,
+    "rationale": "nearest integer +/-1 on the three actual policy coordinates; no Cartesian grid, no outcome-based width",
+    "selection_or_best_neighbor_adoption": false
+  },
+  "new_economic_executions": 0,
+  "non_tunable_semantics": [
+    {
+      "name": "bar_interval_ms",
+      "value": 14400000
+    },
+    {
+      "name": "first_eligible_source_index",
+      "value": 239
+    },
+    {
+      "name": "EMA_seed",
+      "value": "UNCHANGED_DSL_EMA_LAST_4N_VALUES_FIRST_VALUE_SEED"
+    },
+    {
+      "name": "lag_for_reclaim",
+      "value": 1
+    },
+    {
+      "name": "directional_half",
+      "value": "close >= (high+low)/2; ties allowed"
+    },
+    {
+      "name": "initial_SL",
+      "value": null
+    },
+    {
+      "name": "TP",
+      "value": null
+    },
+    {
+      "name": "entry_side",
+      "value": "long"
+    },
+    {
+      "classification": "COST_AUTHORITY_NOT_STRATEGY_NEIGHBOR",
+      "name": "cost_bps_per_trade",
+      "value": 20.0
+    }
+  ],
+  "not_present_in_this_executable": [
+    "ATR_CHANNEL_PERIOD",
+    "KELTNER_BAND_MULTIPLIER",
+    "SL_ATR_MULTIPLIER",
+    "TP_R_MULTIPLIER"
+  ],
+  "policy_exposed_numeric_coordinates": [
+    {
+      "classification": "INDEPENDENT_POLICY_COORDINATE_FIXED_RUNTIME",
+      "name": "ema_fast_period",
+      "source": "PARENT_SPEC.features[0].formula=ema(close,20)",
+      "unit": "completed4h bars",
+      "value": 20
+    },
+    {
+      "classification": "INDEPENDENT_POLICY_COORDINATE_FIXED_RUNTIME",
+      "name": "ema_slow_period",
+      "source": "PARENT_SPEC.features[1].formula=ema(close,50)",
+      "unit": "completed4h bars",
+      "value": 50
+    },
+    {
+      "classification": "INDEPENDENT_POLICY_COORDINATE_FIXED_RUNTIME",
+      "name": "native_hold_bars",
+      "source": "HOLD=12; PARENT_SPEC.max_hold_bars=HOLD",
+      "unit": "observed4h bar index offsets",
+      "value": 12
+    }
+  ],
+  "purpose": "PENDING_AUTHORITY_SENSITIVITY_ONLY_NOT_NEW_CANDIDATE_SELECTION",
+  "receipt_sha256": "fb4380e1e96615117c8c3015b344ec1d0b4712b8213d77239ebec5bc08f6d74a",
+  "runtime_limit": "build_bundle requires exact equality to PARENT_SPEC; frozen replay does not expose numeric overrides. A separately reviewed sensitivity producer must vary only declared policy coordinates with full dependent/reference propagation; no monkeypatch activation is approved here.",
+  "schema": "zel.step7.kr3.parameter.inventory.v1",
+  "source_files_sha256": {
+    "backend/research/rebuild/keltner_cumulative_entry_adapter_v1.py": "4a275e8c36758191348763e4a7da3309bd9b26cf0a457d9aa7e1d6654a7e389b",
+    "backend/research/rebuild/keltner_kr1_v1.py": "92bf577b5e555dbab75aad9e5a417d596825d9b0518d8c8e728872abfff563fd",
+    "backend/research/rebuild/keltner_kr3_v1.py": "a0b310a79a7e5777317f255f35389337567fde53a0ecaf307ff3a952cb68f367",
+    "backend/research/rebuild/keltner_m2_context_v1.py": "b43404e19e9787836441e948c19fc586fa1ec4ca713067911d08f11c94b1696c",
+    "backend/research/rebuild/keltner_opportunity_reservation_adapter_v1.py": "2c88c5704c5e1b017232d130d3ddfdd41f5fb1fa90b0c85faadeb8943c2b47e0",
+    "backend/research/rebuild/parallel_exit_keltner_v1.py": "93f3274c8b7f76556a9b12e12bdf57b019f3026f21582cf21bdc617e25608e27"
+  },
+  "source_owner": "backend/research/rebuild/parallel_exit_keltner_v1.py:PARENT_SPEC/build_bundle",
+  "state_and_reservation_impacts": {
+    "EMA_neighbor": "Changes both original reclaim signals and D reference EMA release, M2 suppression criterion, extension eligibility and runner exit. Rebuild whole causal D reference on same prefix with this exact neighbor policy; never inherit original outcome-based admission list.",
+    "HOLD_neighbor": "Propagate HOLD consistently through source parent evaluator, D reference release, entry/actual KR paths, extension decision HOLD-1 and final cap 2*HOLD. Otherwise reference/actual semantics mismatch. No independent finalcap or runner tuning.",
+    "actual_slot": "One actual symbol slot; signals at/before last actual exit remain blocked; all native excluded/open events retained.",
+    "reset": "Fresh flat actual/reference state at each preregistered evaluation start; identical source warmup/first-index239 and unchanged seed formula. Never reset between trades except native lifecycle; no early release of D reservation from child exit.",
+    "source_gaps": "Reference clock rejects timestamp gaps. Caps are observed bar offsets in path code; do not silently convert to hard96h or pad absent prices."
+  }
+}

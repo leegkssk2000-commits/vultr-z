@@ -1,0 +1,85 @@
+name: STEP7 Parent Survivor
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*step7*.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/**'
+      - '.github/workflows/step7-parent-survivor-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*step7*.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/**'
+      - '.github/workflows/step7-parent-survivor-v1.yml'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: step7-parent-survivor-v1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: New contract source and validation boundary tests
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_step7_campaign_v1 backend.research.rebuild.test_step7_candidate_contract_v1 backend.research.rebuild.test_step7_source_bridge_v1 backend.research.rebuild.test_step7_independent_validation_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Exact STEP7 application and frozen integration reproduction
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.step7_candidate_contract_v1 --selection research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/SELECTION.json --output research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/CONTRACT/APPLICATION.json --verify
+          python -m backend.research.rebuild.step7_campaign_v1 --verify
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: step7-implementation-${{ github.run_id }}
+          path: research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR
+          retention-days: 90
+  source:
+    needs: verify
+    if: github.event_name == 'push' && github.run_attempt == 1 && startsWith(github.event.head_commit.message, 'Merge STEP7 task-c28e09b57c612762')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reserved canonical public source bundle once
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.step7_campaign_v1 --collect-source out/step7-source
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: step7-source-${{ github.run_id }}
+          path: out/step7-source
+          if-no-files-found: error
+          retention-days: 90

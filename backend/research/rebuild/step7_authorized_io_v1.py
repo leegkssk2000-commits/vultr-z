@@ -18,7 +18,6 @@ import base64
 from copy import deepcopy
 import fcntl
 import hashlib
-import inspect
 import json
 import os
 from pathlib import Path
@@ -28,8 +27,11 @@ import tempfile
 import time
 
 from backend.research.rebuild import step7_independent_validation_v1 as guard
+from backend.research.rebuild.step7_callable_binding_v1 import producer_binding
+from backend.research.rebuild import step7_isolated_worker_v1 as isolated
 
 TRUST_PATH = Path('/etc/zel/step7/authority-trust.json')
+SIGNATURE_VERIFIER = Path('/usr/bin/openssl')
 SCHEMA = 'zel.step7.external_authority.v1'
 REQUEST_KEYS = {'identity', 'design', 'roles', 'source', 'registered_ms',
                 'data_relpath', 'signed_approval'}
@@ -114,10 +116,12 @@ def _signature_valid(public_key_pem, payload, signature_b64):
         (p / 'payload').write_bytes(_json_bytes(payload))
         (p / 'signature').write_bytes(signature)
         try:
-            result = subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin',
+            verifier = _protected(SIGNATURE_VERIFIER)
+            result = subprocess.run([str(verifier), 'pkeyutl', '-verify', '-pubin',
                                      '-inkey', str(p / 'key.pem'), '-rawin',
                                      '-in', str(p / 'payload'), '-sigfile', str(p / 'signature')],
-                                    capture_output=True, timeout=5, check=False)
+                                    capture_output=True, timeout=5, check=False,
+                                    env={'LC_ALL': 'C.UTF-8'}, cwd=p)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AccessDenied('SIGNATURE_VERIFIER_UNAVAILABLE') from exc
         if result.returncode:
@@ -125,12 +129,8 @@ def _signature_valid(public_key_pem, payload, signature_b64):
 
 
 def _producer_binding(producer):
-    if not inspect.isfunction(producer) or '<' in producer.__qualname__:
-        raise AccessDenied('TOP_LEVEL_PINNED_PRODUCER_REQUIRED')
-    filename = inspect.getsourcefile(producer)
-    if not filename:
-        raise AccessDenied('PRODUCER_SOURCE_REQUIRED')
-    return _sha_bytes(Path(filename).read_bytes()), producer.__module__ + ':' + producer.__qualname__
+    producer_binding(producer, error_type=AccessDenied)
+    return isolated.snapshot_identity(isolated.snapshot(producer))
 
 
 def _authorize(request, producer, trust, campaign, now_ms, *, fixture=False):
@@ -195,7 +195,15 @@ def _create_durable(path, value):
 
 
 def _execute(request, producer, trust, campaign, journal, now_ms, reader, *, fixture=False):
+    # Keep the authenticated request stable across the reader callback.
+    request = deepcopy(request)
+    producer_binding(producer, error_type=AccessDenied)
+    prepared = isolated.snapshot(producer)
     plan, next_campaign, ticket = _authorize(request, producer, trust, campaign, now_ms, fixture=fixture)
+    approved = request['signed_approval']['payload']['binding']
+    expected_producer = (approved['producer_code_sha256'], approved['producer_qualname'])
+    if isolated.snapshot_identity(prepared) != expected_producer:
+        raise AccessDenied('PRODUCER_SNAPSHOT_CHANGED_BEFORE_AUTHORIZATION')
     journal = Path(journal)
     # Fixed campaign key: changing approval id, data path or request filename does
     # not allocate another run. The journal is never reset by this module.
@@ -213,10 +221,18 @@ def _execute(request, producer, trust, campaign, journal, now_ms, reader, *, fix
         raw = reader(request, trust)
         if _sha_bytes(raw) != request['source']['data_sha']:
             raise AccessDenied('SEALED_DATA_HASH_MISMATCH_ALLOCATION_CONSUMED')
-        output = producer(raw)
+        # Recheck after IO: a callback mutated while reading must not receive
+        # protected bytes. A failed check keeps the already-consumed reservation.
+        if _producer_binding(producer) != expected_producer:
+            raise AccessDenied('PRODUCER_CHANGED_AFTER_AUTHORIZATION')
+        # Never invoke the parent callable or any of its mutable globals. The
+        # fresh child imports only the source snapshot captured before approval.
+        output = isolated.run(prepared, raw)
         receipt = {'state': 'DISPATCH_COMPLETED', 'ticket_sha': ticket['receipt_sha256'],
                    'output_sha': guard.sha(output), 'bytes_read': len(raw),
-                   'formal_credit': 0, 'economic_pass': False, 'fixture_only': fixture}
+                   'formal_credit': 0, 'economic_pass': False, 'fixture_only': fixture,
+                   'execution_identity_sha256': expected_producer[0],
+                   'execution_mode': 'FRESH_ISOLATED_SOURCE_SNAPSHOT'}
         _create_durable(str(prefix) + '.outcome.json', receipt)
         return {'output': output, 'access_receipt': receipt}
     except BaseException as exc:
@@ -255,7 +271,11 @@ def dispatch(request, producer):
     """Only production sealed-read/dispatch entrypoint; accepts no trust override.
 
     Request is public metadata. Producer is a top-level bytes -> dict function
-    whose exact module bytes and qualified name were externally approved.
+    whose source dependency snapshot, worker, runtime identity and qualified name
+    were externally approved. Prior file-only signatures need external renewal.
+    The actual code object and canonical module namespace must match that source
+    before reservation and again before dispatch; metadata alone never suffices.
+    Execution occurs in a new -I -S child, never through parent mutable globals.
     """
     if not isinstance(request, dict) or set(request) != REQUEST_KEYS:
         raise AccessDenied('EXACT_REQUEST_KEYS_NO_TRUST_OR_FIXTURE_INJECTION')

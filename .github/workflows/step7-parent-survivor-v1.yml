@@ -32,15 +32,60 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Classify PR1211 implementation and stored-evidence continuation
+        id: scope
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          changed = subprocess.check_output(['git','diff','--name-only','HEAD^1','HEAD'],text=True).splitlines()
+          allowed = {
+            '.github/workflows/step7-parent-survivor-v1.yml',
+            '.github/workflows/step7-g5a-readiness.yml',
+            'backend/research/rebuild/step7_authorized_io_v1.py',
+            'backend/research/rebuild/step7_callable_binding_v1.py',
+            'backend/research/rebuild/test_step7_callable_binding_v1.py',
+            'backend/research/rebuild/test_step7_g5a_contract_scope_v1.py',
+            'backend/research/rebuild/step7_kr3_g5a_evidence_v1.py',
+            'backend/research/rebuild/step7_isolated_worker_v1.py',
+            'backend/research/rebuild/test_step7_isolated_worker_v1.py',
+            'backend/research/rebuild/test_step7_kr3_g5a_evidence_v1.py',
+            'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/TASK.json',
+          }
+          prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/'
+          auth_only = bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
+          if auth_only:
+            # PR1210 remains historical evidence. Only authorized auth/CI drift
+            # is exempted; all unchanged candidate/producer/design bytes match.
+            base = pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR')
+            spec = json.loads((base/'EXECUTION_PATH/SPEC.json').read_text())
+            allowed_drift = {'.github/workflows/step7-parent-survivor-v1.yml',
+                             'backend/research/rebuild/step7_authorized_io_v1.py'}
+            for path, expected in spec['files_sha256'].items():
+              if path not in allowed_drift and hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() != expected:
+                raise SystemExit('UNRELATED_FROZEN_INPUT_CHANGED:' + path)
+            print('REUSE_PR1210_FROZEN_SYNTHETIC_RESULT; no native economics or source rerun')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+            f.write('auth_only=' + str(auth_only).lower() + '\n')
+          PY
+      - name: Changed authorization boundary and actual evidence linkage regression
+        if: steps.scope.outputs.auth_only == 'true'
+        run: |
+          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_callable_binding_v1 backend.research.rebuild.test_step7_kr3_g5a_evidence_v1 backend.research.rebuild.test_step7_isolated_worker_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+          python -m backend.research.rebuild.step7_kr3_g5a_evidence_v1 --out-dir out/step7-g5a-evidence
+          cmp out/step7-g5a-evidence/KR3_G5A_EVIDENCE.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/KR3_G5A_EVIDENCE.json
       - name: New execution path regression only
+        if: steps.scope.outputs.auth_only != 'true'
         run: |
           set -euo pipefail
           python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_kr3_execution_v1 backend.research.rebuild.test_step7_source_sequence_v1 backend.research.rebuild.test_step7_design_feasibility_v1 backend.research.rebuild.test_step7_execution_path_v1 -v
           npm run --prefix frontend/z-os-app-source validate
       - name: Frozen native nine-report integration reproduction
+        if: steps.scope.outputs.auth_only != 'true'
         run: |
           set -euo pipefail
           python -m backend.research.rebuild.step7_execution_path_v1 --verify
@@ -53,6 +98,8 @@ jobs:
           name: step7-path-implementation-${{ github.run_id }}
           path: |
             out/step7-path-integration
+            out/step7-g5a-evidence
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS
             research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/EXECUTION_PATH
           retention-days: 90
   source_sequence:

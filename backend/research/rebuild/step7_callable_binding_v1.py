@@ -1,9 +1,10 @@
 """Match a live STEP7 callback to its installed source without executing that source.
 
-This closes mutable-function-metadata substitution, not arbitrary hostile Python
-execution. The validator process, imported dependencies and host administrator
-remain trusted. Source hashes are still compared to the signed approval by the
-existing authorization owner. No data access, network or approval is provided.
+This is an initial callback identity check, not a mutable-globals security
+boundary. The authorization owner additionally binds a source dependency
+snapshot and executes it in a fresh isolated process; it never invokes the
+checked parent callback on protected bytes. The validator process and host
+administrator remain trusted. No data access, network or approval is provided.
 """
 from __future__ import annotations
 

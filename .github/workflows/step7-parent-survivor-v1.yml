@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Classify authorization-only continuation without rerunning economics
+      - name: Classify PR1211 implementation and stored-evidence continuation
         id: scope
         run: |
           python - <<'PY'
@@ -49,6 +49,11 @@ jobs:
             'backend/research/rebuild/step7_callable_binding_v1.py',
             'backend/research/rebuild/test_step7_callable_binding_v1.py',
             'backend/research/rebuild/test_step7_g5a_contract_scope_v1.py',
+            'backend/research/rebuild/step7_kr3_g5a_evidence_v1.py',
+            'backend/research/rebuild/step7_isolated_worker_v1.py',
+            'backend/research/rebuild/test_step7_isolated_worker_v1.py',
+            'backend/research/rebuild/test_step7_kr3_g5a_evidence_v1.py',
+            'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/TASK.json',
           }
           prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/'
           auth_only = bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
@@ -66,11 +71,13 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:
             f.write('auth_only=' + str(auth_only).lower() + '\n')
           PY
-      - name: Changed authorization boundary and G5A scope regression
+      - name: Changed authorization boundary and actual evidence linkage regression
         if: steps.scope.outputs.auth_only == 'true'
         run: |
-          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_callable_binding_v1 backend.research.rebuild.test_step7_g5a_contract_scope_v1 -v
+          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_callable_binding_v1 backend.research.rebuild.test_step7_kr3_g5a_evidence_v1 backend.research.rebuild.test_step7_isolated_worker_v1 -v
           npm run --prefix frontend/z-os-app-source validate
+          python -m backend.research.rebuild.step7_kr3_g5a_evidence_v1 --out-dir out/step7-g5a-evidence
+          cmp out/step7-g5a-evidence/KR3_G5A_EVIDENCE.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/KR3_G5A_EVIDENCE.json
       - name: New execution path regression only
         if: steps.scope.outputs.auth_only != 'true'
         run: |
@@ -91,6 +98,8 @@ jobs:
           name: step7-path-implementation-${{ github.run_id }}
           path: |
             out/step7-path-integration
+            out/step7-g5a-evidence
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS
             research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/EXECUTION_PATH
           retention-days: 90
   source_sequence:

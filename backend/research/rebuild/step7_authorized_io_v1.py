@@ -18,7 +18,6 @@ import base64
 from copy import deepcopy
 import fcntl
 import hashlib
-import inspect
 import json
 import os
 from pathlib import Path
@@ -28,6 +27,7 @@ import tempfile
 import time
 
 from backend.research.rebuild import step7_independent_validation_v1 as guard
+from backend.research.rebuild.step7_callable_binding_v1 import producer_binding
 
 TRUST_PATH = Path('/etc/zel/step7/authority-trust.json')
 SCHEMA = 'zel.step7.external_authority.v1'
@@ -125,12 +125,7 @@ def _signature_valid(public_key_pem, payload, signature_b64):
 
 
 def _producer_binding(producer):
-    if not inspect.isfunction(producer) or '<' in producer.__qualname__:
-        raise AccessDenied('TOP_LEVEL_PINNED_PRODUCER_REQUIRED')
-    filename = inspect.getsourcefile(producer)
-    if not filename:
-        raise AccessDenied('PRODUCER_SOURCE_REQUIRED')
-    return _sha_bytes(Path(filename).read_bytes()), producer.__module__ + ':' + producer.__qualname__
+    return producer_binding(producer, error_type=AccessDenied)
 
 
 def _authorize(request, producer, trust, campaign, now_ms, *, fixture=False):
@@ -195,7 +190,11 @@ def _create_durable(path, value):
 
 
 def _execute(request, producer, trust, campaign, journal, now_ms, reader, *, fixture=False):
+    # Keep the authenticated request stable across the reader callback.
+    request = deepcopy(request)
     plan, next_campaign, ticket = _authorize(request, producer, trust, campaign, now_ms, fixture=fixture)
+    approved = request['signed_approval']['payload']['binding']
+    expected_producer = (approved['producer_code_sha256'], approved['producer_qualname'])
     journal = Path(journal)
     # Fixed campaign key: changing approval id, data path or request filename does
     # not allocate another run. The journal is never reset by this module.
@@ -213,6 +212,10 @@ def _execute(request, producer, trust, campaign, journal, now_ms, reader, *, fix
         raw = reader(request, trust)
         if _sha_bytes(raw) != request['source']['data_sha']:
             raise AccessDenied('SEALED_DATA_HASH_MISMATCH_ALLOCATION_CONSUMED')
+        # Recheck after IO: a callback mutated while reading must not receive
+        # protected bytes. A failed check keeps the already-consumed reservation.
+        if _producer_binding(producer) != expected_producer:
+            raise AccessDenied('PRODUCER_CHANGED_AFTER_AUTHORIZATION')
         output = producer(raw)
         receipt = {'state': 'DISPATCH_COMPLETED', 'ticket_sha': ticket['receipt_sha256'],
                    'output_sha': guard.sha(output), 'bytes_read': len(raw),
@@ -256,6 +259,8 @@ def dispatch(request, producer):
 
     Request is public metadata. Producer is a top-level bytes -> dict function
     whose exact module bytes and qualified name were externally approved.
+    The actual code object and canonical module namespace must match that source
+    before reservation and again before dispatch; metadata alone never suffices.
     """
     if not isinstance(request, dict) or set(request) != REQUEST_KEYS:
         raise AccessDenied('EXACT_REQUEST_KEYS_NO_TRUST_OR_FIXTURE_INJECTION')

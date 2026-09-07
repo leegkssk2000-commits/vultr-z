@@ -1,0 +1,310 @@
+[CONTINUE / NEW WORK — PR #1201 누적 수선 + Top5 메커니즘 이식]
+
+0. 목표·승인 범위
+사용자가 이 실행문을 Work에 첨부해 실행을 지시하면 아래 한정 DEV 작업을 승인한다.
+목표는 KR1의 비용 후 흑자와 유효한 기존 개선을 보존하며 부작용을 수선하고,
+다른 Top5에는 호환되는 ‘상태별 보유·청산·기회 관리’ 메커니즘을 실제 시험하는 것이다.
+자격심사·로드맵·관측기 재설계로 주작업을 바꾸지 않는다. 성공을 보장하지 않는다.
+
+별도 신규 후보 예산: 총 최대 5개, 아래 명시된 각 후보 최대 1개씩.
+A묶음: Keltner KR2 → Supertrend SR1 → Break V2 BR1 (최대 3개).
+B묶음: TrendRider Primary TPR1 → Broad TBR1 (각 1개).
+한 lane의 미실행/실패가 다른 lane의 허용된 실측을 막지 않는다.
+B묶음은 A묶음의 경제 PASS를 선행조건으로 삼지 않는다. 다만 계산·쓰기는 직렬이다.
+한 후보 실패 후 같은 lane의 대체 규칙/임계치/후보를 자동 생성하지 않는다.
+
+이는 G5_DEV_NO_CREDIT 연구 승인이다. 실제 주문·실계좌 sizing·운영 교체·
+G5A/G5B/Survivor/G6 공식 승격·유료 외부 AI·새 시세 수집·새 스케줄러는 승인하지 않는다.
+신규 연구용 adapter, 관련 합성·회귀검증, 필요한 CI/PR/병합/master 재현은 허용한다.
+지금 측정한 개선분을 독립 미래 우위라고 주장하지 않는다.
+
+1. 출발점·중복 방지·보존
+Repository: leegkssk2000-commits/vultr-z
+마지막 확인 앵커: PR #1201
+merge SHA: c934068d958793cff134182f73fe73148f72b8ea
+이를 과거 checkout/reset의 명령으로 사용하지 않는다. 실제 최신 origin/master를 확인한다.
+current branch, local HEAD, 미커밋, 원격 미반영 commit, 동일 목적 PR/실행/결과만 좁게 확인한다.
+이미 실행된 동일 작업이면 결과/체크포인트를 회수한다. 중복 경제 실행 금지.
+reset --hard/clean/기존 브랜치 일괄 병합/원장 덮어쓰기 금지.
+
+기존 후보34건 보존: 후보33 KR1=TRADEOFF/TRADEOFF, 후보34 QF1=REJECT/REJECT.
+KR1은 부분 개선 연구분기이며 채택 완료 incumbent가 아니다.
+M/M1/M2, Q0/Q1/Q2/B/QF1, Primary/Broad/Supertrend의 기존 판정과 데이터·코드는 보존한다.
+Q0 원형 및 Q0_FROZEN_20260907_V1 연구 관측을 중간 교체하거나 다시 만들지 않는다.
+독립 비교0/1 NOT_RUN, 기사용 평가1/1, Q0 자격심사 추가0/1은 서로 다른 과거 기록이다.
+옛 봉인 SPEC의 후보26/32 등 역사적 숫자를 현재 누계로 덮어쓰지 않는다.
+
+실제 새 후보 경제 실행을 시작할 때만 다음 연속 번호를 기록한다(첫 신규는 35).
+5개 모두 실제 실행하면 최대39. 미실행 lane은 번호를 소비하지 않으며 슬롯 전용도 하지 않는다.
+두 기간과 FIXED/FULL은 해당 후보의 사전 승인 비교 묶음이다. 모든 baseline/비교 실행을 기록한다.
+기존 원장의 기여 합계 검산은 새 후보 실측이 아니다. 반면 새 규칙을 적용해 수익을 계산하면
+‘진단’이라는 이름이어도 신규 경제 실행이다. 파라미터 탐색을 진단으로 숨기지 않는다.
+
+2. 최소 읽기 경로와 현재 확인된 근거
+주요 근거 root:
+research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1/
+  REPORT.md, REVIEW.md, SPEC.json, KR1/receipt.json, KR1/DEV2025.json.gz,
+  KR1/SEEN2026.json.gz, QF1/receipt.json, TRIAL_LEDGER.json, durable_receipt.json
+
+소스/소유자:
+backend/research/rebuild/keltner_kr1_v1.py
+backend/research/rebuild/keltner_m2_context_v1.py
+backend/research/rebuild/keltner_opportunity_reservation_adapter_v1.py
+backend/research/rebuild/top5_performance_sprint_v1.py
+backend/research/rebuild/top5_sprint_metrics_v1.py
+backend/research/contracts/a1_top5_replacement_child_freeze_v2.json
+backend/research/contracts/top5_development_repair_v1.json
+backend/research/rebuild/top5_development_repair_v1.py
+backend/research/rebuild/top5_development_native_v1.py
+backend/research/rebuild/trend_policy_batch_v1.py
+backend/research/rebuild/trend_rider_wr80_us_chase_cooling_child_policy_v1.py
+backend/research/rebuild/a1_exact25_generic_evaluator_v1.py
+
+현재 적용범위 확인용(전수 재감사 아님):
+backend/research/rebuild/g5_g14_governance_contract_v1.json
+backend/research/rebuild/a1_top5_latest_only_ssot_v1.json
+
+기존 실패의 중복 확인:
+TOP5_EXIT_20260906_V1, TOP5_STATE_20260906_V1,
+SUPERTREND_FLIP_AB_20260906_V1 및 관련 exact rule/parent 기록.
+공통 cost-cover/BE, first-signal, Supertrend flip·signal-low 실패를 이름만 바꿔 반복하지 않는다.
+
+확인된 KR1 비용·미완결 포함 종료 손익(base / cost2), 단위 trade-bps:
+2025: +9,367.471416 / +4,831.293131
+2026: +4,414.411183 / +2,660.132945
+KR1 marked DD: 2025 12,640.258962; 2026 약4,409.68.
+비교 M2 종료 손익: 2025 +6,097.0897/+1,849.1855; 2026 -134.3529/-1,794.1235.
+이 숫자는 보존 대조군이지 새 후보의 성적이나 새 PASS 임계치가 아니다.
+
+3. 새 후보 전 동결·공통 시험 조건
+전략별 정확한 parent ID, code/data/cost SHA, 시간 의미, 평가기간, 초기 상태,
+기존 손절·TP·timeout·점유/cooldown, 실제 사용할 helper를 manifest에 결속한다.
+이름이 비슷한 native Supertrend와 highvol V2를 혼동하지 않는다.
+
+새 후보의 코드·규칙·기준은 새 경제 결과 전에 공개 commit으로 동결한다.
+A묶음과 B묶음은 별도로 동결할 수 있으나, 한 묶음의 결과를 보고 다른 규칙을 재튜닝하지 않는다.
+동일 가설/부모의 기완료 실험 발견 또는 소스 불일치는 해당 lane만 중단·회수한다.
+합성자료로 disabled=parent, causal timing, stop priority, restart, accounting을 먼저 검증한다.
+필수 source/identity/비용 무결성 실패는 그 입력을 이용한 실행을 중단한다.
+Q0 formal 적용계약 미충족은 아래 연구용 시험 전체의 차단 사유가 아니다.
+
+4. Keltner KR2 — 연장 판단봉의 구조 이탈에 한정한 추가 청산
+제안 ID: KELTNER_KR2_RUNNER_DECISION_LOW_DEV_V1 (기존 동일 ID/규칙이면 중복 금지).
+부모: PR1201의 KR1_FULL. 고정 대조군: M, M2, KR1.
+
+가설:
+KR1은 원래 만료 직전 봉으로 연장을 결정하지만, 연장 후에는 EMA20 이탈을 기다린다.
+그 연장 판단봉의 가격 범위를 잃으면 EMA20 이전에 연장 전제를 상실했는지 시험한다.
+이 조건의 증분효과는 아직 측정하지 않았다. 기존 신호봉 저가 M1과 같은 규칙이 아니다.
+
+정확한 변경:
+- KR1의 원래 extension decision(index=native_exit-1)에서 allowed=true일 때
+  그 완료봉의 low를 runner_anchor_low로 한 번 저장한다.
+- KR1의 진입·M2 초기 청산·연장 허용조건·HOLD·최대 2*HOLD·timeout 의미는 그대로다.
+- 추가 조건은 원래 만료 index부터 실제 연장 구간에만 적용한다.
+- 완료봉 close < runner_anchor_low이면 다음 봉 시가에 청산한다.
+- 기존 close<=EMA20 runner 청산과 EMA 추세 소멸/M2 청산도 그대로 유지한다.
+- runner_anchor_low는 이후 봉 저점으로 올리거나 내리지 않는다. 비율/ATR 배수 없음.
+- 연장을 허용하지 않은 포지션에는 이 조건을 절대 적용하지 않는다.
+- 이미 청산된 포지션/예정된 다음 시가 주문에는 추가 조건을 중복 적용하지 않는다.
+- 최초 판단봉의 아직 미완성인 low 사용, low 가격 즉시 체결, 당일 종가 사후선택 금지.
+- 기존 hard-stop/gap/기존 청산 우선순위와 scheduled cap 처리는 부모 의미를 보존한다.
+
+D 기반 원래 참조 점유는 그대로다. 실제 청산시점 변화가 FULL의 후속 기회를 바꿀 수 있으므로
+이를 차단됐던 원장 ID로 사후 고정하지 않는다. 인과적으로 actual slot을 추적한다.
+FIXED에서는 원래 KR1의 동일 진입 진단, FULL에서는 실제 signal/reference/actual slot을 재생한다.
+기여를 공통 청산 변화/제외·복원/새 거래/미완결 전환으로 분해한다.
+
+KR2 목표: 두 기간 비용·미완결 포함 흑자를 지키면서 KR1의 DD 및 승리 반납을 줄일 수 있는지.
+KR1보다 더 일찍 나가면 이후 대승을 놓칠 수 있다. 이 피해를 숨기지 않는다.
+고정 partial 비율, BE, EMA 기간 변경, 다른 봉 저가 선택을 이번 후보에 섞지 않는다.
+
+5. 다른 Top5로 이전할 공통 메커니즘의 경계
+이전하는 것은 Keltner 거래·손익·승격 자격이 아니다.
+기존 진입을 보존하고 ‘시간이 됐다는 이유만으로 끝내는 수익 중 추세’를
+관측 가능한 native trend 상태가 유지될 때만 유한하게 더 보유하는 절차다.
+
+각 host에서는 시간 청산만 연장한다. native SL/TP/기존 조건부 청산은 우회하지 않는다.
+만료 판단은 native 예정 만료보다 한 완료봉 전. 실제 native index convention을 읽어
+off-by-one을 보존하고, timeframe 및 H 숫자를 Keltner에서 무조건 복사하지 않는다.
+연장 구간에서만 추가 추세 소멸 청산을 허용한다. 원래 보유 구간의 실패 청산을 동시에 바꾸지 않는다.
+최대 연장은 각 host의 원래 H봉 1회, 총 상한은 원래 timeout에서 H봉 추가.
+현재 원형에 executable hard stop이 없다면 없다고 명시한다. 새 SL을 확보했다고 주장하지 않는다.
+
+6. Supertrend SR1 — 시간 청산 12봉 V2에 유한 러너 이식
+제안 ID: SUPERTREND_V2_FINITE_RUNNER_SR1_DEV_V1
+정확한 부모: supertrend_replacement_highvol_mom_long_4h_h12_v2
+코드상 entry: abs(ret1)>=1.5*retstd20 AND ret1>0 AND ema20>ema50.
+명칭은 Supertrend지만 이 V2에 존재하지 않는 native Supertrend line을 실행 feature로 발명하지 않는다.
+기존 flip A/B 또는 M2 신호봉 저가 청산을 함께 붙이지 않는다.
+
+- 원형 signals, side=long, entry next open, 4h, H=12, 초기 수량/비용 유지.
+- 원래 timeout 직전 완료봉에서 close>실제 모형 entry_price AND close>ema20>ema50이면
+  딱 한 번 H=12봉 연장, 아니면 원래 시간 청산 유지.
+- 연장 구간에서 close<=ema20 또는 ema20<=ema50이면 다음 시가 청산.
+- 기존 최대 연장 종료시각, strict-end, 미완결 가상평가를 동결한다.
+- 실제 연장 포지션은 같은 종목의 원형 점유권을 차지한다.
+기존 long/short flip 실패와 SR1의 시간 청산 변경은 다른 가설로 기록한다.
+
+7. Break BR1 — Q0를 되돌리지 않고 기존 V2의 시간 청산 분기만 시험
+제안 ID: BREAK_V2_FINITE_RUNNER_BR1_DEV_V1
+정확한 부모: break_replacement_breakout50_long_4h_h6_v2
+entry: close>lag(highest50,1) AND ema20>ema50 AND vol_ratio(20)>=1.1.
+이 branch는 기존 Break V2를 대조하는 별도 연구 분기다. Q0의 대체/초기화가 아니다.
+기존 Q0와 다른 Break child의 더 좋은 결과·실패 기록도 그대로 유지한다.
+
+- 원형 4h, long, H=6, 진입 및 50봉 돌파·거래량 조건 보존.
+- timeout 직전 완료봉에서 close>entry_price AND close>ema20>ema50이면
+  한 번 H=6봉 연장, 아니면 원형 청산 유지.
+- 연장 구간 close<=ema20 또는 ema20<=ema50이면 다음 시가 청산.
+- 실제 점유·gap·미완결·추가 비용은 SR1과 같은 원칙으로 native 의미를 보존한다.
+- QF1의 확인 종가 상승 조건을 재도입하지 않는다.
+
+Q0에는 고정 timeout/TP가 없다. 따라서 ‘Q0의 12봉 보유 연장’이라는 가짜 이식을 금지한다.
+보고서의 Break 표에는 Q0 원형 보존과 BR1의 정확한 V2 부모를 별도 표기한다.
+서로 다른 entry/calendar의 Q0와 BR1 누적 bps를 단순 경쟁 순위나 자동 교체 근거로 쓰지 않는다.
+기존 V2에 이식이 성공하면 별도 branch 개선으로 보존하고, Q0를 자동 교체하지 않는다.
+
+8. TrendRider Primary TPR1 / Broad TBR1 — native 시간 청산만 선택 연장
+각 lane 별도 후보1개. 공유 아이디어라도 trade/economic trial은 2개로 센다.
+부모 코드:
+Primary: trend_rider_wr80_us_chase_cooling_child_policy_v1.py의 native policy
+Broad: trend_policy_batch_v1.py의 native TrendRider policy
+기존 top5_development_native_v1.NativeFeatureCache/native_replay 및 native owner 재사용.
+정확한 부모 ID/설정 SHA를 별도로 보존한다. 두 lane의 신호·진입·과거 거래를 합치지 않는다.
+
+확인된 의미:
+- native1h, BTC/ETH 자료를 사용하는 경로다. 4h 7종목으로 임의 교체하지 않는다.
+- 설정 timeout_bars=48, 실제 evaluator의 48+1 entry-bar 관례를 먼저 읽고 그대로 유지한다.
+- initial native SL 및 SL-first execution, cooldown/transition ownership은 반드시 유지한다.
+- 설정의 trailing=true/runner=true는 기존 평가기에서 전부 실행됐다는 뜻이 아니다.
+  구현되지 않은 trailing을 이번에 함께 구현하거나 이미 운용됐다고 주장하지 않는다.
+
+한정 규칙:
+원래 timeout의 직전 완료봉에서 실제 포지션이 살아 있고 다음 두 조건이 참일 때만
+native H(48)봉을 한 번 연장한다. 실제 만료 index는 native owner의 정의를 따른다.
+  A. side 방향의 가격 수익이 양수:
+     long close>entry_price; short close<entry_price.
+  B. native 유지 추세:
+     long: direction==1 AND close>native_supertrend_line AND close>native_EMA50
+           AND EMA50[j]>EMA50[j-1].
+     short: direction==-1 AND close<native_supertrend_line AND close<native_EMA50
+            AND EMA50[j]<EMA50[j-1].
+B는 native feature의 기존 trend 핵심을 사용한다. 일회성 transition 최초발동,
+세션 재진입 허가, chase/previous candle 신규 진입 조건까지 보유 중 다시 요구하지 않는다.
+원래 진입 조건·세션/US cooling·risk·leverage·SL은 그대로다.
+
+연장 구간에는 native SL을 계속 우선 적용한다.
+위 B 유지 추세가 완료봉에서 거짓이면 다음 native1h 시가에 청산한다.
+기존 TP가 실제 존재하는 부모라면 TP도 유지하며, 이를 넘겨 runner로 만드는 것은 금지한다.
+모든 강제 청산·native timeout upper bound·gap 의미를 보존한다.
+
+native trailing flag와 별개인 이번 명시적 TIMEOUT_ONLY_EXTENSION을 구분한다.
+SL을 먼저 맞는 거래는 구하지 못한다. SL 손실 때문에 원형이 적자라면
+시간 연장만으로 복구되지 않을 수 있다는 한계를 별도 보고한다.
+
+먼저 기존 저장 원장/trace에서 원형 time-stop 발생 여부만 확인한다.
+원형에 실행 가능한 시간 청산이 없거나 데이터상 적용 기회 자체가 없다면
+해당 후보는 NOT_APPLICABLE/NOT_RUN으로 남긴다. 같은 lane에서 다른 SL/진입 후보를 자동 만들지 않는다.
+실행한 뒤에야 적용0을 알았다면 실제 계산 사실과 사용 슬롯을 숨기지 않는다.
+
+9. 데이터·기간·실험 순서
+Keltner: PR1201의 정확한 DEV2025/SEEN2026, source/cost/warmup/strict-end를 재사용한다.
+SR1/BR1: 기존 동결 4h source의 같은 두 기사용 기간을 별도로 승인한다.
+다른 lane이 이미 읽은 기간은 새로운 독립 OOS가 아니다. cross-lane data reuse를 명시한다.
+새 source의 근거 없이 학습/평가기간을 늘리거나 유리한 구간으로 잘라내지 않는다.
+
+TPR1/TBR1: 기존 sealed native1h BTC/ETH 전체 DEV 구간부터 사용한다.
+2026 native1h 자료가 현재 저장소에 실제로 존재하고 이미 사용된 구간이며 계보를 확인할 수 있을 때만
+결과를 보기 전 동일한 2026 평가 경계를 동결해 추가 비교한다.
+없으면 ‘2026 native1h 미확보’로 남기되 적격 2025 비교까지 막지 않는다.
+4h OHLCV를 1h로 쪼개 생성하거나 다른 strategy의 4h 손익을 native 수익으로 사용하지 않는다.
+데이터를 새로 수집/구매하거나 2026-09-05 이후 가격·Q0 미래 관측 성과를 해독하지 않는다.
+
+원래 부모와 동일 entry/calendar/cost의 baseline parity를 검증하고,
+필요한 baseline 새 구간 계산은 candidate 비교의 일부로 명시한다.
+기존 보호 결과를 다시 전부 실행하지 않는다. 해당 새 비교에 필요한 owner만 호출한다.
+
+10. 공통 회계·점유·강건성 검수
+원형 참조 점유와 실제 포지션 상태를 분리한다. 참조 종료를 과거 trade exit_ts로 선입력하지 않고
+완료봉을 순서대로 처리하여 결정한다. native ownership/cooldown 정의를 그대로 사용한다.
+FULL에는 연장 때문에 막힌 신호, 새로운 진입, 밀려난 진입, 비용과 포지션 종료의 연쇄 효과를 포함한다.
+FIXED는 진단용 독립 경로로서 overlap 가능성을 표시한다. 실행 가능한 포트폴리오라고 부르지 않는다.
+
+모든 기존 승리/손실/미완결을 포함한다. closed→open이 되면 그 손실을 제거하지 않는다.
+거래가 없어진 것을 zero-PnL 승리로 기록하지 않는다. timeframe별 UTC 평가를 맞춘다.
+기존 full roundtrip research fee/spread/impact/slippage/funding/floor를 유지하고
+실제 보유시간·정산 횟수에 따라 비용을 재계산한다. 기본과 전체cost2 모두 계산한다.
+순손익에 포함된 비용 절감을 다시 가산하지 않는다. 실제 signed funding/체결을 확보했다고 주장하지 않는다.
+기존 가격 proxy와 실제 SL 체결시각 상한 한계는 유지하며 변경하지 않는다.
+
+필수 테스트: disabled exact parent; signal/preparation 불변; closed-bar availability;
+next-open only; last-bar censoring; native SL/TP priority; extension once; finite cap;
+KR2 anchor immutability; extension 전 KR2 미발동; restart state parity;
+reference/actual slot separation; same-source duplicate no-op; mixed close/open accounting.
+1h와4h, long/short를 다른 테스트로 검수한다. threshold/code를 결과 후 바꿔 재측정하지 않는다.
+
+11. 판단과 최종 첫 표
+기존 적용 가능한 decision owner/임계값을 읽어 사전에 고정한다. 과거 판정은 덮어쓰지 않는다.
+각 신규 비교는 absolute economics, incremental gain, risk/giveback, evidence를 분리한다.
+새로운 임의 PF/승률/회복일 임계값을 현행 SSOT에 넣지 않는다.
+
+KR2 표: M / M2 / KR1 / KR2, 기간별 다음 항목.
+각 이식 lane 표: 정확한 parent / FIXED / FULL, 기간별 같은 항목.
+  진입·완결·미완결, 승률, 평균 순승리·순손실, 실현 손익비, PF,
+  완결 순기대값, 종료 순손익, 종료cost2, marked DD, 최대 묶음 연패,
+  완료 회복·종료 미회복, 노출 symbol-days, 최대 동시포지션, 비용내역,
+  일반·큰 승리 금액 보존, 승리→손실, 제거·새 진입·C/O 전환.
+  최대 기여1거래 제외 산술 진단, 종목·월·동시 사건 집중, frozen uncertainty/한계.
+
+KR2는 기존 KR1의 두 기간 흑자를 유지했는지와 위험/승리 훼손을 줄였는지를 우선 본다.
+이익을 크게 버리고 DD만 낮춘 후보를 수익 개선이라고 하지 않는다.
+KR1보다 모든 지표가 좋아져야 한다고 과거 판정을 바꾸지는 않되, 반납한 이익을 반드시 수치로 제시한다.
+
+다른 lane은 원형보다 조금 덜 잃은 결과와 자체 비용 후 양수 결과를 분리한다.
+한 lane 성공을 다른 lane의 PASS로 전이하지 않는다. 같은 Primary/Broad 거래 중복도 독립으로 세지 않는다.
+기간 간 방향이 다르면 TRADEOFF/REJECT 한계를 보존한다. 긍정적 부분분기는 남기고 부모는 지키되,
+부분개선을 공식 채택/Survivor로 자동 승격하지 않는다.
+
+Top5 최종 표는 반드시 각 lane에 다음 중 실제 상태를 넣는다:
+  측정 완료 + 경제 결과 / 미실행 + 정확한 적용불가·데이터·시간 체크포인트 사유.
+‘나머지 보존’만 적고 이번 이식 여부를 생략하지 않는다.
+
+12. 작업시간·CI·종료
+실제 경제 실행 담당1명, 독립 검토가 필요하면 read-only 담당1명까지.
+여러 worker가 같은 시세/후보를 중복 실행하거나 전역 patch를 동시에 사용하지 않는다.
+일괄 스윕 대신 manifest에 고정된 순서대로 직렬 실행한다.
+
+15분간 새 코드·로그·결과·원격 상태 변화가 없으면 마지막 실제 실행 ID와 진전 여부를 확인한다.
+45분 시점에 반드시 안전 체크포인트를 저장한다. 구현/실측/CI 진행 단계, 완료 후보,
+남은 후보·예산, 정확한 branch/SHA/run ID를 기록한다. 끝난 작업은 반복하지 않는다.
+현재 한 응답/세션에서 모두 완료할 수 없으면 원격 수행을 보존하고 PARTIAL로 종료한다.
+사용자의 다음 ‘이어서’에서는 같은 승인 예산 안의 남은 후보만 재개한다.
+최대한 빨리 끝내라는 이유로 필수 무결성·경제 계산·미완결 보고를 생략하지 않는다.
+
+A/B 각 묶음당 최대1개 PR, 공통 중복 보고서/플랫폼 생성 금지.
+필수 CI PASS일 때만 병합하고, 해당 묶음의 master exact-reproduction 완료 후 즉시 종료한다.
+완료 후 재감사/추가 후보/다른 lane 자동 확장 금지. 새 검토 이슈는 별도 구체적 미결로 보고한다.
+운영 G5B·Q0 관측·실주문·유료 API 정책은 그대로다.
+
+13. 이번 전달물의 현재 상태
+이 파일은 다음 Work의 시험 명세와 승인 범위다. KR2/SR1/BR1/TPR1/TBR1 경제 결과는 아직 없다.
+현재 대화에서는 PR1201 master artifact를 회수해16개 저장파일SHA와
+282개 원형 진입의 저장 손익 증분을 검산했다. 전략 evaluator/새 가격 경로는 실행하지 않았다.
+기존34건 이후 슬롯은 아직 소비하지 않았다.
+
+저장 원장 검산(모두 비용 반영 순증분의 부호별 합계; gross PnL 아님):
+2025: KR1-M2 양의 기여 +14,675.222150, 음의 기여 -11,404.840432 = +3,270.381718.
+      양의 기여31개 origin / 음의 기여50개; 연장 허용83개(무변화도 있음).
+2026: 양의 기여 +6,793.626660, 음의 기여 -2,244.862613 = +4,548.764047.
+      양의 기여10개 origin / 음의 기여14개; 연장 허용25개.
+이 사후 그룹은 실행 feature가 아니다. KR2의 효과가 사전 입증됐다는 뜻도 아니다.
+
+원천 artifact: master run34096715300 / artifact10008887563.
+ZIP SHA256: 71871eb21777bef408bc04349dbd5a01621330b60edd4b9e29eb2253145aaa96
+KR1 DEV gzip SHA256: 813c2d4715ba23032f88fdeee4928bbc470b77f3829ca31a750899fcd3ed12f8
+KR1 SEEN gzip SHA256: 7593a0e476579162551078918c8513a88fdb681ef92c120a7cdc4a404f75afea
+KR1 receipt seal: 2ce6632b174315fbd34e2446bf365d95ed76c1065b6d4c6bc1bd9312d4e771d0
+
+이후 실제 명세 동결 시 현재 원본을 직접 읽고 exact code/data/계산 시각 의미를 일치시킨다.
+이 전달물의 일반 설명을 빌미로 원형 오류를 숨기거나 SL/timeout 의미를 임의 변경하지 않는다.

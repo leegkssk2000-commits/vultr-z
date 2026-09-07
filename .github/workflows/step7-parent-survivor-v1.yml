@@ -35,26 +35,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: New contract source and validation boundary tests
+      - name: New execution path regression only
         run: |
           set -euo pipefail
-          python -m unittest backend.research.rebuild.test_step7_campaign_v1 backend.research.rebuild.test_step7_candidate_contract_v1 backend.research.rebuild.test_step7_source_bridge_v1 backend.research.rebuild.test_step7_independent_validation_v1 -v
+          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_kr3_execution_v1 backend.research.rebuild.test_step7_source_sequence_v1 backend.research.rebuild.test_step7_design_feasibility_v1 backend.research.rebuild.test_step7_execution_path_v1 -v
           npm run --prefix frontend/z-os-app-source validate
-      - name: Exact STEP7 application and frozen integration reproduction
+      - name: Frozen native nine-report integration reproduction
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.step7_candidate_contract_v1 --selection research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/SELECTION.json --output research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/CONTRACT/APPLICATION.json --verify
-          python -m backend.research.rebuild.step7_campaign_v1 --verify
+          python -m backend.research.rebuild.step7_execution_path_v1 --verify
+          python -m backend.research.rebuild.step7_kr3_execution_v1 --fixture --out-dir out/step7-path-integration
+          python -m backend.research.rebuild.step7_execution_path_v1 --verify-fixture out/step7-path-integration
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: step7-implementation-${{ github.run_id }}
-          path: research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR
+          name: step7-path-implementation-${{ github.run_id }}
+          path: |
+            out/step7-path-integration
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/EXECUTION_PATH
           retention-days: 90
-  source:
+  source_sequence:
     needs: verify
-    if: github.event_name == 'push' && github.run_attempt == 1 && startsWith(github.event.head_commit.message, 'Merge STEP7 task-c28e09b57c612762')
+    if: github.event_name == 'push' && github.run_attempt == 1 && startsWith(github.event.head_commit.message, 'Merge STEP7 execution path task-c28e09b57c612762')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -70,16 +73,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Reserved canonical public source bundle once
+      - name: Additional allocated native source sequence once
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python -m backend.research.rebuild.step7_campaign_v1 --collect-source out/step7-source
+          python -m backend.research.rebuild.step7_execution_path_v1 --collect-source out/step7-path-source
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: step7-source-${{ github.run_id }}
-          path: out/step7-source
+          name: step7-path-source-${{ github.run_id }}
+          path: out/step7-path-source
           if-no-files-found: error
           retention-days: 90

@@ -1,0 +1,65 @@
+name: Top5 Cumulative V4
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*combined_v1.py'
+      - 'backend/research/rebuild/*cumulative_v1.py'
+      - 'backend/research/rebuild/*kr3_evidence_adapter_v1.py'
+      - 'backend/research/rebuild/*api_pilot_runtime_v2.py'
+      - 'backend/research/rebuild/*supertrend_h12_diagnostic_v1.py'
+      - 'research/development_evidence/TOP5_AFTER_PR1205_CUMULATIVE_DEV_G5_SUBAGENTS_V1/**'
+      - '.github/workflows/top5-cumulative-v4.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*combined_v1.py'
+      - 'backend/research/rebuild/*cumulative_v1.py'
+      - 'backend/research/rebuild/*kr3_evidence_adapter_v1.py'
+      - 'backend/research/rebuild/*api_pilot_runtime_v2.py'
+      - 'backend/research/rebuild/*supertrend_h12_diagnostic_v1.py'
+      - 'research/development_evidence/TOP5_AFTER_PR1205_CUMULATIVE_DEV_G5_SUBAGENTS_V1/**'
+      - '.github/workflows/top5-cumulative-v4.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-cumulative-v4-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Causal combined exit tests and free adapter regression
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_trend_primary_combined_v1 backend.research.rebuild.test_top5_cumulative_v1 -v
+          for pattern in test_kr3_evidence_adapter_v1.py test_api_pilot_runtime_v2.py test_supertrend_h12_diagnostic_v1.py; do
+            python -m unittest discover -s backend/research/rebuild -p "$pattern" -v
+          done
+          python -m backend.research.rebuild.top5_cumulative_v1 --check-only
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Serial exact reproduction of committed TPC1 only
+        if: hashFiles('research/development_evidence/TOP5_AFTER_PR1205_CUMULATIVE_DEV_G5_SUBAGENTS_V1/TPC1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.top5_cumulative_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-cumulative-v4-${{ github.run_id }}
+          path: research/development_evidence/TOP5_AFTER_PR1205_CUMULATIVE_DEV_G5_SUBAGENTS_V1
+          retention-days: 90

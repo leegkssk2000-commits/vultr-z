@@ -48,12 +48,13 @@ jobs:
             'backend/research/rebuild/step7_authorized_io_v1.py',
             'backend/research/rebuild/step7_callable_binding_v1.py',
             'backend/research/rebuild/test_step7_callable_binding_v1.py',
+            'backend/research/rebuild/test_step7_g5a_contract_scope_v1.py',
           }
           prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/'
           auth_only = bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
           if auth_only:
-            # The original PR1210 spec and result remain immutable historical
-            # evidence. Only its explicitly changed auth/CI files may differ.
+            # PR1210 remains historical evidence. Only authorized auth/CI drift
+            # is exempted; all unchanged candidate/producer/design bytes match.
             base = pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR')
             spec = json.loads((base/'EXECUTION_PATH/SPEC.json').read_text())
             allowed_drift = {'.github/workflows/step7-parent-survivor-v1.yml',
@@ -65,10 +66,10 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:
             f.write('auth_only=' + str(auth_only).lower() + '\n')
           PY
-      - name: Changed authorization boundary regression
+      - name: Changed authorization boundary and G5A scope regression
         if: steps.scope.outputs.auth_only == 'true'
         run: |
-          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_callable_binding_v1 -v
+          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_callable_binding_v1 backend.research.rebuild.test_step7_g5a_contract_scope_v1 -v
           npm run --prefix frontend/z-os-app-source validate
       - name: New execution path regression only
         if: steps.scope.outputs.auth_only != 'true'

@@ -1,0 +1,75 @@
+name: Top5 KR1 QF1 Frozen Performance
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*keltner_kr1_v1.py'
+      - 'backend/research/rebuild/*q0_qf1_v1.py'
+      - 'backend/research/rebuild/*top5_sprint_metrics_v1.py'
+      - 'backend/research/rebuild/*top5_performance_sprint_v1.py'
+      - 'research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1/**'
+      - '.github/workflows/top5-performance-sprint-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*keltner_kr1_v1.py'
+      - 'backend/research/rebuild/*q0_qf1_v1.py'
+      - 'backend/research/rebuild/*top5_sprint_metrics_v1.py'
+      - 'backend/research/rebuild/*top5_performance_sprint_v1.py'
+      - 'research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1/**'
+      - '.github/workflows/top5-performance-sprint-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-performance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  frozen-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Synthetic timing, slot, accounting and parent preservation
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_top5_performance_sprint_v1 backend.research.rebuild.test_keltner_m2_context_v1 backend.research.rebuild.test_keltner_opportunity_reservation_adapter_v1 backend.research.rebuild.test_parallel_exit_keltner_v1 backend.research.rebuild.test_break_channel_structure_v1 backend.research.rebuild.test_parallel_exit_metrics_v1 backend.research.architecture_factory.test_g5a_development_event_evaluator_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+          python -m backend.research.rebuild.top5_performance_sprint_v1 --check-only
+      - name: Serial exact reproduction of committed receipts only
+        if: hashFiles('research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1/*/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/top5-sprint-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/top5-sprint-input
+          for candidate in KR1 QF1; do
+            if test -f "research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1/$candidate/receipt.json"; then
+              python -m backend.research.rebuild.top5_performance_sprint_v1 --candidate "$candidate" --data-dir /tmp/top5-sprint-input/research/data/g5a_stage_v1 --verify-only
+            fi
+          done
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/TOP5_PERFORMANCE_SPRINT_20260907_V1
+          if-no-files-found: error
+          retention-days: 90

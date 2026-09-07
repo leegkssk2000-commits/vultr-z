@@ -1,6 +1,6 @@
 # STEP7 — KR3 정확한 후보에서 독립 검증으로 연결
 
-주심사 후보는 KELTNER_KR3_PRIOR_SUPPRESSED_BREACH_EXTENSION_VETO_DEV_V1의 FULL이다. 기존44건·PR1207·API0/0·모든 부분 개선/실패를 승계하며 신규 전략/SL/TP/퓨전은 실행하지 않았다. session_status=IN_PROGRESS, implementation_and_data_status=IMPLEMENTED_SOURCE_CAPTURE_PENDING, economic_campaign_status=BLOCKED_AUTHORITY_AND_INDEPENDENT_EVIDENCE. G5A 자격과 새 G5B terminal은 모두 미달이다.
+주심사 후보는 KELTNER_KR3_PRIOR_SUPPRESSED_BREACH_EXTENSION_VETO_DEV_V1의 FULL이다. 기존44건·PR1207·API0/0·모든 부분 개선/실패를 승계하며 신규 전략/SL/TP/퓨전은 실행하지 않았다. session_status=CHECKPOINTED / REPORT_ONLY, implementation_and_data_status=IMPLEMENTATION_MERGED_REPRODUCED_SOURCE_SNAPSHOT_STORED_FULL_EVIDENCE_INCOMPLETE, economic_campaign_status=BLOCKED_AUTHORITY_AND_INDEPENDENT_EVIDENCE. G5A 자격과 새 G5B terminal은 모두 미달이다.
 
 | KR3 저장 경제성 | 종료 | 승률 | PF | 손익비 | 종료 순손익 | 미완결 포함 terminal 가상 순손익 | 전체 cost2 가상 순손익 | DD | 미완결 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -19,7 +19,7 @@
 
 **실제 원천.** 기존 forward caller는 g5_forward_real_evidence_bridge_v4이며 active V2용 TIME_STOP_ONLY 경로다. 본 작업은 이를 교체하지 않는다. 선택된7종목과 기존 canonicalsource계약을 비교하여 public depth·240개4h OHLC·funding각1회, contracts공통1회인 최대22GET/1묶음을 준비했다. 첫오류종료·retry0, stream+symbol cursor, 원본sha공유, 재시작gap격리, parse online/offline동일성, 가용시각과native 다음시가 참조 검사를 구현했다. 실제시그널·체결·원장 parity는 아직 미실행이며 현재 snapshot으로 과거호가/체결을 복원하지 않는다.
 
-로컬 요청은 network approval cancelled before a decision was returned로 시장HTTP0. 승인된 기존 GitHubActions 실행환경의 이번 고정merge push에서만 root사전예약 source1묶음을 실행한다. 동일SHA 최초push run/run_attempt1만 허용하고 같은실험 새파일/재시도 우회는 차단한다. 실제원본은 가격이 개발자에 노출되지 않는 source artifact90일로 보존하고 공개메타/커서만 결과에 연결한다. 결과 수신 전에는 수집중/PASS라고 하지 않는다. 상시 수집기 추가나 Work시장대기는 없다.
+로컬 요청은 network approval cancelled before a decision was returned로 시장HTTP0. 승인된 기존 GitHubActions 실행환경의 고정merge push에서 root사전예약 source1묶음을 실제 실행·저장했다. 동일SHA 최초push run/run_attempt1만 허용하고 같은실험 새파일/재시도 우회는 차단한다. 실제원본은 가격이 개발자에 노출되지 않는 source artifact90일로 보존하고 공개메타/커서만 결과에 연결한다. 실제 결과는 아래 확정기록과 SOURCE/RUN_RECEIPT.json에 연결했다. 상시 수집기 추가나 Work시장대기는 없다.
 
 **정식 승인안 하나.** AUTHORITY/APPROVAL_BUNDLE.json 및 .md의11항목은 PENDING_AUTHORITY다. 무보호SL 연구cohort와 ATR20 통계R(계좌risk-R 아님), KR1 actualFULL 승리금액 retention, 승인·source준비후 시작30일×3, 실제점유overlap purge와96h embargo/7일runoff종료검토, causalregime/UTC일·점유연결군집, 최소5bps/component·power80%·familywise alpha.05/7, 동일sealed자료의4개control과6개neighbor, 완료봉60s/BBO2s·수신1s/RTT2s/clock500ms 한계, 2종목이상/단일종목양의이익50%이하/최대승리제거후양수 제안이다. 기존G5A/G5B 수치와 errors/duplicate/censored_open/unknown_exit=0은 유지한다. 모두 미사용성과 전에 제안한 값이며 기존승인으로 위장하지 않았다.
 
@@ -34,3 +34,12 @@ S2 원형parameter목록은 EMA20/50,HOLD12다. 이웃6개 (19,50,12),(21,50,12)
 재현명령: `python -m backend.research.rebuild.step7_candidate_contract_v1 --selection research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/SELECTION.json --output research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/CONTRACT/APPLICATION.json --verify`와 `python -m backend.research.rebuild.step7_campaign_v1 --verify`. 이 명령은 이미 완료된 경제실험을 돌리지 않는다. 완료 후 명령을 반복하지 않는다.
 
 외부AI 실제0, 공유기존사용/예약0/0과USD5·Gemini1/OpenAI1 한도를승계했다. G6/실주문/실계좌sizing/승격권한없음. 세션완료와 경제목표완료는 별도다. 경제미달/미래거래대기를 이유로 세션을 연장하지 않는다. Q0/G5B/기존수집/다른Work는 보존한다.
+
+
+**확정 실행 결과와 종료.** PR #1209 병합 SHA d37dbfa30cd7624d2db8980bac2df7e5afa7ad14, PR CI run34154128727(신규39시험 PASS 및 관련8워크플로success), 고정merge master run34154220234 completed/success. Source job101842608877도 완료했다. 원천22GET/22저장,7종목 각각 완료4h239봉·depth5레벨 snapshot·funding3행과 공통contracts1179행을 확보했다.22receipt의 online/offline parse 동일, 수신구간 내 duplicate0/검출gap0이다. 이는 과거 전체구간 무결성이나 전략 시그널/체결 parity PASS가 아니다.
+
+원본 artifact step7-source-34154220234, id10030394321,270475bytes, digest sha256:c1a9046d5fa3df93cf397746988d44d2b49ee6915409fea8b023baca2a9bc665, 만료2026-12-06T19:05:20Z. 개발자는 raw가격/신규성과를 열지 않고 sanitized메타만 연결했다. 마지막 실제 원천수신2026-09-07T19:05:52.003Z, source job 마지막로그2026-09-07T19:05:53.7275107Z. 상시수집 시작/과거BBO복원/실제체결/독립OOS 수행으로 보고하지 않는다.
+
+현재239완료봉 snapshot은 exact native seed·실제 의사결정·진입청산 당시 BBO/비용 증거를 완성하지 못한다. 따라서 W3 잔여source연결, W4 승인/전체producer/독립평가는 BLOCKED다. 이 작업의 원천1/1은 소비됐으며 재시도/새이름으로 예산초기화하지 않는다. independent0/1, 후보44보존·신규0, Gemini0/OpenAI0, 유료사용/예약$0/$0을 기록했다.
+
+세션은 CHECKPOINTED / REPORT_ONLY로 닫는다. 경제목표완료=false, G5A미충족, G5B새boundary0/freshT0/terminalPASS0. 불필요한 작업 소유 실행/대기 없음. S1~S4 산출물은 반영·종료됐으며 Q0/G5B/기존수집/다른Work는 건드리지 않았다. 미완료 작업별 담당·입력·잔여예산·조건부 다음명령과 아직 없는 실제경제실행 명령의 이유는 HANDOFF.json에 보존했다. 승인만으로 미완성 native/control/neighbor producer가 완성됐다고 취급하지 않는다.

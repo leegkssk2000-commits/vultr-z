@@ -1,0 +1,67 @@
+name: Top5 Frozen Mechanism B
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*top5_native_finite_runner_v1.py'
+      - 'backend/research/rebuild/*top5_mechanism_b_v1.py'
+      - 'research/development_evidence/TOP5_MECHANISM_B_20260907_V1/**'
+      - '.github/workflows/top5-mechanism-b-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*top5_native_finite_runner_v1.py'
+      - 'backend/research/rebuild/*top5_mechanism_b_v1.py'
+      - 'research/development_evidence/TOP5_MECHANISM_B_20260907_V1/**'
+      - '.github/workflows/top5-mechanism-b-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: top5-mechanism-b-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  frozen-mechanism-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Synthetic timing, slot, accounting and parent preservation
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_top5_mechanism_b_v1 backend.research.rebuild.test_top5_development_repair_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+          python -m backend.research.rebuild.top5_mechanism_b_v1 --check-only
+      - name: Serial exact reproduction of committed receipts only
+        if: hashFiles('research/development_evidence/TOP5_MECHANISM_B_20260907_V1/*/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          for candidate in TPR1 TBR1; do
+            if test -f "research/development_evidence/TOP5_MECHANISM_B_20260907_V1/$candidate/receipt.json"; then
+              python -m backend.research.rebuild.top5_mechanism_b_v1 --candidate "$candidate" --verify-only
+            fi
+          done
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-mechanism-b-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/TOP5_MECHANISM_B_20260907_V1
+          if-no-files-found: error
+          retention-days: 90

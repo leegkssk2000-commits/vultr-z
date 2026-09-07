@@ -3,11 +3,43 @@ on:
   pull_request:
     branches: [master]
     paths:
+      - 'backend/research/rebuild/*keltner_m2*_v1.py'
+      - 'research/development_evidence/KELTNER_M2_CONTEXT_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_m1*_v1.py'
+      - 'research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'backend/research/rebuild/*keltner_cumulative_entry*_v1.py'
+      - 'backend/research/rebuild/*parallel_exit*_v1.py'
+      - 'backend/research/rebuild/*top5_development_repair*_v1.py'
+      - 'backend/research/rebuild/*break_channel_source*_v1.py'
+      - 'backend/research/rebuild/*break_channel_metrics*_v1.py'
+      - 'backend/research/rebuild/*break_channel_q1_metrics*_v1.py'
+      - 'backend/research/rebuild/*q0_b_seen*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_probe*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_event_evaluator*_v1.py'
+      - 'backend/research/architecture_factory/*a1_gen2_generic_dev_econ*_v1.py'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
       - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
       - '.github/workflows/g5a-alpha-factory-lane-local-v1.yml'
   push:
-    branches: [master]
+    branches: [master, research/keltner-m2-context-v1]
     paths:
+      - 'backend/research/rebuild/*keltner_m2*_v1.py'
+      - 'research/development_evidence/KELTNER_M2_CONTEXT_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_m1*_v1.py'
+      - 'research/development_evidence/KELTNER_M1_SIGNAL_LOW_20260907_V1/**'
+      - 'backend/research/rebuild/*keltner_opportunity_reservation*_v1.py'
+      - 'backend/research/rebuild/*keltner_cumulative_entry*_v1.py'
+      - 'backend/research/rebuild/*parallel_exit*_v1.py'
+      - 'backend/research/rebuild/*top5_development_repair*_v1.py'
+      - 'backend/research/rebuild/*break_channel_source*_v1.py'
+      - 'backend/research/rebuild/*break_channel_metrics*_v1.py'
+      - 'backend/research/rebuild/*break_channel_q1_metrics*_v1.py'
+      - 'backend/research/rebuild/*q0_b_seen*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_probe*_v1.py'
+      - 'backend/research/architecture_factory/*g5a_development_event_evaluator*_v1.py'
+      - 'backend/research/architecture_factory/*a1_gen2_generic_dev_econ*_v1.py'
+      - 'backend/research/rebuild/a1_top5_replacement_child_prospective_v1.py'
       - 'backend/research/rebuild/g5_g14_governance_contract_v1.json'
       - '.github/workflows/g5a-alpha-factory-lane-local-v1.yml'
   workflow_dispatch:
@@ -40,3 +72,52 @@ jobs:
           assert e['Gemini_is_prerequisite'] is False
           print('PASS_CURRENT_TOP5_DEVELOPMENT_OWNER; NO_RESEARCH_GENERATION_OR_AUTHORITY')
           CHECK
+  m2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: M2 synthetic and direct dependency regressions
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+          python -m unittest backend.research.rebuild.test_keltner_m2_context_v1 backend.research.rebuild.test_keltner_opportunity_reservation_adapter_v1 backend.research.rebuild.test_keltner_opportunity_reservation_metrics_v1 backend.research.rebuild.test_keltner_cumulative_entry_adapter_v1 backend.research.rebuild.test_parallel_exit_keltner_v1 backend.research.rebuild.test_parallel_exit_metrics_v1 backend.research.architecture_factory.test_g5a_development_event_evaluator_v1 -v
+          python backend/research/rebuild/test_g5_g14_governance_validator_v1.py
+          python backend/research/rebuild/test_g5_g14_generation_controller_v1.py
+          python -m backend.research.alpha_proof.a1_alpha_proof_gate_v1 --self-test
+          python -m backend.research.architecture_factory.a1_common_source_semantic_guard_v1 --self-test
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Check M2 code and rule freeze before measurement
+        if: hashFiles('research/development_evidence/KELTNER_M2_CONTEXT_20260907_V1/receipt.json') == ''
+        run: python -m backend.research.rebuild.keltner_m2_study_v1 --check-only
+      - name: Reproduce the single frozen M2 result
+        if: hashFiles('research/development_evidence/KELTNER_M2_CONTEXT_20260907_V1/receipt.json') != ''
+        run: |
+          set -euo pipefail
+          data_ref=$(python -c "import json; print(json.load(open('backend/research/contracts/top5_development_repair_v1.json'))['data_ref'])")
+          git fetch --no-tags origin "$data_ref"
+          mkdir -p /tmp/keltner-m2-input
+          git archive "$data_ref" research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/keltner-m2-input
+          python -m backend.research.rebuild.keltner_m2_study_v1 --data-dir /tmp/keltner-m2-input/research/data/g5a_stage_v1 --verify-only
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keltner-m2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/development_evidence/KELTNER_M2_CONTEXT_20260907_V1
+          if-no-files-found: error
+          retention-days: 90

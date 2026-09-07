@@ -1,6 +1,6 @@
 # V5 승률·진입 품질 결과
 
-**DEV 경제 실행 완료: TPQ1 #44, FIXED/FULL REJECT. API_RUNTIME_BLOCKED. CI/병합/고정 merge 재현 진행 중.**
+**DEV 경제 실행 완료: TPQ1 #44, FIXED/FULL REJECT. API_RUNTIME_BLOCKED. PR #1207 병합·고정 merge 재현 PASS. W2 미해결로 CHECKPOINTED / REPORT_ONLY.**
 
 단위는 trade-bps 합계이며 계좌 수익률이 아니다. 기간은 기존 DEV2025 라벨의 동결 2024-12-19~2025-12-29 native 1h BTC/ETH, 375일/376 UTC 버킷이다. 부모는 저장 결과만 읽었다.
 
@@ -45,3 +45,5 @@ FIXED는 TPC1 저장 거래의 적격 부분집합이며 실행 가능한 포트
 **실제 검증 기록.** 원격 사전 동결 33c80f5fa2f4e7c2e5455cef0a0d2460926b27d0, SPEC 7f6241f9e33cad24a862c16a7964d6475c07023cb622953ed8fd1ae55a5d9528. 최초 경제 실제 로그 2026-09-07T15:05:05.952273+00:00 → 완료 15:05:10.785062+00:00, command python -m backend.research.rebuild.top5_winrate_v1 --run --frozen-commit 33c80f5fa2f4e7c2e5455cef0a0d2460926b27d0, exit0. 후보 #44 하나만 사용. 이전 부모 경제 재실행0, 신규 FIXED 저장계산1/FULL1. 관련 인과/API 무과금시험·frontend 사전/사후 PASS. CI와 고정 merge 재현 기록은 완료 영수증에 결속한다.
 
 완료 경제 REJECT를 이유로 새 실험·추가 감사·최적화를 수행하지 않는다. API 미해결이면 W2를 BLOCKED로 남기고 안전 체크포인트에서 REPORT_ONLY로 닫는다. Q0/G5B 관측·기존 수집·다른 Work는 조작하지 않았다.
+
+검증 결속: PR https://github.com/leegkssk2000-commits/vultr-z/pull/1207; head 6a20bcf532547332bf2452435cb16d8e86faa580; CI run 34136913835 completed/success; merge 8b30c233d6b239ac4562109b9001b68498cb5ce6; fixed merge run 34137151735 completed/success. 종료 시점 2026-09-07T15:14:58.533042+00:00. 별도 소유 실행 없음. 남은 W2는 외부 API의 수동 환경 probe/상한 증거/실제 요청·응답 활용이며 자동 재시작하지 않는다.

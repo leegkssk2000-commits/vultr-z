@@ -1,0 +1,74 @@
+name: STEP7 G5A Readiness
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/step7-g5a-readiness.yml'
+      - 'backend/research/rebuild/step7_authorized_io_v1.py'
+      - 'backend/research/rebuild/step7_callable_binding_v1.py'
+      - 'backend/research/rebuild/test_step7_callable_binding_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/step7-g5a-readiness.yml'
+      - 'backend/research/rebuild/step7_callable_binding_v1.py'
+permissions:
+  contents: read
+concurrency:
+  group: step7-g5a-readiness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Required canonical-root preflight
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Changed approval boundary regression only
+        run: |
+          python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 -v
+          if test -f backend/research/rebuild/test_step7_callable_binding_v1.py; then
+            python -m unittest backend.research.rebuild.test_step7_callable_binding_v1 -v
+          fi
+      - name: Preserve exact non-market code and execution metadata
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess, zipfile
+          output = pathlib.Path('out/step7-g5a-readiness')
+          output.mkdir(parents=True, exist_ok=True)
+          names = [
+            'backend/research/rebuild/step7_authorized_io_v1.py',
+            'backend/research/rebuild/step7_independent_validation_v1.py',
+            'backend/research/rebuild/test_step7_authorized_io_v1.py',
+            'backend/research/rebuild/step7_callable_binding_v1.py',
+            'backend/research/rebuild/test_step7_callable_binding_v1.py',
+          ]
+          manifest = {'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+            'market_requests': 0, 'sealed_reads': 0, 'paid_ai_calls': 0,
+            'new_candidates': 0, 'G5A_PASS_claimed': False, 'files': {}}
+          with zipfile.ZipFile(output / 'code.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name in names:
+              path = pathlib.Path(name)
+              if not path.is_file():
+                continue
+              data = path.read_bytes()
+              manifest['files'][name] = hashlib.sha256(data).hexdigest()
+              archive.writestr(name, data)
+          (output / 'MANIFEST.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          PY
+          npm run --prefix frontend/z-os-app-source validate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step7-g5a-readiness-${{ github.run_id }}
+          path: out/step7-g5a-readiness/
+          retention-days: 30

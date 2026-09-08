@@ -1,0 +1,46 @@
+name: ZEL external engine strategy benchmark
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/BR2/DEV2025.json.gz'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/BR2/SEEN2026.json.gz'
+      - '.github/workflows/zel-external-benchmark-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/BR2/DEV2025.json.gz'
+      - 'research/development_evidence/FOCUSED_REPAIR_20260907_V1/BR2/SEEN2026.json.gz'
+      - '.github/workflows/zel-external-benchmark-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: zel-external-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify_saved_only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      OPENAI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Saved evidence and closure only; no external engine execution
+        run: |
+          set -euo pipefail
+          python research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/verify_saved.py
+          python research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/test_closed.py -v
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code

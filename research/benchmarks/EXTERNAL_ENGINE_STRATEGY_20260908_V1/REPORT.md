@@ -11,6 +11,8 @@ Offline SPOT matching applied to existing BingX futures price data is an analyti
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 |DEV2025|ZEL_Break_V2_SAVED|155/2|50.968|1.187|1.233|4792.194|1623.063|4404.814|
 |DEV2025|BREAK|155/1|50.968|1.187|1.234|5002.277|1853.145|4400.337|
+|SEEN2026|ZEL_Break_V2_SAVED|52/0|69.231|1.692|3.806|11508.789|10459.079|2652.184|
+|SEEN2026|BREAK|52/0|69.231|1.692|3.807|11516.611|10466.900|2652.796|
 
 ## DEV2025 actual engine differences
 ```json
@@ -122,6 +124,117 @@ Offline SPOT matching applied to existing BingX futures price data is an analyti
   "raw_signal_symmetric_difference": [],
   "raw_signals_external": 283,
   "raw_signals_native": 283
+}
+```
+
+## SEEN2026 actual engine differences
+```json
+{
+  "common_entries": 52,
+  "declared_convention_deltas": [
+    "ZEL_H6_CLOSE_VS_FT_NEXT_OPEN",
+    "FT_NO_LAST_BAR_ENTRY",
+    "FT_FORCE_EXIT_REPORTED_AS_OPEN_FINAL_CLOSE_MARK",
+    "UNCONSTRAINED_ANALYTICAL_PRECISION_NOT_FUTURES_EXECUTION"
+  ],
+  "external_only_entries": [],
+  "first_mismatches": [
+    {
+      "changes": {
+        "exit_price": [
+          0.004372,
+          0.0043726
+        ]
+      },
+      "origin": "1000PEPE-USDT:1778443200000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          0.0029336,
+          0.002933
+        ]
+      },
+      "origin": "1000PEPE-USDT:1781539200000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          0.0027324,
+          0.0027322
+        ]
+      },
+      "origin": "1000PEPE-USDT:1783123200000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          0.0041386,
+          0.004138
+        ]
+      },
+      "origin": "1000PEPE-USDT:1787342400000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          277.59,
+          277.62
+        ]
+      },
+      "origin": "BCH-USDT:1787313600000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          62745.6,
+          62745.7
+        ]
+      },
+      "origin": "BTC-USDT:1783195200000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          64021.5,
+          64021.6
+        ]
+      },
+      "origin": "BTC-USDT:1783296000000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          65388.6,
+          65388.5
+        ]
+      },
+      "origin": "BTC-USDT:1784044800000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          65811.2,
+          65811.0
+        ]
+      },
+      "origin": "BTC-USDT:1784620800000"
+    },
+    {
+      "changes": {
+        "exit_price": [
+          72433.2,
+          72432.2
+        ]
+      },
+      "origin": "BTC-USDT:1787155200000"
+    }
+  ],
+  "mismatched_common_entries": 36,
+  "native_only_entries": [],
+  "raw_signal_symmetric_difference": [],
+  "raw_signals_external": 90,
+  "raw_signals_native": 90
 }
 ```
 

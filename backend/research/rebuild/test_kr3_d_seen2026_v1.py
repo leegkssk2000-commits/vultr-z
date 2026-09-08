@@ -46,4 +46,24 @@ class ExactDTests(unittest.TestCase):
         self.assertEqual(set(m.BINDINGS),{'rows_by','policy','costs'})
         self.assertTrue(all(len(x)==64 for x in m.BINDINGS.values()))
 
+class ClosedWorkflowTests(unittest.TestCase):
+    def workflow(self):
+        return (m.ROOT/'.github/workflows/kr3-d-seen2026-exact-v1.yml').read_text()
+    def test_completed_scope_has_no_replay_dispatch(self):
+        text=self.workflow()
+        for forbidden in ('economic_once:', '--execute', 'workflow_dispatch:', 'schedule:', 'execution_commit_subject'):
+            self.assertNotIn(forbidden,text)
+    def test_completed_scope_has_no_remote_writer_or_market_input(self):
+        text=self.workflow()
+        self.assertIn('contents: read',text)
+        self.assertIn('persist-credentials: false',text)
+        for forbidden in ('contents: write', 'git push', 'download-artifact', 'git fetch'):
+            self.assertNotIn(forbidden,text)
+    def test_incomplete_or_missing_evidence_cannot_pass_closed_scope(self):
+        text=self.workflow()
+        for name in ('ATTEMPT.json','RECEIPT.json','RESULT.json.gz','ACCOUNTING.json'):
+            self.assertIn('test -f "$b/'+name+'"',text)
+        self.assertIn('COMPLETED_SINGLE_ALLOCATION_REQUIRED',text)
+        self.assertIn('--verify-saved',text)
+
 if __name__=='__main__':unittest.main()

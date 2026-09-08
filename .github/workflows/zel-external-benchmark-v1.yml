@@ -1,0 +1,63 @@
+name: ZEL external engine strategy benchmark
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/**'
+      - '.github/workflows/zel-external-benchmark-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: zel-external-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  synthetic_engine_preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ''
+      OPENAI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Canonical preflight
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Install pinned external engine only, not FreqAI or hyperopt
+        run: |
+          python -m pip install 'freqtrade==2026.8' 'ta==0.11.0'
+          mkdir -p out/external-benchmark
+          python -m pip freeze > out/external-benchmark/ENVIRONMENT.txt
+      - name: Exact external strategy source, no parameter search or market requests
+        run: |
+          python - <<'PY'
+          import hashlib,pathlib,urllib.request,json
+          base='https://raw.githubusercontent.com/freqtrade/freqtrade-strategies/7f91ff52bb664423ae673092a6a18d76c50c2c29/'
+          output=pathlib.Path('out/external-benchmark')
+          for path,name in [('user_data/strategies/Heracles.py','Heracles.py'),('LICENSE','LICENSE.external')]:
+              with urllib.request.urlopen(base+path,timeout=30) as r:raw=r.read()
+              if name=='Heracles.py':
+                  blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                  if blob!='b69656b76ee142c0945dbb0229a19d67d5516215':raise SystemExit('UPSTREAM_STRATEGY_DRIFT')
+              (output/name).write_bytes(raw)
+          PY
+      - name: Synthetic real-engine smoke, NO market strategy run
+        run: |
+          python research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/ft_offline.py 2>&1 | tee out/external-benchmark/SMOKE.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-benchmark-preflight-${{ github.run_id }}
+          path: out/external-benchmark
+          retention-days: 30

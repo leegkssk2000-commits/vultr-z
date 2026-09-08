@@ -17,7 +17,6 @@ on:
       - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS/**'
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: kr3-d1-progress-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
@@ -25,8 +24,11 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    outputs:
-      resume: ${{ steps.scope.outputs.resume }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,186 +37,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Canonical preflight and synthetic boundary tests
+      - name: Canonical validation and narrow synthetic regressions
         run: |
           npm run --prefix frontend/z-os-app-source validate
           python -m unittest backend.research.rebuild.test_kr3_d1_progress_requal_v1 -v
-      - name: Existing reserved operation has no economic execution; no old run retry
-        id: scope
-        env:
-          EVENT: ${{ github.event_name }}
-          ATTEMPT: ${{ github.run_attempt }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+      - name: Verify two completed records; never dispatch economics
         run: |
           python - <<'PY'
-          import json,os,pathlib,subprocess
+          import json,pathlib
           from backend.research.rebuild import kr3_d1_progress_study_v1 as m
-          b=pathlib.Path(m.OUT);budget=json.loads(pathlib.Path(m.p.BUDGET).read_bytes())
-          subject=subprocess.check_output(['git','log','-1','--format=%s'],text=True).strip()
-          go=(os.environ['EVENT']=='pull_request' and os.environ['ATTEMPT']=='1' and os.environ['HEAD_BRANCH']=='research/kr3-d1-progress-requal-v1' and subject=='RESUME_CONFIRMED_UNSTARTED_D1_NO_WORKFLOW_WRITES' and m.KEY not in budget and not (b/'SPEC.json').exists())
-          if (b/'SPEC.json').exists():
-            check=m.saved_check(json.loads((b/'SPEC.json').read_bytes()));print(check)
-            if check['completed']!=2:raise SystemExit('D1_SCOPE_INCOMPLETE_NO_AUTOMATIC_RETRY')
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('resume='+str(go).lower()+'\n')
+          b=pathlib.Path(m.OUT)
+          for period in m.RUNS:
+            for name in ('ATTEMPT.json','EXECUTION_STARTED.json','RESULT.json.gz','RECEIPT.json'):
+              m.need((b/period/name).is_file(),'MISSING_COMPLETED_EVIDENCE:'+period+'/'+name)
+          for name in ('SPEC.json','ACCOUNTING.json','REPORT.md','TRANSPORT_RECOVERY.json'):
+            m.need((b/name).is_file(),'MISSING_FINAL_EVIDENCE:'+name)
+          spec=json.loads((b/'SPEC.json').read_bytes());result=m.saved_check(spec)
+          m.need(result['completed']==2,'TWO_COMPLETED_PERIODS_REQUIRED')
+          budget=json.loads(pathlib.Path(m.p.BUDGET).read_bytes())
+          m.need(budget[m.KEY]['used']==2 and budget[m.KEY]['completed']==2,'COMPLETED_ALLOCATION_REQUIRED')
+          m.need(budget['cumulative_actual']>=46 and budget['cumulative_actual_evaluations']>=66,'PRIOR_COUNTS_NOT_PRESERVED')
+          print(result)
           PY
-  finish_unstarted:
-    needs: verify
-    if: needs.verify.outputs.resume == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: read
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      BRANCH: research/kr3-d1-progress-requal-v1
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          name: kr3-d1-progress-34226568725
-          run-id: 34226568725
-          github-token: ${{ github.token }}
-          path: out/failed-reservation
-      - name: Confirm old job stopped before execute and recover immutable reservation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python - <<'PY'
-          import hashlib,json,os,pathlib,urllib.request
-          from backend.research.rebuild import kr3_d1_progress_study_v1 as m
-          base=pathlib.Path('out/failed-reservation');out=pathlib.Path(m.OUT)
-          names={str(p.relative_to(base)) for p in base.rglob('*') if p.is_file()}
-          m.need(names=={'BUDGET.json','D1_PROGRESS/SPEC.json','D1_PROGRESS/DEV2025/ATTEMPT.json'},'EXACT_PRE_EXECUTION_ARTIFACT_REQUIRED')
-          req=urllib.request.Request('https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/jobs/102062092876',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
-          with urllib.request.urlopen(req,timeout=20) as r:job=json.load(r)
-          m.need(job['status']=='completed' and job['conclusion']=='failure' and job['run_id']==34226568725,'OLD_JOB_NOT_TERMINATED')
-          steps={x['name']:x['conclusion'] for x in job['steps']}
-          m.need(steps['Persist each real attempt remotely before its only FULL execution']=='failure','OLD_FAILURE_MISMATCH')
-          specraw=(base/'D1_PROGRESS/SPEC.json').read_bytes()
-          m.need(hashlib.sha256(specraw).hexdigest()=='0aecb72034e7709167c67f413f228025c61d585d12341a1995a8c4cab536ae25','ORIGINAL_SPEC_MISMATCH')
-          spec=json.loads(specraw);m.verify(spec)
-          attempt=(base/'D1_PROGRESS/DEV2025/ATTEMPT.json').read_bytes();at=json.loads(attempt)
-          m.need(at['github_run_id']=='34226568725' and at['actual_experiment_ordinal']==65 and at['specification_sha256']==spec['receipt_sha256'],'ORIGINAL_RESERVATION_MISMATCH')
-          old=json.loads(pathlib.Path(m.p.BUDGET).read_bytes());reserved=json.loads((base/'BUDGET.json').read_bytes())
-          m.need(old['cumulative_actual']==45 and old['cumulative_actual_evaluations']==64 and m.KEY not in old,'BASE_BUDGET_MOVED')
-          m.need(reserved['cumulative_actual']==46 and reserved['cumulative_actual_evaluations']==65 and reserved[m.KEY]['used']==1 and reserved[m.KEY]['completed']==0,'RECOVERED_BUDGET_MISMATCH')
-          for k,v in old.items():
-            if k not in ('cumulative_actual','cumulative_actual_evaluations','candidate_trials','trials','new_candidate_runs'):m.need(reserved[k]==v,'UNRELATED_BUDGET_CHANGED:'+k)
-          m.need(reserved['trials'][:-1]==old['trials'] and reserved['candidate_trials'][:-1]==old['candidate_trials'],'OLD_HISTORY_CHANGED')
-          m.p.write_new(out/'SPEC.json',specraw);m.p.write_new(out/'DEV2025/ATTEMPT.json',attempt)
-          pathlib.Path(m.p.BUDGET).write_bytes((base/'BUDGET.json').read_bytes())
-          transfer={'scope':m.SCOPE,'operation_ordinal':65,'original_attempt_run':34226568725,'original_attempt_sha256':hashlib.sha256(attempt).hexdigest(),'old_job':102062092876,'old_artifact':10055961169,'reason':'PUSH_REJECTED_WORKFLOW_PERMISSION_BEFORE_EXECUTE','economic_started_in_old_job':False,'basis':'Exact completed log: set-e stopped at git push rejected before execute; exact artifact only SPEC/ATTEMPT/BUDGET. No EXECUTION_STARTED or RESULT.','new_runtime_run':os.environ['GITHUB_RUN_ID'],'new_runtime_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'same_unstarted_evaluation':True,'additional_evaluation_allocated':False,'rules_changed':False}
-          m.p.write_new(out/'TRANSPORT_RECOVERY.json',m.p.canonical(transfer))
-          PY
-      - name: Reuse the same known DEV prefixes without collection or economics
-        run: |
-          set -euo pipefail
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/d1-source out/d1-input
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/d1-source
-          python - <<'PY'
-          import gzip,json,pathlib
-          from backend.research.rebuild import kr3_d1_progress_study_v1 as m
-          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
-          from backend.research.rebuild import q0_b_seen_adapter_v1 as q
-          root='/tmp/d1-source/research/data/g5a_stage_v1'
-          rows,policy,costs,lineage=e.load_dev_slice(root)
-          assert lineage['decoded_OOS_rows']==lineage['decoded_validation_rows']==0
-          packets={'DEV2025':{'rows_by':rows,'policy':policy,'costs':costs}}
-          spec=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
-          policy,dev,rows,access=q.load_seen_inputs(root,spec)
-          assert all(x['rows_after_evaluation_end_decoded']==0 for x in access.values())
-          packets['SEEN2026']={'rows_by':rows,'policy':policy,'costs':dev['cost_by_symbol']}
-          for period,packet in packets.items():
-            m.packet_check(period,packet)
-            pathlib.Path('out/d1-input/'+period+'.json.gz').write_bytes(gzip.compress(m.p.canonical(packet),mtime=0))
-          PY
-      - name: Push same reservation and execution start BEFORE the first actual D1 replay
-        run: |
-          set -euo pipefail
-          git config user.name kr3-d1-finite-evaluator
-          git config user.email actions@users.noreply.github.com
-          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS
-          budget=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
-          test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$(git rev-parse HEAD)"
-          python - <<'PY'
-          import os,time,pathlib
-          from backend.research.rebuild import kr3_d1_progress_study_v1 as m
-          m.p.write_new(pathlib.Path(m.OUT)/'DEV2025/EXECUTION_STARTED.json',m.p.canonical({'actual_run':os.environ['GITHUB_RUN_ID'],'actual_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'original_unstarted_reservation_run':34226568725,'state':'CLAIMED_FOR_EXECUTION_BEFORE_REMOTE_PUSH','time_ns':time.time_ns()}))
-          PY
-          git add "$b" "$budget"
-          git commit -m 'research: persist same unstarted D1 reservation and new execution owner [skip ci]'
-          git push origin HEAD:refs/heads/$BRANCH
-          export ZEL_D1_RESERVATION_COMMIT="$(git rev-parse HEAD)"
-          test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$ZEL_D1_RESERVATION_COMMIT"
-          python -u - <<'PY'
-          import gzip,json,os,pathlib,subprocess,sys
-          from backend.research.rebuild import kr3_d1_progress_study_v1 as m
-          b=pathlib.Path(m.OUT);spec=json.loads((b/'SPEC.json').read_bytes());m.verify(spec)
-          transfer=json.loads((b/'TRANSPORT_RECOVERY.json').read_bytes())
-          m.need(transfer['new_runtime_run']==os.environ['GITHUB_RUN_ID'] and transfer['new_runtime_attempt']=='1','RECOVERY_OWNER_MISMATCH')
-          head=os.environ['ZEL_D1_RESERVATION_COMMIT']
-          for name in ('SPEC.json','DEV2025/ATTEMPT.json','DEV2025/EXECUTION_STARTED.json','TRANSPORT_RECOVERY.json'):
-            m.need(subprocess.check_output(['git','show',head+':'+m.OUT+'/'+name])==(b/name).read_bytes(),'REMOTE_CLAIM_CONTENT_MISMATCH')
-          m.need(not (b/'DEV2025/RESULT.json.gz').exists() and not (b/'DEV2025/RECEIPT.json').exists(),'ALREADY_EXECUTED')
-          packet=json.loads(gzip.decompress(pathlib.Path('out/d1-input/DEV2025.json.gz').read_bytes()));m.packet_check('DEV2025',packet)
-          result=m.run_one('DEV2025',packet,spec)
-          digest=m.p.write_new(b/'DEV2025/RESULT.json.gz',gzip.compress(m.p.canonical(result),mtime=0))
-          m.p.write_new(b/'DEV2025/RECEIPT.json',m.p.canonical({'scope':m.SCOPE,'period':'DEV2025','status':'COMPLETED','result_sha256':digest,'specification_sha256':spec['receipt_sha256'],'reservation_commit':head,'metrics':m.a.snapshot(result),'runtime':sys.version,'actual_runtime_run':os.environ['GITHUB_RUN_ID'],'original_unstarted_reservation_run':34226568725,'formal_credit':0}))
-          bp=pathlib.Path(m.p.BUDGET);budget=json.loads(bp.read_bytes());m.need(budget[m.KEY]['completed']==0,'ALREADY_COMPLETED');budget[m.KEY]['completed']=1;bp.write_text(json.dumps(budget,sort_keys=True,indent=2)+'\n')
-          print(json.dumps(m.a.snapshot(result)))
-          PY
-          git add "$b" "$budget"
-          git commit -m 'research: save D1 first actual DEV2025 result [skip ci]'
-          git push origin HEAD:refs/heads/$BRANCH
-      - name: Reserve remaining 2026 period remotely and execute exactly once
-        run: |
-          set -euo pipefail
-          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS
-          budget=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
-          test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$(git rev-parse HEAD)"
-          python -m backend.research.rebuild.kr3_d1_progress_study_v1 reserve --period SEEN2026
-          git add "$b" "$budget"
-          git commit -m 'research: persist D1 SEEN2026 attempt before replay [skip ci]'
-          git push origin HEAD:refs/heads/$BRANCH
-          export ZEL_D1_RESERVATION_COMMIT="$(git rev-parse HEAD)"
-          test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$ZEL_D1_RESERVATION_COMMIT"
-          python -u -m backend.research.rebuild.kr3_d1_progress_study_v1 execute --period SEEN2026 --input out/d1-input/SEEN2026.json.gz
-          git add "$b" "$budget"
-          git commit -m 'research: save D1 SEEN2026 actual result [skip ci]'
-          git push origin HEAD:refs/heads/$BRANCH
-          python -m backend.research.rebuild.kr3_d1_progress_study_v1 summarize
-          python -m backend.research.rebuild.kr3_d1_progress_study_v1 verify
-          git add "$b"
-          git commit -m 'research: preserve D1 two-period accounting [skip ci]'
-          git push origin HEAD:refs/heads/$BRANCH
-      - name: Preserve unfinished state without resetting or replaying
-        if: always()
-        run: |
-          set -euo pipefail
-          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS
-          test -d "$b" || exit 0
-          git config user.name kr3-d1-finite-evaluator
-          git config user.email actions@users.noreply.github.com
-          git add "$b" research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
-          git diff --cached --quiet || { git commit -m 'research: preserve D1 checkpoint no retry [skip ci]'; git push origin HEAD:refs/heads/$BRANCH; }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: kr3-d1-progress-result-${{ github.run_id }}
-          path: |
-            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS
-            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
-            .github/workflows/step7-parent-survivor-v1.yml
-          include-hidden-files: true
-          retention-days: 90
+          git diff --exit-code

@@ -83,4 +83,24 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(c['audit']['reference_released_by_actual_exit'])
         self.assertEqual(c['reference_opportunities'][0]['reference_signal_index'],8)
 
+class CompletedScopeTests(unittest.TestCase):
+    def workflow(self):
+        return (m.p.ROOT/'.github/workflows/kr3-d1-progress-v1.yml').read_text()
+    def test_no_replay_or_recovery_dispatch_remains(self):
+        value=self.workflow()
+        for forbidden in ('finish_unstarted:', 'economic_once:', 'run_one(', ' reserve ', ' execute ', 'workflow_dispatch:', 'schedule:'):
+            self.assertNotIn(forbidden,value)
+    def test_no_writer_credentials_or_input_fetch_remains(self):
+        value=self.workflow()
+        self.assertIn('contents: read',value)
+        self.assertIn('persist-credentials: false',value)
+        for forbidden in ('contents: write','git push','download-artifact','git fetch'):
+            self.assertNotIn(forbidden,value)
+    def test_complete_outputs_and_original_reservation_required(self):
+        value=self.workflow()
+        for name in ('ATTEMPT.json','EXECUTION_STARTED.json','RESULT.json.gz','RECEIPT.json','TRANSPORT_RECOVERY.json'):
+            self.assertIn(name,value)
+        self.assertIn("result['completed']==2",value)
+        self.assertIn('COMPLETED_ALLOCATION_REQUIRED',value)
+
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,33 @@
+name: D2 hlhb calendar repair
+on:
+  pull_request:
+    paths:
+      - 'research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1/**'
+      - '.github/workflows/d2-hlhb-calendar-repair-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1/**'
+      - '.github/workflows/d2-hlhb-calendar-repair-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical source validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Verify original preserved result records
+        working-directory: research/benchmarks/D2_HLHB_FREQTRADE_2026_7_V1
+        run: python3 -B verify_closed.py --manifest-sha256 378a28dd3696422a13b938bf5f95c1de1381b12b4b5dfdb64a4e914c8c9398b5
+      - name: Verify both corrected results without market replay
+        working-directory: research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 4b5d9269cba3e03d867ff7ff4487e3be439ba7570c7ff2fd96b1e42eb4038d39
+          python3 -B verify_raw.py --manifest-sha256 8431d59115ff3c76023eb2ce50af506da2b98514802bfb327b1f448a3b1a2e50
+          python3 -B -m unittest -v test_verify test_raw_link
+          git diff --exit-code

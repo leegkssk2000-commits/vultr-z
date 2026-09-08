@@ -7,15 +7,25 @@ on:
       - 'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py'
       - 'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py'
       - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/step7-kr3-mechanism-separation-v1.yml'
+      - 'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/**'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: step7-kr3-mechanism-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  prepare:
+  verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 5
+    outputs:
+      run_needed: ${{ steps.state.outputs.run_needed }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       GEMINI_API_KEY: ''
@@ -24,50 +34,117 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Canonical pre-check before research implementation
+          python-version: '3.13.5'
+      - name: Canonical root and synthetic regressions only
         run: |
           pwd
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Reuse opaque canonical source files; no market API
-        run: |
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/kr3-used-dev
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv research/data/g5a_stage_v1/cost | tar -x -C /tmp/kr3-used-dev
-      - name: Export bounded DEV prefix and exact code; no strategy replay
+          python -m unittest backend.research.rebuild.test_step7_kr3_mechanism_separation_v1 -v
+      - name: Exact stored evidence verification; never replay economics
+        id: state
         run: |
           python - <<'PY'
-          import gzip, hashlib, json, pathlib, subprocess, sys, zipfile
-          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
-          from backend.research.rebuild import step7_kr3_dev_validation_v1 as v
-          out=pathlib.Path('out/kr3-mechanism-input');out.mkdir(parents=True)
-          rows,policy,costs,lineage=e.load_dev_slice('/tmp/kr3-used-dev/research/data/g5a_stage_v1')
-          prior=pathlib.Path(e.CAMPAIGN)/'DEV_VALIDATION/SPEC.json'
-          old=json.loads(prior.read_bytes())
-          assert v.sha(rows)==old['data_sha256'] and v.sha(costs)==old['cost_sha256']
-          assert lineage['decoded_OOS_rows']==lineage['decoded_validation_rows']==0
-          packet={'rows_by':rows,'policy':policy,'costs':costs,'lineage':lineage,'parent_spec':old}
-          (out/'INPUT.json.gz').write_bytes(gzip.compress(v.canonical(packet),mtime=0))
-          with zipfile.ZipFile(out/'CODE.zip','w',zipfile.ZIP_DEFLATED) as z:
-            for p in pathlib.Path('backend').rglob('*.py'):
-              z.write(p,str(p))
-            for p in pathlib.Path('frontend/z-os-app-source').rglob('*'):
-              if p.is_file() and 'node_modules' not in p.parts:z.write(p,str(p))
-            z.write('AGENTS.md')
-          center=pathlib.Path(e.previous.DEV)/'KR3/DEV2025.json.gz'
-          (out/'STORED_KR3_DEV2025.json.gz').write_bytes(center.read_bytes())
-          receipt={'state':'INPUT_PREPARED_NO_ECONOMIC_RUN','scope':'KR3_TIMING_REQUAL_OCCUPANCY_AFTER_PR1212_V1','base':'22f859019c4d39643d2ba8d6481c2ee925bc9831','commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'new_candidates':0,'economic_runs':0,'market_requests':0,'paid_AI':0,'sealed_reads':0,'decoded_rows':sum(map(len,rows.values())),'decoded_OOS_rows':0,'prior_prepare_failure':'run34180507996: missing opaque cost file; no economic execution','files':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file()}}
-          (out/'PREPARATION.json').write_text(json.dumps(receipt,indent=2)+'\n')
-          print(json.dumps(receipt))
+          import hashlib,json,os,pathlib
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as m
+          p=pathlib.Path(m.OUTPUT);s=json.loads((p/'SPEC.json').read_bytes())
+          assert m.native.contracts.check_seal(s)
+          assert s['receipt_sha256']=='21fd46074da76bfcc8d129e593325d6a436e8990787fd8c528f23e9476ab02b9'
+          for name,digest in s['files_sha256'].items():
+            assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==digest,name
+          index=p/'RESULT_INDEX.json'
+          if index.exists():
+            r=json.loads(index.read_bytes());assert r['spec_sha256']==s['receipt_sha256']
+            assert r['new_diagnostic_executions']==4 and r['candidate_hypotheses']==44
+            for row in r['results']:
+              folder=p/row['mode']['id']
+              assert json.loads((folder/'RECEIPT.json').read_bytes())==row
+              assert hashlib.sha256((folder/'RESULT.json.gz').read_bytes()).hexdigest()==row['artifact_sha256']
+            b=json.loads(pathlib.Path(m.BUDGET).read_bytes());m.require_allocation(s,b)
+            assert b['cumulative_actual_evaluations']==60 and b['kr3_mechanism_separation_allocation']['used']==4
+            print('FOUR_STORED_DIAGNOSTICS_VERIFIED; new economic replays0')
+          needed=not (p/'REMOTE_CLAIM.json').exists() and not index.exists()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('run_needed='+str(needed).lower()+'\n')
           PY
+  economic_once:
+    needs: verify
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1213 && github.event.pull_request.head.ref == 'research/kr3-timing-requal-occupancy-v1' && github.event.pull_request.head.repo.full_name == github.repository && github.run_attempt == 1 && needs.verify.outputs.run_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OWN_BRANCH: research/kr3-timing-requal-occupancy-v1
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - uses: actions/download-artifact@v4
+        with:
+          name: kr3-mechanism-input-34180607396
+          run-id: 34180607396
+          github-token: ${{ github.token }}
+          path: out/prepared
+      - name: Persist scope claim and shared allocation before any economic dispatch
+        run: |
+          set -euo pipefail
+          git fetch origin "$OWN_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git checkout -B "$OWN_BRANCH" "$EXPECTED_HEAD"
+          python - <<'PY'
+          import gzip,hashlib,json,os,pathlib,time
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as m
+          p=pathlib.Path(m.OUTPUT);spec=json.loads((p/'SPEC.json').read_bytes())
+          inp=pathlib.Path('out/prepared/INPUT.json.gz')
+          assert hashlib.sha256(inp.read_bytes()).hexdigest()=='4c2de1d10c0c5076cb5868ab9b960bbb47f26907aeb55471f774579c02b98d50'
+          packet=json.loads(gzip.decompress(inp.read_bytes()));m.verify(spec,packet)
+          bp=pathlib.Path(m.BUDGET);raw=bp.read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==m.INHERITED_BUDGET_SHA256
+          b=json.loads(raw);b['kr3_mechanism_separation_allocation']=json.loads((p/'ALLOCATION.json').read_bytes())
+          m.require_allocation(spec,b)
+          m.write_new(p/'REMOTE_CLAIM.json',m.canonical({'scope':m.SCOPE,'spec_sha256':spec['receipt_sha256'],'preexecution_head':os.environ['EXPECTED_HEAD'],'run_id':os.environ['GITHUB_RUN_ID'],'claimed_unix_ns':time.time_ns(),'retry_allowed':False,'candidate_hypotheses':44,'prior_executions':56}))
+          bp.write_text(json.dumps(b,sort_keys=True,indent=2)+'\n')
+          PY
+          git config user.name 'KR3 finite diagnostic owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/REMOTE_CLAIM.json
+          git commit -m 'Reserve KR3 mechanism diagnostics57-60 before execution [skip ci]'
+          git push origin "HEAD:$OWN_BRANCH"
+      - name: Four finite DEV diagnostics once; no baseline rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.step7_kr3_mechanism_separation_v1 --input out/prepared/INPUT.json.gz --out-dir research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION --execute | tee out/MECHANISM_EXECUTION.log
+      - name: Persist exact diagnostics and consumed shared ledger only
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/REMOTE_CLAIM.json
+          git add research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION
+          if ! git diff --cached --quiet; then
+            git commit -m 'Preserve KR3 finite mechanism diagnostic outcomes without adoption [skip ci]'
+            git push origin "HEAD:$OWN_BRANCH"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kr3-mechanism-input-${{ github.run_id }}
-          path: out/kr3-mechanism-input
-          retention-days: 30
+          name: kr3-mechanism-results-${{ github.run_id }}
+          path: |
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+            out/MECHANISM_EXECUTION.log
+          retention-days: 90

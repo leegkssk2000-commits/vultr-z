@@ -1,0 +1,61 @@
+name: KR3 D exact seen2026
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d-seen2026-exact-v1.yml'
+      - 'backend/research/rebuild/kr3_d_seen2026_v1.py'
+      - 'backend/research/rebuild/test_kr3_d_seen2026_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d-seen2026-exact-v1.yml'
+      - 'backend/research/rebuild/kr3_d_seen2026_v1.py'
+      - 'backend/research/rebuild/test_kr3_d_seen2026_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/**'
+permissions:
+  contents: read
+concurrency:
+  group: kr3-d-exact-seen2026-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Completed allocation requires all original execution records
+        run: |
+          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026
+          test -f "$b/ATTEMPT.json"
+          test -f "$b/RECEIPT.json"
+          test -f "$b/RESULT.json.gz"
+          test -f "$b/ACCOUNTING.json"
+          python - <<'PY'
+          import json, pathlib
+          budget=json.loads(pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json').read_bytes())
+          a=budget['kr3_d_seen2026_allocation']
+          if a['status']!='COMPLETED' or a['completed']!=1 or a['used']!=1:
+              raise SystemExit('COMPLETED_SINGLE_ALLOCATION_REQUIRED')
+          PY
+      - name: Changed boundary tests and exact saved result verification only
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python -m unittest backend.research.rebuild.test_kr3_d_seen2026_v1 -v
+          python -m backend.research.rebuild.kr3_d_seen2026_v1 --verify-saved
+          git diff --exit-code

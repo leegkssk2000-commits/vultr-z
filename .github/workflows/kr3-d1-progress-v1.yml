@@ -1,0 +1,82 @@
+name: KR3 D1 progress requalification
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d1-progress-v1.yml'
+      - 'backend/research/rebuild/kr3_d1*.py'
+      - 'backend/research/rebuild/test_kr3_d1*.py'
+      - 'research/development_evidence/KR3_D1_PROGRESS_DESIGN.md'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d1-progress-v1.yml'
+      - 'backend/research/rebuild/kr3_d1*.py'
+      - 'backend/research/rebuild/test_kr3_d1*.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D1_PROGRESS/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+permissions:
+  contents: read
+concurrency:
+  group: kr3-d1-progress-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical validation and narrow synthetic regressions
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -m unittest backend.research.rebuild.test_kr3_d1_progress_requal_v1 -v
+      - name: Verify two completed records; never dispatch economics
+        run: |
+          python - <<'PY'
+          import gzip,hashlib,json,pathlib
+          from backend.research.rebuild import kr3_d1_progress_study_v1 as m
+          b=pathlib.Path(m.OUT)
+          for period in m.RUNS:
+            for name in ('ATTEMPT.json','EXECUTION_STARTED.json','RESULT.json.gz','RECEIPT.json'):
+              m.need((b/period/name).is_file(),'MISSING_COMPLETED_EVIDENCE:'+period+'/'+name)
+          for name in ('SPEC.json','ACCOUNTING.json','REPORT.md','TRANSPORT_RECOVERY.json'):
+            m.need((b/name).is_file(),'MISSING_FINAL_EVIDENCE:'+name)
+          spec=json.loads((b/'SPEC.json').read_bytes());result=m.saved_check(spec)
+          m.need(result['completed']==2,'TWO_COMPLETED_PERIODS_REQUIRED')
+          # These are the exact executed, reviewed final summaries. A later
+          # content-only edit cannot silently contradict the stored ledgers.
+          summary_hashes={
+            'ACCOUNTING.json':'07ea4effa00074c6eae03a68341a0a8764a7d13b68f2a643cebcb716ff9da57c',
+            'REPORT.md':'474c0a1d0c6a800a714d14725c2b00a71efd87d616fac8c151aeb1c3f9e72ed0',
+            'TRANSPORT_RECOVERY.json':'4339381fed843f411e11c76caf8e0c750b95c3d50d96daad046a21bb6b4e2e95',
+          }
+          for name,expected in summary_hashes.items():
+            m.need(hashlib.sha256((b/name).read_bytes()).hexdigest()==expected,'BOUND_SUMMARY_CHANGED:'+name)
+          accounting=json.loads((b/'ACCOUNTING.json').read_bytes())
+          for period in m.RUNS:
+            measured=json.loads(gzip.decompress((b/period/'RESULT.json.gz').read_bytes()))
+            m.need(m.a.snapshot(measured)==accounting[period]['snapshots']['D1'],'SUMMARY_LEDGER_SEMANTIC_MISMATCH:'+period)
+            for parent in ('D','KR3'):
+              m.need(accounting[period][parent+'_to_D1']['four_way_terminal_delta']['parity']=='PASS','SUMMARY_RECONCILIATION_FAILED')
+          recovery=json.loads((b/'TRANSPORT_RECOVERY.json').read_bytes())
+          m.need(recovery['original_attempt_run']==34226568725 and recovery['old_job']==102062092876 and recovery['operation_ordinal']==65,'RECOVERY_ORIGIN_CHANGED')
+          m.need(recovery['economic_started_in_old_job'] is False and recovery['additional_evaluation_allocated'] is False,'RECOVERY_SCOPE_CHANGED')
+          budget=json.loads(pathlib.Path(m.p.BUDGET).read_bytes())
+          m.need(budget[m.KEY]['used']==2 and budget[m.KEY]['completed']==2,'COMPLETED_ALLOCATION_REQUIRED')
+          m.need(budget['cumulative_actual']>=46 and budget['cumulative_actual_evaluations']>=66,'PRIOR_COUNTS_NOT_PRESERVED')
+          print(result)
+          PY
+          git diff --exit-code

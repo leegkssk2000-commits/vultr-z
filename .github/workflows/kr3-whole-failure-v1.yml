@@ -1,0 +1,34 @@
+name: KR3 whole-entry failure profit study
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/kr3_whole_entry_failure*.py'
+      - 'backend/research/rebuild/test_kr3_whole_entry_failure*.py'
+      - 'research/development_evidence/KR3_WHOLE_FAILURE_AFTER_PR1221_V1/**'
+      - '.github/workflows/kr3-whole-failure-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/kr3_whole_entry_failure*.py'
+      - 'backend/research/rebuild/test_kr3_whole_entry_failure*.py'
+      - 'research/development_evidence/KR3_WHOLE_FAILURE_AFTER_PR1221_V1/**'
+      - '.github/workflows/kr3-whole-failure-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-saved-economic-result:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Verify pinned raw trades and independent cost arithmetic only
+        working-directory: research/development_evidence/KR3_WHOLE_FAILURE_AFTER_PR1221_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 bc0acf588d4a2af83cdfdf20d4a744703f8ed62bbc94b29d1588db41951c9cb0
+          python3 -B -m unittest -v test_verify_saved
+          git diff --exit-code

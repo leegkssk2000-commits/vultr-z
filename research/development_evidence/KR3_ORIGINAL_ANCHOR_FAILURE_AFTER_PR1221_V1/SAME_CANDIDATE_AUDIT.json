@@ -1,0 +1,104 @@
+{
+  "schema": "same_candidate_audit_v1",
+  "requested_scope_key": "KR3_ORIGINAL_ANCHOR_FAILURE_AFTER_PR1221_V1",
+  "existing_scope_key": "KR3_WHOLE_FAILURE_AFTER_PR1221_V1",
+  "repository": "leegkssk2000-commits/vultr-z",
+  "reviewed_head": "e97e032044114ff81a1f3aa4be48ef8a17a77e56",
+  "verdict": "SAME_CANDIDATE_NO_NEW_ECONOMIC_EXECUTION",
+  "method": "Read-only source and synthetic-test assertion review; no market data or economic execution",
+  "code_blobs": {
+    "parent": "b6b42ad0a8b92ff1f5717adc832d962bfbc9f509",
+    "reference": "8b9edcf879a589acfc88fd9dc585e02a9d4eabc7",
+    "candidate": "d75a34edb59efce3a6ab3e581561401f0e1570ef",
+    "synthetic_tests": "877455ffde3823a27b996770a2be319ddf21094c"
+  },
+  "semantic_mapping": [
+    {
+      "requirement": "Direct parent is original KR3",
+      "evidence": "from ... import keltner_kr3_v1 as parent; original parent blob matches expected",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Original signal, EMA, next-open entry, reference reservation",
+      "evidence": "Uses parent.kr.replay under a temporary path-only hook; i=signal_index, ei=i+1, signal_low=rows[i].low; no D mechanism import",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "First suppressed breach is preserved and cannot trigger same bar",
+      "evidence": "state.status==SUPPRESSED AND index>state.index before strict close comparisons",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Later completed close below original frozen low and current EMA50",
+      "evidence": "additional_failure compares current row.close<signal_low AND row.close<ema50[j]",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Original exit priority",
+      "evidence": "Timeout processed first; reason order EMA -> allowed-low -> runner -> added failure",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Next-open execution without future HLC",
+      "evidence": "After trigger raw geometry ends at j and fills only rows[j+1].open",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Out-of-window next open remains censored and pending",
+      "evidence": "If xi absent or open_ts>=end, breaks to CENSORED with pending_exit_trigger retained",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "No D delay/recheck or shifted references",
+      "evidence": "No decision_index or exit_anchor_index; no p.MODES[3], delay6 or D replay",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "Disabled is exact KR3",
+      "evidence": "enabled=False directly returns parent.replay(rows,bundle,**kw)",
+      "status": "MATCH"
+    },
+    {
+      "requirement": "SL, TP, add-on, allocation and leverage unchanged",
+      "evidence": "Only held exit path copied with one additional predicate; no entry/sizing edits",
+      "status": "MATCH"
+    }
+  ],
+  "synthetic_tests_reviewed": 17,
+  "tests_executed_by_auditor": 0,
+  "new_economic_executions": 0,
+  "test_coverage_gaps": [
+    {
+      "requirement": "Intermediate evaluation start, warmup prefix and original coordinates",
+      "evidence": "All replay invocations have eval_start_ms=0; no nonzero-start fixture",
+      "category": "MISSING_EXPLICIT_TEST"
+    },
+    {
+      "requirement": "Reference checkpoint restart",
+      "evidence": "No reference_checkpoint invocation; test_serialized_suppression_preserves_decision covers only local suppression predicate state",
+      "category": "MISSING_EXPLICIT_TEST"
+    },
+    {
+      "requirement": "Input immutability",
+      "evidence": "No rows/bundle before-after deep equality assertion",
+      "category": "MISSING_EXPLICIT_TEST"
+    },
+    {
+      "requirement": "Temporary hook restoration under exception",
+      "evidence": "Normal-path hook identity is asserted; exception restoration not explicitly tested",
+      "category": "MISSING_EXPLICIT_TEST"
+    },
+    {
+      "requirement": "Next open present in input but outside eval window",
+      "evidence": "Pending test truncates input so next bar does not exist; does not exercise xi present and open_ts>=end",
+      "category": "MISSING_EXPLICIT_TEST"
+    }
+  ],
+  "limitations": [
+    "Code inspection confirms mechanism equivalence; test source inspection does not prove CI execution or economic result validity.",
+    "Preserved entry rules do not imply identical FULL admission sets; changed occupancy can admit or exclude opportunities.",
+    "Read-only audit did not independently inspect budget49/78 or existing50/80; root owns authoritative ledger verification.",
+    "New synthetic coverage added after outcomes must be labelled post-result validation, not pre-freeze evidence."
+  ],
+  "action": "Reuse existing candidate and root-verified execution ledger; no new candidate ordinal or additional two FULL runs"
+}

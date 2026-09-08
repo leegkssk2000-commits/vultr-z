@@ -5,108 +5,29 @@ on:
       - 'backend/research/rebuild/*profit_zone_recovery*.py'
       - 'research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1/**'
       - '.github/workflows/kr3-c51-recovery-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*profit_zone_recovery*.py'
+      - 'research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1/**'
+      - '.github/workflows/kr3-c51-recovery-v1.yml'
 permissions:
   contents: read
-  actions: read
-concurrency:
-  group: kr3-c51-recovery-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
 jobs:
-  once:
+  verify-completed:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    permissions:
-      contents: write
-      actions: read
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      B: research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1
-      BRANCH: research/kr3-c51-once-recovery-v1
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - name: Explicit one-shot boundary
-        id: scope
-        env:
-          ATTEMPT: ${{ github.run_attempt }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+      - name: Canonical and artificial regression
         run: |
-          set -euo pipefail
-          if [ "$ATTEMPT" = 1 ] && [ "$HEAD_REF" = "$BRANCH" ] && [ "$(git log -1 --format=%s)" = 'RUN_ONCE_C51_RECOVERY_20260909' ] && [ ! -f "$B/SPEC.json" ]; then
-            echo 'execute=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'execute=false' >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          python-version: '3.12'
-      - name: Canonical preflight and artificial boundaries
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-          python -m unittest backend.research.rebuild.test_kr3_profit_zone_recovery_v1 -v
-          python -m py_compile backend/research/rebuild/kr3_profit_zone_recovery_study_v1.py
-      - uses: actions/download-artifact@v4
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          name: kr3-profit-zone-34282003231
-          run-id: 34282003231
-          github-token: ${{ github.token }}
-          path: out/parent51
-      - name: Freeze and read back runtime claims before two FULLs
-        if: steps.scope.outputs.execute == 'true'
+          python3 -B -m unittest backend.research.rebuild.test_kr3_profit_zone_recovery_v1 -v
+      - name: Saved economic records only
+        working-directory: research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1
         run: |
-          set -euo pipefail
-          git config user.name c51-recovery-evaluator
-          git config user.email actions@users.noreply.github.com
-          persist() {
-            git add "$B"
-            python - <<'PY'
-          import os,subprocess
-          changed=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          if any(not p.startswith(os.environ['B']+'/') for p in changed):raise SystemExit('UNSCOPED_WRITE')
-          PY
-            git diff --cached --quiet || git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          }
-          python -m backend.research.rebuild.kr3_profit_zone_recovery_study_v1 freeze --inputs out/parent51/inputs
-          persist 'research: freeze C51 recovery before new economic outcomes'
-          for per in DEV2025 SEEN2026; do
-            python -m backend.research.rebuild.kr3_profit_zone_recovery_study_v1 reserve --period "$per"
-            persist "research: reserve C51 recovery $per before replay"
-            remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-            test "$remote" = "$(git rev-parse HEAD)"
-            timeout 150 python -u -m backend.research.rebuild.kr3_profit_zone_recovery_study_v1 execute --inputs out/parent51/inputs --period "$per" --remote-sha "$remote"
-            persist "research: preserve C51 recovery $per result"
-          done
-          python -m backend.research.rebuild.kr3_profit_zone_recovery_study_v1 summarize
-          persist 'research: summarize exact C51 recovery comparison'
-      - name: Save checkpoint without re-execution
-        if: always() && steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name c51-recovery-evaluator
-          git config user.email actions@users.noreply.github.com
-          git add "$B"
-          if ! git diff --cached --quiet; then
-            git commit -m 'research: preserve recovery checkpoint no retry [skip ci]'
-            git push origin "HEAD:refs/heads/$BRANCH"
-          fi
-          mkdir -p out/c51-recovery
-          git archive HEAD "$B" backend/research/rebuild/kr3_profit_zone_recovery_v1.py backend/research/rebuild/test_kr3_profit_zone_recovery_v1.py backend/research/rebuild/kr3_profit_zone_recovery_study_v1.py .github/workflows/kr3-c51-recovery-v1.yml > out/c51-recovery/code-results.tar
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.execute == 'true'
-        with:
-          name: c51-recovery-${{ github.run_id }}
-          path: out/c51-recovery
-          retention-days: 90
+          python3 -B verify_saved.py --manifest-sha256 336eb6b2996bc76fdf3d96ef70b63810a797f707486f800c7af69283cb409416
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

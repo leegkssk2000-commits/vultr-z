@@ -4,140 +4,29 @@ on:
     paths:
       - 'research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1/**'
       - '.github/workflows/d2-hlhb-calendar-repair-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1/**'
+      - '.github/workflows/d2-hlhb-calendar-repair-v1.yml'
 permissions:
   contents: read
-  actions: read
-concurrency:
-  group: d2-hlhb-calendar-repair-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
 jobs:
-  reserved-sequential-repair:
+  verify-completed-comparison:
     runs-on: ubuntu-24.04
-    timeout-minutes: 18
-    permissions:
-      contents: write
-      actions: read
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      B: research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1
-      F: research/benchmarks/D2_HLHB_FREQTRADE_2026_7_V1
-      BRANCH: research/d2-hlhb-calendar-repair-after-pr1220-v1
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - name: One explicit new-scope dispatch only
-        id: scope
-        env:
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+      - name: Canonical source validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Verify original preserved result records
+        working-directory: research/benchmarks/D2_HLHB_FREQTRADE_2026_7_V1
+        run: python3 -B verify_closed.py --manifest-sha256 378a28dd3696422a13b938bf5f95c1de1381b12b4b5dfdb64a4e914c8c9398b5
+      - name: Verify both corrected results without market replay
+        working-directory: research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1
         run: |
-          set -euo pipefail
-          subject=$(git log -1 --format=%s)
-          if [ "$RUN_ATTEMPT" = 1 ] && [ "$HEAD_REF" = "$BRANCH" ] && [ "$subject" = 'RUN_TWO_CALENDAR_REPAIR_SEEN2026_20260908' ] && [ ! -f "$B/SPEC.json" ]; then
-            echo 'execute=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'execute=false' >> "$GITHUB_OUTPUT"
-            echo 'NO_REPLAY_DISPATCH'
-          fi
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          python-version: '3.12'
-      - name: Canonical preflight and frozen old evidence
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          (cd "$F" && python -B verify_closed.py --manifest-sha256 378a28dd3696422a13b938bf5f95c1de1381b12b4b5dfdb64a4e914c8c9398b5)
-      - name: Exact original FT dependency installation
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          python -m venv /tmp/ft2026-7
-          /tmp/ft2026-7/bin/python -m pip install --disable-pip-version-check --require-hashes -r "$F/environment/requirements-hashed.txt"
-          /tmp/ft2026-7/bin/python -m pip check
-          /tmp/ft2026-7/bin/python -m py_compile "$B/execute.py" "$B/boundary.py"
-      - uses: actions/download-artifact@v4
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          name: calendar-qa-34263219129
-          run-id: 34263219129
-          github-token: ${{ github.token }}
-          path: out/verified-qa
-      - name: Bind passed QA to exact boundary source; load only existing approved prefix
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os,tarfile,pathlib,json
-          b=pathlib.Path(os.environ['B'])
-          with tarfile.open('out/verified-qa/code.tar') as t:
-            for name in ['boundary.py','test_boundary.py']:
-              if t.extractfile(str(b/name)).read()!=(b/name).read_bytes():raise SystemExit('QA_SOURCE_CHANGED:'+name)
-          qa=json.loads(pathlib.Path('out/verified-qa/SYNTHETIC_QA.json').read_bytes())
-          if not qa['success'] or qa['tests']!=14:raise SystemExit('PRIOR_QA_NOT_PASS')
-          PY
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/approved-original-source
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/approved-original-source
-          PYTHONPATH=. /tmp/ft2026-7/bin/python -B "$B/execute.py" prepare --source /tmp/approved-original-source/research/data/g5a_stage_v1 --inputs out/SEEN2026.json.gz
-      - name: Freeze source and runtime claims remotely before each actual engine run
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name calendar-repair-evaluator
-          git config user.email actions@users.noreply.github.com
-          persist() {
-            git add "$B"
-            python - <<'PY'
-          import os,subprocess
-          prefix=os.environ['B']+'/'
-          changed=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          if any(not p.startswith(prefix) for p in changed):raise SystemExit('UNSCOPED_WRITE')
-          PY
-            git diff --cached --quiet || git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            current=$(git rev-parse HEAD)
-            remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-            test "$current" = "$remote"
-          }
-          PYTHONPATH=. /tmp/ft2026-7/bin/python -B "$B/execute.py" freeze --inputs out/SEEN2026.json.gz --qa out/verified-qa/SYNTHETIC_QA.json
-          persist 'research: freeze exact calendar repair before both new outcomes'
-          for kind in D2 HLHB; do
-            PYTHONPATH=. /tmp/ft2026-7/bin/python -B "$B/execute.py" reserve --kind "$kind"
-            persist "research: reserve $kind corrected SEEN2026 before replay"
-            current=$(git rev-parse HEAD)
-            remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-            test "$current" = "$remote"
-            PYTHONPATH=. timeout 180 /tmp/ft2026-7/bin/python -u -B "$B/execute.py" execute --kind "$kind" --inputs out/SEEN2026.json.gz --claim-commit "$current" --remote-sha "$remote"
-            persist "research: preserve $kind corrected SEEN2026 result"
-          done
-          PYTHONPATH=. /tmp/ft2026-7/bin/python -B "$B/execute.py" summarize
-          persist 'research: record two corrected 2026 comparisons without new rule'
-      - name: Preserve any consumed runtime attempt without retrying
-        if: always() && steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name calendar-repair-evaluator
-          git config user.email actions@users.noreply.github.com
-          git add "$B"
-          if ! git diff --cached --quiet; then
-            git commit -m 'research: preserve calendar repair checkpoint without retry [skip ci]'
-            git push origin "HEAD:refs/heads/$BRANCH"
-          fi
-          mkdir -p out/calendar-results
-          git archive HEAD "$B" "$F" .github/workflows/d2-hlhb-calendar-repair-v1.yml > out/calendar-results/code-and-results.tar
-          test ! -f out/SEEN2026.json.gz || cp out/SEEN2026.json.gz out/calendar-results/
-          test ! -f out/verified-qa/SYNTHETIC_QA.json || cp out/verified-qa/SYNTHETIC_QA.json out/calendar-results/
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.execute == 'true'
-        with:
-          name: calendar-repair-results-${{ github.run_id }}
-          path: out/calendar-results
-          retention-days: 90
+          python3 -B verify_saved.py --manifest-sha256 4b5d9269cba3e03d867ff7ff4487e3be439ba7570c7ff2fd96b1e42eb4038d39
+          python3 -B -m unittest -v test_verify
+          git diff --exit-code

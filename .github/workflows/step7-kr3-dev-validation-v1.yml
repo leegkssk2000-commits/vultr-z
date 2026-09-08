@@ -54,6 +54,12 @@ jobs:
           import hashlib, json, pathlib
           from backend.research.rebuild import step7_kr3_dev_validation_v1 as runner
           base = pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION')
+          # Consume the saved API status as evidence; this is not a provider probe.
+          runtime = json.loads(pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/AI/RUNTIME_STATUS.json').read_bytes())
+          if runtime['candidate_sha256'] != runner.CANDIDATE or runtime['calls_this_scope'] != 0 or runtime['P5_completed'] is not False:
+            raise SystemExit('API_RUNTIME_RECEIPT_IDENTITY_OR_EXECUTION_CLAIM')
+          if hashlib.sha256(pathlib.Path(runtime['canonical_ledger']).read_bytes()).hexdigest() != runtime['canonical_ledger_sha256']:
+            raise SystemExit('PRESERVED_SHARED_API_LEDGER_CHANGED')
           spec = json.loads((base/'SPEC.json').read_bytes())
           if not runner.native.contracts.check_seal(spec) or spec['variants'] != runner.variants():
             raise SystemExit('EXACT_TWELVE_FROZEN_VARIANTS_REQUIRED')

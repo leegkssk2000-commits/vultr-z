@@ -1,0 +1,60 @@
+name: D2 hlhb calendar repair
+on:
+  pull_request:
+    paths:
+      - 'research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1/**'
+      - '.github/workflows/d2-hlhb-calendar-repair-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: d2-hlhb-calendar-repair-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  synthetic-boundary-qa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical preflight
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Install original pinned research runtime only
+        run: |
+          python -m venv /tmp/ft2026-7
+          /tmp/ft2026-7/bin/python -m pip install --disable-pip-version-check --require-hashes -r research/benchmarks/D2_HLHB_FREQTRADE_2026_7_V1/environment/requirements-hashed.txt
+          /tmp/ft2026-7/bin/python -m pip check
+          mkdir -p out/calendar-qa
+          /tmp/ft2026-7/bin/python -m pip freeze --all > out/calendar-qa/runtime-freeze.txt
+      - name: Real FT on artificial prices only and fresh-directory test
+        env:
+          QA_RECEIPT: ${{ github.workspace }}/out/calendar-qa/SYNTHETIC_QA.json
+        run: |
+          cd research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1
+          /tmp/ft2026-7/bin/python -B test_boundary.py -v
+          cd -
+          git diff --exit-code
+      - name: Preserve portable code and QA records, no market inputs
+        if: always()
+        run: |
+          mkdir -p out/calendar-qa
+          git archive HEAD research/benchmarks/D2_HLHB_FREQTRADE_2026_7_V1 research/benchmarks/D2_HLHB_CALENDAR_REPAIR_AFTER_PR1220_V1 .github/workflows/d2-hlhb-calendar-repair-v1.yml > out/calendar-qa/code.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: calendar-qa-${{ github.run_id }}
+          path: out/calendar-qa
+          retention-days: 30

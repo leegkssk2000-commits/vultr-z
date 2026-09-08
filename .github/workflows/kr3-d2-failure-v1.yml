@@ -1,0 +1,153 @@
+name: KR3 D2 structural failure
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d2-failure-v1.yml'
+      - 'backend/research/rebuild/kr3_d2*.py'
+      - 'backend/research/rebuild/test_kr3_d2*.py'
+      - 'research/development_evidence/KR3_D_HELD_PATH_DIAGNOSIS_V1/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d2-failure-v1.yml'
+      - 'backend/research/rebuild/kr3_d2*.py'
+      - 'backend/research/rebuild/test_kr3_d2*.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE/**'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+permissions:
+  contents: read
+concurrency:
+  group: kr3-d2-failure-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      execute: ${{ steps.scope.outputs.execute }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical preflight and synthetic tests before economics
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python -m unittest backend.research.rebuild.test_kr3_d2_failure_exit_v1 -v
+      - name: Finite new operation or saved check, never retry
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          ATTEMPT: ${{ github.run_attempt }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,subprocess
+          from backend.research.rebuild import kr3_d2_failure_study_v1 as m
+          b=pathlib.Path(m.OUT);budget=json.loads(pathlib.Path(m.p.BUDGET).read_bytes())
+          subject=subprocess.check_output(['git','log','-1','--format=%s'],text=True).strip()
+          go=(os.environ['EVENT']=='pull_request' and os.environ['ATTEMPT']=='1' and os.environ['HEAD_BRANCH']=='research/kr3-d-held-path-diagnostic-v1' and subject=='RUN_D2_FAILURE_ONCE_AFTER_PR1217' and m.KEY not in budget and not (b/'SPEC.json').exists())
+          if (b/'SPEC.json').exists():
+            result=m.saved_check(json.loads((b/'SPEC.json').read_bytes()))
+            if result['completed']!=2:raise SystemExit('SCOPE_INCOMPLETE_NO_RETRY')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('execute='+str(go).lower()+'\n')
+          print('ONE_FROZEN_CANDIDATE_TWO_USED_PERIODS' if go else 'SAVED_VERIFY_ONLY')
+          PY
+  economic_once:
+    needs: verify
+    if: needs.verify.outputs.execute == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      BRANCH: research/kr3-d-held-path-diagnostic-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Same used source prefixes and policy, no market collection
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
+          mkdir -p /tmp/d2-source out/d2-input
+          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/d2-source
+          python - <<'PY'
+          import gzip,json,pathlib
+          from backend.research.rebuild import kr3_d2_failure_study_v1 as m
+          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
+          from backend.research.rebuild import q0_b_seen_adapter_v1 as adapter
+          source='/tmp/d2-source/research/data/g5a_stage_v1'
+          rows,policy,costs,lineage=e.load_dev_slice(source)
+          assert lineage['decoded_OOS_rows']==lineage['decoded_validation_rows']==0
+          packets={'DEV2025':{'rows_by':rows,'policy':policy,'costs':costs}}
+          config=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
+          policy,dev,rows,access=adapter.load_seen_inputs(source,config)
+          assert all(a['rows_after_evaluation_end_decoded']==0 for a in access.values())
+          packets['SEEN2026']={'rows_by':rows,'policy':policy,'costs':dev['cost_by_symbol']}
+          for period,packet in packets.items():
+            m.packet_check(period,packet)
+            pathlib.Path('out/d2-input/'+period+'.json.gz').write_bytes(gzip.compress(m.p.canonical(packet),mtime=0))
+          print('EXACT_USED_INPUTS_MATCH_NO_ECONOMIC_REPLAY_YET')
+          PY
+          python -m backend.research.rebuild.kr3_d2_failure_study_v1 freeze
+      - name: Remote reservation precedes each of two actual FULL executions
+        run: |
+          set -euo pipefail
+          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE
+          budget=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+          git config user.name kr3-d2-finite-evaluator
+          git config user.email actions@users.noreply.github.com
+          for period in DEV2025 SEEN2026; do
+            test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$(git rev-parse HEAD)"
+            python -m backend.research.rebuild.kr3_d2_failure_study_v1 reserve --period "$period"
+            git add "$b" "$budget"
+            git commit -m "research: persist D2 $period real reservation BEFORE replay [skip ci]"
+            git push origin HEAD:refs/heads/$BRANCH
+            export ZEL_D2_RESERVATION_COMMIT="$(git rev-parse HEAD)"
+            test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$ZEL_D2_RESERVATION_COMMIT"
+            python -u -m backend.research.rebuild.kr3_d2_failure_study_v1 execute --period "$period" --input "out/d2-input/$period.json.gz"
+            git add "$b" "$budget"
+            git commit -m "research: preserve D2 $period actual result [skip ci]"
+            git push origin HEAD:refs/heads/$BRANCH
+          done
+          python -m backend.research.rebuild.kr3_d2_failure_study_v1 summarize
+          python -m backend.research.rebuild.kr3_d2_failure_study_v1 verify
+          git add "$b"
+          git commit -m 'research: preserve D2 two-period accounting [skip ci]'
+          git push origin HEAD:refs/heads/$BRANCH
+      - name: Preserve any incomplete state without resetting or retrying
+        if: always()
+        run: |
+          set -euo pipefail
+          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE
+          test -d "$b" || exit 0
+          git config user.name kr3-d2-finite-evaluator
+          git config user.email actions@users.noreply.github.com
+          git add "$b" research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+          git diff --cached --quiet || { git commit -m 'research: preserve D2 checkpoint NO RETRY [skip ci]'; git push origin HEAD:refs/heads/$BRANCH; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kr3-d2-failure-${{ github.run_id }}
+          path: |
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+          retention-days: 90

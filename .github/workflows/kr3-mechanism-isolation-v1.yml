@@ -1,0 +1,108 @@
+name: KR3 mechanism isolation DEV
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-mechanism-isolation-v1.yml'
+      - 'backend/research/rebuild/kr3_mechanism_isolation_v1.py'
+      - 'backend/research/rebuild/test_kr3_mechanism_isolation_v1.py'
+      - 'research/development_evidence/KR3_MECHANISM_ISOLATION_V1/**'
+permissions:
+  contents: read
+concurrency:
+  group: kr3-mechanism-isolation-v1-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.event.action == 'opened' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical source preflight before any strategy implementation change
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - uses: actions/checkout@v4
+        with:
+          ref: 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
+          path: out/original-source
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /research/data/g5a_stage_v1/development_manifest.json
+            /research/data/g5a_stage_v1/ohlcv/
+            /research/data/g5a_stage_v1/cost/
+      - name: Export existing DEV prefix and loaded code only; no signal or strategy replay
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, sys, zipfile
+          root = pathlib.Path.cwd().resolve()
+          opened = set()
+          def audit(event, args):
+            if event == 'open' and isinstance(args[0], (str, bytes)):
+              try:
+                p = pathlib.Path(args[0]).resolve()
+                rel = p.relative_to(root)
+                if not str(rel).startswith(('out/', '.git/')) and p.is_file():
+                  opened.add(str(rel))
+              except (ValueError, OSError):
+                pass
+          sys.addaudithook(audit)
+          from backend.research.rebuild import step7_kr3_dev_validation_v1 as old
+          rows, policy, costs, lineage = old.evidence.load_dev_slice(root/'out/original-source/research/data/g5a_stage_v1')
+          prior = root/'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/SPEC.json'
+          spec = json.loads(prior.read_bytes())
+          if (old.sha(rows), old.sha(policy), old.sha(costs)) != (spec['data_sha256'], spec['policy_sha256'], spec['cost_sha256']):
+            raise SystemExit('ORIGINAL_DEV_PREFIX_POLICY_COST_MISMATCH')
+          if lineage['decoded_OOS_rows'] or lineage['decoded_validation_rows']:
+            raise SystemExit('UNAUTHORIZED_SUFFIX_DECODE')
+          dependencies = old.code_dependencies()
+          for name, expected in spec['code_files_sha256'].items():
+            if hashlib.sha256((root/name).read_bytes()).hexdigest() != expected:
+              raise SystemExit('PRESERVED_NATIVE_CODE_CHANGED:'+name)
+          files = set(opened) | set(dependencies)
+          for module in tuple(sys.modules.values()):
+            name = getattr(module, '__file__', None)
+            if name:
+              p = pathlib.Path(name).resolve()
+              try: rel = p.relative_to(root)
+              except ValueError: continue
+              if str(rel).startswith('backend/') and p.suffix == '.py': files.add(str(rel))
+          files.update(str(p.relative_to(root)) for p in (root/'frontend/z-os-app-source').rglob('*') if p.is_file())
+          files.add('AGENTS.md')
+          files.add(str(prior.relative_to(root)))
+          result = root/'out/kr3-mechanism-prepared'; result.mkdir(parents=True)
+          payload = {'rows_by':rows,'policy':policy,'costs':costs,'lineage':lineage,'original_spec':spec}
+          (result/'DEV_INPUT.json').write_bytes(old.canonical(payload))
+          manifest = {'scope':'KR3_MECHANISM_ISOLATION_V1','base':'22f859019c4d39643d2ba8d6481c2ee925bc9831','candidate_hypotheses':44,'prior_executions':56,'new_economic_runs':0,'new_collection_calls':0,'paid_AI_calls':0,'decoded_OOS_rows':0,'decoded_validation_rows':0,'files':{}}
+          with zipfile.ZipFile(result/'CODE.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for name in sorted(files):
+              p = root/name
+              if p.is_file() and not name.startswith(('out/','.git/')):
+                data=p.read_bytes(); z.writestr(name,data)
+                manifest['files'][name]=hashlib.sha256(data).hexdigest()
+          manifest['input_sha256']=hashlib.sha256((result/'DEV_INPUT.json').read_bytes()).hexdigest()
+          (result/'MANIFEST.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n')
+          print(json.dumps({k:v for k,v in manifest.items() if k!='files'},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kr3-mechanism-prepared-${{ github.run_id }}
+          path: out/kr3-mechanism-prepared/
+          if-no-files-found: error
+          retention-days: 90

@@ -7,13 +7,17 @@ on:
       - '.github/workflows/zel-external-benchmark-v1.yml'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: zel-external-benchmark-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 jobs:
-  synthetic_engine_preflight:
+  benchmark_once:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
+    permissions:
+      contents: write
+      actions: read
     env:
       GEMINI_API_KEY: ''
       OPENAI_API_KEY: ''
@@ -23,73 +27,91 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ github.event.pull_request.head.sha }}
+      - name: Exact finite dispatch guard
+        id: guard
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          subject=$(git log -1 --format=%s)
+          if [ "$subject" = 'RUN_EXTERNAL_BENCHMARK_ONCE_20260908' ] && [ "$RUN_ATTEMPT" = 1 ] && [ "$HEAD_BRANCH" = 'research/external-engine-strategy-benchmark-v1' ] && [ ! -f research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/SPEC.json ]; then
+            echo execute=true >> "$GITHUB_OUTPUT"
+          else
+            echo execute=false >> "$GITHUB_OUTPUT"
+            echo NO_NEW_ECONOMIC_DISPATCH
+          fi
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.execute == 'true'
         with:
           python-version: '3.12'
           cache: pip
-      - name: Canonical preflight
+      - uses: actions/download-artifact@v4
+        if: steps.guard.outputs.execute == 'true'
+        with:
+          name: external-benchmark-preflight-34249737131
+          run-id: 34249737131
+          github-token: ${{ github.token }}
+          path: out/prepared-benchmark
+      - name: Pinned runtime and inherited frontend preflight
+        if: steps.guard.outputs.execute == 'true'
         run: |
+          set -euo pipefail
           pwd
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Install pinned external engine only
-        run: |
-          python -m pip install 'freqtrade==2026.8' 'ta==0.11.0'
-          mkdir -p out/external-benchmark
-          python -m pip freeze > out/external-benchmark/ENVIRONMENT.txt
-      - name: Exact external source
-        run: |
+          python -m pip install -r out/prepared-benchmark/ENVIRONMENT.txt
           python - <<'PY'
-          import hashlib,pathlib,urllib.request
-          base='https://raw.githubusercontent.com/freqtrade/freqtrade-strategies/7f91ff52bb664423ae673092a6a18d76c50c2c29/'
-          output=pathlib.Path('out/external-benchmark')
-          for path,name in [('user_data/strategies/Heracles.py','Heracles.py'),('LICENSE','LICENSE.external')]:
-              with urllib.request.urlopen(base+path,timeout=30) as r:raw=r.read()
-              if name=='Heracles.py':
-                  blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
-                  if blob!='b69656b76ee142c0945dbb0229a19d67d5516215':raise SystemExit('UPSTREAM_STRATEGY_DRIFT')
-              (output/name).write_bytes(raw)
+          import hashlib,json,pathlib
+          p=pathlib.Path('out/prepared-benchmark')
+          r=json.loads((p/'PREPARATION.json').read_bytes())
+          if r['status']!='PREPARED_NOT_EVALUATED':raise SystemExit('WRONG_PREPARATION')
+          for name,sha in r['files'].items():
+              if hashlib.sha256((p/name).read_bytes()).hexdigest()!=sha:raise SystemExit('PREPARED_BYTES_CHANGED:'+name)
           PY
-      - name: Synthetic real-engine smoke, no market evaluation
+      - name: Synthetic semantics and actual external engine smoke before any market replay
+        if: steps.guard.outputs.execute == 'true'
         run: |
           set -euo pipefail
-          python research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/ft_offline.py 2>&1 | tee out/external-benchmark/SMOKE.log
-          grep -q SYNTHETIC_FREQTRADE_OFFLINE_SMOKE_PASS out/external-benchmark/SMOKE.log
-      - name: Reuse exact used-DEV inputs only, no strategy evaluation
+          b=research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1
+          python "$b/test_benchmark.py" -v 2>&1 | tee out/PRE_ECONOMIC_TESTS.log
+          python "$b/ft_offline.py" 2>&1 | tee out/ENGINE_SMOKE.log
+          grep -q SYNTHETIC_FREQTRADE_OFFLINE_SMOKE_PASS out/ENGINE_SMOKE.log
+          PYTHONPATH="$b:." python - <<'PY'
+          from pathlib import Path
+          import benchmark_run as b
+          import pandas as pd,numpy as np
+          from unittest.mock import patch
+          from freqtrade.resolvers import StrategyResolver
+          source=Path('out/prepared-benchmark/Heracles.py')
+          cls=b.reference_class(source)
+          df=pd.DataFrame({'date':pd.date_range('2020-01-01',periods=80,freq='4h',tz='UTC'),'open':100.,'high':102.,'low':98.,'close':100.,'volume':1000.})
+          start=int(df.date.iloc[0].timestamp()*1000);end=int(df.date.iloc[-1].timestamp()*1000)+b.ft.BAR
+          result,signals=b.ft.run_frame(cls,{'BTC/USDT':df},start,end,'/tmp/synthetic-heracles',{'BTC/USDT':0})
+          assert result['resolved_parameters']['stoploss']==-.256
+          assert result['resolved_parameters']['buy']['buy_indicator_shift']==15
+          assert result['resolved_parameters']['minimal_roi']=={0:.598,644:.166,3269:.115,7289:0}
+          print('UPSTREAM_PARAMETER_LOAD_SYNTHETIC_PASS')
+          PY
+      - name: Reserve remotely then run finite four empirical applications
+        if: steps.guard.outputs.execute == 'true'
         run: |
           set -euo pipefail
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/benchmark-source
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/benchmark-source
-          python - <<'PY'
-          import gzip,hashlib,json,pathlib
-          from backend.research.rebuild import q0_b_seen_adapter_v1 as a
-          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
-          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as p
-          source=pathlib.Path('/tmp/benchmark-source/research/data/g5a_stage_v1')
-          c=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
-          policy,dev,rows,access=a.load_seen_inputs(source,c)
-          first,policy25,cost25,lineage25=e.load_dev_slice(source)
-          manifest=json.loads((source/'development_manifest.json').read_bytes())
-          starts={s:meta['first_open_ms'] for s,meta in manifest['raw_symbols'].items()}
-          out=pathlib.Path('out/external-benchmark')
-          for label,r,pol,cost in [('DEV2025',first,policy25,cost25),('SEEN2026',rows,policy,dev['cost_by_symbol'])]:
-              packet={'rows_by':r,'policy':pol,'costs':cost,'history_start':starts,'independent':False}
-              (out/(label+'.json.gz')).write_bytes(gzip.compress(p.canonical(packet),mtime=0))
-          expected=json.loads(pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE/SPEC.json').read_bytes())
-          assert p.sha(first)==expected['input_hashes']['DEV2025']['rows_by']
-          assert p.sha(rows)==expected['input_hashes']['SEEN2026']['rows_by']
-          assert p.sha(cost25)==expected['cost_hash']==p.sha(dev['cost_by_symbol'])
-          assert all(v['rows_after_evaluation_end_decoded']==0 for v in access.values())
-          receipt={'status':'PREPARED_NOT_EVALUATED','new_market_requests':0,'strategy_evaluations':0,'source_ref':e.DATA_REF,'data_hashes':expected['input_hashes'],'history_start':starts,'files':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
-          (out/'PREPARATION.json').write_bytes(p.canonical(receipt));print(json.dumps(receipt))
-          PY
+          git config user.name zel-external-benchmark
+          git config user.email actions@users.noreply.github.com
+          python -u research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/benchmark_run.py --input out/prepared-benchmark 2>&1 | tee out/ECONOMIC_EXECUTION.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: external-benchmark-preflight-${{ github.run_id }}
-          path: out/external-benchmark
-          retention-days: 30
+          name: external-benchmark-actual-${{ github.run_id }}
+          path: |
+            research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+            out/PRE_ECONOMIC_TESTS.log
+            out/ENGINE_SMOKE.log
+            out/ECONOMIC_EXECUTION.log
+            out/prepared-benchmark/PREPARATION.json
+          retention-days: 90

@@ -10,6 +10,8 @@ SCOPE='EXTERNAL_ENGINE_STRATEGY_20260908_V1'
 BUDGET='research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
 RUNS=['BREAK_DEV2025','BREAK_SEEN2026','HERACLES_DEV2025','HERACLES_SEEN2026']
 OLD_BUDGET_BLOB='a2dbe0a859f3e27bb8c7780fc7c94225cf676f3e'
+# Fixed against the original completed artifact; no auto-regeneration path.
+RESULT_ANCHOR_SHA256='816c956ebd405a1db48093e0072e19b9f71d1cb4d7e75d05dfd8f56dd73ffe4e'
 def digest(x):return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 def require(x,msg):
     if not x:raise ValueError(msg)
@@ -32,7 +34,17 @@ def validate_record(r):
     for _,v in m['equity4h']:peak=max(peak,v);dd=max(dd,peak-v)
     require(near(dd,m['mark4h_DD']),'MARKED_DD')
     require(near(m['equity4h'][-1][1],m['terminal_net']),'FINAL_EQUITY')
+def verify_anchor(root=HERE):
+    raw=(root/'RESULT_ANCHOR.json').read_bytes()
+    require(hashlib.sha256(raw).hexdigest()==RESULT_ANCHOR_SHA256,'RESULT_ANCHOR_MANIFEST_CHANGED')
+    anchor=json.loads(raw)
+    require(anchor['scope']==SCOPE and anchor['executed_result_commit']=='863243f0382c0187807f7b1e4fd7b5e3cb3f2681','RESULT_ANCHOR_IDENTITY')
+    for path,expected in anchor['files_sha256'].items():
+        require(hashlib.sha256((root/path).read_bytes()).hexdigest()==expected,'ORIGINAL_EXECUTED_BYTES_CHANGED:'+path)
+    return {'anchored_files':len(anchor['files_sha256']),'executed_result_commit':anchor['executed_result_commit']}
+
 def verify():
+    verify_anchor()
     spec=json.loads((HERE/'SPEC.json').read_bytes());seal=spec.pop('receipt_sha256')
     require(seal==digest(spec),'SPEC_SEAL')
     for p,h in spec['scientific_files'].items():require(hashlib.sha256((HERE/p).read_bytes()).hexdigest()==h,'SCIENTIFIC_CODE_CHANGED:'+p)

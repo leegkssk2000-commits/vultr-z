@@ -1,0 +1,33 @@
+name: KR3 C51 one recovery
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/*profit_zone_recovery*.py'
+      - 'research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1/**'
+      - '.github/workflows/kr3-c51-recovery-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*profit_zone_recovery*.py'
+      - 'research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1/**'
+      - '.github/workflows/kr3-c51-recovery-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical and artificial regression
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.rebuild.test_kr3_profit_zone_recovery_v1 -v
+      - name: Saved economic records only
+        working-directory: research/development_evidence/KR3_C51_ONCE_RECOVERY_AFTER_PR1224_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 336eb6b2996bc76fdf3d96ef70b63810a797f707486f800c7af69283cb409416
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

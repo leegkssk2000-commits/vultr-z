@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Classify PR1211 implementation and stored-evidence continuation
+      - name: Classify completed scopes and finite KR3 DEV successor
         id: scope
         run: |
           python - <<'PY'
@@ -56,7 +56,24 @@ jobs:
             'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/TASK.json',
           }
           prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/'
-          auth_only = bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
+          dev_allowed = {
+            '.github/workflows/step7-parent-survivor-v1.yml',
+            '.github/workflows/step7-kr3-dev-validation-v1.yml',
+            '.github/workflows/top5-cumulative-api-v4.yml',
+            'backend/research/rebuild/step7_kr3_dev_evidence_v1.py',
+            'backend/research/rebuild/test_step7_kr3_dev_evidence_v1.py',
+            'backend/research/rebuild/step7_kr3_dev_validation_v1.py',
+            'backend/research/rebuild/test_step7_kr3_dev_validation_v1.py',
+            'backend/research/rebuild/step7_kr3_review_route_v1.py',
+            'backend/research/rebuild/test_step7_kr3_review_route_v1.py',
+            'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/TASK.json',
+            'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json',
+          }
+          dev_prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/'
+          dev_only = bool(changed) and any(p.startswith(dev_prefix) for p in changed) and all(p in dev_allowed or p.startswith(dev_prefix) for p in changed)
+          auth_only = not dev_only and bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
+          if dev_only:
+            print('REUSE_COMPLETED_PR1211_AUTH_AND_PR1210_SYNTHETIC_EVIDENCE; NEW_DEV_TESTS_AND_STORED_RESULTS_HAVE_SEPARATE_WORKFLOW')
           if auth_only:
             # PR1210 remains historical evidence. Only authorized auth/CI drift
             # is exempted; all unchanged candidate/producer/design bytes match.
@@ -70,6 +87,7 @@ jobs:
             print('REUSE_PR1210_FROZEN_SYNTHETIC_RESULT; no native economics or source rerun')
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:
             f.write('auth_only=' + str(auth_only).lower() + '\n')
+            f.write('dev_only=' + str(dev_only).lower() + '\n')
           PY
       - name: Changed authorization boundary and actual evidence linkage regression
         if: steps.scope.outputs.auth_only == 'true'
@@ -79,13 +97,13 @@ jobs:
           python -m backend.research.rebuild.step7_kr3_g5a_evidence_v1 --out-dir out/step7-g5a-evidence
           cmp out/step7-g5a-evidence/KR3_G5A_EVIDENCE.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/G5A_READINESS/KR3_G5A_EVIDENCE.json
       - name: New execution path regression only
-        if: steps.scope.outputs.auth_only != 'true'
+        if: steps.scope.outputs.auth_only != 'true' && steps.scope.outputs.dev_only != 'true'
         run: |
           set -euo pipefail
           python -m unittest backend.research.rebuild.test_step7_authorized_io_v1 backend.research.rebuild.test_step7_kr3_execution_v1 backend.research.rebuild.test_step7_source_sequence_v1 backend.research.rebuild.test_step7_design_feasibility_v1 backend.research.rebuild.test_step7_execution_path_v1 -v
           npm run --prefix frontend/z-os-app-source validate
       - name: Frozen native nine-report integration reproduction
-        if: steps.scope.outputs.auth_only != 'true'
+        if: steps.scope.outputs.auth_only != 'true' && steps.scope.outputs.dev_only != 'true'
         run: |
           set -euo pipefail
           python -m backend.research.rebuild.step7_execution_path_v1 --verify

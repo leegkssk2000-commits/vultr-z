@@ -1,0 +1,120 @@
+name: STEP7 KR3 finite DEV validation
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/step7_kr3_dev_evidence_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_dev_evidence_v1.py'
+      - 'backend/research/rebuild/step7_kr3_dev_validation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_dev_validation_v1.py'
+      - 'backend/research/rebuild/step7_kr3_review_route_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_review_route_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/**'
+      - '.github/workflows/step7-kr3-dev-validation-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/step7_kr3_dev_evidence_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_dev_evidence_v1.py'
+      - 'backend/research/rebuild/step7_kr3_dev_validation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_dev_validation_v1.py'
+      - 'backend/research/rebuild/step7_kr3_review_route_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_review_route_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/**'
+      - '.github/workflows/step7-kr3-dev-validation-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: step7-kr3-dev-validation-v1-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: New synthetic regression only
+        run: |
+          python -m unittest backend.research.rebuild.test_step7_kr3_dev_evidence_v1 backend.research.rebuild.test_step7_kr3_dev_validation_v1 backend.research.rebuild.test_step7_kr3_review_route_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Verify stored finite DEV receipts without economic replay
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib
+          from backend.research.rebuild import step7_kr3_dev_validation_v1 as runner
+          base = pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION')
+          # Consume the saved API status as evidence; this is not a provider probe.
+          runtime = json.loads(pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/AI/RUNTIME_STATUS.json').read_bytes())
+          if runtime['candidate_sha256'] != runner.CANDIDATE or runtime['calls_this_scope'] != 0 or runtime['P5_completed'] is not False:
+            raise SystemExit('API_RUNTIME_RECEIPT_IDENTITY_OR_EXECUTION_CLAIM')
+          if hashlib.sha256(pathlib.Path(runtime['canonical_ledger']).read_bytes()).hexdigest() != runtime['canonical_ledger_sha256']:
+            raise SystemExit('PRESERVED_SHARED_API_LEDGER_CHANGED')
+          spec = json.loads((base/'SPEC.json').read_bytes())
+          if not runner.native.contracts.check_seal(spec) or spec['variants'] != runner.variants():
+            raise SystemExit('EXACT_TWELVE_FROZEN_VARIANTS_REQUIRED')
+          if spec['candidate_sha256'] != runner.CANDIDATE or spec['seed'] != 'NO_RANDOM':
+            raise SystemExit('CANDIDATE_OR_SEED_CHANGED')
+          for name, expected in spec['code_files_sha256'].items():
+            if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() != expected:
+              raise SystemExit('FROZEN_EXECUTION_CODE_CHANGED:' + name)
+          index = json.loads((base/'VARIANTS/INDEX.json').read_bytes())
+          if index['specification_sha256'] != spec['receipt_sha256']:
+            raise SystemExit('INDEX_SPECIFICATION_MISMATCH')
+          listed = {row['variant']['id']: row for row in index['results']}
+          if len(listed) != len(index['results']) or not set(listed) <= {v['id'] for v in spec['variants']}:
+            raise SystemExit('DUPLICATE_OR_UNFROZEN_RESULT')
+          counts = {'COMPLETED': 0, 'FAILED_CONSUMED': 0, 'UNEXECUTED': 0}
+          failure_seen = False
+          for variant in spec['variants']:
+            folder = base/'VARIANTS'/variant['id']
+            receipt_path = folder/'RECEIPT.json'
+            if not receipt_path.exists():
+              if (folder/'ATTEMPT.json').exists():
+                raise SystemExit('UNFINISHED_OWNED_EXECUTION:' + variant['id'])
+              if not failure_seen:
+                raise SystemExit('UNEXPLAINED_MISSING_VARIANT:' + variant['id'])
+              row = listed.get(variant['id'])
+              if row is not None and row.get('status') not in ('UNEXECUTED', 'BLOCKED', 'NOT_EXECUTED'):
+                raise SystemExit('UNEXECUTED_RESULT_MISLABELLED:' + variant['id'])
+              counts['UNEXECUTED'] += 1
+              continue
+            receipt = json.loads(receipt_path.read_bytes())
+            attempt = json.loads((folder/'ATTEMPT.json').read_bytes())
+            if receipt != listed.get(variant['id']) or receipt['variant'] != variant:
+              raise SystemExit('INDEX_RECEIPT_VARIANT_MISMATCH:' + variant['id'])
+            if receipt['specification_sha256'] != spec['receipt_sha256'] or attempt['specification_sha256'] != spec['receipt_sha256']:
+              raise SystemExit('ATTEMPT_SPECIFICATION_MISMATCH:' + variant['id'])
+            if attempt['status'] != 'RESERVED_BEFORE_NATIVE_REPLAY' or attempt['retry_allowed'] is not False:
+              raise SystemExit('INVALID_ATTEMPT_RESERVATION:' + variant['id'])
+            if receipt['status'] == 'COMPLETED':
+              if hashlib.sha256((folder/'RESULT.json.gz').read_bytes()).hexdigest() != receipt['artifact_sha256']:
+                raise SystemExit('STORED_RESULT_BYTES_MISMATCH:' + variant['id'])
+              counts['COMPLETED'] += 1
+            elif receipt['status'] == 'FAILED_CONSUMED':
+              failure_seen = True
+              counts['FAILED_CONSUMED'] += 1
+            else:
+              raise SystemExit('UNFINISHED_VARIANT:' + variant['id'])
+          if sum(counts.values()) != 12:
+            raise SystemExit('FINITE_ATTEMPT_ACCOUNTING_MISMATCH')
+          print(json.dumps({'stored_dev_variant_accounting': counts, 'economic_replays': 0,
+                            'source_requests': 0, 'provider_calls': 0, 'formal_pass_claimed': False}, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: step7-kr3-dev-${{ github.sha }}-${{ github.run_id }}
+          path: research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION
+          if-no-files-found: error
+          retention-days: 90

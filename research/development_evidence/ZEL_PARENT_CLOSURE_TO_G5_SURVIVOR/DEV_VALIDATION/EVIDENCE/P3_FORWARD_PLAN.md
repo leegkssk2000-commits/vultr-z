@@ -1,0 +1,11 @@
+# P3 missing forward-path extraction specification — NOT EXECUTED
+
+Owner reference: `backend/research/architecture_factory/a1_gen2_alpha_proof_e2e_v1.py:_simulate/_p3`; gate: `backend/research/alpha_proof/a1_alpha_proof_gate_v1.py:evaluate_p3`. The generic owner defines a maximum-hold horizon. It is not a registered KR3 launch decision.
+
+A bounded future implementation can reuse the exact already-used DEV2025 source prefixes and stored KR3 FULL admitted entries, without regenerating signals or trades. The descriptive population must enumerate all existing entries, including the open tail; completed-only medians must be reported separately to expose censoring. It must not treat excluded entry signals as executed positions.
+
+For an existing entry index `e_i`, let `h = e_i + 12 - 1`, where 12 is the preserved original native cap in observed 4h bars. Use original entry price `p_e` and rows `e_i..h` inclusive. Long signed forward movement is `(close[h] / p_e - 1) * 10000` bps. Positive adverse magnitude is `max(0, (1 - min(low[e_i:h+1]) / p_e) * 10000)` bps. Favorable movement follows the referenced generic owner's formula `(max(high[e_i:h+1]) / p_e - 1) * 10000`; retain any signed difference from the native zero-clipped held excursion rather than silently normalizing it. Medians use the exact complete-window population with equal entry weight and no outcome selection.
+
+If the full horizon is absent from the approved prefix, record the entry as `WINDOW_CENSORED` and retain its identity/count. Do not pull a suffix, shorten the horizon with `min(..., last_row)`, or substitute an exit/terminal mark. This full-window extraction is a declared diagnostic difference from the generic producer's terminal truncation. No new execution feature, strategy candidate, threshold or live access is introduced.
+
+Unresolved before these diagnostic numbers can populate formal P3 fields: exact KR3 horizon applicability (native H12 versus the conditional H24 extension), intended population (raw signals versus actual admitted entries), treatment of incomplete forward windows, MAE/MFE sign convention, and the authorized SSOT launch owner. The stored native medians already produced in this task remain labeled variable actual-holding results; this document adds no measured values and grants no formal PASS.

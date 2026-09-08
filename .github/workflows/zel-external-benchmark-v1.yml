@@ -19,6 +19,7 @@ jobs:
       OPENAI_API_KEY: ''
       GOOGLE_API_KEY: ''
       PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,15 +35,15 @@ jobs:
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Install pinned external engine only, not FreqAI or hyperopt
+      - name: Install pinned external engine only
         run: |
           python -m pip install 'freqtrade==2026.8' 'ta==0.11.0'
           mkdir -p out/external-benchmark
           python -m pip freeze > out/external-benchmark/ENVIRONMENT.txt
-      - name: Exact external strategy source, no parameter search or market requests
+      - name: Exact external source
         run: |
           python - <<'PY'
-          import hashlib,pathlib,urllib.request,json
+          import hashlib,pathlib,urllib.request
           base='https://raw.githubusercontent.com/freqtrade/freqtrade-strategies/7f91ff52bb664423ae673092a6a18d76c50c2c29/'
           output=pathlib.Path('out/external-benchmark')
           for path,name in [('user_data/strategies/Heracles.py','Heracles.py'),('LICENSE','LICENSE.external')]:
@@ -52,9 +53,40 @@ jobs:
                   if blob!='b69656b76ee142c0945dbb0229a19d67d5516215':raise SystemExit('UPSTREAM_STRATEGY_DRIFT')
               (output/name).write_bytes(raw)
           PY
-      - name: Synthetic real-engine smoke, NO market strategy run
+      - name: Synthetic real-engine smoke, no market evaluation
         run: |
+          set -euo pipefail
           python research/benchmarks/EXTERNAL_ENGINE_STRATEGY_20260908_V1/ft_offline.py 2>&1 | tee out/external-benchmark/SMOKE.log
+          grep -q SYNTHETIC_FREQTRADE_OFFLINE_SMOKE_PASS out/external-benchmark/SMOKE.log
+      - name: Reuse exact used-DEV inputs only, no strategy evaluation
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
+          mkdir -p /tmp/benchmark-source
+          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/benchmark-source
+          python - <<'PY'
+          import gzip,hashlib,json,pathlib
+          from backend.research.rebuild import q0_b_seen_adapter_v1 as a
+          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as p
+          source=pathlib.Path('/tmp/benchmark-source/research/data/g5a_stage_v1')
+          c=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
+          policy,dev,rows,access=a.load_seen_inputs(source,c)
+          first,policy25,cost25,lineage25=e.load_dev_slice(source)
+          manifest=json.loads((source/'development_manifest.json').read_bytes())
+          starts={s:meta['first_open_ms'] for s,meta in manifest['raw_symbols'].items()}
+          out=pathlib.Path('out/external-benchmark')
+          for label,r,pol,cost in [('DEV2025',first,policy25,cost25),('SEEN2026',rows,policy,dev['cost_by_symbol'])]:
+              packet={'rows_by':r,'policy':pol,'costs':cost,'history_start':starts,'independent':False}
+              (out/(label+'.json.gz')).write_bytes(gzip.compress(p.canonical(packet),mtime=0))
+          expected=json.loads(pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D2_FAILURE/SPEC.json').read_bytes())
+          assert p.sha(first)==expected['input_hashes']['DEV2025']['rows_by']
+          assert p.sha(rows)==expected['input_hashes']['SEEN2026']['rows_by']
+          assert p.sha(cost25)==expected['cost_hash']==p.sha(dev['cost_by_symbol'])
+          assert all(v['rows_after_evaluation_end_decoded']==0 for v in access.values())
+          receipt={'status':'PREPARED_NOT_EVALUATED','new_market_requests':0,'strategy_evaluations':0,'source_ref':e.DATA_REF,'data_hashes':expected['input_hashes'],'history_start':starts,'files':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
+          (out/'PREPARATION.json').write_bytes(p.canonical(receipt));print(json.dumps(receipt))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

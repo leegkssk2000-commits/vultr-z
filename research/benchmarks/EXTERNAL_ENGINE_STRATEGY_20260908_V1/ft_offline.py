@@ -1,4 +1,4 @@
-"""Offline Freqtrade adapter. Real engine; analytical market metadata, no exchange IO."""
+"""Actual Freqtrade engine, offline analytical market metadata; no exchange IO."""
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -47,7 +47,7 @@ class SmokeStrategy(BreakV2Port):
 
 def blocked(*args,**kwargs):raise RuntimeError('BENCHMARK_MARKET_NETWORK_FORBIDDEN')
 
-def run_frame(strategy_class,frames,start_ms,end_ms,workdir):
+def run_frame(strategy_class,frames,start_ms,end_ms,workdir,history_start=None):
     workdir=Path(workdir);workdir.mkdir(parents=True,exist_ok=True)
     config={'dry_run':True,'dry_run_wallet':1000000000.0,'tradable_balance_ratio':1.0,
       'stake_currency':'USDT','stake_amount':1000.0,'max_open_trades':len(frames),
@@ -62,8 +62,9 @@ def run_frame(strategy_class,frames,start_ms,end_ms,workdir):
       'order_time_in_force':{'entry':'GTC','exit':'GTC'},
       'unfilledtimeout':{'entry':10,'exit':10,'unit':'minutes'},
       'datadir':workdir/'data','user_data_dir':workdir,'strategy':strategy_class.__name__,
-      'timerange':f'{start_ms//1000}-{end_ms//1000}',
-      'export':'none','enable_protections':False,'position_stacking':False}
+      'timerange':f'{(start_ms-BAR)//1000}-{end_ms//1000}',
+      'export':'none','enable_protections':False,'position_stacking':False,
+      'verified_history_start':history_start or {}}
     config['datadir'].mkdir(exist_ok=True)
     with patch.object(socket.socket,'connect',blocked),patch('socket.create_connection',blocked):
         ex=Exchange(config,validate=False,load_leverage_tiers=False)
@@ -73,17 +74,20 @@ def run_frame(strategy_class,frames,start_ms,end_ms,workdir):
           'taker':.0005,'maker':.0005,'precision':{'amount':1e-12,'price':1e-12},
           'limits':{'amount':{'min':1e-12,'max':None},'price':{'min':None,'max':None},'cost':{'min':0,'max':None}}} for p in frames}
         ex._markets=markets;ex._api.set_markets(markets);ex._api_async.set_markets(markets)
-        def resolve(c):
-            s=strategy_class(c);s.order_types=c['order_types'];s.order_time_in_force=c['order_time_in_force']
-            c.update(minimal_roi=s.minimal_roi,stoploss=s.stoploss,trailing_stop=s.trailing_stop,
-                     use_exit_signal=s.use_exit_signal,exit_profit_only=s.exit_profit_only)
-            return s
+        # Replace only class discovery, NOT official attribute/hyperparam loading.
+        def resolve(strategy_name,config,extra_dir=None):
+            return StrategyResolver.validate_strategy(strategy_class(config))
         try:
-            with patch.object(StrategyResolver,'load_strategy',side_effect=resolve):bt=Backtesting(config,exchange=ex)
+            with patch.object(StrategyResolver,'_load_strategy',side_effect=resolve):bt=Backtesting(config,exchange=ex)
             strat=bt.strategylist[0];bt._set_strategy(strat)
+            if hasattr(strat,'buy_indicator_shift'):
+                assert strat.buy_indicator_shift.value==15 and strat.buy_crossed_indicator_shift.value==9
             processed=strat.advise_all_indicators({p:df.copy() for p,df in frames.items()})
             signals={p:strat.advise_entry(df.copy(),{'pair':p}) for p,df in processed.items()}
-            output=bt.backtest(processed,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp((end_ms-BAR)/1000,timezone.utc))
+            engine_start=max(start_ms-BAR,min(int(df.date.iloc[0].timestamp()*1000) for df in frames.values()))
+            output=bt.backtest(processed,datetime.fromtimestamp(engine_start/1000,timezone.utc),datetime.fromtimestamp((end_ms-BAR)/1000,timezone.utc))
+            output['resolved_parameters']={'minimal_roi':strat.minimal_roi,'stoploss':strat.stoploss,
+              'buy':getattr(strat,'buy_params',None),'max_open_trades':strat.max_open_trades}
             return output,signals
         finally:
             Backtesting.cleanup();ex.close()

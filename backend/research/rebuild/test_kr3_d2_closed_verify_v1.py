@@ -15,6 +15,11 @@ class ClosedScopeTests(unittest.TestCase):
     def test_budget_only_changes_trigger_verification(self):
         text=self.workflow()
         self.assertEqual(text.count("- '"+v.m.p.BUDGET+"'"),2)
+    def test_every_frozen_dependency_triggers_on_both_events(self):
+        text=self.workflow()
+        spec=v.read(v.m.ROOT/v.m.OUT/'SPEC.json')
+        for path in spec['files_sha256']:
+            self.assertEqual(text.count("- '"+path+"'"),2,path)
     def test_both_result_sets_are_required(self):
         text=self.workflow()
         for name in ('ATTEMPT.json','EXECUTION_STARTED.json','RECEIPT.json','RESULT.json.gz'):

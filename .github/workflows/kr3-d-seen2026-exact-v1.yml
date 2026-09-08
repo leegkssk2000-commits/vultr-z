@@ -1,0 +1,80 @@
+name: KR3 D exact seen2026
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d-seen2026-exact-v1.yml'
+      - 'backend/research/rebuild/kr3_d_seen2026_v1.py'
+      - 'backend/research/rebuild/test_kr3_d_seen2026_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/**'
+permissions:
+  contents: read
+concurrency:
+  group: kr3-d-exact-seen2026-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Required canonical preflight
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reuse existing canonical source archive; no market query
+        run: |
+          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
+          mkdir -p /tmp/kr3-d-source
+          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/kr3-d-source
+      - name: Decode exact already-used prefix and preserve preparation
+        run: |
+          python - <<'PY'
+          import gzip, hashlib, json, pathlib, subprocess, zipfile
+          from backend.research.rebuild import q0_b_seen_adapter_v1 as adapter
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as p
+          base=pathlib.Path(p.CAMPAIGN)
+          c=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
+          policy,dev,rows,access=adapter.load_seen_inputs('/tmp/kr3-d-source/research/data/g5a_stage_v1',c)
+          expected=json.loads((base/'WINNER_REPAIR/INPUTS.json').read_bytes())['SEEN2026']
+          costs=dev['cost_by_symbol']
+          packet={'rows_by':rows,'policy':policy,'costs':costs,'lineage':{'access':access,'source_ref':'6d6335d1c9ad7ecb1e9597da85c2eb87635561e1','unused_oos_access':False}}
+          actual={'data_sha256':p.sha(rows),'cost_sha256':p.sha(costs),'policy_sha256':p.sha(policy)}
+          print(json.dumps({'expected':{k:expected[k] for k in actual},'actual':actual}))
+          for k,value in actual.items():
+            if value!=expected[k]: raise SystemExit('PREPARATION_IDENTITY_MISMATCH:'+k)
+          assert all(len(r)==3748 for r in rows.values())
+          assert all(a['rows_after_evaluation_end_decoded']==0 for a in access.values())
+          out=pathlib.Path('out/D_PARENT_2026_PREP');out.mkdir(parents=True,exist_ok=True)
+          (out/'INPUT.json.gz').write_bytes(gzip.compress(p.canonical(packet),mtime=0))
+          with zipfile.ZipFile(out/'CODE_AND_EVIDENCE.zip','w',zipfile.ZIP_DEFLATED) as archive:
+            roots=['backend','frontend/z-os-app-source',str(base),'research/development_evidence/FOCUSED_REPAIR_20260907_V1','research/development_evidence/Q0_B_SEEN_2026_V1']
+            seen=set()
+            for root in roots:
+              for path in pathlib.Path(root).rglob('*'):
+                if path.is_file() and path.suffix not in ('.pyc',) and '__pycache__' not in path.parts and 'node_modules' not in path.parts and str(path) not in seen:
+                  archive.write(path,str(path));seen.add(str(path))
+            archive.write('AGENTS.md')
+          receipt={'state':'PREPARED_NO_ECONOMIC_RUN','scope':'KR3_D_EXACT_SEEN2026_AFTER_PR1215_V1','head':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'exact_mode':p.MODES[3].id,'new_economic_runs':0,'new_hypotheses':0,'market_requests':0,'unused_OOS_reads':0,'provider_calls':0,'bindings':actual,'prior_candidates':45,'prior_evaluations':63,'files':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
+          (out/'PREPARATION.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kr3-d-seen2026-prepared-${{ github.run_id }}
+          path: out/D_PARENT_2026_PREP
+          retention-days: 30

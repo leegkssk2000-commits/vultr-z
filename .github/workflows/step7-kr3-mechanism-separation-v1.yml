@@ -52,23 +52,40 @@ jobs:
           python - <<'PY'
           import hashlib,json,os,pathlib
           from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as m
+          def needs_dispatch(claimed, completed):
+            if claimed and not completed:
+              raise ValueError('CLAIM_WITHOUT_COMPLETE_DIAGNOSTICS')
+            if completed and not claimed:
+              raise ValueError('RESULT_WITHOUT_REMOTE_CLAIM')
+            return not completed
+          assert needs_dispatch(False,False) is True
+          assert needs_dispatch(True,True) is False
+          for flags in ((True,False),(False,True)):
+            try: needs_dispatch(*flags)
+            except ValueError: pass
+            else: raise AssertionError('INCOMPLETE_OR_UNCLAIMED_RESULT_ACCEPTED')
+          print('CHECKPOINT_STATE_MATRIX_4_OF_4_PASS')
           p=pathlib.Path(m.OUTPUT);s=json.loads((p/'SPEC.json').read_bytes())
           assert m.native.contracts.check_seal(s)
           assert s['receipt_sha256']=='21fd46074da76bfcc8d129e593325d6a436e8990787fd8c528f23e9476ab02b9'
           for name,digest in s['files_sha256'].items():
             assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==digest,name
           index=p/'RESULT_INDEX.json'
+          needed=needs_dispatch((p/'REMOTE_CLAIM.json').exists(),index.exists())
           if index.exists():
             r=json.loads(index.read_bytes());assert r['spec_sha256']==s['receipt_sha256']
             assert r['new_diagnostic_executions']==4 and r['candidate_hypotheses']==44
+            assert len(r['results'])==4
+            assert [x['ordinal'] for x in r['results']]==[57,58,59,60]
+            assert [x['mode'] for x in r['results']]==s['modes']
             for row in r['results']:
+              assert row['status']=='COMPLETED' and row['spec_sha256']==s['receipt_sha256']
               folder=p/row['mode']['id']
               assert json.loads((folder/'RECEIPT.json').read_bytes())==row
               assert hashlib.sha256((folder/'RESULT.json.gz').read_bytes()).hexdigest()==row['artifact_sha256']
             b=json.loads(pathlib.Path(m.BUDGET).read_bytes());m.require_allocation(s,b)
             assert b['cumulative_actual_evaluations']==60 and b['kr3_mechanism_separation_allocation']['used']==4
             print('FOUR_STORED_DIAGNOSTICS_VERIFIED; new economic replays0')
-          needed=not (p/'REMOTE_CLAIM.json').exists() and not index.exists()
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('run_needed='+str(needed).lower()+'\n')
           PY
   economic_once:

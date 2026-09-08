@@ -7,113 +7,30 @@ on:
       - 'backend/research/rebuild/test_kr3_profit_zone*.py'
       - 'research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1/**'
       - '.github/workflows/kr3-profit-zone-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/kr3_profit_zone*.py'
+      - 'backend/research/rebuild/test_kr3_profit_zone*.py'
+      - 'research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1/**'
+      - '.github/workflows/kr3-profit-zone-v1.yml'
 permissions:
   contents: read
-concurrency:
-  group: kr3-profit-zone-preservation-v1
-  cancel-in-progress: false
 jobs:
-  finite-profit-study:
+  verify-saved-economic-result:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    permissions:
-      contents: write
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      B: research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1
-      MOD: backend.research.rebuild.kr3_profit_zone_study_v1
-      BRANCH: research/kr3-profit-zone-after-pr1223-v1
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - name: Finite single-owner dispatch check
-        id: scope
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial strategy and accounting boundary tests only
         run: |
-          set -euo pipefail
-          if [ '${{ github.run_attempt }}' = 1 ] && [ '${{ github.event.pull_request.head.ref }}' = "$BRANCH" ] && [ "$(git log -1 --format=%s)" = 'RUN_ONCE_KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1' ] && [ ! -f "$B/SPEC.json" ]; then
-            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-            echo 'execute=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'execute=false' >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          python-version: '3.12'
-      - name: Canonical validation and synthetic integration before market inputs
-        if: steps.scope.outputs.execute == 'true'
+          python3 -B -m unittest -v backend.research.rebuild.test_kr3_profit_zone_exit_v1
+          python3 -B -m unittest discover -s research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1 -p test_verify_saved.py -v
+      - name: Pinned raw costs metrics and complete attribution without replay
         run: |
-          set -euo pipefail
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          mkdir -p out/kr3-profit-zone
-          python -B -m unittest -v backend.research.rebuild.test_kr3_profit_zone_exit_v1 2>&1 | tee out/kr3-profit-zone/SYNTHETIC_TESTS.log
-          python -B -m unittest discover -s "$B" -p test_verify_saved.py -v 2>&1 | tee out/kr3-profit-zone/SYNTHETIC_ACCOUNTING_TESTS.log
-      - name: Recover original canonical archive and decode approved used prefixes
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/kr3-profit-zone-source
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/kr3-profit-zone-source
-          python -B -m "$MOD" prepare --source /tmp/kr3-profit-zone-source/research/data/g5a_stage_v1 --inputs out/kr3-profit-zone/inputs
-      - name: Persist freeze and each actual attempt before two FULL executions
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name kr3-profit-zone-evaluator
-          git config user.email actions@users.noreply.github.com
-          persist() {
-            git add "$B"
-            python - <<'PY'
-          import os,subprocess
-          names=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          if any(not n.startswith(os.environ['B']+'/') for n in names):raise SystemExit('UNSCOPED_WRITE')
-          PY
-            git diff --cached --quiet || git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          }
-          python -B -m "$MOD" freeze --inputs out/kr3-profit-zone/inputs
-          persist 'research: freeze KR3 profit-zone rule and joint objective before outcomes'
-          for period in DEV2025 SEEN2026; do
-            python -B -m "$MOD" reserve --period "$period"
-            persist "research: reserve KR3 profit-zone $period before actual replay"
-            claim_ref=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-            timeout 180 python -B -u -m "$MOD" execute --period "$period" --inputs out/kr3-profit-zone/inputs --remote-sha "$claim_ref"
-            persist "research: preserve KR3 profit-zone $period result"
-          done
-          python -B -m "$MOD" summarize
-          persist 'research: report KR3 joint win-rate net cost-stress and drawdown outcome'
-      - name: Preserve any checkpoint without retry
-        if: always() && steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name kr3-profit-zone-evaluator
-          git config user.email actions@users.noreply.github.com
-          git add "$B"
-          python - <<'PY'
-          import os,subprocess
-          names=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          if any(not n.startswith(os.environ['B']+'/') for n in names):raise SystemExit('UNSCOPED_CHECKPOINT')
-          PY
-          if ! git diff --cached --quiet; then
-            git commit -m 'research: preserve KR3 profit-zone checkpoint no retry [skip ci]'
-            git push origin "HEAD:refs/heads/$BRANCH"
-            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          fi
-          mkdir -p out/kr3-profit-zone
-          git archive HEAD "$B" backend/research/rebuild/kr3_profit_zone_exit_v1.py backend/research/rebuild/kr3_profit_zone_study_v1.py backend/research/rebuild/test_kr3_profit_zone_exit_v1.py .github/workflows/kr3-profit-zone-v1.yml > out/kr3-profit-zone/code-results.tar
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.execute == 'true'
-        with:
-          name: kr3-profit-zone-${{ github.run_id }}
-          path: out/kr3-profit-zone
-          retention-days: 90
+          python3 -B research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1/verify_saved.py --manifest-sha256 d8a4eb3df74c24a017694021461e42f73137c4d622eab2ff0153f99b02a85479
+          git diff --exit-code

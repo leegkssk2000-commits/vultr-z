@@ -7,15 +7,25 @@ on:
       - 'backend/research/rebuild/kr3_d_seen2026_v1.py'
       - 'backend/research/rebuild/test_kr3_d_seen2026_v1.py'
       - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/kr3-d-seen2026-exact-v1.yml'
+      - 'backend/research/rebuild/kr3_d_seen2026_v1.py'
+      - 'backend/research/rebuild/test_kr3_d_seen2026_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/**'
 permissions:
   contents: read
+  actions: read
 concurrency:
-  group: kr3-d-exact-seen2026-${{ github.event.pull_request.number }}
+  group: kr3-d-exact-seen2026-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 jobs:
-  prepare:
+  verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 5
+    outputs:
+      execute: ${{ steps.scope.outputs.execute }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       GEMINI_API_KEY: ''
@@ -25,56 +35,123 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Required canonical preflight
+      - name: Canonical preflight and changed boundary tests only
         run: |
           pwd
           ls -la frontend/z-os-app-source
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-      - name: Reuse existing canonical source archive; no market query
-        run: |
-          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
-          mkdir -p /tmp/kr3-d-source
-          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1 | tar -x -C /tmp/kr3-d-source
-      - name: Decode exact already-used prefix and preserve preparation
+          python -m unittest backend.research.rebuild.test_kr3_d_seen2026_v1 -v
+          python -m backend.research.rebuild.kr3_d_seen2026_v1 --verify-saved
+      - name: Single reserved economic dispatch, not CI replay
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          ATTEMPT: ${{ github.run_attempt }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           python - <<'PY'
-          import gzip, hashlib, json, pathlib, subprocess, zipfile
-          from backend.research.rebuild import q0_b_seen_adapter_v1 as adapter
-          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as p
-          base=pathlib.Path(p.CAMPAIGN)
-          c=json.loads(pathlib.Path('research/development_evidence/Q0_B_SEEN_2026_V1/SPEC.json').read_bytes())
-          policy,dev,rows,access=adapter.load_seen_inputs('/tmp/kr3-d-source/research/data/g5a_stage_v1',c)
-          expected=json.loads((base/'WINNER_REPAIR/INPUTS.json').read_bytes())['SEEN2026']
-          costs=dev['cost_by_symbol']
-          packet={'rows_by':rows,'policy':policy,'costs':costs,'lineage':{'access':access,'source_ref':'6d6335d1c9ad7ecb1e9597da85c2eb87635561e1','unused_oos_access':False}}
-          actual={'data_sha256':p.sha(rows),'cost_sha256':p.sha(costs),'policy_sha256':p.sha(policy)}
-          print(json.dumps({'expected':{k:expected[k] for k in actual},'actual':actual}))
-          for k,value in actual.items():
-            if value!=expected[k]: raise SystemExit('PREPARATION_IDENTITY_MISMATCH:'+k)
-          assert all(len(r)==3748 for r in rows.values())
-          assert all(a['rows_after_evaluation_end_decoded']==0 for a in access.values())
-          out=pathlib.Path('out/D_PARENT_2026_PREP');out.mkdir(parents=True,exist_ok=True)
-          (out/'INPUT.json.gz').write_bytes(gzip.compress(p.canonical(packet),mtime=0))
-          with zipfile.ZipFile(out/'CODE_AND_EVIDENCE.zip','w',zipfile.ZIP_DEFLATED) as archive:
-            roots=['backend','frontend/z-os-app-source',str(base),'research/development_evidence/FOCUSED_REPAIR_20260907_V1','research/development_evidence/Q0_B_SEEN_2026_V1']
-            seen=set()
-            for root in roots:
-              for path in pathlib.Path(root).rglob('*'):
-                if path.is_file() and path.suffix not in ('.pyc',) and '__pycache__' not in path.parts and 'node_modules' not in path.parts and str(path) not in seen:
-                  archive.write(path,str(path));seen.add(str(path))
-            archive.write('AGENTS.md')
-          receipt={'state':'PREPARED_NO_ECONOMIC_RUN','scope':'KR3_D_EXACT_SEEN2026_AFTER_PR1215_V1','head':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'exact_mode':p.MODES[3].id,'new_economic_runs':0,'new_hypotheses':0,'market_requests':0,'unused_OOS_reads':0,'provider_calls':0,'bindings':actual,'prior_candidates':45,'prior_evaluations':63,'files':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in out.iterdir() if f.is_file()}}
-          (out/'PREPARATION.json').write_text(json.dumps(receipt,indent=2)+'\n')
-          print(json.dumps(receipt))
+          import json,os,pathlib,subprocess
+          b=pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026')
+          claim=json.loads((b/'REMOTE_CLAIM.json').read_bytes())
+          subject=subprocess.check_output(['git','log','-1','--format=%s'],text=True).strip()
+          go=(os.environ['EVENT']=='pull_request' and os.environ['ATTEMPT']=='1' and os.environ['HEAD_BRANCH']=='research/kr3-d-seen2026-exact-v1' and subject==claim['execution_commit_subject'] and not (b/'ATTEMPT.json').exists())
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('execute='+str(go).lower()+'\n')
+          print('ONE_EXPLICIT_RESERVED_RUN' if go else 'VERIFY_ONLY_NO_ECONOMIC_RERUN')
           PY
+  economic_once:
+    needs: verify
+    if: needs.verify.outputs.execute == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: kr3-d-seen2026-prepared-34216752391
+          run-id: 34216752391
+          github-token: ${{ github.token }}
+          path: out/D_PREPARED
+      - name: Exact input integrity and one D FULL
+        run: |
+          python - <<'PY'
+          import hashlib,pathlib
+          b=pathlib.Path('out/D_PREPARED/INPUT.json.gz').read_bytes()
+          if hashlib.sha256(b).hexdigest()!='f1890e0a51ffda2e3bacc4874d5d8ecf9400dc3068d2b7991f725bec83707202':raise SystemExit('PREPARED_INPUT_DRIFT')
+          PY
+          python -u -m backend.research.rebuild.kr3_d_seen2026_v1 --input out/D_PREPARED/INPUT.json.gz --execute
+      - name: Stored origin accounting, no strategy replay
+        run: |
+          python - <<'PY'
+          import gzip,json,pathlib
+          from backend.research.rebuild import kr3_d_seen2026_v1 as m
+          b=pathlib.Path(m.OUT);root=pathlib.Path(m.p.CAMPAIGN)
+          def read(p):return json.loads(gzip.decompress(pathlib.Path(p).read_bytes()))
+          rows=[];summary={}
+          for period in ('DEV2025','SEEN2026'):
+            kr3=m.acct.normalize_kr3(read('research/development_evidence/FOCUSED_REPAIR_20260907_V1/KR3/'+period+'.json.gz'))
+            d=read(root/'MECHANISM_SEPARATION'/m.MODE_ID/'RESULT.json.gz') if period=='DEV2025' else read(b/'RESULT.json.gz')
+            comparison=m.acct.compare(kr3,d);comparison['comparison_type']='EXACT_D_CONFIGURATION_VS_INHERITED_KR3'
+            summary[period]={'KR3':m.acct.snapshot(kr3),'D':m.acct.snapshot(d),'comparison':comparison}
+            for label,r in (('KR3',kr3),('D',d)):
+              s=m.acct.snapshot(r)
+              rows.append('|'+ '|'.join([period,label,str(s['closed'])+'/'+str(s['open']),f"{100*s['win_rate']:.2f}",f"{s['realized_payoff']:.3f}",f"{s['PF']:.3f}",f"{s['terminal_net_bps']:.2f}",f"{s['terminal_cost2x_net_bps']:.2f}",f"{s['marked_DD_trade_sum_bps']:.2f}"])+ '|')
+          (b/'ACCOUNTING.json').write_bytes(m.canonical(summary))
+          text=['# Exact PR1213 D: reused 2026 expansion','',
+            'Exactly one new FULL: D-SEEN2026. D-DEV2025 and both KR3 periods are saved results, not rerun.',
+            'Equal-notional trade-bps, not account returns. Both periods are reused DEV; no independent OOS or G5A PASS.',
+            'Original D admission, sixth observed-bar recheck, shifted reference/exit anchors and no initial SL/fixed TP are unchanged.','',
+            '|Period|Rule|Closed/open|Win %|Payoff|PF|Terminal net|All-cost2|Marked DD|',
+            '|---|---|---:|---:|---:|---:|---:|---:|---:|']+rows+['',
+            'Full origin-state/winner/open/concentration/same-calendar reconciliation is in ACCOUNTING.json. No costs are added twice.',
+            'Candidate hypotheses45 preserved; actual evaluations63→64. Selecting an already tested D as development parent does not rewrite the PR1213 diagnostic record.',
+            'New market requests0, unused OOS reads0, paid provider calls0, orders0. Formal G5A/G5B states unchanged.',
+            'Remote CI/merge closure is recorded separately; this measured report does not claim those are already complete.','']
+          (b/'REPORT.md').write_text('\n'.join(text))
+          print('\n'.join(text))
+          PY
+          python -m backend.research.rebuild.kr3_d_seen2026_v1 --verify-saved
+      - name: Preserve exact scoped outputs and consumed budget on branch
+        if: always()
+        run: |
+          set -euo pipefail
+          b=research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026
+          test -f "$b/ATTEMPT.json" || exit 0
+          git config user.name kr3-d-seen2026-evaluator
+          git config user.email actions@users.noreply.github.com
+          git add "$b" research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+          python - <<'PY'
+          import subprocess
+          prefix='research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026/'
+          budget='research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json'
+          changed=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          if any(x!=budget and not x.startswith(prefix) for x in changed):raise SystemExit('UNSCOPED_WRITE_BLOCKED')
+          PY
+          git diff --cached --quiet || git commit -m 'research: preserve one exact D SEEN2026 result [skip ci]'
+          git push origin HEAD:refs/heads/research/kr3-d-seen2026-exact-v1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kr3-d-seen2026-prepared-${{ github.run_id }}
-          path: out/D_PARENT_2026_PREP
-          retention-days: 30
+          name: kr3-d-seen2026-result-${{ github.run_id }}
+          path: |
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/D_PARENT_2026
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+          retention-days: 90

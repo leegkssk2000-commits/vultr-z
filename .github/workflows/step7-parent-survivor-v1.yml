@@ -70,13 +70,26 @@ jobs:
             'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json',
           }
           dev_prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/DEV_VALIDATION/'
-          dev_only = bool(changed) and any(p.startswith(dev_prefix) for p in changed) and all(p in dev_allowed or p.startswith(dev_prefix) for p in changed)
+          mechanism_prefix = 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/'
+          mechanism_allowed = {
+            '.github/workflows/step7-parent-survivor-v1.yml',
+            '.github/workflows/step7-kr3-mechanism-separation-v1.yml',
+            'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py',
+            'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py',
+            'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json',
+          }
+          mechanism_only = bool(changed) and any(p.startswith(mechanism_prefix) for p in changed) and all(p in mechanism_allowed or p.startswith(mechanism_prefix) for p in changed)
+          if mechanism_only:
+            old = json.loads(pathlib.Path(dev_prefix+'SPEC.json').read_bytes())
+            for path, expected in old['code_files_sha256'].items():
+              if hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() != expected:
+                raise SystemExit('PR1212_FROZEN_NATIVE_CHANGED:'+path)
+            print('REUSE_COMPLETED_PR1212; MECHANISM_RESULTS_VERIFIED_BY_OWN_SCOPED_WORKFLOW; NO_OLD_ECONOMIC_RERUN')
+          dev_only = mechanism_only or (bool(changed) and any(p.startswith(dev_prefix) for p in changed) and all(p in dev_allowed or p.startswith(dev_prefix) for p in changed))
           auth_only = not dev_only and bool(changed) and all(p in allowed or p.startswith(prefix) for p in changed)
           if dev_only:
             print('REUSE_COMPLETED_PR1211_AUTH_AND_PR1210_SYNTHETIC_EVIDENCE; NEW_DEV_TESTS_AND_STORED_RESULTS_HAVE_SEPARATE_WORKFLOW')
           if auth_only:
-            # PR1210 remains historical evidence. Only authorized auth/CI drift
-            # is exempted; all unchanged candidate/producer/design bytes match.
             base = pathlib.Path('research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR')
             spec = json.loads((base/'EXECUTION_PATH/SPEC.json').read_text())
             allowed_drift = {'.github/workflows/step7-parent-survivor-v1.yml',

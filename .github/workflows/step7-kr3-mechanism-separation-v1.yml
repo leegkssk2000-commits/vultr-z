@@ -1,0 +1,167 @@
+name: STEP7 KR3 mechanism separation
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/step7-kr3-mechanism-separation-v1.yml'
+      - 'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/**'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/step7-kr3-mechanism-separation-v1.yml'
+      - 'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/**'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: step7-kr3-mechanism-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_needed: ${{ steps.state.outputs.run_needed }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Canonical root and synthetic regressions only
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python -m unittest backend.research.rebuild.test_step7_kr3_mechanism_separation_v1 -v
+      - name: Exact stored evidence verification; never replay economics
+        id: state
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as m
+          def needs_dispatch(claimed, completed):
+            if claimed and not completed:
+              raise ValueError('CLAIM_WITHOUT_COMPLETE_DIAGNOSTICS')
+            if completed and not claimed:
+              raise ValueError('RESULT_WITHOUT_REMOTE_CLAIM')
+            return not completed
+          assert needs_dispatch(False,False) is True
+          assert needs_dispatch(True,True) is False
+          for flags in ((True,False),(False,True)):
+            try: needs_dispatch(*flags)
+            except ValueError: pass
+            else: raise AssertionError('INCOMPLETE_OR_UNCLAIMED_RESULT_ACCEPTED')
+          print('CHECKPOINT_STATE_MATRIX_4_OF_4_PASS')
+          p=pathlib.Path(m.OUTPUT);s=json.loads((p/'SPEC.json').read_bytes())
+          assert m.native.contracts.check_seal(s)
+          assert s['receipt_sha256']=='21fd46074da76bfcc8d129e593325d6a436e8990787fd8c528f23e9476ab02b9'
+          for name,digest in s['files_sha256'].items():
+            assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==digest,name
+          index=p/'RESULT_INDEX.json'
+          needed=needs_dispatch((p/'REMOTE_CLAIM.json').exists(),index.exists())
+          if index.exists():
+            r=json.loads(index.read_bytes());assert r['spec_sha256']==s['receipt_sha256']
+            assert r['new_diagnostic_executions']==4 and r['candidate_hypotheses']==44
+            assert len(r['results'])==4
+            assert [x['ordinal'] for x in r['results']]==[57,58,59,60]
+            assert [x['mode'] for x in r['results']]==s['modes']
+            for row in r['results']:
+              assert row['status']=='COMPLETED' and row['spec_sha256']==s['receipt_sha256']
+              folder=p/row['mode']['id']
+              assert json.loads((folder/'RECEIPT.json').read_bytes())==row
+              assert hashlib.sha256((folder/'RESULT.json.gz').read_bytes()).hexdigest()==row['artifact_sha256']
+            b=json.loads(pathlib.Path(m.BUDGET).read_bytes());m.require_allocation(s,b)
+            assert b['cumulative_actual_evaluations']==60 and b['kr3_mechanism_separation_allocation']['used']==4
+            print('FOUR_STORED_DIAGNOSTICS_VERIFIED; new economic replays0')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('run_needed='+str(needed).lower()+'\n')
+          PY
+  economic_once:
+    needs: verify
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1213 && github.event.pull_request.head.ref == 'research/kr3-timing-requal-occupancy-v1' && github.event.pull_request.head.repo.full_name == github.repository && github.run_attempt == 1 && needs.verify.outputs.run_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: write
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      OWN_BRANCH: research/kr3-timing-requal-occupancy-v1
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - uses: actions/download-artifact@v4
+        with:
+          name: kr3-mechanism-input-34180607396
+          run-id: 34180607396
+          github-token: ${{ github.token }}
+          path: out/prepared
+      - name: Persist scope claim and shared allocation before any economic dispatch
+        run: |
+          set -euo pipefail
+          git fetch origin "$OWN_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git checkout -B "$OWN_BRANCH" "$EXPECTED_HEAD"
+          python - <<'PY'
+          import gzip,hashlib,json,os,pathlib,time
+          from backend.research.rebuild import step7_kr3_mechanism_separation_v1 as m
+          p=pathlib.Path(m.OUTPUT);spec=json.loads((p/'SPEC.json').read_bytes())
+          inp=pathlib.Path('out/prepared/INPUT.json.gz')
+          assert hashlib.sha256(inp.read_bytes()).hexdigest()=='4c2de1d10c0c5076cb5868ab9b960bbb47f26907aeb55471f774579c02b98d50'
+          packet=json.loads(gzip.decompress(inp.read_bytes()));m.verify(spec,packet)
+          bp=pathlib.Path(m.BUDGET);raw=bp.read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==m.INHERITED_BUDGET_SHA256
+          b=json.loads(raw);b['kr3_mechanism_separation_allocation']=json.loads((p/'ALLOCATION.json').read_bytes())
+          m.require_allocation(spec,b)
+          m.write_new(p/'REMOTE_CLAIM.json',m.canonical({'scope':m.SCOPE,'spec_sha256':spec['receipt_sha256'],'preexecution_head':os.environ['EXPECTED_HEAD'],'run_id':os.environ['GITHUB_RUN_ID'],'claimed_unix_ns':time.time_ns(),'retry_allowed':False,'candidate_hypotheses':44,'prior_executions':56}))
+          bp.write_text(json.dumps(b,sort_keys=True,indent=2)+'\n')
+          PY
+          git config user.name 'KR3 finite diagnostic owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/REMOTE_CLAIM.json
+          git commit -m 'Reserve KR3 mechanism diagnostics57-60 before execution [skip ci]'
+          git push origin "HEAD:$OWN_BRANCH"
+      - name: Four finite DEV diagnostics once; no baseline rerun
+        run: |
+          set -euo pipefail
+          python -m backend.research.rebuild.step7_kr3_mechanism_separation_v1 --input out/prepared/INPUT.json.gz --out-dir research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION --execute | tee out/MECHANISM_EXECUTION.log
+      - name: Persist exact diagnostics and consumed shared ledger only
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/REMOTE_CLAIM.json
+          git add research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION
+          if ! git diff --cached --quiet; then
+            git commit -m 'Preserve KR3 finite mechanism diagnostic outcomes without adoption [skip ci]'
+            git push origin "HEAD:$OWN_BRANCH"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kr3-mechanism-results-${{ github.run_id }}
+          path: |
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION
+            research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/BUDGET.json
+            out/MECHANISM_EXECUTION.log
+          retention-days: 90

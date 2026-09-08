@@ -1,4 +1,4 @@
-"""KR3 route counterexamples; synthetic local store/HTTP only, no paid requests."""
+"""KR3 route regression: saved DEV summaries, synthetic store/HTTP, no paid calls."""
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -28,12 +28,21 @@ class Tests(unittest.TestCase):
         source = self.root / 'used-dev.json'
         source.write_text('{"fact":"KR3 synthetic isolation fixture"}')
         sources = {'used-dev.json': hashlib.sha256(source.read_bytes()).hexdigest()}
+        # Copy only already-used DEV summaries to the synthetic transport fixture.
+        # No native replay, protected source read or real provider call occurs.
+        for name in route.MEASURED_INPUTS:
+            rel = route.DEV_OUTPUT / name
+            target = self.root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((route.ROOT / rel).read_bytes())
+            sources[str(rel)] = hashlib.sha256(target.read_bytes()).hexdigest()
         folder = self.root / route.OUTPUT
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         (folder / 'SOURCE_ALLOWLIST.json').write_text(json.dumps({'source_hashes': sources}))
         self.dossier = {'scope_key': route.SCOPE, 'data_class': 'DEV_USED', 'holdout_access': False,
                         'source_hashes': sources, 'candidate_sha256': route.CANDIDATE,
-                        'candidate_mode': 'FULL', 'purpose': route.PURPOSE, 'campaign_key': route.CAMPAIGN}
+                        'candidate_mode': 'FULL', 'purpose': route.PURPOSE, 'campaign_key': route.CAMPAIGN,
+                        'actual_dev_validation': route.measured_facts(self.root)}
         self.quote = {'provider': 'gemini', 'model': 'gemini-2.5-flash', 'currency': 'USD',
                       'request_semantics_verified': True, 'input_token_upper_bound': 1048576,
                       'output_thinking_upper_bound': 6000, 'input_usd_per_million': .3,
@@ -124,6 +133,7 @@ class Tests(unittest.TestCase):
         prompt = json.loads(json.loads(calls[0].data)['contents'][0]['parts'][0]['text'])
         self.assertEqual(prompt['candidate_sha256'], route.CANDIDATE)
         self.assertEqual(prompt['purpose'], route.PURPOSE)
+        self.assertEqual(prompt['actual_dev_validation'], self.dossier['actual_dev_validation'])
         with self.assertRaises(GateError):
             self.request(store, timeout)
         self.assertEqual(len(calls), 1)
@@ -141,6 +151,67 @@ class Tests(unittest.TestCase):
         self.assertEqual(owner.bound_runtime().LEDGER_PATH, route.LEDGER_PATH)
         self.assertEqual(route.previous.SCOPE, 'TOP5_AFTER_PR1206_WINRATE_FIRST_AI_V1')
         self.assertEqual(len(route.previous.PRIOR_SCOPES), 2)
+
+    def assert_blocked_without_reservation(self, reason):
+        store, calls = Store(self.data), []
+        with self.assertRaisesRegex(GateError, reason):
+            self.request(store, lambda *a, **k: calls.append(a))
+        self.assertEqual((calls, store.writes), ([], 0))
+
+    def test_missing_actual_results_cannot_consume_provider(self):
+        self.dossier.pop('actual_dev_validation')
+        self.approval['dossier_sha'] = digest(self.dossier)
+        self.assert_blocked_without_reservation('ACTUAL_DEV_PROMPT_MISSING_OR_CHANGED')
+
+    def test_counterexample_omission_cannot_hide_behind_new_prompt_hash(self):
+        self.dossier['actual_dev_validation']['rows'].pop(1)
+        self.approval['dossier_sha'] = digest(self.dossier)
+        self.assert_blocked_without_reservation('ACTUAL_DEV_PROMPT_MISSING_OR_CHANGED')
+
+    def test_edited_counterexample_number_is_denied(self):
+        self.dossier['actual_dev_validation']['rows'][1][7] = 0
+        self.approval['dossier_sha'] = digest(self.dossier)
+        self.assert_blocked_without_reservation('ACTUAL_DEV_PROMPT_MISSING_OR_CHANGED')
+
+    def test_missing_g5a_result_source_is_denied(self):
+        self.dossier['source_hashes'].pop(str(route.DEV_OUTPUT / 'G5A_RESULT.json'))
+        self.assert_blocked_without_reservation('MEASURED_DEV_SOURCE_BINDING')
+
+    def test_stale_saved_result_bytes_are_denied(self):
+        path = self.root / route.DEV_OUTPUT / 'VARIANTS/INDEX.json'
+        path.write_bytes(path.read_bytes() + b' ')
+        self.assert_blocked_without_reservation('MEASURED_DEV_SOURCE_BINDING')
+
+    def test_regenerated_prompt_still_has_exact_twelve_unique_variants(self):
+        facts = self.dossier['actual_dev_validation']
+        self.assertEqual(tuple(row[0] for row in facts['rows']), route.VARIANT_IDS)
+        self.assertEqual([row[1] for row in facts['rows']], list(range(45, 57)))
+        self.assertFalse(facts['independent'])
+        self.assertEqual(facts['formal_credit'], 0)
+        self.assertEqual(facts['g5a_state'], 'HOLD_ALPHA_PROOF')
+
+    def test_committed_dossier_is_actual_complete_and_within_original_byte_budget(self):
+        folder = route.ROOT / route.OUTPUT
+        dossier = json.loads((folder / 'DOSSIER.json').read_bytes())
+        template = json.loads((folder / 'API_APPROVAL_TEMPLATE.json').read_bytes())
+        route.verify_measured(dossier)
+        self.assertEqual(template['dossier_sha'], digest(dossier))
+        self.assertTrue(template['template_only'])
+        self.assertFalse(template['explicit_manual_approval'])
+        self.assertEqual(dossier['source_hashes'], json.loads((folder / 'SOURCE_ALLOWLIST.json').read_bytes())['source_hashes'])
+        self.assertLessEqual(len(json.dumps(dossier, sort_keys=True, ensure_ascii=False).encode()), 16000)
+
+    def test_openai_actual_outcomes_are_in_transmitted_input(self):
+        self.quote.update(provider='openai', model='gpt-4.1-mini-2025-04-14')
+        self.approval.update(provider='openai', model=self.quote['model'], price_sha=digest(self.quote))
+        store, calls = Store(self.data), []
+        def timeout(request, **kwargs):
+            calls.append(request)
+            raise TimeoutError()
+        self.request(store, timeout)
+        prompt = json.loads(json.loads(calls[0].data)['input'])
+        self.assertEqual(prompt['actual_dev_validation'], self.dossier['actual_dev_validation'])
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == '__main__':

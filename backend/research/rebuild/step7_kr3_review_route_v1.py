@@ -64,13 +64,84 @@ def verify_exact(dossier, approval, quote):
         raise GateError('EXACT_KR3_PURPOSE_IDENTITY_REQUIRED')
     if quote.get('checked_at') != datetime.now(timezone.utc).date().isoformat():
         raise GateError('CURRENT_OFFICIAL_QUOTE_REQUIRED')
-    # A template or previous candidate's manual dispatch is not authorization.
     if approval.get('template_only') is not False:
         raise GateError('REAL_MANUAL_PACKAGE_REQUIRED')
 
 
+# Bounded saved-result summary. No replay, provider or market access.
+DEV_OUTPUT = OUTPUT.parent
+MEASURED_INPUTS = ('SPEC.json', 'G5A_RESULT.json', 'VARIANTS/INDEX.json')
+VARIANT_IDS = ('direction_flip', 'time_shift_placebo', 'delayed_entry',
+               'without_trend_feature', 'without_reclaim_feature', 'without_directional_half',
+               'neighbor_19_50_12', 'neighbor_21_50_12', 'neighbor_20_49_12',
+               'neighbor_20_51_12', 'neighbor_20_50_11', 'neighbor_20_50_13')
+
+
+def measured_facts(root=ROOT):
+    """Summarize every fixed actual outcome; summaries cannot grant formal credit."""
+    docs = [json.loads((Path(root) / DEV_OUTPUT / name).read_bytes()) for name in MEASURED_INPUTS]
+    spec, result, index = docs
+    rows = index['results']
+    if (spec.get('candidate_sha256') != CANDIDATE or result.get('candidate_sha256') != CANDIDATE
+            or index.get('specification_sha256') != spec.get('receipt_sha256')
+            or result.get('specification_sha256') != spec.get('receipt_sha256')
+            or index.get('actual_variants') != 12 or result.get('actual_variants') != 12
+            or tuple(r['variant']['id'] for r in rows) != VARIANT_IDS
+            or tuple(v['id'] for v in spec['variants']) != VARIANT_IDS
+            or any(r.get('status') != 'COMPLETED' for r in rows)):
+        raise GateError('EXACT_TWELVE_ACTUAL_DEV_OUTCOMES_REQUIRED')
+    observations = []
+    for r in rows:
+        m = r['metrics']; base = m['base_cost']
+        observations.append([r['variant']['id'], r['actual_experiment_ordinal'],
+                             m['closed_T'], m['open_T'], base['win_rate'], base['PF'],
+                             base['realized_payoff'], m['terminal_net_bps'],
+                             m['terminal_cost2x_net_bps'], m['marked_DD_trade_sum_bps']])
+    return {'schema': 'zel.step7.kr3.measured_review_input.v1',
+            'evidence_kind': 'ACTUAL_REUSED_DEV_VALIDATION', 'independent': False,
+            'formal_credit': 0, 'new_candidate_selected': False,
+            'specification_sha256': spec['receipt_sha256'],
+            'columns': ['variant', 'evaluation_ordinal', 'closed_T', 'open_T', 'win_rate_fraction',
+                        'PF', 'net_payoff', 'terminal_net_trade_bps', 'all_cost2_terminal_trade_bps',
+                        'marked_DD_trade_bps'],
+            'rows': observations,
+            'g5a_state': result['alpha_owner_result']['state'],
+            'gates': {g['gate']: {'passed': g['passed'],
+                       'failure_codes': sorted({f['code'] for f in g['failures']})}
+                      for g in result['alpha_owner_result']['gates']},
+            'economic_report_states': {k: v['status'] for k, v in result['economic_reports'].items()},
+            'limitations': ['All observations are previously used DEV2025, not independent OOS.',
+                'Time shifts relatch shifted-bar geometry and regenerate reference/actual occupancy; not timing-only or equal-budget controls.',
+                'Observed bars do not guarantee fixed wallclock hours. +1 delay and +6 shift are both included.',
+                'Direction flip reflects returns on unchanged long-information exit clock, not a native short strategy.',
+                'Costs are inherited modeled proxies; open liquidation marks are hypothetical.',
+                'All six measured neighbors and three ablations are reported without choosing a replacement.',
+                'Formal report completion remains zero; purged OOS is not executed.']}
+
+
+def verify_measured(dossier, root=ROOT):
+    """Reject missing/stale/edited outcomes before any provider reservation."""
+    try:
+        for name in MEASURED_INPUTS:
+            rel = str(DEV_OUTPUT / name)
+            path = Path(root) / rel
+            if path.is_symlink() or not path.resolve().is_relative_to(Path(root).resolve()):
+                raise GateError('MEASURED_DEV_SOURCE_PATH')
+            expected = dossier.get('source_hashes', {}).get(rel)
+            if not expected or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise GateError('MEASURED_DEV_SOURCE_BINDING')
+        if dossier.get('actual_dev_validation') != measured_facts(root):
+            raise GateError('ACTUAL_DEV_PROMPT_MISSING_OR_CHANGED')
+    except (KeyError, TypeError, OSError, ValueError) as exc:
+        if isinstance(exc, GateError):
+            raise
+        raise GateError('ACTUAL_DEV_REVIEW_INPUT_INVALID') from exc
+
+
 def request_once(registry, dossier, approval, quote, *, event, key, transport=None, root=ROOT):
+    dossier = deepcopy(dossier)
     verify_exact(dossier, approval, quote)
+    verify_measured(dossier, root)
     return bound_owner().bound_runtime().request_once(
         registry, dossier, approval, quote, event=event, key=key,
         transport=transport, root=root)
@@ -108,6 +179,7 @@ def main():
             dossier = json.loads((ROOT / OUTPUT / 'DOSSIER.json').read_text())
             quote = json.loads((ROOT / OUTPUT / 'OFFICIAL_PRICING.json').read_text())['providers'][approval['provider']]
             verify_exact(dossier, approval, quote)
+            verify_measured(dossier, ROOT)
             owner = bound_owner()
             runtime = owner.bound_runtime()
             key = os.getenv('GEMINI_API_KEY' if approval['provider'] == 'gemini' else 'OPENAI_API_KEY', '')

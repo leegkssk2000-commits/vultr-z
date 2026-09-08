@@ -1,0 +1,73 @@
+name: STEP7 KR3 mechanism separation
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/step7-kr3-mechanism-separation-v1.yml'
+      - 'backend/research/rebuild/step7_kr3_mechanism_separation_v1.py'
+      - 'backend/research/rebuild/test_step7_kr3_mechanism_separation_v1.py'
+      - 'research/development_evidence/ZEL_PARENT_CLOSURE_TO_G5_SURVIVOR/MECHANISM_SEPARATION/**'
+permissions:
+  contents: read
+concurrency:
+  group: step7-kr3-mechanism-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Canonical pre-check before research implementation
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Reuse opaque canonical source files; no market API
+        run: |
+          git fetch --depth=1 origin 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1
+          mkdir -p /tmp/kr3-used-dev
+          git archive 6d6335d1c9ad7ecb1e9597da85c2eb87635561e1 research/data/g5a_stage_v1/development_manifest.json research/data/g5a_stage_v1/ohlcv | tar -x -C /tmp/kr3-used-dev
+      - name: Export bounded DEV prefix and exact code; no strategy replay
+        run: |
+          python - <<'PY'
+          import gzip, hashlib, json, pathlib, subprocess, sys, zipfile
+          from backend.research.rebuild import step7_kr3_dev_evidence_v1 as e
+          from backend.research.rebuild import step7_kr3_dev_validation_v1 as v
+          out=pathlib.Path('out/kr3-mechanism-input');out.mkdir(parents=True)
+          rows,policy,costs,lineage=e.load_dev_slice('/tmp/kr3-used-dev/research/data/g5a_stage_v1')
+          prior=pathlib.Path(e.CAMPAIGN)/'DEV_VALIDATION/SPEC.json'
+          old=json.loads(prior.read_bytes())
+          assert v.sha(rows)==old['data_sha256'] and v.sha(costs)==old['cost_sha256']
+          assert lineage['decoded_OOS_rows']==lineage['decoded_validation_rows']==0
+          packet={'rows_by':rows,'policy':policy,'costs':costs,'lineage':lineage,'parent_spec':old}
+          (out/'INPUT.json.gz').write_bytes(gzip.compress(v.canonical(packet),mtime=0))
+          with zipfile.ZipFile(out/'CODE.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for p in pathlib.Path('backend').rglob('*.py'):
+              z.write(p,str(p))
+            for p in pathlib.Path('frontend/z-os-app-source').rglob('*'):
+              if p.is_file() and 'node_modules' not in p.parts:z.write(p,str(p))
+            z.write('AGENTS.md')
+          center=pathlib.Path(e.previous.DEV)/'KR3/DEV2025.json.gz'
+          (out/'STORED_KR3_DEV2025.json.gz').write_bytes(center.read_bytes())
+          receipt={'state':'INPUT_PREPARED_NO_ECONOMIC_RUN','scope':'KR3_TIMING_REQUAL_OCCUPANCY_AFTER_PR1212_V1','base':'22f859019c4d39643d2ba8d6481c2ee925bc9831','commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'new_candidates':0,'economic_runs':0,'market_requests':0,'paid_AI':0,'sealed_reads':0,'decoded_rows':sum(map(len,rows.values())),'decoded_OOS_rows':0,'files':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file()}}
+          (out/'PREPARATION.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kr3-mechanism-input-${{ github.run_id }}
+          path: out/kr3-mechanism-input
+          retention-days: 30

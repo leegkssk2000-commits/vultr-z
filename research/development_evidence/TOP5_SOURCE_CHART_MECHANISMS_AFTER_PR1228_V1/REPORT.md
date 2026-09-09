@@ -58,3 +58,5 @@ M1 improves all four comparisons in SEEN2026, including total net +4293.52 bps, 
 T1/F1/F0 never ran, consumed no candidate or execution, and have no attribution or Fibonacci efficacy result. Source-volume semantics are the precise remaining blocker. M1/R1 have different signal pools: C54 winner damage or common-origin repair cannot be causally assigned to them. Their full win/loss distributions and concentration are in SUMMARY.json, with exact common-calendar drawdown windows in SAME_CALENDAR_RISK.json. No standalone profit is added to C54.
 
 New candidates2 / FULL4; cumulative59/98. No new market collection, unused OOS, paid AI, orders or deployment. The6 unused FULL slots are not scheduled or retried. Own economics have ended; required CI/review/merge closure is tracked in PR1229.
+
+CI review correction: the exact two frozen, already-used input packets are now retained in INPUTS and passed to the saved verifier on both PR and merge. This closes the missing --inputs source-binding check without any economic rerun or new market/OOS input.

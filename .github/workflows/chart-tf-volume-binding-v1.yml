@@ -1,0 +1,43 @@
+name: Chart T-F historical volume binding
+on:
+  pull_request:
+    paths:
+      - 'research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/**'
+      - '.github/workflows/chart-tf-volume-binding-v1.yml'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: chart-tf-volume-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  preserved-source-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Canonical frontend preflight
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Read exact original retained artifact, never market endpoints
+        if: hashFiles('research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/ARTIFACT_CONTENTS.json') == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: g5a-stage-development-33967876652
+          run-id: 33967876652
+          repository: leegkssk2000-commits/vultr-z
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: out/tf-original-artifact
+      - name: Opaque hashes and member inventory only
+        if: hashFiles('research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/ARTIFACT_CONTENTS.json') == ''
+        run: |
+          python3 -B research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/inspect_artifact.py --directory out/tf-original-artifact | tee out/ARTIFACT_CONTENTS.json
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chart-tf-volume-metadata-${{ github.run_id }}
+          path: out/ARTIFACT_CONTENTS.json
+          retention-days: 90

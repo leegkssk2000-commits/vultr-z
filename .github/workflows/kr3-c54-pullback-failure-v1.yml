@@ -1,0 +1,115 @@
+name: KR3 C54 pullback failure
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/*c54_pullback_failure*.py'
+      - 'research/development_evidence/KR3_C54_PULLBACK_FAILURE_AFTER_PR1227_V1/**'
+      - '.github/workflows/kr3-c54-pullback-failure-v1.yml'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: c54-pullback-failure-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  finite-two:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: write
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      B: research/development_evidence/KR3_C54_PULLBACK_FAILURE_AFTER_PR1227_V1
+      BRANCH: research/c54-pullback-failure-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - name: Single new-scope dispatch
+        id: scope
+        env:
+          ATTEMPT: ${{ github.run_attempt }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$ATTEMPT" = 1 ] && [ "$HEAD_REF" = "$BRANCH" ] && [ "$(git log -1 --format=%s)" = 'RUN_C54_PULLBACK_FAILURE_TWO_20260909' ] && [ ! -f "$B/SPEC.json" ]; then
+            echo 'execute=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'execute=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.execute == 'true'
+        with:
+          python-version: '3.12'
+      - name: Required full-checkout preflight and synthetic tests
+        if: steps.scope.outputs.execute == 'true'
+        run: |
+          set -euo pipefail
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          mkdir -p out/c54
+          python -B -m unittest backend.research.rebuild.test_kr3_c54_pullback_failure_v1 -v > out/c54/SYNTHETIC_QA.log 2>&1
+          cat out/c54/SYNTHETIC_QA.log
+          python -m py_compile backend/research/rebuild/kr3_c54_pullback_failure_study_v1.py
+      - uses: actions/download-artifact@v4
+        if: steps.scope.outputs.execute == 'true'
+        with:
+          name: kr3-profit-zone-34282003231
+          run-id: 34282003231
+          github-token: ${{ github.token }}
+          path: out/parent51
+      - name: Freeze and remote claim before each of two serial FULLs
+        if: steps.scope.outputs.execute == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name c54-pullback-failure-evaluator
+          git config user.email actions@users.noreply.github.com
+          persist() {
+            git add "$B"
+            python - <<'PY'
+          import os,subprocess
+          names=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          if any(not p.startswith(os.environ['B']+'/') for p in names):raise SystemExit('UNSCOPED_WRITE')
+          PY
+            git diff --cached --quiet || git commit -m "$1 [skip ci]"
+            git push origin "HEAD:refs/heads/$BRANCH"
+            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
+          }
+          python -m backend.research.rebuild.kr3_c54_pullback_failure_study_v1 freeze --inputs out/parent51/inputs
+          persist 'research: freeze one C54 pullback-failure rule before outcomes'
+          for per in DEV2025 SEEN2026; do
+            python -m backend.research.rebuild.kr3_c54_pullback_failure_study_v1 reserve --period "$per"
+            persist "research: reserve C54 successor $per before execution"
+            remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+            test "$remote" = "$(git rev-parse HEAD)"
+            timeout 150 python -u -m backend.research.rebuild.kr3_c54_pullback_failure_study_v1 execute --inputs out/parent51/inputs --period "$per" --remote-sha "$remote"
+            persist "research: preserve C54 successor $per measured result"
+          done
+          python -m backend.research.rebuild.kr3_c54_pullback_failure_study_v1 summarize
+          persist 'research: record two C54 successor comparisons'
+      - name: Preserve consumed attempt without retry
+        if: always() && steps.scope.outputs.execute == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name c54-pullback-failure-evaluator
+          git config user.email actions@users.noreply.github.com
+          git add "$B"
+          if ! git diff --cached --quiet; then
+            git commit -m 'research: preserve C54 checkpoint without replay [skip ci]'
+            git push origin "HEAD:refs/heads/$BRANCH"
+          fi
+          mkdir -p out/c54
+          git archive HEAD "$B" backend/research/rebuild/kr3_c54_pullback_failure_v1.py backend/research/rebuild/test_kr3_c54_pullback_failure_v1.py backend/research/rebuild/kr3_c54_pullback_failure_study_v1.py .github/workflows/kr3-c54-pullback-failure-v1.yml > out/c54/code-results.tar
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.execute == 'true'
+        with:
+          name: c54-pullback-failure-${{ github.run_id }}
+          path: out/c54
+          retention-days: 90

@@ -1,0 +1,33 @@
+name: C63 failed breakout exit finite comparison
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-failed-breakout-exit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-failed-breakout-exit-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-c63-exit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_c63_failed_breakout_exit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Saved first-trigger, absence, costs and complete attribution
+        working-directory: research/development_evidence/C63_FAILED_BREAKOUT_EXIT_AFTER_PR1233_V1
+        run: |
+          python3 -B verify_saved.py --derived-sha256 65d34fdf6981aea6d8fad6f9a42498593ff2fb41f3ad077d79201655c6965182
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

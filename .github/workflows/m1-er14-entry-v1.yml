@@ -23,31 +23,11 @@ jobs:
           persist-credentials: false
       - name: Canonical validation
         run: npm run --prefix frontend/z-os-app-source validate
-      - name: Read-only exact manifest diagnosis
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib,json,subprocess
-          b=Path('research/development_evidence/M1_ER14_ENTRY_AFTER_PR1231_V1')
-          spec=json.loads((b/'SPEC.json').read_bytes())
-          manifest=json.loads((b/'FINAL_HASHES.json').read_bytes())
-          mismatch={n:{'expected':d,'actual':hashlib.sha256((b/n).read_bytes()).hexdigest()} for n,d in manifest.items() if hashlib.sha256((b/n).read_bytes()).hexdigest()!=d}
-          out=Path('out/m1-manifest-diagnosis');out.mkdir(parents=True,exist_ok=True)
-          (out/'DIGEST_DIFFERENCES.json').write_text(json.dumps(mismatch,indent=2))
-          print(json.dumps(mismatch,indent=2))
-          names=sorted(set(spec['source_files_sha256'])|{str(b),'.github/workflows/m1-er14-entry-v1.yml','research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/M1','research/development_evidence/KR3_C51_ENTRY_CONTEXT_AB_AFTER_PR1225_V1/B','research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1/COSTS.json','research/development_evidence/KR3_PROFIT_ZONE_PRESERVATION_AFTER_PR1223_V1/verify_saved.py','research/development_evidence/C54_PRICE_RETRACEMENT_M1_DIAG_AFTER_PR1230_V1/BUDGET.json','research/development_evidence/C54_PRICE_RETRACEMENT_M1_DIAG_AFTER_PR1230_V1/SPEC.json'})
-          with (out/'exact-saved-checkout.tar').open('wb') as f:subprocess.run(['git','archive','HEAD',*names],stdout=f,check=True)
-          PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: m1-manifest-diagnosis-${{ github.run_id }}
-          path: out/m1-manifest-diagnosis
-          retention-days: 30
       - name: Artificial boundaries only
         run: python3 -B -m unittest backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 backend.research.rebuild.test_chart_mechanism_c54_binding_v1 -v
       - name: Saved original paths, source-bound ER, costs and full attribution
         working-directory: research/development_evidence/M1_ER14_ENTRY_AFTER_PR1231_V1
         run: |
-          python3 -B verify_saved.py --manifest-sha256 33d52a42f370998aaebbb96e87f9a743ab2119201dc9324258ed7952c79dc527
+          python3 -B verify_saved.py --manifest-sha256 3f960560a217756e93dfc489652c5c9639a31870963db7149f6b6bba86ad008f
           python3 -B -m unittest test_saved -v
           git diff --exit-code

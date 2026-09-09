@@ -1,0 +1,33 @@
+name: M1 ER range rescue finite comparison
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/m1-er-range-rescue-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/m1-er-range-rescue-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-range-rescue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 backend.research.rebuild.test_chart_mechanism_c54_binding_v1 -v
+      - name: Saved source-bound range, ER, costs and full attribution
+        working-directory: research/development_evidence/M1_ER_RANGE_RESCUE_AFTER_PR1232_V1
+        run: |
+          python3 -B verify_saved.py --derived-sha256 22d002a3abd6a719b4b109f55c88dfc7008595949f64a8430b3881bb6552e521
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

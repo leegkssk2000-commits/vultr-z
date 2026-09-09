@@ -1,0 +1,26 @@
+# Chart mechanism integration — Chat implementation, Work economics NOT STARTED
+
+User requested continuation after the Chat/Work split. Current master/recent PRs and exact scope search were read once. Last verified master3f88fd22730401407bd18f1b1817e21d692afcee, PR1228 closed, candidate57/evaluation94. No matching remote execution found; unpushed Work sessions cannot be inferred from GitHub. No economic allocation or candidate ordinal is created by this implementation.
+
+## Preserved scope
+TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1. The uploaded ZEL_CHART_MECHANISM_WORK_NEXT.txt and WORK_SPEC.json remain the requested definitions: T1/M1/R1/F1/F0, maximum5 variants and10 already-used-period FULL applications, only Work may reserve/run/merge. This Chat branch is implementation plus synthetic verification, NOT a new economic scope, not a complete benchmark and not a started Work session. No dispatcher or automated evaluator is added. C54/C51/KR3 and prior failures remain unchanged. No pricing downloads, unused OOS, paid model API, orders, sizing, deployment or SSH.
+
+## Implemented
+chart_mechanism_features_v1.py preserves the prepared formulas: radius2 confirmed pivot, same-anchor HLC3-volume AVWAP, .382-.618 versus .350-.586, BB20/2populationSD/KC20EMA1.5ATR and MOM14, exactly6four-hour bars per UTC day, Soup20days/prior-low>=3sessions.
+chart_mechanism_execution_v1.py connects T/F eligibility to exact C54/B full chronological reservations and unchanged C51 protection. Only callbacks for entry observations/admission are wrapped and restored. No fake C54 fills/results are fed into entries.
+Independent M1 and R1 have separate signal/setup pools, first-cause exit priorities, observed next-open entry/exit, invalid-gap cancellation, one position per symbol, pending entry/exit and open marks. M1 fixed20heldbars80h; R1 fixed12heldbars48h/previous-range midpoint; neither copies C54 exit nor claims creator-exact/live futures replication. Signals at an exit timestamp remain occupied at decision; they cannot use an unobserved exit fill to finance a simultaneous entry.
+R1 drops only an incomplete leading UTC day when the input starts08UTC; no missing internal bars are filled and original4h indices stay intact. Excluding that partial day does not create a missing twentieth historical day. Warmup carries features, never old positions/PnL.
+chart_mechanism_integration_v1.py binds the existing packet hash check, frozen common costs/floor/funding model and daily marked metrics. evaluate_one is a callable for the sole Work runner AFTER remote freeze/reservation, not a CLI/trigger or budget authorizer. T/F get full C54 origin accounting; M/R get standalone comparison without portfolio addition.
+
+## Validation scope
+Original prepared helper37 tests passed locally. New independent lifecycle32 tests passed locally. Local C54 integration import attempt failed because the partial source archive has no backend.research.alpha_proof; it is NOT claimed PASS and no module is fabricated. Full-repository remote preflight must run canonical frontend validate and the32+8 new lifecycle/C54/cost tests. These tests use only invented prices and do not import any market input or consume an economic slot. Same-new-source test success is not strategy profitability.
+
+## Explicit remaining Work tasks
+1.Read this same branch and current scope/ledger; do not create duplicate implementations or reset57/94. Compare actual legacy AVWAP/squeeze/soup rule+receipt, not names alone.
+2.Verify creator source snapshots/digests and per-symbol base/fixed-contract volume semantics. The source URLs in the prepared packet are references, not snapshots. validate_volume only checks schema/binding; it cannot verify the truth of supplied metadata. UNKNOWN volume blocks T/F only, not M/R.
+3.Complete full integration review, including source-bound first-event and no-event checks, then freeze all five code/rules/data/costs/judgment before the first outcome. Preserve old SPEC/budgets; use the existing append-only runtime reservation owner and actual remote readback. No economics inside synthetic CI or import-time helpers.
+4.At most10first FULLs in prepared order T1,M1,R1,F1,F0, each DEV2025 then SEEN2026. Counters assigned only at real start. Unknown/failed runs are reconciled, never erased or auto-retried. No parent/FIXED replay or parameter search.
+5.Report actual C54/T1/M1/R1/F1/F0 costs/WR/net/DD/concentration and whole contributions. Include deterministic as-of candle/line/volume chart samples separately from after-decision paths; no fictional chart fills. Source interpretations, lower-timeframe data and5variants remain bounded.
+6.Only then final related CI/review/merge/exact-merge saved checks; retire economics and close REPORT_ONLY once. This preparation does not fulfill those steps. New outcome0, operating/formal promotion0. Time budget45min; checkpoint real pending work, never extend until profits.
+
+Explicit user request covers these scoped backend tests and related CI under AGENTS exception. Full checkout canonical preflight is remote; missing local frontend is not fabricated. Final status/CI IDs are recorded in the PR discussion without triggering another economic run.

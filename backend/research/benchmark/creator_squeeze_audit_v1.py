@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError
+from backend.research.benchmark.creator_squeeze_diagnostics_v1 import credential_problem, failure_details, SafeFailure
 SCOPE='CREATOR_SQUEEZE_AI_AFTER_PR1234_V1'
 OUT='research/development_evidence/'+SCOPE
 BRANCH='research/creator-squeeze-ai-after-pr1234-v1'
@@ -39,14 +40,28 @@ def git(*args):return subprocess.check_output(['git',*args],cwd=ROOT,text=True,t
 class NoRedirect(HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs):raise ValueError('REDIRECT_NOT_AUTHORIZED')
 def request(url,*,body=None,key=None,provider=None,timeout=60):
- headers={'User-Agent':'ZEL-source-conformance/1.0','Accept':'application/json' if body is not None else 'text/html'}
- if body is not None:headers['Content-Type']='application/json'
- if key:
-  headers.update({'x-goog-api-key':key} if provider=='gemini' else {'Authorization':'Bearer '+key})
- req=Request(url,data=canonical(body) if body is not None else None,headers=headers)
- with build_opener(NoRedirect()).open(req,timeout=timeout) as r:
-  content=r.read(2000001);need(len(content)<=2000000,'RESPONSE_LIMIT')
-  return content,r.status
+ phase='CREDENTIAL_PREFLIGHT';status=None
+ try:
+  if provider in MODELS:
+   problem=credential_problem(key)
+   if problem:raise SafeFailure(problem,phase)
+  phase='REQUEST_BUILD'
+  headers={'User-Agent':'ZEL-source-conformance/1.0','Accept':'application/json' if body is not None else 'text/html'}
+  if body is not None:headers['Content-Type']='application/json'
+  if key:
+   headers.update({'x-goog-api-key':key} if provider=='gemini' else {'Authorization':'Bearer '+key})
+  req=Request(url,data=canonical(body) if body is not None else None,headers=headers)
+  phase='HTTP_OPEN'
+  with build_opener(NoRedirect()).open(req,timeout=timeout) as r:
+   status=r.status;phase='HTTP_READ'
+   content=r.read(2000001);need(len(content)<=2000000,'RESPONSE_LIMIT')
+   return content,status
+ except HTTPError as exc:
+  exc.audit_phase=phase
+  raise  # Preserve the existing atomic-claim HTTP422 handling.
+ except Exception as exc:
+  details=failure_details(exc,phase,status)
+  raise SafeFailure(details['error_code'],details['error_phase'],details['http_status']) from None
 class Text(HTMLParser):
  def __init__(self):super().__init__();self.hidden=0;self.parts=[]
  def handle_starttag(self,tag,attrs):
@@ -156,12 +171,18 @@ def run():
  def save_ledger():
   path=ROOT/OUT/'API_LEDGER.json';temp=path.with_suffix('.tmp');temp.write_bytes(canonical(ledger));os.replace(temp,path)
  save_ledger();persist('research: durable manual source-AI reservation before I/O')
+ phase='CREDENTIAL_PREFLIGHT'
  try:
+  ledger['credential_preflight']={p:credential_problem(env.get('GEMINI_API_KEY' if p=='gemini' else 'OPENAI_API_KEY','')) for p in MODELS}
+  for problem in ledger['credential_preflight'].values():
+   if problem:raise SafeFailure(problem,phase)
+  phase='SOURCE_CAPTURE'
   sources={};receipts={}
   for name,(url,start,end) in SOURCES.items():
    raw,status=request(url,timeout=35);text,r=section(raw,start,end);sources[name]=dict(url=url,text=text)
    receipts[name]=dict(r,url=url,http_status=status,fetched_at=now(),representation='HTML_SECTION_TEXT_NO_VIDEO',copyright_text_republished=False)
   put(ROOT/OUT/'SOURCE_RECEIPTS.json',receipts)
+  phase='CODE_BINDING'
   files={n:(ROOT/n).read_text() for n in config['code_blobs']}
   feature=files['backend/research/rebuild/chart_mechanism_features_v1.py'];execution=files['backend/research/rebuild/chart_mechanism_execution_v1.py']
   code={'squeeze_features':feature[feature.index('def squeeze_features'):feature.index('def completed_utc_days')], 'exit_reason':execution[execution.index('def exit_reason'):execution.index('def _position')]}
@@ -171,32 +192,41 @@ def run():
    key=env.get('GEMINI_API_KEY' if provider=='gemini' else 'OPENAI_API_KEY','')
    if not key:
     ledger['slots'][provider]['state']='NOT_CALLED_KEY_MISSING';ledger['status']='BLOCKED';break
+   phase='PROMPT_BUILD'
    prompt=make_prompt(provider,sources,code,extracted if provider=='openai' else None);body=body_for(provider,prompt);can_start(ledger,provider)
    plan=dict(provider=provider,model=MODELS[provider],prompt_sha256=sha(prompt.encode()),request_body_sha256=sha(canonical(body)),source_receipts_sha256=sha(canonical(receipts)),input_byte_cap=INPUT_BYTES,output_and_thinking_cap=OUTPUT_CAP,request_counter=1,reserved_usd=2.5,tools_enabled=False,cache_storage_requested=False,retry=False,started_at=now())
    put(ROOT/OUT/(provider+'_REQUEST.json'),plan);ledger['slots'][provider].update(state='STARTED',attempts=1);save_ledger();claim_commit=persist('research: record '+provider+' start before paid request')
    receipt=dict(plan,claim_commit=claim_commit,response_id=None,http_status=None,usage=None,estimated_token_charge_usd=None,settled_cost_usd=None,billing_status='UNKNOWN',result=None)
    try:
+    phase='HTTP_OPEN'
     url=('https://generativelanguage.googleapis.com/v1beta/models/'+MODELS[provider]+':generateContent') if provider=='gemini' else 'https://api.openai.com/v1/responses'
-    raw,status=request(url,body=body,key=key,provider=provider,timeout=100);payload=json.loads(raw)
+    raw,status=request(url,body=body,key=key,provider=provider,timeout=100)
+    receipt.update(http_status=status,response_sha256=sha(raw))
+    phase='RESPONSE_JSON';payload=json.loads(raw)
+    phase='RESPONSE_ENVELOPE';need(isinstance(payload,dict),'MODEL_SCHEMA')
     receipt.update(http_status=status,response_id=payload.get('responseId',payload.get('id')),response_sha256=sha(raw),response_model=payload.get('modelVersion',payload.get('model')),usage=payload.get('usageMetadata',payload.get('usage')))
+    phase='RESPONSE_DECODE'
     result,usage,cost=decode(provider,payload);receipt.update(result=result,usage=usage,estimated_token_charge_usd=cost,billing_status='USAGE_ESTIMATE_NOT_INVOICE')
     ledger['slots'][provider]['state']='RESPONSE_COMPLETE'
     if provider=='gemini':extracted=result
    except Exception as e:
-    receipt.update(error_type=type(e).__name__,http_status=e.code if isinstance(e,HTTPError) else receipt['http_status'])
+    receipt.update(error_type=type(e).__name__,**failure_details(e,phase,receipt['http_status']))
     # No error body or secret-bearing request repr is logged. Unknown consumption remains.
     ledger['slots'][provider]['state']='FAILED_OR_UNKNOWN_CONSUMED';ledger['status']='BLOCKED'
    receipt['ended_at']=now();put(ROOT/OUT/(provider+'_RESPONSE.json'),receipt);save_ledger();persist('research: retain '+provider+' response and usage without retry')
    if ledger['status']!='ACTIVE':break
   if ledger['status']=='ACTIVE':ledger['status']='COMPLETED'
  except Exception as e:
-  ledger.update(status='BLOCKED',blocking_error_type=type(e).__name__,blocking_reason=str(e)[:160] if isinstance(e,ValueError) else 'SOURCE_OR_TRANSPORT_FAILURE')
+  ledger.update(status='BLOCKED',blocking_error_type=type(e).__name__,blocking_error=failure_details(e,phase))
  finally:
   ledger.update(ended_at=now(),report_only=True,further_dispatch_allowed=False)
   save_ledger();persist('research: close finite creator audit; no economic dispatch')
  print(json.dumps({'status':ledger['status'],'provider_states':ledger['slots'],'economic_evaluations':0}))
+ return ledger
 
 if __name__=='__main__':
  parser=argparse.ArgumentParser();parser.add_argument('--run',action='store_true');args=parser.parse_args()
- if args.run:run()
+ if args.run:
+  outcome=run()
+  if outcome and outcome['status']!='COMPLETED':raise SystemExit(2)
  else:print(json.dumps(contract_gate(read(ROOT/OUT/'SOURCE_CONTRACT.json'))))

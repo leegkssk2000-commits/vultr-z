@@ -1,118 +1,53 @@
-name: C63 one-third partial finite comparison
+name: C63 one-third partial saved comparison
 on:
   pull_request:
     paths:
-      - 'backend/research/rebuild/*c63_partial_profit*.py'
-      - 'research/development_evidence/C63_PARTIAL_REALIZATION_AFTER_PR1238_V1/**'
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-partial-profit-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
       - '.github/workflows/c63-partial-profit-v1.yml'
 permissions:
   contents: read
-  actions: read
-concurrency:
-  group: c63-partial-one-owner-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
 jobs:
-  finite-two:
+  verify-saved-only:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    permissions:
-      contents: write
-      actions: read
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      B: research/development_evidence/C63_PARTIAL_REALIZATION_AFTER_PR1238_V1
-      BRANCH: research/c63-partial-profit-after-pr1238-v1
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - name: Exact one-owner finite scope only
-        id: scope
-        env:
-          ATTEMPT: ${{ github.run_attempt }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+      - name: Canonical validation and artificial tests only
         run: |
           set -euo pipefail
-          if [ "$ATTEMPT" = 1 ] && [ "$HEAD_REF" = "$BRANCH" ] && [ "$SAME_REPO" = 'leegkssk2000-commits/vultr-z' ] && [ "$(git log -1 --format=%s)" = 'RUN_C63_PARTIAL_TWO_20260909' ] && [ ! -f "$B/SPEC.json" ] && [ "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" ]; then
-            echo 'execute=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'execute=false' >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          python-version: '3.12'
-      - name: Canonical full checkout and artificial regressions
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
-          mkdir -p out/c63-partial
-          python -B -m unittest backend.research.rebuild.test_c63_partial_profit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v > out/c63-partial/TESTS.log 2>&1
-          cat out/c63-partial/TESTS.log
-          python -m py_compile backend/research/rebuild/c63_partial_profit_study_v1.py
-      - uses: actions/download-artifact@v4
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          name: kr3-profit-zone-34282003231
-          run-id: 34282003231
-          github-token: ${{ github.token }}
-          path: out/parent51
-      - name: Native closed and unfinished cost-mark smoke with artificial prices
-        if: steps.scope.outputs.execute == 'true'
-        run: python -B -m backend.research.rebuild.c63_partial_profit_study_v1 smoke --inputs out/parent51/inputs
-      - name: Freeze and claim before each of two new applications
-        if: steps.scope.outputs.execute == 'true'
+          python3 -B -m unittest backend.research.rebuild.test_c63_partial_profit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Immutable completed evidence and parent pins, no market replay
         run: |
-          set -euo pipefail
-          git config user.name c63-partial-evaluator
-          git config user.email actions@users.noreply.github.com
-          persist() {
-            git add "$B"
-            python - <<'PY'
-          import os,subprocess
-          names=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          assert all(x.startswith(os.environ['B']+'/') for x in names),'UNSCOPED_WRITE'
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          root=pathlib.Path('.')
+          b=root/'research/development_evidence/C63_PARTIAL_REALIZATION_AFTER_PR1238_V1'
+          parent=root/'research/development_evidence/M1_ER_RANGE_RESCUE_AFTER_PR1232_V1'
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          assert sha(b/'EVIDENCE_HASHES.json')=='b9c5ae90c545c932f7e8f26705af20b8d19f9631537bf1cddc6f3e9ad0b227cf'
+          for name,digest in json.loads((b/'EVIDENCE_HASHES.json').read_bytes()).items():
+              assert sha(b/name)==digest,name
+          spec=json.loads((b/'SPEC.json').read_bytes())
+          for per,files in spec['parent_results_sha256'].items():
+              for name,digest in files.items():assert sha(parent/per/name)==digest
+          for name,digest in spec['source_files_sha256'].items():assert sha(root/name)==digest,name
+          budget=json.loads((b/'BUDGET.json').read_bytes())
+          assert (budget['cumulative_actual'],budget['cumulative_actual_evaluations'])==(65,112)
+          slot=budget['c63_partial_profit_allocation']
+          assert slot['started']==slot['completed']==slot['reserved']==2
+          assert slot['remaining']==slot['failed']==0
+          summary=json.loads((b/'SUMMARY.json').read_bytes())
+          assert summary['status']=='REJECT_KEEP_C63' and summary['formal_credit']==0
+          print('SAVED_PINS_PASS; TWO_COMPLETED_APPLICATIONS; NO_REPLAY_NO_PROVIDER_NO_DISPATCH')
           PY
-            git diff --cached --quiet || git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            test "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          }
-          python -m backend.research.rebuild.c63_partial_profit_study_v1 freeze --inputs out/parent51/inputs
-          persist 'research: freeze C63 one-third profit realization before outcomes'
-          for per in DEV2025 SEEN2026; do
-            python -m backend.research.rebuild.c63_partial_profit_study_v1 reserve --period "$per"
-            persist "research: reserve C63 partial $per before actual replay"
-            remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-            timeout 180 python -u -m backend.research.rebuild.c63_partial_profit_study_v1 execute --inputs out/parent51/inputs --period "$per" --remote-sha "$remote"
-            persist "research: preserve C63 partial $per result"
-          done
-          python -m backend.research.rebuild.c63_partial_profit_study_v1 summarize
-          persist 'research: close finite C63 partial comparison without auto successor'
-      - name: Preserve checkpoint without economic retry
-        if: always() && steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name c63-partial-evaluator
-          git config user.email actions@users.noreply.github.com
-          git add "$B"
-          if ! git diff --cached --quiet; then
-            git commit -m 'research: retain C63 partial failure or completion checkpoint [skip ci]'
-            git push origin "HEAD:refs/heads/$BRANCH"
-          fi
-          mkdir -p out/c63-partial
-          git archive HEAD "$B" backend/research/rebuild/c63_partial_profit_v1.py backend/research/rebuild/c63_partial_profit_study_v1.py backend/research/rebuild/test_c63_partial_profit_v1.py .github/workflows/c63-partial-profit-v1.yml research/development_evidence/M1_ER_RANGE_RESCUE_AFTER_PR1232_V1 > out/c63-partial/code-results.tar
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.execute == 'true'
-        with:
-          name: c63-partial-${{ github.run_id }}
-          path: out/c63-partial
-          retention-days: 90
+          git diff --exit-code

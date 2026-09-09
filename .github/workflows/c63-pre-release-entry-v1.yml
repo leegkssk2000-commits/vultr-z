@@ -1,109 +1,37 @@
 name: C63 Pre-release Entry Finite Comparison
 on:
-  push:
-    branches: ['research/c63-pre-release-pullback-entry-v1']
-    paths:
-      - 'backend/research/rebuild/c63_pre_release*'
-      - 'backend/research/rebuild/test_c63_pre_release*'
-      - 'research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1/DESIGN.md'
-      - '.github/workflows/c63-pre-release-entry-v1.yml'
   pull_request:
     paths:
-      - 'backend/research/rebuild/c63_pre_release*'
-      - 'backend/research/rebuild/test_c63_pre_release*'
-      - 'research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1/**'
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-pre-release-entry-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
       - '.github/workflows/c63-pre-release-entry-v1.yml'
 permissions:
   contents: read
-concurrency:
-  group: c63-pre-release-entry-one-owner-v1
-  cancel-in-progress: false
 jobs:
-  offline:
-    if: github.event_name == 'pull_request'
+  verify-completed-entry:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - run: |
-          npm run --prefix frontend/z-os-app-source validate
-          python3 -B -m unittest backend.research.rebuild.test_c63_pre_release_pullback_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
-  finite-first:
-    if: github.event_name == 'push' && github.run_attempt == 1
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    permissions:
-      contents: write
     env:
       GEMINI_API_KEY: ''
       GOOGLE_API_KEY: ''
       OPENAI_API_KEY: ''
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/c63-pre-release-pullback-entry-v1
-          fetch-depth: 0
-          persist-credentials: true
-      - name: Scope precheck
-        id: scope
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial entry and lifecycle boundaries
+        run: python3 -B -m unittest backend.research.rebuild.test_c63_pre_release_pullback_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Independent original-source and saved accounting checks
+        working-directory: research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1
         run: |
-          if test -e research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1/SPEC.json; then
-            echo 'run=false' >> "$GITHUB_OUTPUT"
-          else
-            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-            echo 'run=true' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Canonical and artificial preflight
-        if: steps.scope.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          python3 -B -m unittest backend.research.rebuild.test_c63_pre_release_pullback_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v 2>&1 | tee SYNTHETIC_QA.log
-      - name: Freeze and two claimed first FULLs
-        if: steps.scope.outputs.run == 'true'
-        env:
-          C63_ENTRY_PREFLIGHT: PASSED
-        run: |
-          set -euo pipefail
-          E=research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1
-          BR=research/c63-pre-release-pullback-entry-v1
-          git config user.name 'c63-pre-release-entry'
-          git config user.email 'actions@users.noreply.github.com'
-          git fetch origin 832bf59d9d4c183f2bf8e88d437d75e91867a10a
-          persist() {
-            git add "$E"
-            if ! git diff --cached --quiet; then git commit -m "$1 [skip ci]"; fi
-            git push origin "HEAD:refs/heads/$BR"
-            REMOTE=$(git ls-remote origin "refs/heads/$BR" | cut -f1)
-            test "$REMOTE" = "$(git rev-parse HEAD)"
-          }
-          python3 -B -m backend.research.rebuild.c63_pre_release_study_v1 freeze
-          persist 'research: freeze pre-release entry and existing history67/118'
-          for PER in DEV2025 SEEN2026; do
-            python3 -B -m backend.research.rebuild.c63_pre_release_study_v1 reserve --period "$PER"
-            persist "research: reserve pre-release entry $PER"
-            STATUS=0
-            python3 -B -m backend.research.rebuild.c63_pre_release_study_v1 execute --period "$PER" --remote "$REMOTE" || STATUS=$?
-            persist "research: preserve pre-release entry $PER outcome"
-            if test "$STATUS" != 0; then exit "$STATUS"; fi
-          done
-          python3 -B -m backend.research.rebuild.c63_pre_release_study_v1 summarize
-          persist 'research: close first pre-release entry economics68/120'
-      - name: Pack exact result and source
-        if: always()
-        run: |
-          tar -cf pre-release-code-results.tar backend/research/rebuild/c63_pre_release_pullback_v1.py backend/research/rebuild/c63_pre_release_study_v1.py backend/research/rebuild/test_c63_pre_release_pullback_v1.py research/development_evidence/C63_PRE_RELEASE_PULLBACK_ENTRY_V1
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: c63-pre-release-entry-${{ github.run_id }}
-          path: |
-            pre-release-code-results.tar
-            SYNTHETIC_QA.log
-          retention-days: 90
+          python3 -B verify_saved.py
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

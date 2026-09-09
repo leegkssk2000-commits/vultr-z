@@ -1,0 +1,34 @@
+name: KR3 C51 entry context factorial
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c51-entry-context-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c51-entry-context-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-entry-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical preflight
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial strategy boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_kr3_c51_entry_context_v1 -v
+      - name: Immutable raw accounting, no market replay
+        working-directory: research/development_evidence/KR3_C51_ENTRY_CONTEXT_AB_AFTER_PR1225_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 6aed19ef05f68518c1257916b6239f04120de636e4fd386fb9727fa056d25d64
+          python3 -B -m unittest test_saved test_review -v
+          python3 -B verify_review.py
+          git diff --exit-code

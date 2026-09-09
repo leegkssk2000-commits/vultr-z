@@ -1,0 +1,41 @@
+name: Chart T-F historical volume binding
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/chart-tf-volume-binding-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/chart-tf-volume-binding-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: chart-tf-volume-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  preserved-source-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical frontend validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Verify preserved results and completed source audit
+        run: |
+          mkdir -p out
+          python3 -B research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/verify_preserved.py --manifest-sha256 318c6d7a3bae54d2392e0aaa8a3bf7159304202d4bfc39442b0c4d6c05e8ec9a | tee out/VERIFICATION.json
+          python3 -B research/development_evidence/CHART_TF_VOLUME_BINDING_AFTER_PR1229_V1/verify_preserved.py --self-test
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chart-tf-volume-preservation-${{ github.run_id }}
+          path: out/VERIFICATION.json
+          if-no-files-found: error
+          retention-days: 90

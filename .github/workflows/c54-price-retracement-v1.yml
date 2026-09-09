@@ -1,0 +1,33 @@
+name: C54 price-only retracement finite comparison
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c54-price-retracement-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c54-price-retracement-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-price-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical preflight
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_c54_price_retracement_v1 backend.research.rebuild.test_kr3_c51_entry_context_v1 -v
+      - name: Saved price, costs, attribution and M1 original paths only
+        working-directory: research/development_evidence/C54_PRICE_RETRACEMENT_M1_DIAG_AFTER_PR1230_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 0cb7efde5e0266149db5a8a495653e52bde29cc1e529d0c9feace7d0f4d09732
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

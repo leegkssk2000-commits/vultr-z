@@ -3,113 +3,31 @@ on:
   pull_request:
     paths:
       - 'backend/research/rebuild/*c63_daily_ema21*.py'
-      - 'research/development_evidence/C63_DAILY_EMA21_HORTON_TIP_AFTER_PR1241_V1/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-daily-ema21-tip-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*c63_daily_ema21*.py'
+      - 'research/development_evidence/**'
       - '.github/workflows/c63-daily-ema21-tip-v1.yml'
 permissions:
   contents: read
-  actions: read
-concurrency:
-  group: c63-daily-ema21-single-scope-v1
-  cancel-in-progress: false
 jobs:
-  first-two-fulls:
+  verify-saved-daily-tip:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    permissions:
-      contents: write
-      actions: read
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-      GEMINI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-      OPENAI_API_KEY: ''
-      B: research/development_evidence/C63_DAILY_EMA21_HORTON_TIP_AFTER_PR1241_V1
-      BRANCH: research/c63-daily-ema21-tip-after-pr1241-v1
-      INPUTS: research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/INPUTS
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true
-      - name: First exact source head only; no retry
-        id: scope
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+      - name: Canonical full-checkout validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial causality and parent regressions
+        run: python3 -B -m unittest backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Immutable source-bound saved economics and counterexamples
+        working-directory: research/development_evidence/C63_DAILY_EMA21_HORTON_TIP_AFTER_PR1241_V1
         run: |
-          set -euo pipefail
-          REMOTE=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
-          if [ "$GITHUB_RUN_ATTEMPT" = 1 ] && [ "$HEAD_REF" = "$BRANCH" ] && [ "$REMOTE" = "$(git rev-parse HEAD)" ] && [ "$(git log -1 --format=%s)" = RUN_C63_DAILY_EMA21_TIP_TWO_FULLS ] && [ ! -f "$B/SPEC.json" ]; then
-            echo 'execute=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'execute=false' >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          python-version: '3.12'
-      - name: Required full-checkout canonical and artificial tests
-        if: steps.scope.outputs.execute == 'true'
-        run: |
-          set -euo pipefail
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          mkdir -p out/daily
-          python -B -m unittest backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v > out/daily/SYNTHETIC_QA.log 2>&1
-          cat out/daily/SYNTHETIC_QA.log
-          python -m py_compile backend/research/rebuild/c63_daily_ema21_study_v1.py
-      - uses: actions/download-artifact@v4
-        if: steps.scope.outputs.execute == 'true'
-        with:
-          name: kr3-profit-zone-34282003231
-          run-id: 34282003231
-          github-token: ${{ github.token }}
-          path: out/original51
-      - name: Freeze then persist each one-time economic claim
-        if: steps.scope.outputs.execute == 'true'
-        env:
-          DAILY_PREFLIGHT: PASSED
-        run: |
-          set -euo pipefail
-          mkdir -p "$INPUTS"
-          cp out/original51/inputs/DEV2025.json.gz "$INPUTS/DEV2025.json.gz"
-          cp out/original51/inputs/SEEN2026.json.gz "$INPUTS/SEEN2026.json.gz"
-          git config user.name c63-daily-tip-evaluator
-          git config user.email actions@users.noreply.github.com
-          persist() {
-            git add "$B"
-            python - <<'PY'
-          import os,subprocess
-          names=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
-          if any(not n.startswith(os.environ['B']+'/') for n in names):raise SystemExit('UNSCOPED_WRITE')
-          PY
-            git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$(git rev-parse HEAD)"
-          }
-          python -B -m backend.research.rebuild.c63_daily_ema21_study_v1 freeze
-          persist 'research: freeze one Horton daily tip before economics'
-          for PERIOD in DEV2025 SEEN2026; do
-            python -B -m backend.research.rebuild.c63_daily_ema21_study_v1 reserve --period "$PERIOD"
-            persist "research: reserve $PERIOD first daily-tip FULL"
-            set +e
-            python -B -m backend.research.rebuild.c63_daily_ema21_study_v1 execute --period "$PERIOD" --remote "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-            STATUS=$?
-            set -e
-            persist "research: record $PERIOD daily-tip outcome without retry"
-            test "$STATUS" = 0
-          done
-          python -B -m backend.research.rebuild.c63_daily_ema21_study_v1 summarize
-          persist 'research: close daily tip economics and preserve C63'
-      - name: Package exact executed code and saved results
-        if: always() && steps.scope.outputs.execute == 'true'
-        run: |
-          mkdir -p out/daily
-          tar -cf out/daily/code-results.tar backend/research/rebuild/c63_daily_ema21_entry_v1.py backend/research/rebuild/c63_daily_ema21_study_v1.py backend/research/rebuild/test_c63_daily_ema21_entry_v1.py "$B"
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.execute == 'true'
-        with:
-          name: c63-daily-tip-${{ github.run_id }}
-          path: out/daily
-          retention-days: 90
+          python3 -B verify_saved.py --full-repository --derived-sha256 e271f2bf7b0e72e9a6e779e789f9ce839b6412038c27af7b5d696c2658a6ef3b
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

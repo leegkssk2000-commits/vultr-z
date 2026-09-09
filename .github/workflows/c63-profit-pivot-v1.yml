@@ -1,128 +1,33 @@
 name: C63 Profit Pivot Finite Study V1
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
     paths:
-      - 'backend/research/rebuild/*c63_profit_pivot*'
+      - 'backend/research/**'
       - 'research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1/**'
       - '.github/workflows/c63-profit-pivot-v1.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/rebuild/*c63_profit_pivot*'
+      - 'backend/research/**'
       - 'research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1/**'
       - '.github/workflows/c63-profit-pivot-v1.yml'
 permissions:
   contents: read
 jobs:
-  offline:
+  verify-completed:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: |
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          python3 -B -m unittest backend.research.rebuild.test_c63_profit_pivot_exit_v1 backend.research.rebuild.test_c63_failed_breakout_exit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
-  economic-once:
-    needs: offline
-    if: >-
-      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
-      github.head_ref == 'research/c63-profit-pivot-after-pr1239-v1' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.user.id == 232057951 && github.run_attempt == 1
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    concurrency:
-      group: c63-profit-pivot-one-economic-owner-v1
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      actions: read
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-      BRANCH: research/c63-profit-pivot-after-pr1239-v1
-      OUT: research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1
-      GEMINI_API_KEY: ''
-      OPENAI_API_KEY: ''
-      GOOGLE_API_KEY: ''
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-          persist-credentials: true
-      - name: Exact head and full checkout synthetic preflight before prices
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_c63_profit_pivot_exit_v1 backend.research.rebuild.test_c63_failed_breakout_exit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
+      - name: Completed source-bound records, costs, full attribution and no replay
+        working-directory: research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1
         run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          test ! -e "$OUT/SPEC.json"
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
-          npm run --prefix frontend/z-os-app-source validate
-          python3 -B -m unittest backend.research.rebuild.test_c63_profit_pivot_exit_v1 backend.research.rebuild.test_c63_failed_breakout_exit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v 2>&1 | tee SYNTHETIC_QA.log
-      - name: Recover only the already-used exact input packets
-        run: |
-          python3 - <<'PY'
-          import os,urllib.request,urllib.parse,zipfile,io,pathlib,hashlib
-          class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self,req,fp,code,msg,headers,newurl):
-                  u=urllib.parse.urlsplit(newurl)
-                  assert u.scheme=='https' and (u.hostname.endswith('.blob.core.windows.net') or u.hostname.endswith('.actions.githubusercontent.com'))
-                  follow=super().redirect_request(req,fp,code,msg,headers,newurl)
-                  follow.remove_header('Authorization')
-                  return follow
-          url='https://api.github.com/repos/leegkssk2000-commits/vultr-z/actions/artifacts/10077992463/zip'
-          req=urllib.request.Request(url,headers={'Authorization':'Bearer '+os.environ['GITHUB_TOKEN'],'Accept':'application/vnd.github+json'})
-          with urllib.request.build_opener(ArtifactRedirect()).open(req,timeout=45) as r:raw=r.read(50000000)
-          z=zipfile.ZipFile(io.BytesIO(raw));pathlib.Path('inputs').mkdir()
-          hashes={'DEV2025':'4c1936726690fd29407694bf55e1047c4870d524843dd5b3420e60ac238a919c','SEEN2026':'91d6e07a38c6b0dd3bcfcfa4b1b10bcf8cb3595d35fba183765f8e02a6a24a70'}
-          for per,digest in hashes.items():
-              data=z.read('inputs/'+per+'.json.gz');assert hashlib.sha256(data).hexdigest()==digest
-              pathlib.Path('inputs',per+'.json.gz').write_bytes(data)
-          PY
-      - name: Import earlier distinct local trial, freeze, claim and four first applications
-        run: |
-          git config user.name 'c63-profit-pivot-study'
-          git config user.email 'actions@users.noreply.github.com'
-          persist() {
-            git add "$OUT"
-            if ! git diff --cached --quiet; then
-              git commit -m "research: C63 pivot scope receipt [skip ci]"
-              timeout 40 git push origin "HEAD:refs/heads/$BRANCH"
-            fi
-            test "$(timeout 30 git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$(git rev-parse HEAD)"
-          }
-          trap 'persist' EXIT
-          python3 -B -m backend.research.rebuild.c63_profit_pivot_study_v1 freeze --inputs inputs
-          persist
-          python3 -B -m backend.research.rebuild.c63_profit_pivot_study_v1 preflight --inputs inputs
-          persist
-          for period in DEV2025 SEEN2026; do
-            for view in FIXED FULL; do
-              python3 -B -m backend.research.rebuild.c63_profit_pivot_study_v1 reserve --period "$period" --view "$view"
-              persist
-              python3 -B -m backend.research.rebuild.c63_profit_pivot_study_v1 execute --period "$period" --view "$view" --inputs inputs --remote-sha "$(git rev-parse HEAD)"
-              persist
-            done
-          done
-          python3 -B -m backend.research.rebuild.c63_profit_pivot_study_v1 summarize
-          persist
-      - name: Preserve execution bytes without rerunning
-        if: always()
-        run: |
-          tar -cf code-results.tar "$OUT" backend/research/rebuild/c63_profit_pivot_exit_v1.py backend/research/rebuild/c63_profit_pivot_study_v1.py backend/research/rebuild/test_c63_profit_pivot_exit_v1.py .github/workflows/c63-profit-pivot-v1.yml
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: c63-profit-pivot-${{ github.run_id }}
-          path: |
-            code-results.tar
-            SYNTHETIC_QA.log
-          retention-days: 90
+          python3 -B verify_saved.py --derived-sha256 5870b2c150999de446456ce474ae514f5f8a13d6d0048350bb1ba9c301939408
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

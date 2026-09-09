@@ -1,6 +1,7 @@
 """Artificial lifecycle/clock counterexamples; no market data or economic runs."""
 from copy import deepcopy
 from dataclasses import replace
+from math import sqrt
 import json
 import unittest
 from unittest.mock import patch
@@ -136,4 +137,53 @@ class StandaloneTests(unittest.TestCase):
         bars=momentum_fixture();s1,_,_=c.m1_setups(bars);s2,_,_=c.m1_setups(bars[:31]);self.assertEqual(s1[0],s2[0])
     def test_zero_volume_does_not_silently_block_nonvolume_MR(self):
         self.assertTrue(self.run_bars([replace(b,volume=0.) for b in momentum_fixture()])['trades'])
+    def test_m1_equal_band_touch_is_not_outside_release(self):
+        bars=momentum_fixture(22);bars[-1]=f.Bar(21*c.BAR,100.,111.,99.,110.,10.)
+        upper=100.5+2*sqrt((19*.5**2+9.5**2)/20)
+        atr=(upper-100.)/1.5
+        with patch.object(f,'_average',side_effect=[[100.]*22,[atr]*21]):
+            features=f.squeeze_features(bars)
+        self.assertTrue(features[20]['squeeze_on'])
+        self.assertEqual(features[21]['bb_upper'],features[21]['kc_upper'])
+        self.assertFalse(features[21]['release']);self.assertFalse(features[21]['long_release'])
+    def test_m1_touch_ends_episode_without_delayed_release_or_old_floor(self):
+        bars=momentum_fixture(26);bars[20]=replace(bars[20],low=1.)
+        def obs(i,on,release=False):
+            return dict(available_at=(i+1)*c.BAR,squeeze_on=on,release=release,long_release=release)
+        features=[None]*20+[obs(20,True),obs(21,False),obs(22,False),obs(23,True),obs(24,True),obs(25,False,True)]
+        with patch.object(f,'squeeze_features',return_value=features):signals,events,_=c.m1_setups(bars)
+        self.assertEqual(len(signals),1);self.assertEqual(signals[0]['episode_start'],23)
+        self.assertEqual(signals[0]['floor'],99.8);self.assertEqual(len(events),1)
+    def test_confirmed_pivot_requires_both_right_bars(self):
+        bars=[f.Bar(i*c.BAR,10.,h,8.,10.,1.) for i,h in enumerate([11.,12.,15.,12.,11.])]
+        self.assertFalse(f.confirmed_pivots(bars,3))
+        p=f.confirmed_pivots(bars,4)[0]
+        self.assertEqual((p['kind'],p['index'],p['known_index'],p['available_at']),('HIGH',2,4,5*c.BAR))
+        changed=list(bars);changed[4]=replace(changed[4],high=16.)
+        self.assertEqual(f.confirmed_pivots(bars,3),f.confirmed_pivots(changed,3))
+        self.assertFalse(f.confirmed_pivots(changed,4))
+    def test_pivot_ties_do_not_count(self):
+        bars=[f.Bar(i*c.BAR,10.,h,8.,10.,1.) for i,h in enumerate([11.,12.,15.,15.,11.])]
+        self.assertFalse(f.confirmed_pivots(bars,4))
+    def test_upswing_uses_latest_high_before_q_and_low_strictly_before_high(self):
+        bars=[f.Bar(i*c.BAR,10.,12.,8.,10.,1.) for i in range(12)]
+        pivots=[dict(kind=k,index=i,price=p,available_at=(i+3)*c.BAR) for k,i,p in [('LOW',2,5.),('HIGH',5,15.),('LOW',6,6.),('HIGH',8,16.)]]
+        with patch.object(f,'confirmed_pivots',return_value=pivots):a=f.known_upswing(bars,11,7)
+        self.assertEqual((a['low']['index'],a['high']['index']),(2,5))
+    def test_avwap_same_anchor_prefix_ignores_future_and_zero_is_unavailable(self):
+        bars=momentum_fixture();v=f.anchored_bar_vwap(bars,20,30)
+        changed=list(bars);changed[31]=replace(changed[31],volume=10**9,high=10**9)
+        self.assertEqual(v,f.anchored_bar_vwap(changed,20,30))
+        self.assertIsNone(f.anchored_bar_vwap([replace(b,volume=0.) for b in bars],20,30))
+    def test_daily_aggregation_never_fills_partial_or_missing_bars(self):
+        bars=soup_fixture();days=f.completed_utc_days(bars,7*c.BAR)
+        self.assertEqual(len(days),1);self.assertEqual(days[0].volume,60.)
+        self.assertEqual(f.completed_utc_days(bars,5*c.BAR),[])
+        with self.assertRaisesRegex(ValueError,'GAP_OR_DUPLICATE'):
+            f.completed_utc_days(bars[:2]+bars[3:],len(bars)*c.BAR)
+    def test_soup_latest_equal_prior_low_controls_three_day_rule(self):
+        days=f.completed_utc_days(soup_fixture(),25*c.DAY)
+        self.assertIsNotNone(f.soup_plus_one_setup(days,20))
+        changed=list(days);changed[19]=replace(changed[19],low=100.)
+        self.assertIsNone(f.soup_plus_one_setup(changed,20))
 if __name__=='__main__':unittest.main()

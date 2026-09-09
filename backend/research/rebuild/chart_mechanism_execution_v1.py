@@ -76,6 +76,9 @@ def m1_setups(bars):
                 floor=min(b.low for b in bars[episode:i+1]),target=None,expiry=None,max_hold_bars=20,feature=deepcopy(obs),setup_available_at=obs['available_at'])
             observations.append(dict(event,long_signal=obs['long_release']))
             if obs['long_release']:signals.append(event)
+        # Equality at a band edge ends strict containment without releasing.
+        # A later episode must not inherit that earlier episode's stop anchor.
+        if not obs['squeeze_on']:
             episode=None
     return signals,observations,features
 

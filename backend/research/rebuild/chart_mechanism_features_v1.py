@@ -82,7 +82,10 @@ def squeeze_features(bars:Sequence[Bar])->list[dict|None]:
         window=close[i-19:i+1];avg=fsum(window)/20;sd=sqrt(fsum((v-avg)**2 for v in window)/20)
         upper,lower=avg+2*sd,avg-2*sd;ku,kl=center[i]+1.5*atr[i],center[i]-1.5*atr[i]
         on=lower>kl and upper<ku;previous_on=out[-1] is not None and out[-1]['squeeze_on']
-        momentum=close[i]-close[i-14];release=bool(previous_on and not on)
+        # A touch is neither strict containment nor a release outside KC.
+        # It breaks the squeeze episode, but cannot create a buy signal.
+        outside=lower<kl or upper>ku
+        momentum=close[i]-close[i-14];release=bool(previous_on and outside)
         out.append(dict(available_at=b.open_ts+BAR_MS,squeeze_on=on,release=release,bb_upper=upper,bb_lower=lower,kc_upper=ku,kc_lower=kl,momentum=momentum,long_release=release and momentum>0 and b.close>upper))
     return out
 

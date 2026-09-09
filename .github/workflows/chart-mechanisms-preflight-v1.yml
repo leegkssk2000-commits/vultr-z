@@ -3,7 +3,14 @@ on:
   pull_request:
     paths:
       - 'backend/research/**'
-      - 'research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/**'
+      - 'research/development_evidence/**'
+      - 'backend/research/contracts/**'
+      - '.github/workflows/chart-mechanisms-preflight-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
       - '.github/workflows/chart-mechanisms-preflight-v1.yml'
 permissions:
   contents: read
@@ -22,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Full-checkout canonical preflight
         run: |
@@ -35,8 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/chart-preflight
-          python3 -B -m unittest backend.research.rebuild.test_chart_mechanism_execution_v1 backend.research.rebuild.test_chart_mechanism_c54_binding_v1 -v 2>&1 | tee out/chart-preflight/SYNTHETIC_QA.log
+          python3 -B -m unittest backend.research.rebuild.test_chart_mechanism_execution_v1 backend.research.rebuild.test_chart_mechanism_c54_binding_v1 backend.research.rebuild.test_chart_mechanism_study_v1 -v 2>&1 | tee out/chart-preflight/SYNTHETIC_QA.log
           python3 -m py_compile backend/research/rebuild/chart_mechanism_features_v1.py backend/research/rebuild/chart_mechanism_execution_v1.py backend/research/rebuild/chart_mechanism_integration_v1.py
+          python3 -B research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/test_verify_saved.py
+          if test -f research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/FINAL_HASHES.json; then
+            python3 -B research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/verify_saved.py
+          fi
           git diff --exit-code
       - name: Save exact implementation and test result only
         if: always()

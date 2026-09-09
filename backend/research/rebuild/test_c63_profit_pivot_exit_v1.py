@@ -59,7 +59,7 @@ class NativeTests(unittest.TestCase):
         from backend.research.rebuild.chart_mechanism_features_v1 import Bar
         from backend.research.rebuild import chart_mechanism_execution_v1 as e
         b=[Bar(i*e.BAR,100,105,95,100,1) for i in range(45)]
-        vals={21:(100,113,99,110),22:(110,115,108,112),23:(110,114,106,110),24:(110,115,108,112),25:(110,115,109,112),26:(110,111,104,105),27:(104,106,103,104)}
+        vals={21:(100,113,99,110),22:(110,115,108,112),23:(110,114,109,110),24:(110,115,106,112),25:(110,115,108,112),26:(110,115,109,112),27:(110,111,104,105),28:(104,106,103,104)}
         for i,v in vals.items():b[i]=Bar(i*e.BAR,*v,1)
         sig=dict(signal_index=20,signal_ts=21*e.BAR,floor=90,target=None,setup_id='SYNTHETIC')
         return b,sig,[dict(momentum=10) for _ in b],e
@@ -69,17 +69,17 @@ class NativeTests(unittest.TestCase):
             return x.position(b,s,'M1',f,end or len(b)*e.BAR,{},e._position,e.exit_reason)
     def test_native_next_open_not_level_price(self):
         b,s,f,e=self.fixture();t,op,tr=self.position(b,s,f,e)
-        self.assertIsNone(op);self.assertEqual((t['exit_index'],t['exit_price'],t['exit_reason']),(27,104,x.REASON+'_NEXT_OPEN'))
+        self.assertIsNone(op);self.assertEqual((t['exit_index'],t['exit_price'],t['exit_reason']),(28,104,x.REASON+'_NEXT_OPEN'))
     def test_window_end_pending_not_fake_fill(self):
-        b,s,f,e=self.fixture();t,op,tr=self.position(b[:27],s,f[:27],e)
+        b,s,f,e=self.fixture();t,op,tr=self.position(b[:28],s,f[:28],e)
         self.assertIsNone(t);self.assertFalse(op['terminal_liquidation']);self.assertEqual(op['pending_exit_trigger']['reason'],x.REASON)
     def test_time_priority_and_hook_restored(self):
-        b,s,f,e=self.fixture();fn=e.exit_reason;f[26]['momentum']=0
+        b,s,f,e=self.fixture();fn=e.exit_reason;f[27]['momentum']=0
         t,_,_=self.position(b,s,f,e);self.assertEqual(t['exit_reason'],'MOMENTUM_NONPOSITIVE_CLOSE_NEXT_OPEN');self.assertIs(e.exit_reason,fn)
     def test_future_changes_no_earlier_fill_change(self):
         from dataclasses import replace
         b,s,f,e=self.fixture();first=self.position(b,s,f,e)[0]
-        for i in range(28,len(b)):b[i]=replace(b[i],open=900,high=1000,low=800,close=900)
+        for i in range(29,len(b)):b[i]=replace(b[i],open=900,high=1000,low=800,close=900)
         self.assertEqual(self.position(b,s,f,e)[0],first)
 
 if __name__=='__main__':unittest.main()

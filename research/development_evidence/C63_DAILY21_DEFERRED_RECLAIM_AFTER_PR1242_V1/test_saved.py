@@ -2,7 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
-import unittest
+import unittest,fnmatch,re
 import verify_saved as c
 
 class SavedTests(unittest.TestCase):
@@ -15,6 +15,24 @@ class SavedTests(unittest.TestCase):
         return next(e for x in raw.values() for e in x['events'] if e['admission'] and e['wait_bars']>1)
     def delayed_trade(self,raw):
         return next(t for x in raw.values() for t in x['trades'] if t['wait_bars']>0)
+    def test_full_repository_requires_original_inputs(self):
+        with self.assertRaisesRegex(ValueError,'FULL_REPOSITORY_REQUIRES_ORIGINAL_INPUTS'):
+            c.verify(full_repository=True)
+    def test_workflow_covers_all_frozen_sources_for_pr_and_push(self):
+        text=(c.REPO/'.github/workflows/c63-daily21-deferred-v1.yml').read_text()
+        blocks=text.split('permissions:')[0].split('  push:')
+        self.assertEqual(len(blocks),2)
+        for block in blocks:
+            patterns=re.findall(r"      - '([^']+)'",block)
+            for path in c.read(c.HERE/'SPEC.json')['source_files_sha256']:
+                self.assertTrue(any(fnmatch.fnmatchcase(path,p) for p in patterns),path)
+    def test_workflow_supplies_original_packets_without_economic_dispatch(self):
+        text=(c.REPO/'.github/workflows/c63-daily21-deferred-v1.yml').read_text()
+        self.assertIn('--inputs "$GITHUB_WORKSPACE/out/original51/inputs"',text)
+        self.assertIn('run-id: 34282003231',text)
+        self.assertIn('contents: read',text)
+        self.assertNotIn('contents: write',text)
+        self.assertNotIn('deferred_study_v1',text)
     def test_valid_saved_result(self):
         self.assertEqual(c.verify()['status'],'REJECT_KEEP_C63')
     def test_no_skipped_pending_close(self):

@@ -2,17 +2,18 @@ name: C63 Daily21 Deferred Confirmation V1
 on:
   pull_request:
     paths:
-      - 'backend/research/rebuild/*c63_daily21_deferred*.py'
+      - 'backend/research/**'
       - 'research/development_evidence/**'
       - '.github/workflows/c63-daily21-deferred-v1.yml'
   push:
     branches: [master]
     paths:
-      - 'backend/research/rebuild/*c63_daily21_deferred*.py'
+      - 'backend/research/**'
       - 'research/development_evidence/**'
       - '.github/workflows/c63-daily21-deferred-v1.yml'
 permissions:
   contents: read
+  actions: read
 jobs:
   verify-saved-deferred:
     runs-on: ubuntu-24.04
@@ -25,9 +26,16 @@ jobs:
         run: npm run --prefix frontend/z-os-app-source validate
       - name: Artificial timing and preserved parent regressions
         run: python3 -B -m unittest backend.research.rebuild.test_c63_daily21_deferred_v1 backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Restore immutable already-used input packets
+        uses: actions/download-artifact@v4
+        with:
+          name: kr3-profit-zone-34282003231
+          run-id: 34282003231
+          github-token: ${{ github.token }}
+          path: out/original51
       - name: Source-bound saved result and counterexamples only
         working-directory: research/development_evidence/C63_DAILY21_DEFERRED_RECLAIM_AFTER_PR1242_V1
         run: |
-          python3 -B verify_saved.py --full-repository --proof-sha 77b4bd6f87fdd53fd0cc5c53c25960ac62175565729ac0d54fa194c3d1d0766e
+          python3 -B verify_saved.py --full-repository --inputs "$GITHUB_WORKSPACE/out/original51/inputs" --proof-sha 77b4bd6f87fdd53fd0cc5c53c25960ac62175565729ac0d54fa194c3d1d0766e
           python3 -B -m unittest test_saved -v
           git diff --exit-code

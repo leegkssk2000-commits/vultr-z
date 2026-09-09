@@ -145,6 +145,7 @@ def cell(per,inputs=None,root=HERE):
     return dict(signals=signals,positions=len(v.index(result)),held_closes=held,pending_closes=pending_closes,daily_marks=len(result['metrics']['daily']),deferred=delayed,details=out)
 
 def verify(root=HERE,inputs=None,full_repository=False,proof_sha=None):
+    if full_repository:need(inputs is not None,'FULL_REPOSITORY_REQUIRES_ORIGINAL_INPUTS')
     root=Path(root);repo=root.parents[2];need(sha(root/'EVIDENCE_HASHES.json')==EVIDENCE_SHA,'MANIFEST_PIN')
     for n,d in read(root/'EVIDENCE_HASHES.json').items():need(sha(root/n)==d,'FROZEN_OUTPUT:'+n)
     spec=read(root/'SPEC.json');b=deepcopy(read(root/'BUDGET.json'));slot=b.pop(KEY)

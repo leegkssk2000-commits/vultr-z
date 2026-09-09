@@ -1,0 +1,52 @@
+name: Chart mechanisms synthetic preflight
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/**'
+      - '.github/workflows/chart-mechanisms-preflight-v1.yml'
+permissions:
+  contents: read
+concurrency:
+  group: chart-synthetic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Full-checkout canonical preflight
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          find backend/research -name AGENTS.md -print
+      - name: Artificial lifecycles, original C54 binding, existing cost model
+        run: |
+          set -euo pipefail
+          mkdir -p out/chart-preflight
+          python3 -B -m unittest backend.research.rebuild.test_chart_mechanism_execution_v1 backend.research.rebuild.test_chart_mechanism_c54_binding_v1 -v 2>&1 | tee out/chart-preflight/SYNTHETIC_QA.log
+          python3 -m py_compile backend/research/rebuild/chart_mechanism_features_v1.py backend/research/rebuild/chart_mechanism_execution_v1.py backend/research/rebuild/chart_mechanism_integration_v1.py
+          git diff --exit-code
+      - name: Save exact implementation and test result only
+        if: always()
+        run: |
+          mkdir -p out/chart-preflight
+          git rev-parse HEAD > out/chart-preflight/HEAD.txt
+          git archive HEAD backend/research/rebuild/chart_mechanism_features_v1.py backend/research/rebuild/chart_mechanism_execution_v1.py backend/research/rebuild/chart_mechanism_integration_v1.py backend/research/rebuild/test_chart_mechanism_execution_v1.py backend/research/rebuild/test_chart_mechanism_c54_binding_v1.py research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1 .github/workflows/chart-mechanisms-preflight-v1.yml > out/chart-preflight/IMPLEMENTATION.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chart-synthetic-${{ github.run_id }}
+          path: out/chart-preflight
+          retention-days: 90

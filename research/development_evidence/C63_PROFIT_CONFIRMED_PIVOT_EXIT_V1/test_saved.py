@@ -30,5 +30,8 @@ class SavedTests(unittest.TestCase):
     def test_completed_workflow_no_runtime(self):
         s=(v.REPO/'.github/workflows/c63-profit-pivot-v1.yml').read_text()
         for bad in ('contents: write','economic-once','_study_v1','git push','workflow_dispatch','download','schedule:'):self.assertNotIn(bad,s)
+    def test_workflow_uses_original_checked_in_packets(self):
+        s=(v.REPO/'.github/workflows/c63-profit-pivot-v1.yml').read_text()
+        self.assertIn('--inputs ../TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/INPUTS',s)
 
 if __name__=='__main__':unittest.main()

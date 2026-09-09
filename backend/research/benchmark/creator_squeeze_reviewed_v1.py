@@ -1,12 +1,21 @@
 """Reviewed execution boundary for the finite source audit; no new provider route."""
 import argparse,json
+from urllib.parse import urlsplit
 from backend.research.benchmark import creator_squeeze_audit_v1 as a
-AUTH,DECODE,PROMPT=a.authorize,a.decode,a.make_prompt
+AUTH,DECODE,PROMPT,REQUEST=a.authorize,a.decode,a.make_prompt,a.Request
 
 def exact_authorize(event,env,approval_sha,pr):
  auth=AUTH(event,env,approval_sha,pr)
  a.need(a.git('rev-parse','HEAD')==auth['merge_sha'],'EXECUTION_NOT_EXACT_APPROVED_MERGE')
  return auth
+
+def media_request(url,*args,**kwargs):
+ """Correct the reviewed runner's GitHub media header without changing I/O."""
+ parts=urlsplit(url)
+ if parts.scheme=='https' and parts.netloc=='api.github.com':
+  headers=dict(kwargs.get('headers',{}));headers['Accept']='application/vnd.github+json'
+  kwargs=dict(kwargs,headers=headers)
+ return REQUEST(url,*args,**kwargs)
 
 def validate_result(provider,result):
  a.need(isinstance(result,dict),'RESULT_OBJECT')
@@ -44,10 +53,10 @@ def typed_prompt(provider,sources,code,gemini=None):
  return text
 
 def run():
- original=(a.authorize,a.decode,a.make_prompt)
- a.authorize,a.decode,a.make_prompt=exact_authorize,checked_decode,typed_prompt
+ original=(a.authorize,a.decode,a.make_prompt,a.Request)
+ a.authorize,a.decode,a.make_prompt,a.Request=exact_authorize,checked_decode,typed_prompt,media_request
  try:a.run()
- finally:a.authorize,a.decode,a.make_prompt=original
+ finally:a.authorize,a.decode,a.make_prompt,a.Request=original
 
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('--run',action='store_true');args=p.parse_args()

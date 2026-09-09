@@ -1,6 +1,6 @@
 """Artificial source-timing cases only: no exchange, market bars or PnL."""
 import copy
-from decimal import Decimal
+from decimal import Decimal, localcontext, Inexact, Rounded
 from fractions import Fraction
 import unittest
 from backend.research.benchmark.creator_squeeze_timing_v1 import (
@@ -166,5 +166,89 @@ class ManagementTests(unittest.TestCase):
     def test_nonfinite_negative_float_prices_not_accepted(self):
         for v in ('NaN','Infinity','-1','0',True,100.1,'bad'):
             with self.assertRaises(ValueError):price(v)
+
+
+
+class ExactArithmeticTests(unittest.TestCase):
+    def test_third_cannot_be_rounded_to_small_lot(self):
+        x=ExitSequence('100','2')
+        with self.assertRaisesRegex(Unresolved,'LOT_ROUNDING_POLICY_REQUIRED'):
+            x.quantity_for_fraction('1',Fraction(1,3),'1e-28')
+
+    def test_low_precision_cannot_fabricate_lot_alignment(self):
+        x=ExitSequence('100','2')
+        with localcontext() as context:
+            context.prec=6
+            with self.assertRaisesRegex(Unresolved,'LOT_ROUNDING_POLICY_REQUIRED'):
+                x.quantity_for_fraction('1',Fraction(1,3),'0.000001')
+
+    def test_exact_quantity_is_context_invariant(self):
+        x=ExitSequence('100','2')
+        for precision in (2,6,28):
+            with self.subTest(precision=precision), localcontext() as context:
+                context.prec=precision
+                self.assertEqual(x.quantity_for_fraction('123456789.03',Fraction(1,3),'.01'),Decimal('41152263.01'))
+
+    def test_rounding_traps_are_not_relied_on(self):
+        x=ExitSequence('100','2')
+        with localcontext() as context:
+            context.prec=2
+            context.traps[Inexact]=context.traps[Rounded]=True
+            self.assertEqual(x.quantity_for_fraction('123456789.03',Fraction(1,3),'.01'),Decimal('41152263.01'))
+
+    def test_rational_lot_alignment_cases(self):
+        x=ExitSequence('100','2')
+        for total in range(1,11):
+            for denominator in range(1,8):
+                for step in ('1','.1','.01'):
+                    fraction=Fraction(1,denominator)
+                    exact=Fraction(total)*fraction
+                    with self.subTest(total=total,denominator=denominator,step=step):
+                        if (exact/Fraction(Decimal(step))).denominator==1:
+                            self.assertEqual(Fraction(x.quantity_for_fraction(total,fraction,step)),exact)
+                        else:
+                            with self.assertRaises(Unresolved):x.quantity_for_fraction(total,fraction,step)
+
+    def test_initial_stop_preserves_small_difference(self):
+        with localcontext() as context:
+            context.prec=3
+            x=ExitSequence('100.09','.01')
+            self.assertEqual(x.stop,Decimal('100.07'))
+
+    def test_first_tranche_protection_does_not_round(self):
+        with localcontext() as context:
+            context.prec=3
+            x=ExitSequence('100.09','.01')
+            x.request_target('FIRST_HIGH',1,fact(True))
+            x.acknowledge_fill(Fraction(1,3),2,'filled')
+            self.assertEqual(x.stop,Decimal('100.08'))
+
+    def test_initial_nonpositive_stop_still_rejected(self):
+        for entry,atr in (('2','1'),('1','1')):
+            with self.assertRaisesRegex(ValueError,'NONPOSITIVE_INITIAL_STOP'):ExitSequence(entry,atr)
+
+    def test_runner_offset_preserves_exact_level(self):
+        data=lows(('100.09','100.11','100.12'))
+        with localcontext() as context:
+            context.prec=3
+            level=runner_level(data,calendar_id='EXAMPLE_SESSION_CALENDAR',current_session=3,decision_at=20,offset='.01',current_protection='99')
+            self.assertEqual(level,Decimal('100.08'))
+
+    def test_runner_still_cannot_loosen(self):
+        with localcontext() as context:
+            context.prec=3
+            level=runner_level(lows(('100.09','100.11','100.12')),calendar_id='EXAMPLE_SESSION_CALENDAR',current_session=3,decision_at=20,offset='.01',current_protection='100.081')
+            self.assertEqual(level,Decimal('100.081'))
+
+    def test_bad_lot_policy_leaves_management_unchanged(self):
+        x=runner();before=copy.deepcopy(vars(x))
+        with self.assertRaises(Unresolved):x.quantity_for_fraction('10',Fraction(1,3),'1e-28')
+        self.assertEqual(vars(x),before)
+
+    def test_conformance_math_does_not_grant_economics(self):
+        x=economic_replay_authority()
+        self.assertFalse(x['allowed'])
+        self.assertEqual(x['new_strategy_candidates'],0)
+        self.assertEqual(x['formal_credit'],0)
 
 if __name__=='__main__':unittest.main()

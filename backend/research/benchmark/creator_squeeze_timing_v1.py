@@ -32,6 +32,28 @@ def price(value: object) -> Decimal:
     return result
 
 
+def _exact_decimal(value: Fraction) -> Decimal:
+    """Convert a terminating rational without consulting Decimal context.
+
+    Refuse repeating quantities rather than quantizing them onto a lot grid.
+    This is arithmetic exactness, not an exchange rounding policy.
+    """
+    denominator = value.denominator
+    twos = fives = 0
+    while denominator % 2 == 0:
+        denominator //= 2
+        twos += 1
+    while denominator % 5 == 0:
+        denominator //= 5
+        fives += 1
+    if denominator != 1:
+        raise Unresolved('NONTERMINATING_EXACT_DECIMAL')
+    scale = max(twos, fives)
+    coefficient = abs(value.numerator) * 2 ** (scale - twos) * 5 ** (scale - fives)
+    digits = tuple(int(digit) for digit in str(coefficient))
+    return Decimal((int(value < 0), digits, -scale))
+
+
 def integer(value: object, name: str) -> int:
     if type(value) is not int or value < 0:
         raise ValueError(name)
@@ -170,7 +192,7 @@ from source prose. Breakeven here means underlying entry, not cost-net flat.
         raise Unresolved('SESSION_CLOCK_ORDER')
     if any(d.calendar_id != calendar_id or type(d.available_at) is not int or not 0 <= d.available_at < decision_at for d in lows):
         raise Unresolved('RUNNER_LOW_NOT_AVAILABLE')
-    proposed = min(price(d.low) for d in lows) - price(offset)
+    proposed = _exact_decimal(Fraction(min(price(d.low) for d in lows)) - Fraction(price(offset)))
     if proposed <= 0:
         raise ValueError('NONPOSITIVE_TRAIL_LEVEL')
     return max(price(current_protection), proposed)
@@ -207,9 +229,10 @@ The fixed entry ATR and stop ratchet are explicit conformance-test choices.
     def __init__(self, entry: object, entry_atr21: object):
         self.entry = price(entry)
         self.atr = price(entry_atr21)
-        if self.entry - 2 * self.atr <= 0:
+        initial_stop = _exact_decimal(Fraction(self.entry) - 2 * Fraction(self.atr))
+        if initial_stop <= 0:
             raise ValueError('NONPOSITIVE_INITIAL_STOP')
-        self.stop = self.entry - 2 * self.atr
+        self.stop = initial_stop
         self.remaining = Fraction(1)
         self.stage = 0
         self.pending: str | None = None
@@ -248,7 +271,7 @@ The fixed entry ATR and stop ratchet are explicit conformance-test choices.
             self.stage += 1
             self.pending = None
             if self.stage == 1:
-                self.stop = max(self.stop, self.entry - self.atr)
+                self.stop = max(self.stop, _exact_decimal(Fraction(self.entry) - Fraction(self.atr)))
             elif self.stage == 2:
                 self.stop = max(self.stop, self.entry)
 
@@ -267,11 +290,11 @@ The fixed entry ATR and stop ratchet are explicit conformance-test choices.
                               lot_step: object) -> Decimal:
         if not isinstance(fraction, Fraction) or not 0 < fraction <= 1:
             raise ValueError('REFERENCE_FRACTION')
-        q = price(filled_quantity) * Decimal(fraction.numerator) / Decimal(fraction.denominator)
-        step = price(lot_step)
-        if q % step:
+        quantity = Fraction(price(filled_quantity)) * fraction
+        lot_count = quantity / Fraction(price(lot_step))
+        if lot_count.denominator != 1:
             raise Unresolved('LOT_ROUNDING_POLICY_REQUIRED')
-        return q
+        return _exact_decimal(quantity)
 
 
 UNRESOLVED_SOURCE_TO_CRYPTO = (

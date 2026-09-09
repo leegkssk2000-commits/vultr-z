@@ -1,0 +1,43 @@
+name: Creator Squeeze Timing Conformance V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/benchmark/creator_squeeze_timing_v1.py'
+      - 'backend/research/benchmark/test_creator_squeeze_timing_v1.py'
+      - 'research/development_evidence/CREATOR_TIMING_CONFORMANCE_AFTER_PR1237_V1/**'
+      - '.github/workflows/creator-squeeze-timing-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/benchmark/creator_squeeze_timing_v1.py'
+      - 'backend/research/benchmark/test_creator_squeeze_timing_v1.py'
+      - 'research/development_evidence/CREATOR_TIMING_CONFORMANCE_AFTER_PR1237_V1/**'
+      - '.github/workflows/creator-squeeze-timing-v1.yml'
+permissions:
+  contents: read
+jobs:
+  timing-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical full-checkout validation
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial timing and quantity conservation, no market or model
+        run: |
+          mkdir -p out/creator-timing
+          python3 -B -m unittest backend.research.benchmark.test_creator_squeeze_timing_v1 -v 2>&1 | tee out/creator-timing/TESTS.log
+          git diff --exit-code
+          git archive HEAD backend/research/benchmark/creator_squeeze_timing_v1.py backend/research/benchmark/test_creator_squeeze_timing_v1.py research/development_evidence/CREATOR_TIMING_CONFORMANCE_AFTER_PR1237_V1 .github/workflows/creator-squeeze-timing-v1.yml > out/creator-timing/SCOPED_SOURCE.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: creator-timing-${{ github.run_id }}
+          path: out/creator-timing
+          retention-days: 90

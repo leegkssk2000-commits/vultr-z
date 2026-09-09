@@ -55,10 +55,12 @@ def typed_prompt(provider,sources,code,gemini=None):
 def run():
  original=(a.authorize,a.decode,a.make_prompt,a.Request)
  a.authorize,a.decode,a.make_prompt,a.Request=exact_authorize,checked_decode,typed_prompt,media_request
- try:a.run()
+ try:return a.run()
  finally:a.authorize,a.decode,a.make_prompt,a.Request=original
 
 if __name__=='__main__':
  p=argparse.ArgumentParser();p.add_argument('--run',action='store_true');args=p.parse_args()
- if args.run:run()
+ if args.run:
+  outcome=run()
+  if outcome and outcome['status']!='COMPLETED':raise SystemExit(2)
  else:print(json.dumps(a.contract_gate(a.read(a.ROOT/a.OUT/'SOURCE_CONTRACT.json'))))

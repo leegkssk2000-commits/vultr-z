@@ -1,0 +1,48 @@
+name: C57 first breach source verification
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c57-first-breach-source-verify-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c57-first-breach-source-verify-v1.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  source-bound-first-event:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      C57_ORIGINAL_INPUTS: ${{ github.workspace }}/out/original/inputs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Read exact original input artifact, not exchange data
+        uses: actions/download-artifact@v4
+        with:
+          name: kr3-profit-zone-34282003231
+          run-id: 34282003231
+          github-token: ${{ github.token }}
+          path: out/original
+      - name: Assert every held close and first event without economic replay
+        working-directory: research/development_evidence/KR3_C54_PULLBACK_FAILURE_AFTER_PR1227_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 2551be0f0aeb2715fa83f24e5e7b3ca0469330464a107120ef060e4988c12c78
+          python3 -B verify_first_breach.py --inputs "$C57_ORIGINAL_INPUTS" --out "$GITHUB_WORKSPACE/out/FIRST_BREACH_VERIFICATION.json"
+          python3 -B -m unittest test_first_breach -v
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c57-first-breach-proof-${{ github.run_id }}
+          path: out/FIRST_BREACH_VERIFICATION.json
+          retention-days: 90

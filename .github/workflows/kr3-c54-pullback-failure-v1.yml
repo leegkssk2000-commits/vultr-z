@@ -1,0 +1,34 @@
+name: KR3 C54 pullback failure
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c54-pullback-failure-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/kr3-c54-pullback-failure-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial strategy boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_kr3_c54_pullback_failure_v1 -v
+      - name: Saved raw, original-source binding and arithmetic
+        working-directory: research/development_evidence/KR3_C54_PULLBACK_FAILURE_AFTER_PR1227_V1
+        run: |
+          python3 -B verify_saved.py --manifest-sha256 2551be0f0aeb2715fa83f24e5e7b3ca0469330464a107120ef060e4988c12c78
+          python3 -B verify_details.py
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

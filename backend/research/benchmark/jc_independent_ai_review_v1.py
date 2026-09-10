@@ -26,6 +26,8 @@ RATES={'gemini':(2.,12.),'openai':(12.5,50.)}
 RESERVES={'gemini':.25,'openai':.75}
 INPUT_BYTES=24000
 OUTPUT_CAP=6000
+PUBLIC_WORDS=150
+PUBLIC_BYTES=5000
 REPORT='research/development_evidence/JC_BOUNDARY_FUNNEL_REPAIR_AFTER_PR1251_V1/REPORT.md'
 CODE={'squeeze':'backend/research/rebuild/chart_mechanism_features_v1.py','setup':'backend/research/rebuild/jc_lifecycle_v1.py'}
 
@@ -85,6 +87,29 @@ def section(raw):
 def function_text(text,name):
     node=next(n for n in ast.parse(text).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name)
     return '\n'.join(text.splitlines()[node.lineno-1:node.end_lineno])
+def code_inputs():
+    selections={'features':(CODE['squeeze'],('validate','_average','squeeze_features','confirmed_pivots','completed_utc_days')),
+                'lifecycle':(CODE['setup'],('daily_features','setup_at'))}
+    output={'constants':'BAR_MS=14400000; DAY_MS=86400000; Bar(open_ts,open,high,low,close,volume). f is features; replace is dataclasses.replace.'}
+    for group,(path,names) in selections.items():
+        text=(ROOT/path).read_text()
+        for name in names:output[group+'.'+name]=function_text(text,name)
+    return output
+
+def public_result(result,source):
+    # Hard output envelope: even if every word paraphrases the source, <=150.
+    def strings(value):
+        if isinstance(value,str):return [value]
+        if isinstance(value,dict):return [s for k,v in value.items() for s in [str(k),*strings(v)]]
+        if isinstance(value,list):return [s for v in value for s in strings(v)]
+        return []
+    words=lambda text:re.findall(r"[a-z0-9]+(?:'[a-z]+)?",text.lower())
+    serialized=' '.join(strings(result));tokens=words(serialized)
+    need(len(tokens)<=PUBLIC_WORDS and len(canonical(result))<=PUBLIC_BYTES,'PUBLICATION_LIMIT')
+    original=words(source);spans={tuple(original[i:i+6]) for i in range(max(0,len(original)-5))}
+    need(not any(tuple(tokens[i:i+6]) in spans for i in range(max(0,len(tokens)-5))),'PUBLICATION_SOURCE_OVERLAP')
+    return result
+
 def prompt(provider,source,report,code):
     role=('Extract source-required vs optional/discretionary/unspecified conditions and compare entry chronology.' if provider=='gemini' else
           'Independently audit the source-to-code claim and challenge root-cause assertions; identify a decisive causal test, not a threshold sweep.')
@@ -97,12 +122,14 @@ def prompt(provider,source,report,code):
       'Gate counts are cumulative symbol-day counts, not independent loss attribution or trades. '
       'Extra-wait-only witnesses are zero: changing that cannot explain the already observed upstream rejection. '
       'Assess recent-high20 AND squeeze3 AND EMA21, sequential readiness versus simultaneous gates, '
-      'canonical BB/KC substitute versus Squeeze Pro, seven-coin universe and daily/4h conversion. '
+      'canonical BB/KC substitute versus Squeeze Pro, seven-coin universe and supplied daily/4h feature construction. '
+      'Helpers are supplied; this request does not audit unsupplied order replay or boundary-merge code. '
       'The source lists different squeezes; do not invent a proprietary formula or assume all indicator variants identical. '
       'Choose at most ONE next falsifiable development question and a no-PnL conformance test, or say no supported change. '
       'Do not suggest relax-until-trades, change dates/symbols based on profit, remove EMA21 merely to admit the five rejected cases, '
       'or alter SL/TP with no entries. Explain what further evidence is actually necessary. '
-      'No quotations; at most 150 English paraphrase words from the source and 450 English words total. '
+      'No quotations or six consecutive words from the source. All JSON keys and values together must use '
+      'at most 140 English alphanumeric words and 4500 UTF8 bytes. Use empty lists where appropriate; '
       'Do not claim this review establishes profitability. Output plain JSON only.')
     value=canonical(dict(source_url=SOURCE,source_section=source,native_code=code,saved_gate_report=report,task=task)).decode()
     need(len(value.encode())<=INPUT_BYTES,'INPUT_BOUND_EXCEEDED');return value
@@ -134,7 +161,7 @@ def decode(provider,payload):
     need(estimate<=RESERVES[provider],'USAGE_BOUND')
     return result,estimate
 
-def one(provider,key,text,slot,checkpoint,transport=request):
+def one(provider,key,text,slot,checkpoint,transport=request,*,source_text):
     need(slot['state']=='RESERVED_NOT_STARTED' and slot['attempts']==0,'ALREADY_STARTED')
     problem=credential_problem(key)
     if problem:
@@ -151,6 +178,8 @@ def one(provider,key,text,slot,checkpoint,transport=request):
         slot.update(response_id=payload.get('responseId',payload.get('id')),usage=payload.get('usageMetadata',payload.get('usage')),
                     response_model=payload.get('modelVersion',payload.get('model')))
         phase='RESPONSE_DECODE';result,estimate=decode(provider,payload)
+        slot['estimated_token_charge_usd']=estimate
+        phase='PUBLICATION_GUARD';result=public_result(result,source_text)
         # The model never sees secrets; defense-in-depth prevents publication if echoed by transport.
         need(key not in canonical(result).decode(),'MODEL_SCHEMA')
         slot.update(state='RESPONSE_COMPLETE',result=result,estimated_token_charge_usd=estimate)
@@ -188,8 +217,7 @@ def run():
     try:
         raw,status=request(SOURCE);source=section(raw)
         report=(ROOT/REPORT).read_text().split('## Economic reference')[0]
-        codes={k:function_text((ROOT/path).read_text(),name) for k,path,name in
-               [('squeeze',CODE['squeeze'],'squeeze_features'),('setup',CODE['setup'],'setup_at')]}
+        codes=code_inputs()
         receipt=dict(url=SOURCE,http_status=status,fetched_at=now(),raw_sha256=sha(raw),section_sha256=sha(source.encode()),
            source_text_republished=False,report_path=REPORT,report_sha256=sha((ROOT/REPORT).read_bytes()),
            code_file_sha256={path:sha((ROOT/path).read_bytes()) for path in CODE.values()})
@@ -199,7 +227,7 @@ def run():
         save('PROMPT_BINDING.json',{p:dict(prompt_sha256=sha(t.encode()),bytes=len(t.encode()),input_token_upper=INPUT_BYTES+1024,
                    output_including_thinking_cap=OUTPUT_CAP,rates_per_million=RATES[p]) for p,t in prompts.items()});checkpoint()
         for provider,keyname in [('gemini','GEMINI_API_KEY'),('openai','OPENAI_API_KEY')]:
-            one(provider,env.get(keyname,''),prompts[provider],ledger['slots'][provider],checkpoint)
+            one(provider,env.get(keyname,''),prompts[provider],ledger['slots'][provider],checkpoint,source_text=source)
         successes=sum(x['state']=='RESPONSE_COMPLETE' for x in ledger['slots'].values())
         ledger.update(status='COMPLETED' if successes==2 else 'PARTIAL' if successes else 'BLOCKED',successful_responses=successes,
                       report_only=True,further_dispatch_allowed=False,ended_at=now());checkpoint()

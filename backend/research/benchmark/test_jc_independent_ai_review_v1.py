@@ -8,6 +8,7 @@ from backend.research.benchmark import jc_independent_ai_review_v1 as r
 RESULT={'supported_findings':[], 'unproven_hypotheses':[], 'source_code_mismatches':[],
         'counterexample_tests':[], 'next_action':{}, 'limitations':[]}
 KEY='synthetic-not-a-real-provider-credential-12345'
+def one(*args,**kwargs):return r.one(*args,source_text='artificial publisher context with disjoint wording',**kwargs)
 def response():
     return {'status':'completed','id':'artificial_response','model':r.MODELS['openai'],
       'output':[{'type':'message','content':[{'type':'output_text','text':json.dumps(RESULT)}]}],
@@ -21,45 +22,45 @@ class IndependentReviewTests(unittest.TestCase):
             self.assertLess(((r.INPUT_BYTES+1024)*i+r.OUTPUT_CAP*o)/1e6,r.RESERVES[p])
     def test_keys_not_normalized_and_other_role_runs(self):
         g,o=slot(),slot(); calls=[]
-        r.one('gemini',KEY+'\n','{}',g,lambda:None,lambda *a,**k:calls.append(a))
-        r.one('openai',KEY,'{}',o,lambda:None,transport)
+        one('gemini',KEY+'\n','{}',g,lambda:None,lambda *a,**k:calls.append(a))
+        one('openai',KEY,'{}',o,lambda:None,transport)
         self.assertEqual(g['state'],'NOT_CALLED_CREDENTIAL_PREFLIGHT')
         self.assertEqual(g['error_code'],'KEY_CONTROL_CHARACTER');self.assertFalse(calls)
         self.assertEqual(g['attempts'],0);self.assertEqual(o['state'],'RESPONSE_COMPLETE')
         self.assertEqual(o['attempts'],1)
     def test_missing_key_no_call(self):
         s=slot()
-        r.one('openai','','{}',s,lambda:None,lambda *a,**k:self.fail('network'))
+        one('openai','','{}',s,lambda:None,lambda *a,**k:self.fail('network'))
         self.assertEqual(s['attempts'],0)
     def test_start_persist_precedes_transport(self):
         s=slot();events=[]
         def call(*a,**k):
             self.assertEqual(events,['STARTED']);return transport()
-        r.one('openai',KEY,'{}',s,lambda:events.append(s['state']),call)
+        one('openai',KEY,'{}',s,lambda:events.append(s['state']),call)
         self.assertEqual(events,['STARTED','RESPONSE_COMPLETE'])
     def test_failed_persist_no_call(self):
         def fail():raise RuntimeError('synthetic persistence failure')
         with self.assertRaises(RuntimeError):
-            r.one('openai',KEY,'{}',slot(),fail,lambda *a,**k:self.fail('network'))
+            one('openai',KEY,'{}',slot(),fail,lambda *a,**k:self.fail('network'))
     def test_once_even_after_failed_request(self):
         s=slot();calls=[]
         def fail(*a,**k):calls.append(1);raise TimeoutError()
-        r.one('openai',KEY,'{}',s,lambda:None,fail)
+        one('openai',KEY,'{}',s,lambda:None,fail)
         self.assertEqual(len(calls),1);self.assertEqual(s['state'],'FAILED_OR_UNKNOWN_CONSUMED')
         self.assertNotIn('estimated_token_charge_usd',s)
-        with self.assertRaises(ValueError):r.one('openai',KEY,'{}',s,lambda:None,transport)
+        with self.assertRaises(ValueError):one('openai',KEY,'{}',s,lambda:None,transport)
     def test_http_status_without_raw_error(self):
         s=slot()
         def fail(*a,**k):raise HTTPError(r.URLS['openai'],401,KEY,{},None)
-        r.one('openai',KEY,'{}',s,lambda:None,fail)
+        one('openai',KEY,'{}',s,lambda:None,fail)
         self.assertEqual(s['http_status'],401);self.assertNotIn(KEY,json.dumps(s))
     def test_bad_json_keeps_http_status_hash(self):
-        s=slot();r.one('openai',KEY,'{}',s,lambda:None,lambda *a,**k:(b'{',200))
+        s=slot();one('openai',KEY,'{}',s,lambda:None,lambda *a,**k:(b'{',200))
         self.assertEqual(s['http_status'],200);self.assertEqual(s['error_phase'],'RESPONSE_JSON')
         self.assertEqual(s['response_sha256'],r.sha(b'{'))
     def test_bad_schema_keeps_usage(self):
         s=slot();p=response();p['output'][0]['content'][0]['text']='{}'
-        r.one('openai',KEY,'{}',s,lambda:None,lambda *a,**k:(r.canonical(p),200))
+        one('openai',KEY,'{}',s,lambda:None,lambda *a,**k:(r.canonical(p),200))
         self.assertEqual(s['usage'],p['usage']);self.assertEqual(s['state'],'FAILED_OR_UNKNOWN_CONSUMED')
     def test_incomplete_not_success(self):
         p=response();p['status']='incomplete'
@@ -96,5 +97,22 @@ class IndependentReviewTests(unittest.TestCase):
         p=r.prompt('openai','source','gate',{'setup':'code'})
         self.assertNotIn(KEY,p);self.assertIn('Extra-wait-only witnesses are zero',p)
         self.assertNotEqual(p,r.prompt('gemini','source','gate',{'setup':'code'}))
+
+    def test_publication_limits_and_overlap(self):
+        good=deepcopy(RESULT);good['supported_findings']=['Different prose.']
+        self.assertEqual(r.public_result(good,'source text'),good)
+        for text,source in [('x '*151,'source'),('one two three four five six','one two three four five six seven')]:
+            bad=deepcopy(RESULT);bad['supported_findings']=[text]
+            with self.assertRaises(ValueError):r.public_result(bad,source)
+        s=slot();p=response();p['output'][0]['content'][0]['text']=json.dumps(bad)
+        r.one('openai',KEY,'{}',s,lambda:None,lambda *a,**k:(r.canonical(p),200),source_text=source)
+        self.assertEqual(s['state'],'FAILED_OR_UNKNOWN_CONSUMED');self.assertIsNone(s['result'])
+        self.assertEqual(s['http_status'],200);self.assertIsNotNone(s['estimated_token_charge_usd'])
+    def test_all_claimed_code_dependencies_in_input(self):
+        inputs=r.code_inputs()
+        for name in ('features.validate','features._average','features.squeeze_features','features.confirmed_pivots',
+                     'features.completed_utc_days','lifecycle.daily_features','lifecycle.setup_at'):
+            self.assertIn(name,inputs)
+        self.assertIn('BAR_MS=14400000',inputs['constants'])
 
 if __name__=='__main__':unittest.main()

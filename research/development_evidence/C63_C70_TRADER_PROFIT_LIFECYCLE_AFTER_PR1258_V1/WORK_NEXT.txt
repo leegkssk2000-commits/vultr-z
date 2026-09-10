@@ -1,0 +1,104 @@
+[NEW WORK — Issue #1259 / C63·C70 실제 트레이더 수익관리 벤치마크]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=C63_C70_TRADER_PROFIT_LIFECYCLE_AFTER_PR1258_V1
+
+Issue #1259 전체를 먼저 읽고 그대로 실제 실행하라.
+이 작업은 Top5 일반 감사가 아니다. C63와 C70_LOCAL(등록71)의 성능개발이다.
+PR #1258의 economic_replay_count=0을 트레이더 매매법 경제실패로 재해석하지 마라.
+
+1) 부모 고정
+- parent_A=C63 정확한 current master identity.
+- parent_B=C70_LOCAL / registered71. PR1243 deferred C70과 혼동 금지.
+- exact C70_LOCAL identity를 못 찾으면 비슷한 C69/C71로 대체하지 말고 BLOCKED_IDENTITY.
+
+2) 벤치마크 source 선택
+- 공개된 돌파 이후 profit-management가 C63/C70 entry-state와 인과적으로 호환되는 source만 사용.
+- 우선 Qullamaggie Breakout management.
+- Jerry Parker는 exact numeric exit가 source-bound될 때만.
+- Carter는 C63/C70 entry 이후 lifecycle stage가 이미 지난 상태면 강제 이식 금지.
+- source 선택은 경제 결과 보기 전에 source_fidelity + entry_state_compatibility + causal_executability로 결정.
+- 첫 PASS source 하나만 실행. 후보 채우기 위해 여러 source를 돌리지 마라.
+
+3) 이번 경제 후보의 성격
+- full trader strategy replica가 아니다.
+- SOURCE_GROUNDED_PROFIT_MANAGEMENT_COMPONENT_BENCHMARK다.
+- C63_TM = C63 entry 그대로 + 선택 trader management block.
+- C70_TM = C70_LOCAL entry 그대로 + 동일 management block.
+- entry filter 새로 추가 금지.
+- source rule과 ZEL operationalization을 분리 기록.
+
+4) Qullamaggie가 선택되면 사전 고정 operationalization
+- 3–5 trading days → entry 이후 세 번째 완료 UTC daily close.
+- 1/3–1/2 partial → assembled qty의 1/3.
+- 첫 관리 시점이 비용후 양의 진행일 때만 profit partial. 이 조건은 ZEL_OPERATIONALIZATION으로 표시.
+- runner → 10DMA 하나만 사용. 20DMA 비교 sweep 금지.
+- 완료 일봉 close<10DMA 확인 → 다음 실제 관측 open에서 잔량 청산.
+- native hard floor/data safety는 항상 우선.
+- native fixed-time exit가 source runner를 사전에 죽이면 충돌 계약을 명시하고 source manager가 time exit를 대체하도록 사전 봉인.
+- partial은 slot을 해제하지 않는다. 최종 exit 이후에만 occupancy release.
+
+5) 예산
+- 신규 candidate 최대2: C63_TM, C70_TM.
+- 기존 두 USED_DEV 창 first FULL 각1회 → 총 최대4회.
+- 부모 경제결과는 exact identity/hash 결속 후 재사용. 부모 replay=0.
+- FIXED 추가=0, parameter/source sweep=0, auto retry=0, new OOS=0, live/order/deploy=0.
+- 신규 paid Gemini/OpenAI API 기본0. public source evidence로 먼저 처리.
+
+6) 반드시 검증
+- source locator / evidence grade / current implementation gap.
+- management OFF parent parity.
+- 완료 UTC day only / no lookahead.
+- partial qty·remaining qty·fee/funding accounting.
+- trailing decision close → next observable open, gap 포함.
+- native safety 우선순위.
+- partial 후 occupancy 유지.
+- 미완결 mark + remaining costs.
+- excluded/new/occupancy/closed↔open 변화와 전체 손익 증분 일치.
+- future mutation이 과거 decision을 바꾸지 않는 prefix test.
+
+7) 첫 보고 형식
+기간별 첫 표를 반드시:
+C63 | C63_TM | C70_LOCAL | C70_TM
+
+필수:
+completed/open, WR, avg win/loss, payoff, PF,
+terminal net trade-bps, cost2 terminal, DD,
+max losing streak/loss tail, exposure,
+ordinary/top-decile winner retention,
+partial count, runner count,
+excluded/new/occupancy changes,
+top1 contribution concentration.
+
+손익 분해:
+줄인 기존 손실
++ 추가로 남긴 승리
+- 잘라낸 승리
+- 추가 fee/funding
++ 점유변화 후속거래
+= 전체 증분
+
+8) 판정
+SOURCE_CONFORMANCE와 ECONOMIC_INCREMENT를 분리.
+source 구현이 맞아도 경제성이 나쁘면
+“이 management component가 C63/C70 entry 구조에서 실패”라고만 써라.
+트레이더 전체 전략 실패라고 확대하지 마라.
+
+9) 누적 개선
+- C70_TM이 C70_LOCAL보다 좋고 C63 대비 누적 우위도 유지/확대 → C70 cumulative workcopy로 보존.
+- C63_TM만 좋으면 C63 분기로 보존.
+- 기간별 반전이면 TRADEOFF. 연도별 전략 선택 금지.
+- 결과가 REJECT여도 source/implementation/result evidence는 보존.
+- 다른 trader source 자동 후속 실행 금지.
+
+10) 완료
+최소 구현 → tests → freeze → FULL 최대4 → 거래/비용 검산 →
+CI/review → 정상 PR 병합 → exact merge SHA saved verification.
+완료 후 해당 scope만 REPORT_ONLY로 닫고 최종 경제표 보고 후 종료.
+REJECT를 PASS로 만들기 위해 source/숫자/기간을 바꾸지 마라.
+
+현재 관측 master 출발점:
+cf1fb4de28f84339deebbb9f5072251d7aa9012a
+reset 기준이 아니다. 실행 시작 시 최신 origin/master를 확인한다.
+
+첫 보고는 PR·테스트 숫자가 아니라 C63/C70 전후 경제표다.

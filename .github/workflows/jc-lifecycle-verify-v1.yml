@@ -1,0 +1,37 @@
+name: JC lifecycle saved verification
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/jc-lifecycle-verify-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/jc-lifecycle-verify-v1.yml'
+permissions:
+  contents: read
+jobs:
+  saved-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical and synthetic regressions
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest backend.research.rebuild.test_jc_lifecycle_v1 -v
+      - name: Saved raw, costs, metrics and attribution only
+        run: |
+          python -B -m backend.research.rebuild.jc_lifecycle_study_v1
+          git diff --exit-code

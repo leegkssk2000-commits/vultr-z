@@ -1,0 +1,37 @@
+name: C63 C70 trader management saved verification
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/*c63_c70_trader*_v1.py'
+      - 'research/development_evidence/C63_C70_TRADER_PROFIT_LIFECYCLE_AFTER_PR1258_V1/**'
+      - '.github/workflows/c63-c70-trader-management-verify-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*c63_c70_trader*_v1.py'
+      - 'research/development_evidence/C63_C70_TRADER_PROFIT_LIFECYCLE_AFTER_PR1258_V1/**'
+      - '.github/workflows/c63-c70-trader-management-verify-v1.yml'
+permissions:
+  contents: read
+jobs:
+  saved-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical and artificial causal regressions
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest backend.research.rebuild.test_c63_c70_trader_management_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
+      - name: Frozen source and saved campaign cash-flow verification
+        run: |
+          python -B -m backend.research.rebuild.c63_c70_trader_verify_v1
+          git diff --exit-code

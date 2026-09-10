@@ -1,0 +1,40 @@
+name: C70 Price Confirmation Successor V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c70-price-confirmation-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c70-price-confirmation-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-saved-price:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical full checkout and synthetic regression
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.rebuild.test_c70_price_confirmation_v1 backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Immutable source arithmetic and corrected imported metadata
+        working-directory: research/development_evidence/C70_PRICE_CONFIRMATION_SUCCESSOR_V1
+        run: |
+          export PRICE_INPUTS="$GITHUB_WORKSPACE/research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/INPUTS"
+          python3 -B verify_saved.py --inputs "$PRICE_INPUTS"
+          python3 -B -m unittest test_saved -v
+          python3 -B verify_corrected.py --inputs "$PRICE_INPUTS"
+          python3 -B -m unittest test_corrected -v
+          git diff --exit-code

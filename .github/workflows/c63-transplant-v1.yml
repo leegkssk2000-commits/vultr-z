@@ -1,76 +1,36 @@
 name: C63 Cumulative Transplant V1
 on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-transplant-v1.yml'
   push:
-    branches: [research/c63-cumulative-transplant-after-pr1244-v1]
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-transplant-v1.yml'
 permissions:
-  contents: write
-concurrency:
-  group: c63-cumulative-transplant-after-pr1244-v1
-  cancel-in-progress: false
+  contents: read
 jobs:
-  first-native-fulls:
-    if: >-
-      github.repository == 'leegkssk2000-commits/vultr-z' && github.run_attempt == 1 && github.event.head_commit.message == 'C63 transplant: authorized first execution'
+  verify-saved-transplants:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 5
     env:
       GEMINI_API_KEY: ''
       GOOGLE_API_KEY: ''
       OPENAI_API_KEY: ''
       PYTHONDONTWRITEBYTECODE: '1'
-      BRANCH: research/c63-cumulative-transplant-after-pr1244-v1
-      OUT: research/development_evidence/C63_CUMULATIVE_TRANSPLANT_AFTER_PR1244_V1
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/c63-cumulative-transplant-after-pr1244-v1
-          fetch-depth: 0
-      - name: Canonical full checkout and synthetic-only preflight
+          persist-credentials: false
+      - name: Canonical full checkout and synthetic regression
         run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          pwd
-          ls -la frontend/z-os-app-source
-          cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
           python3 -B -m unittest backend.research.rebuild.test_c63_transplant_v1 backend.research.rebuild.test_c70_price_confirmation_v1 backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
-      - name: Freeze and execute exactly six first FULL applications
+      - name: Saved hashes and native mark arithmetic only - no strategy replay
         run: |
-          set -euo pipefail
-          git config user.name 'c63-transplant-research'
-          git config user.email 'actions@users.noreply.github.com'
-          persist() {
-            git add -- "$OUT"
-            git diff --cached --quiet || git commit -m "$1 [skip ci]"
-            git push origin "HEAD:refs/heads/$BRANCH"
-            local remote
-            remote="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-            test "$remote" = "$(git rev-parse HEAD)"
-          }
-          export TRANSPLANT_PREFLIGHT=PASSED
-          python3 -B -m backend.research.rebuild.c63_transplant_study_v1 freeze
-          persist 'C63 transplant freeze before outcomes'
-          for variant in G R GR; do
-            for period in DEV2025 SEEN2026; do
-              python3 -B -m backend.research.rebuild.c63_transplant_study_v1 reserve --variant "$variant" --period "$period"
-              persist "C63 transplant reserve $variant $period"
-              remote="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-              set +e
-              python3 -B -m backend.research.rebuild.c63_transplant_study_v1 execute --variant "$variant" --period "$period" --remote "$remote"
-              rc=$?
-              set -e
-              persist "C63 transplant result $variant $period rc=$rc"
-              test "$rc" = 0
-            done
-          done
-          python3 -B -m backend.research.rebuild.c63_transplant_study_v1 summarize
-          persist 'C63 transplant six FULLs completed and preserved'
           python3 -B -m backend.research.rebuild.c63_transplant_study_v1 verify
-          cat "$OUT/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: c63-transplant-${{ github.run_id }}
-          path: research/development_evidence/C63_CUMULATIVE_TRANSPLANT_AFTER_PR1244_V1
-          if-no-files-found: error
-          retention-days: 90
+          git diff --exit-code

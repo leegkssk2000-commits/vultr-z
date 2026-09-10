@@ -1,0 +1,62 @@
+name: Top5 Trader Benchmark Multi AI After PR1255 V1
+
+on:
+  push:
+    branches:
+      - 'work/top5-benchmark-1256'
+    paths:
+      - 'backend/research/benchmark/top5_benchmark_multi_ai_after_pr1255_v1.py'
+      - '.github/workflows/top5-trader-benchmark-multi-ai-after-pr1255-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: top5-trader-benchmark-multi-ai-after-pr1255-v1
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          ref: work/top5-benchmark-1256
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile bounded benchmark runner
+        run: python -m py_compile backend/research/benchmark/top5_benchmark_multi_ai_after_pr1255_v1.py
+      - name: Run bounded Gemini plus OpenAI benchmark mapping
+        run: |
+          set -euo pipefail
+          python backend/research/benchmark/top5_benchmark_multi_ai_after_pr1255_v1.py
+          python - <<'PY'
+          import json
+          r=json.load(open('backend/research/benchmark/top5_benchmark_multi_ai_after_pr1255_latest.json'))
+          d=json.load(open('backend/research/benchmark/BENCHMARK_DECISION.json'))
+          assert r['scope_key']=='TOP5_TRADER_BENCHMARK_MULTI_AI_AFTER_PR1255_V1'
+          assert r['api_budget']['max_calls']==2
+          assert r['protected_mutations']==0
+          assert r['selection_authority'] is False and r['promotion_authority'] is False
+          assert r['execution_authority']=='NONE' and r['order_authority']=='BLOCKED' and r['live_trade_authority']=='BLOCKED'
+          assert d['economic_replay_count']==0
+          print(json.dumps({'gemini':r['gemini']['state'],'openai':r['openai_redteam']['state'],'terminal':d['terminal']},sort_keys=True))
+          PY
+      - name: Persist bounded evidence to work branch
+        run: |
+          set -euo pipefail
+          git config user.name 'top5-benchmark-multi-ai'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/benchmark/top5_benchmark_multi_ai_after_pr1255_latest.json backend/research/benchmark/BENCHMARK_DECISION.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Top5 benchmark: persist bounded Gemini/OpenAI evidence [skip ci]'
+          git push origin HEAD:work/top5-benchmark-1256

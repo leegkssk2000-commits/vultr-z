@@ -1,22 +1,22 @@
 name: C63 initial failure F
 on:
-  push:
-    branches: ['research/c63-initial-failure-f-after-pr1247-v1']
+  pull_request:
     paths:
-      - 'backend/research/rebuild/c63_initial_failure_f_v1.py'
-      - 'backend/research/rebuild/c63_initial_failure_f_study_v1.py'
-      - 'backend/research/rebuild/test_c63_initial_failure_f_v1.py'
-      - 'research/development_evidence/C63_INITIAL_FAILURE_F_AFTER_PR1247_V1/**'
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-initial-failure-f-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
       - '.github/workflows/c63-initial-failure-f-v1.yml'
 permissions:
-  contents: write
-concurrency:
-  group: c63-initial-failure-f-sole-economic-owner
-  cancel-in-progress: false
+  contents: read
 jobs:
-  first-four-full-only:
+  verify-saved-f:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5
     env:
       GEMINI_API_KEY: ''
       GOOGLE_API_KEY: ''
@@ -25,57 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-      - name: Complete checkout canonical and synthetic preflight only
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical and focused synthetic verification
         run: |
-          test "$GITHUB_RUN_ATTEMPT" = 1
-          test "$GITHUB_REF_NAME" = research/c63-initial-failure-f-after-pr1247-v1
-          test ! -e research/development_evidence/C63_INITIAL_FAILURE_F_AFTER_PR1247_V1/SPEC.json
           npm run --prefix frontend/z-os-app-source validate
-          python3 -B -m unittest backend.research.rebuild.test_c63_initial_failure_f_v1 -v
-      - name: Freeze, remotely reserve/read back, then four serial first FULLs
-        env:
-          F1248_PREFLIGHT: PASSED
+          python3 -B -m unittest backend.research.rebuild.test_c63_initial_failure_f_v1 backend.research.rebuild.test_c63_initial_failure_f_verify_v1 -v
+      - name: Saved raw-to-cost-to-metric and symmetric attribution only
         run: |
-          set -Eeuo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          f1248_scope=research/development_evidence/C63_INITIAL_FAILURE_F_AFTER_PR1247_V1
-          persist() {
-            git add -- "$f1248_scope"
-            if ! git diff --cached --quiet; then
-              git commit -m "$1 [skip ci]"
-              git push origin HEAD:refs/heads/research/c63-initial-failure-f-after-pr1247-v1
-            fi
-            f1248_remote=$(git ls-remote origin refs/heads/research/c63-initial-failure-f-after-pr1247-v1 | cut -f1)
-            test "$f1248_remote" = "$(git rev-parse HEAD)"
-          }
-          finish() {
-            f1248_rc=$?
-            trap - EXIT
-            set +e
-            persist 'Persist F two variants final result or failure; no retry'
-            f1248_save_rc=$?
-            if [ "$f1248_rc" -eq 0 ]; then f1248_rc=$f1248_save_rc; fi
-            exit "$f1248_rc"
-          }
-          trap finish EXIT
-          python3 -B -m backend.research.rebuild.c63_initial_failure_f_study_v1 freeze
-          persist 'Freeze F two variants rule code inputs costs and judgment before results'
-          for f1248_variant in F_ONLY B20_F; do
-            for f1248_period in DEV2025 SEEN2026; do
-            python3 -B -m backend.research.rebuild.c63_initial_failure_f_study_v1 reserve --variant "$f1248_variant" --period "$f1248_period"
-            persist "Reserve F two variants $f1248_period before first FULL"
-            python3 -B -m backend.research.rebuild.c63_initial_failure_f_study_v1 execute --variant "$f1248_variant" --period "$f1248_period" --remote "$(git rev-parse HEAD)"
-            persist "Save first F two variants $f1248_period result"
-            done
-          done
-          python3 -B -m backend.research.rebuild.c63_initial_failure_f_study_v1 summarize
-          python3 -B -m backend.research.rebuild.c63_initial_failure_f_study_v1 verify
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: c63-initial-failure-f-first-results-${{ github.run_id }}
-          path: research/development_evidence/C63_INITIAL_FAILURE_F_AFTER_PR1247_V1
-          retention-days: 90
+          python3 -B -m backend.research.rebuild.c63_initial_failure_f_verify_v1
+          git diff --exit-code

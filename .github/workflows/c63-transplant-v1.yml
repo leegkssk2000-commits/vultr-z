@@ -1,0 +1,36 @@
+name: C63 Cumulative Transplant V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-transplant-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-transplant-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-saved-transplants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical full checkout and synthetic regression
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.rebuild.test_c63_transplant_v1 backend.research.rebuild.test_c70_price_confirmation_v1 backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+      - name: Saved hashes and native mark arithmetic only - no strategy replay
+        run: |
+          python3 -B -m backend.research.rebuild.c63_transplant_study_v1 verify
+          git diff --exit-code

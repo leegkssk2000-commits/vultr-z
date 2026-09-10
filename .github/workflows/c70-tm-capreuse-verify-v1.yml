@@ -1,0 +1,37 @@
+name: C70 TM capacity reuse saved verification
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/*c70_tm_capreuse*_v1.py'
+      - 'research/development_evidence/C70_TM_PARTIAL_CAPACITY_REUSE_AFTER_PR1260_V1/**'
+      - '.github/workflows/c70-tm-capreuse-verify-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/*c70_tm_capreuse*_v1.py'
+      - 'research/development_evidence/C70_TM_PARTIAL_CAPACITY_REUSE_AFTER_PR1260_V1/**'
+      - '.github/workflows/c70-tm-capreuse-verify-v1.yml'
+permissions:
+  contents: read
+jobs:
+  saved-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical and synthetic causal regressions
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest backend.research.rebuild.test_c70_tm_capreuse_v1 backend.research.rebuild.test_c63_c70_trader_management_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
+      - name: Frozen evidence and saved cash/capacity verification only
+        run: |
+          python -B -m backend.research.rebuild.c70_tm_capreuse_verify_v1
+          git diff --exit-code

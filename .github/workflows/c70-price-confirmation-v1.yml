@@ -1,0 +1,115 @@
+name: C70 Price Confirmation Successor V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c70-price-confirmation-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c70-price-confirmation-v1.yml'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: c70-price-confirmation-single-owner-v1
+  cancel-in-progress: false
+jobs:
+  finite:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened' && github.head_ref == 'research/c70-price-confirmation-successor-v1' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENAI_API_KEY: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+      OUT: research/development_evidence/C70_PRICE_CONFIRMATION_SUCCESSOR_V1
+      BRANCH: research/c70-price-confirmation-successor-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Canonical preflight and synthetic clocks
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.rebuild.test_c70_price_confirmation_v1 backend.research.rebuild.test_c63_daily_ema21_entry_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 backend.research.rebuild.test_m1_er14_entry_v1 backend.research.rebuild.test_chart_mechanism_execution_v1 -v
+          test ! -f "$OUT/SPEC.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: kr3-profit-zone-34282003231
+          run-id: 34282003231
+          github-token: ${{ github.token }}
+          path: out/original51
+      - name: Freeze and execute exactly two first FULLs with remote claims
+        env:
+          PRICE_PREFLIGHT: PASSED
+        run: |
+          set -euo pipefail
+          git config user.name price-confirmation-finite
+          git config user.email actions@users.noreply.github.com
+          git fetch origin 235445c114c89bed9fd5638ff3a0e3dc77932927
+          persist() {
+            git add "$OUT"
+            git diff --cached --name-only | while read -r f; do case "$f" in "$OUT"/*) ;; *) exit 1;; esac; done
+            git commit -m "research: price-confirmation $1 [skip ci]"
+            git push origin "HEAD:refs/heads/$BRANCH"
+            test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$(git rev-parse HEAD)"
+          }
+          RUN='backend.research.rebuild.c70_price_confirmation_study_v1'
+          INPUTS="$GITHUB_WORKSPACE/out/original51/inputs"
+          python3 -B -m "$RUN" freeze --inputs "$INPUTS"
+          persist frozen-scope-and-import
+          for PERIOD in DEV2025 SEEN2026; do
+            python3 -B -m "$RUN" reserve --period "$PERIOD" --inputs "$INPUTS"
+            persist "$PERIOD-reservation"
+            python3 -B -m "$RUN" execute --period "$PERIOD" --inputs "$INPUTS" --remote "$(git rev-parse HEAD)"
+            persist "$PERIOD-complete"
+          done
+          python3 -B -m "$RUN" summarize --inputs "$INPUTS"
+          persist economics-closed
+      - name: Independent original-source arithmetic without new replay
+        run: python3 -B "$OUT/verify_saved.py" --inputs "$GITHUB_WORKSPACE/out/original51/inputs" --output out/DERIVED.json
+      - name: Preserve any terminal failure without retry
+        if: failure()
+        run: |
+          git add "$OUT"
+          if ! git diff --cached --quiet; then
+            git commit -m 'research: retain consumed failure [skip ci]'
+            git push origin "HEAD:refs/heads/$BRANCH"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c72-price-confirmation-${{ github.run_id }}
+          path: |
+            research/development_evidence/C70_PRICE_CONFIRMATION_SUCCESSOR_V1
+            out/DERIVED.json
+          retention-days: 90
+  saved:
+    if: github.event_name != 'pull_request' || github.event.action != 'opened'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: npm run --prefix frontend/z-os-app-source validate
+      - run: python3 -B -m unittest backend.research.rebuild.test_c70_price_confirmation_v1 -v
+      - uses: actions/download-artifact@v4
+        with:
+          name: kr3-profit-zone-34282003231
+          run-id: 34282003231
+          github-token: ${{ github.token }}
+          path: out/original51
+      - run: python3 -B research/development_evidence/C70_PRICE_CONFIRMATION_SUCCESSOR_V1/verify_saved.py --inputs "$GITHUB_WORKSPACE/out/original51/inputs"

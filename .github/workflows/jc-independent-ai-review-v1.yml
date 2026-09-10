@@ -1,0 +1,101 @@
+name: JC Independent Source AI Review V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/benchmark/*jc_independent_ai_review*'
+      - '.github/workflows/jc-independent-ai-review-v1.yml'
+      - 'research/development_evidence/JC_INDEPENDENT_AI_REVIEW_AFTER_PR1253_V1/**'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/benchmark/*jc_independent_ai_review*'
+      - '.github/workflows/jc-independent-ai-review-v1.yml'
+      - 'research/development_evidence/JC_INDEPENDENT_AI_REVIEW_AFTER_PR1253_V1/**'
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  offline:
+    if: github.event_name != 'issue_comment'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical checkout and offline tests
+        env:
+          GEMINI_API_KEY: ''
+          GOOGLE_API_KEY: ''
+          OPENAI_API_KEY: ''
+        run: |
+          pwd
+          ls -la frontend/z-os-app-source
+          cat frontend/z-os-app-source/package.json
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.benchmark.test_jc_independent_ai_review_v1 -v
+          python3 -B -m backend.research.benchmark.jc_independent_ai_review_v1
+          git diff --exit-code
+  review-once:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.comment.user.id == 232057951 &&
+      github.event.sender.id == 232057951 &&
+      github.event.comment.body == 'RUN_JC_AI_REVIEW_AFTER_PR1253_V1_ONCE'
+    concurrency:
+      group: jc-independent-ai-review-after-pr1253-v1
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Resolve exact approved merge without provider credentials
+        id: approved
+        run: |
+          python3 - <<'PY'
+          import json,os,re,urllib.request
+          e=json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          assert os.environ['GITHUB_RUN_ATTEMPT']=='1'
+          assert e['repository']['full_name']=='leegkssk2000-commits/vultr-z'
+          assert e['sender']['id']==e['comment']['user']['id']==232057951
+          assert e['comment']['author_association']=='OWNER' and e['action']=='created'
+          assert e['comment']['body']=='RUN_JC_AI_REVIEW_AFTER_PR1253_V1_ONCE'
+          base='https://api.github.com/repos/leegkssk2000-commits/vultr-z'
+          def get(path):
+              req=urllib.request.Request(base+path,headers={'Authorization':'Bearer '+os.environ['GITHUB_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req,timeout=25) as r:return json.load(r)
+          pr=get('/pulls/'+str(e['issue']['number']))
+          assert pr['merged'] and pr['head']['ref']=='research/jc-independent-ai-review-after-pr1253-v1'
+          assert pr['head']['repo']['full_name']==e['repository']['full_name'] and pr['base']['ref']=='master'
+          merge=pr['merge_commit_sha'];assert re.fullmatch('[a-f0-9]{40}',merge)
+          workflow='/contents/.github/workflows/jc-independent-ai-review-v1.yml?ref='
+          assert get(workflow+merge)['sha']==get(workflow+os.environ['GITHUB_WORKFLOW_SHA'])['sha']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('merge_sha='+merge+'\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.approved.outputs.merge_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Exact-merge offline preflight
+        run: |
+          test "$(git rev-parse HEAD)" = '${{ steps.approved.outputs.merge_sha }}'
+          npm run --prefix frontend/z-os-app-source validate
+          python3 -B -m unittest backend.research.benchmark.test_jc_independent_ai_review_v1 -v
+      - name: Independently assigned source reviews, once each
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 -B -m backend.research.benchmark.jc_independent_ai_review_v1 --run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jc-independent-ai-review-${{ github.run_id }}
+          path: research/development_evidence/JC_INDEPENDENT_AI_REVIEW_AFTER_PR1253_V1
+          retention-days: 90

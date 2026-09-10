@@ -13,7 +13,7 @@ def verify_period(per,spec):
     folder=c.OUT/per;cal=spec['periods'][per];packet=a.gz(a.INPUTS/(per+'.json.gz'))
     raw=a.gz(folder/'RAW.json.gz');result=a.gz(folder/'RESULT.json.gz');ctrl=c.parents(per,packet,cal)
     parent_raw=a.gz(a.OUT/'C70_TM'/per/'RAW.json.gz')
-    positions={a.key(t):(status,t) for status,name in [('C','trades'),('O','open_observations')] for t in result[name]}
+    positions=a.bridge._index(result['trades'],result['open_observations'])
     checked=set();trace_count=0;max_active=Fraction(0);common_exact=0
     for symbol,rr in raw.items():
         rows=packet['rows_by'][symbol]
@@ -92,7 +92,7 @@ def verify_period(per,spec):
     for name,parent,child in [('A',ctrl['C70_LOCAL'],ctrl['C70_TM']),('B',ctrl['C70_TM'],result),('C',ctrl['C70_LOCAL'],result)]:
         assert a.decomposition(parent,child)==a.read(folder/('DECOMPOSITION_'+name+'.json'))
     assert c.repair_bridge(ctrl['C70_TM'],result,ctrl['C70_LOCAL'])==a.read(folder/'REPAIR_BRIDGE.json')
-    assert a.canon(c.diagnose(per,packet,cal,ctrl))==a.canon(a.read(folder/'OCCUPANCY_DIAGNOSTIC.json'))
+    assert c.diagnose(per,packet,cal,ctrl)==a.read(folder/'OCCUPANCY_DIAGNOSTIC.json')
     assert c.snapshot(result,ctrl['C70_LOCAL'])==a.read(folder/'SNAPSHOT.json')
     return dict(status='PASS',campaigns=len(positions),trace_events=trace_count,
                 unchanged_common_unit_lifecycles=common_exact,max_same_symbol_normalized_qty=float(max_active),
@@ -101,13 +101,8 @@ def verify_period(per,spec):
 
 def verify():
     spec=a.read(c.OUT/'SPEC.json')
-    correction=a.read(c.OUT/'VERIFIER_CORRECTION.json')
-    assert a.h(c.OUT/'FROZEN_VERIFIER.py.txt')==correction['frozen_sha256']
     for group in ('source_files_sha256','preserved_files_sha256'):
-        for name,digest in spec[group].items():
-            if group=='source_files_sha256' and name==correction['path']:
-                assert digest==correction['frozen_sha256'];digest=correction['corrected_sha256']
-            assert a.h(a.ROOT/name)==digest,group+':'+name
+        for name,digest in spec[group].items():assert a.h(a.ROOT/name)==digest,group+':'+name
     for per,digest in spec['input_packet_sha256'].items():assert a.h(a.INPUTS/(per+'.json.gz'))==digest,'INPUT_HASH'
     if (c.OUT/'EVIDENCE_HASHES.json').exists():
         for name,digest in a.read(c.OUT/'EVIDENCE_HASHES.json').items():assert a.h(c.OUT/name)==digest,'EVIDENCE_HASH:'+name

@@ -1,22 +1,22 @@
 name: C63 R B20 protection
 on:
-  push:
-    branches: ['research/c63-r-b20-after-pr1245-v1']
+  pull_request:
     paths:
-      - 'backend/research/rebuild/c63_r_b20_v1.py'
-      - 'backend/research/rebuild/c63_r_b20_study_v1.py'
-      - 'backend/research/rebuild/test_c63_r_b20_v1.py'
-      - 'research/development_evidence/C63_R_B20_PROTECTION_AFTER_PR1245_V1/**'
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
+      - '.github/workflows/c63-r-b20-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/**'
       - '.github/workflows/c63-r-b20-v1.yml'
 permissions:
-  contents: write
-concurrency:
-  group: c63-r-b20-sole-economic-owner
-  cancel-in-progress: false
+  contents: read
 jobs:
-  first-two-full-only:
+  verify-saved-r-b20:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5
     env:
       GEMINI_API_KEY: ''
       GOOGLE_API_KEY: ''
@@ -25,55 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-      - name: Complete checkout canonical and synthetic preflight only
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Canonical full checkout and focused synthetic regression
         run: |
-          test "$GITHUB_RUN_ATTEMPT" = 1
-          test "$GITHUB_REF_NAME" = research/c63-r-b20-after-pr1245-v1
-          test ! -e research/development_evidence/C63_R_B20_PROTECTION_AFTER_PR1245_V1/SPEC.json
           npm run --prefix frontend/z-os-app-source validate
           python3 -B -m unittest backend.research.rebuild.test_c63_r_b20_v1 -v
-      - name: Freeze, remotely reserve/read back, then two serial first FULLs
-        env:
-          RB20_PREFLIGHT: PASSED
+      - name: Saved raw-to-cost-to-metric and attribution checks only
         run: |
-          set -Eeuo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          rb20_scope=research/development_evidence/C63_R_B20_PROTECTION_AFTER_PR1245_V1
-          persist() {
-            git add -- "$rb20_scope"
-            if ! git diff --cached --quiet; then
-              git commit -m "$1 [skip ci]"
-              git push origin HEAD:refs/heads/research/c63-r-b20-after-pr1245-v1
-            fi
-            rb20_remote=$(git ls-remote origin refs/heads/research/c63-r-b20-after-pr1245-v1 | cut -f1)
-            test "$rb20_remote" = "$(git rev-parse HEAD)"
-          }
-          finish() {
-            rb20_rc=$?
-            trap - EXIT
-            set +e
-            persist 'Persist R_B20 final result or failure; no retry'
-            rb20_save_rc=$?
-            if [ "$rb20_rc" -eq 0 ]; then rb20_rc=$rb20_save_rc; fi
-            exit "$rb20_rc"
-          }
-          trap finish EXIT
-          python3 -B -m backend.research.rebuild.c63_r_b20_study_v1 freeze
-          persist 'Freeze R_B20 rule code inputs costs and judgment before results'
-          for rb20_period in DEV2025 SEEN2026; do
-            python3 -B -m backend.research.rebuild.c63_r_b20_study_v1 reserve --period "$rb20_period"
-            persist "Reserve R_B20 $rb20_period before first FULL"
-            python3 -B -m backend.research.rebuild.c63_r_b20_study_v1 execute --period "$rb20_period" --remote "$(git rev-parse HEAD)"
-            persist "Save first R_B20 $rb20_period result"
-          done
-          python3 -B -m backend.research.rebuild.c63_r_b20_study_v1 summarize
-          python3 -B -m backend.research.rebuild.c63_r_b20_study_v1 verify
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: c63-r-b20-first-results-${{ github.run_id }}
-          path: research/development_evidence/C63_R_B20_PROTECTION_AFTER_PR1245_V1
-          retention-days: 90
+          python3 -B -m backend.research.rebuild.c63_r_b20_verify_v1
+          git diff --exit-code

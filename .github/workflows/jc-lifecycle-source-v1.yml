@@ -15,14 +15,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research/trader-lifecycle-after-pr1249-v1
-      - run: |
-          git config user.name 'zel-research'
-          git config user.email 'zel-research@users.noreply.github.com'
-          python -m backend.research.rebuild.jc_lifecycle_source_v1
       - uses: actions/download-artifact@v4
         with:
-          name: step7-path-source-34158767327
-          run-id: 34158767327
+          name: step7-source-34154220234
+          run-id: 34154220234
           github-token: ${{ github.token }}
           path: /tmp/pr1210-source
       - name: Preserve existing contract metadata only
@@ -31,15 +27,18 @@ jobs:
           import json,pathlib,hashlib
           root=pathlib.Path('research/development_evidence/TRADER_LIFECYCLE_BENCHMARK_AFTER_PR1249_V1/SOURCE')
           found=[]
-          for p in pathlib.Path('/tmp/pr1210-source').rglob('*.json'):
+          for p in pathlib.Path('/tmp/pr1210-source').rglob('*'):
+            if not p.is_file(): continue
             try: d=json.loads(p.read_bytes())
             except (ValueError,UnicodeError): continue
             data=d.get('data') if isinstance(d,dict) else None
             if isinstance(data,list) and data and isinstance(data[0],dict) and 'pricePrecision' in data[0]:
               raw=p.read_bytes(); target=root/('CONTRACTS_'+hashlib.sha256(raw).hexdigest()+'.json'); target.write_bytes(raw)
-              found.append(dict(path=str(target),sha256=hashlib.sha256(raw).hexdigest(),artifact_id=10031887621,run_id=34158767327,temporal_status='2026-09-07 snapshot; not historical precision change evidence'))
+              found.append(dict(path=str(target),sha256=hashlib.sha256(raw).hexdigest(),artifact_id=10030394321,run_id=34154220234,temporal_status='2026-09-07 snapshot; not historical precision change evidence'))
           (root/'CONTRACT_RECOVERY.json').write_text(json.dumps(found,indent=2)+'\n')
           PY
+          git config user.name 'zel-research'
+          git config user.email 'zel-research@users.noreply.github.com'
           git add research/development_evidence/TRADER_LIFECYCLE_BENCHMARK_AFTER_PR1249_V1
           git commit -m 'JC recover existing contract metadata [skip ci]'
           git push origin HEAD:research/trader-lifecycle-after-pr1249-v1

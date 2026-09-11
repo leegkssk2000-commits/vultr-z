@@ -4,6 +4,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from backend.research.rebuild import trendrider_unified_saved_verify_v1 as verifier
 
@@ -21,7 +22,7 @@ class ClosureTests(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(original / relative, destination)
 
-    def reseal_changed_document(self, name, change):
+    def reseal_changed_document(self, name, change, *, trust_test_manifest=True):
         relative = verifier.EVIDENCE + '/' + name
         path = self.root / relative
         value = json.loads(path.read_text())
@@ -31,9 +32,22 @@ class ClosureTests(unittest.TestCase):
         manifest = json.loads(mp.read_text())
         manifest['files_sha256'][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
         mp.write_text(json.dumps(manifest))
+        if trust_test_manifest:
+            # Deliberately replace the trust anchor only in unit tests of
+            # downstream semantic gates. Runtime has no reseal/override API.
+            anchor = patch.object(verifier, 'EXPECTED_MANIFEST_SHA256', hashlib.sha256(mp.read_bytes()).hexdigest())
+            anchor.start()
+            self.addCleanup(anchor.stop)
 
     def test_saved_closure_passes(self):
         self.assertEqual(verifier.verify(self.root)['economic_runs'], 0)
+
+    def test_untrusted_resealed_review_cannot_change_manifest_authority(self):
+        self.reseal_changed_document('INDEPENDENT_GATE_REVIEW.json',
+                                     lambda d: d.update(economic_execution_authorized=True),
+                                     trust_test_manifest=False)
+        with self.assertRaisesRegex(ValueError, 'FROZEN_MANIFEST_HASH_MISMATCH'):
+            verifier.verify(self.root)
 
     def test_resealed_budget_cannot_claim_extra_full(self):
         self.reseal_changed_document('BUDGET_AND_TERMINAL.json', lambda d: d.update(child_FULL=1))

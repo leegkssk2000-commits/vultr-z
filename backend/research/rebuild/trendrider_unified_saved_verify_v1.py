@@ -8,6 +8,9 @@ from pathlib import Path
 from backend.research.rebuild.trendrider_unified_parent_audit_v1 import SCOPE, build_report
 
 EVIDENCE = 'research/development_evidence/' + SCOPE
+# Root of trust is this reviewed code; the manifest deliberately excludes
+# this owner to avoid a circular self-hash. It covers all saved scope evidence.
+EXPECTED_MANIFEST_SHA256 = '48901189347a4bd283831bae7877eef8ae510ced965ec3e5055126ea294e5129'
 ZERO_FIELDS = (
     'gene_screens', 'canonical_candidates', 'child_FULL', 'parent_control_replay',
     'economic_replay', 'retry', 'sweep', 'new_market_data_fetch',
@@ -25,7 +28,10 @@ def verify(root: Path):
     root = root.resolve()
     evidence = root / EVIDENCE
     read = lambda name: json.loads((evidence / name).read_text(encoding='utf-8'))
-    manifest = read('EVIDENCE_MANIFEST.json')
+    manifest_bytes = (evidence / 'EVIDENCE_MANIFEST.json').read_bytes()
+    require(hashlib.sha256(manifest_bytes).hexdigest() == EXPECTED_MANIFEST_SHA256,
+            'FROZEN_MANIFEST_HASH_MISMATCH')
+    manifest = json.loads(manifest_bytes)
     require(manifest['scope_key'] == SCOPE, 'SCOPE_MISMATCH')
     expected_files = manifest['files_sha256']
     require(all(isinstance(p, str) and not Path(p).is_absolute()

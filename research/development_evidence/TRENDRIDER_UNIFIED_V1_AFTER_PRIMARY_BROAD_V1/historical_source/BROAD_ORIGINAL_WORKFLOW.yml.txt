@@ -1,0 +1,205 @@
+name: A1 Exact25 Rebuilt Controller V1
+# wake-only: preserve GEN1 exact25 economics; retrigger authoritative controller
+# survivor-progression wake 2026-08-21
+# continue-until-survivor wake 2026-08-21T03:42Z
+# trend-rider tier-A sample refresh 2026-08-21T06:42Z
+# continue-after-hardening 2026-08-21T06:55Z
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/a1-exact25-controller-v1.yml'
+      - 'backend/research/rebuild/a1_exact25_controller_v2.py'
+      - 'backend/research/rebuild/a1_exact25_resource_budget_v1.json'
+      - 'backend/research/rebuild/a1_exact25_parallel_evidence_scheduler_v1.py'
+      - 'backend/research/rebuild/a1_exact25_parallel_evidence_scheduler_v2.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v2.py'
+      - 'backend/research/rebuild/a1_exact25_policy_adapter_v1.py'
+      - 'backend/research/rebuild/test_a1_exact25_controller_v2.py'
+      - 'backend/research/rebuild/test_a1_exact25_parallel_evidence_scheduler_v1.py'
+      - 'backend/research/rebuild/test_a1_exact25_parallel_evidence_scheduler_v2.py'
+      - 'backend/research/rebuild/test_a1_exact25_policy_adapter_v1.py'
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: a1-global-heavy-economic-evaluator-v1
+  cancel-in-progress: false
+
+jobs:
+  exact25-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify finite sparse, parallel scheduler and policy-adapter contracts
+        run: |
+          set -euo pipefail
+          python -m unittest backend.research.rebuild.test_a1_exact25_controller_v2 backend.research.rebuild.test_a1_exact25_parallel_evidence_scheduler_v1 backend.research.rebuild.test_a1_exact25_parallel_evidence_scheduler_v2 backend.research.rebuild.test_a1_exact25_policy_adapter_v1
+      - name: Freeze exact25 parallel evidence clocks and select heavy slot
+        id: prepare
+        run: python -m backend.research.rebuild.a1_exact25_parallel_evidence_scheduler_v2 --mode prepare
+      - name: Read active exact25 strategy
+        id: active
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          print('strategy_id=' + str(d.get('active_strategy_id') or ''))
+          PY
+      - name: Evaluate current heavy strategy
+        run: |
+          set -euo pipefail
+          SID='${{ steps.active.outputs.strategy_id }}'; test -n "$SID"
+          if [ "$SID" = "bb_revert" ]; then python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out a1_exact25_current_receipt.json; else python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id "$SID" --out a1_exact25_current_receipt.json; fi
+      - name: Apply immutable disposition
+        id: controller
+        run: python backend/research/rebuild/a1_exact25_controller_v2.py --receipt a1_exact25_current_receipt.json --out-event a1_exact25_controller_event.json
+      - name: Release waiting heavy slot and route opportunistically
+        id: route
+        run: python -m backend.research.rebuild.a1_exact25_parallel_evidence_scheduler_v2 --mode after-receipt --receipt a1_exact25_current_receipt.json
+      - name: Drain bounded terminal-ready screening queue in same cycle
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 7); do
+            SID="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('backend/research/rebuild/a1_exact25_disposition_ledger_v1.json').read_text())
+          print(str(d.get('active_strategy_id') or ''))
+          PY
+            )"
+            if [ -z "$SID" ]; then break; fi
+            RECEIPT="a1_exact25_drain_${i}_receipt.json"
+            EVENT="a1_exact25_drain_${i}_event.json"
+            if [ "$SID" = "bb_revert" ]; then
+              python backend/research/rebuild/a1_rebuilt_bb_revert_evaluator_v1.py --out "$RECEIPT"
+            else
+              python -m backend.research.rebuild.a1_exact25_generic_evaluator_v2 --strategy-id "$SID" --out "$RECEIPT"
+            fi
+            python backend/research/rebuild/a1_exact25_controller_v2.py --receipt "$RECEIPT" --out-event "$EVENT"
+            python -m backend.research.rebuild.a1_exact25_parallel_evidence_scheduler_v2 --mode after-receipt --receipt "$RECEIPT"
+          done
+      - name: Validate research-only authority and one-heavy invariant
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          names=['a1_exact25_current_receipt.json','a1_exact25_controller_event.json','backend/research/rebuild/a1_exact25_disposition_ledger_v1.json','backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json']
+          names += [str(x) for x in sorted(Path('.').glob('a1_exact25_drain_*_receipt.json'))]
+          names += [str(x) for x in sorted(Path('.').glob('a1_exact25_drain_*_event.json'))]
+          for name in names:
+              x=json.loads(Path(name).read_text()); a=x.get('authority',x)
+              assert a.get('selection_authority') is False and a.get('promotion_authority') is False
+              assert a.get('execution_authority')=='NONE' and a.get('order_authority')=='BLOCKED' and a.get('live_trade_authority')=='BLOCKED'
+              assert int(a.get('protected_mutations',0))==0
+          c=json.loads(Path('backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json').read_text())
+          assert int(c['heavy_active_count'])<=1
+          print('PASS_RESEARCH_ONLY_AUTHORITY_AND_PARALLEL_CLOCK')
+          PY
+      - name: Persist exact25 scheduler and disposition progression
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- backend/research/rebuild/a1_exact25_disposition_ledger_v1.json backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json; then exit 0; fi
+          git config user.name 'a1-exact25-controller'; git config user.email 'actions@users.noreply.github.com'
+          git add backend/research/rebuild/a1_exact25_disposition_ledger_v1.json backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json
+          git commit -m 'A1 exact25: persist parallel evidence progression [skip ci]'; git push origin HEAD:master
+      - name: Report new strategy disposition once
+        if: steps.controller.outputs.report_required == 'true'
+        uses: actions/github-script@v7
+        env:
+          REPORT_LINE: ${{ steps.controller.outputs.report_line }}
+          EVIDENCE_LINE: ${{ steps.controller.outputs.evidence_line }}
+        with:
+          script: await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:566,body:`${process.env.REPORT_LINE}\n${process.env.EVIDENCE_LINE}`})
+      - name: Upload exact25 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: a1-exact25-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            a1_exact25_current_receipt.json
+            a1_exact25_controller_event.json
+            a1_exact25_drain_*_receipt.json
+            a1_exact25_drain_*_event.json
+            backend/research/rebuild/a1_exact25_disposition_ledger_v1.json
+            backend/research/rebuild/a1_exact25_parallel_evidence_clock_v1.json
+            backend/research/rebuild/a1_exact25_resource_budget_v1.json
+      - name: Dispatch GEN2 PREP economic research lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/a1-gen2-parallel-prep-swarm-v1.yml/dispatches"
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'}
+          req=urllib.request.Request(url,data=json.dumps({'ref':'master'}).encode(),headers=h,method='POST')
+          with urllib.request.urlopen(req,timeout=20) as r: assert r.status in (204,201)
+          print('PASS_DISPATCHED_GEN2_PREP')
+          PY
+      - name: Dispatch trend_rider Liquid6 rescue once
+        if: ${{ hashFiles('backend/research/rebuild/diagnostics/trend_rider_liquid6_latest.json') == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/a1-trend-rider-h4-h5-v1.yml/dispatches"
+          headers={
+            'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+            'Accept':'application/vnd.github+json',
+            'Content-Type':'application/json',
+            'X-GitHub-Api-Version':'2022-11-28',
+          }
+          req=urllib.request.Request(url,data=json.dumps({'ref':'master'}).encode(),headers=headers,method='POST')
+          with urllib.request.urlopen(req,timeout=20) as response:
+              assert response.status in (204,201)
+          print('PASS_DISPATCHED_TREND_RIDER_LIQUID6_RESCUE')
+          PY
+      - name: Dispatch trend_rider first-confirmation until dev H4 exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,urllib.request
+          p=pathlib.Path('backend/research/rebuild/diagnostics/trend_rider_first_confirmation_latest.json')
+          value=json.loads(p.read_text()) if p.exists() else {}
+          dev=value.get('development') or {}
+          fidelity=dev.get('policy_fidelity') or {}
+          if dev.get('h4_state') and fidelity.get('state')=='PASS_POLICY_OWNERSHIP_ENFORCED':
+              print('PASS_FIRST_CONFIRMATION_DEV_H4_ALREADY_PRESENT')
+              raise SystemExit(0)
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/a1-trend-rider-first-confirmation-v1.yml/dispatches"
+          headers={
+            'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+            'Accept':'application/vnd.github+json',
+            'Content-Type':'application/json',
+            'X-GitHub-Api-Version':'2022-11-28',
+          }
+          req=urllib.request.Request(url,data=json.dumps({'ref':'master'}).encode(),headers=headers,method='POST')
+          with urllib.request.urlopen(req,timeout=20) as response:
+              assert response.status in (204,201)
+          print('PASS_DISPATCHED_TREND_RIDER_FIRST_CONFIRMATION_DEV_H4')
+          PY
+      - name: Seal sweep-complete state marker
+        if: steps.controller.outputs.sweep_complete == 'true'
+        run: echo 'A1_EXACT25_BASELINE_SWEEP_COMPLETE'
+

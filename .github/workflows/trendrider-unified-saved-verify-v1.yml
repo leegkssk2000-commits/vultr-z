@@ -1,0 +1,32 @@
+name: TrendRider Unified saved parent audit
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  saved-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Canonical source and adversarial audit tests
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest backend.research.rebuild.test_trendrider_unified_parent_audit_v1 backend.research.rebuild.test_trendrider_unified_saved_verify_v1 -v
+      - name: Verify saved evidence only
+        run: |
+          python -B -m backend.research.rebuild.trendrider_unified_saved_verify_v1
+          git diff --exit-code

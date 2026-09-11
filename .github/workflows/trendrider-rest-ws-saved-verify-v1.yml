@@ -1,0 +1,39 @@
+name: TrendRider REST WS Saved Verify V1
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+permissions:
+  contents: read
+concurrency:
+  group: trendrider-rest-ws-saved-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  saved-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned packages used by synthetic transport fixtures
+        run: python -m pip install aiohttp==3.13.5 websockets==16.0
+      - name: Verify saved ACK parser failure and zero source or economic execution
+        run: python -m backend.research.rebuild.trendrider_rest_ws_saved_verify_v1
+      - name: Synthetic fixtures and saved evidence mutations only
+        run: |
+          python -m unittest backend.research.rebuild.test_trendrider_rest_ws_timestamp_v1 backend.research.rebuild.test_trendrider_common_source_v4 backend.research.rebuild.test_trendrider_rest_ws_saved_verify_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code

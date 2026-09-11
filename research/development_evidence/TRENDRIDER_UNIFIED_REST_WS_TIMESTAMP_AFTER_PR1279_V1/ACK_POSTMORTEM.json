@@ -1,0 +1,102 @@
+{
+  "actual_observation": {
+    "actual_counts": {
+      "application_pings": 0,
+      "application_pongs": 0,
+      "rest_requests": 0,
+      "ws_application_frames": 1,
+      "ws_sessions": 1,
+      "ws_subscriptions": 1
+    },
+    "classification_basis": [
+      "id equals the sole prerecorded subscription request identifier",
+      "code is integer zero",
+      "data is null; no kline payload exists",
+      "empty dataType belongs to this control acknowledgement, not an observed market-data frame"
+    ],
+    "decoded_application_message": {
+      "code": 0,
+      "data": null,
+      "dataType": "",
+      "id": "trendrider-rest-ws-1280-v1",
+      "msg": ""
+    },
+    "frame_kind": "SUBSCRIPTION_SUCCESS_ACKNOWLEDGEMENT",
+    "kline_frames_observed": 0,
+    "raw_bytes": 104,
+    "raw_path": "/workspace/scratch/044c5eb4a347/vultr-z-tr-rest-ws/research/development_evidence/TRENDRIDER_UNIFIED_REST_WS_TIMESTAMP_AFTER_PR1279_V1/calibration/raw/ws_0001.bin",
+    "raw_sha256": "c2a99fa6fbc419b920094c7d7c82c005be42b55707687f076935ad6e23d61eaa",
+    "recorded_error": [
+      "WS_RECEIVE:REST_WS_CHANNEL_IDENTITY"
+    ],
+    "rest_responses_observed": 0,
+    "semantic_receipt_sha256": "2e96055dd29f965537138befbdb0b8bf744cd660e03cb4f7c5810337da0d1efe",
+    "session_duration_seconds": 14.241736,
+    "witness": null
+  },
+  "analysis_method": "READ_ONLY_SAVED_RAW_GZIP_DECOMPRESSION_AND_SOURCE_INSPECTION_NO_SESSION_REPLAY",
+  "classification": "LOCAL_SUBSCRIPTION_ACK_CLASSIFICATION_DEFECT",
+  "current_scope_action": {
+    "attempt_consumed": true,
+    "calibration_replay": 0,
+    "disposition": "Preserve failed session and exact implementation evidence, report the local defect, finish authorized CI/review/merge closure without retry.",
+    "frozen_code_tests_protocol_modified": false,
+    "new_economic_executions": 0,
+    "new_rest_calls": 0,
+    "new_source_acquisition_calls": 0,
+    "new_ws_sessions": 0,
+    "retry_budget": 0
+  },
+  "minimal_future_fix_design_NOT_IMPLEMENTED": {
+    "ack_effect": "Record control ACK, continue the existing WS session, keep target unset, and dispatch no REST until a valid current or previous-hour kline.",
+    "change_axis": "Separate subscription control ACK classification from kline payload classification before enforcing kline dataType.",
+    "required_regressions": [
+      "Exact observed ACK bytes decoded as ACK, not channel failure",
+      "Synthetic ACK followed by valid kline and matching REST passes within one session",
+      "ACK-only session reaches its existing deadline with REST zero",
+      "Mismatched id, nonzero code, boolean code, and non-null data cannot be swallowed as success ACK",
+      "An ACK with empty dataType must not relax actual kline channel validation"
+    ],
+    "requires_separate_authorized_successor": true,
+    "success_ack_conditions": [
+      "type(code) is int and code == 0",
+      "id exactly equals the frozen subscription id",
+      "data absent or null; never classify a non-null candle payload as ACK",
+      "dataType absent or empty for the observed ACK shape; any additionally supported shape must be explicit in the next frozen protocol"
+    ],
+    "unchanged_invariants": [
+      "single original subscription",
+      "same session deadline",
+      "REST at most two and only after valid kline",
+      "no timestamp shift",
+      "strict market-frame symbol and interval checks",
+      "exact Decimal OHLC matching",
+      "raw-first persistence"
+    ]
+  },
+  "root_cause": {
+    "frozen_module_sha256": "9873ac390daadceec90eca39fb5521465be56e4c61bdeb1134df467145cd968c",
+    "function": "decode_ws",
+    "incorrect_branch": "ACK recognition requires the data key to be absent. A present data:null fails that condition.",
+    "module": "backend/research/rebuild/trendrider_rest_ws_timestamp_v1.py",
+    "owner_effect": "receive() sets fatal; session owner terminates before any valid kline candidate and before REST dispatch.",
+    "ownership": "Implementation and pre-execution test coverage defect in this scope; not evidence of an exchange kline channel defect.",
+    "pre_execution_known_risk": "Root explicitly raised data:null acknowledgement handling before the real session. The frozen implementation and synthetic coverage did not resolve that concern.",
+    "subsequent_failure": "The successful ACK falls into the market kline classifier, where empty dataType incorrectly raises REST_WS_CHANNEL_IDENTITY."
+  },
+  "schema": "trendrider.rest.ws.ack.postmortem.v1",
+  "scope_key": "TRENDRIDER_UNIFIED_REST_WS_TIMESTAMP_AFTER_PR1279_V1",
+  "terminal_state_preserved": "BLOCKED_REST_WS_TIMESTAMP_WITNESS",
+  "what_cannot_be_concluded": [
+    "No conclusion that BingX failed to provide klines: the client stopped on a success ACK before waiting for a kline.",
+    "No conclusion that the exchange published a wrong kline channel: empty dataType was observed only on an ACK.",
+    "No conclusion about REST object time, REST versus WS equality, historical source integrity, or strategy economics."
+  ],
+  "why_36_synthetic_tests_missed": [
+    "FakeWS.send records the subscription but does not generate a realistic subscription ACK response.",
+    "Successful runner fixtures begin directly with a synthetic kline, optionally preceded by Ping; the ACK-before-first-kline transition is absent.",
+    "No test covers a matching subscription id and code:0 with data:null and empty dataType.",
+    "Existing identity-negative tests exercise actual kline payloads, so they do not separate control-envelope identity from market-frame identity.",
+    "Raw-first, timestamps, duplicate keys, HTTP draining, and exact-match tests passed but do not exercise this missing branch."
+  ]
+}

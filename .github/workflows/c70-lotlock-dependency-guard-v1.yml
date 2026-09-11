@@ -1,0 +1,25 @@
+name: C70 lotlock frozen dependency guard
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  saved-dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check every immutable dependency and saved ledger without replay
+        run: |
+          python -B -m backend.research.rebuild.c70_lotlock_verify_v1
+          git diff --exit-code

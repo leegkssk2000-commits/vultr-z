@@ -1,0 +1,50 @@
+"""Temporary root-only one-shot authorized dispatcher. Removed after FULL2."""
+import sys,time,subprocess
+from copy import deepcopy
+sys.path.insert(0,'/workspace/scratch/793e452bbc6b/vultr-z-lotlock')
+from backend.research.rebuild import c70_lotlock_account_v1 as c
+
+a=c.a;e=c.e
+per,freeze=sys.argv[1:];assert per in a.PERIODS
+spec=a.read(c.OUT/'SPEC.json');specsha=a.h(c.OUT/'SPEC.json')
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=a.ROOT,text=True).strip()==freeze
+assert subprocess.check_output(['git','show',freeze+':'+str((c.OUT/'SPEC.json').relative_to(a.ROOT))],cwd=a.ROOT)==(c.OUT/'SPEC.json').read_bytes()
+e.assert_authorized(spec['scope'],a.read(c.OUT/'STATUS.json')['status'])
+for group in ('source_files_sha256','preserved_files_sha256'):
+ for name,digest in spec[group].items():assert a.h(a.ROOT/name)==digest,(group,name)
+for name,digest in spec['input_packet_sha256'].items():assert a.h(a.INPUTS/(name+'.json.gz'))==digest
+assert a.h(__file__)==spec['dispatcher_sha256']
+prior=a.read(c.OUT/'HISTORY_PRIOR.json');b=a.read(c.OUT/'BUDGET.json');q=b['c70_lotlock_allocation']
+assert b['candidate_trials'][:len(prior['candidate_trials'])]==prior['candidate_trials']
+assert b['trials'][:len(prior['trials'])]==prior['trials']
+assert q['remaining']>0 and q['started']<2 and q['failed']==0
+assert not any(t.get('scope')==e.SCOPE and t['period']==per for t in b['trials'])
+plan=spec['plan'][q['started']];assert plan['period']==per
+assert b['cumulative_actual_evaluations']+1==plan['evaluation_ordinal']
+folder=c.OUT/per
+r=dict(scope=e.SCOPE,variant=e.RULE,period=per,candidate_ordinal=plan['candidate_ordinal'],
+ evaluation_ordinal=plan['evaluation_ordinal'],actual_experiment_ordinal=plan['evaluation_ordinal'],
+ frozen_commit=freeze,spec_sha256=specsha,started_ns=time.time_ns(),status='STARTED',owner='WORK_793e452bbc6b_ROOT',execution_mode='LOCAL_WORK_FIRST_FULL')
+a.put(folder/'EXECUTION_STARTED.json',r)
+q['started']+=1;q['remaining']-=1
+if q['started']==1:
+ assert b['cumulative_actual']+1==plan['candidate_ordinal']
+ b['cumulative_actual']+=1
+ b['candidate_trials'].append(dict(candidate=e.RULE,ordinal=plan['candidate_ordinal'],first_evaluation=plan['evaluation_ordinal'],scope=e.SCOPE))
+b['cumulative_actual_evaluations']+=1;b['trials'].append(deepcopy(r))
+(c.OUT/'BUDGET.json').write_bytes(a.canon(b)+b'\n')
+assert a.read(c.OUT/'BUDGET.json')==b
+print('RESERVATION_READ_BACK',per,plan,flush=True)
+try:
+ packet=a.gz(a.INPUTS/(per+'.json.gz'));cal=spec['periods'][per]
+ raw={symbol:e.replay(rows,eval_start_ms=cal['start_ms'],eval_end_ms=cal['runoff_end_ms'],cost=packet['costs'][symbol]) for symbol,rows in sorted(packet['rows_by'].items())}
+ a.put(folder/'RAW.json.gz',raw)
+ result=c.charge(raw,packet,cal);a.put(folder/'RESULT.json.gz',result)
+ r.update(status='COMPLETED',finished_ns=time.time_ns());q['completed']+=1
+except BaseException as ex:
+ r.update(status='FAILED_NO_RETRY',finished_ns=time.time_ns(),error=type(ex).__name__+':'+str(ex));q['failed']+=1
+ raise
+finally:
+ b['trials'][-1]=deepcopy(r);(c.OUT/'BUDGET.json').write_bytes(a.canon(b)+b'\n');a.put(folder/'ATTEMPT.json',r)
+a.put(folder/'RECEIPT.json',dict(r,raw_sha256=a.h(folder/'RAW.json.gz'),result_sha256=a.h(folder/'RESULT.json.gz'),parent_replays=0,automatic_retry=False))
+print('FIRST_FULL_COMPLETED',per,flush=True)

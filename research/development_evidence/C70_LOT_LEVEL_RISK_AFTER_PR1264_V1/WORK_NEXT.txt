@@ -1,0 +1,148 @@
+[신규 후속 실행 승인 — Issue #1265]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=C70_LOT_LEVEL_RISK_AFTER_PR1264_V1
+
+Issue #1265 전체를 읽고 실제 실행하라.
+
+이번 작업은 실패한 group-PROFITLOCK을 미세조정하는 작업이 아니다.
+누적 parent는 PR #1262의 exact C70_TM_CAPREUSE_V1(candidate82)로 되돌린다.
+PR #1264 PROFITLOCK(candidate83)은 실패 비교 증거로만 보존한다.
+
+목표:
+CAPREUSE의 수익/occupancy 개선은 유지하면서
+same-symbol 전체 group 청산의 collateral damage를 제거하고,
+각 campaign/lot의 post-partial runner 위험만 독립적으로 제한한다.
+
+보존:
+- exact C70_LOCAL / registered71 entry/signal/next-open/size
+- PR1260 Qullamaggie management:
+  3rd completed UTC daily close / profit-only 1/3 partial / BE / SMA10 runner
+- native hard floor/data-integrity safety
+- PR1262 released-capacity reuse
+- same-symbol normalized active qty <=1.0
+- 새 reuse campaign에도 동일 lifecycle
+
+금지:
+- 3→5일, 1/3→1/2, SMA10→20
+- entry/filter/cap1 변경
+- 연도/종목/승패/거래ID 예외
+- group bank/peak 재도입
+- 다른 trader source
+- threshold/parameter sweep
+- paid Gemini/OpenAI
+- C63/부모 재실행
+
+신규 candidate:
+C70_CAPREUSE_LOTLOCK_V1 1개
+
+lot-level 규칙:
+각 실제 entry fill campaign/lot을 독립 객체로 본다.
+first actual profit partial fill 이후에만 그 lot의 remaining runner에 envelope 활성.
+
+lot_realized_bank_net(t):
+해당 lot의 first partial 이후 실제 fill된 positive partial realized net 합
+(비용/funding 반영).
+
+lot_marked_net(t):
+해당 lot realized net
++ 현재 완료관측 remaining qty marked net
+- remaining exit cost/funding proxy.
+
+lot_peak_marked_net(t):
+first partial 이후 완료된 causal observations의 lot_marked_net 최대값.
+
+allowed giveback = lot_realized_bank_net(t)
+
+조건:
+lot_realized_bank_net>0
+AND lot_marked_net <= lot_peak_marked_net - lot_realized_bank_net
+
+첫 성립 완료관측 후 다음 실제 observable open에서
+그 lot의 remaining qty만 전량 exit.
+
+절대 금지:
+- 다른 same-symbol lot/root/reuse campaign 동시 exit
+- 다른 lot의 realized bank 차용
+- group peak/group marked net 사용
+- future/incomplete bar/outcome 사용
+
+인과/점유:
+- partial actual fill 전 영향0
+- hard floor/data safety 최우선
+- SMA10/BE/source exit와 동시라면 기존 conservative execution contract
+- decision close 체결 금지; next-open + gap
+- actual lot exit fill 전 capacity release 금지
+- 다른 same-symbol lots는 qty/runner/path 그대로
+- released capacity는 기존 CAPREUSE 규칙으로 이후 C70 신호가 사용 가능
+- same-symbol total active normalized qty<=1.0
+- partial leg는 WR denominator 증가 없음
+- unfinished lot은 mark + remaining costs/funding
+
+먼저 PR1264 group-lock triggers 26/6건을 lot 단위로 saved 진단:
+- 실제 threshold 초과 lot
+- threshold 미초과인데 group exit로 collateral 청산된 다른 lot
+- collateral qty/PnL
+- group exit 후 full-size root 재진입 상호작용
+- PR1264 DD 감소 중 lot 자체 위험감소 vs collateral/re-entry 이동효과
+
+단, 이 진단으로 후보0개 종료하지 마라.
+무결성 문제가 없으면 C70_CAPREUSE_LOTLOCK_V1을 반드시 FULL2까지 실행.
+
+예산:
+- candidate 최대1
+- 두 USED_DEV 창 first FULL 각1회 = 총2
+- parent replay/FIXED/sweep/retry/new OOS/API/live/order/deploy=0
+- 누계가 그대로면 candidate84 / eval151-152를 실제 시작 직전 예약/read-back
+
+필수 첫 표:
+C70_LOCAL | C70_TM | CAPREUSE | group-PROFITLOCK(failed reference) | LOTLOCK
+
+필수 지표:
+completed/open, WR, avg win/loss, payoff, PF,
+terminal net, cost2, marked DD,
+max losing streak/loss tail,
+symbol-days exposure / avg normalized concurrent exposure / max hold,
+ordinary/top-decile winner retention,
+partial/runner/reuse/lot-lock trigger counts,
+lot-lock exit qty,
+other-lot collateral exit qty(목표0),
+occupancy excluded/new changes,
+top1 concentration,
+peak→trough lot-role attribution.
+
+증분:
+A LOCAL→TM
+B TM→CAPREUSE
+C CAPREUSE→LOTLOCK
+D LOCAL→LOTLOCK cumulative
+참고: CAPREUSE→group-PROFITLOCK 실패 비교.
+
+Risk bridge:
+lot 자체에서 줄인 giveback
+- lot-lock로 잘라낸 이후 승리
++ capacity 조기해제로 바뀐 후속거래
+- 추가/절감 비용
+= C 증분
+
+다른 lot collateral PnL 변화는 별도 항목으로 반드시 0인지 검산.
+
+성공 기준:
+- 비교 기준은 CAPREUSE.
+- DD/노출이 실제 감소해야 함.
+- 동시에 net/cost2/일반·상위10% 승리보존이 group-PROFITLOCK처럼 크게 훼손되면 REJECT.
+- group-PROFITLOCK보다 낫다는 이유만으로 PASS 금지.
+- 동일 규칙을 두 기간에 적용, 연도별 선택 금지.
+- live/G5 자동승격 없음.
+
+최소 구현 → saved lot attribution → causal/accounting tests →
+사전 freeze → FULL2 → raw trade/cost/lot-risk-window 검산 →
+CI/review → 정상 PR 병합 → exact merge saved verification.
+
+완료 후 이번 scope만 REPORT_ONLY로 닫고
+경제표부터 최종 보고 후 종료하라.
+다른 risk rule/source/C63 child 자동 생성 금지.
+
+현재 관측 master:
+b42c5cae30a48e8e85179bb1b87a72df73443b40
+reset 기준이 아니다. 시작 시 최신 origin/master 확인.

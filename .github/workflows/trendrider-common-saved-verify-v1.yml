@@ -1,0 +1,37 @@
+name: TrendRider Common Saved Verify V1
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+permissions:
+  contents: read
+concurrency:
+  group: trendrider-common-saved-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  saved-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      GROQ_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify sealed saved bytes and blocked-source budget without fetching or replaying
+        run: python -m backend.research.rebuild.trendrider_common_saved_verify_v1
+      - name: Synthetic causal, source and gate regressions only
+        run: |
+          python -m unittest backend.research.rebuild.test_trendrider_common_engine_v1 backend.research.rebuild.test_trendrider_common_source_v1 backend.research.rebuild.test_trendrider_common_genes_v1 backend.research.rebuild.test_trendrider_common_saved_verify_v1 -v
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code

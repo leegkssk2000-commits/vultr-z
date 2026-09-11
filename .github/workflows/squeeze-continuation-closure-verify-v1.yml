@@ -1,0 +1,27 @@
+name: Squeeze Continuation closure and prepared G5B authority verification
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  saved-closure-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Authority and identity mutation regression; no economic execution
+        run: python -B -m unittest backend.research.rebuild.test_squeeze_sprint_closure_verify_v1 -v
+      - name: Verify saved closure and exact dependency hashes; no packet decode
+        run: |
+          python -B -m backend.research.rebuild.squeeze_sprint_closure_verify_v1 --require-evidence-manifest
+          git diff --exit-code

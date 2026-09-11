@@ -1,0 +1,137 @@
+{
+  "scope_key": "SQUEEZE_CONTINUATION_BENCHMARK_SPRINT_AFTER_PR1266_V1",
+  "prepared_by": "source_raschke_carter",
+  "prepared_at": "2026-09-11T09:27:59.928Z",
+  "status": "SOURCE_COMPONENTS_READY_FOR_ROOT_PREFREEZE_REVIEW",
+  "economic_execution_count": 0,
+  "canonical_candidate_numbers_assigned": 0,
+  "cards": [
+    {
+      "mechanism_id": "S1-03",
+      "trader": "Linda Bradford Raschke",
+      "component": "RASCHKE_3_10_RUNNER_DIVERGENCE",
+      "lifecycle_axis": "POST_PARTIAL_RUNNER_EXIT",
+      "source_grade": "C",
+      "primary_rule_source": {
+        "source_id": "LBR_RULE_2004",
+        "url": "https://lindaraschke.net/wp-content/uploads/2026/03/raschke_pt2_0304.pdf",
+        "title": "Active Trader interview, March 2004, pp.78–79",
+        "primary_basis": "Direct interview with Raschke, republished by her official website.",
+        "published": "2004-03",
+        "source_exact": "The oscillator subtracts the 10-period simple average from the 3-period simple average. Raschke describes rising price with a falling oscillator as a late-run sell divergence, illustrating a 120-minute chart."
+      },
+      "performance_evidence": {
+        "source_id": "LBR_PERF_SELF_BIO",
+        "url": "https://lindaraschke.net/bio-linda/",
+        "grade": "C",
+        "claim": "Her official biography claims her hedge fund ranked 17th among 4,500 for five-year performance in BarclayHedge rankings.",
+        "verification_limit": "Self-published claim; underlying ranking and audited return series were not retrieved. The component does not inherit the trader's performance."
+      },
+      "zel_operationalization": {
+        "activation": "Only after this lot's first actual profit-only partial fill; never before fill.",
+        "observation_clock": "Native completed 4-hour bars, not the source's illustrated 120-minute chart.",
+        "indicator": "O[j] = SMA3(close)[j] - SMA10(close)[j], using only bars completed by j. Source's additional 16-SMA signal is not used because divergence compares the 3-10 line itself.",
+        "anchor": "Track the largest completed closing price observed since actual entry, with its same-time O reading. Evaluate against the old anchor before updating; equal-price observations do not replace it.",
+        "trigger": "At an eligible post-partial completed bar: close[j] > prior running closing-price high AND O[j] < O_at_that_prior_high. Both oscillator values must be available. No hindsight pivots or future confirmation.",
+        "execution": "Schedule only this lot's remaining quantity at next actual observable open. Preserve existing native-floor/data-safety and original conservative exit priority; an already due source final fill is not duplicated.",
+        "explicit_adaptations": [
+          "Causal running closing-price records formalize the source's discretionary divergence observation.",
+          "Source warning becomes a deterministic exit of the existing runner.",
+          "4h data and next-open fills follow the frozen ZEL execution model."
+        ],
+        "unchanged": [
+          "Original reg71 entry/filter/size",
+          "D3 profit-only 1/3 partial",
+          "BE and SMA10 native runner exit",
+          "CAPREUSE admission and allocation",
+          "Other lots"
+        ],
+        "numerical_parameters_from_source": {
+          "fast_sma": 3,
+          "slow_sma": 10
+        },
+        "new_tuned_thresholds": 0
+      },
+      "compatibility": {
+        "control_duplicate": false,
+        "conflicts": [
+          "Additive runner exit may cut a continuing winner before SMA10; screen must expose that loss."
+        ],
+        "source_exact_strategy_replication": false,
+        "causal_gate": "PASS_SPEC_ONLY_PENDING_IMPLEMENTATION_TESTS"
+      }
+    },
+    {
+      "mechanism_id": "S1-04",
+      "trader": "John Carter",
+      "component": "CARTER_INITIAL_THRUST_FAILURE",
+      "lifecycle_axis": "INITIAL_THRUST_FAILURE_EXIT",
+      "source_grade": "C",
+      "primary_rule_source": {
+        "source_id": "JC_RULE_AND_PERF",
+        "url": "https://www.simplertrading.com/news/ttm-squeeze-explained",
+        "title": "TTM Squeeze Indicator Explained",
+        "primary_basis": "Official educational material from the indicator creator's company, with Carter's statements.",
+        "published": null,
+        "source_exact": "The initial squeeze thrust typically lasts four bars. Unprofitable trades after that initial thrust should be exited before losses grow. This is presented as a tendency and management instruction, not a guaranteed four-bar forecast."
+      },
+      "performance_evidence": {
+        "source_id": "JC_RULE_AND_PERF",
+        "url": "https://www.simplertrading.com/news/ttm-squeeze-explained",
+        "grade": "C",
+        "claim": "Creator's company cites a seven-figure TSLA trade and labels Carter an eight-figure trader.",
+        "verification_limit": "Company/self-reported promotional claims; no independent broker audit or complete return series was obtained. Weekly trading goals on his plan are not realized performance evidence."
+      },
+      "zel_operationalization": {
+        "activation": "One initial-thrust check for each original actual entry campaign; later reuse campaigns receive the same rule independently.",
+        "observation_clock": "Fourth completed native4h bar since actual entry, counting entry bar as completed bar1: j=entry_index+3.",
+        "mapping": "The existing reg71 squeeze/continuation signal is the frozen release event. Do not add a new TTM squeeze or momentum filter.",
+        "profit_measure": "unit_net_progress_bps = 10000*(completed_close/actual_entry_price-1) - frozen cost_at(cost, entry_ts, completed_close_ts). This defines unprofitable after costs rather than gross-price-only.",
+        "trigger": "At that single fourth-bar close, if unit_net_progress_bps <=0 schedule this lot's remaining quantity to exit at the next actual observable open. If positive, disable this component for the rest of that campaign; no later rearm.",
+        "execution": "Native floor, data safety and existing source-exit priority remain. No next actual open before terminal boundary means terminal mark with pending exit, not synthetic liquidation.",
+        "explicit_adaptations": [
+          "An approximate source four-bar thrust becomes a one-time deterministic checkpoint.",
+          "The frozen reg71 signal replaces Carter's full TTM entry setup.",
+          "Net-of-cost profitability, completed4h clock and next-open fill semantics are ZEL choices fixed before outcomes."
+        ],
+        "unchanged": [
+          "Original reg71 entry/filter/size",
+          "D3 profit-only 1/3 partial if the lot survives",
+          "BE and SMA10 native runner exit",
+          "CAPREUSE admission and allocation",
+          "Other lots"
+        ],
+        "numerical_parameters_from_source": {
+          "initial_thrust_bars": 4
+        },
+        "new_tuned_thresholds": 0
+      },
+      "compatibility": {
+        "control_duplicate": false,
+        "conflicts": [
+          "Can terminate before D3; this is the single intended initial-failure axis.",
+          "Do not combine the earlier investigated Carter box-return or two-blue-bar ideas into this candidate."
+        ],
+        "source_exact_strategy_replication": false,
+        "causal_gate": "PASS_SPEC_ONLY_PENDING_IMPLEMENTATION_TESTS"
+      }
+    }
+  ],
+  "rejected_unselected_directions": [
+    {
+      "trader": "Raschke",
+      "direction": "Seven-bar trailing low from February2004 interview",
+      "reason": "Presented in a hypothetical mechanical-system critique, not a verified rule she recommends for the proposed lifecycle."
+    },
+    {
+      "trader": "Carter",
+      "direction": "Two dark-blue histogram bars",
+      "reason": "No sufficiently direct exact source was obtained; do not infer a default."
+    },
+    {
+      "trader": "Carter",
+      "direction": "Box return close",
+      "reason": "Exact official rule found but not selected; only one Carter lifecycle component is submitted."
+    }
+  ]
+}

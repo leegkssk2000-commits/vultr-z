@@ -1,0 +1,123 @@
+[신규 후속 실행 승인 — Issue #1263]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=C70_CUMULATIVE_PROFITLOCK_AFTER_PR1262_V1
+
+Issue #1263 전체를 읽고 실제 실행하라.
+
+이번 작업은 병렬 후보 생성이 아니라
+C70_LOCAL → C70_TM → C70_TM_CAPREUSE_V1의 검증된 이득을
+하나의 cumulative DEV workcopy로 유지한 채
+post-partial runner의 marked DD / 장기 노출만 줄이는 다음 단계다.
+
+고정 parent:
+- C70_LOCAL / registered71
+- PR #1260 exact C70_TM
+- PR #1262 exact C70_TM_CAPREUSE_V1 candidate82
+- C63 및 부모 재실행 금지
+
+기존 Qullamaggie management와 CAPREUSE는 전부 유지:
+- 3rd completed UTC daily close
+- profit-only 1/3 partial
+- BE protection
+- SMA10 runner
+- native floor priority
+- released-capacity reuse
+- same-symbol normalized qty <= 1.0
+
+금지:
+- 3→5일, 1/3→1/2, SMA10→20
+- C70 entry/filter 변경
+- capacity cap 변경
+- 연도/종목/승패 예외
+- 다른 trader source
+- 숫자/threshold sweep
+- paid Gemini/OpenAI
+
+먼저 저장 원장으로 각 기간 DD peak→trough를 분해:
+- C70_LOCAL / C70_TM / CAPREUSE
+- 원래 lot / TM runner / CAPREUSE lot
+- realized partial PnL
+- unrealized runner giveback
+- fee/funding
+- occupancy interaction
+- C70_LOCAL→TM DD excess와 TM→CAPREUSE DD excess 검산
+
+그 후 사전 고정된 신규 후보 1개를 반드시 first FULL까지 실행:
+candidate = C70_CUMULATIVE_PROFITLOCK_V1
+
+새 규칙:
+첫 실제 profit partial fill 이후에만 same-symbol active group에
+ZEL_POST_PARTIAL_RISK_ENVELOPE를 적용한다.
+
+realized_bank_net(t):
+- first partial 이후 실제 fill된 positive partial들의 비용/funding 반영 realized net 합
+
+group_marked_net(t):
+- 해당 symbol 모든 active lots의 realized net
++ 현재 완료관측 mark net
+- remaining exit cost proxy
+
+peak_group_marked_net(t):
+- first partial fill 이후 현재까지 완료관측 group_marked_net 최고값
+
+allowed giveback = realized_bank_net(t)
+
+realized_bank_net > 0 이고
+group_marked_net <= peak_group_marked_net - realized_bank_net
+가 처음 성립하면 다음 실제 관측 open에서
+해당 symbol의 remaining runner/reuse lots를 전량 risk-envelope exit.
+
+원칙:
+- first partial 전 영향0
+- 미래봉/미완료봉 금지
+- native hard floor/data safety 우선
+- SMA10/source exit/BE/partial/CAPREUSE 자체는 변경 금지
+- next-open + gap 반영
+- actual fill 전 capacity release 금지
+- partial은 WR denominator 증가 없음
+- group exit 후 다음 정상 C70 signal은 새 root group 시작 가능
+
+예산:
+- 신규 후보 최대1
+- 기존 두 USED_DEV 창 first FULL 각1회 = 총2
+- parent replay/FIXED/sweep/retry/new OOS/API/live/order/deploy = 0
+- 누계가 그대로면 candidate83 / eval149-150을 실제 시작 직전 예약/read-back
+
+필수 첫 보고:
+C70_LOCAL | C70_TM | CAPREUSE | C70_CUMULATIVE_PROFITLOCK_V1
+
+필수 지표:
+completed/open, WR, avg win/loss, payoff, PF,
+terminal net, cost2, marked DD,
+max losing streak/loss tail,
+symbol-days exposure / avg concurrent normalized exposure,
+ordinary/top-decile winner retention,
+partial/runner/reuse/profit-lock trigger counts,
+occupancy/new/excluded,
+top1 contribution concentration,
+peak→trough runner/reuse contribution.
+
+증분:
+A LOCAL→TM
+B TM→CAPREUSE
+C CAPREUSE→PROFITLOCK
+D LOCAL→PROFITLOCK 누적
+
+이번 성공 기준:
+CAPREUSE 수익을 최대한 유지하면서
+DD와 장기 노출을 실제로 낮추는가.
+net이 늘어도 DD가 악화되면 위험수선 성공으로 부르지 마라.
+DD가 낮아져도 net/cost2/승리보존이 과도하게 훼손되면 TRADEOFF/REJECT.
+
+최소 구현 → saved DD attribution → causal/accounting tests →
+사전 freeze → FULL2 → raw/cost/risk-window 검산 →
+CI/review → 정상 PR 병합 → exact merge saved verification.
+
+완료 후 이번 scope만 REPORT_ONLY로 닫고
+경제표부터 보고 후 종료하라.
+다른 risk rule/source/C63 child를 자동 생성하지 마라.
+
+현재 관측 master:
+fddd5865b2d141f0c52a475f0f2a4e9254b0ec75
+reset 기준이 아니다. 시작 시 최신 origin/master 확인.

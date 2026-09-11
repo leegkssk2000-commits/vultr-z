@@ -1,0 +1,198 @@
+[신규 후속 실행 승인 — Issue #1282]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=TRENDRIDER_UNIFIED_ACK_REPAIR_AFTER_PR1281_V1
+
+Issue #1282 전체를 읽고 실제 실행하라.
+
+목적:
+PR1281의 실패 원인은 전략이 아니라 IMPLEMENTATION_ACK_CLASSIFICATION_FAILURE다.
+성공 WS 구독 ACK {id:<expected>,code:0,dataType:"",data:null}를 kline으로 잘못 분류했다.
+
+이번에는:
+ACK 최소수선
+→ 실제 ACK→kline
+→ REST 동일 candle 대조
+→ timestamp semantic PASS
+→ BTC/ETH exact1000 freeze
+→ P_COMMON/B_COMMON
+→ frozen G1~G6
+→ DEV_B confirmation
+→ U1/U2
+→ TrendRider Unified v1
+까지 같은 Work에서 완료한다.
+
+현재 관측 master:
+2f1f77894b69ccf4bccf169e03c1c545885fd8e1
+reset 기준 아님. 시작 시 최신 origin/master 확인.
+
+전략/경제 계약은 byte-preserve:
+- B_COMMON=trend_policy_batch_v1
+- P_COMMON=trend_rider_transition_freshness_child_policy_v1
+- frozen G1~G6
+- cost14bps / cost2 28bps
+- warmup64
+- DEV_A/B chronological half split
+- Unified=P_COMMON OR (B_COMMON_ONLY AND QUALITY_GATE)
+- final gates/Pareto/tie-break
+- exit/SL/TP/timeout/size
+변경 금지.
+
+금지:
+threshold/grid/sweep/FIXED
+arbitrary OOS
+prospective TrendRider decode
+Squeeze data access
+paid AI
+live/order/deploy.
+
+1) ACK repair
+PR1281 실패 실행본은 immutable evidence로 보존.
+새 version decoder에서 ACK를 kline보다 먼저 분류.
+
+ACK PASS:
+- id exact match
+- code is int 0, bool 금지
+- msg string
+- data absent OR null
+- dataType absent OR ""
+
+PASS면 SUBSCRIPTION_ACK_OK로 소비하고 kline 대기 계속.
+
+FAIL:
+id mismatch
+code missing/non-int/nonzero/bool
+non-null data
+unexpected non-empty dataType
+ACK+kline mixed malformed frame
+
+2) Live 전 regression
+반드시 PASS:
+- ACK(data absent)->kline->REST
+- ACK(data:null)->kline->REST
+  *실제 PR1281 raw ACK fixture 사용
+- ACK only timeout -> REST0
+- wrong id
+- nonzero/bool/string code
+- non-null data
+- ACK 후 kline channel mismatch
+- future frame mutation prefix invariant
+
+실패하면 live session0/economic0 종료.
+
+3) REST↔WS session 1회
+BTC-USDT 1h
+WS endpoint wss://open-api-swap.bingx.com/swap-market
+subscribe BTC-USDT@kline_1h
+session1/subscribe1/retry0
+REST max2.
+
+ACK 후 실제 kline K.t/K.T/OHLCV raw-first.
+같은 closed candle REST raw-first.
+
+PASS:
+WS K.t/K.T 존재.
+REST array: [0]==K.t and [6]==K.T.
+REST object: same symbol/interval + exact OHLC match + time==K.t.
+ambiguity0.
+
+FAIL:
+time==K.T
+OHLC mismatch/ambiguous
+no kline
+REST no exact match
+±1h 보정 필요
+
+PASS -> REST_WS_TIMESTAMP_SEMANTIC_RECEIPT_V2.json.
+FAIL -> exact blocker, retry0.
+
+4) Historical source PASS 후
+BTC-USDT/ETH-USDT
+1h
+cutoff 2026-08-30T00:00:00Z
+canonical open_ts exact1000 each
+2026-07-19T08:00:00Z~2026-08-29T23:00:00Z.
+
+raw before decode.
+max3 pages/symbol.
+retry0.
+guard quarantine.
+gap/duplicate/malformed0.
+BTC/ETH exact same timestamp vector.
+post-outcome refetch0.
+DATA_FREEZE_V5.json + per-symbol SHA + combined SHA.
+
+5) Stage0
+B_COMMON/P_COMMON × DEV_A/B
+max4 control runs.
+필수 표:
+eligible/completed/open
+WR/net/expectancy/PF/payoff/cost2/DD
+avg win/loss/worst/loss-tail
+exposure/conflict/top1
+overlap/P-only/B-only
+feature/intent lineage
+
+6) Stage1
+frozen G1~G6 only.
+DEV_A max6.
+hard gate:
+integrity PASS
+expectancy>0
+PF>=1
+payoff>=1
+cost2>0
+ordinary/top10 winner retention>=60%
+
+survivor<=2 freeze.
+unchanged DEV_B confirm max2.
+survivor0 => NO_CAUSAL_UNIFIED_GENE_COMMON_REPLAY.
+rescue0.
+
+7) Stage2
+U1 + 필요 시 orthogonal U2.
+max2 candidates.
+child FULL max4.
+control replay duplicate0.
+
+8) Stage3
+DEV_A/B 둘 다:
+net>0
+expectancy>0
+PF>=1
+payoff>=1
+cost2>0
+integrity clean
+winner retention>=60%.
+
+그 뒤 frozen Pareto/tie-break.
+
+PASS:
+TrendRider Unified v1 exact seal.
+
+FAIL:
+TREND_RIDER_UNIFIED_NOT_EARNED_COMMON_REPLAY.
+
+9) 성공 후
+prospective G5A handoff.
+common replay formal credit0.
+새 future qualification boundary.
+G5A와 이후 G5B data 시간 분리.
+Historical Primary/Broad archive only.
+Unified 하나만 다음 TrendRider lane.
+G5B terminal PASS 전 G6 금지.
+
+최종 보고:
+ACK regression
+ACK→kline chronology
+REST↔WS witness
+exact1000 SHA
+P_COMMON|B_COMMON|U1|U2 경제표
+donor attribution
+final seal/failure
+actual counts
+CI/review/merge/exact verification
+prospective G5A handoff.
+
+완료 후 REPORT_ONLY.
+자동 미세튜닝 successor 금지.

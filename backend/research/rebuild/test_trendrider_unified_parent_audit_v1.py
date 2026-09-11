@@ -96,6 +96,18 @@ class ParentAuditTests(unittest.TestCase):
         self.assertEqual(audit.saved_metrics(values)["max_drawdown_bps"], 8)
         self.assertEqual(audit.saved_metrics(values)["net_pnl_bps"], 12)
 
+    def test_saved_metrics_independent_of_builtin_float_sum_version(self):
+        rows = [row(1000, 1e16), row(2000, 1), row(3000, -1e16)]
+        expected = audit.saved_metrics(rows)
+        self.assertEqual(expected['net_pnl_bps'], 1)
+        def legacy_sum(values, start=0):
+            result = start
+            for value in values:
+                result += value
+            return result
+        with patch('builtins.sum', legacy_sum):
+            self.assertEqual(audit.saved_metrics(rows), expected)
+
     def test_real_frozen_receipts_pass_membership_but_cannot_authorize_economics(self):
         root = Path(__file__).resolve().parents[3]
         docs = audit.build_report(root)

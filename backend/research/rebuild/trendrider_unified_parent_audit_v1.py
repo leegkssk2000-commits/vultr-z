@@ -139,13 +139,15 @@ def saved_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if any(not math.isfinite(x) for x in values):
         raise ValueError("NONFINITE_SAVED_PNL")
     wins, losses = [x for x in values if x > 0], [-x for x in values if x < 0]
-    gp, gl = sum(wins), sum(losses)
+    # Python 3.12 changed built-in float sum. Stable audit bytes must not
+    # depend on whether a checkout is verified under Python 3.11 or 3.12.
+    gp, gl = math.fsum(wins), math.fsum(losses)
     cumulative = peak = dd = 0.0
     for value in values:
         cumulative += value
         peak = max(peak, cumulative)
         dd = max(dd, peak - cumulative)
-    costs = sum(float(x["realized_cost_bps"]) for x in rows)
+    costs = math.fsum(float(x["realized_cost_bps"]) for x in rows)
     worst_losses = sorted(-x for x in losses)[:max(1, math.ceil(len(losses) / 10))]
     events = [(x["entry_ts"], 1) for x in rows] + [(x["exit_ts"], -1) for x in rows]
     current = maximum = 0
@@ -156,18 +158,18 @@ def saved_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "completed_trades": len(values), "wins": len(wins),
         "losses": len(losses),
         "win_rate": len(wins) / len(values) if values else None,
-        "gross_pnl_bps": sum(float(x["gross_bps"]) for x in rows),
-        "net_pnl_bps": sum(values),
-        "net_expectancy_bps": sum(values) / len(values) if values else None,
+        "gross_pnl_bps": math.fsum(float(x["gross_bps"]) for x in rows),
+        "net_pnl_bps": math.fsum(values),
+        "net_expectancy_bps": math.fsum(values) / len(values) if values else None,
         "average_win_bps": gp / len(wins) if wins else None,
         "average_loss_bps": -gl / len(losses) if losses else None,
         "profit_factor": gp / gl if gl else None,
         "payoff": (gp / len(wins)) / (gl / len(losses)) if wins and losses else None,
         "max_drawdown_bps": dd,
         "realized_cost_bps": costs,
-        "cost2_net_pnl_bps": sum(values) - costs,
+        "cost2_net_pnl_bps": math.fsum(values) - costs,
         "worst_trade_bps": min(values) if values else None,
-        "bottom_decile_loss_mean_bps": sum(worst_losses) / len(worst_losses) if worst_losses else None,
+        "bottom_decile_loss_mean_bps": math.fsum(worst_losses) / len(worst_losses) if worst_losses else None,
         "bottom_decile_loss_count": len(worst_losses),
         "additive_symbol_days": sum(x["exit_ts"] - x["entry_ts"] for x in rows) / 86400000,
         "max_concurrent_independent_saved_rows": maximum,

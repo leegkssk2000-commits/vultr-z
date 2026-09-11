@@ -1,0 +1,51 @@
+name: Squeeze exact lifecycle and blocked qualification verification
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  saved-and-synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Lifecycle and evidence integrity fixtures; no real qualification
+        run: |
+          python -B -m unittest \
+            backend.research.rebuild.test_squeeze_g5b_lifecycle_v1 \
+            backend.research.rebuild.test_squeeze_g5b_evidence_v1 \
+            backend.research.rebuild.test_squeeze_g5a_qualification_v1 \
+            backend.research.rebuild.test_squeeze_g5b_saved_verify_v1
+      - name: Preserve source, old lanes and G5 through G14 gates
+        run: |
+          python -B -m unittest \
+            backend.research.rebuild.test_g5_clean_runner_v1 \
+            backend.research.rebuild.test_g5_clean_runner_binding_fix_v1 \
+            backend.research.rebuild.test_g5_clean_runner_cutover_progress_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v1 \
+            backend.research.rebuild.test_g5_forward_real_evidence_bridge_v3 \
+            backend.research.rebuild.test_g5a_source_g5b_operational_v1 \
+            backend.research.rebuild.test_g5_g14_governance_validator_v1 \
+            backend.research.rebuild.test_g5_g14_generation_controller_v1 \
+            backend.research.rebuild.test_g5_data_stale_evidence_v1 \
+            backend.research.prep.test_g5_production_economic_ssot_v1
+      - name: Verify already issued rejection and frozen parent evidence
+        run: |
+          python -B -m backend.research.rebuild.squeeze_g5a_qualification_v1 --verify-only
+          python -B -m backend.research.rebuild.squeeze_g5b_saved_verify_v1
+          python -B -m backend.research.rebuild.c70_tm_capreuse_verify_v1
+          npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code

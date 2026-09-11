@@ -28,9 +28,23 @@ class SourceAdmissionTests(unittest.TestCase):
         self.assertIn("NONMONOTONIC:source_timestamp_ms", admission.audit_native_rows([row, row])["errors"])
 
     def test_expired_registry_cannot_generate(self):
-        registry = admission.read("backend/research/architecture_factory/g5a_source_capability_registry_v1.json")
-        with self.assertRaisesRegex(RuntimeError, "NOT_READY_BEFORE_GENERATION"):
-            admission.generation_sources(registry, now_ms=registry["as_of_ms"] + 86_400_000)
+        # Isolate clock expiry from the append-only production files, whose
+        # current bytes can legitimately postdate the saved registry receipt.
+        # Input drift has its own rejection test immediately below.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.json"
+            source.write_text('{"fixture_only":true}\n')
+            registry = admission.seal({
+                "source_files_sha256": {"source.json": admission.file_sha(source)},
+                "sources": [{"source": "ohlcv", "decision": "PASS", "available": True,
+                             "point_in_time": True, "validated": True, "fresh": True,
+                             "stale_limit_ms": 14_400_000,
+                             "historical_depth": {"last_close_ms": 1_000}}],
+            })
+            self.assertEqual(admission.generation_sources(registry, now_ms=14_400_999, root=root), ["ohlcv"])
+            with self.assertRaisesRegex(RuntimeError, "NOT_READY_BEFORE_GENERATION"):
+                admission.generation_sources(registry, now_ms=14_401_000, root=root)
 
     def test_modified_registry_cannot_generate(self):
         registry = admission.read("backend/research/architecture_factory/g5a_source_capability_registry_v1.json")

@@ -1,0 +1,137 @@
+[신규 후속 실행 승인 — Issue #1276]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=TRENDRIDER_UNIFIED_SOURCE_REPAIR_AFTER_PR1275_V1
+
+Issue #1276 전체를 읽고 실제 실행하라.
+
+목표:
+PR1275의 BLOCKED_COMMON_SOURCE_DATA는 경제 실패가 아니다.
+전략/유전자/비용/분할은 전부 동결하고,
+공통 historical source-window 수집기만 최소수선한 뒤
+B_COMMON/P_COMMON → Stage1 genes → DEV_B confirmation → U1/U2 FULL → final Unified까지
+같은 Work에서 끝낸다.
+
+현재 관측 master:
+0ccb519e3a373c01265eff652f00d59d47d2b30f
+reset 기준 아님. 시작 시 최신 origin/master 확인 및 이후 이력 보존.
+
+동결:
+- B_COMMON = trend_policy_batch_v1 exact TrendRider
+- P_COMMON = trend_rider_transition_freshness_child_policy_v1
+- G1~G6 gene 정의
+- cutoff=2026-08-30T00:00:00Z
+- BTC-USDT / ETH-USDT
+- 1h
+- common cost=14bps / cost2=28bps
+- warmup64
+- DEV_A/DEV_B chronological half split
+- Stage1 DEV_A selection → max2 freeze → unchanged DEV_B confirmation
+- Unified = P_COMMON OR (B_COMMON_ONLY AND QUALITY_GATE)
+- 기존 final gates/Pareto/tie-break
+
+금지:
+threshold/grid/sweep,
+exit/SL/TP/timeout/size/cost 수정,
+Squeeze/prospective TrendRider data 접근,
+paid AI/live/order/deploy.
+
+1) Timestamp semantic preflight
+네트워크 호출 전 PR1275 quarantined raw와 repo source/evaluator만 사용.
+API `time`의 open/close semantic,
+endTime boundary behavior,
+policy canonical bar timestamp를 구분해서
+TIMESTAMP_SEMANTIC_RECEIPT.json으로 결과 전에 봉인.
+
+근거없는 ±1h 보정 금지.
+불명확하면 BLOCKED_TIMESTAMP_SEMANTIC, 경제실행0.
+
+2) Source collector 최소수선
+새 versioned collector + 새 빈 evidence root.
+successor acquisition 1회만.
+
+- raw bytes/hash/request metadata decode 전 저장
+- guard bar가 있어도 timestamp-only membership으로 target exact clock 선택 가능
+- 필요 시 deterministic backward pagination
+- cursor는 semantic receipt 규칙만
+- max3 pages/symbol
+- transport retry0
+- post-outcome refetch/re-window0
+- normalized 각 symbol exactly1000 bars
+- cutoff 이후 canonical open_ts 0
+- gap/duplicate/malformed0
+- BTC/ETH timestamp vectors exact equal
+- extra guard raw rows economic input0
+
+성공 시 DATA_FREEZE_V2.json 봉인.
+실패 시 exact source blocker로 종료.
+
+3) Source 성공 후 즉시 common replay
+Stage0:
+B_COMMON/P_COMMON × DEV_A/B, max4.
+필수 경제표:
+eligible/completed/open,
+WR/net/expectancy/PF/payoff/cost2/DD,
+avg win/loss/worst/loss-tail,
+exposure/conflict/top1,
+overlap/P-only/B-only,
+feature/intent lineage.
+
+4) Stage1
+PR1275 frozen G1~G6만 DEV_A screen max6.
+hard gate 그대로.
+survivor max2 freeze.
+수정 없이 DEV_B confirmation max2.
+
+survivor0:
+NO_CAUSAL_UNIFIED_GENE_COMMON_REPLAY
+추가 rescue0.
+
+5) Stage2
+U1 + 필요 시 orthogonal U2.
+max2 candidates / child FULL max4.
+controls 중복 replay0.
+
+6) Stage3
+DEV_A/B 모두:
+net>0
+expectancy>0
+PF>=1
+payoff>=1
+cost2>0
+integrity clean
+winner retention>=60%
+
+그 후 frozen Pareto/tie-break.
+
+PASS:
+TrendRider Unified v1 exact seal.
+FAIL:
+TREND_RIDER_UNIFIED_NOT_EARNED_COMMON_REPLAY.
+
+7) 성공 후 prospective G5A handoff
+common replay formal credit0.
+새 future qualification boundary.
+G5A qualification data와 이후 G5B fresh data 시간 분리.
+Historical Primary/Broad archive only.
+Unified 하나만 차기 TrendRider lane.
+G5B terminal 전 G6 금지.
+
+첫 보고:
+- timestamp semantic 결론
+- source repair 전/후
+- BTC/ETH exact1000 data SHA
+- DEV_A/B
+- B_COMMON/P_COMMON 경제표
+- Stage1→DEV_B
+
+최종:
+- P_COMMON|B_COMMON|U1|U2 경제표
+- donor attribution
+- exact Unified v1 seal 또는 failure
+- source pages/control/screen/candidate/FULL
+- tests/CI/review/merge/exact verification
+- prospective G5A handoff
+
+완료 후 REPORT_ONLY.
+자동 미세튜닝 successor 금지.

@@ -1,0 +1,86 @@
+[신규 후속 실행 승인 — Issue #1278]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=TRENDRIDER_UNIFIED_CANONICAL_KLINE_AFTER_PR1277_V1
+
+Issue #1278 전체를 읽고 실제 실행하라.
+
+목적:
+PR1277의 BLOCKED_TIMESTAMP_SEMANTIC은 경제 실패가 아니다.
+공식 BingX v3 kline schema + outcome-independent calibration probe로
+객체형 REST time의 canonical open-time mapping을 확정한 뒤,
+동결된 TrendRider common replay를 끝까지 실행한다.
+
+현재 관측 master:
+38d550c05b7b42c2874556dd7bb823c513263189
+reset 기준 아님. 시작 시 최신 origin/master 확인.
+
+동결:
+B_COMMON=trend_policy_batch_v1
+P_COMMON=trend_rider_transition_freshness_child_policy_v1
+G1~G6
+cost=14bps / cost2=28bps
+warmup64
+DEV_A/B half split
+Unified=P_COMMON OR (B_COMMON_ONLY AND QUALITY_GATE)
+기존 final gates/Pareto
+exit/SL/TP/timeout/size
+threshold/grid/sweep/FIXED/prospective decode/Squeeze data/paidAI/live/order/deploy=0
+
+1) 공식 schema authority
+BingX 공식 BingX-API/api-ai-skills commit/blob SHA 저장.
+v3 klines official array:
+[0]=Open time,[1]=Open,[2]=High,[3]=Low,[4]=Close,[5]=Volume,[6]=Close time.
+가능하면 X-SOURCE-KEY: BX-AI-SKILL 사용/기록.
+객체형 time을 자동 동일시 금지.
+
+2) timestamp calibration
+경제 실행 전 BTC-USDT 1h 진단 probe 최대2.
+Probe A: 사전고정 hour T, startTime=T, endTime=T+1h-1ms, limit<=3.
+Probe B: 인접 다른 hour T2 동일.
+raw/request/header/status decode 전 저장.
+
+PASS:
+- array면 [0]/[6] 직접 확인.
+- object면 두 probe에서 time이 official openTime과 동일함을 cross-schema로 증명.
+- open/close 양쪽 가능성이 남으면 FAIL.
+- OHLC continuity만으로 추정 금지.
+- ±1h 임의 보정 금지.
+
+PASS -> CANONICAL_KLINE_TIMESTAMP_RECEIPT.json.
+FAIL -> BLOCKED_CANONICAL_KLINE_SCHEMA, 경제실행0.
+
+3) common source
+calibration PASS 후 1회.
+BTC-USDT/ETH-USDT,1h,cutoff=2026-08-30T00:00:00Z.
+canonical open_ts exact1000:
+2026-07-19T08:00:00Z~2026-08-29T23:00:00Z.
+array는 openTime/closeTime 직접.
+object는 calibration PASS mapping 때만.
+raw before decode, deterministic pagination, max3 pages/symbol, retry0,
+gap/duplicate/malformed0, BTC/ETH clock 동일, refetch0.
+DATA_FREEZE_V3.json 봉인.
+
+4) replay
+Stage0 controls: B/P x DEV_A/B max4.
+Stage1: frozen G1~G6 DEV_A max6 -> survivor<=2 freeze -> unchanged DEV_B confirm max2.
+survivor0 => NO_CAUSAL_UNIFIED_GENE_COMMON_REPLAY.
+Stage2: U1, 필요 시 orthogonal U2, max2 candidates / child FULL max4.
+Stage3 final gate는 DEV_A/B 둘 다 net>0, expectancy>0, PF>=1, payoff>=1, cost2>0, integrity clean, winner retention>=60%.
+PASS => TrendRider Unified v1 exact seal.
+FAIL => TREND_RIDER_UNIFIED_NOT_EARNED_COMMON_REPLAY.
+
+5) 성공 후 prospective G5A handoff
+common replay formal credit0.
+새 future qualification boundary.
+G5A와 이후 G5B 데이터 시간 분리.
+Historical Primary/Broad archive only.
+Unified 하나만 다음 TrendRider lane.
+G5B terminal PASS 전 G6 금지.
+
+최종 보고:
+official schema/probe 판정, exact1000 SHA, B/P/U1/U2 경제표,
+donor attribution, final seal/failure, 실제 실행수, CI/merge/exact verification,
+prospective G5A handoff 여부.
+
+완료 후 REPORT_ONLY. 자동 미세튜닝 successor 금지.

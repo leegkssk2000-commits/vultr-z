@@ -1,0 +1,56 @@
+"""Root-owned one-time component screen. Not an economic FULL dispatcher."""
+import json,os,subprocess,time
+from pathlib import Path
+from unittest.mock import patch
+from backend.research.rebuild import squeeze_sprint_account_v1 as c
+from backend.research.rebuild import squeeze_sprint_screen_v1 as screen
+from backend.research.rebuild import squeeze_sprint_verify_v1 as verify
+a=c.a;out=c.OUT
+spec=a.read(out/'SPEC.json');freeze=a.read(out/'REMOTE_FREEZE.json')
+assert spec['status']=='FROZEN_BEFORE_STAGE1'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=a.ROOT,text=True).strip()==freeze['commit_sha']
+for path,sha in {**spec['source_files_sha256'],**spec['preserved_files_sha256']}.items():assert a.h(a.ROOT/path)==sha,path
+for per,sha in spec['input_packet_sha256'].items():assert a.h(a.INPUTS/(per+'.json.gz'))==sha
+assert a.h(out/'CHALLENGE_WINDOW_SEALED.json')==spec['challenge_sha256']
+a.put(out/'STAGE1_STARTED.json',dict(started_ns=time.time_ns(),freeze=freeze,spec_sha256=a.h(out/'SPEC.json'),FULL=0,canonical_candidates=0,owner='WORK_793e452bbc6b_ROOT'))
+budget=a.read(out/'BUDGET.json')
+def budget_save():
+    tmp=out/'BUDGET.pending';tmp.write_bytes(a.canon(budget)+b'\n');os.replace(tmp,out/'BUDGET.json')
+table={}
+for slot in spec['stage1_slots']:
+    table[slot]={}
+    for per in c.PERIODS:
+        path=out/'STAGE1'/slot/per
+        attempt=dict(stage='STAGE1',slot=slot,period=per,status='STARTED',started_ns=time.time_ns(),FULL=0,
+            canonical_candidate_number=None,retry=False,freeze_commit=freeze['commit_sha'],spec_sha256=a.h(out/'SPEC.json'))
+        a.put(path/'EXECUTION_STARTED.json',attempt)
+        budget['squeeze_sprint_allocation']['screen_window_starts'].append(attempt);budget_save()
+        try:
+            packet=a.gz(a.INPUTS/(per+'.json.gz'));cal=spec['periods'][per]
+            parent_raw=a.gz(c.cap.OUT/per/'RAW.json.gz');parent=a.gz(c.cap.OUT/per/'RESULT.json.gz')
+            raw={}
+            # Dynamic sentinels prohibit hidden signal, source lifecycle or
+            # capacity replay inside the fixed-entry component-only screen.
+            forbidden=AssertionError('STAGE1_FORBIDDEN_ECONOMIC_REPLAY')
+            with patch.object(screen.cap,'replay',side_effect=forbidden),patch.object(screen.tm,'position',side_effect=forbidden),patch.object(screen.tm.native,'m1_setups',side_effect=forbidden):
+                for symbol,rr in sorted(parent_raw.items()):
+                    raw[symbol]=screen.screen_symbol(rr,packet['rows_by'][symbol],packet['costs'][symbol],cal['runoff_end_ms'],slot)
+            a.put(path/'RAW.json.gz',raw)
+            result=c.charge(raw,packet,cal,slot,c.SCREEN);a.put(path/'RESULT.json.gz',result)
+            checked={symbol:verify.verify_screen_saved(rr,parent_raw[symbol],packet['rows_by'][symbol],packet['costs'][symbol],cal['runoff_end_ms']) for symbol,rr in raw.items()}
+            a.put(path/'ACCOUNTING.json',dict(symbols=checked,money=verify.verify_money_saved(raw,result,packet)))
+            snap=c.snapshot(result,parent);metrics=c.screen_metrics(parent,result)
+            a.put(path/'SNAPSHOT.json',snap);a.put(path/'SCREEN_METRICS.json',metrics)
+            table[slot][per]=metrics
+            attempt.update(status='COMPLETED',finished_ns=time.time_ns());budget_save()
+            a.put(path/'ATTEMPT.json',attempt)
+            a.put(path/'RECEIPT.json',dict(status='PASS',spec_sha256=a.h(out/'SPEC.json'),freeze_commit=freeze['commit_sha'],files={x.name:a.h(x) for x in path.iterdir() if x.is_file()},FULL=0,canonical_candidates=0))
+            print(json.dumps(dict(slot=slot,period=per,normal=metrics['normal_increment_bps'],cost2=metrics['cost2_increment_bps'],ordinary=metrics['ordinary_winner_retention'],top10=metrics['top_decile_winner_retention']),sort_keys=True),flush=True)
+        except BaseException as exc:
+            attempt.update(status='FAILED_NO_RETRY',finished_ns=time.time_ns(),error=repr(exc));budget_save()
+            a.put(path/'FAILED_NO_RETRY.json',attempt)
+            raise
+a.put(out/'STAGE1_TABLE.json',table)
+selection=c.select_stage1(table,a.read(out/'SOURCE_REGISTRY.json'))
+a.put(out/'STAGE1_SELECTION.json',selection)
+print(json.dumps(selection,sort_keys=True),flush=True)

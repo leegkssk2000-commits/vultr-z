@@ -48,7 +48,7 @@ canonical 데이터 SHA는 `3a17c13bf38ba83d11a9246b99750fcd9bf4a29ef377023812b1
 | future mutation prefix invariance | PASS |
 | 기존 3개 lane dispatcher passthrough | PASS |
 
-새 lifecycle 어댑터 합성 테스트 32개, production evidence 합성 테스트 29개, qualification 합성 테스트 17개가 통과했다. 새 어댑터를 저장된 **105 campaigns·3,081 held-close observations·133 exit fills**와 직접 대조했다. 이 비교는 이미 승인된 entry 이후 전이에 한정한다. 기존 저장 전용 검증기가 별도로 **105 campaigns·3,328 trace**의 진입 승인·portfolio capacity·현금 원장을 확인했다. 이 검증들은 formal fresh credit 0이며 경제 평가·튜닝이 아니다.
+새 lifecycle 어댑터 합성 테스트 32개, production evidence 합성 테스트 34개, qualification 합성 테스트 17개가 통과했다. 새 어댑터를 저장된 **105 campaigns·3,081 held-close observations·133 exit fills**와 직접 대조했다. 이 비교는 이미 승인된 entry 이후 전이에 한정한다. 기존 저장 전용 검증기가 별도로 **105 campaigns·3,328 trace**의 진입 승인·portfolio capacity·현금 원장을 확인했다. 이 검증들은 formal fresh credit 0이며 경제 평가·튜닝이 아니다.
 
 새 evidence 모듈은 entry/partial/final leg의 실제 base qty depth VWAP, fee authority SHA, 지연, signed funding settlement, completed 5m path를 검산한다. 같은 봉의 MFE/MAE 선후는 UNKNOWN으로 표시하고 양끝 부분봉의 미관측 구간을 명시한다. 누락 component는 null/BLOCK이다. append-only 원장은 hash chain·flock·fsync·입력 재검산을 사용하며 동일 signal의 lot/campaign 이름 변경으로 T를 추가할 수 없다. PARTIAL과 OPEN/CENSORED의 formal T는 0이다.
 
@@ -80,10 +80,12 @@ T6는 diagnostic, T12는 provisional이며 terminal이 아니다. 별도의 revi
 
 기존 코드·증거 **321개 파일**의 hash를 보존했다. 기존 governance/source/bridge 테스트 55개가 통과했다. 기존 만료 테스트의 production source 입력이 저장 registry보다 갱신되어 먼저 hash 오류를 내는 문제는 테스트 fixture만 격리해 해결했다. 실제 gate의 hash·freshness 규칙은 바꾸지 않았다. 누계는 **84후보 / 152평가** 그대로다.
 
-독립 리뷰에서 동시 partial/final, fee SHA 결속, MFE/MAE 순서, 누락 증거의 후속 보완, 동일 signal 중복 T 문제를 수선했다. 78개 합성 테스트를 독립 재확인했다. 이것은 G5A P5의 서로 다른 provider 리뷰를 뜻하지 않는다.
+독립 리뷰에서 동시 partial/final, fee SHA 결속, MFE/MAE 순서, 누락 증거의 후속 보완, 동일 signal 중복 T 문제를 수선했다. 83개 합성 테스트를 독립 재확인했다. 이것은 G5A P5의 서로 다른 provider 리뷰를 뜻하지 않는다.
 
 정식 심사 source/authority를 원격 `05234827e4d468e06813fb3c26935569ad4f2a98`에 먼저 고정하고 bytes를 read-back했다. 단일 실패 receipt는 `6fee57568f37b0ef0fb4594fdea10155845a0f5f`에 보존했다. `--verify-only` 및 최종 CI는 qualification/gate/경제 실행을 재호출하지 않는다. `G5A_QUALIFICATION_ATTEMPT.json`은 시작된 슬롯을 소비하며 재시도를 차단한다.
 
 관련 승인: [Issue #1270](https://github.com/leegkssk2000-commits/vultr-z/issues/1270). 준비 인계 [Issue #1268](https://github.com/leegkssk2000-commits/vultr-z/issues/1268)는 이 결과로 종료한다. exact merge와 CI·status read-back 결과는 같은 폴더의 `EXACT_MERGE_VERIFICATION.json`에 기록한다.
 
 배포는 필요 없다. 되돌릴 범위는 새 어댑터·검증 코드/workflow와 테스트 fixture 변경이다. 기존 부모·3개 운영 lane·권한·boundary는 보존했다. 이 실패를 근거로 자동 재튜닝·재시험·새 창·새 후보를 실행하지 않는다.
+
+PR 자동 리뷰의 시간 인과성 P2 두 건도 수정했다. 진입/partial 실체결보다 앞서거나 같은 시각의 일반 청산 결정을 차단하고, due-open을 원래 결정 봉 close에 고정했다. 실제 수신·판단 지연은 decision_observed_ts에 보존한다. 기존 D3 SMA10 공동 청산만 원래 sealed joint-intent로 허용한다. 수정 후 evidence 34개와 세 가지 기존 false-credit 재현의 차단을 독립 검증했다. 최종 테스트는 새 검증 86개와 기존 검증 55개, 총 141개이다. 자격심사·경제 실행 재시도는 없다.

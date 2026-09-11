@@ -206,21 +206,24 @@ def validate_leg(leg: Mapping[str, Any], expected_identity: Mapping[str, Any], *
         require(leg.get("duplicate") == 0 and leg.get("lookahead") == 0
                 and leg.get("historical_backfill") is False, "LEG_CAUSALITY_FLAGS")
         decision = timestamp(leg.get("decision_ts"), "DECISION")
+        decision_observed = timestamp(leg.get("decision_observed_ts"), "DECISION_OBSERVED")
         due = timestamp(leg.get("due_open_ts"), "DUE_OPEN")
         observed = timestamp(leg.get("observed_ts"), "OBSERVED")
-        require(boundary_ms < decision <= due <= observed <= as_of_ms, "LEG_TIME_ORDER")
-        bar = source(leg.get("decision_bar"), "DECISION_BAR", as_of_ms=decision)
+        require(boundary_ms < decision <= decision_observed <= observed <= as_of_ms, "LEG_TIME_ORDER")
+        bar = source(leg.get("decision_bar"), "DECISION_BAR", as_of_ms=decision_observed)
         require(bar.get("symbol") == leg["symbol"]
                 and timestamp(bar["raw"].get("bar_close_ts"), "DECISION_CLOSE") <= bar["observed_ts"], "DECISION_COMPLETED_BAR")
-        require(bar["raw"]["bar_close_ts"] <= due, "DECISION_DUE_ORDER")
         if leg["kind"] == "ENTRY":
             require(bar["raw"]["bar_close_ts"] > boundary_ms
                     and leg["signal_sha"] == bar["receipt_sha256"], "ENTRY_SIGNAL_BOUNDARY_OR_SHA")
+        # A continuous next bar opens at this completed bar's close. Actual
+        # receipt/execution lag remains in observed timestamps, never in due.
+        require(bar["raw"]["bar_close_ts"] == decision == due, "NEXT_OPEN_DECISION_BAR_PARITY")
         qty = number(leg.get("base_qty"), "LEG_QTY", positive=True)
         nq = number(leg.get("normalized_qty"), "NORMALIZED_QTY", positive=True)
         require(nq <= 1.0, "NORMALIZED_QTY_CAP")
         d = _depth(leg.get("depth"), symbol=leg["symbol"], qty=qty,
-                   buy=leg["kind"] == "ENTRY", due_ts=due, as_of_ms=as_of_ms,
+                   buy=leg["kind"] == "ENTRY", due_ts=decision_observed, as_of_ms=as_of_ms,
                    consumed_before=number(leg.get("depth_consumed_base_before"), "DEPTH_CONSUMED_BEFORE"))
         require(observed == d["observed_ts"], "LEG_DEPTH_TIMESTAMP_PARITY")
         same(leg.get("delay_ms"), observed - due, "DELAY")
@@ -238,6 +241,33 @@ def validate_leg(leg: Mapping[str, Any], expected_identity: Mapping[str, Any], *
     except (EvidenceError, KeyError, TypeError, IndexError, AttributeError) as exc:
         result["blockers"] = [str(exc) if isinstance(exc, EvidenceError) else "MALFORMED_LEG:" + type(exc).__name__]
     return seal(result)
+
+
+def _d3_original_safety_intent(partial: Mapping[str, Any], final: Mapping[str, Any]) -> None:
+    """Only a pre-existing D3 joint intent may decide FINAL before partial fills.
+
+    Both fill legs bind the same original decision and IDs. The final fill may
+    use that book's remainder or wait for later executable depth; it may not
+    relabel an ordinary post-partial BE/SMA10 decision as the D3 safety action.
+    """
+    witness = check_seal(partial.get("decision_intent"), "D3_ORIGINAL_INTENT")
+    require(final.get("decision_intent") == witness, "D3_ORIGINAL_INTENT_PARITY")
+    require(partial.get("reason") == "D3_PROFIT_PARTIAL_NEXT_OPEN"
+            and final.get("reason") == "D3_SMA10_SAFETY_CLOSE_NEXT_OPEN", "D3_ORIGINAL_INTENT_REASON")
+    require(all(partial.get(k) == final.get(k) for k in
+                ("decision_ts", "decision_observed_ts", "due_open_ts", "decision_bar")), "D3_SAME_DECISION_REQUIRED")
+    expected = {
+        "kind": "D3_PARTIAL_WITH_SMA10_SAFETY", "strategy_digest": partial["strategy_digest"],
+        "lot_id": partial["lot_id"], "campaign_id": partial["campaign_id"],
+        "signal_sha": partial["signal_sha"], "partial_leg_id": partial["leg_id"],
+        "final_leg_id": final["leg_id"], "decision_ts": partial["decision_ts"],
+        "decision_observed_ts": partial["decision_observed_ts"], "due_open_ts": partial["due_open_ts"],
+        "decision_bar_sha": partial["decision_bar"]["receipt_sha256"],
+        "created_at_ms": partial["decision_observed_ts"],
+        "partial_reason": partial["reason"], "final_reason": final["reason"],
+    }
+    require({k: v for k, v in witness.items() if k != "receipt_sha256"} == expected,
+            "D3_ORIGINAL_INTENT_BINDING")
 
 
 def _funding(value: Any, legs: Sequence[Mapping[str, Any]], *, symbol: str,
@@ -354,6 +384,18 @@ def campaign_evidence(campaign: Mapping[str, Any], legs: Sequence[Mapping[str, A
         kinds = [l["kind"] for l in legs]
         require(kinds[0] == "ENTRY" and kinds.count("ENTRY") == 1 and kinds.count("PARTIAL") <= 1
                 and kinds.count("FINAL_EXIT") <= 1, "LEG_LIFECYCLE")
+        partial = None
+        for leg in legs[1:]:
+            # Completed-close decisions precede an equal-clock fill. Without
+            # separate event-order evidence an equal timestamp cannot own it.
+            require(leg["decision_ts"] > legs[0]["observed_ts"], "EXIT_DECISION_BEFORE_OR_AT_ENTRY_FILL")
+            if leg["kind"] == "PARTIAL":
+                partial = leg
+            elif leg["kind"] == "FINAL_EXIT" and partial is not None:
+                if leg["decision_ts"] <= partial["observed_ts"]:
+                    require(leg.get("reason") == "D3_SMA10_SAFETY_CLOSE_NEXT_OPEN",
+                            "FINAL_DECISION_BEFORE_OR_AT_PARTIAL_FILL")
+                    _d3_original_safety_intent(partial, leg)
         closed = campaign["status"] == "CLOSED"
         require((closed and kinds[-1] == "FINAL_EXIT") or (not closed and "FINAL_EXIT" not in kinds), "CLOSED_FINAL_EXIT_PARITY")
         initial = number(campaign.get("initial_base_qty"), "INITIAL_QTY", positive=True)

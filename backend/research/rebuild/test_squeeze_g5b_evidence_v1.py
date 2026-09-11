@@ -61,7 +61,10 @@ def fixture(status="CLOSED"):
         change = qty if kind == "ENTRY" else -qty
         legs.append({**common, "leg_id": "leg-" + str(ordinal), "kind": kind,
                      "leg_sequence": ordinal, "depth_consumed_base_before": 0.0,
-                     "decision_ts": due, "due_open_ts": due, "observed_ts": observed,
+                     "decision_ts": due, "decision_observed_ts": due,
+                     "due_open_ts": due, "observed_ts": observed,
+                     "reason": {"ENTRY": "C70_ENTRY_NEXT_OPEN", "PARTIAL": "D3_PROFIT_PARTIAL_NEXT_OPEN",
+                                "FINAL_EXIT": "RUNNER_SMA10_CLOSE_NEXT_OPEN"}[kind],
                      "delay_ms": 2, "decision_bar": signal if ordinal == 0 else bar(due),
                      "depth": depth(due, observed, mid), "fee_authority": fee(),
                      "base_qty": qty, "normalized_qty": qty / 3, "notional": qty * px,
@@ -100,6 +103,21 @@ def run_fixture(data):
     campaign, legs, funding, path, identity, as_of = data
     return evidence.campaign_evidence(campaign, legs, funding, path, identity,
                                       boundary_ms=B, as_of_ms=as_of)
+
+
+def bind_d3_safety_intent(partial, final):
+    final["reason"] = "D3_SMA10_SAFETY_CLOSE_NEXT_OPEN"
+    witness = evidence.seal({
+        "kind": "D3_PARTIAL_WITH_SMA10_SAFETY", "strategy_digest": partial["strategy_digest"],
+        "lot_id": partial["lot_id"], "campaign_id": partial["campaign_id"],
+        "signal_sha": partial["signal_sha"], "partial_leg_id": partial["leg_id"],
+        "final_leg_id": final["leg_id"], "decision_ts": partial["decision_ts"],
+        "decision_observed_ts": partial["decision_observed_ts"], "due_open_ts": partial["due_open_ts"],
+        "decision_bar_sha": partial["decision_bar"]["receipt_sha256"],
+        "created_at_ms": partial["decision_observed_ts"],
+        "partial_reason": partial["reason"], "final_reason": final["reason"],
+    })
+    partial["decision_intent"] = final["decision_intent"] = witness
 
 
 class SqueezeEvidenceTests(unittest.TestCase):
@@ -146,11 +164,13 @@ class SqueezeEvidenceTests(unittest.TestCase):
                                "bids": [[109, .5], [108, 1], [107, 2]]}})
         for leg, offset in ((legs[1], 0), (legs[2], 1)):
             leg.update(decision_ts=legs[1]["decision_ts"], due_open_ts=legs[1]["due_open_ts"],
+                       decision_observed_ts=legs[1]["decision_observed_ts"],
                        observed_ts=legs[1]["observed_ts"], decision_bar=legs[1]["decision_bar"],
                        depth=shared, depth_consumed_base_before=offset)
             vwap = evidence.depth_vwap_base(shared["raw"]["bids"], leg["base_qty"], consumed_base_before=offset)
             leg.update(notional=leg["base_qty"] * vwap, fee_cash=leg["base_qty"] * vwap * .0005,
                        slippage_cash=leg["base_qty"] * (110 - vwap), impact_cash=leg["base_qty"] * (109 - vwap))
+        bind_d3_safety_intent(legs[1], legs[2])
         campaign["final_exit_ts"] = legs[2]["observed_ts"]
         data[-1] = legs[2]["observed_ts"] + 1000
         data[2] = evidence.seal({**data[2], "rows": data[2]["rows"][:1]})
@@ -161,6 +181,10 @@ class SqueezeEvidenceTests(unittest.TestCase):
         self.assertTrue(result["production_grade"], result["blockers"])
         self.assertEqual(result["formal_fresh_T"], 1)
         self.assertAlmostEqual(result["metrics"]["net_cash"], -303 + 108.5 + 214.5 - (303 + 108.5 + 214.5) * .0005 - .3)
+        witness = legs[1].pop("decision_intent")
+        legs[2].pop("decision_intent")
+        self.assertBlocked(data, "D3_ORIGINAL_INTENT_MISSING")
+        legs[1]["decision_intent"] = legs[2]["decision_intent"] = witness
         legs[2]["depth_consumed_base_before"] = 0
         # Recompute claimed final cost to emulate a second fill reusing liquidity.
         legs[2].update(notional=216, fee_cash=216 * .0005, slippage_cash=4, impact_cash=2)
@@ -260,6 +284,68 @@ class SqueezeEvidenceTests(unittest.TestCase):
         data = fixture()
         data[1][0]["delay_ms"] = 0
         self.assertBlocked(data, "DELAY_RECONCILIATION")
+
+    def test_partial_decision_before_or_equal_actual_entry_fill_is_blocked(self):
+        for offset in (-1, 0):
+            with self.subTest(offset=offset):
+                data = fixture()
+                partial = data[1][1]
+                ts = data[1][0]["observed_ts"] + offset
+                partial.update(decision_ts=ts, decision_observed_ts=ts, due_open_ts=ts,
+                               decision_bar=bar(ts), delay_ms=partial["observed_ts"] - ts)
+                self.assertBlocked(data, "EXIT_DECISION_BEFORE_OR_AT_ENTRY_FILL")
+
+    def test_final_decision_before_or_equal_actual_partial_fill_is_blocked(self):
+        for offset in (-1, 0):
+            with self.subTest(offset=offset):
+                data = fixture()
+                final = data[1][2]
+                ts = data[1][1]["observed_ts"] + offset
+                final.update(decision_ts=ts, decision_observed_ts=ts, due_open_ts=ts,
+                             decision_bar=bar(ts), delay_ms=final["observed_ts"] - ts)
+                self.assertBlocked(data, "FINAL_DECISION_BEFORE_OR_AT_PARTIAL_FILL")
+
+    def test_due_cannot_shift_from_the_completed_decision_bar(self):
+        for index in (0, 1, 2):
+            with self.subTest(index=index):
+                data = fixture()
+                leg = data[1][index]
+                leg["due_open_ts"] += 1
+                leg["delay_ms"] -= 1
+                leg["depth"] = evidence.seal({**leg["depth"], "requested_ts": leg["due_open_ts"]})
+                self.assertBlocked(data, "NEXT_OPEN_DECISION_BAR_PARITY")
+
+    def test_delayed_completed_bar_receipt_keeps_causal_due_and_records_latency(self):
+        data = fixture()
+        entry = data[1][0]
+        due = entry["due_open_ts"]
+        entry["decision_bar"] = evidence.seal({**entry["decision_bar"], "observed_ts": due + 5000})
+        entry.update(decision_observed_ts=due + 7000, observed_ts=due + 9000,
+                     depth=depth(due + 8000, due + 9000, 100), delay_ms=9000)
+        for row in [data[0], *data[1]]:
+            row["signal_sha"] = entry["decision_bar"]["receipt_sha256"]
+        result = run_fixture(data)
+        self.assertTrue(result["production_grade"], result["blockers"])
+        self.assertEqual(result["formal_fresh_T"], 1)
+        recorded = result["inputs"]["legs"][0]
+        self.assertEqual(recorded["decision_ts"], recorded["due_open_ts"])
+        self.assertEqual(recorded["decision_observed_ts"] - recorded["decision_ts"], 7000)
+        self.assertEqual(recorded["delay_ms"], 9000)
+
+    def test_original_d3_safety_intent_survives_delayed_final_depth(self):
+        data = fixture()
+        partial, final = data[1][1:]
+        final.update(decision_ts=partial["decision_ts"], decision_observed_ts=partial["decision_observed_ts"],
+                     due_open_ts=partial["due_open_ts"], decision_bar=partial["decision_bar"],
+                     delay_ms=final["observed_ts"] - partial["due_open_ts"])
+        bind_d3_safety_intent(partial, final)
+        result = run_fixture(data)
+        self.assertTrue(result["production_grade"], result["blockers"])
+        self.assertEqual(result["formal_fresh_T"], 1)
+        self.assertAlmostEqual(result["metrics"]["net_cash"], 43.775)
+        witness = evidence.seal({**partial["decision_intent"], "created_at_ms": partial["observed_ts"] + 1})
+        partial["decision_intent"] = final["decision_intent"] = witness
+        self.assertBlocked(data, "D3_ORIGINAL_INTENT_BINDING")
 
     def test_decision_cannot_see_later_completed_bar(self):
         data = fixture()

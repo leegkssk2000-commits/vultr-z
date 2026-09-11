@@ -1,0 +1,140 @@
+[신규 후속 실행 승인 — Issue #1280]
+
+repo=leegkssk2000-commits/vultr-z
+scope_key=TRENDRIDER_UNIFIED_REST_WS_TIMESTAMP_AFTER_PR1279_V1
+
+Issue #1280 전체를 읽고 실제 실행하라.
+
+목적:
+PR1279의 BLOCKED_CANONICAL_KLINE_SCHEMA는 경제 실패가 아니다.
+BingX 공식 Swap WebSocket kline의 K.t=start time / K.T=close time과
+REST v3 klines의 동일 candle을 직접 대조해서 REST object time 의미를 확정한 뒤,
+동결된 common replay를 끝까지 실행한다.
+
+현재 관측 master:
+9542b7a45be7a6bafa7dced8df423ff77d81ebff
+reset 기준 아님. 시작 시 최신 origin/master 확인.
+
+외부 semantic authority:
+- BingX Swap WS: data.K.t=Kline start time, data.K.T=Kline close time
+- BingX REST v3 docs: [0]=Open time ... [6]=Close time
+- CCXT BingX adapter는 보조 독립 증거:
+  linear swap fetchOHLCV -> /swap/v3/quote/klines
+  object response {open,close,high,low,volume,time}
+  parse_ohlcv는 object time을 unified OHLCV timestamp로 사용
+BingX 공식 REST↔WS witness가 우선 authority.
+
+1) REST↔WS semantic calibration
+BTC-USDT 1h, 최대 session1.
+- WS BTC-USDT@kline_1h subscribe1
+- WS K.t/K.T/OHLCV raw-first 저장
+- REST 해당 hour 최소 범위/limit, max2 requests
+- raw-first 저장
+- 동일 candle OHLC + timestamp 매칭
+
+PASS:
+- REST array: [0]==K.t, [6]==K.T
+- REST object: 동일 candle OHLC 일치 + time==K.t
+FAIL:
+- time==K.T
+- OHLC match 불확실
+- 서로 다른 candle 가능성
+- 단순 continuity만 존재
+±1h 임의 보정 금지.
+retry0.
+
+PASS -> REST_WS_TIMESTAMP_SEMANTIC_RECEIPT.json
+FAIL -> BLOCKED_REST_WS_TIMESTAMP_WITNESS, 경제0.
+
+2) Historical source
+semantic PASS 후 1회.
+BTC-USDT/ETH-USDT, 1h
+cutoff=2026-08-30T00:00:00Z
+canonical open_ts exact1000:
+2026-07-19T08:00:00Z ~ 2026-08-29T23:00:00Z
+
+REST object time은 semantic PASS일 때만 open_ts.
+raw-before-decode.
+deterministic backward pagination.
+max3 pages/symbol.
+retry0.
+target exact1000.
+guard quarantine.
+cutoff 이후 open_ts0.
+gap/duplicate/malformed0.
+BTC/ETH clock exact equal.
+post-outcome refetch0.
+
+DATA_FREEZE_V4.json + normalized SHA + combined SHA 봉인.
+
+3) 경제 계약 byte-preserve
+B_COMMON=trend_policy_batch_v1 exact TrendRider
+P_COMMON=trend_rider_transition_freshness_child_policy_v1
+G1~G6 frozen
+normal cost14bps / cost2 28bps
+warmup64
+DEV_A/B chronological half split
+Stage1 DEV_A -> max2 freeze -> unchanged DEV_B
+Unified=P_COMMON OR (B_COMMON_ONLY AND QUALITY_GATE)
+final gates/Pareto
+exit/SL/TP/timeout/size unchanged
+
+threshold/grid/sweep/FIXED/arbitrary OOS/prospective decode/Squeeze data/paidAI/live/order/deploy=0.
+
+4) Source PASS 후 같은 Work에서 완료
+Stage0:
+B/P x DEV_A/B controls max4.
+
+Stage1:
+G1~G6 DEV_A max6.
+hard gates:
+integrity PASS
+net expectancy>0
+PF>=1
+payoff>=1
+cost2 net>0
+ordinary/top10 winner retention>=60%
+survivor<=2 freeze.
+unchanged DEV_B confirmation max2.
+survivor0 -> NO_CAUSAL_UNIFIED_GENE_COMMON_REPLAY, rescue0.
+
+Stage2:
+U1, 필요 시 orthogonal U2.
+max2 candidates / child FULL max4.
+controls 중복 replay0.
+
+Stage3:
+DEV_A/B 둘 다
+net>0
+expectancy>0
+PF>=1
+payoff>=1
+cost2 net>0
+integrity clean
+winner retention>=60%
+필수.
+frozen Pareto/tie-break.
+
+PASS -> TrendRider Unified v1 exact seal.
+FAIL -> TREND_RIDER_UNIFIED_NOT_EARNED_COMMON_REPLAY.
+
+5) 성공 후 prospective G5A
+common replay formal credit0.
+sprint 종료 후 새 future qualification boundary.
+G5A와 이후 G5B data 시간 분리.
+Historical Primary/Broad archive only.
+Unified 하나만 다음 TrendRider lane.
+G5B terminal PASS 전 G6 금지.
+
+최종 보고:
+REST↔WS witness/raw SHA,
+exact1000 data SHA,
+P_COMMON|B_COMMON|U1|U2 경제표,
+donor attribution,
+final seal/failure,
+actual execution counts,
+CI/review/merge/exact verification,
+prospective G5A handoff 여부.
+
+완료 후 REPORT_ONLY.
+자동 미세튜닝 successor 금지.

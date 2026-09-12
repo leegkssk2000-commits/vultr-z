@@ -1,0 +1,59 @@
+name: Top5 Pre-G5 Readiness 1297
+
+on:
+  push:
+    branches: [codex/top5-pre-g5-readiness-1297]
+    paths:
+      - 'backend/research/rebuild/trend_rider_unified_v1_policy.py'
+      - 'research/development_evidence/TOP5_PRE_G5_READINESS_AFTER_PR1296_V1/READINESS.json'
+      - '.github/workflows/top5-pre-g5-readiness-1297.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_rider_unified_v1_policy.py'
+      - 'research/development_evidence/TOP5_PRE_G5_READINESS_AFTER_PR1296_V1/READINESS.json'
+      - '.github/workflows/top5-pre-g5-readiness-1297.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and self-test exact TrendRider Unified causal policy
+        run: |
+          python3 -B -m py_compile backend/research/rebuild/trend_rider_unified_v1_policy.py
+          python3 -B -m backend.research.rebuild.trend_rider_unified_v1_policy
+      - name: Verify readiness matrix against repository authority
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('research/development_evidence/TOP5_PRE_G5_READINESS_AFTER_PR1296_V1/READINESS.json').read_text())
+          assert r['active_count']==5 and r['reserve_count']==1
+          names=[x['name'] for x in r['active']]
+          assert names==['TrendRider Unified','Squeeze-KR3 Unified','Keltner Reclaim','Supertrend Momentum','Q0 Convex Channel Breakout']
+          old=json.loads(Path('backend/research/rebuild/g5_trend_rider_bbo_oos_state_v1.json').read_text())
+          assert old['parent_identity']=='TREND_RIDER_WR8125_CHASE_COOLING_FROZEN_PARENT'
+          assert old['formal_credit']==0
+          p=json.loads(Path('backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json').read_text())
+          k=p['lanes']['keltner_trend_main']; s=p['lanes']['supertrend_pullback_main']
+          assert k['child_id']=='keltner_replacement_trend_pull_long_4h_h12_v2'
+          assert s['child_id']=='supertrend_replacement_highvol_mom_long_4h_h12_v2'
+          assert k['closed_T']>=16 and s['closed_T']>=12
+          assert p['fixed_cost_bps_per_trade']==20.0
+          q=Path('backend/research/rebuild/q0_prospective_engine_v1.py').read_text()
+          assert 'No source acquisition, costs, sizing, persistence or economic decision occurs' in q
+          assert 'intrabar_stop_timing_unknown=intrabar' in q
+          sq=Path('backend/research/rebuild/squeeze_kr3_native_sleeve_v1.py').read_text()
+          assert 'Uses saved exact parent/donor campaign streams' in sq
+          print('PASS_TOP5_PRE_G5_READINESS_1297')
+          PY

@@ -130,7 +130,7 @@ def self_test() -> int:
     fixed,w=resolve_trade(raw,dict(bar_open_ts=bo,bar_close_ts=bc,open=100.,high=102.,low=94.,close=96.,volume=1.),[],mins)
     assert fixed['exit_ts']==bo+12*MINUTE_MS and fixed['exit_price']==stop
     assert fixed['intrabar_stop_timing_unknown'] is False and fixed['intrabar_stop_subminute_timing_unknown'] is True
-    assert fixed['mae_bps']==-500.0 and w['post_stop_1m_HLC_excluded_from_MFE_MAE'] is True
+    assert abs(fixed['mae_bps']+500.0)<1e-9 and w['post_stop_1m_HLC_excluded_from_MFE_MAE'] is True
     print('PASS_Q0_CONVEX_OBSERVED_1M_STOP_ADAPTER_V1');return 0
 
 

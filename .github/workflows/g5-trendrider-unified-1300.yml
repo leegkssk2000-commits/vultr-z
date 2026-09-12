@@ -1,0 +1,119 @@
+name: G5A TrendRider Unified Collector 1300
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/trend_rider_unified_v1_policy.py'
+      - 'backend/research/rebuild/g5_trend_rider_unified_collector_v1.py'
+      - 'backend/research/contracts/trendrider_unified_g5a_collector_v1.json'
+      - '.github/workflows/g5-trendrider-unified-1300.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_trend_rider_unified_collector_v1.py'
+      - 'backend/research/contracts/trendrider_unified_g5a_collector_v1.json'
+      - '.github/workflows/g5-trendrider-unified-1300.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5A_TRENDRIDER_UNIFIED_COLLECTOR_V1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen policy and collector without market access
+        run: |
+          set -euo pipefail
+          python3 -B -m py_compile backend/research/rebuild/trend_rider_unified_v1_policy.py backend/research/rebuild/g5_trend_rider_unified_collector_v1.py
+          python3 -B -m backend.research.rebuild.trend_rider_unified_v1_policy
+          python3 -B -m backend.research.rebuild.g5_trend_rider_unified_collector_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Collect future-only Unified signals and pretrade cost evidence
+        run: |
+          set -euo pipefail
+          python3 -B -m backend.research.rebuild.g5_trend_rider_unified_collector_v1 --self-test
+          rm -rf out && mkdir -p out
+          python3 -B -m backend.research.rebuild.g5_trend_rider_unified_collector_v1 --out-dir out
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('out/g5_trend_rider_unified_state_v1.json').read_text())
+          assert s['state']=='UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY'
+          assert s['boundary_ms']==1789221600000
+          assert s['historical_backfill'] is False and s['formal_credit']==0
+          assert s['order_authority']=='BLOCKED' and s['live_trade_authority']=='BLOCKED'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5a-trendrider-unified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Append-only persist state and events
+        run: |
+          set -euo pipefail
+          git config user.name 'g5a-trendrider-unified-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git switch --detach origin/master
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('backend/research/rebuild'); out=Path('out')
+          gs=json.loads((out/'g5_trend_rider_unified_state_v1.json').read_text())
+          ge=[x for x in (out/'g5_trend_rider_unified_events_v1.jsonl').read_text().splitlines() if x.strip()]
+          sp=root/'g5_trend_rider_unified_state_v1.json'; ep=root/'g5_trend_rider_unified_events_v1.jsonl'
+          if sp.exists():
+              old=json.loads(sp.read_text())
+              if old.get('boundary_ms')!=gs.get('boundary_ms') or old.get('rule_id')!=gs.get('rule_id'):
+                  raise SystemExit('UNIFIED_STATE_IDENTITY_CONFLICT')
+          olde=[x for x in ep.read_text().splitlines() if x.strip()] if ep.exists() else []
+          if len(ge)<len(olde) or ge[:len(olde)]!=olde:
+              raise SystemExit('UNIFIED_APPEND_ONLY_CONFLICT')
+          sp.write_text(json.dumps(gs,sort_keys=True,indent=2)+'\n')
+          ep.write_text('\n'.join(ge)+('\n' if ge else ''))
+          PY
+            git add backend/research/rebuild/g5_trend_rider_unified_state_v1.json backend/research/rebuild/g5_trend_rider_unified_events_v1.jsonl
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5A: persist TrendRider Unified future evidence [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1

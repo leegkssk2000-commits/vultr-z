@@ -1,0 +1,78 @@
+name: Top5 Frozen 6M Exact Replay V1
+
+on:
+  push:
+    branches: [research/top5-6m-exact-replay-v1]
+    paths:
+      - 'backend/research/rebuild/top5_6m_exact_historical_replay_v1.py'
+      - '.github/workflows/top5-6m-exact-replay-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: TOP5_6M_EXACT_HISTORICAL_REPLAY_V1
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/top5-6m-exact-replay-v1
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Compile exact replay harness
+        run: python3 -B -m py_compile backend/research/rebuild/top5_6m_exact_historical_replay_v1.py
+      - name: Run frozen Top5 6M historical replay
+        run: |
+          set -euo pipefail
+          rm -rf out && mkdir -p out
+          python3 -B -m backend.research.rebuild.top5_6m_exact_historical_replay_v1 --out out/top5_6m_exact_historical_replay_v1.json
+      - name: Verify no fresh/formal authority mutation
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('out/top5_6m_exact_historical_replay_v1.json')
+          r=json.loads(p.read_text())
+          assert r['state']=='TERMINAL_TOP5_6M_EXACT_HISTORICAL_REPLAY'
+          assert r['fresh_rows_used'] is False
+          assert r['historical_backfill_to_g5'] is False
+          assert r['formal_credit']==0
+          assert r['strategy_tuning'] is False and r['threshold_grid'] is False
+          assert r['paid_ai']==0 and r['orders']==0 and r['live']==0 and r['deploy']==0
+          assert [x['strategy'] for x in r['results']]==['TrendRider Unified','Squeeze-KR3 Unified','Keltner Reclaim','Supertrend Momentum','Q0 Channel Breakout']
+          for x in r['results']:
+              assert x['integrity']['fresh_rows_used'] is False
+          print('PASS_TOP5_6M_EXACT_REPLAY_AUTHORITY')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: top5-6m-exact-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Persist terminal receipt to research branch
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p research/development_evidence/TOP5_6M_EXACT_REPLAY_V1
+          cp out/top5_6m_exact_historical_replay_v1.json research/development_evidence/TOP5_6M_EXACT_REPLAY_V1/RESULT.json
+          git config user.name 'top5-6m-exact-replay-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/development_evidence/TOP5_6M_EXACT_REPLAY_V1/RESULT.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'research: persist Top5 6M exact replay result [skip ci]'
+          git push origin HEAD:research/top5-6m-exact-replay-v1

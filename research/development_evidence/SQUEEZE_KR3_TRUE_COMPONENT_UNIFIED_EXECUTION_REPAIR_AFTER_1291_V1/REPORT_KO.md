@@ -27,4 +27,4 @@ Squeeze-KR3 Unified = 생성안됨
 - U2: K1 veto=0, K2 arm=34, K2 trigger=31, two-period net delta=-4932.20bps, reduced-loss gross=693.65, extended-winner gross=5120.24, cut-winner gross=9027.91, added-loss gross=2029.39, occupancy net=0.00
 - U3: K1 veto=104, K2 arm=0, K2 trigger=0, two-period net delta=-19027.63bps, reduced-loss gross=0.00, extended-winner gross=0.00, cut-winner gross=0.00, added-loss gross=0.00, occupancy net=-19027.63
 
-candidate85/eval153 no-output wiring failure is preserved. Closure economic reruns=0. All measured U1/U2/U3 evidence is USED_DEV/formal_credit=0; Top6 fresh/Q/G5 data was not accessed.
+candidate85/eval153 no-output wiring failure is preserved. Closure economic reruns=0. Parent snapshots/results are verified against frozen SPEC hashes. All measured U1/U2/U3 evidence is USED_DEV/formal_credit=0; Top6 fresh/Q/G5 data was not accessed.

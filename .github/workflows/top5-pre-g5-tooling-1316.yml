@@ -1,0 +1,52 @@
+name: Top5 Pre-G5 Tooling 1316
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/top5_pre_g5_tooling_v1.py'
+      - 'backend/tests/test_top5_pre_g5_tooling_v1.py'
+      - 'research/development_evidence/TOP5_PRE_G5_TOOLING_1316/**'
+      - '.github/workflows/top5-pre-g5-tooling-1316.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: TOP5_PRE_G5_TOOLING_1316-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and self-test bounded tooling
+        run: |
+          set -euo pipefail
+          python3 -B -m py_compile backend/research/rebuild/top5_pre_g5_tooling_v1.py
+          python3 -B -m backend.research.rebuild.top5_pre_g5_tooling_v1 --self-test
+      - name: Run focused regression tests
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q backend/tests/test_top5_pre_g5_tooling_v1.py
+      - name: Assert no runtime authority or paid-model surface
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('backend/research/rebuild/top5_pre_g5_tooling_v1.py').read_text()
+          forbidden=['place_order','live_trade_authority = True','OPENAI_API_KEY','GEMINI_API_KEY','historical_backfill = True']
+          for x in forbidden:
+              assert x not in p, x
+          print('PASS_TOP5_PRE_G5_NO_RUNTIME_AUTHORITY')
+          PY

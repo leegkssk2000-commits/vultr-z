@@ -1,0 +1,84 @@
+{
+  "schema": "zel.g5a.q0_convex.collector_contract.v1",
+  "scope_key": "Q0_CONVEX_CHANNEL_BREAKOUT_G5A_ADAPTER_AFTER_PR1303_V1",
+  "issue": 1306,
+  "strategy_name": "Q0 Convex Channel Breakout",
+  "internal_strategy_name": "Q0 original preparation/channel breakout architecture",
+  "rule_id": "Q0_CONVEX_CHANNEL_BREAKOUT_V1",
+  "engine_path": "backend/research/rebuild/q0_prospective_engine_v1.py",
+  "intrabar_adapter_path": "backend/research/rebuild/q0_convex_intrabar_adapter_v1.py",
+  "signal_entry_rules": {
+    "daily_channel": "prior 2 completed UTC daily closes; preparation width<=0.5%; U=low*1.005; D=high*0.995",
+    "bullish_confirmation": "two consecutive daily closes strictly above latched U; preparation required at attempt start",
+    "entry": "next actual 4h open if strictly above latched lower protective stop",
+    "ownership": "long/cash, max one position per symbol",
+    "protective_stop": "latched lower channel",
+    "bearish_exit": "two-close bearish confirmation then next actual 4h open",
+    "retune": false
+  },
+  "qualification_boundary_utc": "2026-09-13T00:00:00Z",
+  "qualification_boundary_ms": 1789257600000,
+  "collection_end_utc": "2027-01-11T00:00:00Z",
+  "collection_end_ms": 1799625600000,
+  "historical_backfill": false,
+  "historical_formal_credit": 0,
+  "symbols": [
+    "1000PEPE-USDT",
+    "BCH-USDT",
+    "BTC-USDT",
+    "ETH-USDT",
+    "HYPE-USDT",
+    "LINK-USDT",
+    "SOL-USDT"
+  ],
+  "source": {
+    "bars_4h": "BingX public USDT-M 4h klines via a1_exact25_generic_evaluator_v1.fetch_bars",
+    "intrabar_stop_witness": "BingX public USDT-M 1m klines fetched only when a completed future 4h bar causally contains a protective-stop crossing",
+    "canonical_open_timestamp": "BingX REST object time already bound as canonical bar open",
+    "completed_bars_only": true,
+    "1m_stop_witness_rule": "first contiguous completed 1m bar inside the 4h stop bar with low<=latched stop; if its open<=stop fill at observed 1m open, otherwise stop price with timestamp at that first-cross 1m bar close upper bound",
+    "1m_missing_or_noncontiguous": "FAIL_CLOSED_NO_FORMAL_CREDIT",
+    "post_stop_HLC_in_crossing_minute_used_for_MFE_MAE": false
+  },
+  "cost": {
+    "authority_path": "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json",
+    "freeze_mode": "ONE_PUBLIC_FEE_SPREAD_IMPACT_FUNDING_P95_SNAPSHOT_PER_SYMBOL_BEFORE_QUALIFICATION_BOUNDARY",
+    "fields": ["fee_bps", "spread_bps", "impact_bps", "funding_p95_per_settlement_bps"],
+    "mapping": "funding_p95_per_settlement_bps := observed funding_p95_abs_bps",
+    "historical_20bps_floor": "preserved in later Q0 accounting; no economic rule mutation"
+  },
+  "persistence": {
+    "engine_state": "append-progress state with exact cursor and frozen cost/source identities",
+    "events": "append-only hash-chained signal/intrabar/finalized lifecycle journal",
+    "duplicate_conflict": "FAIL_CLOSED",
+    "censored_open": "not closed T",
+    "unknown_exit": "not formal T"
+  },
+  "fresh_credit_policy": {
+    "collection_formal_credit": 0,
+    "g5a_closed_T_requires_separate_finalized_economic_accounting": true,
+    "g5a_data_reusable_for_g5b": false,
+    "same_lane_g5b_requires_later_boundary_after_g5a_terminal_pass": true,
+    "strategy_source_cost_or_execution_rule_change_burns_boundary": true
+  },
+  "negative_reference": {
+    "QF1": "REJECT; positive-progress filter cut fat-tail winners and must not be retuned/reused as this adapter"
+  },
+  "forbidden": [
+    "entry threshold or confirmation retune",
+    "symbol/year exception",
+    "historical intrabar stop repair presented as fresh evidence",
+    "4h-close stop timestamp proxy for formal future rows",
+    "post-stop HLC leakage into MFE/MAE",
+    "paid AI",
+    "orders/live/deploy"
+  ],
+  "authority": {
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED",
+    "formal_credit": 0
+  }
+}

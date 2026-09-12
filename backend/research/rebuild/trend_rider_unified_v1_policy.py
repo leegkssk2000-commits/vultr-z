@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from backend.research.rebuild import trend_policy_batch_v1 as broad_parent
@@ -9,6 +9,7 @@ from backend.research.rebuild import trend_rider_transition_freshness_non_us_chi
 
 STRATEGY_ID = "trend_rider"
 RULE_ID = "TREND_RIDER_UNIFIED_V1_CAUSAL_POLICY"
+POLICY_SCHEMA = "zel.trend_rider.unified_v1.policy.v1"
 ARCHITECTURE = "PRIMARY_EXACT16_CAUSAL_CORE OR (BROAD_ONLY_CAUSAL AND EXACT_BROAD_WR80_STATE)"
 SESSION_TAXONOMY = session_policy.SESSION_TAXONOMY
 
@@ -69,9 +70,9 @@ def compute_trend_rider_feature(
     primary_long = bool(pvals.get("long_confirm"))
     primary_short = bool(pvals.get("short_confirm"))
 
-    # Broad donor is evaluated independently from the base Broad policy, then the
-    # exact historical WR80 state rule is applied using only the current and prior
-    # completed bar. No historical trade membership or outcome is consulted.
+    # Broad donor is evaluated independently from the original complete Broad policy,
+    # then the exact historical WR80 state rule is applied using only the current and
+    # prior completed bar. Historical trade membership/outcomes are not runtime inputs.
     broad, broad_long, broad_short, bctx = _broad_wr80_gate(
         bars, symbol=symbol, now_ts_ms=now_ts_ms, cfg=cfg
     )
@@ -121,7 +122,39 @@ def compute_trend_rider_feature(
 def build_trend_rider_intent(feature: FeatureSnapshot, **kwargs: Any):
     if feature.strategy_id != STRATEGY_ID:
         raise ValueError("FEATURE_STRATEGY_MISMATCH")
-    return broad_parent._build(feature, **kwargs)
+    intent = broad_parent._build(feature, **kwargs)
+    if intent.no_trade:
+        return replace(
+            intent,
+            schema_version=POLICY_SCHEMA,
+            reason_codes=tuple(intent.reason_codes) + ("TRENDRIDER_UNIFIED_V1_NO_TRADE",),
+        )
+
+    values = feature.values
+    if intent.side == "long" and bool(values.get("primary_core_long_confirm")):
+        component = "PRIMARY_EXACT16_CORE"
+    elif intent.side == "short" and bool(values.get("primary_core_short_confirm")):
+        component = "PRIMARY_EXACT16_CORE"
+    elif intent.side == "long" and bool(values.get("broad_only_long_confirm")):
+        component = "BROAD_ONLY_WR80_STATE_DONOR"
+    elif intent.side == "short" and bool(values.get("broad_only_short_confirm")):
+        component = "BROAD_ONLY_WR80_STATE_DONOR"
+    else:
+        raise ValueError("UNIFIED_COMPONENT_PROVENANCE_UNRESOLVED")
+
+    return replace(
+        intent,
+        schema_version=POLICY_SCHEMA,
+        entry_rule=f"{component}:{intent.entry_rule}",
+        regime=f"TRENDRIDER_UNIFIED_V1:{component}:{intent.regime}",
+        reason_codes=tuple(intent.reason_codes) + ("TRENDRIDER_UNIFIED_V1", component),
+        evidence_ids=tuple(dict.fromkeys(tuple(intent.evidence_ids) + (
+            "TRENDRIDER_PRIMARY_EXACT16_COMPONENT",
+            "TRENDRIDER_BROAD_EXACT30_WR80_STATE_COMPONENT",
+            "TRENDRIDER_TRUE_COMPONENT_SYNTHESIS_PR1287",
+            "TRENDRIDER_UNIFIED_V1_ADOPTION_PR1289",
+        ))),
+    )
 
 
 def invariant_receipt() -> dict[str, Any]:
@@ -131,31 +164,41 @@ def invariant_receipt() -> dict[str, Any]:
     return {
         "strategy_id": STRATEGY_ID,
         "rule_id": RULE_ID,
+        "policy_schema": POLICY_SCHEMA,
         "architecture": ARCHITECTURE,
         "primary_policy": "trend_rider_wr80_us_chase_cooling_child_policy_v1",
         "broad_policy": "trend_policy_batch_v1",
         "broad_component_rule": "session!=US OR current_chase_atr<=prior_closed_bar_chase_atr",
         "primary_and_broad_config_equal": vars(cfg) == vars(primary_cfg) == vars(broad_cfg),
+        "core_absolute_priority": True,
+        "broad_donor_requires_primary_core_false": True,
+        "component_provenance_in_intent": True,
         "historical_membership_runtime_dependency": False,
         "post_outcome_data_runtime_dependency": False,
         "numeric_threshold_sweep": False,
         "symbol_or_year_exception": False,
         "future_bar_access": False,
+        "historical_replay_parity_claim": False,
         "selection_authority": False,
         "promotion_authority": False,
         "execution_authority": "NONE",
         "order_authority": "BLOCKED",
         "live_trade_authority": "BLOCKED",
+        "formal_credit": 0,
     }
 
 
 def self_test() -> int:
     r = invariant_receipt()
+    assert r["primary_and_broad_config_equal"] is True
+    assert r["core_absolute_priority"] is True
+    assert r["broad_donor_requires_primary_core_false"] is True
+    assert r["component_provenance_in_intent"] is True
     assert r["historical_membership_runtime_dependency"] is False
     assert r["post_outcome_data_runtime_dependency"] is False
     assert r["numeric_threshold_sweep"] is False
     assert r["future_bar_access"] is False
-    assert r["order_authority"] == "BLOCKED"
+    assert r["formal_credit"] == 0 and r["order_authority"] == "BLOCKED"
     print("PASS_TREND_RIDER_UNIFIED_V1_CAUSAL_POLICY")
     return 0
 

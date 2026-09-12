@@ -73,10 +73,14 @@ def combine(label,pdata):
         combined_cost2_bps=sum(x['terminal_cost2x_net_bps'] for x in pdata.values()),
         worst_period_DD_bps=max(x['marked_DD_bps'] for x in pdata.values()),per_period=pdata)
 
-def parent():
+def parent(spec):
     pdata={}
     for p in PERIODS:
-        pdata[p]=snapshot_view('CAPREUSE',p,read(CAP/p/'SNAPSHOT.json'))
+        snapshot=CAP/p/'SNAPSHOT.json'
+        result=CAP/p/'RESULT.json.gz'
+        need(sha(snapshot)==spec['parent_snapshots_sha256'][p],'PARENT_SNAPSHOT_HASH:'+p)
+        need(sha(result)==spec['parent_results_sha256'][p],'PARENT_RESULT_HASH:'+p)
+        pdata[p]=snapshot_view('CAPREUSE',p,read(snapshot))
     return combine('CAPREUSE',pdata)
 
 def child(v):
@@ -99,12 +103,13 @@ def child(v):
     return c
 
 def main():
+    spec=read(OUT/'SPEC.json')
     budget=read(OUT/'BUDGET.json'); q=budget[KEY]
     need((q['reserved'],q['started'],q['completed'],q['failed'],q['remaining'])==(6,6,6,0,0),'BUDGET_NOT_TERMINAL_CLEAN')
     need(budget['cumulative_actual']==88 and budget['cumulative_actual_evaluations']==159,'ORDINALS_NOT_88_159')
     need((OUT.parent/'SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/U1/DEV2025/FAILURE.json').exists(),'PREDECESSOR_FAILURE_MISSING')
     need(not (OUT.parent/'SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/U1/DEV2025/RESULT.json.gz').exists(),'PREDECESSOR_RESULT_SHOULD_NOT_EXIST')
-    p=parent(); cs={v:child(v) for v in VARIANTS}
+    p=parent(spec); cs={v:child(v) for v in VARIANTS}
     eligible=[c for c in cs.values() if c['eligible']]
     eligible.sort(key=lambda c:(c['combined_terminal_net_bps'],c['combined_cost2_bps'],-c['worst_period_DD_bps'],c['weighted_win_rate'] or -1),reverse=True)
     best=eligible[0] if eligible else None
@@ -114,7 +119,7 @@ def main():
         predecessor_no_output_failure='candidate85/evaluation153',parent=p,candidates=cs,selected=selected,state=state,
         ranking=['combined_terminal_net_bps','combined_cost2_bps','lower_worst_period_DD_bps','weighted_win_rate'],
         eligibility='each period terminal_net>0 AND cost2>0 AND PF>=1',WR_hard_gate=False,
-        economic_FULL_count=6,new_economic_execution_in_closure=0,formal_credit=0,Q_track_touched=False,
+        parent_frozen_hashes_verified=True,economic_FULL_count=6,new_economic_execution_in_closure=0,formal_credit=0,Q_track_touched=False,
         automatic_successor=False)
     put(OUT/'SUMMARY.json',summary)
     if selected!='CAPREUSE':
@@ -122,6 +127,8 @@ def main():
             source_scope=SCOPE,combined=cs[selected],formal_credit=0,prospective_boundary_required_after_merge=True))
     put(OUT/'FINAL_STATUS.json',dict(strategy_name=('Squeeze-KR3 Unified v1' if selected!='CAPREUSE' else None),selected_incumbent=selected,state=state,
         formal_credit=0,Q_track_touched=False,prospective_boundary_required=(selected!='CAPREUSE'),report_only=True))
+    put(OUT/'STATUS.json',dict(scope=SCOPE,state=state,selected=selected,formal_credit=0,report_only=True,
+        parent_frozen_hashes_verified=True,economic_FULL_count=6,new_economic_execution_in_closure=0,remaining_execution=[]))
     lines=['# Squeeze-KR3 true-component Unified — saved-only closure','',('Squeeze-KR3 Unified = 생성됨' if selected!='CAPREUSE' else 'Squeeze-KR3 Unified = 생성안됨'),'',f'- 선택: `{selected}`',f'- 상태: `{state}`','',
       '|후보|Combined net|Combined cost2|Weighted WR|Worst-period DD|Eligible|','|---|---:|---:|---:|---:|---|']
     for name,c in [('CAPREUSE',p)]+[(v,cs[v]) for v in VARIANTS]:
@@ -138,9 +145,9 @@ def main():
     for v in VARIANTS:
         c=cs[v];d=c['component_bridge']
         lines.append(f"- {v}: K1 veto={c['k1_veto_T']}, K2 arm={c['k2_arm_T']}, K2 trigger={c['k2_trigger_T']}, two-period net delta={d['terminal_delta_bps']:.2f}bps, reduced-loss gross={d['reduced_existing_loss_gross_bps']:.2f}, extended-winner gross={d['extended_existing_win_gross_bps']:.2f}, cut-winner gross={d['cut_existing_win_gross_bps']:.2f}, added-loss gross={d['added_existing_loss_gross_bps']:.2f}, occupancy net={d['occupancy_new_excluded_net_bps']:.2f}")
-    lines+=['','candidate85/eval153 no-output wiring failure is preserved. Closure economic reruns=0. All measured U1/U2/U3 evidence is USED_DEV/formal_credit=0; Top6 fresh/Q/G5 data was not accessed.']
+    lines+=['','candidate85/eval153 no-output wiring failure is preserved. Closure economic reruns=0. Parent snapshots/results are verified against frozen SPEC hashes. All measured U1/U2/U3 evidence is USED_DEV/formal_credit=0; Top6 fresh/Q/G5 data was not accessed.']
     (OUT/'REPORT_KO.md').write_text('\n'.join(lines)+'\n')
-    commit=persist('Close saved-only Squeeze/KR3 Unified selection')
+    commit=persist('Close saved-only Squeeze/KR3 Unified selection with review fixes')
     print(json.dumps(dict(selected=selected,state=state,commit=commit,parent_net=p['combined_terminal_net_bps'],candidate_net={v:cs[v]['combined_terminal_net_bps'] for v in VARIANTS}),sort_keys=True))
 
 if __name__=='__main__': main()

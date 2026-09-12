@@ -15,7 +15,7 @@ on:
       - 'backend/research/contracts/squeeze_kr3_unified_g5a_collector_v1.json'
       - '.github/workflows/g5-squeeze-kr3-unified-1304.yml'
   schedule:
-    - cron: '17 */4 * * *'
+    - cron: '23 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
   verify:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 10
     env:
       PYTHONPATH: .
       OPENAI_API_KEY: ''
@@ -39,7 +39,7 @@ jobs:
       GROQ_API_KEY: ''
     steps:
       - uses: actions/checkout@v4
-      - name: Verify frozen dual generator and collector without market access
+      - name: Verify frozen binding and collector without market access
         run: |
           set -euo pipefail
           python3 -B -m py_compile backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py backend/research/rebuild/g5_squeeze_kr3_unified_collector_v1.py
@@ -49,7 +49,7 @@ jobs:
   collect:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 18
+    timeout-minutes: 15
     env:
       PYTHONPATH: .
       OPENAI_API_KEY: ''
@@ -63,7 +63,7 @@ jobs:
           ref: master
           fetch-depth: 0
           persist-credentials: true
-      - name: Collect future-only Squeeze-KR3 component/lifecycle evidence
+      - name: Collect future-only Squeeze-KR3 lifecycle evidence
         run: |
           set -euo pipefail
           python3 -B -m backend.research.rebuild.g5_squeeze_kr3_unified_collector_v1 --self-test
@@ -74,10 +74,10 @@ jobs:
           from pathlib import Path
           s=json.loads(Path('out/g5_squeeze_kr3_unified_state_v1.json').read_text())
           assert s['state']=='SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY'
-          assert s['boundary_ms']==1789243200000
+          assert s['boundary_ms']==1789228800000
           assert s['historical_backfill'] is False and s['formal_credit']==0
           assert s['order_authority']=='BLOCKED' and s['live_trade_authority']=='BLOCKED'
-          assert len(s['cost_models'])==7
+          assert set(s['cost_freeze']['models'])=={'1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT'}
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -86,7 +86,7 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 90
-      - name: Append-only persist state and lifecycle events
+      - name: Append-only persist state and completed campaigns
         run: |
           set -euo pipefail
           git config user.name 'g5a-squeeze-kr3-unified-v1'
@@ -97,19 +97,19 @@ jobs:
             python3 - <<'PY'
           import json
           from pathlib import Path
-          root=Path('backend/research/rebuild');out=Path('out')
+          root=Path('backend/research/rebuild'); out=Path('out')
           ns=json.loads((out/'g5_squeeze_kr3_unified_state_v1.json').read_text())
           ne=[x for x in (out/'g5_squeeze_kr3_unified_events_v1.jsonl').read_text().splitlines() if x.strip()]
-          sp=root/'g5_squeeze_kr3_unified_state_v1.json';ep=root/'g5_squeeze_kr3_unified_events_v1.jsonl'
+          sp=root/'g5_squeeze_kr3_unified_state_v1.json'; ep=root/'g5_squeeze_kr3_unified_events_v1.jsonl'
           if sp.exists():
               old=json.loads(sp.read_text())
-              if old.get('boundary_ms')!=ns.get('boundary_ms') or old.get('rule_id')!=ns.get('rule_id'):
-                  raise SystemExit('SQUEEZE_KR3_STATE_IDENTITY_CONFLICT')
-              if old.get('cost_models')!=ns.get('cost_models'):
-                  raise SystemExit('SQUEEZE_KR3_FROZEN_COST_MODEL_CONFLICT')
-          olde=[x for x in ep.read_text().splitlines() if x.strip()] if ep.exists() else []
-          if len(ne)<len(olde) or ne[:len(olde)]!=olde:
-              raise SystemExit('SQUEEZE_KR3_APPEND_ONLY_CONFLICT')
+              for k in ('boundary_ms','rule_id'):
+                  if old.get(k)!=ns.get(k): raise SystemExit('SQUEEZE_G5A_STATE_IDENTITY_CONFLICT:'+k)
+              if old.get('cost_freeze',{}).get('freeze_sha256')!=ns.get('cost_freeze',{}).get('freeze_sha256'):
+                  raise SystemExit('SQUEEZE_G5A_COST_FREEZE_DRIFT')
+          oe=[x for x in ep.read_text().splitlines() if x.strip()] if ep.exists() else []
+          if len(ne)<len(oe) or ne[:len(oe)]!=oe:
+              raise SystemExit('SQUEEZE_G5A_APPEND_ONLY_CONFLICT')
           sp.write_text(json.dumps(ns,sort_keys=True,indent=2)+'\n')
           ep.write_text('\n'.join(ne)+('\n' if ne else ''))
           PY

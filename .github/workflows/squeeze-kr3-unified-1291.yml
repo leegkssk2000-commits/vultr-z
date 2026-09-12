@@ -5,8 +5,10 @@ on:
     paths:
       - 'backend/research/rebuild/squeeze_kr3_unified_v1.py'
       - 'backend/research/rebuild/squeeze_kr3_unified_study_v1.py'
+      - 'backend/research/rebuild/squeeze_kr3_unified_finalize_v1.py'
       - 'backend/research/rebuild/test_squeeze_kr3_unified_v1.py'
       - 'research/development_evidence/SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/DESIGN.md'
+      - 'research/development_evidence/SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/PRE_EXECUTION_REPAIR.md'
       - '.github/workflows/squeeze-kr3-unified-1291.yml'
 permissions:
   contents: write
@@ -28,9 +30,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Record execution runtime
+        run: |
+          python --version
+          uname -a
       - name: Canonical validation and frozen component regressions
         run: |
           npm run --prefix frontend/z-os-app-source validate
@@ -48,4 +51,14 @@ jobs:
         run: |
           git config user.name 'squeeze-kr3-unified-owner'
           git config user.email 'actions@users.noreply.github.com'
-          python -B -m backend.research.rebuild.squeeze_kr3_unified_study_v1 --all
+          python -B - <<'PY'
+          from backend.research.rebuild import squeeze_kr3_unified_study_v1 as s
+          s.freeze()
+          s.persist('Freeze Squeeze/KR3 Unified contract')
+          for variant, period in s.PLAN:
+              claim = s.reserve(variant, period)
+              s.execute(variant, period, claim)
+          PY
+      - name: Apply frozen selection contract to saved results
+        run: |
+          python -B -m backend.research.rebuild.squeeze_kr3_unified_finalize_v1

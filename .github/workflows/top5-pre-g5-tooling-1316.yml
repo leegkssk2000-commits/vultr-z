@@ -35,10 +35,23 @@ jobs:
           set -euo pipefail
           python3 -B -m py_compile backend/research/rebuild/top5_pre_g5_tooling_v1.py
           python3 -B -m backend.research.rebuild.top5_pre_g5_tooling_v1 --self-test
-      - name: Run focused regression tests
+      - name: Run focused regression tests without external test dependency
         run: |
           set -euo pipefail
-          python3 -m pytest -q backend/tests/test_top5_pre_g5_tooling_v1.py
+          python3 - <<'PY'
+          import inspect
+          import backend.tests.test_top5_pre_g5_tooling_v1 as tests
+
+          selected = []
+          for name, obj in sorted(vars(tests).items()):
+              if name.startswith('test_') and inspect.isfunction(obj):
+                  selected.append((name, obj))
+          assert selected, 'NO_TESTS_DISCOVERED'
+          for name, fn in selected:
+              fn()
+              print(f'PASS {name}')
+          print(f'PASS_TOP5_PRE_G5_REGRESSION count={len(selected)}')
+          PY
       - name: Assert no runtime authority or paid-model surface
         run: |
           set -euo pipefail

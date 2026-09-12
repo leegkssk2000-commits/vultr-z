@@ -1,0 +1,33 @@
+name: Keltner Supertrend G5A Boundary 1302
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/development_evidence/KELTNER_SUPERTREND_G5A_BOUNDARY_AFTER_PR1301_V1/BOUNDARY_SEAL.json'
+      - '.github/workflows/keltner-supertrend-g5a-boundary-1302.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact current collector identities and fresh seal
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('research/development_evidence/KELTNER_SUPERTREND_G5A_BOUNDARY_AFTER_PR1301_V1/BOUNDARY_SEAL.json').read_text())
+          p=json.loads(Path('backend/research/rebuild/a1_top5_replacement_child_prospective_v2_latest.json').read_text())
+          k=p['lanes']['keltner_trend_main']; u=p['lanes']['supertrend_pullback_main']
+          assert s['boundary_ms']==1789228800000 and s['historical_backfill'] is False
+          assert s['fixed_cost_bps_per_trade']==20.0 and p['fixed_cost_bps_per_trade']==20.0
+          assert k['child_id']==s['lanes']['keltner_reclaim']['child_id']
+          assert u['child_id']==s['lanes']['supertrend_momentum']['child_id']
+          assert k['closed_T']>=16 and u['closed_T']>=12
+          assert s['lanes']['keltner_reclaim']['g5a_credit_T_at_freeze']==0
+          assert s['lanes']['supertrend_momentum']['g5a_credit_T_at_freeze']==0
+          assert s['order_authority']=='BLOCKED' and s['live_trade_authority']=='BLOCKED'
+          print('PASS_KELTNER_SUPERTREND_G5A_BOUNDARY_1302')
+          PY

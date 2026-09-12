@@ -1,0 +1,267 @@
+name: TrendRider Observed Economic Resume V1
+
+on:
+  push:
+    branches:
+      - codex/trendrider-observed-ws-1284
+    paths:
+      - '.github/workflows/trendrider-observed-economic-resume-v1.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trendrider-observed-economic-resume-v1
+  cancel-in-progress: false
+
+jobs:
+  bounded-economic-owner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BRANCH: codex/trendrider-observed-ws-1284
+      EVID: research/development_evidence/TRENDRIDER_UNIFIED_OBSERVED_WS_SCHEMA_AFTER_PR1283_V1
+      OWNER: backend/research/rebuild/trendrider_observed_economic_owner_v1.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/trendrider-observed-ws-1284
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Preflight frozen owner and source evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$OWNER" \
+            backend/research/rebuild/trendrider_common_engine_v1.py \
+            backend/research/rebuild/trendrider_common_genes_v1.py \
+            backend/research/rebuild/trendrider_common_source_v6.py
+          test -f "$EVID/OWNER_INPUT_FREEZE.json"
+          test -f "$EVID/source_data/DATA_FREEZE_V6.json"
+          test -f "$EVID/calibration/OBSERVED_WS_REST_TIMESTAMP_RECEIPT.json"
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('.')
+          e=Path('research/development_evidence/TRENDRIDER_UNIFIED_OBSERVED_WS_SCHEMA_AFTER_PR1283_V1')
+          freeze=json.loads((e/'OWNER_INPUT_FREEZE.json').read_text())
+          assert freeze['before_economic_execution'] is True
+          data=json.loads((e/'source_data/DATA_FREEZE_V6.json').read_text())
+          assert data['state']=='FROZEN_COMMON_HISTORICAL_DEV'
+          assert data['admitted_rows']==2000
+          assert data['normalized']['BTC-USDT']['bars']==1000
+          assert data['normalized']['ETH-USDT']['bars']==1000
+          sem=json.loads((e/'calibration/OBSERVED_WS_REST_TIMESTAMP_RECEIPT.json').read_text())
+          assert sem['state']=='PASS' and sem['open_ts_rule']=='native_T'
+          print('PASS_PRE_ECONOMIC_FROZEN_EVIDENCE')
+          PY
+
+      - name: Run Stage0 controls and DEV_A selection
+        id: stage1a
+        shell: bash
+        run: |
+          set -euo pipefail
+          FREEZE_SHA="$(sha256sum "$EVID/OWNER_INPUT_FREEZE.json" | awk '{print $1}')"
+          echo "freeze_sha=$FREEZE_SHA" >> "$GITHUB_OUTPUT"
+          ROOT="$GITHUB_WORKSPACE/$EVID"
+          MANIFEST="$ROOT/OWNER_INPUT_FREEZE.json"
+          python "$OWNER" stage0 --repo-root "$GITHUB_WORKSPACE" --evidence-root "$ROOT" --freeze-manifest "$MANIFEST" --freeze-sha "$FREEZE_SHA" | tee "$EVID/STAGE0_STDOUT.json"
+          python "$OWNER" stage1a --repo-root "$GITHUB_WORKSPACE" --evidence-root "$ROOT" --freeze-manifest "$MANIFEST" --freeze-sha "$FREEZE_SHA" | tee "$EVID/STAGE1A_STDOUT.json"
+          SURV="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/development_evidence/TRENDRIDER_UNIFIED_OBSERVED_WS_SCHEMA_AFTER_PR1283_V1/SELECTION_A.json')
+          print(len(json.loads(p.read_text())['ordered_survivors']))
+          PY
+          )"
+          echo "survivors=$SURV" >> "$GITHUB_OUTPUT"
+          echo "Stage1A survivors=$SURV"
+
+      - name: Upload Stage1A durable recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trendrider-1284-after-stage1a-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.EVID }}/SIGNALS.json
+            ${{ env.EVID }}/STAGE0_RECEIPT.json
+            ${{ env.EVID }}/SELECTION_A.json
+            ${{ env.EVID }}/controls
+            ${{ env.EVID }}/screens_A
+            ${{ env.EVID }}/reservations
+            ${{ env.EVID }}/completions
+            ${{ env.EVID }}/output_receipts
+
+      - name: Commit and verify A-selection remote readback
+        if: steps.stage1a.outputs.survivors != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'trendrider-economic-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$EVID"
+          git commit -m 'research: execute TrendRider controls and DEV_A selection [skip ci]'
+          git push origin HEAD:"$BRANCH"
+          LOCAL_COMMIT="$(git rev-parse HEAD)"
+          git fetch origin "$BRANCH"
+          REMOTE_COMMIT="$(git rev-parse FETCH_HEAD)"
+          test "$LOCAL_COMMIT" = "$REMOTE_COMMIT"
+          LOCAL_SHA="$(sha256sum "$EVID/SELECTION_A.json" | awk '{print $1}')"
+          REMOTE_SHA="$(git show "$REMOTE_COMMIT:$EVID/SELECTION_A.json" | sha256sum | awk '{print $1}')"
+          test "$LOCAL_SHA" = "$REMOTE_SHA"
+          FREEZE_SHA="${{ steps.stage1a.outputs.freeze_sha }}"
+          python - "$EVID/REMOTE_A_SELECTION_READBACK.json" "$LOCAL_COMMIT" "$FREEZE_SHA" "$LOCAL_SHA" <<'PY'
+          import json,sys
+          from pathlib import Path
+          out,commit,freeze,sha=sys.argv[1:]
+          Path(out).write_text(json.dumps({
+            'stage':'A_SELECTION','readback_verified':True,
+            'input_freeze_sha256':freeze,'verified_commit_sha':commit,
+            'files':{'SELECTION_A.json':sha}},sort_keys=True,indent=2)+'\n')
+          PY
+
+      - name: Run DEV_B confirmation
+        if: steps.stage1a.outputs.survivors != '0'
+        id: stage1b
+        shell: bash
+        run: |
+          set -euo pipefail
+          FREEZE_SHA="${{ steps.stage1a.outputs.freeze_sha }}"
+          ROOT="$GITHUB_WORKSPACE/$EVID"
+          MANIFEST="$ROOT/OWNER_INPUT_FREEZE.json"
+          python "$OWNER" stage1b --repo-root "$GITHUB_WORKSPACE" --evidence-root "$ROOT" --freeze-manifest "$MANIFEST" --freeze-sha "$FREEZE_SHA" --remote-receipt "$EVID/REMOTE_A_SELECTION_READBACK.json" | tee "$EVID/STAGE1B_STDOUT.json"
+          CANDS="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/development_evidence/TRENDRIDER_UNIFIED_OBSERVED_WS_SCHEMA_AFTER_PR1283_V1/CANDIDATE_IDENTITIES.json')
+          print(len(json.loads(p.read_text())['candidates']))
+          PY
+          )"
+          echo "candidates=$CANDS" >> "$GITHUB_OUTPUT"
+          echo "Stage1B candidates=$CANDS"
+
+      - name: Upload Stage1B durable recovery artifact
+        if: steps.stage1a.outputs.survivors != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trendrider-1284-after-stage1b-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.EVID }}/CONFIRMATION_B.json
+            ${{ env.EVID }}/CANDIDATE_IDENTITIES.json
+            ${{ env.EVID }}/confirmations_B
+            ${{ env.EVID }}/reservations
+            ${{ env.EVID }}/completions
+            ${{ env.EVID }}/output_receipts
+            ${{ env.EVID }}/REMOTE_A_SELECTION_READBACK.json
+
+      - name: Commit and verify candidate remote readback
+        if: steps.stage1a.outputs.survivors != '0' && steps.stage1b.outputs.candidates != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'trendrider-economic-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$EVID"
+          git commit -m 'research: freeze TrendRider DEV_B confirmation and candidate identities [skip ci]'
+          git push origin HEAD:"$BRANCH"
+          LOCAL_COMMIT="$(git rev-parse HEAD)"
+          git fetch origin "$BRANCH"
+          REMOTE_COMMIT="$(git rev-parse FETCH_HEAD)"
+          test "$LOCAL_COMMIT" = "$REMOTE_COMMIT"
+          LOCAL_SHA="$(sha256sum "$EVID/CANDIDATE_IDENTITIES.json" | awk '{print $1}')"
+          REMOTE_SHA="$(git show "$REMOTE_COMMIT:$EVID/CANDIDATE_IDENTITIES.json" | sha256sum | awk '{print $1}')"
+          test "$LOCAL_SHA" = "$REMOTE_SHA"
+          FREEZE_SHA="${{ steps.stage1a.outputs.freeze_sha }}"
+          python - "$EVID/REMOTE_CANDIDATE_IDENTITIES_READBACK.json" "$LOCAL_COMMIT" "$FREEZE_SHA" "$LOCAL_SHA" <<'PY'
+          import json,sys
+          from pathlib import Path
+          out,commit,freeze,sha=sys.argv[1:]
+          Path(out).write_text(json.dumps({
+            'stage':'CANDIDATE_IDENTITIES','readback_verified':True,
+            'input_freeze_sha256':freeze,'verified_commit_sha':commit,
+            'files':{'CANDIDATE_IDENTITIES.json':sha}},sort_keys=True,indent=2)+'\n')
+          PY
+
+      - name: Run child FULL economics
+        if: steps.stage1a.outputs.survivors != '0' && steps.stage1b.outputs.candidates != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FREEZE_SHA="${{ steps.stage1a.outputs.freeze_sha }}"
+          ROOT="$GITHUB_WORKSPACE/$EVID"
+          MANIFEST="$ROOT/OWNER_INPUT_FREEZE.json"
+          python "$OWNER" stage2 --repo-root "$GITHUB_WORKSPACE" --evidence-root "$ROOT" --freeze-manifest "$MANIFEST" --freeze-sha "$FREEZE_SHA" --remote-receipt "$EVID/REMOTE_CANDIDATE_IDENTITIES_READBACK.json" | tee "$EVID/STAGE2_STDOUT.json"
+
+      - name: Run final deterministic selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          FREEZE_SHA="${{ steps.stage1a.outputs.freeze_sha }}"
+          ROOT="$GITHUB_WORKSPACE/$EVID"
+          MANIFEST="$ROOT/OWNER_INPUT_FREEZE.json"
+          python "$OWNER" final --repo-root "$GITHUB_WORKSPACE" --evidence-root "$ROOT" --freeze-manifest "$MANIFEST" --freeze-sha "$FREEZE_SHA" | tee "$EVID/FINAL_STDOUT.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          e=Path('research/development_evidence/TRENDRIDER_UNIFIED_OBSERVED_WS_SCHEMA_AFTER_PR1283_V1')
+          f=json.loads((e/'FINAL_ECONOMIC_RECEIPT.json').read_text())
+          out={
+            'scope_key':f['scope_key'],
+            'state':f.get('state'),
+            'unified_state':f.get('unified_state'),
+            'selected_candidate':f.get('selected_candidate'),
+            'G5A_handoff_eligible':f.get('G5A_handoff_eligible'),
+            'budget':f.get('budget'),
+            'receipt_sha':f.get('receipt_sha')}
+          (e/'WORKFLOW_EXECUTION_RESULT.json').write_text(json.dumps(out,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(out,sort_keys=True))
+          PY
+
+      - name: Upload final durable recovery artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trendrider-1284-economic-final-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ env.EVID }}/FINAL_ECONOMIC_RECEIPT.json
+            ${{ env.EVID }}/WORKFLOW_EXECUTION_RESULT.json
+            ${{ env.EVID }}/SIGNALS.json
+            ${{ env.EVID }}/STAGE0_RECEIPT.json
+            ${{ env.EVID }}/SELECTION_A.json
+            ${{ env.EVID }}/CONFIRMATION_B.json
+            ${{ env.EVID }}/CANDIDATE_IDENTITIES.json
+            ${{ env.EVID }}/CHILD_REPORTS.json
+            ${{ env.EVID }}/controls
+            ${{ env.EVID }}/screens_A
+            ${{ env.EVID }}/confirmations_B
+            ${{ env.EVID }}/children
+            ${{ env.EVID }}/reservations
+            ${{ env.EVID }}/completions
+            ${{ env.EVID }}/failures
+            ${{ env.EVID }}/output_receipts
+            ${{ env.EVID }}/REMOTE_A_SELECTION_READBACK.json
+            ${{ env.EVID }}/REMOTE_CANDIDATE_IDENTITIES_READBACK.json
+
+      - name: Commit final evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'trendrider-economic-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$EVID"
+          if git diff --cached --quiet; then
+            echo 'No final evidence changes to commit'
+          else
+            git commit -m 'research: complete TrendRider bounded common economics [skip ci]'
+            git push origin HEAD:"$BRANCH"
+          fi

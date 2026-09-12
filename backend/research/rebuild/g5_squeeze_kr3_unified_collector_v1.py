@@ -7,7 +7,7 @@ import json
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
 from backend.research.rebuild import squeeze_kr3_future_dual_generator_v1 as generator
@@ -19,192 +19,317 @@ STATE_PATH = ROOT / 'backend/research/rebuild/g5_squeeze_kr3_unified_state_v1.js
 EVENTS_PATH = ROOT / 'backend/research/rebuild/g5_squeeze_kr3_unified_events_v1.jsonl'
 COST_PATH = ROOT / 'backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json'
 GENERATOR_PATH = ROOT / 'backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py'
-ARBITER_PATH = ROOT / 'backend/research/rebuild/squeeze_kr3_native_sleeve_v1.py'
-SCHEMA = 'zel.g5a.squeeze_kr3_unified.event.v1'
+SOURCE_PATH = ROOT / 'backend/research/rebuild/a1_exact25_generic_evaluator_v1.py'
+SCHEMA = 'zel.g5a.squeeze_kr3_unified.completed_campaign.v1'
 STATE_SCHEMA = 'zel.g5a.squeeze_kr3_unified.state.v1'
 BAR_MS = 14_400_000
-SYMBOLS = ('1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT')
-AUTHORITY = dict(selection_authority=False,promotion_authority=False,execution_authority='NONE',order_authority='BLOCKED',live_trade_authority='BLOCKED',formal_credit=0)
+AUTHORITY = dict(selection_authority=False, promotion_authority=False,
+                 execution_authority='NONE', order_authority='BLOCKED',
+                 live_trade_authority='BLOCKED', formal_credit=0)
 
 
-def now_ms() -> int: return int(time.time()*1000)
-def stable(v: Any) -> str: return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False,default=str).encode()).hexdigest()
-def read(path: Path) -> dict[str,Any]: return json.loads(path.read_text())
-def sha(path: Path) -> str: return hashlib.sha256(path.read_bytes()).hexdigest()
+def now_ms() -> int:
+    return int(time.time() * 1000)
 
-def read_events(path: Path) -> list[dict[str,Any]]:
-    if not path.exists(): return []
+
+def stable(v: Any) -> str:
+    return hashlib.sha256(json.dumps(v, sort_keys=True, separators=(',', ':'),
+                                     ensure_ascii=False, allow_nan=False,
+                                     default=str).encode()).hexdigest()
+
+
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise RuntimeError('JSON_OBJECT_REQUIRED:' + str(path))
+    return value
+
+
+def read_events(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
     return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
 
-def write_json(path: Path,v: Any) -> None:
-    path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(v,sort_keys=True,indent=2,ensure_ascii=False)+'\n')
-def write_events(path: Path,rows: Sequence[Mapping[str,Any]]) -> None:
-    path.parent.mkdir(parents=True,exist_ok=True);path.write_text(''.join(json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=False)+'\n' for x in rows))
 
-def seal_state(v: Mapping[str,Any]) -> dict[str,Any]:
-    out=dict(v);out.pop('state_sha256',None);out['state_sha256']=stable(out);return out
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True, indent=2,
+                               ensure_ascii=False) + '\n')
 
-def validate_contract(c: Mapping[str,Any]) -> None:
-    if c['rule_id'] != generator.RULE_ID: raise RuntimeError('SQUEEZE_KR3_RULE_ID_DRIFT')
-    if c['historical_backfill'] is not False or int(c['historical_formal_credit']) != 0: raise RuntimeError('SQUEEZE_KR3_BOUNDARY_POLICY_DRIFT')
-    if tuple(c['symbols']) != SYMBOLS: raise RuntimeError('SQUEEZE_KR3_SYMBOL_UNIVERSE_DRIFT')
-    if c['component_identity']['core'] != generator.CORE_RULE or c['component_identity']['donor'] != generator.DONOR_RULE: raise RuntimeError('SQUEEZE_KR3_COMPONENT_DRIFT')
-    if c['authority']['order_authority'] != 'BLOCKED' or c['authority']['live_trade_authority'] != 'BLOCKED': raise RuntimeError('SQUEEZE_KR3_AUTHORITY_DRIFT')
 
-def validate_chain(rows: Sequence[Mapping[str,Any]]) -> None:
-    prev=None;ids=set()
-    for i,row in enumerate(rows):
-        if row['schema_version']!=SCHEMA or int(row['seq'])!=i or row['prev_sha256']!=prev: raise RuntimeError('SQUEEZE_KR3_EVENT_CHAIN')
-        if row['event_id'] in ids: raise RuntimeError('SQUEEZE_KR3_EVENT_DUP')
-        core=dict(row);sup=core.pop('record_sha256')
-        if stable(core)!=sup: raise RuntimeError('SQUEEZE_KR3_EVENT_HASH')
-        ids.add(row['event_id']);prev=sup
+def write_events(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(json.dumps(x, sort_keys=True, separators=(',', ':'),
+                                       ensure_ascii=False) + '\n' for x in rows))
 
-def append(rows: list[dict[str,Any]],payload: Mapping[str,Any]) -> dict[str,Any]:
-    row=dict(payload,schema_version=SCHEMA,seq=len(rows),prev_sha256=rows[-1]['record_sha256'] if rows else None)
-    row['record_sha256']=stable(row);rows.append(row);return row
 
-def validate_state(s: Mapping[str,Any],c: Mapping[str,Any]) -> None:
-    if s['schema_version']!=STATE_SCHEMA or s['rule_id']!=generator.RULE_ID: raise RuntimeError('SQUEEZE_KR3_STATE_IDENTITY_DRIFT')
-    if int(s['boundary_ms'])!=int(c['qualification_boundary_ms']) or s['historical_backfill'] is not False: raise RuntimeError('SQUEEZE_KR3_STATE_BOUNDARY_DRIFT')
-    for symbol in SYMBOLS:
-        item=s['cost_models'].get(symbol)
-        if not item or stable(item['model'])!=item['model_sha256']: raise RuntimeError('SQUEEZE_KR3_COST_MODEL_HASH:'+symbol)
-    core=dict(s);sup=core.pop('state_sha256')
-    if stable(core)!=sup: raise RuntimeError('SQUEEZE_KR3_STATE_HASH')
-
-def cost_from_snapshot(snapshot: Mapping[str,Any]) -> dict[str,float]:
-    return {
-        'fee_bps':float(snapshot['fee_bps']),
-        'spread_bps':float(snapshot['spread_bps']),
-        'impact_bps':float(snapshot['impact_bps']),
-        'funding_p95_per_settlement_bps':float(snapshot['funding_p95_abs_bps']),
-    }
-
-def freeze_cost_models(authority: Mapping[str,Any]) -> dict[str,Any]:
-    out={}
-    for symbol in SYMBOLS:
-        snap=ev.fetch_execution_snapshot(symbol,dict(authority))
-        model=cost_from_snapshot(snap)
-        out[symbol]={
-            'model':model,
-            'model_sha256':stable(model),
-            'public_snapshot_sha256':str(snap['snapshot_sha256']),
-            'pretrade_verified_cost_bps':float(snap['pretrade_verified_cost_bps']),
-            'fee_bps':float(snap['fee_bps']),
-            'spread_bps':float(snap['spread_bps']),
-            'impact_bps':float(snap['impact_bps']),
-            'funding_p95_abs_bps':float(snap['funding_p95_abs_bps']),
-        }
+def seal_state(value: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(value)
+    out.pop('state_sha256', None)
+    out['state_sha256'] = stable(out)
     return out
 
-def make_state(c: Mapping[str,Any],current_ms: int,authority: Mapping[str,Any]) -> dict[str,Any]:
-    boundary=int(c['qualification_boundary_ms'])
-    # Cost identity must exist before the first eligible 4h signal can complete.
-    if current_ms >= boundary + BAR_MS: raise RuntimeError('SQUEEZE_KR3_COST_FREEZE_MISSED_FIRST_ELIGIBLE_SIGNAL_CLOSE_NEW_BOUNDARY_REQUIRED')
-    models=freeze_cost_models(authority)
-    return seal_state(dict(
-        schema_version=STATE_SCHEMA,state='SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY',rule_id=generator.RULE_ID,
-        architecture=generator.ARCHITECTURE,boundary_ms=boundary,boundary_utc=c['qualification_boundary_utc'],historical_backfill=False,
-        last_scanned_closed_4h_ms=0,signal_T=0,finalized_T=0,event_T=0,cost_models=models,cost_freeze_observed_at_ms=current_ms,
-        contract_sha256=sha(CONTRACT_PATH),generator_sha256=sha(GENERATOR_PATH),arbiter_sha256=sha(ARBITER_PATH),symbols=list(SYMBOLS),**AUTHORITY))
 
-def closed_source_rows(symbol: str,current_ms: int) -> list[dict[str,Any]]:
-    bars=ev.fetch_bars(symbol,'4h',1000)
-    out=[]
-    for bar in bars:
-        ts=int(bar['ts_ms'])
-        if ts+BAR_MS>current_ms: continue
-        out.append(dict(bar_open_ts=ts,bar_close_ts=ts+BAR_MS,open=float(bar['open']),high=float(bar['high']),low=float(bar['low']),close=float(bar['close']),volume=float(bar['volume'])))
-    return out
+def validate_contract(c: Mapping[str, Any]) -> None:
+    if c['rule_id'] != generator.RULE_ID:
+        raise RuntimeError('SQUEEZE_G5A_RULE_ID_DRIFT')
+    if c['timeframe'] != '4h' or int(c['bar_ms']) != BAR_MS:
+        raise RuntimeError('SQUEEZE_G5A_TIMEFRAME_DRIFT')
+    if c['historical_backfill'] is not False or c['pre_boundary_credit'] != 0:
+        raise RuntimeError('SQUEEZE_G5A_BOUNDARY_POLICY_DRIFT')
+    if c['authority']['order_authority'] != 'BLOCKED':
+        raise RuntimeError('SQUEEZE_G5A_ORDER_AUTHORITY_DRIFT')
+    if list(c['symbols']) != ['1000PEPE-USDT','BCH-USDT','BTC-USDT','ETH-USDT','HYPE-USDT','LINK-USDT','SOL-USDT']:
+        raise RuntimeError('SQUEEZE_G5A_SYMBOL_UNIVERSE_DRIFT')
 
-def campaign_id(component: str,row: Mapping[str,Any]) -> str:
-    return stable(dict(rule_id=generator.RULE_ID,component=component,symbol=row['symbol'],signal_ts=int(row['signal_ts']),entry_ts=int(row['entry_ts']),side=row.get('side','long')))
 
-def accepted_campaigns(result: Mapping[str,Any],source_rows: Sequence[Mapping[str,Any]]) -> list[tuple[str,dict[str,Any]]]:
-    out=[]
-    for row in result['core_campaigns']:
-        out.append(('CAPREUSE82_CORE',deepcopy(row)))
-    plan=result['arbitration_plan']
+def validate_chain(rows: list[dict[str, Any]]) -> None:
+    prev = None
+    seen: set[str] = set()
+    for i, row in enumerate(rows):
+        if row['schema_version'] != SCHEMA or row['seq'] != i or row['prev_sha256'] != prev:
+            raise RuntimeError('SQUEEZE_G5A_EVENT_CHAIN')
+        if row['event_id'] in seen:
+            raise RuntimeError('SQUEEZE_G5A_EVENT_DUP')
+        core = dict(row)
+        supplied = core.pop('record_sha256')
+        if stable(core) != supplied:
+            raise RuntimeError('SQUEEZE_G5A_EVENT_HASH')
+        seen.add(row['event_id'])
+        prev = supplied
+
+
+def append(rows: list[dict[str, Any]], payload: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(payload, schema_version=SCHEMA, seq=len(rows),
+               prev_sha256=rows[-1]['record_sha256'] if rows else None)
+    row['record_sha256'] = stable(row)
+    rows.append(row)
+    return row
+
+
+def normalize_closed_bars(symbol: str, current_ms: int) -> list[dict[str, Any]]:
+    raw = [dict(x) for x in ev.fetch_bars(symbol, '4h', 1000)]
+    rows = []
+    for x in raw:
+        open_ts = int(x['ts_ms'])
+        if open_ts + BAR_MS > current_ms:
+            continue
+        rows.append(dict(bar_open_ts=open_ts, bar_close_ts=open_ts + BAR_MS,
+                         open=float(x['open']), high=float(x['high']),
+                         low=float(x['low']), close=float(x['close']),
+                         volume=float(x.get('volume', 0))))
+    rows.sort(key=lambda x: int(x['bar_open_ts']))
+    if len({int(x['bar_open_ts']) for x in rows}) != len(rows):
+        raise RuntimeError('SQUEEZE_G5A_SOURCE_DUPLICATE_BAR')
+    for a, b in zip(rows, rows[1:]):
+        if int(b['bar_open_ts']) - int(a['bar_open_ts']) != BAR_MS:
+            raise RuntimeError('SQUEEZE_G5A_SOURCE_GAP')
+    return rows
+
+
+def freeze_cost_models(c: Mapping[str, Any], current_ms: int) -> dict[str, Any]:
+    boundary = int(c['qualification_boundary_ms'])
+    if current_ms >= boundary + BAR_MS:
+        raise RuntimeError('SQUEEZE_G5A_COST_FREEZE_TOO_LATE_FOR_FIRST_BOUNDARY_BAR')
+    authority = ev.load_json(COST_PATH)
+    if authority.get('state') != 'FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY':
+        raise RuntimeError('SQUEEZE_G5A_COST_AUTHORITY_INVALID')
+    models: dict[str, Any] = {}
+    for symbol in c['symbols']:
+        snap = ev.fetch_execution_snapshot(symbol, dict(authority))
+        model = dict(fee_bps=float(snap['fee_bps']),
+                     spread_bps=float(snap['spread_bps']),
+                     impact_bps=float(snap['impact_bps']),
+                     funding_p95_per_settlement_bps=float(snap['funding_p95_abs_bps']))
+        models[symbol] = dict(model=model, model_sha256=stable(model),
+                              observed_snapshot_sha256=str(snap['snapshot_sha256']))
+    return dict(frozen_at_ms=current_ms, cost_authority_sha256=sha(COST_PATH),
+                models=models, freeze_sha256=stable(models))
+
+
+def make_state(c: Mapping[str, Any], current_ms: int) -> dict[str, Any]:
+    cost_freeze = freeze_cost_models(c, current_ms)
+    return seal_state(dict(schema_version=STATE_SCHEMA,
+        state='SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY',
+        rule_id=generator.RULE_ID, architecture=generator.ARCHITECTURE,
+        boundary_ms=int(c['qualification_boundary_ms']),
+        boundary_utc=c['qualification_boundary_utc'], historical_backfill=False,
+        symbols=list(c['symbols']), last_scanned_closed_4h_ms=0,
+        generator_sha256=sha(GENERATOR_PATH), source_owner_sha256=sha(SOURCE_PATH),
+        contract_sha256=sha(CONTRACT_PATH), cost_freeze=cost_freeze,
+        completed_campaign_T=0, duplicate_T=0, unknown_exit_T=0,
+        censored_open_T=0, g5a_economic_completed_T=0, **AUTHORITY))
+
+
+def validate_state(s: Mapping[str, Any], c: Mapping[str, Any]) -> None:
+    if s['schema_version'] != STATE_SCHEMA or s['rule_id'] != generator.RULE_ID:
+        raise RuntimeError('SQUEEZE_G5A_STATE_IDENTITY_DRIFT')
+    if int(s['boundary_ms']) != int(c['qualification_boundary_ms']):
+        raise RuntimeError('SQUEEZE_G5A_STATE_BOUNDARY_DRIFT')
+    if s['historical_backfill'] is not False:
+        raise RuntimeError('SQUEEZE_G5A_STATE_BACKFILL_DRIFT')
+    core = dict(s)
+    supplied = core.pop('state_sha256')
+    if stable(core) != supplied:
+        raise RuntimeError('SQUEEZE_G5A_STATE_HASH')
+    for symbol in c['symbols']:
+        if symbol not in s['cost_freeze']['models']:
+            raise RuntimeError('SQUEEZE_G5A_COST_MODEL_MISSING:' + symbol)
+
+
+def _key(row: Mapping[str, Any]) -> tuple[str, int, str]:
+    return (str(row['symbol']), int(row['signal_ts']), str(row.get('side', 'long')))
+
+
+def completed_unified_rows(generated: Mapping[str, Any], bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    core_completed = [dict(r) for r in generated['core_campaigns'] if 'exit_ts' in r]
+    donor_completed = {_key(r): dict(r) for r in generated['donor_campaigns'] if 'exit_ts' in r}
+    out = list(core_completed)
+    plan = generated['arbitration_plan']
     for item in plan['accepted_natural']:
-        out.append(('C54_B_DONOR',deepcopy(item['row'])))
+        key = tuple(item['key'])
+        if key in donor_completed:
+            out.append(donor_completed[key])
     for item in plan['accepted_preempt']:
-        row=arbiter.preempt_raw(item['row'],source_rows,int(item['preempt_ts']))
-        row['symbol']=item['key'][0];row['unified_component']='C54_B_DONOR';row['unified_rule_id']=generator.RULE_ID
-        out.append(('C54_B_DONOR',row))
-    # An identity can only appear once in the current causal reconstruction.
-    seen=set();unique=[]
-    for component,row in sorted(out,key=lambda x:(int(x[1]['signal_ts']),x[0],x[1]['symbol'])):
-        cid=campaign_id(component,row)
-        if cid in seen: continue
-        seen.add(cid);unique.append((component,row))
-    return unique
+        raw = dict(item['row'])
+        if int(raw['entry_ts']) >= int(item['preempt_ts']):
+            raise RuntimeError('SQUEEZE_G5A_INVALID_PREEMPT_ORDER')
+        out.append(arbiter.preempt_raw(raw, bars, int(item['preempt_ts'])))
+    unique: dict[tuple[str, int, str, str], dict[str, Any]] = {}
+    for row in out:
+        component = str(row.get('unified_component', 'UNKNOWN'))
+        k = (str(row['symbol']), int(row['signal_ts']), str(row.get('side','long')), component)
+        if k in unique:
+            raise RuntimeError('SQUEEZE_G5A_DUPLICATE_UNIFIED_CAMPAIGN')
+        unique[k] = row
+    return sorted(unique.values(), key=lambda r: (int(r['entry_ts']), str(r['symbol']), str(r.get('unified_component',''))))
 
-def source_window_sha(rows: Sequence[Mapping[str,Any]]) -> str: return stable(list(rows))
 
-def run(state: dict[str,Any] | None,events: list[dict[str,Any]],current_ms: int) -> tuple[dict[str,Any],list[dict[str,Any]],dict[str,Any]]:
-    c=read(CONTRACT_PATH);validate_contract(c);validate_chain(events)
-    cost_authority=ev.load_json(COST_PATH)
-    if cost_authority.get('state')!='FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY': raise RuntimeError('SQUEEZE_KR3_COST_AUTHORITY_INVALID')
-    if state is None: state=make_state(c,current_ms,cost_authority)
-    else: validate_state(state,c)
-    captured={x['campaign_id'] for x in events if x.get('kind')=='SIGNAL_CAPTURED'}
-    finalized={x['campaign_id'] for x in events if x.get('kind')=='LIFECYCLE_FINALIZED'}
-    new_signal=new_final=0;cursor=int(state['last_scanned_closed_4h_ms']);boundary=int(c['qualification_boundary_ms'])
-    for symbol in SYMBOLS:
-        rows=closed_source_rows(symbol,current_ms)
-        if rows: cursor=max(cursor,int(rows[-1]['bar_open_ts']))
-        if not rows or int(rows[-1]['bar_close_ts'])<=boundary: continue
-        result=generator.generate_symbol_campaigns(rows,symbol=symbol,eval_start_ms=boundary,eval_end_ms=int(rows[-1]['bar_close_ts']),cost_model=state['cost_models'][symbol]['model'])
-        win_sha=source_window_sha(rows);cost_item=state['cost_models'][symbol]
-        for component,row in accepted_campaigns(result,rows):
-            if int(row['signal_ts'])<boundary: continue
-            cid=campaign_id(component,row)
-            if cid not in captured:
-                append(events,dict(
-                    event_id=stable(dict(campaign_id=cid,kind='SIGNAL_CAPTURED')),kind='SIGNAL_CAPTURED',campaign_id=cid,rule_id=generator.RULE_ID,
-                    component=component,symbol=symbol,signal_ts=int(row['signal_ts']),entry_ts=int(row['entry_ts']),side=row.get('side','long'),
-                    allocation_numerator=row.get('allocation_numerator',1),allocation_denominator=row.get('allocation_denominator',1),
-                    cost_model_sha256=cost_item['model_sha256'],public_cost_snapshot_sha256=cost_item['public_snapshot_sha256'],
-                    pretrade_verified_cost_bps=cost_item['pretrade_verified_cost_bps'],source_window_sha256=win_sha,
-                    generator_sha256=state['generator_sha256'],arbiter_sha256=state['arbiter_sha256'],observed_at_ms=current_ms,
-                    lifecycle_state='SIGNAL_CAPTURED_AWAIT_FINALIZATION',duplicate=False,censored=('exit_ts' not in row),unknown_exit=False,
-                    g5a_economic_credit=False,**AUTHORITY));captured.add(cid);new_signal+=1
-            if 'exit_ts' in row and cid not in finalized:
-                reason=row.get('exit_reason')
-                if reason is None: raise RuntimeError('SQUEEZE_KR3_FINAL_WITHOUT_EXIT_REASON')
-                append(events,dict(
-                    event_id=stable(dict(campaign_id=cid,kind='LIFECYCLE_FINALIZED',exit_ts=int(row['exit_ts']))),kind='LIFECYCLE_FINALIZED',campaign_id=cid,
-                    rule_id=generator.RULE_ID,component=component,symbol=symbol,signal_ts=int(row['signal_ts']),entry_ts=int(row['entry_ts']),
-                    exit_ts=int(row['exit_ts']),exit_reason=str(reason),side=row.get('side','long'),gross_bps=float(row.get('gross_bps',0.0)),
-                    raw_lifecycle_sha256=stable(row),cost_model_sha256=cost_item['model_sha256'],source_window_sha256=win_sha,
-                    generator_sha256=state['generator_sha256'],arbiter_sha256=state['arbiter_sha256'],observed_at_ms=current_ms,
-                    lifecycle_state='FINALIZED_PENDING_G5A_ECONOMIC_ACCOUNTING',duplicate=False,censored=False,unknown_exit=False,
-                    g5a_economic_credit=False,**AUTHORITY));finalized.add(cid);new_final+=1
-    state['last_scanned_closed_4h_ms']=cursor;state['signal_T']=len(captured);state['finalized_T']=len(finalized);state['event_T']=len(events);state=seal_state(state)
-    status=dict(state=state['state'],boundary_ms=boundary,new_signals=new_signal,new_finalized=new_final,signal_T=len(captured),finalized_T=len(finalized),
-                formal_credit=0,g5a_economic_completed_T=0,next='ACCUMULATE_FUTURE_ONLY_LIFECYCLES_THEN_BIND_FINALIZED_ROWS_TO_G5A_ECONOMIC_ACCOUNTING',
-                **{k:v for k,v in AUTHORITY.items() if k!='formal_credit'})
-    return state,events,status
+def event_payload(row: Mapping[str, Any], *, source_packet_sha: str,
+                  frozen_cost: Mapping[str, Any], observed_at_ms: int,
+                  boundary_ms: int) -> dict[str, Any]:
+    if int(row['signal_ts']) < boundary_ms or int(row['entry_ts']) < boundary_ms:
+        raise RuntimeError('SQUEEZE_G5A_PREBOUNDARY_CAMPAIGN')
+    if 'exit_ts' not in row or row.get('exit_reason') is None:
+        raise RuntimeError('SQUEEZE_G5A_COMPLETED_CAMPAIGN_EXIT_REQUIRED')
+    component = str(row.get('unified_component', 'UNKNOWN'))
+    event_id = stable(dict(rule_id=generator.RULE_ID, symbol=row['symbol'],
+                           component=component, signal_ts=int(row['signal_ts']),
+                           entry_ts=int(row['entry_ts']), exit_ts=int(row['exit_ts']),
+                           exit_reason=str(row['exit_reason'])))
+    return dict(event_id=event_id, rule_id=generator.RULE_ID,
+        component=component, symbol=str(row['symbol']), side=str(row.get('side','long')),
+        signal_ts=int(row['signal_ts']), entry_ts=int(row['entry_ts']),
+        exit_ts=int(row['exit_ts']), exit_reason=str(row['exit_reason']),
+        entry_price=float(row['entry_price']), exit_price=float(row['exit_price']),
+        gross_bps=float(row.get('gross_bps', 0.0)),
+        source_packet_sha256=source_packet_sha,
+        frozen_cost_model_sha256=str(frozen_cost['model_sha256']),
+        cost_snapshot_sha256=str(frozen_cost['observed_snapshot_sha256']),
+        observed_at_ms=observed_at_ms, duplicate=False, censored=False,
+        unknown_exit=False, lifecycle_state='COMPLETED_AWAIT_G5A_ECONOMIC_ACCOUNTING',
+        g5a_economic_credit=False, **AUTHORITY)
+
+
+def run(state: dict[str, Any] | None, events: list[dict[str, Any]], current_ms: int):
+    c = read(CONTRACT_PATH)
+    validate_contract(c)
+    validate_chain(events)
+    if state is None:
+        state = make_state(c, current_ms)
+    else:
+        validate_state(state, c)
+    known = {x['event_id'] for x in events}
+    boundary = int(c['qualification_boundary_ms'])
+    new = 0
+    max_closed = int(state['last_scanned_closed_4h_ms'])
+    open_count = 0
+    for symbol in c['symbols']:
+        bars = normalize_closed_bars(symbol, current_ms)
+        if not bars:
+            continue
+        max_closed = max(max_closed, int(bars[-1]['bar_close_ts']))
+        if int(bars[-1]['bar_close_ts']) <= boundary:
+            continue
+        cost = deepcopy(state['cost_freeze']['models'][symbol]['model'])
+        generated = generator.generate_symbol_campaigns(
+            bars, symbol=symbol, eval_start_ms=boundary,
+            eval_end_ms=int(bars[-1]['bar_close_ts']), cost_model=cost)
+        open_count += len(generated['core_raw'].get('open_positions', [])) + len(generated['donor_raw'].get('open_positions', []))
+        packet_sha = stable(bars)
+        for row in completed_unified_rows(generated, bars):
+            payload = event_payload(row, source_packet_sha=packet_sha,
+                                    frozen_cost=state['cost_freeze']['models'][symbol],
+                                    observed_at_ms=current_ms, boundary_ms=boundary)
+            if payload['event_id'] in known:
+                continue
+            append(events, payload)
+            known.add(payload['event_id'])
+            new += 1
+    state['last_scanned_closed_4h_ms'] = max_closed
+    state['completed_campaign_T'] = len(events)
+    state['censored_open_T'] = open_count
+    state['duplicate_T'] = 0
+    state['unknown_exit_T'] = 0
+    state['g5a_economic_completed_T'] = sum(1 for x in events if x.get('g5a_economic_credit') is True)
+    state = seal_state(state)
+    status = dict(state=state['state'], boundary_ms=boundary,
+                  boundary_utc=c['qualification_boundary_utc'], new_completed_campaigns=new,
+                  completed_campaign_T=len(events), censored_open_T=open_count,
+                  historical_backfill=False, formal_credit=0,
+                  g5a_economic_completed_T=state['g5a_economic_completed_T'],
+                  next='ACCUMULATE_FUTURE_ONLY_COMPLETED_CAMPAIGNS_AND_BIND_G5A_ECONOMIC_ACCOUNTING',
+                  execution_authority='NONE', order_authority='BLOCKED', live_trade_authority='BLOCKED')
+    return state, events, status
+
 
 def self_test() -> int:
-    c=read(CONTRACT_PATH);validate_contract(c)
-    dummy={s:{'model':{'fee_bps':10.0,'spread_bps':1.0,'impact_bps':2.0,'funding_p95_per_settlement_bps':1.0},'model_sha256':'','public_snapshot_sha256':'x','pretrade_verified_cost_bps':14.0} for s in SYMBOLS}
-    for x in dummy.values(): x['model_sha256']=stable(x['model'])
-    s=seal_state(dict(schema_version=STATE_SCHEMA,state='SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY',rule_id=generator.RULE_ID,architecture=generator.ARCHITECTURE,
-        boundary_ms=int(c['qualification_boundary_ms']),boundary_utc=c['qualification_boundary_utc'],historical_backfill=False,last_scanned_closed_4h_ms=0,signal_T=0,finalized_T=0,event_T=0,
-        cost_models=dummy,cost_freeze_observed_at_ms=0,contract_sha256=sha(CONTRACT_PATH),generator_sha256=sha(GENERATOR_PATH),arbiter_sha256=sha(ARBITER_PATH),symbols=list(SYMBOLS),**AUTHORITY))
-    validate_state(s,c);rows=[];append(rows,dict(event_id='x',kind='TEST',campaign_id='c'));validate_chain(rows)
-    inv=generator.invariant_receipt();assert inv['saved_campaign_membership_input'] is False and inv['core_priority'] and inv['donor_requires_core_flat']
-    assert int(c['qualification_boundary_ms'])%BAR_MS==0 and c['historical_backfill'] is False
-    print('PASS_SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_V1');return 0
+    c = read(CONTRACT_PATH)
+    validate_contract(c)
+    rows: list[dict[str, Any]] = []
+    append(rows, dict(event_id='x', rule_id=generator.RULE_ID,
+                      component='CAPREUSE82_CORE', symbol='BTC-USDT', side='long',
+                      signal_ts=int(c['qualification_boundary_ms']),
+                      entry_ts=int(c['qualification_boundary_ms']) + BAR_MS,
+                      exit_ts=int(c['qualification_boundary_ms']) + 2 * BAR_MS,
+                      exit_reason='TEST', entry_price=1.0, exit_price=1.1,
+                      gross_bps=1000.0, source_packet_sha256='s',
+                      frozen_cost_model_sha256='c', cost_snapshot_sha256='k',
+                      observed_at_ms=1, duplicate=False, censored=False,
+                      unknown_exit=False,
+                      lifecycle_state='COMPLETED_AWAIT_G5A_ECONOMIC_ACCOUNTING',
+                      g5a_economic_credit=False, **AUTHORITY))
+    validate_chain(rows)
+    inv = generator.invariant_receipt()
+    assert inv['saved_campaign_membership_input'] is False
+    assert inv['core_priority'] and inv['donor_requires_core_flat'] and inv['later_core_entry_preempts_donor']
+    assert int(c['qualification_boundary_ms']) == 1789228800000
+    print('PASS_SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_V1')
+    return 0
+
 
 def main() -> int:
-    ap=argparse.ArgumentParser();ap.add_argument('--self-test',action='store_true');ap.add_argument('--out-dir');args=ap.parse_args()
-    if args.self_test:return self_test()
-    state=read(STATE_PATH) if STATE_PATH.exists() else None;events=read_events(EVENTS_PATH);s,e,status=run(state,events,now_ms())
-    out=Path(args.out_dir or ROOT/'out');out.mkdir(parents=True,exist_ok=True)
-    write_json(out/'g5_squeeze_kr3_unified_state_v1.json',s);write_events(out/'g5_squeeze_kr3_unified_events_v1.jsonl',e);write_json(out/'g5_squeeze_kr3_unified_status_v1.json',status)
-    print(json.dumps(status,sort_keys=True));return 0
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--self-test', action='store_true')
+    ap.add_argument('--out-dir')
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    state = read(STATE_PATH) if STATE_PATH.exists() else None
+    events = read_events(EVENTS_PATH)
+    state, events, status = run(state, events, now_ms())
+    out = Path(args.out_dir or ROOT / 'out')
+    out.mkdir(parents=True, exist_ok=True)
+    write_json(out / 'g5_squeeze_kr3_unified_state_v1.json', state)
+    write_events(out / 'g5_squeeze_kr3_unified_events_v1.jsonl', events)
+    write_json(out / 'g5_squeeze_kr3_unified_status_v1.json', status)
+    print(json.dumps(status, sort_keys=True))
+    return 0
 
-if __name__=='__main__': raise SystemExit(main())
+
+if __name__ == '__main__':
+    raise SystemExit(main())

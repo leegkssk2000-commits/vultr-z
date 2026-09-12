@@ -3,6 +3,7 @@
 Reads completed U4 evidence and frozen parent/donor receipts. No strategy replay or economic allocation.
 """
 import hashlib,json,math,subprocess
+from decimal import Decimal
 from math import fsum
 from pathlib import Path
 
@@ -38,40 +39,42 @@ def persist(msg):
     remote=git('ls-remote','origin','refs/heads/'+BRANCH).split()[0];need(head==remote,'REMOTE_READBACK_MISMATCH')
     return head
 
-
 def wins(snapshot):
     if snapshot['win_rate'] is None:return 0
     w=round(int(snapshot['closed'])*float(snapshot['win_rate']))
     need(math.isclose(w/int(snapshot['closed']),float(snapshot['win_rate']),rel_tol=1e-12,abs_tol=1e-12),'WIN_RATE_COUNT_MISMATCH')
     return w
 
+def D(v): return Decimal(str(v))
+
 
 def main():
     spec=read(OUT/'SPEC.json');budget=read(OUT/'BUDGET.json');q=budget[KEY]
     need((q['reserved'],q['started'],q['completed'],q['failed'],q['remaining'])==(2,2,2,0,0),'BUDGET_NOT_TERMINAL_CLEAN')
     need((budget['cumulative_actual'],budget['cumulative_actual_evaluations'])==(89,161),'ORDINALS_NOT_89_161')
-    # Frozen source authority.
     for per in PERIODS:
         need(sha(CAP/per/'RESULT.json.gz')==spec['core_result_sha256'][per],'CORE_RESULT_DRIFT:'+per)
         need(sha(CAP/per/'SNAPSHOT.json')==spec['core_snapshot_sha256'][per],'CORE_SNAPSHOT_DRIFT:'+per)
         need(sha(C54/per/'RESULT.json.gz')==spec['donor_result_sha256'][per],'DONOR_RESULT_DRIFT:'+per)
         need(sha(C54/per/'RAW.json.gz')==spec['donor_raw_sha256'][per],'DONOR_RAW_DRIFT:'+per)
         need(sha(ROOT/'research/development_evidence/TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/INPUTS'/(per+'.json.gz'))==spec['input_packet_sha256'][per],'INPUT_DRIFT:'+per)
-    perdata={};parentdata={};receipts={}
+    perdata={};parentdata={};receipts={};bridge_residuals={}
     for per in PERIODS:
         folder=OUT/per;rec=read(folder/'RECEIPT.json');need(rec['state']=='COMPLETED','RECEIPT_NOT_COMPLETED:'+per)
         for fn,key in [('RESULT.json.gz','result_sha256'),('SNAPSHOT.json','snapshot_sha256'),('DECOMPOSITION.json','decomposition_sha256'),('ARBITRATION.json.gz','arbitration_sha256')]:
             need(sha(folder/fn)==rec[key],'SAVED_HASH:'+per+':'+fn)
         s=read(folder/'SNAPSHOT.json');p=read(CAP/per/'SNAPSHOT.json')
         need(float(s['core_retention_fraction'])==1.0,'CORE_RETENTION:'+per)
-        delta=float(s['terminal_net_bps'])-float(p['terminal_net_bps'])
-        contrib=float(s['donor_net_contribution_bps'])
-        bysymbol=fsum(float(v) for v in s['donor_net_by_symbol'].values())
-        need(math.isclose(delta,contrib,rel_tol=1e-12,abs_tol=1e-8),'DONOR_NET_DELTA_BRIDGE:'+per)
-        need(math.isclose(contrib,bysymbol,rel_tol=1e-12,abs_tol=1e-8),'DONOR_SYMBOL_BRIDGE:'+per)
+        delta=D(s['terminal_net_bps'])-D(p['terminal_net_bps'])
+        contrib=D(s['donor_net_contribution_bps'])
+        bysymbol=sum((D(v) for v in s['donor_net_by_symbol'].values()),Decimal(0))
+        delta_residual=delta-contrib; symbol_residual=contrib-bysymbol
+        need(delta_residual==0,'DONOR_NET_DELTA_BRIDGE:'+per+':'+str(delta_residual))
+        need(abs(symbol_residual)<=Decimal('0.00000001'),'DONOR_SYMBOL_BRIDGE:'+per+':'+str(symbol_residual))
         need(int(s['donor_accepted_T'])==int(s['donor_natural_T'])+int(s['donor_preempted_T']),'DONOR_COUNT_BRIDGE:'+per)
         eligible=float(s['terminal_net_bps'])>0 and float(s['terminal_cost2x_net_bps'])>0 and s['PF'] is not None and float(s['PF'])>=1 and int(s['donor_accepted_T'])>=1
         need(eligible,'PERIOD_ELIGIBILITY_FAIL:'+per)
+        bridge_residuals[per]=dict(serialized_net_delta=str(delta),serialized_donor_contribution=str(contrib),delta_residual=str(delta_residual),symbol_sum_residual=str(symbol_residual))
         perdata[per]=s;parentdata[per]=p;receipts[per]=sha(folder/'RECEIPT.json')
     parent_net=fsum(float(parentdata[p]['terminal_net_bps']) for p in PERIODS)
     child_net=fsum(float(perdata[p]['terminal_net_bps']) for p in PERIODS)
@@ -94,6 +97,7 @@ def main():
         donor_natural_T=sum(int(perdata[p]['donor_natural_T']) for p in PERIODS),
         donor_preempted_T=sum(int(perdata[p]['donor_preempted_T']) for p in PERIODS),
         donor_excluded_T=sum(int(perdata[p]['donor_excluded_T']) for p in PERIODS),
+        serialized_bridge_residuals=bridge_residuals,
         per_period=perdata,parent_per_period=parentdata,formal_credit=0,used_DEV=True,Q_track_touched=False,
         new_economic_execution_in_closure=0,automatic_successor=False)
     put(OUT/'SUMMARY.json',summary)

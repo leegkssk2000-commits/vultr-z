@@ -1,0 +1,59 @@
+name: A1 Top5 Exit Runner Ratchet V4
+
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v1.py'
+      - 'backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v2.py'
+      - 'backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v3.py'
+      - 'backend/research/rebuild/a1_top5_exit_runner_ratchet_v4.py'
+      - '.github/workflows/a1-top5-exit-asymmetry-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exit-runner:
+    strategy:
+      fail-fast: false
+      matrix:
+        strategy_id:
+          - trend_rider
+          - keltner_trend
+          - break_and_continue
+          - supertrend_pullback
+          - trend_ma_macd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v1.py \
+            backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v2.py \
+            backend/research/rebuild/a1_top5_exit_asymmetry_optimizer_v3.py \
+            backend/research/rebuild/a1_top5_exit_runner_ratchet_v4.py
+          python -m backend.research.rebuild.a1_top5_exit_asymmetry_optimizer_v1 --self-test
+          python -m backend.research.rebuild.a1_top5_exit_asymmetry_optimizer_v2 --self-test
+          python -m backend.research.rebuild.a1_top5_exit_asymmetry_optimizer_v3 --self-test
+          python -m backend.research.rebuild.a1_top5_exit_runner_ratchet_v4 --self-test
+      - name: Optimize executable runner ratchet
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python -m backend.research.rebuild.a1_top5_exit_runner_ratchet_v4 \
+            --strategy-id '${{ matrix.strategy_id }}' \
+            --out 'out/a1_top5_exit_runner_${{ matrix.strategy_id }}.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: top5-exit-runner-v4-${{ matrix.strategy_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/a1_top5_exit_runner_${{ matrix.strategy_id }}.json
+          retention-days: 30

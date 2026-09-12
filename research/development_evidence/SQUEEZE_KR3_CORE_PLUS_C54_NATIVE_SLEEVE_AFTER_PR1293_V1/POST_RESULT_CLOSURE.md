@@ -18,4 +18,6 @@ Therefore closure is strictly saved-only. It must:
 5. apply the already-frozen adoption contract;
 6. write SUMMARY/INCUMBENT_SEAL/FINAL_STATUS/STATUS/REPORT only.
 
+PR #1295 review finding `r3996063642` identified a post-result evidence-only defect: `sleeve_role` had been added to 167 naturally accepted donor rows after their original C54 row seal, so their top-level `trade_sha256` / `observation_sha256` no longer matched the canonical row bytes. The authorized repair is strictly saved-only: remove the stale top-level row seal, recompute it after `sleeve_role`, update the enclosing RESULT/RECEIPT hashes, verify all 167 persisted natural donor rows, and rerun this saved-only closure. Strategy semantics, metrics, SPEC, budget, and economic results must not change and economics must not rerun.
+
 No strategy replay, parent/donor replay, candidate/evaluation allocation, market/OOS/fresh/G5 access, rule mutation, threshold rescue, paid AI, order or deployment is permitted in this closure.

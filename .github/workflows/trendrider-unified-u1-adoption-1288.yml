@@ -1,0 +1,82 @@
+name: TrendRider Unified U1 Adoption 1288
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'research/development_evidence/TRENDRIDER_UNIFIED_U1_ADOPTION_AFTER_PR1287_V1/**'
+      - '.github/workflows/trendrider-unified-u1-adoption-1288.yml'
+  push:
+    branches:
+      - 'codex/trendrider-unified-u1-adoption-1288'
+    paths:
+      - 'research/development_evidence/TRENDRIDER_UNIFIED_U1_ADOPTION_AFTER_PR1287_V1/**'
+      - '.github/workflows/trendrider-unified-u1-adoption-1288.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-unified-selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify unchanged U1 identity and economic tradeoff selection
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          old_path = Path('research/development_evidence/TRENDRIDER_TRUE_COMPONENT_SYNTHESIS_AFTER_PR1285_V1/EXACT_MERGE_VERIFICATION.json')
+          seal_path = Path('research/development_evidence/TRENDRIDER_UNIFIED_U1_ADOPTION_AFTER_PR1287_V1/TREND_RIDER_UNIFIED_V1_SEAL.json')
+          old = json.loads(old_path.read_text())
+          s = json.loads(seal_path.read_text())
+
+          assert old['state'] == 'PASS_EXACT_MERGE_VERIFIED'
+          assert old['candidate'] == 'U1'
+          assert old['architecture'] == s['architecture']
+          assert old['proxy_substitution'] == 0 == s['proxy_substitution']
+          assert old['numeric_sweep'] == 0 == s['numeric_sweep']
+          assert old['primary_core_retention'] == 1.0 == s['unified_v1']['primary_core_retention']
+
+          u = old['U1']
+          su = s['unified_v1']
+          assert u['trades'] == su['T'] == 26
+          assert u['wins'] == su['wins'] == 20
+          for old_key, new_key in [
+              ('win_rate','win_rate'),
+              ('net_pnl_bps','net_pnl_bps'),
+              ('net_expectancy_bps','net_expectancy_bps'),
+              ('profit_factor','profit_factor'),
+              ('payoff','payoff'),
+              ('drawdown_bps','drawdown_bps'),
+          ]:
+              assert abs(float(u[old_key]) - float(su[new_key])) < 1e-9
+
+          p = s['parents']['primary_exact16']
+          b = s['parents']['broad_exact30']
+          assert su['net_pnl_bps'] > p['net_pnl_bps']
+          assert su['win_rate'] > b['win_rate']
+          assert su['net_expectancy_bps'] > b['net_expectancy_bps']
+          assert su['drawdown_bps'] < b['drawdown_bps']
+          assert su['profit_factor'] > 1.0
+          assert su['payoff'] > p['payoff']
+          assert s['selection_policy']['result'] == 'PASS_ECONOMIC_TRADEOFF_SELECTION'
+          assert s['selection_policy']['type'] == 'USER_APPROVED_ECONOMIC_TRADEOFF_AFTER_RESULT'
+          assert s['historical_formal_credit'] == 0
+          assert s['formal_credit'] == 0
+          assert s['g5a']['handoff'] == 'PREPARED_PENDING_SEAL_MERGE_BOUNDARY'
+          assert s['live_order_deploy'] == 0
+          print(json.dumps({
+              'state':'PASS_UNIFIED_V1_SELECTION_SEAL',
+              'strategy_name':s['strategy_name'],
+              'U1':su,
+              'historical_formal_credit':s['historical_formal_credit'],
+              'g5a_handoff':s['g5a']['handoff'],
+          }, sort_keys=True))
+          PY

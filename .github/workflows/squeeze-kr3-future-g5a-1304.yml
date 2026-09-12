@@ -1,0 +1,50 @@
+name: Squeeze KR3 Future G5A Binding 1304
+
+on:
+  push:
+    branches: [codex/squeeze-kr3-future-g5a-1304]
+    paths:
+      - 'backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py'
+      - 'research/development_evidence/SQUEEZE_KR3_UNIFIED_FUTURE_GENERATOR_G5A_AFTER_PR1303_V1/BINDING_AUDIT.json'
+      - '.github/workflows/squeeze-kr3-future-g5a-1304.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py'
+      - 'research/development_evidence/SQUEEZE_KR3_UNIFIED_FUTURE_GENERATOR_G5A_AFTER_PR1303_V1/BINDING_AUDIT.json'
+      - '.github/workflows/squeeze-kr3-future-g5a-1304.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-binding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile future dual-generator binding
+        run: python3 -B -m py_compile backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py
+      - name: Verify frozen component invariants
+        run: python3 -B -m backend.research.rebuild.squeeze_kr3_future_dual_generator_v1
+      - name: Verify audit remains pre-credit and no proxy
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/development_evidence/SQUEEZE_KR3_UNIFIED_FUTURE_GENERATOR_G5A_AFTER_PR1303_V1/BINDING_AUDIT.json')
+          r=json.loads(p.read_text())
+          assert r['core']['future_callable'] is True
+          assert r['donor']['future_callable'] is True
+          assert r['core']['saved_campaign_membership_required'] is False
+          assert r['donor']['saved_campaign_membership_required'] is False
+          assert r['strategy_rule_mutation'] is False
+          assert r['economic_replay']==0 and r['fresh_g5a_credit_consumed']==0
+          assert r['orders']==0 and r['live']==0 and r['paid_ai']==0
+          print('PASS_SQUEEZE_KR3_1304_BINDING_AUDIT')
+          PY

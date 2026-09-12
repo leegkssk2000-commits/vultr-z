@@ -2,7 +2,7 @@
 
 Uses saved exact parent/donor campaign streams on the same USED_DEV packets.
 Core campaigns have absolute priority. Donor admission/preemption is processed
-chronologically; no future overlap screen is used at donor entry.
+chronologically per symbol; no future overlap screen is used at donor entry.
 """
 from copy import deepcopy
 from math import isfinite
@@ -40,7 +40,7 @@ def _gross(side,entry,exit_price):
 
 
 def _excursions(side,entry,bars,entry_index,exit_index,exit_price):
-    held=bars[entry_index:exit_index]  # preempting open: no future high/low from exit bar
+    held=bars[entry_index:exit_index]
     if side=='long':
         fav=[(b['high']/entry-1)*10000 for b in held]
         adv=[(b['low']/entry-1)*10000 for b in held]
@@ -83,30 +83,32 @@ def chronological_plan(core_rows,donor_rows):
     for r in donor_rows:
         k=key(r);events.append((int(r['entry_ts']),3,'DONOR_ENTRY',k,r));events.append((end_ts(r),0,'DONOR_END',k,r))
     events.sort(key=lambda x:(x[0],x[1],x[2],x[3]))
-    active_core=set();active_donor=None;accepted=[];excluded=[];preempt=[]
+    active_core={};active_donor={};accepted=[];excluded=[];preempt=[]
     for ts,_,kind,k,row in events:
+        symbol=k[0]
+        cores=active_core.setdefault(symbol,set())
+        donor=active_donor.get(symbol)
         if kind=='DONOR_END':
-            if active_donor is not None and active_donor['key']==k:
-                accepted.append(dict(key=k,row=active_donor['row'],mode='NATURAL',end_ts=ts))
-                active_donor=None
+            if donor is not None and donor['key']==k:
+                accepted.append(dict(key=k,row=donor['row'],mode='NATURAL',end_ts=ts))
+                active_donor.pop(symbol,None)
         elif kind=='CORE_END':
-            active_core.discard(k)
+            cores.discard(k)
         elif kind=='CORE_ENTRY':
-            if active_donor is not None:
-                preempt.append(dict(key=active_donor['key'],row=active_donor['row'],preempt_ts=ts,core_key=k))
-                active_donor=None
-            active_core.add(k)
+            if donor is not None:
+                preempt.append(dict(key=donor['key'],row=donor['row'],preempt_ts=ts,core_key=k))
+                active_donor.pop(symbol,None)
+            cores.add(k)
         elif kind=='DONOR_ENTRY':
             if k in core_keys:
                 excluded.append(dict(key=k,reason='DUPLICATE_CORE_IDENTITY',ts=ts))
-            elif active_core:
+            elif cores:
                 excluded.append(dict(key=k,reason='CORE_ACTIVE_AT_DONOR_ENTRY',ts=ts))
-            elif active_donor is not None:
+            elif donor is not None:
                 excluded.append(dict(key=k,reason='DONOR_ACTIVE_AT_DONOR_ENTRY',ts=ts))
             else:
-                active_donor=dict(key=k,row=row)
+                active_donor[symbol]=dict(key=k,row=row)
         else: raise RuntimeError('UNKNOWN_EVENT')
-    # A terminal donor open is accepted on its DONOR_END(mark_ts) event, so none may remain.
-    if active_donor is not None: raise RuntimeError('DONOR_EVENT_STREAM_UNCLOSED')
+    if active_donor: raise RuntimeError('DONOR_EVENT_STREAM_UNCLOSED')
     return dict(accepted_natural=accepted,accepted_preempt=preempt,excluded=excluded,
                 core_keys=sorted(core_keys),event_count=len(events))

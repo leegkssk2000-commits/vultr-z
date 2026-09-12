@@ -1,0 +1,103 @@
+name: TrendRider TRUE Component Synthesis 1286
+
+on:
+  push:
+    branches:
+      - codex/trendrider-true-component-1286
+    paths:
+      - 'backend/research/rebuild/trendrider_true_component_synthesis_v1.py'
+      - '.github/workflows/trendrider-true-component-1286.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: trendrider-true-component-1286
+  cancel-in-progress: false
+
+jobs:
+  exact-historical-synthesis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      GH_TOKEN: ${{ github.token }}
+      EVID: research/development_evidence/TRENDRIDER_TRUE_COMPONENT_SYNTHESIS_AFTER_PR1285_V1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/trendrider-true-component-1286
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify immutable inputs exist
+        run: |
+          set -euo pipefail
+          python -m py_compile backend/research/rebuild/trendrider_true_component_synthesis_v1.py
+          test -f backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json
+          mkdir -p out/broad out/wr80 "$EVID"
+
+      - name: Download exact Broad30 authority and original WR80 component receipt
+        run: |
+          set -euo pipefail
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9446790894/zip > out/broad.zip
+          unzip -q out/broad.zip -d out/broad
+          test -f out/broad/a1_exact25_drain_6_receipt.json
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9668303286/zip > out/wr80.zip
+          unzip -q out/wr80.zip -d out/wr80
+          test -f out/wr80/a1_trendrider_broad30_wr80_state_addonly_v1.json
+          sha256sum out/broad/a1_exact25_drain_6_receipt.json out/wr80/a1_trendrider_broad30_wr80_state_addonly_v1.json
+
+      - name: Execute TRUE historical component union
+        run: |
+          set -euo pipefail
+          python backend/research/rebuild/trendrider_true_component_synthesis_v1.py \
+            --primary backend/research/rebuild/a1_trendrider_wr8125_exact16_trade_receipt_v1.json \
+            --broad out/broad/a1_exact25_drain_6_receipt.json \
+            --wr80 out/wr80/a1_trendrider_broad30_wr80_state_addonly_v1.json \
+            --out-root "$EVID" | tee "$EVID/EXECUTION_STDOUT.json"
+
+      - name: Verify no proxy substitution and terminal accounting
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          e=Path('research/development_evidence/TRENDRIDER_TRUE_COMPONENT_SYNTHESIS_AFTER_PR1285_V1')
+          l=json.loads((e/'TRUE_COMPONENT_LEDGER.json').read_text())
+          s=json.loads((e/'HISTORICAL_SYNTHESIS_RESULT.json').read_text())
+          f=json.loads((e/'FINAL_STATUS.json').read_text())
+          assert l['proxy_substitution_allowed'] is False
+          assert l['numeric_sweep_allowed'] is False
+          assert l['allowed_candidate_ids']==['U1']
+          assert l['parents']['PRIMARY_CORE_WR8125']['metrics']['trades']==16
+          assert l['parents']['PRIMARY_CORE_WR8125']['metrics']['win_rate']==0.8125
+          assert l['parents']['BROAD_PARENT_WR7000']['metrics']['trades']==30
+          assert l['parents']['BROAD_PARENT_WR7000']['metrics']['win_rate']==0.70
+          assert l['components']['BROAD_WR80_STATE']['classification']=='GOOD_QUALITY_COMPONENT'
+          assert s['primary_core_retention_fraction']==1.0
+          assert s['architecture']=='PRIMARY_EXACT16_CORE OR (BROAD_ONLY AND EXACT_BROAD_WR80_STATE)'
+          assert f['state'] in ('TRUE_COMPONENT_SYNTHESIS_NOT_EARNED','HISTORICAL_TRUE_COMPONENT_PASS_PENDING_ROBUSTNESS')
+          print(json.dumps({'state':f['state'],'added_T':s['wr80_broad_only_added_T'],'metrics':s['union_metrics'],'gates':s['gates']},sort_keys=True))
+          PY
+
+      - name: Persist exact evidence to branch
+        run: |
+          set -euo pipefail
+          git config user.name 'trendrider-true-component-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          git add "$EVID"
+          git commit -m 'research: persist TrendRider true-component historical synthesis [skip ci]'
+          git push origin HEAD:codex/trendrider-true-component-1286
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trendrider-true-component-1286-${{ github.run_id }}
+          path: ${{ env.EVID }}
+          if-no-files-found: error
+          retention-days: 90

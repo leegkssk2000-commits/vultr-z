@@ -1,0 +1,56 @@
+name: Squeeze KR3 Unified Repair 1292
+on:
+  push:
+    branches: [codex/squeeze-kr3-unified-repair-1292]
+    paths:
+      - 'backend/research/rebuild/squeeze_kr3_unified_v1.py'
+      - 'backend/research/rebuild/squeeze_kr3_unified_repair_study_v1.py'
+      - 'backend/research/rebuild/test_squeeze_kr3_unified_v1.py'
+      - 'backend/research/rebuild/test_squeeze_kr3_unified_repair_v1.py'
+      - 'research/development_evidence/SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_EXECUTION_REPAIR_AFTER_1291_V1/DESIGN.md'
+      - '.github/workflows/squeeze-kr3-unified-repair-1292.yml'
+permissions:
+  contents: write
+concurrency:
+  group: squeeze-kr3-unified-repair-1292
+  cancel-in-progress: false
+jobs:
+  repaired-first-fulls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      SKR1292_PREFLIGHT: 'PASSED'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Record runtime
+        run: |
+          python --version
+          uname -a
+      - name: Canonical validation and repaired boundary regressions
+        run: |
+          npm run --prefix frontend/z-os-app-source validate
+          python -B -m unittest \
+            backend.research.rebuild.test_squeeze_kr3_unified_v1 \
+            backend.research.rebuild.test_squeeze_kr3_unified_repair_v1 \
+            backend.research.rebuild.test_c70_tm_capreuse_v1 \
+            backend.research.rebuild.test_c63_c70_trader_management_v1 \
+            backend.research.rebuild.test_kr3_c51_entry_context_v1 \
+            backend.research.rebuild.test_kr3_profit_zone_exit_v1 -v
+      - name: Verify CAPREUSE saved parent and predecessor no-output failure
+        run: |
+          python -B -m backend.research.rebuild.c70_tm_capreuse_verify_v1
+          test -f research/development_evidence/SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/U1/DEV2025/FAILURE.json
+          test ! -f research/development_evidence/SQUEEZE_KR3_TRUE_COMPONENT_UNIFIED_AFTER_TOP6_V1/U1/DEV2025/RESULT.json.gz
+          git diff --exit-code
+      - name: Execute repaired U1 U2 U3 x two USED_DEV periods once
+        run: |
+          git config user.name 'squeeze-kr3-unified-repair-owner'
+          git config user.email 'actions@users.noreply.github.com'
+          python -B -m backend.research.rebuild.squeeze_kr3_unified_repair_study_v1 --all

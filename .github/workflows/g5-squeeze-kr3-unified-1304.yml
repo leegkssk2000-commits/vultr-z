@@ -1,0 +1,122 @@
+name: G5A Squeeze-KR3 Unified Collector 1304
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py'
+      - 'backend/research/rebuild/g5_squeeze_kr3_unified_collector_v1.py'
+      - 'backend/research/contracts/squeeze_kr3_unified_g5a_collector_v1.json'
+      - '.github/workflows/g5-squeeze-kr3-unified-1304.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/g5_squeeze_kr3_unified_collector_v1.py'
+      - 'backend/research/contracts/squeeze_kr3_unified_g5a_collector_v1.json'
+      - '.github/workflows/g5-squeeze-kr3-unified-1304.yml'
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: G5A_SQUEEZE_KR3_UNIFIED_COLLECTOR_V1
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen dual generator and collector without market access
+        run: |
+          set -euo pipefail
+          python3 -B -m py_compile backend/research/rebuild/squeeze_kr3_future_dual_generator_v1.py backend/research/rebuild/g5_squeeze_kr3_unified_collector_v1.py
+          python3 -B -m backend.research.rebuild.squeeze_kr3_future_dual_generator_v1
+          python3 -B -m backend.research.rebuild.g5_squeeze_kr3_unified_collector_v1 --self-test
+
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      GOOGLE_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Collect future-only Squeeze-KR3 component/lifecycle evidence
+        run: |
+          set -euo pipefail
+          python3 -B -m backend.research.rebuild.g5_squeeze_kr3_unified_collector_v1 --self-test
+          rm -rf out && mkdir -p out
+          python3 -B -m backend.research.rebuild.g5_squeeze_kr3_unified_collector_v1 --out-dir out
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('out/g5_squeeze_kr3_unified_state_v1.json').read_text())
+          assert s['state']=='SQUEEZE_KR3_UNIFIED_G5A_COLLECTOR_READY_FUTURE_ONLY'
+          assert s['boundary_ms']==1789243200000
+          assert s['historical_backfill'] is False and s['formal_credit']==0
+          assert s['order_authority']=='BLOCKED' and s['live_trade_authority']=='BLOCKED'
+          assert len(s['cost_models'])==7
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g5a-squeeze-kr3-unified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Append-only persist state and lifecycle events
+        run: |
+          set -euo pipefail
+          git config user.name 'g5a-squeeze-kr3-unified-v1'
+          git config user.email 'actions@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git switch --detach origin/master
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('backend/research/rebuild');out=Path('out')
+          ns=json.loads((out/'g5_squeeze_kr3_unified_state_v1.json').read_text())
+          ne=[x for x in (out/'g5_squeeze_kr3_unified_events_v1.jsonl').read_text().splitlines() if x.strip()]
+          sp=root/'g5_squeeze_kr3_unified_state_v1.json';ep=root/'g5_squeeze_kr3_unified_events_v1.jsonl'
+          if sp.exists():
+              old=json.loads(sp.read_text())
+              if old.get('boundary_ms')!=ns.get('boundary_ms') or old.get('rule_id')!=ns.get('rule_id'):
+                  raise SystemExit('SQUEEZE_KR3_STATE_IDENTITY_CONFLICT')
+              if old.get('cost_models')!=ns.get('cost_models'):
+                  raise SystemExit('SQUEEZE_KR3_FROZEN_COST_MODEL_CONFLICT')
+          olde=[x for x in ep.read_text().splitlines() if x.strip()] if ep.exists() else []
+          if len(ne)<len(olde) or ne[:len(olde)]!=olde:
+              raise SystemExit('SQUEEZE_KR3_APPEND_ONLY_CONFLICT')
+          sp.write_text(json.dumps(ns,sort_keys=True,indent=2)+'\n')
+          ep.write_text('\n'.join(ne)+('\n' if ne else ''))
+          PY
+            git add backend/research/rebuild/g5_squeeze_kr3_unified_state_v1.json backend/research/rebuild/g5_squeeze_kr3_unified_events_v1.jsonl
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'G5A: persist Squeeze-KR3 Unified future evidence [skip ci]'
+            if git push origin HEAD:master; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1

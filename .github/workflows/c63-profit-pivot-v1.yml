@@ -1,0 +1,33 @@
+name: C63 Profit Pivot Finite Study V1
+on:
+  pull_request:
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1/**'
+      - '.github/workflows/c63-profit-pivot-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/**'
+      - 'research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1/**'
+      - '.github/workflows/c63-profit-pivot-v1.yml'
+permissions:
+  contents: read
+jobs:
+  verify-completed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Canonical validation
+        run: npm run --prefix frontend/z-os-app-source validate
+      - name: Artificial boundaries only
+        run: python3 -B -m unittest backend.research.rebuild.test_c63_profit_pivot_exit_v1 backend.research.rebuild.test_c63_failed_breakout_exit_v1 backend.research.rebuild.test_m1_er_range_rescue_v1 -v
+      - name: Original checked-in prices, saved costs and attribution without replay
+        working-directory: research/development_evidence/C63_PROFIT_CONFIRMED_PIVOT_EXIT_V1
+        run: |
+          python3 -B verify_saved.py --derived-sha256 5870b2c150999de446456ce474ae514f5f8a13d6d0048350bb1ba9c301939408 --inputs ../TOP5_SOURCE_CHART_MECHANISMS_AFTER_PR1228_V1/INPUTS
+          python3 -B -m unittest test_saved -v
+          git diff --exit-code

@@ -1,0 +1,68 @@
+name: Desktop Commander VPS autostart bootstrap
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/desktop-commander-vps-autostart-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-on-vps:
+    name: Install and verify systemd service on VPS
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - name: Verify Desktop Commander installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_BIN=/root/dc-node22/node_modules/node/bin/node
+          DC_JS=/root/dc-node22/node_modules/@wonderwhy-er/desktop-commander/dist/index.js
+          AUTH=/root/.desktop-commander-device/device.json
+          test -x "$NODE_BIN"
+          test -f "$DC_JS"
+          test -f "$AUTH"
+          echo "desktop_commander_install=ok"
+          echo "device_auth=present"
+
+      - name: Install persistent systemd unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          UNIT=/etc/systemd/system/desktop-commander-remote.service
+          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo -n"; fi
+          $SUDO tee "$UNIT" >/dev/null <<'EOF'
+          [Unit]
+          Description=Desktop Commander Remote Agent
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          User=root
+          Environment=HOME=/root
+          WorkingDirectory=/root/dc-node22
+          ExecStart=/root/dc-node22/node_modules/node/bin/node /root/dc-node22/node_modules/@wonderwhy-er/desktop-commander/dist/index.js remote
+          Restart=always
+          RestartSec=5
+          StartLimitIntervalSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          $SUDO systemctl daemon-reload
+          $SUDO systemctl enable --now desktop-commander-remote.service
+
+      - name: Verify active and enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo -n"; fi
+          $SUDO systemctl is-enabled desktop-commander-remote.service
+          $SUDO systemctl is-active desktop-commander-remote.service
+          $SUDO systemctl --no-pager --full status desktop-commander-remote.service | head -40
+          echo "DESKTOP_COMMANDER_AUTOSTART=PASS"

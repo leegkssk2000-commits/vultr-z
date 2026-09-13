@@ -1,0 +1,76 @@
+name: G4 Scalp Round1 VPS Direct V1
+
+on:
+  push:
+    branches:
+      - research/g4-scalp-round1-vps-direct-v1
+    paths:
+      - '.github/workflows/g4-scalp-round1-vps-direct-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch-vps-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g4-scalp-round1-vps-direct-v1
+          persist-credentials: false
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Stage frozen Round1 code on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/g4-scalp-round1-vps-direct-v1"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "rm -rf '$remote' && mkdir -p '$remote'"
+          tar --exclude=.git -czf - . | ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "tar -xzf - -C '$remote'"
+      - name: Launch direct VPS replay detached
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          remote="/tmp/g4-scalp-round1-vps-direct-v1"
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "cat > '$remote/run_round1.sh' <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd /tmp/g4-scalp-round1-vps-direct-v1
+          export PYTHONPATH=.
+          py=/home/z/z/.venv/bin/python
+          cache=/tmp/g4_scalp_round1_direct_cache
+          result=/tmp/g4-scalp-round1-vps-direct-v1/research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE
+          rm -rf \"$cache\"
+          mkdir -p \"$result/LANES\"
+          echo \"DIRECT_START $(date -u +%FT%TZ)\" > \"$result/DIRECT_STATUS.txt\"
+          $py -B -m backend.research.rebuild.g4_scalp_round1_1m_to_5m_source_v1 --cache-dir \"$cache\" --receipt \"$result/SOURCE_REPAIR_RECEIPT.json\" >> \"$result/DIRECT_RUN.log\" 2>&1
+          $py -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 --prepare-cache --cache-dir \"$cache\" >> \"$result/DIRECT_RUN.log\" 2>&1
+          for sid in liquidity_sweep scalp_snap vol_spike_fade ema_ribbon_scalp session_bias sr_levels rbreaker_like pivot_reversal range_fade fvg_revert rsi_swing_fail alpha_combo obv_trend mfi_rsi_div grid_rebalance; do
+            echo \"LANE_START $sid $(date -u +%FT%TZ)\" >> \"$result/DIRECT_RUN.log\"
+            $py -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 --cache-dir \"$cache\" --strategy-id \"$sid\" --out \"$result/LANES/$sid.json\" >> \"$result/DIRECT_RUN.log\" 2>&1
+            echo \"LANE_DONE $sid $(date -u +%FT%TZ)\" >> \"$result/DIRECT_RUN.log\"
+          done
+          $py -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 --aggregate --lanes-dir \"$result/LANES\" --out \"$result/RESULT.json\" >> \"$result/DIRECT_RUN.log\" 2>&1
+          echo \"DIRECT_COMPLETE $(date -u +%FT%TZ)\" > \"$result/DIRECT_STATUS.txt\"
+          SH
+          chmod +x '$remote/run_round1.sh'
+          nohup '$remote/run_round1.sh' > '$remote/nohup.out' 2>&1 < /dev/null & echo \$! > '$remote/DIRECT_PID'"
+          sleep 2
+          ssh -i "$GITHUB_WORKSPACE/.ssh/vps_key" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "cat '$remote/DIRECT_PID'; cat '$remote/research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/DIRECT_STATUS.txt'"
+      - name: Cleanup key only
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"

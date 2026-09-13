@@ -1,0 +1,27 @@
+# One bounded C69 overblocking repair — C63 remains the control
+
+User `저기서 더 개선 들어가` authorizes this finite next development experiment. Current source master f9da0baf62659a23085f257aee84af0cc8d6da57; completed PR1242 and all69/122 preserved. This is NOT repeat C69, a year/symbol exception, a parameter sweep, or promotion. Single Chat owner. No paid AI, secrets, market fetch, holdout, operating changes or deployments. The old six AVWAP slots are not spent. At most one new candidate70 / first FULL123-124 on the two original USED_DEV packets. No repeated parents/FIXED. No automatic next candidate.
+
+## Public basis and explicit adaptation boundary
+FocusedTrades/Taylor Horton, 2022-09-23, Options Trading Setup: Big 3 Combo + Big 3 Squeeze: price above daily21, lower-timeframe buy/squeeze agreement, entry promptly when criteria appear. The text was read again before development. Its source is https://www.focusedtrades.com/options-trading-setup-big-3-combo/ (sections Daily21 and OtherTips/TipsBeforeYouGo). No trader account audit is requested. No proprietary Big3 formula or claimed win rate is replicated.
+
+The source does NOT prescribe storing a C63 signal for20bars. The finite pending state, cancellation and clock below are ZEL engineering choices to test the failure diagnosed in C69. UTCday, completed-day21EMA/SMAseed and C63 lower-timeframe signal are the same explicit adaptations as C69. No new proximity/ATR threshold is invented. The result tests this one implementation, not Horton's entire method.
+
+## Frozen question and causal rule
+Can waiting for the direction condition, instead of permanently throwing away the signal, retain the loss avoidance while recovering worthwhile breakouts? C63 baseline and C69 comparator remain immutable.
+
+1. Generate all original M1 signals and compute C63 ER-or-prior-range qualification at the ORIGINAL signal. Native original occupancy/window/expiry blocks retain priority. Missing daily21 history stays a missing-data block, never a recovery candidate.
+2. If the ORIGINAL signal close already exceeds completed-day21EMA, use the original next open. Otherwise a C63-qualified, daily21-available signal becomes PENDING, not a position. Its original next-open gap must still be above the fixed floor; failure cancels rather than being bypassed by waiting.
+3. Inspect subsequent native completed closes in time order. Original floor close, nonpositive original momentum, or elapsed20bars since original signal cancels BEFORE testing daily eligibility. A newly arriving original raw M1 signal also cancels the old pending signal; the new signal gets its own ordinary C63 assessment. Pending does not reserve fictitious position exposure or create repeated orders.
+4. At the FIRST later close above its then-available completed-day21EMA, enter at next ACTUAL observed open, only if native end-window/fixed-floor gap safety passes. Failed gap/no-next-open does not retry. No earlier EMA-price fill is fabricated.
+5. Original fixed floor/momentum/time exit priority retained. Crucially waiting and holding SHARE THE ORIGINAL20BAR CLOCK. It is not reset at the delayed fill. Thus this experiment is timing/eligibility, not hidden holding-extension/exit optimization. Native _position is reused with elapsed waiting bars added only to its time counter.
+6. After actual fill, subsequent original signals obey actual occupancy including original conservative same-time exit/entry block. All signals have one terminal event or explicit pending. End-window pending and hypothetical open position marks remain distinct. Signal origin ID/time stays original; decision and fill times are separate.
+
+Never select candidate by a known C63 future exit, winner label, eventual EMA return or symbol/year. Loop lookahead to the next raw signal is only an implementation bound equivalent to cancellation when that signal arrives; prefix/future-mutation tests must hold. Current incomplete daily candle is not used. Original signal floor never widened, no averaging/partials/sizing change.
+
+## Execution and evaluation
+Pre-economic synthetic regressions and canonical frontend validation run in a FULL remote checkout, then original source/packet/history hashes, SPEC freeze and each remote committed/read-back claim precede the corresponding first FULL. Failure consumes attempt, no retry. Local clone DNS failed; local synthetic proof is a partial export, not full-checkout/frontend PASS.
+
+Use the existing deterministic charge_and_mark and compare/snapshot. Preserve original floor20bps/absolute-funding proxy, cost2, nominal size, symbols, calendars, cutoff/open marks. Original source/source-hash dependencies remain immutable. Report C63 / C69 / C70 WR, closed/open, net/cost2, daily markedDD, meanW/L/payoff/PF, loss-run/exposure and parent-pinned winner retention; decompose common/removed/new/closed-open transitions; attribute waiting versus original veto, newly occupied/displaced follow-ups and missed open marks. Do not double-add saved costs. Old used periods are never independent evidence.
+
+Retain the original eight goals: each period WR/net/cost2 strictly higher and daily markedDD lower under unchanged comparisons. Even partial improvement is NOT G5/formal/operating acceptance. No data-driven goal relaxation. After two results, replace economic workflow with read-only saved verification, then final-headCI/review/normalmerge/exactmerge validation or exact checkpoint. Bound controlled scope at45min; no post-completion extra experiment.

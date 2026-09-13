@@ -1,0 +1,132 @@
+{
+  "schema_version": "zel.g4_scalp_intraday_rebase.fast_child_freeze.v1",
+  "scope_key": "G4_SCALP_INTRADAY_ROUND1_V1",
+  "issue": 1322,
+  "frozen_before_round1_economics": true,
+  "parent_master_sha": "8de5176e110ba149ebd788a64850104a2d4cd621",
+  "purpose": "Create distinct fast identities for the nine Round0 slow policies without using Round1 outcomes. Only decision timeframe and hard lifecycle are compressed here; benchmark mechanism changes remain Round2 A/B work.",
+  "global_rules": {
+    "old_parent_history_preserved": true,
+    "parent_identity_mutated": false,
+    "outcome_or_pnl_used": false,
+    "public_trader_thresholds_copied": false,
+    "indicator_lookbacks_inherit_parent_defaults": true,
+    "entry_thresholds_inherit_parent_defaults": true,
+    "stop_risk_geometry_inherit_parent_defaults": true,
+    "cost_budget_inherit_parent_defaults": true,
+    "only_timeframe_and_timeout_overridden": true,
+    "benchmark_transfer_deferred_to_round2_parent_child_ab": true,
+    "selection_authority": false,
+    "promotion_authority": false,
+    "execution_authority": "NONE",
+    "order_authority": "BLOCKED",
+    "live_trade_authority": "BLOCKED"
+  },
+  "children": {
+    "bb_revert_fast_v1": {
+      "parent_strategy_id": "bb_revert",
+      "parent_policy": "backend/research/rebuild/vwap_bb_policy_batch_v1.py",
+      "benchmark_ids": ["CONNORS_MEAN_REVERSION", "RASCHKE_SHORT_TERM"],
+      "timeframe": "5m",
+      "timeframe_ms": 300000,
+      "timeout_bars": 24,
+      "hard_timeout_minutes": 120,
+      "mechanism": "band extension then confirmed re-entry inside a valid mean-reversion regime",
+      "benchmark_transfer_round2": ["regime_gate", "fast_invalidation_when_reversion_fails"]
+    },
+    "anchor_vwap_trend_fast_v1": {
+      "parent_strategy_id": "anchor_vwap_trend",
+      "parent_policy": "backend/research/rebuild/vwap_bb_policy_batch_v1.py",
+      "benchmark_ids": ["SHANNON_AVWAP"],
+      "timeframe": "5m",
+      "timeframe_ms": 300000,
+      "timeout_bars": 24,
+      "hard_timeout_minutes": 120,
+      "mechanism": "causal anchored-VWAP reaction and reclaim within a faster directional lifecycle",
+      "benchmark_transfer_round2": ["AVWAP_as_reference_not_signal", "reaction_reclaim_confirmation"]
+    },
+    "vwap_revert_fast_v1": {
+      "parent_strategy_id": "vwap_revert",
+      "parent_policy": "backend/research/rebuild/vwap_bb_policy_batch_v1.py",
+      "benchmark_ids": ["AZIZ_SCALP_VWAP", "SHANNON_AVWAP"],
+      "timeframe": "5m",
+      "timeframe_ms": 300000,
+      "timeout_bars": 18,
+      "hard_timeout_minutes": 90,
+      "mechanism": "VWAP displacement then reclaim/mean reversion in a short liquidity horizon",
+      "benchmark_transfer_round2": ["Level2_or_flow_confirmation", "session_liquidity_context"]
+    },
+    "break_and_continue_fast_v1": {
+      "parent_strategy_id": "break_and_continue",
+      "parent_policy": "backend/research/rebuild/breakout_policy_batch_v1.py",
+      "benchmark_ids": ["CRABEL_SEC", "MINERVINI_VERIFIED_2021"],
+      "timeframe": "5m",
+      "timeframe_ms": 300000,
+      "timeout_bars": 24,
+      "hard_timeout_minutes": 120,
+      "mechanism": "short-horizon range break and continuation",
+      "benchmark_transfer_round2": ["compression_before_expansion", "controlled_pullback_retest", "tight_failed_break_invalidation"]
+    },
+    "squeeze_break_fast_v1": {
+      "parent_strategy_id": "squeeze_break",
+      "parent_policy": "backend/research/rebuild/breakout_policy_batch_v1.py",
+      "benchmark_ids": ["CARTER_SQUEEZE"],
+      "timeframe": "5m",
+      "timeframe_ms": 300000,
+      "timeout_bars": 24,
+      "hard_timeout_minutes": 120,
+      "mechanism": "Bollinger/Keltner compression followed by the first volatility release",
+      "benchmark_transfer_round2": ["release_quality", "momentum_direction", "chase_control"]
+    },
+    "keltner_trend_fast_v1": {
+      "parent_strategy_id": "keltner_trend",
+      "parent_policy": "backend/research/rebuild/breakout_policy_batch_v1.py",
+      "benchmark_ids": ["RASCHKE_SHORT_TERM", "GUPPY_GMMA"],
+      "timeframe": "15m",
+      "timeframe_ms": 900000,
+      "timeout_bars": 32,
+      "hard_timeout_minutes": 480,
+      "mechanism": "Keltner volatility expansion with aligned trend structure",
+      "benchmark_transfer_round2": ["avoid_late_chase", "fast_scratch_if_no_progress"]
+    },
+    "supertrend_pullback_fast_v1": {
+      "parent_strategy_id": "supertrend_pullback",
+      "parent_policy": "backend/research/rebuild/trend_policy_batch_v1.py",
+      "benchmark_ids": ["RASCHKE_SHORT_TERM", "GUPPY_GMMA"],
+      "timeframe": "15m",
+      "timeframe_ms": 900000,
+      "timeout_bars": 32,
+      "hard_timeout_minutes": 480,
+      "mechanism": "trend-first state followed by pullback and reclaim",
+      "benchmark_transfer_round2": ["structure_based_scratch"]
+    },
+    "trend_ma_macd_fast_v1": {
+      "parent_strategy_id": "trend_ma_macd",
+      "parent_policy": "backend/research/rebuild/trend_policy_batch_v1.py",
+      "benchmark_ids": ["GUPPY_GMMA", "PARKER_TREND"],
+      "timeframe": "15m",
+      "timeframe_ms": 900000,
+      "timeout_bars": 32,
+      "hard_timeout_minutes": 480,
+      "mechanism": "moving-average trend state followed by momentum re-acceleration",
+      "benchmark_transfer_round2": ["trend_state_before_momentum_trigger", "objective_invalidation"]
+    },
+    "trend_rider_fast_v1": {
+      "parent_strategy_id": "trend_rider",
+      "parent_policy": "backend/research/rebuild/trend_policy_batch_v1.py",
+      "benchmark_ids": ["PARKER_TREND", "GUPPY_GMMA"],
+      "timeframe": "15m",
+      "timeframe_ms": 900000,
+      "timeout_bars": 32,
+      "hard_timeout_minutes": 480,
+      "mechanism": "trend persistence and objective structure in an intraday lifecycle",
+      "benchmark_transfer_round2": ["outlier_capture", "trend_structure_regime_filter"]
+    }
+  },
+  "donor_only": {
+    "turtle_trend": {
+      "reason": "current 1h/120h identity is outside the scalp/daytrade operability envelope",
+      "allowed_transfer": ["objective_breakout_entry_exit", "asymmetric_payoff", "cut_losses_let_outliers_run", "equal_rule_weighting"]
+    }
+  }
+}

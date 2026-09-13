@@ -167,8 +167,8 @@ def build_result() -> dict[str, Any]:
             "benchmark_ids": list(bench.get("benchmark_ids", [])),
             "benchmark_strength": bench.get("benchmark_strength"),
             "lane_hint": bench.get("lane_hint"),
-            "round0_economics_used": false,
-            "old_pnl_used_for_classification": false,
+            "round0_economics_used": False,
+            "old_pnl_used_for_classification": False,
         })
         if sid in FAST_CHILD_TARGETS:
             row["fast_child_authorization"] = FAST_CHILD_TARGETS[sid]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 from backend.research.rebuild import top5_6m_exact_historical_replay_v1 as m
@@ -14,6 +15,12 @@ ORDER = [
     ("supertrend", "Supertrend Momentum"),
     ("q0", "Q0 Channel Breakout"),
 ]
+
+
+def git_head_sha() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
 
 
 def aggregate(lane_dir: Path) -> dict:
@@ -73,7 +80,7 @@ def aggregate(lane_dir: Path) -> dict:
         "lane_receipts": lane_receipts,
         "results": results,
         "source_identity": {
-            "aggregate_head": m.ev.git_head_sha(),
+            "aggregate_head": git_head_sha(),
             "script_blob_sha": m.ev.git_blob_sha(Path(m.__file__)),
             "aggregate_blob_sha": m.ev.git_blob_sha(Path(__file__)),
         },

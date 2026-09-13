@@ -1,0 +1,132 @@
+name: G4 Scalp Round1 Native Economics V1
+
+on:
+  push:
+    branches:
+      - research/g4-scalp-round1-v1
+    paths:
+      - 'backend/research/rebuild/g4_scalp_round1_native_economics_v1.py'
+      - 'backend/tests/test_g4_scalp_round1_native_economics_v1.py'
+      - 'research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_CONTRACT.json'
+      - 'research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/FAST_CHILD_FREEZE_V1.json'
+      - '.github/workflows/g4-scalp-round1-native-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g4-scalp-round1-heavy-v1
+  cancel-in-progress: true
+
+jobs:
+  round1-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g4-scalp-round1-v1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compile Round1 runner
+        run: |
+          python3 -B -m py_compile backend/research/rebuild/g4_scalp_round1_native_economics_v1.py
+          python3 -B -m py_compile backend/tests/test_g4_scalp_round1_native_economics_v1.py
+
+      - name: Test frozen Round1 contracts
+        run: python3 -B -m unittest backend.tests.test_g4_scalp_round1_native_economics_v1 -v
+
+      - name: Prepare shared Liquid5 5m source cache
+        run: |
+          rm -rf /tmp/g4_scalp_round1_cache
+          python3 -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 \
+            --prepare-cache \
+            --cache-dir /tmp/g4_scalp_round1_cache
+
+      - name: Run and checkpoint 15 native scalp lanes
+        run: |
+          set -euo pipefail
+          git config user.name 'g4-scalp-round1'
+          git config user.email 'actions@users.noreply.github.com'
+          lanes=(
+            liquidity_sweep
+            scalp_snap
+            vol_spike_fade
+            ema_ribbon_scalp
+            session_bias
+            sr_levels
+            rbreaker_like
+            pivot_reversal
+            range_fade
+            fvg_revert
+            rsi_swing_fail
+            alpha_combo
+            obv_trend
+            mfi_rsi_div
+            grid_rebalance
+          )
+          mkdir -p research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/LANES
+          for sid in "${lanes[@]}"; do
+            out="research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/LANES/${sid}.json"
+            if [[ -f "$out" ]]; then
+              echo "ROUND1_LANE_ALREADY_CHECKPOINTED:$sid"
+              continue
+            fi
+            echo "ROUND1_LANE_START:$sid"
+            python3 -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 \
+              --cache-dir /tmp/g4_scalp_round1_cache \
+              --strategy-id "$sid" \
+              --out "$out"
+            git add "$out"
+            git commit -m "G4-SCALP: checkpoint Round1 ${sid} [skip ci]"
+            git pull --rebase origin research/g4-scalp-round1-v1
+            git push origin HEAD:research/g4-scalp-round1-v1
+            echo "ROUND1_LANE_CHECKPOINTED:$sid"
+          done
+
+      - name: Aggregate Round1 native results
+        run: |
+          set -euo pipefail
+          python3 -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 \
+            --aggregate \
+            --lanes-dir research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/LANES \
+            --out research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/RESULT.json
+          python3 - <<'PY'
+          import json
+          p='research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/RESULT.json'
+          x=json.load(open(p))
+          assert x['state']=='ROUND1_NATIVE_15_COMPLETE_DESCRIPTIVE_NO_SELECTION'
+          assert x['lane_count']==15
+          assert x['authority']['selection_authority'] is False
+          assert x['authority']['promotion_authority'] is False
+          assert x['authority']['order_authority']=='BLOCKED'
+          assert x['authority']['live_trade_authority']=='BLOCKED'
+          print(json.dumps({'lane_count':x['lane_count'],'state_counts':x['state_counts']},sort_keys=True))
+          PY
+          git config user.name 'g4-scalp-round1'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/RESULT.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'G4-SCALP: persist Round1 native aggregate [skip ci]'
+            git pull --rebase origin research/g4-scalp-round1-v1
+            git push origin HEAD:research/g4-scalp-round1-v1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g4-scalp-round1-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_CONTRACT.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/FAST_CHILD_FREEZE_V1.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/LANES/*.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/RESULT.json
+          if-no-files-found: error
+          retention-days: 90

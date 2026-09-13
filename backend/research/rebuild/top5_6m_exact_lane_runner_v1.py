@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -25,6 +26,12 @@ LANES = {
     ),
     "q0": ("Q0 Channel Breakout", m.q0_replay),
 }
+
+
+def git_head_sha() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
 
 
 def build_receipt(lane: str) -> dict:
@@ -62,7 +69,7 @@ def build_receipt(lane: str) -> dict:
         "result": result,
         "runtime_seconds": time.time() - started,
         "source_identity": {
-            "head_at_runtime": m.ev.git_head_sha(),
+            "head_at_runtime": git_head_sha(),
             "script_blob_sha": m.ev.git_blob_sha(Path(m.__file__)),
             "lane_runner_blob_sha": m.ev.git_blob_sha(Path(__file__)),
             "v2_freeze_sha256": m.stable(m.read(m.V2_FREEZE)),

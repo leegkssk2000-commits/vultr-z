@@ -1,0 +1,95 @@
+name: G4 Scalp Intraday Round0 V1
+
+on:
+  push:
+    branches:
+      - research/g4-scalp-intraday-rebase-v1
+    paths:
+      - 'backend/research/rebuild/g4_scalp_intraday_round0_v1.py'
+      - 'backend/research/rebuild/*policy*_v1.py'
+      - 'backend/research/rebuild/turtle_trend_policy_v2.py'
+      - 'backend/research/rebuild/strategy25_structural_inventory_v2.json'
+      - 'backend/tests/test_g4_scalp_intraday_round0_v1.py'
+      - 'research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/**'
+      - '.github/workflows/g4-scalp-intraday-round0-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g4-scalp-intraday-round0-v1
+  cancel-in-progress: true
+
+jobs:
+  round0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      OPENAI_API_KEY: ''
+      GEMINI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      GROQ_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/g4-scalp-intraday-rebase-v1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compile Round0
+        run: |
+          python3 -B -m py_compile backend/research/rebuild/g4_scalp_intraday_round0_v1.py
+          python3 -B -m py_compile backend/tests/test_g4_scalp_intraday_round0_v1.py
+
+      - name: Test Round0 contract
+        run: python3 -B -m unittest backend.tests.test_g4_scalp_intraday_round0_v1 -v
+
+      - name: Execute Round0 operability census
+        run: |
+          python3 -B -m backend.research.rebuild.g4_scalp_intraday_round0_v1 \
+            --out research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND0_RESULT.json
+
+      - name: Verify terminal Round0 counts
+        run: |
+          python3 - <<'PY'
+          import json
+          p='research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND0_RESULT.json'
+          x=json.load(open(p))
+          assert x['state']=='ROUND0_COMPLETE_OPERABILITY_REBASE_READY_FOR_NATIVE_ROUND1_AND_FAST_CHILD_BUILD'
+          assert x['counts']=={
+              'exact25':25,
+              'scalp_native_round1_eligible':15,
+              'daytrade_native_round1_eligible':0,
+              'fast_child_required_before_round1':9,
+              'donor_only_current':1,
+          }, x['counts']
+          assert x['authority']['order_authority']=='BLOCKED'
+          assert x['authority']['live_trade_authority']=='BLOCKED'
+          print(json.dumps(x['counts'], sort_keys=True))
+          PY
+
+      - name: Persist durable Round0 result
+        run: |
+          set -euo pipefail
+          git config user.name 'g4-scalp-round0'
+          git config user.email 'actions@users.noreply.github.com'
+          git add research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND0_RESULT.json
+          if git diff --cached --quiet; then
+            echo 'ROUND0_RESULT_ALREADY_CURRENT'
+            exit 0
+          fi
+          git commit -m 'G4-SCALP: persist Round0 operability result [skip ci]'
+          git pull --rebase origin research/g4-scalp-intraday-rebase-v1
+          git push origin HEAD:research/g4-scalp-intraday-rebase-v1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g4-scalp-intraday-round0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/SCALP_INTRADAY_CONTRACT.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/BENCHMARK_DOSSIER.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND0_RESULT.json
+          if-no-files-found: error
+          retention-days: 90

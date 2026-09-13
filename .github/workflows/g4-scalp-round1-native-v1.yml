@@ -6,6 +6,7 @@ on:
       - research/g4-scalp-round1-v1
     paths:
       - 'backend/research/rebuild/g4_scalp_round1_native_economics_v1.py'
+      - 'backend/research/rebuild/g4_scalp_round1_1m_to_5m_source_v1.py'
       - 'backend/tests/test_g4_scalp_round1_native_economics_v1.py'
       - 'research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_CONTRACT.json'
       - 'research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/FAST_CHILD_FREEZE_V1.json'
@@ -36,20 +37,44 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Compile Round1 runner
+      - name: Compile Round1 runner and source repair
         run: |
           python3 -B -m py_compile backend/research/rebuild/g4_scalp_round1_native_economics_v1.py
+          python3 -B -m py_compile backend/research/rebuild/g4_scalp_round1_1m_to_5m_source_v1.py
           python3 -B -m py_compile backend/tests/test_g4_scalp_round1_native_economics_v1.py
 
       - name: Test frozen Round1 contracts
         run: python3 -B -m unittest backend.tests.test_g4_scalp_round1_native_economics_v1 -v
 
-      - name: Prepare shared Liquid5 5m source cache
+      - name: Test exact 1m to 5m fail-closed aggregation
+        run: python3 -B -m backend.research.rebuild.g4_scalp_round1_1m_to_5m_source_v1 --self-test
+
+      - name: Build exact Liquid5 5m cache from 1m lineage
         run: |
           rm -rf /tmp/g4_scalp_round1_cache
+          python3 -B -m backend.research.rebuild.g4_scalp_round1_1m_to_5m_source_v1 \
+            --cache-dir /tmp/g4_scalp_round1_cache \
+            --receipt research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/SOURCE_REPAIR_RECEIPT.json
+
+      - name: Verify shared Liquid5 5m source cache with frozen Round1 runner
+        run: |
           python3 -B -m backend.research.rebuild.g4_scalp_round1_native_economics_v1 \
             --prepare-cache \
             --cache-dir /tmp/g4_scalp_round1_cache
+
+      - name: Persist source repair receipt
+        run: |
+          set -euo pipefail
+          git config user.name 'g4-scalp-round1'
+          git config user.email 'actions@users.noreply.github.com'
+          receipt='research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/SOURCE_REPAIR_RECEIPT.json'
+          test -s "$receipt"
+          git add "$receipt"
+          if ! git diff --cached --quiet; then
+            git commit -m 'G4-SCALP: persist exact 1m-to-5m source repair receipt [skip ci]'
+            git pull --rebase origin research/g4-scalp-round1-v1
+            git push origin HEAD:research/g4-scalp-round1-v1
+          fi
 
       - name: Run and checkpoint 15 native scalp lanes
         run: |
@@ -126,6 +151,7 @@ jobs:
           path: |
             research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_CONTRACT.json
             research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/FAST_CHILD_FREEZE_V1.json
+            research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/SOURCE_REPAIR_RECEIPT.json
             research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/LANES/*.json
             research/development_evidence/G4_SCALP_INTRADAY_REBASE_V1/ROUND1_NATIVE/RESULT.json
           if-no-files-found: error

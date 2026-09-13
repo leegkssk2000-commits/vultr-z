@@ -1,0 +1,109 @@
+name: ZEL EMA MFE MAE Semantics Artifact V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/zel-ema-mfe-mae-semantics-artifact-v1.yml
+      - backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-mfe-mae-semantics-artifact-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Extract and minimize writer semantics
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          sed '/^from __future__ import annotations$/a from collections import Counter' \
+            backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py \
+          | timeout 900s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --stdout' > out/raw.json
+          python - <<'PY'
+          import json
+          row=json.load(open('out/raw.json'))
+          writers=[]
+          seen=set()
+          for value in row.get('writers',[]):
+              facts=value.get('value') or {}
+              item={
+                  'root':value.get('root_label'),
+                  'path':value.get('path'),
+                  'sha256':value.get('sha256'),
+                  'class':value.get('class_name'),
+                  'function':value.get('function_name'),
+                  'function_line':value.get('function_line'),
+                  'write_line':value.get('line'),
+                  'key':value.get('key'),
+                  'kind':value.get('kind'),
+                  'high':bool(facts.get('uses_high')),
+                  'low':bool(facts.get('uses_low')),
+                  'close':bool(facts.get('uses_close')),
+                  'open':bool(facts.get('uses_open')),
+                  'entry':bool(facts.get('uses_entry')),
+                  'stop_or_risk':bool(facts.get('uses_stop')),
+                  'loaded_names':facts.get('loaded_names') or [],
+                  'calls':facts.get('calls') or [],
+                  'subscripts':facts.get('subscripts') or [],
+                  'numbers':facts.get('numbers') or [],
+              }
+              fp=json.dumps(item,sort_keys=True)
+              if fp in seen: continue
+              seen.add(fp); writers.append(item)
+          writers.sort(key=lambda x:(x['path'] or '',x['function_line'] or 0,x['write_line'] or 0,x['key'] or ''))
+          summary={
+              'state':row['state'],
+              'writer_count':len(writers),
+              'key_counts':row['key_counts'],
+              'semantic_mode_counts':row['semantic_mode_counts'],
+              'writers':writers,
+              'blockers':row['blockers'],
+          }
+          json.dump(summary,open('out/summary.json','w'),indent=2,sort_keys=True)
+          PY
+          rm -f out/raw.json
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-mfe-mae-semantics-minimal-${{ github.run_id }}
+          path: out/summary.json
+          if-no-files-found: error
+          retention-days: 30

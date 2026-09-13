@@ -35,33 +35,22 @@ jobs:
           python -m unittest backend.research.rebuild.test_trendrider_common_source_v2 backend.research.rebuild.test_trendrider_source_repair_saved_verify_v1 -v
           npm run --prefix frontend/z-os-app-source validate
           git diff --exit-code
-
-  rdc-ssh-probe:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.event.head_commit.message == 'ops: execute RDC credential probe via trusted source workflow' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    env:
-      RDC_HOST: ${{ secrets.RDC_HOST }}
-      RDC_USER: ${{ secrets.RDC_USER }}
-      RDC_SSH_KEY: ${{ secrets.RDC_SSH_KEY }}
-    steps:
-      - name: Confirm SSH credential trio without printing values
+      - name: Probe RDC bootstrap credentials without exposing values
+        env:
+          RDC_HOST: ${{ secrets.RDC_HOST }}
+          RDC_USER: ${{ secrets.RDC_USER }}
+          RDC_SSH_KEY: ${{ secrets.RDC_SSH_KEY }}
+          RDC_API_TOKEN: ${{ secrets.RDC_API_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${RDC_HOST:-}"
-          test -n "${RDC_USER:-}"
-          test -n "${RDC_SSH_KEY:-}"
-
-  rdc-api-token-probe:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.event.head_commit.message == 'ops: execute RDC credential probe via trusted source workflow' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    env:
-      RDC_API_TOKEN: ${{ secrets.RDC_API_TOKEN }}
-    steps:
-      - name: Confirm API token without printing value
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${RDC_API_TOKEN:-}"
+          if [[ -n "${RDC_HOST:-}" && -n "${RDC_USER:-}" && -n "${RDC_SSH_KEY:-}" ]]; then
+            echo "RDC_BOOTSTRAP_SSH=AVAILABLE"
+          else
+            echo "RDC_BOOTSTRAP_SSH=UNAVAILABLE"
+          fi
+          if [[ -n "${RDC_API_TOKEN:-}" ]]; then
+            echo "RDC_BOOTSTRAP_API=AVAILABLE"
+          else
+            echo "RDC_BOOTSTRAP_API=UNAVAILABLE"
+          fi

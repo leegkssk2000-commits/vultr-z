@@ -133,9 +133,9 @@ def _emit(
 
 
 def _ref(state: MachineState) -> float:
-    if state.reference is None or not np.isfinite(_ref(state)):
+    if state.reference is None or not np.isfinite(float(state.reference)):
         raise RuntimeError("STATE_REFERENCE_REQUIRED")
-    return _ref(state)
+    return float(state.reference)
 
 
 def _basic(row: pd.Series, prev: pd.Series) -> dict[str, float]:

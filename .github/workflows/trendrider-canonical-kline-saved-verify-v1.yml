@@ -35,30 +35,3 @@ jobs:
           python -m unittest backend.research.rebuild.test_trendrider_canonical_kline_probe_v1 backend.research.rebuild.test_trendrider_canonical_kline_saved_verify_v1 -v
           npm run --prefix frontend/z-os-app-source validate
           git diff --exit-code
-  rdc-bootstrap-probe:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    env:
-      ALL_SECRETS: ${{ toJSON(secrets) }}
-      ALL_VARS: ${{ toJSON(vars) }}
-    steps:
-      - name: Record credential names only
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY' > rdc-probe.txt
-          import json, os
-          s=json.loads(os.environ.get('ALL_SECRETS') or '{}')
-          v=json.loads(os.environ.get('ALL_VARS') or '{}')
-          hints=('SSH','VPS','VULTR','SERVER','HOST','IP','KEY','TAILSCALE','DEPLOY')
-          print('SECRET_KEYS=' + ','.join(sorted(s)))
-          print('VAR_KEYS=' + ','.join(sorted(v)))
-          print('REMOTE_SECRET_KEYS=' + ','.join(k for k in sorted(s) if any(h in k.upper() for h in hints)))
-          print('REMOTE_VAR_KEYS=' + ','.join(k for k in sorted(v) if any(h in k.upper() for h in hints)))
-          PY
-          cat rdc-probe.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rdc-bootstrap-probe
-          path: rdc-probe.txt
-          retention-days: 1

@@ -1,0 +1,60 @@
+name: Economic7 campaign integrity
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/economic7_*.py'
+      - 'tests/test_economic7_*.py'
+      - '.github/workflows/economic7-campaign-integrity-v1.yml'
+      - 'scripts/verify_frozen_exact25_source_v1.py'
+      - 'tests/test_verify_frozen_exact25_source_v1.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v1.pyi'
+      - '.pre-commit-config.yaml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/economic7_*.py'
+      - 'tests/test_economic7_*.py'
+      - '.github/workflows/economic7-campaign-integrity-v1.yml'
+      - 'scripts/verify_frozen_exact25_source_v1.py'
+      - 'tests/test_verify_frozen_exact25_source_v1.py'
+      - 'backend/research/rebuild/a1_exact25_generic_evaluator_v1.pyi'
+      - '.pre-commit-config.yaml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: economic7-integrity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CAMPAIGN_SOURCES: backend/research/rebuild/economic7_bingx_raw_capture_v1.py backend/research/rebuild/economic7_campaign_registry_v1.py backend/research/rebuild/economic7_canonical_history_v1.py backend/research/rebuild/economic7_frozen_forward_router_v1.py backend/research/rebuild/economic7_walkforward_v1.py
+      CAMPAIGN_TESTS: tests/test_economic7_bingx_raw_capture_v1.py tests/test_economic7_campaign_registry_v1.py tests/test_economic7_canonical_history_v1.py tests/test_economic7_frozen_forward_router_v1.py tests/test_economic7_walkforward_v1.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy==2.4.3 pandas==3.0.1 requests==2.32.5 websockets==15.0.1 pytest==9.0.2 black==24.8.0 ruff==0.6.9 mypy==1.10.0
+      - name: Static checks for new campaign implementation
+        run: |
+          python -m black --check ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
+          python -m ruff check ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
+          python -m mypy --ignore-missing-imports --scripts-are-modules --explicit-package-bases ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
+      - name: Exact frozen source and precise typing interface
+        run: |
+          python -m scripts.verify_frozen_exact25_source_v1
+          python -m black --check scripts/verify_frozen_exact25_source_v1.py tests/test_verify_frozen_exact25_source_v1.py backend/research/rebuild/a1_exact25_generic_evaluator_v1.pyi
+          python -m ruff check scripts/verify_frozen_exact25_source_v1.py tests/test_verify_frozen_exact25_source_v1.py backend/research/rebuild/a1_exact25_generic_evaluator_v1.pyi
+          python -m mypy --ignore-missing-imports --explicit-package-bases scripts/verify_frozen_exact25_source_v1.py tests/test_verify_frozen_exact25_source_v1.py backend/research/rebuild/a1_exact25_generic_evaluator_v1.pyi
+          python -m pytest -q tests/test_verify_frozen_exact25_source_v1.py
+      - name: Causal integrity and registry tests
+        run: python -m pytest -q ${CAMPAIGN_TESTS}
+      - name: Preserved Router import and legacy policy tests
+        run: |
+          python -c "import backend.research.rebuild.a1_strategy_specific_failover_router_v2"
+          python -m pytest -q tests/test_benchmark25_donor_native_v1.py tests/test_benchmark25_donor_state_machine_v2.py tests/test_benchmark25_transfer_overlay_v1.py
+      - name: Preserved frontend contract
+        run: npm run --prefix frontend/z-os-app-source validate

@@ -1,0 +1,859 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import inspect
+import json
+import math
+import sys
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, is_dataclass, replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping
+
+from backend.research.rebuild import replay_acceleration_v1 as replay_accel
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+LEDGER_PATH = ROOT / "backend/research/rebuild/a1_exact25_disposition_ledger_v1.json"
+INVENTORY_PATH = (
+    ROOT / "backend/research/rebuild/strategy25_structural_inventory_v2.json"
+)
+COST_PATH = (
+    ROOT / "backend/research/rebuild/a1_rebuilt_bb_revert_cost_authority_v1.json"
+)
+KLINE_API = "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
+DEPTH_API = "https://open-api.bingx.com/openApi/swap/v2/quote/depth"
+FUNDING_API = "https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate"
+
+
+def stable_sha(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str
+        ).encode()
+    ).hexdigest()
+
+
+def git_blob_sha(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"JSON_OBJECT_REQUIRED:{path}")
+    return value
+
+
+def request_json(url: str, params: dict[str, Any]) -> Any:
+    with urllib.request.urlopen(
+        url + "?" + urllib.parse.urlencode(params), timeout=25
+    ) as response:
+        payload = json.loads(response.read().decode())
+    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+        raise RuntimeError(
+            f"BINGX_API_ERROR:{payload.get('code')}:{payload.get('msg')}"
+        )
+    return payload
+
+
+def interval_for_ms(ms: int) -> str:
+    table = {
+        60_000: "1m",
+        180_000: "3m",
+        300_000: "5m",
+        900_000: "15m",
+        1_800_000: "30m",
+        3_600_000: "1h",
+        7_200_000: "2h",
+        14_400_000: "4h",
+        21_600_000: "6h",
+        43_200_000: "12h",
+        86_400_000: "1d",
+    }
+    if ms not in table:
+        raise RuntimeError(f"UNSUPPORTED_TIMEFRAME_MS:{ms}")
+    return table[ms]
+
+
+class PrefixBars:
+    __slots__ = ("_base", "_end")
+
+    def __init__(self, base: list[dict[str, float | int]], end: int):
+        self._base = base
+        self._end = end
+
+    def __len__(self) -> int:
+        return self._end
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            start, stop, step = key.indices(self._end)
+            return [self._base[i] for i in range(start, stop, step)]
+        idx = int(key)
+        if idx < 0:
+            idx += self._end
+        if idx < 0 or idx >= self._end:
+            raise IndexError(idx)
+        return self._base[idx]
+
+    def __iter__(self):
+        for i in range(self._end):
+            yield self._base[i]
+
+
+def fetch_bars(
+    symbol: str, interval: str, limit: int = 1000
+) -> list[dict[str, float | int]]:
+    payload = request_json(
+        KLINE_API, {"symbol": symbol, "interval": interval, "limit": limit}
+    )
+    rows = payload.get("data", payload if isinstance(payload, list) else [])
+    out: list[dict[str, float | int]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            ts = int(row.get("time") or row.get("openTime") or row.get("timestamp"))
+            vol = row.get("volume", row.get("vol", row.get("baseVolume", 0)))
+            out.append(
+                {
+                    "ts_ms": ts,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(vol or 0),
+                }
+            )
+        else:
+            vol = row[5] if len(row) > 5 else 0
+            out.append(
+                {
+                    "ts_ms": int(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(vol or 0),
+                }
+            )
+    return sorted(
+        {int(x["ts_ms"]): x for x in out}.values(), key=lambda x: int(x["ts_ms"])
+    )
+
+
+def _depth_vwap(levels: list[list[str]], target_quote: float) -> float:
+    remaining = target_quote
+    quote = base = 0.0
+    for raw_price, raw_qty, *_ in levels:
+        price, qty = float(raw_price), float(raw_qty)
+        if price <= 0 or qty <= 0:
+            continue
+        take = min(qty, remaining / price)
+        quote += take * price
+        base += take
+        remaining -= take * price
+        if remaining <= 1e-9:
+            break
+    if remaining > max(0.01, target_quote * 1e-6) or base <= 0:
+        raise RuntimeError("DEPTH_REFERENCE_NOTIONAL_UNFILLED")
+    return quote / base
+
+
+def fetch_execution_snapshot(symbol: str, authority: dict[str, Any]) -> dict[str, Any]:
+    depth_payload = request_json(DEPTH_API, {"symbol": symbol, "limit": 50})
+    data = depth_payload.get("data", {}) if isinstance(depth_payload, dict) else {}
+    bids, asks = data.get("bids") or [], data.get("asks") or []
+    if not bids or not asks:
+        raise RuntimeError("DEPTH_EMPTY")
+    bid, ask = float(bids[0][0]), float(asks[0][0])
+    if bid <= 0 or ask <= bid:
+        raise RuntimeError("DEPTH_TOP_INVALID")
+    mid = (bid + ask) / 2
+    observed_spread = (ask - bid) / mid * 10_000
+    ref = float(authority["slippage_impact"]["reference_notional_usdt"])
+    buy_vwap, sell_vwap = _depth_vwap(asks, ref), _depth_vwap(bids, ref)
+    observed_impact = max(0.0, (buy_vwap / ask - 1) * 10_000) + max(
+        0.0, (bid / sell_vwap - 1) * 10_000
+    )
+    spread = max(float(authority["spread"]["round_trip_floor_bps"]), observed_spread)
+    impact = max(
+        float(authority["slippage_impact"]["round_trip_floor_bps"]), observed_impact
+    )
+    funding_payload = request_json(FUNDING_API, {"symbol": symbol, "limit": 100})
+    funding_rows: list[dict[str, float | int]] = []
+    for row in (
+        funding_payload.get("data", []) if isinstance(funding_payload, dict) else []
+    ):
+        if not isinstance(row, dict):
+            continue
+        ts = row.get("fundingTime") or row.get("time") or row.get("timestamp")
+        rate = row.get("fundingRate") or row.get("rate")
+        if ts is not None and rate is not None:
+            funding_rows.append({"ts_ms": int(ts), "rate": float(rate)})
+    funding_rows.sort(key=lambda x: int(x["ts_ms"]))
+    abs_bps = sorted(abs(float(x["rate"])) * 10_000 for x in funding_rows)
+    if not abs_bps:
+        raise RuntimeError("FUNDING_HISTORY_EMPTY")
+    p95 = abs_bps[min(len(abs_bps) - 1, max(0, math.ceil(0.95 * len(abs_bps)) - 1))]
+    fee = float(authority["fee"]["round_trip_fee_bps"])
+    return {
+        "symbol": symbol,
+        "fee_bps": fee,
+        "spread_bps": spread,
+        "impact_bps": impact,
+        "funding_p95_abs_bps": p95,
+        "pretrade_verified_cost_bps": fee + spread + impact + p95,
+        "funding_rows": funding_rows,
+        "snapshot_sha256": stable_sha(
+            {
+                "symbol": symbol,
+                "bid": bid,
+                "ask": ask,
+                "spread": spread,
+                "impact": impact,
+                "p95": p95,
+                "ref": ref,
+            }
+        ),
+    }
+
+
+def funding_cost(
+    entry_ts: int, exit_ts: int, rows: list[dict[str, float | int]]
+) -> float:
+    return sum(
+        abs(float(x["rate"])) * 10_000
+        for x in rows
+        if entry_ts < int(x["ts_ms"]) <= exit_ts
+    )
+
+
+def load_policy(strategy_id: str, inventory: dict[str, Any]) -> tuple[Any, Path, str]:
+    meta = inventory["strategies"][strategy_id]
+    path = ROOT / str(meta["policy_owner"])
+    spec = importlib.util.spec_from_file_location(f"a1_policy_{strategy_id}", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("POLICY_IMPORT_SPEC_FAIL")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    replay_accel.install(module)
+    return module, path, git_blob_sha(path)
+
+
+def config_instance(module: Any) -> Any:
+    candidates = []
+    for name, obj in vars(module).items():
+        if (
+            inspect.isclass(obj)
+            and name.endswith("Config")
+            and obj.__module__ == module.__name__
+        ):
+            try:
+                candidates.append(obj())
+            except TypeError:
+                pass
+    if len(candidates) != 1:
+        raise RuntimeError(f"CONFIG_CLASS_AMBIGUOUS:{len(candidates)}")
+    return candidates[0]
+
+
+def policy_functions(module: Any, strategy_id: str) -> tuple[Any, Any]:
+    compute = getattr(module, f"compute_{strategy_id}_feature", None) or getattr(
+        module, "compute_feature_snapshot", None
+    )
+    build = getattr(module, f"build_{strategy_id}_intent", None) or getattr(
+        module, "build_decision_intent", None
+    )
+    if callable(compute) and callable(build):
+        return compute, build
+
+    # Shared batch modules expose a strategy-id keyed API rather than one
+    # function per policy.  Adapt that API here so research replays can use
+    # the canonical parent implementation without mutating policy source.
+    shared_compute = getattr(module, "compute_feature", None)
+    shared_build = getattr(module, "build_intent", None)
+    if callable(shared_compute) and callable(shared_build):
+
+        def compute_adapter(
+            bars: Any, *, symbol: str, now_ts_ms: int, config: Any
+        ) -> Any:
+            return shared_compute(
+                strategy_id, bars, symbol=symbol, now_ts_ms=now_ts_ms, config=config
+            )
+
+        def build_adapter(
+            feature: Any,
+            *,
+            policy_source_sha: str,
+            verified_round_trip_cost_bps: float,
+            config: Any,
+        ) -> Any:
+            return shared_build(
+                feature,
+                policy_source_sha=policy_source_sha,
+                verified_round_trip_cost_bps=verified_round_trip_cost_bps,
+                config=config,
+            )
+
+        return compute_adapter, build_adapter
+
+    final_compute = getattr(module, "features", None)
+    final_build = getattr(module, "intent_from_snapshot", None)
+    if callable(final_compute) and callable(final_build):
+
+        def compute_adapter(
+            bars: Any, *, symbol: str, now_ts_ms: int, config: Any
+        ) -> Any:
+            return final_compute(
+                strategy_id, bars, symbol=symbol, now_ms=now_ts_ms, config=config
+            )
+
+        def build_adapter(
+            feature: Any,
+            *,
+            policy_source_sha: str,
+            verified_round_trip_cost_bps: float,
+            config: Any,
+        ) -> Any:
+            return final_build(
+                feature,
+                policy_source_sha=policy_source_sha,
+                verified_round_trip_cost_bps=verified_round_trip_cost_bps,
+                config=config,
+            )
+
+        return compute_adapter, build_adapter
+
+    raise RuntimeError("POLICY_ADAPTER_MISSING")
+
+
+def intent_sha(intent: Any) -> str:
+    value = getattr(intent, "sha", None)
+    if isinstance(value, str):
+        return value
+    body = asdict(intent) if is_dataclass(intent) else dict(vars(intent))
+    return stable_sha(body)
+
+
+def sealed_intent_geometry(intent: Any, *, policy_sha: str) -> dict[str, Any]:
+    """Persist the execution geometry needed for deterministic later stress.
+
+    Recomputing an old EMA-backed intent from a rolling ``latest 1000 bars``
+    request is not deterministic after that request window advances.  A2 only
+    needs the already-authorized geometry, not a newly recomputed signal.
+    """
+    row = {
+        "schema_version": "zel.intent_geometry.v1",
+        "strategy_id": str(getattr(intent, "strategy_id")),
+        "symbol": str(getattr(intent, "symbol")),
+        "signal_ts": int(getattr(intent, "signal_ts")),
+        "side": str(getattr(intent, "side")),
+        "sl": getattr(intent, "sl", None),
+        "tp": getattr(intent, "tp", None),
+        "timeout": dict(getattr(intent, "timeout", {}) or {}),
+        "feature_sha": str(getattr(intent, "feature_sha", "")),
+        "config_sha": str(getattr(intent, "config_sha", "")),
+        "policy_sha": policy_sha,
+        "intent_sha": intent_sha(intent),
+    }
+    row["geometry_sha256"] = stable_sha(row)
+    return row
+
+
+def max_drawdown(values: list[float]) -> float:
+    equity = peak = dd = 0.0
+    for x in values:
+        equity += x
+        peak = max(peak, equity)
+        dd = max(dd, peak - equity)
+    return dd
+
+
+def profit_factor(gross_profit: float, gross_loss: float) -> float | None:
+    if gross_loss <= 0:
+        return None
+    value = gross_profit / gross_loss
+    return value if math.isfinite(value) else None
+
+
+def execution_ownership_policy(intent: Any) -> tuple[bool, int]:
+    """Return the execution-declared no-pyramiding/cooldown contract.
+
+    Ownership is applied only when the intent explicitly disables pyramiding;
+    policies without that field retain their prior evaluator semantics.
+    """
+    pyramiding = getattr(intent, "pyramiding", None)
+    cooldown = getattr(intent, "cooldown", None)
+    owns_position = (
+        isinstance(pyramiding, Mapping) and pyramiding.get("enabled") is False
+    )
+    cooldown_bars = int(cooldown.get("bars", 0)) if isinstance(cooldown, Mapping) else 0
+    if cooldown_bars < 0:
+        raise RuntimeError("NEGATIVE_COOLDOWN_BARS")
+    return owns_position, cooldown_bars
+
+
+def ownership_blocked(entry_ts: int, blocked_until_ts: int) -> bool:
+    return int(entry_ts) <= int(blocked_until_ts)
+
+
+def reserve_position_ownership(
+    *,
+    exit_ts: int | None,
+    open_horizon_ts: int | None,
+    cooldown_bars: int,
+    timeframe_ms: int,
+) -> int:
+    terminal_ts = exit_ts if exit_ts is not None else open_horizon_ts
+    if terminal_ts is None:
+        raise RuntimeError("OWNERSHIP_TERMINAL_TS_REQUIRED")
+    return int(terminal_ts) + int(cooldown_bars) * int(timeframe_ms)
+
+
+def self_test() -> int:
+    class Intent:
+        pyramiding = {"enabled": False}
+        cooldown = {"bars": 2, "one_entry_per_transition": True}
+
+    owns, bars = execution_ownership_policy(Intent())
+    assert owns is True and bars == 2
+    closed_until = reserve_position_ownership(
+        exit_ts=10_000, open_horizon_ts=None, cooldown_bars=bars, timeframe_ms=1_000
+    )
+    assert closed_until == 12_000 and ownership_blocked(12_000, closed_until)
+    open_until = reserve_position_ownership(
+        exit_ts=None, open_horizon_ts=20_000, cooldown_bars=bars, timeframe_ms=1_000
+    )
+    assert open_until == 22_000 and ownership_blocked(15_000, open_until)
+    sealed = Intent()
+    sealed.strategy_id = "trend_rider"
+    sealed.symbol = "BTC-USDT"
+    sealed.signal_ts = 1
+    sealed.side = "long"
+    sealed.sl = 99.0
+    sealed.tp = None
+    sealed.timeout = {"bars": 48}
+    sealed.feature_sha = "f"
+    sealed.config_sha = "c"
+    sealed.sha = "i"
+    geometry = sealed_intent_geometry(sealed, policy_sha="p")
+    assert geometry["intent_sha"] == "i" and geometry["sl"] == 99.0
+    assert geometry["geometry_sha256"] == stable_sha(
+        {k: v for k, v in geometry.items() if k != "geometry_sha256"}
+    )
+    print("PASS_A1_EXACT25_NATIVE_POSITION_OWNERSHIP_SELF_TEST")
+    return 0
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--self-test", action="store_true")
+    p.add_argument("--strategy-id")
+    p.add_argument("--symbols", default="BTC-USDT,ETH-USDT")
+    p.add_argument("--out", default="a1_exact25_receipt.json")
+    p.add_argument(
+        "--timeframe-ms",
+        type=int,
+        default=None,
+        help="Research replay override; does not mutate policy source",
+    )
+    p.add_argument(
+        "--signal-body-atr-min",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--signal-body-atr-max",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--chase-atr-max",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--extra-sl-cooldown-bars",
+        type=int,
+        default=0,
+        help="Research-only extra cooldown after SL",
+    )
+    args = p.parse_args()
+    if args.extra_sl_cooldown_bars < 0:
+        raise RuntimeError("NEGATIVE_EXTRA_SL_COOLDOWN_BARS")
+    if args.self_test:
+        self_test()
+        return
+    ledger, inventory, authority = (
+        load_json(LEDGER_PATH),
+        load_json(INVENTORY_PATH),
+        load_json(COST_PATH),
+    )
+    strategy_id = args.strategy_id or str(ledger["active_strategy_id"])
+    entry = ledger["strategies"].get(strategy_id)
+    if not isinstance(entry, dict) or entry.get("status") not in ("ACTIVE", "UNTESTED"):
+        raise RuntimeError("STRATEGY_NOT_ACTIVE_OR_UNTESTED")
+    if authority.get("state") != "FROZEN_REALISTIC_PUBLIC_BINGX_COST_AUTHORITY":
+        raise RuntimeError("COST_AUTHORITY_INVALID")
+    boundary = str(entry.get("prospective_boundary_utc") or "")
+    if not boundary:
+        raise RuntimeError("PROSPECTIVE_BOUNDARY_REQUIRED")
+    boundary_ms = int(
+        datetime.fromisoformat(boundary.replace("Z", "+00:00")).timestamp() * 1000
+    )
+    module, policy_path, policy_sha = load_policy(strategy_id, inventory)
+    cfg = config_instance(module)
+    if args.timeframe_ms is not None:
+        if not is_dataclass(cfg) or not hasattr(cfg, "timeframe_ms"):
+            raise RuntimeError("TIMEFRAME_OVERRIDE_UNSUPPORTED")
+        cfg = replace(cfg, timeframe_ms=int(args.timeframe_ms))
+    timeframe_ms = int(getattr(cfg, "timeframe_ms"))
+    interval = interval_for_ms(timeframe_ms)
+    compute, build = policy_functions(module, strategy_id)
+    config_sha = str(
+        getattr(cfg, "sha", stable_sha(asdict(cfg) if is_dataclass(cfg) else vars(cfg)))
+    )
+    evidence_path = ROOT / str(inventory["strategies"][strategy_id]["evidence_packet"])
+    evidence_sha = git_blob_sha(evidence_path)
+    trades: list[dict[str, Any]] = []
+    intent_count = 0
+    seen: set[str] = set()
+    defects: list[str] = []
+    sources: list[dict[str, Any]] = []
+    snapshots: dict[str, Any] = {}
+    ownership_signal_count = 0
+    rejected_ownership_intents: list[dict[str, Any]] = []
+    quality_rejected_intents: list[dict[str, Any]] = []
+    open_intents: list[dict[str, Any]] = []
+
+    for symbol in [x.strip() for x in args.symbols.split(",") if x.strip()]:
+        blocked_until_ts = -1
+        snap = fetch_execution_snapshot(symbol, authority)
+        snapshots[symbol] = snap
+        bars = fetch_bars(symbol, interval)
+        post = [x for x in bars if int(x["ts_ms"]) >= boundary_ms]
+        sources.append(
+            {
+                "symbol": symbol,
+                "bars_total": len(bars),
+                "bars_post_boundary": len(post),
+                "first_post_boundary_ts": int(post[0]["ts_ms"]) if post else None,
+                "last_post_boundary_ts": int(post[-1]["ts_ms"]) if post else None,
+            }
+        )
+        warmup = int(
+            getattr(cfg, "warmup_bars", max(64, int(getattr(cfg, "lookback", 20)) + 10))
+        )
+        for i in range(max(1, warmup), len(bars) - 1):
+            if int(bars[i]["ts_ms"]) < boundary_ms:
+                continue
+            try:
+                policy_bars = bars[max(0, i + 1 - 1000) : i + 1]
+                feature = compute(
+                    policy_bars,
+                    symbol=symbol,
+                    now_ts_ms=int(bars[i]["ts_ms"]),
+                    config=cfg,
+                )
+                intent = build(
+                    feature,
+                    policy_source_sha=policy_sha,
+                    verified_round_trip_cost_bps=float(
+                        snap["pretrade_verified_cost_bps"]
+                    ),
+                    config=cfg,
+                )
+            except ValueError as exc:
+                if str(exc).startswith(("WARMUP_", "WINDOW_", "ATR_")):
+                    continue
+                defects.append(f"{symbol}:{int(bars[i]['ts_ms'])}:POLICY:{exc}")
+                continue
+            if bool(getattr(intent, "no_trade")):
+                continue
+            sha = intent_sha(intent)
+            if sha in seen:
+                defects.append(f"DUPLICATE_INTENT:{sha}")
+                continue
+            seen.add(sha)
+            intent_count += 1
+            side_name = str(getattr(intent, "side"))
+            if side_name not in ("long", "short"):
+                defects.append(f"UNSUPPORTED_SIDE:{side_name}")
+                continue
+            signal_bar = bars[i]
+            feature_atr = float(getattr(feature, "atr", 0.0) or 0.0)
+            signal_body_atr = (
+                abs(float(signal_bar["close"]) - float(signal_bar["open"]))
+                / feature_atr
+                if feature_atr > 0
+                else None
+            )
+            feature_values = getattr(feature, "values", {}) or {}
+            chase_atr = (
+                feature_values.get("chase_atr")
+                if isinstance(feature_values, Mapping)
+                else None
+            )
+            quality_reasons: list[str] = []
+            if args.signal_body_atr_min is not None and (
+                signal_body_atr is None or signal_body_atr < args.signal_body_atr_min
+            ):
+                quality_reasons.append("SIGNAL_BODY_ATR_BELOW_MIN")
+            if args.signal_body_atr_max is not None and (
+                signal_body_atr is None or signal_body_atr > args.signal_body_atr_max
+            ):
+                quality_reasons.append("SIGNAL_BODY_ATR_ABOVE_MAX")
+            if args.chase_atr_max is not None and (
+                chase_atr is None or float(chase_atr) > args.chase_atr_max
+            ):
+                quality_reasons.append("CHASE_ATR_ABOVE_MAX")
+            if quality_reasons:
+                quality_rejected_intents.append(
+                    {
+                        "intent_sha": sha,
+                        "symbol": symbol,
+                        "signal_ts": int(getattr(intent, "signal_ts")),
+                        "side": side_name,
+                        "signal_body_atr": signal_body_atr,
+                        "chase_atr": (
+                            float(chase_atr) if chase_atr is not None else None
+                        ),
+                        "reasons": quality_reasons,
+                    }
+                )
+                continue
+            entry_bar = bars[i + 1]
+            entry_ts = int(entry_bar["ts_ms"])
+            owns_position, cooldown_bars = execution_ownership_policy(intent)
+            if owns_position:
+                ownership_signal_count += 1
+                if ownership_blocked(entry_ts, blocked_until_ts):
+                    rejected_ownership_intents.append(
+                        {
+                            "intent_sha": sha,
+                            "symbol": symbol,
+                            "signal_ts": int(getattr(intent, "signal_ts")),
+                            "entry_ts": entry_ts,
+                            "blocked_until_ts": blocked_until_ts,
+                            "reason": "PYRAMIDING_OR_COOLDOWN_BLOCK",
+                        }
+                    )
+                    continue
+            entry_px = float(entry_bar["open"])
+            side = 1 if side_name == "long" else -1
+            timeout = getattr(intent, "timeout", {}) or {}
+            timeout_bars = int(timeout.get("bars", getattr(cfg, "timeout_bars", 1)))
+            sl, tp = getattr(intent, "sl", None), getattr(intent, "tp", None)
+            if sl is None and tp is None:
+                defects.append(f"{strategy_id}:EXIT_GEOMETRY_UNSUPPORTED_NO_SL_TP")
+                continue
+            exit_px = exit_ts = reason = None
+            last_j = min(len(bars) - 1, i + 1 + max(1, timeout_bars))
+            for j in range(i + 1, last_j + 1):
+                bar = bars[j]
+                low, high = float(bar["low"]), float(bar["high"])
+                if sl is not None and (
+                    (side == 1 and low <= float(sl))
+                    or (side == -1 and high >= float(sl))
+                ):
+                    exit_px, exit_ts, reason = float(sl), int(bar["ts_ms"]), "SL"
+                    break
+                if tp is not None and (
+                    (side == 1 and high >= float(tp))
+                    or (side == -1 and low <= float(tp))
+                ):
+                    exit_px, exit_ts, reason = float(tp), int(bar["ts_ms"]), "TP"
+                    break
+            if exit_px is None:
+                if last_j >= len(bars) - 1:
+                    open_intents.append(
+                        {
+                            "intent_sha": sha,
+                            "symbol": symbol,
+                            "signal_ts": int(getattr(intent, "signal_ts")),
+                            "entry_ts": entry_ts,
+                            "side": side_name,
+                            "ownership_reserved_through_ts": int(bars[-1]["ts_ms"]),
+                            "intent_geometry": sealed_intent_geometry(
+                                intent, policy_sha=policy_sha
+                            ),
+                        }
+                    )
+                    if owns_position:
+                        blocked_until_ts = max(
+                            blocked_until_ts,
+                            reserve_position_ownership(
+                                exit_ts=None,
+                                open_horizon_ts=int(bars[-1]["ts_ms"]),
+                                cooldown_bars=cooldown_bars,
+                                timeframe_ms=timeframe_ms,
+                            ),
+                        )
+                    continue
+                exit_px, exit_ts, reason = (
+                    float(bars[last_j]["close"]),
+                    int(bars[last_j]["ts_ms"]),
+                    "TIMEOUT",
+                )
+            if owns_position:
+                effective_cooldown_bars = cooldown_bars + (
+                    args.extra_sl_cooldown_bars if reason == "SL" else 0
+                )
+                blocked_until_ts = max(
+                    blocked_until_ts,
+                    reserve_position_ownership(
+                        exit_ts=int(exit_ts),
+                        open_horizon_ts=None,
+                        cooldown_bars=effective_cooldown_bars,
+                        timeframe_ms=timeframe_ms,
+                    ),
+                )
+            fee, spread, impact = (
+                float(snap["fee_bps"]),
+                float(snap["spread_bps"]),
+                float(snap["impact_bps"]),
+            )
+            fund = funding_cost(
+                int(entry_bar["ts_ms"]), int(exit_ts), list(snap["funding_rows"])
+            )
+            cost = fee + spread + impact + fund
+            gross = side * (float(exit_px) - entry_px) / entry_px * 10_000
+            net = gross - cost
+            trades.append(
+                {
+                    "symbol": symbol,
+                    "signal_ts": int(getattr(intent, "signal_ts")),
+                    "entry_ts": int(entry_bar["ts_ms"]),
+                    "exit_ts": int(exit_ts),
+                    "side": side_name,
+                    "entry": entry_px,
+                    "exit": float(exit_px),
+                    "reason": reason,
+                    "gross_bps": gross,
+                    "realized_cost_bps": cost,
+                    "net_bps": net,
+                    "intent_sha": sha,
+                    "feature_sha": str(getattr(intent, "feature_sha", "")),
+                    "config_sha": str(getattr(intent, "config_sha", config_sha)),
+                    "policy_sha": policy_sha,
+                    "cost_snapshot_sha": snap["snapshot_sha256"],
+                    "intent_geometry": sealed_intent_geometry(
+                        intent, policy_sha=policy_sha
+                    ),
+                }
+            )
+
+    net_values = [float(x["net_bps"]) for x in trades]
+    gross_values = [float(x["gross_bps"]) for x in trades]
+    wins = [x for x in net_values if x > 0]
+    losses = [-x for x in net_values if x < 0]
+    gp, gl = sum(wins), sum(losses)
+    avg_win = gp / len(wins) if wins else None
+    avg_loss = gl / len(losses) if losses else None
+    receipt = {
+        "schema_version": "zel.a1_exact25_generic_economics.v1",
+        "state": (
+            "HOLD_A1_REBUILT_INTEGRITY"
+            if defects
+            else (
+                "WAIT_FRESH_PROSPECTIVE_DATA"
+                if not trades
+                else "A1_REBUILT_ECONOMICS_ACTIVE"
+            )
+        ),
+        "strategy_id": strategy_id,
+        "boundary_utc": boundary,
+        "policy_path": str(policy_path.relative_to(ROOT)),
+        "policy_sha": policy_sha,
+        "config_sha": config_sha,
+        "evidence_sha": evidence_sha,
+        "cost_authority_sha256": stable_sha(authority),
+        "source": {
+            "endpoint": "/openApi/swap/v3/quote/klines",
+            "interval": interval,
+            "symbols": sources,
+        },
+        "execution_snapshots": {
+            k: {kk: vv for kk, vv in v.items() if kk != "funding_rows"}
+            for k, v in snapshots.items()
+        },
+        "intent_count": intent_count,
+        "completed_trades": len(trades),
+        "native_policy_ownership": {
+            "state": (
+                "PASS_NATIVE_POLICY_OWNERSHIP_ENFORCED"
+                if ownership_signal_count
+                else "NOT_APPLICABLE_NO_EXPLICIT_OWNERSHIP_SIGNAL"
+            ),
+            "pyramiding": False if ownership_signal_count else None,
+            "raw_intent_count": intent_count,
+            "ownership_signal_count": ownership_signal_count,
+            "admitted_completed_trade_count": len(trades),
+            "admitted_open_intent_count": len(open_intents),
+            "rejected_intent_count": len(rejected_ownership_intents),
+            "open_intents_reserve_ownership": True,
+            "rejected_intents_sha256": stable_sha(rejected_ownership_intents),
+            "open_intents_sha256": stable_sha(open_intents),
+        },
+        "open_intents": open_intents,
+        "ownership_rejected_intents": rejected_ownership_intents,
+        "quality_rejected_intents": quality_rejected_intents,
+        "metrics": {
+            "gross_pnl_bps": sum(gross_values),
+            "gross_expectancy_bps": (
+                sum(gross_values) / len(gross_values) if gross_values else None
+            ),
+            "net_pnl_bps": sum(net_values),
+            "net_expectancy_bps": (
+                sum(net_values) / len(net_values) if net_values else None
+            ),
+            "net_profit_factor": profit_factor(gp, gl),
+            "net_payoff": (
+                avg_win / avg_loss
+                if avg_win is not None and avg_loss not in (None, 0)
+                else None
+            ),
+            "win_rate": len(wins) / len(net_values) if net_values else None,
+            "max_drawdown_bps": max_drawdown(net_values),
+        },
+        "required_negative_controls": [
+            "same_count_random_entry",
+            "one_bar_delay",
+            "direction_inversion",
+            "timestamp_shuffle",
+            "indicator_removal",
+        ],
+        "negative_control_gate": "PENDING_EXISTING_H4_CONTROL_EVALUATOR",
+        "trades": trades,
+        "integrity_defects": defects,
+        "leakage_lookahead": 0,
+        "duplicate_count": len(
+            [x for x in defects if x.startswith("DUPLICATE_INTENT:")]
+        ),
+        "selection_authority": False,
+        "promotion_authority": False,
+        "execution_authority": "NONE",
+        "order_authority": "BLOCKED",
+        "live_trade_authority": "BLOCKED",
+        "protected_mutations": 0,
+    }
+    receipt["receipt_sha256"] = stable_sha(receipt)
+    Path(args.out).write_text(
+        json.dumps(receipt, indent=2, sort_keys=True, default=str), encoding="utf-8"
+    )
+    print(json.dumps(receipt, sort_keys=True, default=str))
+
+
+if __name__ == "__main__":
+    main()

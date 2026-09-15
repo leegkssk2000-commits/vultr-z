@@ -32,7 +32,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: a1-trend-rider-liquid6-risk-budget-${{ github.ref }}
+  group: a1-trend-rider-liquid6-risk-budget-${{ github.ref }}${{ (github.event_name == 'pull_request' || github.event_name == 'push') && '-code-ci' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -59,21 +59,65 @@ jobs:
           python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 --self-test
           python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_two_lane_v1 --self-test
           python -m backend.research.prep.a2_forward_cost_turnover_v1 --self-test
+      - name: Verify and stage saved Liquid6 receipts on code-change CI
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          out = Path('out')
+          out.mkdir(exist_ok=True)
+          sources = {
+              'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_latest.json': (
+                  'child.json', 'zel.a1.trend_rider.liquid6_losing_basket_guard_child.v1',
+              ),
+              'backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_two_lane_latest.json': (
+                  'two_lane.json', 'zel.a1.trend_rider.liquid6_losing_basket_guard_two_lane.v1',
+              ),
+          }
+          saved = {}
+          verified = []
+          for source, (target, schema) in sources.items():
+              raw = Path(source).read_bytes()
+              receipt = json.loads(raw)
+              assert receipt['schema_version'] == schema, source
+              unsigned = {k: v for k, v in receipt.items() if k != 'receipt_sha256'}
+              actual = hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+              assert receipt['receipt_sha256'] == actual, source
+              assert receipt['execution_authority'] == 'NONE', source
+              assert receipt['order_authority'] == receipt['live_trade_authority'] == 'BLOCKED', source
+              saved[target] = receipt
+              (out / target).write_bytes(raw)
+              verified.append({'path': source, 'file_sha256': hashlib.sha256(raw).hexdigest(), 'receipt_sha256': actual})
+          child, route = saved['child.json'], saved['two_lane.json']
+          assert child['selection_authority'] is False and child['promotion_authority'] is False, child
+          assert child['evaluation_mode'] == 'prospective', child
+          assert route['candidate']['identity'] == child['candidate_id'], route
+          assert route['candidate']['candidate_receipt_sha256'] == child['receipt_sha256'], route
+          assert route['candidate']['selection_authority'] is False and route['candidate']['promotion_authority'] is False, route
+          result = {
+              'state': 'PASS_SAVED_RECEIPT_INTEGRITY_ONLY',
+              'event_scope': 'code_change_ci',
+              'economic_execution_performed': False,
+              'new_fresh_evidence': False,
+              'new_performance_credit': 0,
+              'promotion_credit': 0,
+              'sources': verified,
+          }
+          (out / 'code_change_saved_receipt_verification.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(result, sort_keys=True))
+          PY
       - name: Evaluate same-window parent and Liquid6 child
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           mkdir -p out
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
-              --symbols BTC-USDT,ETH-USDT --mode development --out out/parent.json
-            python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 \
-              --mode development --parent-receipt out/parent.json --out out/child.json
-          else
-            python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
-              --symbols BTC-USDT,ETH-USDT --mode prospective --boundary-utc "$BOUNDARY_UTC" --out out/parent.json
-            python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 \
-              --mode prospective --boundary-utc "$BOUNDARY_UTC" --parent-receipt out/parent.json --out out/child.json
-          fi
+          python -m backend.research.rebuild.a1_trend_rider_challenger_evaluator_v1 \
+            --symbols BTC-USDT,ETH-USDT --mode prospective --boundary-utc "$BOUNDARY_UTC" --out out/parent.json
+          python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_child_v1 \
+            --mode prospective --boundary-utc "$BOUNDARY_UTC" --parent-receipt out/parent.json --out out/child.json
           python -m backend.research.rebuild.a1_trend_rider_liquid6_risk_budget_two_lane_v1 \
             --receipt out/child.json --out out/two_lane.json
       - name: Verify economic comparison and authority
@@ -106,7 +150,7 @@ jobs:
           },sort_keys=True))
           PY
       - name: Persist prospective child and two-lane checkpoint
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
           cp out/child.json backend/research/rebuild/a1_trend_rider_liquid6_risk_budget_child_latest.json

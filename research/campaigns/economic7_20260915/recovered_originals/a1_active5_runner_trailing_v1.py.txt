@@ -1,0 +1,86 @@
+from __future__ import annotations
+import json
+from pathlib import Path
+from typing import Any
+from backend.research.rebuild import a1_exact25_generic_evaluator_v1 as ev
+from backend.research.rebuild.a1_active5_partial_overlay_v1 import metrics
+
+SELECTED={
+ 'supertrend_pullback':('/home/z/z/runtime/active5_quality_sweep_v3/supertrend_pullback/cd3.json',{'stale_bars':12,'stale_frac':.25,'stale_mfe_r':.5},False),
+ 'keltner_trend':('/home/z/z/runtime/active5_quality_sweep_v3/keltner_trend/cd3.json',{'stale_bars':18,'stale_frac':.25,'stale_mfe_r':.5},False),
+ 'break_and_continue':('/home/z/z/runtime/active5_break_alt_v1/body040.json',{'stale_bars':8,'stale_frac':.25,'stale_mfe_r':.75},True),
+ 'trend_ma_macd':('/home/z/z/runtime/active5_quality_sweep_v3/trend_ma_macd/chase120.json',{},True),
+ 'trend_rider':('/home/z/z/runtime/active5_quality_sweep_v2/trend_rider_fast2/body040_cd1.json',{'stale_bars':24,'stale_frac':.25,'stale_mfe_r':.5},True),
+}
+VARIANTS={
+ 'trail15_10':{'trail_arm_r':1.5,'trail_gap_r':1.0},
+ 'trail20_10':{'trail_arm_r':2.0,'trail_gap_r':1.0},
+ 'trail20_125':{'trail_arm_r':2.0,'trail_gap_r':1.25},
+ 'tp20_20r_trail20_10':{'tp_r':2.0,'tp_frac':.20,'trail_arm_r':2.0,'trail_gap_r':1.0},
+ 'tp20_25r_trail25_125':{'tp_r':2.5,'tp_frac':.20,'trail_arm_r':2.5,'trail_gap_r':1.25},
+}
+def load_bars():
+ out={}
+ for s in ['BTC-USDT','ETH-USDT','SOL-USDT','XRP-USDT','LINK-USDT','DOGE-USDT']:
+  out[s]=ev.fetch_bars(s,'1h',1000)
+ return out
+
+def btc_dir(bars,ts):
+ xs=[b for b in bars if int(b['ts_ms'])<=ts]
+ if len(xs)<55:return 0
+ closes=[float(x['close']) for x in xs]
+ e=__import__('backend.research.rebuild.policy_kernel_v1',fromlist=['ema']).ema(closes,50)
+ if closes[-1]>e[-1] and e[-1]>e[-2]: return 1
+ if closes[-1]<e[-1] and e[-1]<e[-2]: return -1
+ return 0
+
+def keep_trade(t,btc,gate):
+ if not gate:return True
+ d=btc_dir(btc,int(t['signal_ts']))
+ side=1 if t['side']=='long' else -1
+ return d==0 or d==side
+
+def simulate(t,bars,base_rule,variant):
+ entry=float(t['entry']); side=1 if t['side']=='long' else -1
+ sl=(t.get('intent_geometry') or {}).get('sl')
+ if sl is None:return float(t['net_bps'])
+ sl=float(sl); r=abs(entry-sl)
+ if r<=0:return float(t['net_bps'])
+ idx={int(b['ts_ms']):i for i,b in enumerate(bars)}
+ if int(t['entry_ts']) not in idx or int(t['exit_ts']) not in idx:return float(t['net_bps'])
+ i0,i1=idx[int(t['entry_ts'])],idx[int(t['exit_ts'])]
+ rem=1.0; parts=[]; mfe=0.0; stale=False; tp=False; trail_armed=False; peak_px=entry
+ for k in range(i0,i1+1):
+  b=bars[k]; hi=float(b['high']); lo=float(b['low']); close=float(b['close'])
+  fav=((hi-entry) if side==1 else (entry-lo))/r
+  mfe=max(mfe,fav)
+  peak_px=max(peak_px,hi) if side==1 else min(peak_px,lo)
+  if (not stale and base_rule.get('stale_bars') and k-i0+1>=base_rule['stale_bars']
+      and mfe<base_rule.get('stale_mfe_r',.5) and rem>0):
+   frac=min(rem,base_rule.get('stale_frac',.25)*rem)
+   parts.append(frac*side*(close-entry)/entry*10000); rem-=frac; stale=True
+  arm=variant.get('trail_arm_r')
+  if arm is not None and mfe>=arm: trail_armed=True
+  if not tp and variant.get('tp_r') is not None and fav>=variant['tp_r'] and rem>0:
+   frac=min(rem,variant.get('tp_frac',.2)*rem); px=entry+side*variant['tp_r']*r
+   parts.append(frac*side*(px-entry)/entry*10000); rem-=frac; tp=True
+  if trail_armed and rem>0:
+   gap=variant.get('trail_gap_r',1.0)*r
+   stop=(peak_px-gap) if side==1 else (peak_px+gap)
+   hit=(side==1 and lo<=stop) or (side==-1 and hi>=stop)
+   if hit:
+    parts.append(rem*side*(stop-entry)/entry*10000); rem=0; break
+ if rem>0: parts.append(rem*float(t['gross_bps']))
+ return sum(parts)-float(t.get('realized_cost_bps') or 0)
+
+def mm(trades,vals):
+ cut=int(len(vals)*.6)
+ return {'full':metrics(vals),'train60':metrics(vals[:cut]),'holdout40':metrics(vals[cut:])}
+
+def main():
+ bars=load_bars(); out={'schema':'zel.a1.active5.runner_trailing.v1','strategies':{}}
+ for sid,(path,base_rule,gate) in SELECTED.items():
+  d=json.load(open(path)); tr=sorted(d.get('trades') or [],key=lambda x:(int(x['exit_ts']),str(x['symbol'])))
+  tr=[t for t in tr if keep_trade(t,bars['BTC-USDT'],gate)]
+  base=[simulate(t,bars[t['symbol']],base_rule,{}) for t in tr]
+  item={'base':mm(tr,base),'variants':{}}

@@ -42,7 +42,7 @@
 |---|---|---|---|---|---|---|---|
 | HOLD_PROVIDER_UNBOUND | — | — | — | — | 미결속 | HOLD/CASH adapter만 검증 | 미실행 |
 
-기존 V2는 같은 hour의 후행 신호, 미완료 1h feature, cutoff 이후 확정 손익을 참조할 위험이 있다. 새 어댑터는 exact decision cohort·available_at·결과 관측시각·실제 위험예산·GREEN 수신자·중복 setup을 검사한다. 원본 결과는 변경하지 않았다.
+기존 V2는 같은 hour의 후행 신호, 미완료 1h feature, cutoff 이후 확정 손익을 참조할 위험이 있다. 새 router와 rolling 검증기는 exact decision cohort·available_at·결과 관측시각·실제 위험예산·GREEN 수신자·중복 setup을 검사한다. 원본 결과는 변경하지 않았다.
 
 | 기존 개발 월 | Net bps |
 |---|---:|
@@ -68,7 +68,7 @@
 
 ## Fresh/지속 수집
 
-- BTC/ETH raw `@incrDepth` + `@trade`: 60초에 수신 1,184개 = depth453 + trade716 + ACK4 + ping11.
+- BTC/ETH raw `@incrDepth` + `@trade`: 60초에 수신 메시지 1,184개 = depth453 + trade716 + ACK4 + ping11. trade716은 거래 실적 T가 아니며, 관찰된 trade payload는 SCHEMA_UNBOUND다.
 - 원문 gzip/JSON, ACK, hash chain, fsync/checkpoint, 단일 writer, 2GiB 제한.
 - systemd `zel-economic7-raw-forward-20260915.service` 동작; SIGTERM 후 자동 restart1회·PID변경·checkpoint증가·새 데이터 수신 확인.
 - raw archive는 거래 결과 producer가 아니다. 7 lane frozen setup/entry/exit producer 연결은 미완료.

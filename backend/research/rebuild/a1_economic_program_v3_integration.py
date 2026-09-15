@@ -100,7 +100,20 @@ def main() -> int:
     micro_dev = json.load(open(ROOT / "micro_exhaustion_sleeve_v1.json"))
     micro_fresh = json.load(open(ROOT / "micro_exhaustion_fresh_forward_v2.json"))
     old_core = json.load(open(ROOT / "priority_economic_program_v1.json"))
-    core_t_day = float(old_core["portfolios"]["core_train_vol_scaled"]["T_per_day"])
+    core_signal_t_day = float(
+        old_core["portfolios"]["core_train_vol_scaled"]["T_per_day"]
+    )
+    chosen_core = core_v3["chosen_metrics"]
+    core_capitalized_t_day = (
+        core_signal_t_day
+        * float(chosen_core["capitalized_T"])
+        / float(chosen_core["physical_signal_T"])
+    )
+    core_risk_equivalent_t_day = (
+        core_signal_t_day
+        * float(chosen_core["risk_equivalent_T"])
+        / float(chosen_core["physical_signal_T"])
+    )
     mr_t_day = float(mr_v1["T_per_day"])
     micro_edge = micro_dev["candidates"]["EDGE"]
     out: dict[str, Any] = {
@@ -109,7 +122,9 @@ def main() -> int:
         "core_v3": {
             "chosen": core_v3["chosen"],
             "metrics": core_v3["chosen_metrics"],
-            "T_per_day": core_t_day,
+            "signal_T_per_day": core_signal_t_day,
+            "capitalized_T_per_day": core_capitalized_t_day,
+            "risk_equivalent_T_per_day": core_risk_equivalent_t_day,
         },
         "mean_reversion_v1": {
             "metrics": mr_v1["economics"],
@@ -121,7 +136,9 @@ def main() -> int:
             "train60_time": a2.metric(train, "adjusted_bps"),
             "holdout40_time": a2.metric(hold, "adjusted_bps"),
             "months": monthly(combined, "adjusted_bps"),
-            "nominal_T_per_day": core_t_day + mr_t_day,
+            "signal_T_per_day": core_signal_t_day + mr_t_day,
+            "capitalized_T_per_day": core_capitalized_t_day + mr_t_day,
+            "risk_equivalent_T_per_day": core_risk_equivalent_t_day + mr_t_day,
         },
         "micro_edge": {
             "development_metrics": {
@@ -135,7 +152,10 @@ def main() -> int:
             },
             "status": "DEV_ONLY_FRESH_FORWARD_ACCUMULATION",
         },
-        "nominal_frequency_if_micro_edge_survives": core_t_day
+        "capitalized_frequency_if_micro_edge_survives": core_capitalized_t_day
+        + mr_t_day
+        + float(micro_edge["T_per_day"]),
+        "risk_equivalent_frequency_if_micro_edge_survives": core_risk_equivalent_t_day
         + mr_t_day
         + float(micro_edge["T_per_day"]),
         "authority": {
@@ -153,8 +173,15 @@ def main() -> int:
             {
                 "combined": out["combined_core_plus_mean_reversion"]["full"],
                 "months": out["combined_core_plus_mean_reversion"]["months"],
-                "T_day": out["combined_core_plus_mean_reversion"]["nominal_T_per_day"],
-                "T_day_if_micro": out["nominal_frequency_if_micro_edge_survives"],
+                "capitalized_T_day": out["combined_core_plus_mean_reversion"][
+                    "capitalized_T_per_day"
+                ],
+                "risk_equivalent_T_day": out["combined_core_plus_mean_reversion"][
+                    "risk_equivalent_T_per_day"
+                ],
+                "capitalized_T_day_if_micro": out[
+                    "capitalized_frequency_if_micro_edge_survives"
+                ],
                 "micro_fresh": out["micro_edge"]["fresh_forward"],
             },
             sort_keys=True,

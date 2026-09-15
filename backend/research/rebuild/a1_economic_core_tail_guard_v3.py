@@ -86,7 +86,9 @@ def evaluate(
         "holdout40_time": a2.metric(hold, "adjusted_bps"),
         "monthly_net_bps": monthly(rows, "adjusted_bps"),
         "train_monthly_net_bps": monthly(train, "adjusted_bps"),
-        "physical_T_preserved": len(rows),
+        "physical_signal_T": len(rows),
+        "capitalized_T": sum(float(x.get("risk_weight", 1.0)) > 0 for x in rows),
+        "risk_equivalent_T": sum(float(x.get("risk_weight", 1.0)) for x in rows),
     }
 
 

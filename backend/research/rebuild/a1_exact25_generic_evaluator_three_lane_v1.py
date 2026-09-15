@@ -9,10 +9,12 @@ import math
 import sys
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
+
+from backend.research.rebuild import replay_acceleration_v1 as replay_accel
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -81,6 +83,32 @@ def interval_for_ms(ms: int) -> str:
     return table[ms]
 
 
+class PrefixBars:
+    __slots__ = ("_base", "_end")
+
+    def __init__(self, base: list[dict[str, float | int]], end: int):
+        self._base = base
+        self._end = end
+
+    def __len__(self) -> int:
+        return self._end
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            start, stop, step = key.indices(self._end)
+            return [self._base[i] for i in range(start, stop, step)]
+        idx = int(key)
+        if idx < 0:
+            idx += self._end
+        if idx < 0 or idx >= self._end:
+            raise IndexError(idx)
+        return self._base[idx]
+
+    def __iter__(self):
+        for i in range(self._end):
+            yield self._base[i]
+
+
 def fetch_bars(
     symbol: str, interval: str, limit: int = 1000
 ) -> list[dict[str, float | int]]:
@@ -91,12 +119,7 @@ def fetch_bars(
     out: list[dict[str, float | int]] = []
     for row in rows:
         if isinstance(row, dict):
-            ts = int(
-                cast(
-                    int | str,
-                    row.get("time") or row.get("openTime") or row.get("timestamp"),
-                )
-            )
+            ts = int(row.get("time") or row.get("openTime") or row.get("timestamp"))
             vol = row.get("volume", row.get("vol", row.get("baseVolume", 0)))
             out.append(
                 {
@@ -221,6 +244,7 @@ def load_policy(strategy_id: str, inventory: dict[str, Any]) -> tuple[Any, Path,
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    replay_accel.install(module)
     return module, path, git_blob_sha(path)
 
 
@@ -248,9 +272,67 @@ def policy_functions(module: Any, strategy_id: str) -> tuple[Any, Any]:
     build = getattr(module, f"build_{strategy_id}_intent", None) or getattr(
         module, "build_decision_intent", None
     )
-    if not callable(compute) or not callable(build):
-        raise RuntimeError("POLICY_ADAPTER_MISSING")
-    return compute, build
+    if callable(compute) and callable(build):
+        return compute, build
+
+    # Shared batch modules expose a strategy-id keyed API rather than one
+    # function per policy.  Adapt that API here so research replays can use
+    # the canonical parent implementation without mutating policy source.
+    shared_compute = getattr(module, "compute_feature", None)
+    shared_build = getattr(module, "build_intent", None)
+    if callable(shared_compute) and callable(shared_build):
+
+        def compute_adapter(
+            bars: Any, *, symbol: str, now_ts_ms: int, config: Any
+        ) -> Any:
+            return shared_compute(
+                strategy_id, bars, symbol=symbol, now_ts_ms=now_ts_ms, config=config
+            )
+
+        def build_adapter(
+            feature: Any,
+            *,
+            policy_source_sha: str,
+            verified_round_trip_cost_bps: float,
+            config: Any,
+        ) -> Any:
+            return shared_build(
+                feature,
+                policy_source_sha=policy_source_sha,
+                verified_round_trip_cost_bps=verified_round_trip_cost_bps,
+                config=config,
+            )
+
+        return compute_adapter, build_adapter
+
+    final_compute = getattr(module, "features", None)
+    final_build = getattr(module, "intent_from_snapshot", None)
+    if callable(final_compute) and callable(final_build):
+
+        def compute_adapter(
+            bars: Any, *, symbol: str, now_ts_ms: int, config: Any
+        ) -> Any:
+            return final_compute(
+                strategy_id, bars, symbol=symbol, now_ms=now_ts_ms, config=config
+            )
+
+        def build_adapter(
+            feature: Any,
+            *,
+            policy_source_sha: str,
+            verified_round_trip_cost_bps: float,
+            config: Any,
+        ) -> Any:
+            return final_build(
+                feature,
+                policy_source_sha=policy_source_sha,
+                verified_round_trip_cost_bps=verified_round_trip_cost_bps,
+                config=config,
+            )
+
+        return compute_adapter, build_adapter
+
+    raise RuntimeError("POLICY_ADAPTER_MISSING")
 
 
 def intent_sha(intent: Any) -> str:
@@ -338,16 +420,6 @@ def reserve_position_ownership(
 
 def self_test() -> int:
     class Intent:
-        strategy_id: str
-        symbol: str
-        signal_ts: int
-        side: str
-        sl: float
-        tp: float | None
-        timeout: dict[str, int]
-        feature_sha: str
-        config_sha: str
-        sha: str
         pyramiding = {"enabled": False}
         cooldown = {"bars": 2, "one_entry_per_transition": True}
 
@@ -387,7 +459,39 @@ def main() -> None:
     p.add_argument("--strategy-id")
     p.add_argument("--symbols", default="BTC-USDT,ETH-USDT")
     p.add_argument("--out", default="a1_exact25_receipt.json")
+    p.add_argument(
+        "--timeframe-ms",
+        type=int,
+        default=None,
+        help="Research replay override; does not mutate policy source",
+    )
+    p.add_argument(
+        "--signal-body-atr-min",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--signal-body-atr-max",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--chase-atr-max",
+        type=float,
+        default=None,
+        help="Research-only causal admission gate",
+    )
+    p.add_argument(
+        "--extra-sl-cooldown-bars",
+        type=int,
+        default=0,
+        help="Research-only extra cooldown after SL",
+    )
     args = p.parse_args()
+    if args.extra_sl_cooldown_bars < 0:
+        raise RuntimeError("NEGATIVE_EXTRA_SL_COOLDOWN_BARS")
     if args.self_test:
         self_test()
         return
@@ -410,6 +514,10 @@ def main() -> None:
     )
     module, policy_path, policy_sha = load_policy(strategy_id, inventory)
     cfg = config_instance(module)
+    if args.timeframe_ms is not None:
+        if not is_dataclass(cfg) or not hasattr(cfg, "timeframe_ms"):
+            raise RuntimeError("TIMEFRAME_OVERRIDE_UNSUPPORTED")
+        cfg = replace(cfg, timeframe_ms=int(args.timeframe_ms))
     timeframe_ms = int(getattr(cfg, "timeframe_ms"))
     interval = interval_for_ms(timeframe_ms)
     compute, build = policy_functions(module, strategy_id)
@@ -426,6 +534,7 @@ def main() -> None:
     snapshots: dict[str, Any] = {}
     ownership_signal_count = 0
     rejected_ownership_intents: list[dict[str, Any]] = []
+    quality_rejected_intents: list[dict[str, Any]] = []
     open_intents: list[dict[str, Any]] = []
 
     for symbol in [x.strip() for x in args.symbols.split(",") if x.strip()]:
@@ -450,8 +559,9 @@ def main() -> None:
             if int(bars[i]["ts_ms"]) < boundary_ms:
                 continue
             try:
+                policy_bars = bars[max(0, i + 1 - 1000) : i + 1]
                 feature = compute(
-                    bars[: i + 1],
+                    policy_bars,
                     symbol=symbol,
                     now_ts_ms=int(bars[i]["ts_ms"]),
                     config=cfg,
@@ -480,6 +590,48 @@ def main() -> None:
             side_name = str(getattr(intent, "side"))
             if side_name not in ("long", "short"):
                 defects.append(f"UNSUPPORTED_SIDE:{side_name}")
+                continue
+            signal_bar = bars[i]
+            feature_atr = float(getattr(feature, "atr", 0.0) or 0.0)
+            signal_body_atr = (
+                abs(float(signal_bar["close"]) - float(signal_bar["open"]))
+                / feature_atr
+                if feature_atr > 0
+                else None
+            )
+            feature_values = getattr(feature, "values", {}) or {}
+            chase_atr = (
+                feature_values.get("chase_atr")
+                if isinstance(feature_values, Mapping)
+                else None
+            )
+            quality_reasons: list[str] = []
+            if args.signal_body_atr_min is not None and (
+                signal_body_atr is None or signal_body_atr < args.signal_body_atr_min
+            ):
+                quality_reasons.append("SIGNAL_BODY_ATR_BELOW_MIN")
+            if args.signal_body_atr_max is not None and (
+                signal_body_atr is None or signal_body_atr > args.signal_body_atr_max
+            ):
+                quality_reasons.append("SIGNAL_BODY_ATR_ABOVE_MAX")
+            if args.chase_atr_max is not None and (
+                chase_atr is None or float(chase_atr) > args.chase_atr_max
+            ):
+                quality_reasons.append("CHASE_ATR_ABOVE_MAX")
+            if quality_reasons:
+                quality_rejected_intents.append(
+                    {
+                        "intent_sha": sha,
+                        "symbol": symbol,
+                        "signal_ts": int(getattr(intent, "signal_ts")),
+                        "side": side_name,
+                        "signal_body_atr": signal_body_atr,
+                        "chase_atr": (
+                            float(chase_atr) if chase_atr is not None else None
+                        ),
+                        "reasons": quality_reasons,
+                    }
+                )
                 continue
             entry_bar = bars[i + 1]
             entry_ts = int(entry_bar["ts_ms"])
@@ -555,12 +707,15 @@ def main() -> None:
                     "TIMEOUT",
                 )
             if owns_position:
+                effective_cooldown_bars = cooldown_bars + (
+                    args.extra_sl_cooldown_bars if reason == "SL" else 0
+                )
                 blocked_until_ts = max(
                     blocked_until_ts,
                     reserve_position_ownership(
-                        exit_ts=int(cast(int, exit_ts)),
+                        exit_ts=int(exit_ts),
                         open_horizon_ts=None,
-                        cooldown_bars=cooldown_bars,
+                        cooldown_bars=effective_cooldown_bars,
                         timeframe_ms=timeframe_ms,
                     ),
                 )
@@ -570,9 +725,7 @@ def main() -> None:
                 float(snap["impact_bps"]),
             )
             fund = funding_cost(
-                int(entry_bar["ts_ms"]),
-                int(cast(int, exit_ts)),
-                list(snap["funding_rows"]),
+                int(entry_bar["ts_ms"]), int(exit_ts), list(snap["funding_rows"])
             )
             cost = fee + spread + impact + fund
             gross = side * (float(exit_px) - entry_px) / entry_px * 10_000
@@ -582,7 +735,7 @@ def main() -> None:
                     "symbol": symbol,
                     "signal_ts": int(getattr(intent, "signal_ts")),
                     "entry_ts": int(entry_bar["ts_ms"]),
-                    "exit_ts": int(cast(int, exit_ts)),
+                    "exit_ts": int(exit_ts),
                     "side": side_name,
                     "entry": entry_px,
                     "exit": float(exit_px),
@@ -655,6 +808,7 @@ def main() -> None:
         },
         "open_intents": open_intents,
         "ownership_rejected_intents": rejected_ownership_intents,
+        "quality_rejected_intents": quality_rejected_intents,
         "metrics": {
             "gross_pnl_bps": sum(gross_values),
             "gross_expectancy_bps": (
@@ -667,7 +821,7 @@ def main() -> None:
             "net_profit_factor": profit_factor(gp, gl),
             "net_payoff": (
                 avg_win / avg_loss
-                if avg_win is not None and avg_loss is not None and avg_loss != 0
+                if avg_win is not None and avg_loss not in (None, 0)
                 else None
             ),
             "win_rate": len(wins) / len(net_values) if net_values else None,

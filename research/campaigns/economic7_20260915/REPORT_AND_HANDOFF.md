@@ -112,14 +112,14 @@ A0/B0/C4/D8/HOLD8 유지. 새 B/A 검토는 실제 부모·단일역할·원자�
 
 PR1327 최초 head `dd49855c35908f51aba60727e7ac28f7c90eff2f`의 evaluator 파일 변경이 기존 Top3/Liquid6 workflow를 자동 시작했다. 각각 run `34964267267`, `34964267430`이 경제 실행 단계에 진입했다. 중앙 registry에서 승인·등록한 평가가 아니며 결과·승격 credit은 0이다. 이를 전체 실행 0회라고 보고하지 않는다.
 
-지정 run의 취소 접근은 자동 승인 검토에서 사용자 승인 작업과 무관한 비공개 GitHub Actions 접근이라는 이유로 거부됐다. 동일 접근을 우회하지 않았다. PR·push 경로는 저장 증거·자체검증만 수행하도록 수선했고, 실행 최종 상태·검증 내역은 `CI_AUTOMATIC_EXECUTION_INCIDENT.json`과 `MERGE_RECEIPT.json`에 남긴다.
+지정 run의 취소 접근은 자동 승인 검토에서 사용자 승인 작업과 무관한 비공개 GitHub Actions 접근이라는 이유로 거부됐다. 동일 접근을 우회하지 않았다. PR·push 경로는 저장 증거·자체검증만 수행하도록 수선했고, 최종 상태는 Top3 완료(success), Liquid6 취소(cancelled)다. 실행·검증 내역은 `CI_AUTOMATIC_EXECUTION_INCIDENT.json`과 `MERGE_RECEIPT.json`에 기록했다.
 
 ## 검증과 재개
 
 - 통합 pytest146 PASS +8 subtests(기존132 + router 경계3 + 원본 보존11). 원래 TrendRider saved 검증5개 및 관련 synthetic333개 PASS. 실제 precommit Black/Ruff/Mypy와 필수 원본 해시·타입 시그니처 guard PASS.
 - recovered2모듈의 타입/형식 수선 및 원본 보존. evaluator는 저장 검증의 원래 바이트로 복원하고 별도 `.pyi`로 타입 제공; 정확한 해시·시그니처 보존 검사를 필수 gate로 적용. 이전 `RECOVERED_TYPING_VERIFICATION.json`의 evaluator 파생본은 경과 기록이며 최종 상태는 `FINAL_SOURCE_PRESERVATION.json`이다.
 - 기존 정책3개 및 evaluator self-test PASS; 중앙 등록 경제 replay는 0회. 외부 CI 자동실행 예외는 다음 절 참조.
-- PR review의 cutoff 경계 P1을 수선하고 미사용 router를 새 UTC 경계로 재동결했다. 원본 freeze는 별도 보존. PR/merge/master CI의 최종 값은 `MERGE_RECEIPT.json`에 기록한다.
+- PR review의 cutoff 경계 P1을 수선하고 미사용 router를 새 UTC 경계로 재동결했다. 원본 freeze는 별도 보존. PR #1327 head `f9bd947b47b209d17365321196d9bc114acfa842`, merge `4834579bdebdc14c06ec859b2751cb8835f66697`; PR CI38/38, master push CI33/33 PASS. 고정 병합 작업트리의16점검 PASS. `MERGE_RECEIPT.json`, `FIXED_MERGE_VERIFICATION.json`, `FIXED_MERGE_VALIDATION.txt`에 기록했다.
 
 다음 재개는 아래 결손을 해결하는 지점이다. 기존 완료 데이터·테스트·실험을 처음부터 반복하지 않는다.
 
@@ -130,3 +130,18 @@ PR1327 최초 head `dd49855c35908f51aba60727e7ac28f7c90eff2f`의 evaluator 파�
 5. 실제 fresh/rolling/portfolio marginal 검증 후에만 승격. B없으면 fusion 계속 보류.
 
 주문·Live 권한은 BLOCKED. 이 문서는 전체 campaign 완료 또는 수익개선 PASS receipt가 아니다.
+
+## 재개 위치
+
+| 항목 | 영속 경로 또는 검증점 |
+|---|---|
+| 자료·원장 루트 | `/home/z/z/runtime/economic7_campaign_20260915` |
+| 12개월 결측 전 구간 | `canonical_12m/` (실제 gap에서 HOLD 종료) |
+| gap-day prefix | `canonical_gapday_prefix/` (보존 원응답에서만 파생) |
+| 결측 후 연속 구간 | `canonical_postgap_20260213/` (6개 symbol 수집 완료) |
+| 원문 forward | `bingx_raw_forward/raw.jsonl`, `checkpoint.json`, `identity.json` |
+| 중앙 registry | `campaign.sqlite3`; 기존16개 import, 등록 평가0 |
+| raw 서비스 | `zel-economic7-raw-forward-20260915.service`; 2GiB에 도달하면 HOLD 종료 |
+| 검증된 코드 | `/home/z/worktrees/7core-merged-4834579bdebd`; 7개 lane provider 미결속 유지 |
+
+원문 raw 수집은 계속되지만 전략별 accrued trade ledger는 아직 없다. 재개 시 위 체크포인트·원본 해시를 먼저 읽고, 완료한 수집 구간 및 후보를 다시 실행하지 않는다. raw schema/단위·provider/cost·사전등록 acceptance가 결속된 뒤에만 새 경제 후보를 registry에 예약한다.

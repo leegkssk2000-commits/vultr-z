@@ -21,6 +21,9 @@ jobs:
   integrity:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      CAMPAIGN_SOURCES: backend/research/rebuild/economic7_bingx_raw_capture_v1.py backend/research/rebuild/economic7_campaign_registry_v1.py backend/research/rebuild/economic7_canonical_history_v1.py backend/research/rebuild/economic7_frozen_forward_router_v1.py backend/research/rebuild/economic7_walkforward_v1.py
+      CAMPAIGN_TESTS: tests/test_economic7_bingx_raw_capture_v1.py tests/test_economic7_campaign_registry_v1.py tests/test_economic7_canonical_history_v1.py tests/test_economic7_frozen_forward_router_v1.py tests/test_economic7_walkforward_v1.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,11 +32,11 @@ jobs:
       - run: python -m pip install numpy==2.4.3 pandas==3.0.1 requests==2.32.5 websockets==15.0.1 pytest==9.0.2 black==24.8.0 ruff==0.6.9 mypy==1.10.0
       - name: Static checks for new campaign implementation
         run: |
-          python -m black --check backend/research/rebuild/economic7_*_v1.py tests/test_economic7_*_v1.py
-          python -m ruff check backend/research/rebuild/economic7_*_v1.py tests/test_economic7_*_v1.py
-          python -m mypy --explicit-package-bases --follow-imports=skip backend/research/rebuild/economic7_*_v1.py
+          python -m black --check ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
+          python -m ruff check ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
+          python -m mypy --ignore-missing-imports --scripts-are-modules --explicit-package-bases ${CAMPAIGN_SOURCES} ${CAMPAIGN_TESTS}
       - name: Causal integrity and registry tests
-        run: python -m pytest -q tests/test_economic7_*_v1.py
+        run: python -m pytest -q ${CAMPAIGN_TESTS}
       - name: Preserved Router import and legacy policy tests
         run: |
           python -c "import backend.research.rebuild.a1_strategy_specific_failover_router_v2"

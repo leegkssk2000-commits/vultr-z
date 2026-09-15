@@ -73,6 +73,7 @@
 - systemd `zel-economic7-raw-forward-20260915.service` 동작; SIGTERM 후 자동 restart1회·PID변경·checkpoint증가·새 데이터 수신 확인.
 - raw archive는 거래 결과 producer가 아니다. 7 lane frozen setup/entry/exit producer 연결은 미완료.
 - `RAW_CAPTURE_PROBE.json`, `RAW_RECOVERY_RECEIPT.json`, `FROZEN_ROUTER_RECEIPT.json` 참조.
+- `FINAL_RUNTIME_CHECK.json`: 2026-09-15 11:46 UTC의 서비스·checkpoint·자료 구간·원본 dirty 보존 점검. 이후 router 코드만 P1 수선으로 재동결했으며, 최종 소스 상태는 새 `FROZEN_ROUTER_RECEIPT.json` 및 병합 검증 receipt를 따른다.
 
 ## Material
 

@@ -65,7 +65,7 @@ def table(headers, rows):
 def main():
     data = json.loads((REPORT / "FINAL_COMPARISON_V2.json").read_text())
     now = dt.datetime.now(dt.timezone.utc)
-    paper_path = RUNTIME / "observed_paper/STATE.json"
+    paper_path = RUNTIME / "observed_paper_clock_v3/STATE.json"
     paper_bytes = paper_path.read_bytes() if paper_path.exists() else b'{"trades":[]}'
     paper = json.loads(paper_bytes)
     fresh = collections.Counter(row["identity"] for row in paper["trades"])
@@ -274,7 +274,7 @@ def main():
     lead += [
         "Portfolio는 과거 완료·공개된 shadow 결과만 health에 사용하고, 같은 시각 이미 유효한 저장 opportunity에만 배분한다. 없으면 cash이며 replacement trade를 만들지 않는다. 최대 gross weight 1, 미해결 갭 포지션은 자본 점유. 입력은 독립 sleeve의 체결 및 미해결 opportunity 원장이므로 독립 sleeve 점유 중 빠진 모든 raw valid signal까지 포함한 완전한 opportunity pool은 아니다. 연구 window별 독립 flat 시작이며 연속 계좌 곡선이 아니다.",
         "",
-        "Fresh는 2026-09-15 20:00 UTC 전에 규칙과 관측 호가 paper 설정을 고정해 7 primary 및 별도 child/material을 동시에 관측하기 시작했다. 실제 공개 trade tape와 1분봉만 수집하며 decision은 15m/30m다. Paper는 실제 decision publication 후 새 요청으로 받은 호가만 사용한다. 신호 수를 fresh T로 세지 않는다. 실제 계좌 체결·주문·capacity 입증은 없다. Genuine fresh 검증에는 앞으로 도착할 자료가 필요하다.",
+        "Fresh 원래 시도는 2026-09-15 20:00 UTC 시작 후 native timestamp가 local receipt보다 1–4ms 앞선 관측에서 안전 중단됐고, 완료 거래·미결 포지션은 모두 0이었다. 원장과 V2 코드를 보존했다. 경제 규칙을 바꾸지 않은 V3 시각 검증을 21:00 UTC 전에 동결하고, 21:00 UTC부터 7 primary 및 별도 child/material의 공통 후속 관측을 시작했다. 원본 시각을 보존하며 실제 wall clock이 도달했다는 hash-linked 증명 후에만 자료를 사용한다. 5000ms 대기 한도·clock reversal·자료 누락은 HOLD다. Micro는 재연결 뒤 완전한 실제 15m bucket을 먼저 확보한다. 실제 공개 trade tape와 1분봉만 수집하며 decision은 15m/30m다. Paper는 실제 decision publication 후 새 요청으로 받은 호가만 사용한다. 신호 수를 fresh T로 세지 않는다. 실제 계좌 체결·주문·capacity 입증은 없다. Genuine fresh 검증에는 앞으로 도착할 자료가 필요하다.",
         "",
         "Validation 30일은 rolling 표에 합치지 않았다. identity별 validation T/WR/Net/PF/DD·2x는 CAMPAIGN_FINAL_RESULTS_V2.json의 window_receipts에서 partition=validation로 별도 보존한다. 초기 90일은 문맥 학습만 수행하고 train PnL을 만들지 않았다. Window 끝 미완료와 갭 미결 거래는 임의 종가 청산하지 않았다.",
         "",
@@ -298,9 +298,9 @@ def main():
         "",
         "- [전체 경제 원장·2x·모든 월/심볼/session](FINAL_COMPARISON_V2.json)",
         "- [독립 saved 검증](../broad_v2/SAVED_RESULTS_INDEPENDENT_ARITHMETIC_V2.json)",
-        "- [실제 candle 비교](anatomy_binding_repair/)",
+        "- [실제 candle 비교 — 간격 보정 표시본](anatomy_binding_repair/readable/)",
         "- [공통 fresh 고정](FRESH_FORWARD_FREEZE_V2.json)",
-        "- [실제 호가 paper 고정](OBSERVED_PAPER_FREEZE_V2.json)",
+        "- [실제 호가 paper 후속 구간 고정](OBSERVED_PAPER_FREEZE_V3.json)",
         "",
         "Core/order/live 승격 없음. 프런트엔드 배포 불필요. Rollback은 해당 Scalp7 연구 service만 중지하고 기존 원장·freeze를 보존한다.",
     ]
@@ -320,6 +320,10 @@ def main():
                     else None
                 ),
                 "fresh_closed_by_identity": dict(fresh),
+                "fresh_state_path": str(paper_path),
+                "fresh_execution_profile": "POST_DECISION_OBSERVED_QUOTE_ACTUAL_CLOCK_BARRIER_V3",
+                "fresh_common_start_utc": "2026-09-15T21:00:00Z",
+                "original_v2_closed_trades": 0,
                 "material_assessment": assessment,
                 "strict_joint_improvements": data["strict_joint_improvement_count"],
                 "profitable_seven_lane_system_established": False,

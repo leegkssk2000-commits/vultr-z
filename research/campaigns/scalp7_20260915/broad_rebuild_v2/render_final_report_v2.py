@@ -299,6 +299,7 @@ def main():
         "- [전체 경제 원장·2x·모든 월/심볼/session](FINAL_COMPARISON_V2.json)",
         "- [독립 saved 검증](../broad_v2/SAVED_RESULTS_INDEPENDENT_ARITHMETIC_V2.json)",
         "- [실제 candle 비교 — 간격 보정 표시본](anatomy_binding_repair/readable/)",
+        "- [실제 fresh 시각·호가·원장 증거](FRESH_CLOCK_RUNTIME_WITNESS_V3.json)",
         "- [공통 fresh 고정](FRESH_FORWARD_FREEZE_V2.json)",
         "- [실제 호가 paper 후속 구간 고정](OBSERVED_PAPER_FREEZE_V3.json)",
         "",

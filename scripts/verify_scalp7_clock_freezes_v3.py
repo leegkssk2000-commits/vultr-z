@@ -62,6 +62,33 @@ def main():
         assert item["order_authority"] == item["live_authority"] == "BLOCKED"
     assert source["historical_replays"] == common["historical_economic_replays"] == 0
     assert paper["promotion_authority"] is micro["historical_replay"] is False
+    witness = read("FRESH_CLOCK_RUNTIME_WITNESS_V3.json")
+    audit = REPORT / "fresh_clock_v3_witness"
+    assert (
+        sha(audit / "PAPER_STATE_AT_FIRST_REVIEW.json") == witness["paper_state_sha256"]
+    )
+    state = json.loads((audit / "PAPER_STATE_AT_FIRST_REVIEW.json").read_bytes())
+    assert len(state["trades"]) == witness["paper_status"]["fresh_closed_trades"]
+    assert len(state["positions"]) == witness["observed_open_positions"]
+    for position in state["positions"].values():
+        assert position["entry_ts_ms"] >= common["common_economic_start_ms"]
+        for quote in position["entry_quote_receipts"].values():
+            assert quote["requested_at_ms"] > position["signal"]["available_ts_ms"]
+            assert position["entry_ts_ms"] >= quote["usable_at_ms"]
+            assert quote["usable_at_ms"] >= max(
+                quote["received_at_ms"], quote["source_ts_ms"] or 0
+            )
+            prefix = quote["quote_id"][:12]
+            receipt_path = audit / (prefix + "." + Path(quote["receipt_path"]).name)
+            clock_path = audit / (prefix + "." + Path(quote["clock_proof_path"]).name)
+            assert sha(receipt_path) == quote["receipt_sha256"]
+            assert sha(clock_path) == quote["clock_proof_sha256"]
+            assert sha(audit / (prefix + ".body")) == quote["body_sha256"]
+            assert (
+                json.loads(clock_path.read_bytes())["clock_proof"]
+                == quote["clock_proof"]
+            )
+    assert witness["order_authority"] == witness["live_authority"] == "BLOCKED"
     presentation = json.loads(
         (
             REPORT / "anatomy_binding_repair/readable/PRESENTATION_MANIFEST_V3.json"

@@ -1,0 +1,42 @@
+name: Economic7 campaign integrity
+on:
+  pull_request:
+    paths:
+      - 'backend/research/rebuild/economic7_*.py'
+      - 'tests/test_economic7_*.py'
+      - '.github/workflows/economic7-campaign-integrity-v1.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'backend/research/rebuild/economic7_*.py'
+      - 'tests/test_economic7_*.py'
+      - '.github/workflows/economic7-campaign-integrity-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: economic7-integrity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy==2.4.3 pandas==3.0.1 requests==2.32.5 websockets==15.0.1 pytest==9.0.2 black==24.8.0 ruff==0.6.9 mypy==1.10.0
+      - name: Static checks for new campaign implementation
+        run: |
+          python -m black --check backend/research/rebuild/economic7_*_v1.py tests/test_economic7_*_v1.py
+          python -m ruff check backend/research/rebuild/economic7_*_v1.py tests/test_economic7_*_v1.py
+          python -m mypy --explicit-package-bases --follow-imports=skip backend/research/rebuild/economic7_*_v1.py
+      - name: Causal integrity and registry tests
+        run: python -m pytest -q tests/test_economic7_*_v1.py
+      - name: Preserved Router import and legacy policy tests
+        run: |
+          python -c "import backend.research.rebuild.a1_strategy_specific_failover_router_v2"
+          python -m pytest -q tests/test_benchmark25_donor_native_v1.py tests/test_benchmark25_donor_state_machine_v2.py tests/test_benchmark25_transfer_overlay_v1.py
+      - name: Preserved frontend contract
+        run: npm run --prefix frontend/z-os-app-source validate

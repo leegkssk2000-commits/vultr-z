@@ -268,22 +268,39 @@ def _exposure(calendar: Mapping[str, Any], start: int, end: int) -> str:
 
 def _trade(record: Mapping[str, Any], calendar: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(record)
-    if out.get("instrument_kind") != "SINGLE_LEG_LINEAR_USDT":
-        raise ValueError(
-            "explicit single-leg contract required; multileg needs a two-leg adapter"
-        )
-    for field in ("trade_id", "strategy", "symbol", "source"):
+    kind = out.get("instrument_kind")
+    if kind not in {"SINGLE_LEG_LINEAR_USDT", "TWO_LEG_MARKET_NEUTRAL_USDT"}:
+        raise ValueError("explicit supported instrument contract required")
+    for field in ("trade_id", "strategy", "source"):
         _text(out.get(field), field)
     for field in ("candidate_id", "rule_hash", "code_sha"):
         if out.get(field) != calendar[field]:
             raise ValueError(f"{field}: ledger/calendar identity mismatch")
-    if out.get("side") not in ("LONG", "SHORT"):
-        raise ValueError("side: LONG/SHORT required")
     out["entry_ts_ms"] = _stamp(out.get("entry_ts_ms"), "entry_ts_ms")
-    if _number(out.get("entry_price"), "entry_price") <= 0:
-        raise ValueError("entry_price must be positive")
+    if kind == "SINGLE_LEG_LINEAR_USDT":
+        _text(out.get("symbol"), "symbol")
+        if out.get("side") not in ("LONG", "SHORT"):
+            raise ValueError("side: LONG/SHORT required")
+        if _number(out.get("entry_price"), "entry_price") <= 0:
+            raise ValueError("entry_price must be positive")
+    else:
+        long_symbol = _text(out.get("long_symbol"), "long_symbol")
+        short_symbol = _text(out.get("short_symbol"), "short_symbol")
+        if long_symbol == short_symbol:
+            raise ValueError("two-leg symbols must be distinct")
+        if out.get("side") != "MARKET_NEUTRAL":
+            raise ValueError("two-leg side: MARKET_NEUTRAL required")
+        for field in ("long_entry_price", "short_entry_price"):
+            if _number(out.get(field), field) <= 0:
+                raise ValueError(f"{field} must be positive")
+        out["symbol"] = f"{long_symbol}|{short_symbol}"
     if out.get("status") in ("OPEN", "CENSORED"):
-        if out.get("exit_ts_ms") is not None or out.get("exit_price") is not None:
+        exit_fields = (
+            ("exit_ts_ms", "exit_price")
+            if kind == "SINGLE_LEG_LINEAR_USDT"
+            else ("exit_ts_ms", "long_exit_price", "short_exit_price")
+        )
+        if any(out.get(field) is not None for field in exit_fields):
             raise ValueError("OPEN/CENSORED may not masquerade as closed trade")
         return out
     if out.get("status") != "CLOSED":
@@ -296,8 +313,6 @@ def _trade(record: Mapping[str, Any], calendar: Mapping[str, Any]) -> dict[str, 
         raise ValueError("outcome availability predates exit")
     if out["exit_ts_ms"] < out["entry_ts_ms"]:
         raise ValueError("exit predates entry")
-    if _number(out.get("exit_price"), "exit_price") <= 0:
-        raise ValueError("exit_price must be positive")
     for field in (
         "gross_bps",
         "fee_bps",
@@ -311,8 +326,29 @@ def _trade(record: Mapping[str, Any], calendar: Mapping[str, Any]) -> dict[str, 
         raise ValueError("negative costs or nonpositive executed risk weight")
     if out.get("cost_authority_sha256") != calendar["cost_authority"]["sha256"]:
         raise ValueError("cost authority mismatch")
-    gross = (out["exit_price"] / out["entry_price"] - 1) * 10_000
-    gross *= (1 if out["side"] == "LONG" else -1) * out["pnl_weight"]
+    if kind == "SINGLE_LEG_LINEAR_USDT":
+        if _number(out.get("exit_price"), "exit_price") <= 0:
+            raise ValueError("exit_price must be positive")
+        gross = (out["exit_price"] / out["entry_price"] - 1) * 10_000
+        gross *= (1 if out["side"] == "LONG" else -1) * out["pnl_weight"]
+    else:
+        for field in ("long_exit_price", "short_exit_price"):
+            if _number(out.get(field), field) <= 0:
+                raise ValueError(f"{field} must be positive")
+        long_weight = _number(out.get("long_weight"), "long_weight")
+        short_weight = _number(out.get("short_weight"), "short_weight")
+        if min(long_weight, short_weight) <= 0:
+            raise ValueError("two-leg weights must be positive")
+        if not math.isclose(
+            long_weight + short_weight, out["pnl_weight"], rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ValueError("two-leg weights must sum to pnl_weight")
+        gross = 10_000 * (
+            long_weight * (out["long_exit_price"] / out["long_entry_price"] - 1)
+            + short_weight
+            * (out["short_entry_price"] - out["short_exit_price"])
+            / out["short_entry_price"]
+        )
     if not math.isclose(out["gross_bps"], gross, rel_tol=1e-9, abs_tol=1e-7):
         raise ValueError("gross/price/side/weight mismatch")
     expected = (

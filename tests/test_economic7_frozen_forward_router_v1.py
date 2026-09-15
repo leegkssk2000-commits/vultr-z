@@ -266,3 +266,17 @@ def test_invalid_nested_schema_holds(spec, field, value):
     row = event()
     row[field] = value
     assert decide(FrozenForwardRouter(spec), [row])["state"] == "HOLD"
+
+
+@pytest.mark.parametrize("boundary", [0, 1])
+def test_forward_boundary_cannot_include_training_cutoff(spec, tmp_path, boundary):
+    with pytest.raises(
+        ValueError, match="FORWARD_BOUNDARY_NOT_AFTER_FROZEN_TRAINING_CUTOFF"
+    ):
+        load_frozen_spec(tmp_path, spec.hashes, BINDINGS, 1800_000, boundary)
+
+
+def test_forward_boundary_immediately_after_training_cutoff_is_valid(spec, tmp_path):
+    cutoff = spec.artifacts["v1"]["cutoff_ts"]
+    after = load_frozen_spec(tmp_path, spec.hashes, BINDINGS, 1800_000, cutoff + 1)
+    assert after.forward_start_ts_ms == cutoff + 1

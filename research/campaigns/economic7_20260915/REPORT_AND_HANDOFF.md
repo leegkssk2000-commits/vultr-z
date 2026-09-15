@@ -1,8 +1,8 @@
 # Economic7 campaign 실행 결과 및 재개 기록
 
-**판정: 전체 campaign 미완료 — source/7 lane provider 결속 HOLD. 신규 Core 승격·경제평가·B/A material·fusion은 모두 0건.**
+**판정: 전체 campaign 미완료 — source/7 lane provider 결속 HOLD. 신규 Core 승격·중앙 등록 경제평가·B/A material·fusion은 모두 0건. PR CI 자동 경제실행 진입 2건은 별도 사고 기록이며 성과에 반영하지 않음.**
 
-기존 180일 결과를 재실행하거나 fresh OOS로 승격하지 않았다. 이번 결과는 원본 복구, 실제 장기자료 수집, 인과성/중복 검증 구현, raw L2 지속 수집 및 복구 시험이다.
+중앙 campaign은 기존 180일 결과를 재실행하거나 fresh OOS로 승격하지 않았다. PR 생성이 기존 CI 경제실행 2건을 자동 유발한 예외는 아래에 공개한다. 이번 결과는 원본 복구, 실제 장기자료 수집, 인과성/중복 검증 구현, raw L2 지속 수집 및 복구 시험이다.
 
 ## 기준점과 보존
 
@@ -13,7 +13,7 @@
 | 복구 통합 | `6f96d9a2b23c02dad5e700f3b4358c25c1a015fb`; 기존 30개 연구 커밋과 master 기록 보존 |
 | dirty 작업트리 | 원위치 보존; Router 전이 의존성 밖의 3개 변경 복사 안 함 |
 | 병렬 작업 | source·data·router·material registry·rolling·QA, subagent 6개 |
-| 기존 경제 결과 | 16개 원장 receipt import; 재평가 0회 |
+| 기존 경제 결과 | 16개 원장 receipt import; 중앙 재평가 0회, CI 자동실행 2건 별도 |
 
 ## 7 lane 경제표
 
@@ -107,12 +107,18 @@ A0/B0/C4/D8/HOLD8 유지. 새 B/A 검토는 실제 부모·단일역할·원자�
 |---|---|---|---|---|---|---|---|---|---|---|
 | 없음 | 검증 B 없음 | — | — | — | — | — | — | 미실행 | 미실행 | NOT_RUN_NO_B_MATERIAL |
 
+## PR CI 자동실행 예외
+
+PR1327 최초 head `dd49855c35908f51aba60727e7ac28f7c90eff2f`의 evaluator 파일 변경이 기존 Top3/Liquid6 workflow를 자동 시작했다. 각각 run `34964267267`, `34964267430`이 경제 실행 단계에 진입했다. 중앙 registry에서 승인·등록한 평가가 아니며 결과·승격 credit은 0이다. 이를 전체 실행 0회라고 보고하지 않는다.
+
+지정 run의 취소 접근은 자동 승인 검토에서 사용자 승인 작업과 무관한 비공개 GitHub Actions 접근이라는 이유로 거부됐다. 동일 접근을 우회하지 않았다. PR·push 경로는 저장 증거·자체검증만 수행하도록 수선했고, 실행 최종 상태·검증 내역은 `CI_AUTOMATIC_EXECUTION_INCIDENT.json`과 `MERGE_RECEIPT.json`에 남긴다.
+
 ## 검증과 재개
 
-- 통합 pytest132 PASS +8 subtests. 신규5모듈/5테스트 실제 precommit Black/Ruff/Mypy PASS; 검사 생략 없음.
-- recovered3모듈의 타입/형식 수선, 원본 보존, 알고리즘 AST 동일 검증.
-- 기존 정책3개 및 evaluator self-test PASS; 이미 완료한 경제 replay는 재실행하지 않음.
-- PR/merge/master CI의 최종 값은 `MERGE_RECEIPT.json`에 기록한다.
+- 통합 pytest146 PASS +8 subtests(기존132 + router 경계3 + 원본 보존11). 원래 TrendRider saved 검증5개 및 관련 synthetic333개 PASS. 실제 precommit Black/Ruff/Mypy와 필수 원본 해시·타입 시그니처 guard PASS.
+- recovered2모듈의 타입/형식 수선 및 원본 보존. evaluator는 저장 검증의 원래 바이트로 복원하고 별도 `.pyi`로 타입 제공; 정확한 해시·시그니처 보존 검사를 필수 gate로 적용. 이전 `RECOVERED_TYPING_VERIFICATION.json`의 evaluator 파생본은 경과 기록이며 최종 상태는 `FINAL_SOURCE_PRESERVATION.json`이다.
+- 기존 정책3개 및 evaluator self-test PASS; 중앙 등록 경제 replay는 0회. 외부 CI 자동실행 예외는 다음 절 참조.
+- PR review의 cutoff 경계 P1을 수선하고 미사용 router를 새 UTC 경계로 재동결했다. 원본 freeze는 별도 보존. PR/merge/master CI의 최종 값은 `MERGE_RECEIPT.json`에 기록한다.
 
 다음 재개는 아래 결손을 해결하는 지점이다. 기존 완료 데이터·테스트·실험을 처음부터 반복하지 않는다.
 

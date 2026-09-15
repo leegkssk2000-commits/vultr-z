@@ -95,7 +95,8 @@ def load_frozen_spec(
                     raise ValueError("UNSUPPORTED_FROZEN_RISK")
     if data_stale_ms is not None:
         timestamp(data_stale_ms)
-    timestamp(forward_start_ts_ms)
+    if timestamp(forward_start_ts_ms) <= next(iter(cutoffs)):
+        raise ValueError("FORWARD_BOUNDARY_NOT_AFTER_FROZEN_TRAINING_CUTOFF")
     bound = {
         "hashes": expected_hashes,
         "lane_bindings": lane_bindings,

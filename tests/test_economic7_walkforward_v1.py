@@ -104,6 +104,49 @@ class WalkForwardTests(unittest.TestCase):
             "net_bps": net,
         }
 
+    def pair_row(
+        self,
+        identity: str = "PAIR",
+        *,
+        entry: int = 20,
+        exit_day: int = 21,
+    ) -> dict[str, Any]:
+        long_entry, short_entry = 100.0, 200.0
+        long_exit, short_exit = 101.0, 198.0
+        gross = 10_000 * (
+            0.5 * (long_exit / long_entry - 1)
+            + 0.5 * (short_entry - short_exit) / short_entry
+        )
+        return {
+            "trade_id": identity,
+            "strategy": "mr_v1",
+            "source": "repo:test_pair_trade",
+            "candidate_id": "FROZEN_TEST",
+            "rule_hash": RULE,
+            "code_sha": CODE,
+            "cost_authority_sha256": COST,
+            "instrument_kind": "TWO_LEG_MARKET_NEUTRAL_USDT",
+            "status": "CLOSED",
+            "side": "MARKET_NEUTRAL",
+            "long_symbol": "DOGE-USDT",
+            "short_symbol": "ETH-USDT",
+            "entry_ts_ms": BASE + entry * DAY,
+            "exit_ts_ms": BASE + exit_day * DAY,
+            "outcome_available_at_ms": BASE + exit_day * DAY,
+            "long_entry_price": long_entry,
+            "short_entry_price": short_entry,
+            "long_exit_price": long_exit,
+            "short_exit_price": short_exit,
+            "long_weight": 0.5,
+            "short_weight": 0.5,
+            "gross_bps": gross,
+            "fee_bps": 4.0,
+            "slippage_bps": 2.0,
+            "funding_bps": 0.0,
+            "pnl_weight": 1.0,
+            "net_bps": gross - 6.0,
+        }
+
     def evaluate(
         self,
         calendar: dict[str, Any],
@@ -241,6 +284,33 @@ class WalkForwardTests(unittest.TestCase):
         report = self.evaluate(self.calendar("FRESH_FORWARD"), [self.row()])
         self.assertEqual(report["fresh_closed_T"], 1)
         self.assertEqual(report["promotion_authority"], "BLOCKED")
+
+    def test_market_neutral_two_leg_trade_is_cost_checked(self) -> None:
+        report = self.evaluate(self.calendar(), [self.pair_row()])
+        self.assertEqual(report["invalid_record_count"], 0)
+        metric = report["metrics"]
+        self.assertIsNotNone(metric)
+        self.assertEqual(metric["T"], 1)
+        self.assertAlmostEqual(metric["net_bps"], 94.0)
+        self.assertAlmostEqual(metric["symbol_net_bps"]["DOGE-USDT|ETH-USDT"], 94.0)
+        self.assertEqual(metric["cost_bps_per_T"], 6.0)
+
+    def test_market_neutral_two_leg_integrity_failures_hold(self) -> None:
+        calendar = self.calendar()
+        mutations = [
+            ("gross_bps", 1.0),
+            ("long_weight", 0.7),
+            ("short_symbol", "DOGE-USDT"),
+            ("side", "LONG"),
+            ("long_exit_price", 0.0),
+        ]
+        for field, value in mutations:
+            with self.subTest(field=field):
+                row = self.pair_row()
+                row[field] = value
+                report = self.evaluate(calendar, [row])
+                self.assertEqual(report["state"], "HOLD")
+                self.assertEqual(report["invalid_record_count"], 1)
 
     def test_missing_cost_or_tampered_gross_holds_entire_result(self) -> None:
         calendar = self.calendar()

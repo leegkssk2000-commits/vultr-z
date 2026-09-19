@@ -342,3 +342,53 @@ def test_registry_receipts_must_bind_selected_saved_results(
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="REGISTRY_RECEIPT"):
         seal.seal(publication)
+
+
+@pytest.mark.parametrize("mutation", ["modified", "deleted", "unlisted"])
+def test_hook_configuration_is_required_and_sealed(publication: Path, mutation: str):
+    config = publication / ".pre-commit-config.yaml"
+    manifest_path = publication / seal.SEAL
+    manifest = json.loads(manifest_path.read_text())
+    assert ".pre-commit-config.yaml" in manifest["files"]
+    if mutation == "modified":
+        config.write_text("repos: []\n")
+    elif mutation == "deleted":
+        config.unlink()
+    else:
+        del manifest["files"][".pre-commit-config.yaml"]
+        manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="SEAL_"):
+        seal.verify(publication)
+
+
+def test_ci_uses_existing_isolated_hooks_without_skipping_gates():
+    root = Path(__file__).resolve().parents[1]
+    yaml: Any = importlib.import_module("yaml")
+    repos = yaml.safe_load((root / ".pre-commit-config.yaml").read_text())["repos"]
+    pins = {r["repo"]: str(r.get("rev")) for r in repos}
+    assert pins["https://github.com/psf/black"] == "24.8.0"
+    assert pins["https://github.com/astral-sh/ruff-pre-commit"] == "v0.6.9"
+    assert pins["https://github.com/pre-commit/mirrors-mypy"] == "v1.10.0"
+    hooks = {h["id"]: h for r in repos for h in r["hooks"]}
+    assert {"black", "ruff", "mypy", "frozen-exact25-source"} <= set(hooks)
+    assert all(
+        hooks[name].get("language") != "system" for name in ("black", "ruff", "mypy")
+    )
+    assert hooks["mypy"]["additional_dependencies"] == ["types-requests"]
+    assert hooks["mypy"]["args"] == [
+        "--ignore-missing-imports",
+        "--scripts-are-modules",
+        "--explicit-package-bases",
+    ]
+    assert (
+        hooks["frozen-exact25-source"]["entry"]
+        == "python3 scripts/verify_frozen_exact25_source_v1.py"
+    )
+    assert hooks["frozen-exact25-source"]["always_run"]
+    workflow = (root / seal.WORKFLOW).read_text()
+    assert 'pre-commit run --files "${files[@]}"' in workflow
+    assert "pre-commit==4.6.0" in workflow
+    assert "SKIP" not in workflow and "continue-on-error" not in workflow
+    assert not re.search(r"^          (black|ruff|mypy) ", workflow, re.MULTILINE)
+    for event in ("pull_request", "push"):
+        assert ".pre-commit-config.yaml" in workflow_filters(workflow, event)

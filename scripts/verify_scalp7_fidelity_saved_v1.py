@@ -21,6 +21,7 @@ ALIASES = {"HG", "RSI", "BREAK", "SRP", "SRC"}
 WORKFLOW = ".github/workflows/scalp7-source-fidelity-v1.yml"
 MANDATORY = (
     WORKFLOW,
+    ".pre-commit-config.yaml",
     "scripts/verify_scalp7_fidelity_saved_v1.py",
     "tests/test_scalp7_fidelity_seal_v1.py",
 )

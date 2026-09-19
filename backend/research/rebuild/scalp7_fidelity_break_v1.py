@@ -25,6 +25,42 @@ TIMEFRAME_MS = parent.TIMEFRAME_MS
 SOURCE_URL = "https://www.brookstradingcourse.com/price-action-trading-terms-glossary/"
 
 
+SPEC: dict[str, Any] = {
+    "identity": IDENTITY,
+    "parent": PARENT_IDENTITY,
+    "timeframe_min": TIMEFRAME_MIN,
+    "axis": "ONE_ADDITIONAL_SHALLOW_PULLBACK_STATE_PATH; parent literal signal producer and lifecycle remain frozen",
+    "source": SOURCE_URL,
+    "source_location": "bar pullback; breakout pullback; breakout test",
+    "source_case_sha256": "be2d766f8b6031e9f19ebf31b1cb56914a7bf99139a6af12d9bb6de91cc4802a",
+    "source_review_case_sha256": "52a1d383446d0f7341bd21c37ce48a03d10e58cee2999555dc3250abd225e0f1",
+    "direct": [
+        "Countertrend bar lower-low in upswing or higher-high in downswing.",
+        "Breakout pullback and undershooting breakout-test concepts.",
+    ],
+    "adaptation": [
+        "Use unchanged parent BreakArchitecture to discover actual rolling20 close-break origins and emit all original literal signals.",
+        "For each parent-discovered origin separately track one optional shallow path. A shallow signal never consumes, delays or mutates the original literal producer.",
+        "A later long bar qualifies only with low>frozen rail, low<previous low, close<previous close, and close>rail; mirror short. No tolerance or strong-close threshold.",
+        "A distinct later completed close beyond the frozen shallow pullback high/low confirms only if adverse pullback extreme has not been breached.",
+        "Close at/inside rail, >10 bars from original break, or source gap/segment change cancels. Adverse breach wins over same-bar reclaim.",
+        "Initial stop is the frozen actual shallow pullback low/high. Close-loss of original rail exits through unchanged parent lifecycle; maxhold24x15m, no new trail/target.",
+        "At most one shallow emission per origin. Preserve later literal emissions even after shallow emission. Same symbol/origin/side/signal timestamp collision keeps literal signal.",
+        "All source feature availability is propagated; no future or incomplete bars. Root owns conservative next-open execution, all costs and occupancy.",
+    ],
+    "preserved": [
+        "Parent literal origin discovery and all literal emissions.",
+        "Original rolling20 channel,10bar origin expiry and24bar hold.",
+        "Parent close-loss lifecycle; no new trailing or profit target.",
+    ],
+    "exact_author_strategy_replication": False,
+    "historical_data_status": "ALREADY_INSPECTED_DEV_DIAGNOSTIC",
+    "order": "BLOCKED",
+    "live": "BLOCKED",
+}
+SPEC_SHA256 = hashlib.sha256(json.dumps(SPEC, sort_keys=True).encode()).hexdigest()
+
+
 def _is_shallow(
     setup: parent.Setup, bar: dict[str, Any], previous: dict[str, Any]
 ) -> bool:

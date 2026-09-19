@@ -27,6 +27,48 @@ STAGE_TTL = 8
 WARMUP_BARS = 101
 
 
+SPEC: dict[str, Any] = {
+    "identity": IDENTITY,
+    "parent": PARENT_IDENTITY,
+    "timeframe_min": TIMEFRAME_MIN,
+    "axis": AXIS,
+    "source": "https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/RSI",
+    "source_location": "How this indicator works: final failure-swing bullet",
+    "source_case_sha256": SOURCE_CASE_SHA256,
+    "source_review_case_sha256": "a9bb1f6ca6345e2d46d40da97403f05f00e47c679842169d60479726592cc5ac",
+    "direct": [
+        "Bottom failure swing: RSI higher low followed by a move above the previous RSI high.",
+        "Top failure swing: RSI lower high followed by a move below the previous RSI low.",
+        "No numeric overbought/oversold threshold is stated in the guide's failure-swing rule.",
+    ],
+    "classification": "NEW_SOURCE_ADAPTATION_NOT_REPAIR_OF_A_VIOLATED_OLD_PRICE_SWEEP_SPEC",
+    "adaptation": {
+        "initialization": "After parent 101 local bars, seed current RSI. A change from rising to falling confirms a HIGH at the previous completed extreme; falling to rising confirms a LOW. No future right window.",
+        "plateau": "Equal RSI neither confirms a pivot nor counts as a break. A plateau extreme uses its most recent completed index.",
+        "pattern": "Latest three alternating completed pivots LOW,HIGH,LOW with third>first for long; HIGH,LOW,HIGH with third<first for short.",
+        "trigger": "A subsequent completed RSI strictly crosses beyond the middle pivot. The same bar that confirms the third pivot can also cross that middle pivot.",
+        "expiry": "Inherited own per-stage 8-bar expiry: clear unfinished oscillator setup if more than8 local bars since the last confirmed pivot. Pending final regime qualification expires more than8 bars after oscillator break.",
+        "regime_gate": "Preserve original final abs(EMA21-EMA55)/ATR<=1.2. As in parent, check only on a later bar after oscillator setup is complete; do not retune the threshold.",
+        "consumption": "Once oscillator break creates pending qualification, do not form new overlapping setups until it emits or expires. On emission clear pivots and seed current RSI to prevent duplicate entry from the same pattern.",
+        "gap": "Parent canonical preparation splits physical gaps and declared segments; reset every oscillator state and101bar warmup at each split.",
+        "unchanged": "Parent RSI14/ATR/EMA preparation; stop_atr0.9,target1.6R,max_hold18bars,scratch5bars atMFE<0.4R; next-open execution and occupancy delegated to root; no new30/70 filter.",
+        "risk_reference": "Keep price lo20/hi20 invalidation metadata for the parent protocol; control lifecycle does not use that metadata as an exit.",
+        "causal_timing": "Source event index is oscillator break. Economic signal index is the later completed bar passing original range gate. Both event and signal timestamps recorded; feature availability remains cumulative parent availability.",
+    },
+    "preserved": [
+        "Parent RSI14, ATR, EMA preparation and cumulative availability.",
+        "Final range gate abs(EMA21-EMA55)/ATR<=1.2 on a later completed bar.",
+        "Stop0.9ATR, target1.6R, maxhold18, scratch5 withMFE<0.4R.",
+        "Parent lifecycle and root next-open execution/occupancy.",
+    ],
+    "exact_author_strategy_replication": False,
+    "historical_data_status": "ALREADY_INSPECTED_DEV_DIAGNOSTIC",
+    "order": "BLOCKED",
+    "live": "BLOCKED",
+}
+SPEC_SHA256 = hashlib.sha256(json.dumps(SPEC, sort_keys=True).encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class Pivot:
     kind: str

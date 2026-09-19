@@ -363,28 +363,11 @@ def test_hook_configuration_is_required_and_sealed(publication: Path, mutation: 
 
 def test_ci_uses_existing_isolated_hooks_without_skipping_gates():
     root = Path(__file__).resolve().parents[1]
-    yaml: Any = importlib.import_module("yaml")
-    repos = yaml.safe_load((root / ".pre-commit-config.yaml").read_text())["repos"]
-    pins = {r["repo"]: str(r.get("rev")) for r in repos}
-    assert pins["https://github.com/psf/black"] == "24.8.0"
-    assert pins["https://github.com/astral-sh/ruff-pre-commit"] == "v0.6.9"
-    assert pins["https://github.com/pre-commit/mirrors-mypy"] == "v1.10.0"
-    hooks = {h["id"]: h for r in repos for h in r["hooks"]}
-    assert {"black", "ruff", "mypy", "frozen-exact25-source"} <= set(hooks)
-    assert all(
-        hooks[name].get("language") != "system" for name in ("black", "ruff", "mypy")
+    # Match the established hook contract without a new PyYAML dependency.
+    config = (root / ".pre-commit-config.yaml").read_bytes()
+    assert hashlib.sha256(config).hexdigest() == (
+        "692b639feb584ba22b73eecf71df3d3385a05a7fef0e1c71c0a745eecef82f53"
     )
-    assert hooks["mypy"]["additional_dependencies"] == ["types-requests"]
-    assert hooks["mypy"]["args"] == [
-        "--ignore-missing-imports",
-        "--scripts-are-modules",
-        "--explicit-package-bases",
-    ]
-    assert (
-        hooks["frozen-exact25-source"]["entry"]
-        == "python3 scripts/verify_frozen_exact25_source_v1.py"
-    )
-    assert hooks["frozen-exact25-source"]["always_run"]
     workflow = (root / seal.WORKFLOW).read_text()
     assert 'pre-commit run --files "${files[@]}"' in workflow
     assert "pre-commit==4.6.0" in workflow

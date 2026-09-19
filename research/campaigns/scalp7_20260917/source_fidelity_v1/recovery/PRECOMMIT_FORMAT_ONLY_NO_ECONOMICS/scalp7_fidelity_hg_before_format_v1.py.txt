@@ -1,0 +1,196 @@
+"""Source-informed HG qualification sequence; frozen parent execution/lifecycle.
+
+AIQ Opening Bell August 1997 p2 supplies initial ADX strength then a later
+EMA20 retracement. Crypto/30m, strict one-bar rising, separate completed stages,
+GMMA/regime/close-confirmation/next-open and incumbent exits are adaptations.
+This is not a replication of Raschke's original resting stop entry.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import math
+from typing import Any, Mapping
+
+import pandas as pd
+
+from backend.research.rebuild import scalp7_positive_lanes_v2 as parent
+
+IDENTITY = "scalp7_hg_initial_qualification_pullback_30m_fidelity_v1"
+PARENT = parent.KELTNER_PARENT
+TIMEFRAME_MIN = 30
+SPEC = {
+    "identity": IDENTITY,
+    "parent": PARENT,
+    "axis": "INITIAL_ADX_QUALIFICATION_THEN_LATER_PULLBACK_STATE",
+    "source": "https://lindaraschke.net/wp-content/uploads/2026/01/august1997.pdf",
+    "source_location": "August 1997, page 2, Holy Grail Pattern",
+    "direct": ["initial ADX14 above 30 and rising", "later EMA20 retracement"],
+    "adaptation": [
+        "rising means current ADX14 greater than previous completed ADX14",
+        "qualification and touch on distinct completed bars",
+        "unconsumed qualified setup does not reset or pause on ADX alone",
+        "no new elapsed expiry; physical gaps reset through parent segmentation",
+        "renewed episode must qualify again after inherited renewal bar",
+    ],
+    "preserved": [
+        "GMMA long bundle order and favorable EMA20/60 slope",
+        "consumed episode ADX>=30 renewal gate and ADX<25 reset",
+        "signal consumes episode before regime and entry admission",
+        "completed close reclaim; next-open execution",
+        "parent regimes, ATR/cost gate, initial stop and full lifecycle",
+    ],
+    "exact_author_strategy_replication": False,
+    "historical_data_status": "ALREADY_INSPECTED_DEV_DIAGNOSTIC",
+    "order": "BLOCKED",
+    "live": "BLOCKED",
+}
+SPEC_SHA256 = hashlib.sha256(json.dumps(SPEC, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass
+class QualificationState(parent.HolyGrailState):
+    qualified: bool = False
+    qualified_at_ms: int = 0
+
+    def event_reset(self) -> None:
+        super().event_reset()
+        self.qualified = False
+        self.qualified_at_ms = 0
+
+
+def event(
+    state: QualificationState,
+    row: Mapping[str, Any],
+    previous: Mapping[str, Any],
+) -> tuple[int, float] | None:
+    values = [float(row[f"g{n}"]) for n in parent.LONG_GMMA]
+    long = all(a > z for a, z in zip(values, values[1:])) and row["g60"] > previous["g60"]
+    short = all(a < z for a, z in zip(values, values[1:])) and row["g60"] < previous["g60"]
+    side = 1 if long else -1 if short else 0
+    slope = side != 0 and side * (row["g20"] - previous["g20"]) > 0
+
+    # The separately specified consumed/re-entry component stays incumbent.
+    if state.episode_traded:
+        if not (slope and row["adx14"] >= 30):
+            if row["adx14"] < 25 or side == 0:
+                state.reset()
+            return None
+        if state.side == side:
+            renewed = row["high"] > row["hi20"] if side == 1 else row["low"] < row["lo20"]
+            if renewed:
+                state.episode_traded = False
+                state.event_reset()
+            return None
+        state.reset()
+
+    if side == 0:
+        state.reset()
+        return None
+    # Preserve parent ordering: unfavorable slope pauses before a side flip.
+    if not slope:
+        return None
+    if state.side != side:
+        state.reset()
+        state.side = side
+    if not state.qualified:
+        if row["adx14"] > 30 and row["adx14"] > previous["adx14"]:
+            state.qualified = True
+            state.qualified_at_ms = int(row.get("available_ts_ms", 0))
+        return None
+    if state.stage == 0:
+        touched = row["low"] <= row["g20"] if side == 1 else row["high"] >= row["g20"]
+        if touched:
+            state.stage = 1
+            state.pull_low, state.pull_high = float(row["low"]), float(row["high"])
+        return None
+    state.pull_low = min(state.pull_low, float(row["low"]))
+    state.pull_high = max(state.pull_high, float(row["high"]))
+    turn = (
+        row["close"] > previous["high"] and row["close"] > row["g20"]
+        if side == 1
+        else row["close"] < previous["low"] and row["close"] < row["g20"]
+    )
+    if turn:
+        state.episode_traded = True
+        return side, state.pull_low if side == 1 else state.pull_high
+    return None
+
+
+def generate_signals(
+    frames: dict[str, pd.DataFrame], costs: Mapping[str, float], identity: str = IDENTITY
+) -> list[dict[str, Any]]:
+    if identity != IDENTITY:
+        raise ValueError("HG_FIDELITY_IDENTITY_MISMATCH")
+    output: list[dict[str, Any]] = []
+    for symbol, frame in sorted(frames.items()):
+        cost = float(costs.get(symbol, float("nan")))
+        if not math.isfinite(cost) or cost <= 0:
+            continue
+        for x in parent.enriched_segments(frame):
+            rows = x.to_dict("records")
+            state = QualificationState()
+            for i in range(1, len(rows)):
+                row, previous = rows[i], rows[i - 1]
+                hg = event(state, row, previous) if i >= 121 else None
+                regime, regime_available = parent._regime(row, None)
+                if not hg or regime not in {"PANIC_DISPERSION", "TREND_DISPERSED"}:
+                    continue
+                side, reference = hg
+                available = max(int(row["feature_available_ts_ms"]), regime_available)
+                output.append(
+                    {
+                        "symbol": symbol,
+                        "timeframe_min": TIMEFRAME_MIN,
+                        "signal_open_ts_ms": row["open_ts_ms"],
+                        "signal_ts_ms": available,
+                        "segment_id": row["segment_id"],
+                        "take_profit_r": None,
+                        "identity": IDENTITY,
+                        "lane": "keltner_holygrail",
+                        "side": side,
+                        "stop_price": reference - side * 0.10 * row["atr"],
+                        "invalidation_price": reference,
+                        "max_hold_bars": 25,
+                        "exit_policy": "KELTNER_HG_FEE_BE_PARTIAL_RUNNER",
+                        "partial_take_profit_r": 2.0,
+                        "partial_fraction": 0.10,
+                        "meta": {
+                            "spec_sha256": SPEC_SHA256,
+                            "regime": regime,
+                            "feature_available_ts_ms": available,
+                            "frozen_cost_bps": cost,
+                            "historical_parity_claim": False,
+                            "atr_price": row["atr"],
+                            "entry_cost_gate": {"atr_price": row["atr"], "min_ratio": 4.5},
+                            "fallback_stop_atr_mult": 1.2,
+                            "be_arm_r": 1.0,
+                            "qualified_at_ms": state.qualified_at_ms,
+                            "event_trace": [
+                                "INITIAL_ADX_ABOVE30_RISING",
+                                "LATER_20EMA_PULLBACK",
+                                "CLOSE_TURN_TRIGGER",
+                            ],
+                        },
+                    }
+                )
+    return sorted(output, key=lambda r: (r["signal_ts_ms"], r["symbol"], r["identity"]))
+
+
+def _parent_signal(signal: Mapping[str, Any]) -> dict[str, Any]:
+    if signal["identity"] != IDENTITY:
+        raise ValueError("HG_FIDELITY_IDENTITY_MISMATCH")
+    return {**signal, "identity": PARENT}
+
+
+def entry_update(signal: Mapping[str, Any], entry_price: float) -> dict[str, Any]:
+    return parent.entry_update(_parent_signal(signal), entry_price)
+
+
+def exit_update(
+    position: dict[str, Any], bar: dict[str, Any], history: pd.DataFrame
+) -> dict[str, Any]:
+    bound = {**position, "signal": _parent_signal(position["signal"])}
+    return parent.exit_update(bound, bar, history)

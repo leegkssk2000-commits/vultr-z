@@ -1,0 +1,233 @@
+{
+  "candidate_axis": "INITIAL_QUALIFICATION_THEN_PULLBACK",
+  "expected_cases": [
+    {
+      "expected": "Qualify initial trend; do not enter without later pullback and trigger.",
+      "id": "HG_SRC_01",
+      "input": "Flat state, ADX previous 31 current 32, trend direction available, price still away from EMA20",
+      "kills_mutation": "remove initial qualification stage",
+      "type": "synthetic_logic_only"
+    },
+    {
+      "expected": "Do not initially qualify despite ADX above 30.",
+      "id": "HG_SRC_02",
+      "input": "Flat state, ADX previous 32 current 31",
+      "kills_mutation": "drop rising predicate",
+      "type": "synthetic_logic_only"
+    },
+    {
+      "expected": "Do not initially qualify at exactly 30.",
+      "id": "HG_SRC_03",
+      "input": "Flat state, ADX previous 29 current 30",
+      "kills_mutation": "replace >30 by >=30",
+      "type": "synthetic_logic_only"
+    },
+    {
+      "expected": "Declining ADX by itself does not invalidate the qualified pullback sequence.",
+      "id": "HG_SRC_04",
+      "input": "Previously qualified at 32 rising; later EMA20 touch with ADX31 descending; later valid preserved reclaim",
+      "kills_mutation": "require ADX rising throughout pullback",
+      "type": "synthetic_logic_only"
+    },
+    {
+      "expected": "Child may progress under declared no-later-floor adaptation; source supplies no exact later minimum.",
+      "id": "HG_SRC_05",
+      "input": "Previously qualified above30 rising; later touch/reclaim at ADX29 with other preserved conditions valid",
+      "kills_mutation": "retain 30 gate after qualification",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Child must follow frozen no-later-floor interpretation, with no claim source mandates or validates this weak-trend trade.",
+      "id": "HG_SRC_06",
+      "input": "Previously qualified above30 rising; later ADX24 while other preserved state conditions remain valid",
+      "kills_mutation": "retain 25 reset after qualification",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Earlier touch cannot retroactively become the later qualified retracement.",
+      "id": "HG_SRC_07",
+      "input": "EMA20 touch occurs before any initial qualification; later ADX becomes >30 rising",
+      "kills_mutation": "reverse qualifier and touch order",
+      "type": "synthetic_logic_only"
+    },
+    {
+      "expected": "Do not claim proof of prior qualification then subsequent touch within that bar; use frozen separate-bar interpretation.",
+      "id": "HG_SRC_08",
+      "input": "Initial qualifier and EMA20 touch occur within same completed bar; OHLC intrabar order unavailable",
+      "kills_mutation": "allow qualification/touch collapse",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Child must remain rejected on unchanged independent admission grounds.",
+      "id": "HG_SRC_09",
+      "input": "Valid sequence but preserved context/cost/GMMA admission rejects",
+      "kills_mutation": "bypass existing admission",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Preserve inherited episode-consumption boundary; no extra re-entry axis.",
+      "id": "HG_SRC_10",
+      "input": "Qualified episode consumed; later touch without permitted parent re-arm",
+      "kills_mutation": "silently reset consumed episode",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Reset episode; no invented continuity across source gap.",
+      "id": "HG_SRC_11",
+      "input": "Data segment changes between qualification and pullback",
+      "kills_mutation": "carry qualification across gap",
+      "type": "synthetic_logic_only_adaptation"
+    },
+    {
+      "expected": "Entry decision unchanged; qualification uses only completed present/past values.",
+      "id": "HG_SRC_12",
+      "input": "Signal bar completes, later bars changed",
+      "kills_mutation": "future qualification or indicator lookup",
+      "type": "synthetic_logic_only_adaptation"
+    }
+  ],
+  "implementation_review": {
+    "accepted_candidate_spec": {
+      "classification": "One coupled entry-qualification state-machine adaptation; no changes to entry execution, exits, cost, market context, or consumed-episode re-entry specification.",
+      "consumed_episode": "Retain parent strong gate ADX>=30 and positive directional EMA20 slope; ADX<25/side0 resets; 20-bar renewal consumes bar and next episode must freshly qualify. No sub30 renewal added.",
+      "gate_order": "A nonfavorable EMA20 slope pauses before direction-flip reset, matching parent. Side0 resets; segment boundaries instantiate new state.",
+      "new_or_unconsumed_episode": "Favorable inherited direction/slope; one completed ADX>30 and ADX>previous bar arms qualification only. A subsequent bar may touch EMA20; later bar may satisfy inherited close trigger. Once qualified, no later ADX floor or ADX-only reset.",
+      "status": "IMPLEMENTED_AND_LOGIC_TESTED"
+    },
+    "chat_audit_verdicts": [
+      {
+        "claim": "Initial qualification and later pullback ADX are conflated in current parent",
+        "verdict": "CONFIRMED_DIFFERENCE_FROM_SOURCE_SEQUENCE"
+      },
+      {
+        "claim": "This omission was introduced by the new 30m UTC adapter",
+        "verdict": "REFUTED_BY_V6_ANCESTRY"
+      },
+      {
+        "claim": "The source explicitly licenses an unlimited low-ADX qualified episode",
+        "verdict": "NOT_ESTABLISHED_NO_MINIMUM_OR_EXPIRY_IS_SPECIFIED"
+      },
+      {
+        "claim": "The existing positive parent's economics are invalid because it is not literal HG",
+        "verdict": "REFUTED_RESULT_APPLIES_TO_ITS_DECLARED_ADAPTATION"
+      },
+      {
+        "claim": "EMA-loss or fixed no-progress scratch follows numerically from author's ETN example",
+        "verdict": "REFUTED_QUALITATIVE_EXAMPLE_DOES_NOT_DEFINE_INTRADAY_BAR_COUNT"
+      }
+    ],
+    "child_review": {
+      "path": "backend/research/rebuild/scalp7_fidelity_hg_v1.py",
+      "sha256": "35978f51e919dcd07da5ba646a597421eb0cc70e8866ee9438dfdedbd0a768ce",
+      "identity": "scalp7_hg_initial_qualification_pullback_30m_fidelity_v1",
+      "reviewed_at_utc": "2026-09-17T07:05:00.938Z",
+      "verdict": "APPROVED_FOR_SAME_WORK_ECONOMIC_COMPARISON_NOT_PROFITABILITY_PASS",
+      "findings": "Implementation agrees with the narrowed preregistered source-case interpretation; consumed-state ADX/renewal remains incumbent; unfavorable slope pauses before direction flip; identity adapter delegates entry and complete lifecycle to frozen parent.",
+      "test_path": "tests/test_scalp7_fidelity_hg_v1.py",
+      "test_sha256": "ea3f10e241a5e371bc9666083088a987bf1dac8f75a4aaca018b4de4dd9d1c22",
+      "test_result": "23 passed; Black, Ruff, Mypy passed; process 676282 exit 0",
+      "economic_runs_performed_by_reviewer": 0,
+      "mutations": {
+        "performed": 4,
+        "killed": 4,
+        "survived": 0,
+        "axes": [
+          "drop initial rising",
+          "replace strict >30 with >=30",
+          "reinsert later-stage 30 floor",
+          "collapse qualifier and touch into same bar"
+        ]
+      },
+      "case_test_mapping": {
+        "HG_SRC_01/07/08": "test_src01_07_08_qualifier_cannot_retroactively_count_touch",
+        "HG_SRC_02/03": "test_src02_03_initial_requires_above30_and_rising",
+        "HG_SRC_04/05/06": "test_src04_05_06_qualified_pullback_may_have_declining_adx",
+        "HG_SRC_09": "test_src09_event_consumed_before_regime_and_cost_admission",
+        "HG_SRC_10": "test_src10_consumed_episode_reentry_gates_and_renewal_bar_preserved",
+        "HG_SRC_11": "test_src11_generator_resets_each_real_gap_segment",
+        "HG_SRC_12": "test_src12_future_rows_do_not_change_signal"
+      },
+      "validation_limits": [
+        "Artificial rows are logical cases; zero author-trade or economic-sample credit.",
+        "Future suffix test isolates child event path with prepared enriched input; inherited parent indicator causality is covered by existing parent tests, not re-estimated here.",
+        "Raw source PDF bytes unavailable through urllib (406); no fabricated raw hash or original chart prices.",
+        "New runner's invocation, frozen saved-parent comparability, actual economic result, and occupancy attribution remain root-owned and not yet reviewed."
+      ]
+    },
+    "lineage": [
+      {
+        "finding": "The all-stage >=30 / <25 reset and absent rising qualifier already existed; this is not newly dropped during UTC rebuild. Earlier cost predicate accessed next bar open, whereas UTC parent moves admission to actual entry.",
+        "function": "keltner_signal",
+        "path": "backend/research/rebuild/a1_benchmark_web_gmma_holygrail_v6.py",
+        "sha256": "e2eb68a983fafd46f4329be550c4fafc99613743b6aa3390c5d5326dfd754875"
+      },
+      {
+        "finding": "Adds own consumed-episode renewal after fresh 20-bar extreme with strong ADX. Preserve this separately specified re-entry component.",
+        "path": "backend/research/rebuild/a1_benchmark_web_holygrail_rearm_v9.py",
+        "sha256": "82ec1cdc22d581d25263398cd5cc075496891af7a23812730e47659bf7cfcce7"
+      },
+      {
+        "finding": "Fee BE lock, ATR/cost gate, partial/runner and scratch geometry are own economic design, not supplied by the four source rules.",
+        "path": "backend/research/rebuild/a1_keltner_holygrail_streak_guard_v11.py",
+        "sha256": "9a799ac27a623d569abcde46923e44954e73127172556212d1178885768a4de4"
+      }
+    ],
+    "parent": {
+      "call_path": "scalp7_campaign_v2.run -> _signals -> imported scalp7_positive_lanes_v2.generate_signals -> enriched_segments/_hg_event -> common scalp7_execution_v2.replay with positive.entry_update and positive.exit_update",
+      "entry_decision": "ADX>=30 at every active step; no ADX rise qualifier; 25<=ADX<30 pauses; ADX<25 resets all; GMMA long bundle and EMA20 slope own filters; close beyond previous candle extreme plus EMA20 generates event",
+      "episode_ownership": "The event is consumed before regime filtering and next-open cost admission, so blocked opportunities can consume a cycle. This is current parent's explicit path, retained rather than repaired in this candidate.",
+      "functions": [
+        "_enrich_segment",
+        "_hg_event",
+        "generate_signals",
+        "entry_admission",
+        "entry_update",
+        "exit_update"
+      ],
+      "identity": "scalp7_keltner_hg_parent_utc30m_v2",
+      "path": "backend/research/rebuild/scalp7_positive_lanes_v2.py",
+      "scope_status": "Frozen UTC adapter explicitly sets historical_parity_claim=false; it does not establish literal author-rule reproduction.",
+      "sha256": "b0919c9e3542d6d2e14ab8f545179c7bfc43d661379bc1f6d0714a6603ea9aa2"
+    }
+  },
+  "independence": {
+    "implementation_review_status": "CHILD_LOGIC_REVIEW_APPROVED_FOR_ROOT_ECONOMIC_FREEZE",
+    "source_and_expected_cases_before_implementation_read": true,
+    "source_first_recorded_at": "2026-09-17T06:57:00.410Z"
+  },
+  "reviewer": "independent source-review subagent /root/fidelity_hg_source_reviewer; not an external human",
+  "schema": "SCALP7_HG_SOURCE_REVIEW_V1",
+  "scope_key": "SCALP7_AND_MATERIAL20_SOURCE_FIDELITY_REPAIR_AFTER_PR1339_V1",
+  "scope_limits": [
+    "Thirty-minute crypto is MARKET_TF_ADAPTATION.",
+    "One-bar positive ADX slope operationalizes qualitative rising; source does not define slope lookback.",
+    "No later ADX minimum is stated; removing later 30/25 gates is an explicit state-machine interpretation, not evidence that indefinitely weak ADX is safe.",
+    "Existing GMMA/context/cost gates, close confirmation, next-open execution, episode ownership, and lifecycle remain own design; no original stop-entry fidelity claim.",
+    "No economics or author trade reproduction from artificial cases."
+  ],
+  "source": {
+    "access": "web primary PDF text + PDF screenshot calls; chart images actually inspected via primary PDF embedded images",
+    "author": "Linda Bradford Raschke interviewed by David Vomund",
+    "brief_rules": "Initial ADX14 exceeds 30 and rises. A later EMA20 retracement often accompanies declining ADX. Touch prompts a stop above previous bar high; protect newly formed swing low and trail. Sell rules reverse.",
+    "location": "printed p2 Holy Grail Pattern; p3 Figures 1 and 2; p4 discussion",
+    "original_market_timeframe": "Daily equity examples; the publication does not validate 30m crypto results",
+    "publication": "AIQ Opening Bell Monthly, volume 6 issue 8, August 1997",
+    "qualitative_examples": [
+      {
+        "expected": "EMA20 retracement followed by upward continuation",
+        "id": "AUTHOR_CMZ_19970623_24",
+        "location": "p3 Figure 1 and p4 discussion",
+        "observed": "Daily CMZ chart visually confirms pullback/rebound with ADX turning down; no chart price or exact bar indicator value transcribed."
+      },
+      {
+        "expected": "Qualified pullback can stagnate; setup does not guarantee continuation",
+        "id": "AUTHOR_ETN_19970701_08",
+        "location": "p3 Figure 2 and p4 discussion",
+        "observed": "ETN chart shows prior thrust then sideways candles; discussion treats failure to progress as reason to leave, without a fixed intraday expiry."
+      }
+    ],
+    "raw_download_status": "HTTP_406_FROM_PYTHON_URLLIB; primary text and embedded images were accessible through web and document reader; no raw-byte hash claimed",
+    "raw_pdf_sha256": null,
+    "url": "https://lindaraschke.net/wp-content/uploads/2026/01/august1997.pdf"
+  }
+}

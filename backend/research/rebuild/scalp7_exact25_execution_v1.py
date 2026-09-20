@@ -133,6 +133,8 @@ class DetailExecutionAdapter:
             raise ValueError("RETROACTIVE_CANCEL")
         if self.state == "UNRESOLVED":
             raise ValueError("UNRESOLVED_OWNERSHIP_RETAINED")
+        if self.order_state not in {"PENDING", "PARTIAL"} or self.remaining <= 0:
+            raise ValueError("NO_CANCELLABLE_ORDER_QUANTITY")
         self.order_state = "CANCELLED"
         self.last_available = stamp
         self.state = "ACTIVE" if self.position is not None else "CANCELLED"
@@ -151,6 +153,12 @@ class DetailExecutionAdapter:
         known = _timestamp(row.get("available_ts_ms"), "fill_available_ts_ms")
         if known < stamp or known < self.last_available:
             raise ValueError("FILL_AVAILABILITY_NOT_CAUSAL")
+        if (
+            self.fill_model == RECEIPT_ONLY
+            and self.details
+            and stamp < self.details[-1]["close_ts_ms"]
+        ):
+            raise ValueError("LATE_OBSERVED_FILL_REQUIRES_DETAIL_REPLAY")
         if self.ledger and stamp < self.ledger[-1]["ts_ms"]:
             raise ValueError("FILL_TIME_NOT_CHRONOLOGICAL")
         if row.get("symbol") != self.order["symbol"]:
@@ -372,6 +380,11 @@ class DetailExecutionAdapter:
                     return self._unresolved("ENTRY_TIME_INTERVAL_OVERLAPS_EXPIRY")
                 self._model_fill("OPEN", witness["candidate_price"], interval, known)
         if self.position is not None:
+            if (
+                self.fill_model == RECEIPT_ONLY
+                and closed <= self.position["entry_ts_ms"]
+            ):
+                return self._event("DETAIL_BEFORE_OBSERVED_POSITION_ENTRY")
             side = self.order["side"]
             touched = bar["low"] <= self.stop if side == 1 else bar["high"] >= self.stop
             if touched:

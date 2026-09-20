@@ -4,13 +4,13 @@
   "created_at_utc": "2026-09-20T17:24:20.313Z",
   "reviewer": "g425_preflight_review",
   "independence": "Reviewer did not author execution/reference/structure modules or their tests. Own numeric helper patch excluded from this review.",
-  "state": "PASS_DECLARED_PARTIAL_CONTRACTS_AFTER_FOUR_REPAIRS",
+  "state": "PASS_DECLARED_PARTIAL_CONTRACTS_AFTER_PR1343_ROUND2",
   "remaining_blocking_findings": 0,
   "reviewed_files_sha256": {
-    "backend/research/rebuild/scalp7_exact25_execution_v1.py": "730854fd3d1c2794a89d84031772a79a4643caaa6248581ac0990b8c8a0be85a",
+    "backend/research/rebuild/scalp7_exact25_execution_v1.py": "e1c36218e9450218d14f57cfe087cba67093b36cef2ede68e30c28a011176dd0",
     "backend/research/rebuild/scalp7_exact25_reference_v1.py": "2becff8f57c25ca724a5d1bbabe352c45950d89d3996c70bb03cc61f951b3974",
     "backend/research/rebuild/scalp7_exact25_structure_v1.py": "bd55ba07eb92d7ee47ed573738b3be470b2d2b43be29ab1c531531cc0662c7b6",
-    "tests/test_scalp7_exact25_execution_v1.py": "e332a0a356fe66a8887640ea57c04dfffb6f6e8fa1b663ab2aa98f8a25039fa2",
+    "tests/test_scalp7_exact25_execution_v1.py": "49b605d1bc44ce4bb6df703d6a894a376e5720f519763ffda601451f03764357",
     "tests/test_scalp7_exact25_reference_v1.py": "ebcf32bdf774fae100a4d36fab9eb43a803ee9692576049401f6700f42cf9640",
     "tests/test_scalp7_exact25_structure_v1.py": "1fc7d456407e5653feaf629de8c4c15edf530cf3180a033d21177c9c1d58f44b"
   },
@@ -60,6 +60,32 @@
       "tests": [
         "test_impossible_receipt_clock_rejected_but_delayed_retrospective_receipt_allowed",
         "test_explicit_wrong_ledger_units_rejected"
+      ],
+      "state": "RESOLVED"
+    },
+    {
+      "id": "E05",
+      "priority": "P2",
+      "original": "Observed receipt event time older than already consumed detail could install or resize exposure without revisiting earlier stop/MAE conditions. Related boundary: a fully pre-entry detail ending exactly at known receipt entry could be misclassified as a stop.",
+      "origin": "PR1343 automated review, independently confirmed by source review; adjacent equality case found by independent reviewer.",
+      "resolution": "RECEIPT_ONLY fill stamp before consumed detail.close rejects before any state mutation. Boundary equality is allowed for next interval. RECEIPT_ONLY detail ending at/before entry skips pre-entry stop/MFE; MODEL internal same-bar fills are unchanged.",
+      "tests": [
+        "test_late_observed_open_cannot_skip_consumed_stop_crossing",
+        "test_late_observed_partial_fill_cannot_rewrite_consumed_exposure",
+        "test_observed_fill_at_consumed_detail_close_is_valid_next_interval",
+        "test_prior_detail_ending_at_known_observed_entry_cannot_stop_position"
+      ],
+      "state": "RESOLVED"
+    },
+    {
+      "id": "E06",
+      "priority": "P2",
+      "original": "cancel() could change filled/closed/cancelled/expired order or episode classification, including changing CLOSED to CANCELLED.",
+      "origin": "PR1343 automated review, independently confirmed by source review.",
+      "resolution": "Cancellation requires PENDING/PARTIAL order state and strictly positive remaining order quantity before any state change. Partial residual cancellation still preserves held position, ledger and protective stop.",
+      "tests": [
+        "test_cancel_cannot_reopen_or_relabel_terminal_order",
+        "test_partial_cancel_remains_allowed_preserving_position_and_protective_stop"
       ],
       "state": "RESOLVED"
     }
@@ -130,5 +156,77 @@
     "findings_still_resolved": true,
     "additional_test_run": false,
     "reason_no_repeat": "Root final all-Scalp7 suite is running; this recheck changes receipt only."
+  },
+  "review_rounds": [
+    {
+      "round": 1,
+      "state": "PASS_DECLARED_PARTIAL_CONTRACTS_AFTER_FOUR_REPAIRS",
+      "findings": [
+        "E01",
+        "E02",
+        "E03",
+        "E04"
+      ],
+      "reviewed_files_sha256": {
+        "backend/research/rebuild/scalp7_exact25_execution_v1.py": "730854fd3d1c2794a89d84031772a79a4643caaa6248581ac0990b8c8a0be85a",
+        "backend/research/rebuild/scalp7_exact25_reference_v1.py": "2becff8f57c25ca724a5d1bbabe352c45950d89d3996c70bb03cc61f951b3974",
+        "backend/research/rebuild/scalp7_exact25_structure_v1.py": "bd55ba07eb92d7ee47ed573738b3be470b2d2b43be29ab1c531531cc0662c7b6",
+        "tests/test_scalp7_exact25_execution_v1.py": "e332a0a356fe66a8887640ea57c04dfffb6f6e8fa1b663ab2aa98f8a25039fa2",
+        "tests/test_scalp7_exact25_reference_v1.py": "ebcf32bdf774fae100a4d36fab9eb43a803ee9692576049401f6700f42cf9640",
+        "tests/test_scalp7_exact25_structure_v1.py": "1fc7d456407e5653feaf629de8c4c15edf530cf3180a033d21177c9c1d58f44b"
+      },
+      "validation": {
+        "command": "/home/z/z/.venv/bin/python -m pytest -q tests/test_scalp7_exact25_execution_v1.py tests/test_scalp7_exact25_reference_v1.py tests/test_scalp7_exact25_structure_v1.py",
+        "passed": 141,
+        "execution_tests": 55,
+        "reference_tests": 38,
+        "structure_tests": 48,
+        "elapsed_seconds": 4.05,
+        "executed_by_independent_reviewer": true,
+        "data": "HAND_CONSTRUCTED_SYNTHETIC_FIXTURES_ONLY",
+        "process_pid": 57687
+      },
+      "receipt_sha256_before_round2": "7ad493b70597f0f56b9ff985057b2219b5813ed3738f0a91bc6a213c24374075",
+      "format_recheck_preserved": true
+    },
+    {
+      "round": 2,
+      "at_utc": "2026-09-20T17:50:03.609367+00:00",
+      "trigger_pr": 1343,
+      "reviewed_base_head": "8e41c414d5327d7154727091463fb27db98c1adb",
+      "method": "Independent review of exact source diff (13 insertions) and nine appended synthetic regressions; no source edits by reviewer.",
+      "findings": [
+        "E05",
+        "E06"
+      ],
+      "previous_four_fixes_preserved": true,
+      "reviewed_files_sha256": {
+        "backend/research/rebuild/scalp7_exact25_execution_v1.py": "e1c36218e9450218d14f57cfe087cba67093b36cef2ede68e30c28a011176dd0",
+        "tests/test_scalp7_exact25_execution_v1.py": "49b605d1bc44ce4bb6df703d6a894a376e5720f519763ffda601451f03764357"
+      },
+      "validation": {
+        "command": "/home/z/z/.venv/bin/python -m pytest -q tests/test_scalp7_exact25_execution_v1.py -k 'late_observed or consumed_detail or prior_detail_ending or cancel_cannot or partial_cancel_remains'",
+        "passed": 9,
+        "deselected": 55,
+        "elapsed_seconds": 0.27,
+        "process_pid": 102622,
+        "executed_by_independent_reviewer": true,
+        "data": "HAND_CONSTRUCTED_SYNTHETIC_FIXTURES_ONLY"
+      },
+      "author_additional_validation": "Author reports 64 execution +30 pipeline =94 PASS and normal hooks PASS; root performs final validation/seal refresh.",
+      "retrospective_account_valuation": "Unchanged. Delayed receipts may be valid retrospective event-time valuation inputs; they cannot rewrite already-consumed stateful execution detail without explicit replay.",
+      "new_full_executions": 0,
+      "real_data_loaded": false,
+      "market_signal_probes": 0
+    }
+  ],
+  "latest_validation": {
+    "command": "/home/z/z/.venv/bin/python -m pytest -q tests/test_scalp7_exact25_execution_v1.py -k 'late_observed or consumed_detail or prior_detail_ending or cancel_cannot or partial_cancel_remains'",
+    "passed": 9,
+    "deselected": 55,
+    "elapsed_seconds": 0.27,
+    "process_pid": 102622,
+    "executed_by_independent_reviewer": true,
+    "data": "HAND_CONSTRUCTED_SYNTHETIC_FIXTURES_ONLY"
   }
 }

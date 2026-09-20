@@ -36,6 +36,8 @@ PR1341 예산은4/4 COMPLETED이고 이번 scope는 승인 원장에 없다. 관
 
 ## 실제 검증
 
-전체 Scalp7 인공·회귀시험 **1335 PASS**(PR1342의1001개 + 이번334개), 정상 Black/Ruff/isolated Mypy/원자료 보호 hook PASS, canonical frontend validation PASS. 기존 저장검증7개도 모두 PASS이며 경제 재실행은0이다. 실제 명령·로그 해시는 `VALIDATION.json`에 저장했다.
+전체 Scalp7 인공·회귀시험 **1344 PASS**(PR1342의1001개 + 이번343개), 정상 Black/Ruff/isolated Mypy/원자료 보호 hook PASS, canonical frontend validation PASS. 기존 저장검증7개도 모두 PASS이며 경제 재실행은0이다. 실제 명령·로그 해시는 `VALIDATION.json`에 저장했다.
 
 25개 dispatcher가 등록됐고, **BBIII 한 경로**만 원시 인공봉→확인 intent→모델 체결→계좌평가까지 검증했다. Alpha는 가짜 OHLC 없이 component/accounting 호출을 검증했다. 25개 전체의 독립 매매 E2E나 경제성 통과로 확대하지 않았다.
+
+자동 PR리뷰 P2 두 건(늦은 observed fill·체결 후 cancel)을 수선하고 관련 시각 경계 회귀9개를 추가했다. 최초 커밋/79파일 seal 기록은 git에 보존했고 수정 내역은 `audits/PR1343_REVIEW_FIXES.json`에 있다.

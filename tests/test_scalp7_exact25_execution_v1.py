@@ -579,3 +579,74 @@ def test_impossible_receipt_clock_rejected_but_delayed_retrospective_receipt_all
 def test_explicit_wrong_ledger_units_rejected(unit):
     with pytest.raises(ValueError, match="LEDGER_UNIT_MISMATCH"):
         value([receipt(**unit)], [mark(0)])
+
+
+def test_late_observed_open_cannot_skip_consumed_stop_crossing():
+    a = observed()
+    a.process_detail_bar(bar(low=80))
+    before = copy.deepcopy(a.__dict__)
+    with pytest.raises(ValueError, match="LATE_OBSERVED_FILL_REQUIRES_DETAIL_REPLAY"):
+        a.record_fill(receipt(ts_ms=0, available_ts_ms=60000, qty_base=2))
+    assert a.__dict__ == before
+    assert a.position is None and not a.ledger
+
+
+def test_late_observed_partial_fill_cannot_rewrite_consumed_exposure():
+    a = observed()
+    a.record_fill(receipt(qty_base=1))
+    a.process_detail_bar(bar())
+    before = copy.deepcopy(a.__dict__)
+    with pytest.raises(ValueError, match="LATE_OBSERVED_FILL_REQUIRES_DETAIL_REPLAY"):
+        a.record_fill(
+            receipt("late", ts_ms=30000, available_ts_ms=60000, qty_base=".5")
+        )
+    assert a.__dict__ == before
+
+
+def test_observed_fill_at_consumed_detail_close_is_valid_next_interval():
+    a = observed()
+    a.process_detail_bar(bar(low=80))
+    a.record_fill(receipt(ts_ms=60000, available_ts_ms=60000, qty_base=2))
+    a.process_detail_bar(bar(60000))
+    assert a.state == "ACTIVE" and a.position["entry_ts_ms"] == 60000
+    assert len(a.ledger) == 1
+
+
+def test_prior_detail_ending_at_known_observed_entry_cannot_stop_position():
+    a = observed()
+    a.record_fill(receipt(ts_ms=60000, available_ts_ms=60000, qty_base=2))
+    assert (
+        a.process_detail_bar(bar(low=80))["status"]
+        == "DETAIL_BEFORE_OBSERVED_POSITION_ENTRY"
+    )
+    assert a.state == "ACTIVE" and a.position["mae_R"] == 0
+    a.process_detail_bar(bar(60000))
+    assert a.state == "ACTIVE" and len(a.ledger) == 1
+
+
+@pytest.mark.parametrize("state", ["FILLED", "CLOSED", "CANCELLED", "EXPIRED"])
+def test_cancel_cannot_reopen_or_relabel_terminal_order(state):
+    a = observed(order_kind="LIMIT", trigger_price=100, expires_ts_ms=60000)
+    if state in {"FILLED", "CLOSED"}:
+        a.record_fill(receipt(qty_base=2))
+        if state == "CLOSED":
+            a.record_fill(receipt("close", effect="CLOSE", qty_base=2, fill_price=110))
+    elif state == "CANCELLED":
+        a.cancel(0)
+    else:
+        a.process_detail_bar(bar())
+        a.process_detail_bar(bar(60000))
+    before = copy.deepcopy(a.__dict__)
+    with pytest.raises(ValueError, match="NO_CANCELLABLE_ORDER_QUANTITY"):
+        a.cancel(a.last_available)
+    assert a.__dict__ == before
+
+
+def test_partial_cancel_remains_allowed_preserving_position_and_protective_stop():
+    a = observed(order_kind="LIMIT", trigger_price=100)
+    a.record_fill(receipt(qty_base=".5"))
+    held, ledger, stop = copy.deepcopy(a.position), copy.deepcopy(a.ledger), a.stop
+    event = a.cancel(0)
+    assert event["cancelled_remaining_qty_base"] == "1.5"
+    assert a.order_state == "CANCELLED" and a.state == "ACTIVE"
+    assert a.position == held and a.ledger == ledger and a.stop == stop

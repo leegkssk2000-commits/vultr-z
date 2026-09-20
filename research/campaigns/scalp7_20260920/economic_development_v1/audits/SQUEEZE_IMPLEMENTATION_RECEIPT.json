@@ -1,0 +1,114 @@
+{
+  "schema": "scalp7.economic_development.squeeze_implementation.v1",
+  "scope_key": "G4_SCALP7_MATERIAL20_ECONOMIC_DEVELOPMENT_AFTER_PR1340_V1",
+  "author": "Work subagent g4_squeeze_implementation",
+  "reviewed_base_sha": "dcfd0e245ff5bc4b8ee3093bacd2fb584bdb4a38",
+  "selected_identities": [
+    "scalp7_squeeze_30m_context_15m_exec_control_v1",
+    "scalp7_squeeze_30m_context_15m_high2_replacement_v1"
+  ],
+  "implementation": {
+    "path": "backend/research/rebuild/scalp7_economic_squeeze_v1.py",
+    "sha256": "75fba537da9b0a8d2b603ea30cb05647814fa96965e2b0e8f28b636e58776505",
+    "spec_sha256": "5ecf05759f536831f9c269aad6a6ba80b8bc1d2e1c78e74a34465d8e69334b64",
+    "interfaces": [
+      "prepare_frames(frames15, frames30, costs)",
+      "generate_signals(frames, costs, identity)",
+      "entry_update(signal, price)",
+      "exit_update(position, bar, history)"
+    ]
+  },
+  "source_case_file": {
+    "path": "research/campaigns/scalp7_20260920/economic_development_v1/audits/SQUEEZE_SOURCE_CASES.md",
+    "sha256": "325923ce2907b2959d13a89e21027898be831b2646cd9b9e77054ebff4951bb4",
+    "chronology": "Written before implementation and first synthetic tests; no economic results accessed"
+  },
+  "primary_receipts_reused": "research/campaigns/scalp7_20260917/source_fidelity_v1/audits/POSITIVE_OTHER_SOURCES.json",
+  "bindings": [
+    {
+      "source": "CARTER_SIMPLER_TUTORIAL",
+      "paragraphs": [
+        "How does the TTM Squeeze indicator work?",
+        "How to Read the Squeeze Indicator"
+      ],
+      "code": "prepare_frames -> parent.generate_signals with parent.SQUEEZE_PARENT",
+      "meaning": "Inherited first-release context, not a new predicate or exact platform implementation"
+    },
+    {
+      "source": "BROOKS_GLOSSARY",
+      "paragraphs": [
+        "bar pullback",
+        "high 1, 2, 3, or 4"
+      ],
+      "code": "High2State.observe",
+      "meaning": "High1 then intervening lower high then High2; separate completed-bar transitions and Squeeze combination are own adaptations"
+    },
+    {
+      "source": "TOS_TTM_SQUEEZE",
+      "paragraphs": [
+        "Description"
+      ],
+      "code": "_weak and exit_update",
+      "meaning": "Two weakening positive30m endpoints; second-latest30m open must be at/after actual position entry"
+    }
+  ],
+  "preimplementation_clarifications": [
+    "No fire-close cost gate: actual frozen parent only admits ATR/referencecost at actual next open.",
+    "Preentry low breach uses low<firelow; in-position nonpositive-momentum exit is not added.",
+    "Original fire close anchors setup300m and life330m even if availability is later.",
+    "New visible fire invalidates old pending trigger; visibility bar never retrospectively counts as setup.",
+    "Control retains parent ATR fallback; child wrong-side structural stop rejects with no fallback."
+  ],
+  "review_fixes_before_freeze": [
+    {
+      "finding": "Delayed activation could skip already-known invalidation and allow recovery resurrection",
+      "fix": "Evaluate High2State.invalidated on the activation bar without advancing stages",
+      "evidence": "Two fixtures: visibility fire-low breach and nonpositive momentum followed by otherwise-valid recovery sequence"
+    },
+    {
+      "finding": "Missing30m context among continuous15m bars not reverse-validated",
+      "fix": "Require exact complete15m-pair start coverage equal to provided30m context starts",
+      "evidence": "Missing30m fixture fails preflight"
+    },
+    {
+      "finding": "Test expected rejection records list but engine uses reason Counter",
+      "fix": "Assert frozen Counter schema; engine unchanged",
+      "evidence": "Delayed historical fill rejection fixture passes"
+    }
+  ],
+  "validation": {
+    "source_tests": {
+      "path": "tests/test_scalp7_economic_squeeze_v1.py",
+      "sha256": "cbc8515c8beeb406833f8188d98065d17bba190dd4277e7cf7449031e5f3505d",
+      "passed": 25,
+      "seconds": 5.67,
+      "kind": "synthetic fixtures only; no historical evidence or new FULL economics"
+    },
+    "normal_precommit": {
+      "status": "PASS",
+      "hooks": [
+        "black",
+        "ruff",
+        "mypy",
+        "Verify immutable Exact25 source and complete type stub"
+      ],
+      "exit_code": 0
+    }
+  },
+  "experiment_boundary": {
+    "real_history_signal_scans": 0,
+    "economic_probes": 0,
+    "economic_runs": 0,
+    "reservations": 0,
+    "service_changes": 0,
+    "order": "BLOCKED",
+    "live": "BLOCKED",
+    "promotion": false
+  },
+  "limitations": [
+    "Source narrative is not an official numerical histogram golden.",
+    "Control versus High2 changes entry timing and structural risk together; do not attribute difference solely to15m timeframe.",
+    "The common frozen engine retains unresolved ownership through gaps; no synthetic close is introduced.",
+    "No profitability or fresh qualification arises from these fixture passes."
+  ]
+}

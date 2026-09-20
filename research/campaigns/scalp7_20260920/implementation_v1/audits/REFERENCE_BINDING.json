@@ -1,0 +1,109 @@
+{
+  "schema": "G4_EXACT25_REFERENCE_BINDING_V1",
+  "scope_key": "G4_EXACT25_SOURCE_TO_CODE_IMPLEMENTATION_AFTER_FINAL_REVIEW_V1",
+  "strategy_ids": [
+    "anchor_vwap_trend",
+    "fvg_revert",
+    "liquidity_sweep",
+    "sr_levels",
+    "vwap_revert"
+  ],
+  "code_path": "backend/research/rebuild/scalp7_exact25_reference_v1.py",
+  "code_sha256": "2becff8f57c25ca724a5d1bbabe352c45950d89d3996c70bb03cc61f951b3974",
+  "test_path": "tests/test_scalp7_exact25_reference_v1.py",
+  "test_sha256": "ebcf32bdf774fae100a4d36fab9eb43a803ee9692576049401f6700f42cf9640",
+  "api": {
+    "catalog": "catalog()->dict[strategy_id,metadata]",
+    "evaluate": "evaluate(strategy_id,frames keyed symbol,config)->events/intents/components/rules/rule_digest/limitations/complete_strategy/per_symbol",
+    "daily_inputs": "config.daily_frames keyed symbol, actual 1440-minute OHLC bars; session_index contiguous; availability before current session",
+    "volume_inputs": "BASE_QUOTE_SUMS requires observed volume_base/volume_quote; HLC3_BASE_PROXY uses base candle volume and is explicitly not trade VWAP",
+    "configuration": "timeframe_min15/30, source_clock, named mode; hypothesis_id+rationale for non-source choices; symbol_configs isolate anchors/references"
+  },
+  "rows": [
+    {
+      "strategy_id": "anchor_vwap_trend",
+      "sources": [
+        "V2_SHANNON_ESSAY",
+        "V2_SHANNON_CASE"
+      ],
+      "producer": "_vwap",
+      "implemented": "Fixed event anchor accumulation of actual quote/base sums; explicit HLC3 proxy; separate recognition timestamp; numerical below-to-reclaim event and setup extreme protective reference. No lookup-window rolling anchor.",
+      "tests": "hand arithmetic10,11.5; recognition/lookup-window/prefix invariance; zero/mixed volume rejection; causal reclaim; gap permanently blocks old anchor",
+      "remaining": "Automatic source anchor selection, sizing and full exits unknown; provided anchor is a declared hypothesis."
+    },
+    {
+      "strategy_id": "fvg_revert",
+      "sources": [
+        "S304"
+      ],
+      "producer": "_fvg",
+      "implemented": "Source bull/bear three-bar geometry; independently computed strict confirmed pivots, past-level sweep, later displacement close/MSS, third-bar zone activation; future revisit witness/expiry/invalidation.",
+      "tests": "bull/bear exact bounds; overlap/non-entry; no three-bar early signal; no sweep/MSS means no intent; sequential raw-candle case stop7 limit14 known7th close; future touch not fill; prefix/gap checks",
+      "remaining": "Pivot widths, displacement ratio, zone expiry and stop alternative are declared choices, not source defaults. Full target/partial exits unbound; no institutional-flow observation claimed."
+    },
+    {
+      "strategy_id": "liquidity_sweep",
+      "sources": [
+        "S309",
+        "R23"
+      ],
+      "producer": "_soup/_ofi separate modes",
+      "implemented": "Actual20 previous DAILY bars/current session excluded; latest tied extreme age>=4 daily sessions; native5..10 tick offset long recovery stop; known current-day-low stop reference; same-session expiry. Separate Cont OFI actual BBO producer.",
+      "tests": "age3 rejects/4 and20 accept; tied recent low rejects; daily-duration spoof rejects; missing-day/no-daily/intraday substitution reject; price90.5 stop88.9 expiryday21; no retrospective final-bar order; OFI3/5 and sequence reset",
+      "remaining": "Soup decision recognition at completed15/30m is explicit execution adaptation,24h daily-source path only; other calendars unsupported. Full trail/size and PlusOne not supplied. OFI no standalone trigger; genuine BBO receipt required; no synthetic L2."
+    },
+    {
+      "strategy_id": "sr_levels",
+      "sources": [
+        "V2_SHANNON_CASE",
+        "R11",
+        "S303"
+      ],
+      "producer": "_box",
+      "implemented": "Explicit prior box/session range frozen before breakout; raw OHLC extrema exclude current breakout; later retest/reclaim or fixed-box reentry failure.",
+      "tests": "prior upper12 remains12 despite breakout high15/future20; no same-bar retest; future reclaim stop8; failure keeps original reference; incomplete/unknown/gap reference blocks",
+      "remaining": "Box selection and full lifecycle not provided by source; caller-selected source region is DECLARED_HYPOTHESIS, not complete Carter model; no inherited time scratch."
+    },
+    {
+      "strategy_id": "vwap_revert",
+      "sources": [
+        "S307",
+        "V2_SHANNON_ESSAY",
+        "V2_SHANNON_CASE"
+      ],
+      "producer": "_vwap failed-retest mode",
+      "implemented": "Actual fixed-anchor cumulative price; above->breakdown->future failed retest short sequence with causal close confirmation, explicit stop reference.",
+      "tests": "breakdown precedes failure; before failure no intent; extended upward trend/distance alone no short; shared VWAP arithmetic/anchor/time/units/gap cases",
+      "remaining": "Full Qullamaggie extension/crack/selection and full exits unbound; reference failure component is not a universal mean-reversion strategy."
+    }
+  ],
+  "verification": {
+    "synthetic_tests_passed": 38,
+    "command": "/home/z/z/.venv/bin/python -m pytest tests/test_scalp7_exact25_reference_v1.py -q",
+    "normal_hooks": {
+      "black": "PASS",
+      "ruff": "PASS",
+      "isolated_mypy": "PASS",
+      "frozen_exact25_source": "PASS"
+    },
+    "frontend_validate": "PASS_VALIDATE_CANONICAL_SOURCE_ROOT",
+    "initial_fixture_issue": "Pandas3 rejected fractional timestamp injection into integer test column; converted synthetic fixture to object dtype. No economic or production-data result."
+  },
+  "economic_runs": 0,
+  "real_market_probes": 0,
+  "source_complete_strategies": 0,
+  "new_spend": 0,
+  "services_changed": 0,
+  "deployment_required": false,
+  "authority": {
+    "order": "BLOCKED",
+    "live": "BLOCKED",
+    "promotion": false
+  },
+  "risks": [
+    "Source-linked numerical components and grammar tests do not establish trading economics or original full-strategy fidelity.",
+    "All emitted intents carry FULL_POSITION_MANAGEMENT_NOT_BOUND; caller must not silently inherit frozen unrelated exits.",
+    "Input source receipts describe provenance contracts; fixture records are synthetic and not genuine market-data observations."
+  ],
+  "rollback": "Remove only this additive module, tests and audit; old frozen strategy/engine paths unchanged."
+}

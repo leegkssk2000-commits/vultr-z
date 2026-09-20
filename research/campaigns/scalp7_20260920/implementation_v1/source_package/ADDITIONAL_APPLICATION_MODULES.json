@@ -1,0 +1,245 @@
+[
+  {
+    "id": "E01",
+    "name": "원 주문의 의미와 실행 시계",
+    "kind": "구현 필수",
+    "applies": "25개 공통; 특히 HG·Break·FVG·AVWAP",
+    "problem": "원문 조건부 가격 도달 주문을 일괄 종가확인/다음 시가로 바꾸면 다른 진입을 평가한다.",
+    "programming": "setup_ts / feature_available_ts / order_submit_ts / ack_ts / fill_ts를 구별. 15m·30m 의사결정은 유지하되 필요한 원 주문의 체결은 관측된 세부봉·틱으로 확인.",
+    "comparison": "원문-compatible 경로와 기존 next-open 경로를 별도 identity로 비교. 관측 부족 봉은 여러 가능한 경로의 불확실성을 표시.",
+    "limit": "1m 상세봉도 틱 선후를 완전히 알지 못한다. 현재 엔진이 지원하는지부터 확인; 무승인 engine 변경·FULL 재실행 없음.",
+    "sources": [
+      "S406",
+      "S408",
+      "S412"
+    ]
+  },
+  {
+    "id": "E02",
+    "name": "지정가·미체결·가격 충격",
+    "kind": "구현 필수",
+    "applies": "눌림·FVG·AVWAP·grid·scalp",
+    "problem": "가격 접촉=전량 maker 체결 가정은 유리한 허구를 만든다.",
+    "programming": "order_type / post_only / maker_taker / remaining_qty / queue_model / spread / fill_price를 기록. 시장성 limit, 취소, 부분체결을 분리.",
+    "comparison": "실측 또는 명시한 보수적 체결 가정 vs 가격접촉 단순모델의 결과 차이와 미체결 승리/손실을 함께 보고.",
+    "limit": "실측 호가가 없으면 queue를 사실처럼 복원하지 않는다. 지정가 변경으로 수수료만 낮추고 체결률은 그대로 두지 않음.",
+    "sources": [
+      "S406",
+      "S411",
+      "S412"
+    ]
+  },
+  {
+    "id": "E03",
+    "name": "수수료·슬리피지·펀딩의 단위 원장",
+    "kind": "구현 필수",
+    "applies": "25개 공통",
+    "problem": "원 트레이더의 주당 비용·옵션 수익·현물 재고를 같은 선물 bps로 취급하면 경제비교가 달라진다.",
+    "programming": "체결별 명목과 실제 요율, 가격오차, 정산별 signed funding, 계약승수·반올림을 원장에 결속. gross_ref−execution_drag−fees−funding=net을 검산.",
+    "comparison": "기존 bound 비용과 새 실제 비용의 차이를 공개; cost/initial-risk 연속값을 진단하되 임의 문턱으로 신호를 지우지 않음.",
+    "limit": "체결가 기반 gross에 슬리피지를 다시 차감하지 않는다. 일반 공개 요율은 사용자 과거 요율이 아님.",
+    "sources": [
+      "S403",
+      "S404",
+      "S405",
+      "S406"
+    ]
+  },
+  {
+    "id": "E04",
+    "name": "거래원천·가격종류·거래량 단위",
+    "kind": "구현 필수",
+    "applies": "volume·VWAP·MFI·OBV·sweep·모든 perp",
+    "problem": "volume 이름이 같아도 base·quote·contracts·실제 체결량이 다를 수 있다. last·mark·index도 서로 다르다.",
+    "programming": "venue / instrument / contract_size / volume_unit / price_type / raw_ts / receive_ts / revision_hash를 저장. VWAP의 거래가중 원본과 HLC3 근사는 구분.",
+    "comparison": "단위 변환 후 불변성·구간합·원 응답 대조. 데이터 수정 버전이 다르면 결과 재사용 동일성 여부를 표시.",
+    "limit": "조작성 논문의 숫자를 BingX에 적용하지 않는다. synthetic gap fill로 거래를 만들지 않음.",
+    "sources": [
+      "S407",
+      "S418",
+      "S405"
+    ]
+  },
+  {
+    "id": "E05",
+    "name": "초기화·누적기준·비미래 지표",
+    "kind": "구현 필수",
+    "applies": "HG·GMMA·BB·RSI·MFI·MACD·Supertrend",
+    "problem": "같은 이름의 EMA/ATR/RSI도 seed·평활·결측 처리·시작봉 수에 따라 조건이 달라질 수 있다.",
+    "programming": "원식과 라이브러리의 alpha/seed/adjust/min_periods를 분리. 길이가 다른 동일 prefix 및 갭 전후에서 값뿐 아니라 실제 신호 시각 차이를 검사.",
+    "comparison": "수치 오차와 판정 뒤집힘 개수를 따로 확인. 미발동 분기는 별도 사례로 강제해 검사 범위를 기록.",
+    "limit": "도구의 마지막 행 비교 또는 no-bias 표시는 전체 경로 인증이 아니다. 현재 설치 버전 검증은 구현 시 수행.",
+    "sources": [
+      "S409",
+      "S410",
+      "S426"
+    ]
+  },
+  {
+    "id": "E06",
+    "name": "정성 패턴의 사건화",
+    "kind": "명세 필수",
+    "applies": "VCP·flag·Kell·FVG·Soup·range",
+    "problem": "‘좋은 눌림·유기적 거래량·강한 봉’의 빈칸을 임의 숫자로 채워 원형이라고 부르는 문제가 재발할 수 있다.",
+    "programming": "선정·추진·수축·trigger·무효화의 관측 순서를 작성. 되돌림/추진 크기·단위시간 참여·기준선 위치는 연속 특징으로 저장하고, source 수치와 해석 수치를 분리.",
+    "comparison": "같은 원문 사례에서 진입·비진입·무효화를 먼저 비교. 모드별 최소 가설만 동결하고 결과 후 기준을 고르지 않음.",
+    "limit": "‘원저자 전체 계좌가 없다’는 이유로 모든 연구를 막지도 않음. 자체 해석은 명명된 가설이지 완료된 정확 재현이 아님.",
+    "sources": [
+      "S416",
+      "S401",
+      "S402"
+    ]
+  },
+  {
+    "id": "E07",
+    "name": "당시 알 수 있는 종목 선정·시장 상태",
+    "kind": "개선 가설",
+    "applies": "Break·Rider·ribbon·session·volume",
+    "problem": "오늘의 승자만 선택하거나 주식 scanner 조건을 고정6코인에 그대로 복사하면 원 전략과 다른 선택효과가 된다.",
+    "programming": "현재 승인 universe 안에서 당시 유동성·가격추진·동시간 참여를 계산. 상장/폐지·종목정보 기준일을 남기고 원형 scanner의 관측불가 조건은 분리.",
+    "comparison": "기존 고정선정 vs 사전 고정 선정부품; 기회 소실·추가 비용·같은 크기에서의 증분성과를 비교.",
+    "limit": "새 코인 universe 확대 권한 아님. 과거 전체 결과를 보고 종목/달을 제거하지 않음.",
+    "sources": [
+      "S407",
+      "S417",
+      "S418",
+      "S419"
+    ]
+  },
+  {
+    "id": "E08",
+    "name": "코인 고유 시각·참여 기준",
+    "kind": "개선 가설",
+    "applies": "session·squeeze·Break·vol_spike·OBV",
+    "problem": "15분 경계 또는 특정 시간대의 통상적 volume 증가를 새로운 개별 신호로 오인할 수 있다.",
+    "programming": "weekday / hour / minute_phase / funding_event_distance와 과거 같은 시각의 기준량을 저장. 현재 봉을 기준통계에 포함하지 않음.",
+    "comparison": "동일 전략의 phase별 비용·미끄러짐·성과, true phase vs 사전 placebo phase를 진단. 새 필터로 채택할 경우 별도 동결.",
+    "limit": "2026 논문의 첫10초 예측을 15m 보유 수익으로 바꾸지 않는다. ML-Light를 지금 도입하라는 제안 아님.",
+    "sources": [
+      "S419",
+      "S420"
+    ]
+  },
+  {
+    "id": "E09",
+    "name": "판단 정확도보다 비용 후 기대값",
+    "kind": "평가 필수",
+    "applies": "25개 공통",
+    "problem": "WR가 높아져도 평균 이익 크기가 비용보다 작거나 큰 손실 하나가 크면 순손익은 나빠진다.",
+    "programming": "완료 episode 기준 WR, gross/T, fee/T, execution_drag/T, funding/T, win/loss 크기, net/T를 함께 산출.",
+    "comparison": "승률 개선·수익 개선·위험 개선을 분리. 종결 거래가 적으면 구간과 집중도도 보고.",
+    "limit": "양수 기대값을 미리 가정하지 않는다. 비용 전 방향 예측 성과를 실제 전략 수익으로 부르지 않음.",
+    "sources": [
+      "S420",
+      "S415",
+      "S408"
+    ]
+  },
+  {
+    "id": "E10",
+    "name": "자본·부분청산·MTM 위험",
+    "kind": "평가 필수",
+    "applies": "Turtle·Kell·grid·alpha 및 부분청산 전략",
+    "problem": "거래 bps 합은 계좌수익이 아니며 부분청산 수를 승리 건수로 세면 WR가 달라진다.",
+    "programming": "decision_id→opportunity_id→position_episode_id→fill_id 계층을 유지. 고정 명목 진단과 같은 초기 위험 비교를 나누고 외부입금 제외 NAV/MTM DD를 별도 계산.",
+    "comparison": "진입·청산 고정 후 size 정책만 별도 비교; 같은 위험·유한 자본·원장의 미완결 손익을 유지.",
+    "limit": "새 레버리지·켈리·피라미딩 최적화 승인이 아님. 사후 잘된 size만 선택하지 않음.",
+    "sources": [
+      "S405",
+      "S408",
+      "S422",
+      "S423"
+    ]
+  },
+  {
+    "id": "E11",
+    "name": "신호 품질과 청산 손상을 분해",
+    "kind": "평가 필수",
+    "applies": "HG·Rider·Break·Squeeze·반전",
+    "problem": "stop 종료가 많다는 통계만으로 진입이 나쁘다거나 stop을 넓혀야 한다고 결정할 수 없다.",
+    "programming": "기회별 주문 전제·초기 위험·시간별 진행·실제 stop ratchet·청산 이유를 연결. 신호 이후 가격 경로 분석은 정답표로만 보관.",
+    "comparison": "같은 진입의 관리 비교와 전체 구조 비교를 구분. MFE·회복을 그대로 실현수익으로 계산하지 않음.",
+    "limit": "손절 정책 논문은 적용 과정에 따라 효과가 다르다는 근거이지 손절을 해제할 이유가 아니다.",
+    "sources": [
+      "S421",
+      "S408"
+    ]
+  },
+  {
+    "id": "E12",
+    "name": "표본 불확실성·동시손실 군집",
+    "kind": "평가 필수",
+    "applies": "25개 및 모든 결합",
+    "problem": "수백 번의 동시 코인 거래가 수백 개의 독립 사건인 것은 아니다.",
+    "programming": "시간으로 정렬한 전체 후보 수익 패널을 저장. 동일 시간 블록을 종목 전체에 공동 적용하는 재표본화를 검토하고 WR의 작은 표본 구간은 별도 표시.",
+    "comparison": "원형-child의 paired 차이와 block 민감도를 보고. 단일 winner 제거는 stress이지 관측 삭제가 아님.",
+    "limit": "공통요인 논문이 지금의 독립표본수를 계산해 주지는 않는다. IID Wilson은 설명용이며 실제 군집 보정의 대체물이 아님.",
+    "sources": [
+      "S413",
+      "S415",
+      "S417",
+      "S420"
+    ]
+  },
+  {
+    "id": "E13",
+    "name": "누적 시도·반복 holdout·선택편향",
+    "kind": "평가 필수",
+    "applies": "25개 전체 G4 선별",
+    "problem": "직전4회만 세고 이전 실패·검토 후 규칙 변경을 잊으면 성공 확률을 과장한다.",
+    "programming": "기존 trial registry에 전체 identity/기간/검토일·source-derived vs 수정형을 연결. 다중시도용 수익 패널과 skew/kurtosis·실질 시도 의존 정보를 준비.",
+    "comparison": "필요 자료가 있으면 DSR/PBO를 보조 진단. 과거에 본 validation/rolling은 계속 개발 이력.",
+    "limit": "단순 모든25를 독립 N=25로 가정하지 않는다. 새 gate·예산·경제실행을 만들지 않음.",
+    "sources": [
+      "S413",
+      "S414"
+    ]
+  },
+  {
+    "id": "E14",
+    "name": "재료의 기여·공통요인·점유",
+    "kind": "역할 평가",
+    "applies": "alpha·재료20·공유 추세 신호",
+    "problem": "독립 음수전략이 부품으로도 무가치하다는 뜻은 아니지만 이름만 재료로 남겨도 검증이 아니다.",
+    "programming": "허용된 P/P+component의 같은시각 입력·자본·비용·점유·부품발동 원인을 보존. 진입 수 감소·cash노출·시장 beta 변화와 증분기여를 구분.",
+    "comparison": "동일 기회 비교 + 전체 시간순 비교 + 동등 노출 참고. 같은시장 방향을 여러 독립 alpha로 중복 집계하지 않음.",
+    "limit": "B×B·host 주입·승격 제한 우회 금지. scope 충돌은 해당 실험만 명시해 분리.",
+    "sources": [
+      "S417",
+      "S408",
+      "S413"
+    ]
+  },
+  {
+    "id": "E15",
+    "name": "OI·호가·외부 문맥의 제한적 사용",
+    "kind": "선택 조사",
+    "applies": "liquidity·scalp·vol_spike·Break",
+    "problem": "OI·체결 방향·호가 사건·청산집계는 같은 정보가 아니다.",
+    "programming": "실제 provider의 interval·sequence·quantity 의미와 수신시각을 먼저 결속. OI는 가격방향/포지션군을 단독 식별하지 않음. open_interest_contracts와 trade_imbalance_ratio(-1~1)는 별도 키·단위로 저장한다.",
+    "comparison": "데이터가 실제 확보된 동일 사건에서만 부품의 추가정보·지연·비용을 비교.",
+    "limit": "새 피드 설치·거래소 전환 승인 아님. 미확인 청산총량·합성 L2·사후뉴스 입력 금지.",
+    "sources": [
+      "S424",
+      "S425",
+      "S407",
+      "S411",
+      "S420"
+    ]
+  },
+  {
+    "id": "E16",
+    "name": "작은 검증·캐시 재사용·범위 통제",
+    "kind": "작업 방식",
+    "applies": "25개 공통",
+    "problem": "검수 비용을 줄이겠다고 결과를 재활용만 하거나, 반대로 전체 동일 실험을 매번 반복하면 판단이 흐려진다.",
+    "programming": "유효 원문/규칙/함수/feature/data hash를 결속. 작은 인과·단위·상태 테스트 후 경제실행; 완료 결과는 exact 조건일 때만 재사용.",
+    "comparison": "기존 증거 재사용/정정/미실행을 각25행에 표시. 차이 없는 원장을 새 개선으로 세지 않음.",
+    "limit": "새 대형 프레임워크·AI 매매·무제한 grid search를 만들지 않는다. 이번은 조사·설계이며 배포/경제실행 미수행.",
+    "sources": [
+      "S408",
+      "S409",
+      "S410"
+    ]
+  }
+]

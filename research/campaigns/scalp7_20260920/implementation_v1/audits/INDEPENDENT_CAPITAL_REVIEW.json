@@ -1,0 +1,156 @@
+{
+  "code_hashes": {
+    "backend/research/rebuild/scalp7_exact25_capital_v1.py": "37b5b306fdb3400d2a5562a6c5874575ab52d99a8ffaac1e709d5c5763065920",
+    "tests/test_scalp7_exact25_capital_v1.py": "fe4a4455b143caf2905c1a07633984c4eb78d68f8f53eab513b47d58b9a95a29"
+  },
+  "findings": [
+    {
+      "fix": "Reject sale if existing cash plus proceeds cannot pay fee",
+      "id": "CAPITAL_REVIEW_01",
+      "original_reproducer": "cash1,inventory1,avg10; sell1 at1 fee3 returned cash=-1",
+      "state": "RESOLVED"
+    },
+    {
+      "fix": "Require explicit final_price.available_ts_ms and ensure valuation knowledge covers price and every fill receipt; retain event and known timestamps",
+      "id": "CAPITAL_REVIEW_02",
+      "original_reproducer": "fill available1000 was accepted against valuation ts40",
+      "state": "RESOLVED"
+    },
+    {
+      "fix": "Explicit net_basis, weight freeze and source-byte verification limits; no claimed ex-ante/source-byte certification",
+      "id": "CAPITAL_REVIEW_03",
+      "issue": "net uses inventory average cost rather than initial marked NAV; alpha caller supplies weights/source identities",
+      "state": "DISCLOSED"
+    }
+  ],
+  "implementation_suite": {
+    "frontend": "PASS_VALIDATE_CANONICAL_SOURCE_ROOT",
+    "hooks": "Black/Ruff/Mypy/immutable Exact25 PASS",
+    "passed": 29
+  },
+  "independent_check_count": 12,
+  "independent_checks": [
+    {
+      "case": "weighted_partial_sale",
+      "independent_expected": {
+        "avg_entry_price": 110,
+        "cash_usdt": 926,
+        "equity_usdt": 1056,
+        "fees_usdt": 4,
+        "net_usdt": 56,
+        "realized_gross_usdt": 40,
+        "remaining_qty_base": 1,
+        "unrealized_usdt": 20
+      },
+      "state": "PASS"
+    },
+    {
+      "case": "loss_mark_after_partial_win",
+      "independent_expected": {
+        "cash_usdt": 857,
+        "equity_usdt": 992,
+        "fees_usdt": 3,
+        "net_usdt": -8,
+        "realized_gross_usdt": 10,
+        "remaining_qty_base": 1.5,
+        "unrealized_usdt": -15
+      },
+      "state": "PASS"
+    },
+    {
+      "case": "initial_inventory_cost_basis",
+      "independent_expected": {
+        "avg_entry_price": 15,
+        "cash_usdt": 504.65,
+        "equity_usdt": 564.65,
+        "fees_usdt": 0.35,
+        "net_usdt": 4.65,
+        "realized_gross_usdt": 5,
+        "remaining_qty_base": 4,
+        "unrealized_usdt": 0
+      },
+      "state": "PASS"
+    },
+    {
+      "case": "full_flat_round_trip",
+      "independent_expected": {
+        "avg_entry_price": 0,
+        "cash_usdt": 103,
+        "equity_usdt": 103,
+        "fees_usdt": 3,
+        "net_usdt": 3,
+        "realized_gross_usdt": 6,
+        "remaining_qty_base": 0,
+        "unrealized_usdt": 0
+      },
+      "state": "PASS"
+    },
+    {
+      "case": "cash_is_not_profit",
+      "independent_expected": {
+        "equity_usdt": 100,
+        "net_usdt": 0
+      },
+      "state": "PASS"
+    },
+    {
+      "case": "sell_fee_negative_cash",
+      "error": "INSUFFICIENT_FINITE_CASH_FOR_SELL_FEE",
+      "state": "PASS"
+    },
+    {
+      "case": "receipt_known_after_valuation",
+      "error": "VALUATION_BEFORE_ALL_INPUTS_AVAILABLE",
+      "state": "PASS"
+    },
+    {
+      "case": "late_receipt_requires_late_report_clock",
+      "state": "PASS"
+    },
+    {
+      "allocated_risk_fraction": 0.2,
+      "case": "valid_component",
+      "state": "PASS",
+      "unallocated_risk_fraction": 0.3
+    },
+    {
+      "allocated_risk_fraction": 0,
+      "case": "unavailable_component",
+      "state": "PASS",
+      "unallocated_risk_fraction": 0.5
+    },
+    {
+      "allocated_risk_fraction": 0,
+      "case": "expired_component",
+      "state": "PASS",
+      "unallocated_risk_fraction": 0.5
+    },
+    {
+      "case": "source_and_strategy_completeness_claims_bounded",
+      "state": "PASS"
+    }
+  ],
+  "limitations": [
+    "Spot only, USDT fee only, external flows unsupported, positive initial cash required",
+    "No original DGT grid generator/reset/queue implementation or economic reproduction",
+    "Signal source bytes and ex-ante weight freeze remain caller binding requirements",
+    "No complete portfolio strategy, no fresh validation, no MTM DD series claim"
+  ],
+  "live": "BLOCKED",
+  "new_economic_full_runs": 0,
+  "order": "BLOCKED",
+  "promotion": false,
+  "real_dataset_reads": 0,
+  "review_scope": [
+    "Read all capital implementation and tests",
+    "Independent hand arithmetic for cash, inventory, weighted basis, realized/unrealized PnL, fee subtraction",
+    "Signal availability/expiry and fixed budget cash retention",
+    "Source provenance and complete-strategy claim boundary"
+  ],
+  "reviewed_at_utc": "2026-09-20T17:20:29.188043+00:00",
+  "reviewer": "g425_indicators",
+  "schema": "G4_EXACT25_INDEPENDENT_CAPITAL_REVIEW_V1",
+  "scope_key": "G4_EXACT25_SOURCE_TO_CODE_IMPLEMENTATION_AFTER_FINAL_REVIEW_V1",
+  "state": "PASS_AFTER_TWO_GUARD_FIXES_AND_DISCLOSURE",
+  "synthetic_only": true
+}

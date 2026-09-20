@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -30,6 +31,17 @@ def _decimal(value: Any, name: str, *, positive: bool = False) -> Decimal:
     if not number.is_finite() or (positive and number <= 0):
         raise ValueError("INVALID_NUMBER:" + name)
     return number
+
+
+def _finite_float(value: Decimal, name: str) -> float:
+    """Reject Decimal values that cannot be represented as finite JSON numbers."""
+    try:
+        result = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("NONFINITE_OUTPUT:" + name) from exc
+    if not math.isfinite(result):
+        raise ValueError("NONFINITE_OUTPUT:" + name)
+    return result
 
 
 def _timestamp(value: Any, name: str) -> int:
@@ -161,7 +173,7 @@ def inspect_entry_bar(
         return {
             **result,
             "status": "MODEL_OPEN_CANDIDATE",
-            "candidate_price": float(o),
+            "candidate_price": _finite_float(o, "candidate_price"),
             "event_interval_ms": [opened, opened],
         }
     if trigger is None:
@@ -176,7 +188,7 @@ def inspect_entry_bar(
         return {
             **result,
             "status": "MODEL_STOP_OPEN_CANDIDATE",
-            "candidate_price": float(o),
+            "candidate_price": _finite_float(o, "candidate_price"),
             "event_interval_ms": [opened, opened],
         }
     if expires < closed:
@@ -194,7 +206,7 @@ def inspect_entry_bar(
     return {
         **result,
         "status": "MODEL_STOP_INTERVAL_CANDIDATE",
-        "candidate_price": float(trigger),
+        "candidate_price": _finite_float(trigger, "candidate_price"),
         "event_interval_ms": [opened, closed],
     }
 
@@ -280,20 +292,20 @@ def value_account_snapshots(
         curve.append(
             {
                 "ts_ms": stamp,
-                "cash_usdt": float(cash),
-                "unrealized_usdt": float(unrealized),
-                "equity_usdt": float(equity),
-                "peak_equity_usdt": float(peak),
-                "drawdown_pct": float(dd * 100),
+                "cash_usdt": _finite_float(cash, "cash_usdt"),
+                "unrealized_usdt": _finite_float(unrealized, "unrealized_usdt"),
+                "equity_usdt": _finite_float(equity, "equity_usdt"),
+                "peak_equity_usdt": _finite_float(peak, "peak_equity_usdt"),
+                "drawdown_pct": _finite_float(dd * 100, "drawdown_pct"),
             }
         )
         last_ts, last_fee = stamp, fees
     return {
         "schema": SCHEMA,
         "price_basis": price_basis,
-        "initial_cash_usdt": float(initial),
+        "initial_cash_usdt": _finite_float(initial, "initial_cash_usdt"),
         "curve": curve,
-        "max_drawdown_pct": float(max_dd * 100),
+        "max_drawdown_pct": _finite_float(max_dd * 100, "max_drawdown_pct"),
         "sampling": "SYNCHRONIZED_SNAPSHOTS_NOT_INTRABAR_MAXIMUM",
         "external_flow_policy": "NO_EXTERNAL_FLOW_SUPPORTED",
         "liquidation_simulated": False,

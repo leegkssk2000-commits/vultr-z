@@ -249,18 +249,21 @@ def evaluate_volume_component(
     bindings: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Admit common inputs then call existing formulas; no model or economics."""
-    basis = config.get("volume_basis") if strategy_id in VWAPS else None
-    contract = requirements(strategy_id, basis)
+    if strategy_id not in STRATEGIES:
+        raise ValueError("UNKNOWN_VOLUME_COMPONENT")
     outputs = {}
+    contracts: dict[str, dict[str, Any] | None] = {}
     for symbol, frame in sorted(frames.items()):
         own = {**config, **config.get("symbol_configs", {}).get(symbol, {})}
+        contracts[symbol] = None
         try:
+            actual_basis = own.get("volume_basis") if strategy_id in VWAPS else None
+            contracts[symbol] = requirements(strategy_id, actual_basis)
             if own.get("price_type") not in (None, "last"):
                 raise ValueError("CALLER_PRICE_TYPE_CONFLICT")
             expected = "BASE" if strategy_id in VWAPS else "base"
             if own.get("volume_unit") not in (None, expected):
                 raise ValueError("CALLER_VOLUME_UNIT_CONFLICT")
-            actual_basis = own.get("volume_basis") if strategy_id in VWAPS else None
             adapted = adapt_volume_frame(
                 symbol,
                 frame,
@@ -289,10 +292,24 @@ def evaluate_volume_component(
     blocked = sum(
         str(out.get("status", "")).startswith("BLOCKED") for out in outputs.values()
     )
+    resolved = list(contracts.values())
+    common = resolved[0] if resolved else None
+    contract = (
+        common
+        if common is not None and all(item == common for item in resolved)
+        else {
+            "version": VERSION,
+            "strategy_id": strategy_id,
+            "volume_basis": "PER_SYMBOL",
+            "scope": "PER_SYMBOL_AFTER_CONFIG_MERGE",
+            "per_symbol": contracts,
+        }
+    )
     return {
         "schema": VERSION,
         "strategy_id": strategy_id,
         "requirements": contract,
+        "per_symbol_requirements": contracts,
         "status": (
             "BLOCKED_VOLUME_INPUT_CONTRACT"
             if not outputs or blocked == len(outputs)

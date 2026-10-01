@@ -184,7 +184,7 @@ def reports():
         "| 상품·체결 | product_contracts.bind_price_grid/fvg_receipt_adapter/turtle_daily_filled_units/value_native_spot_ledger | tick은 가격격자다. FVG touch≠fill, DAILY 유지, perp 현물재고 대체금지. Turtle/DGT 전체 caller 완료 주장은 없다 |",
         "| 공통 측정 | measurement_repair continuity/ownership/NAV gates; measurement_compare.segment_inputs/freeze_comparison/run_authorized_comparison | 기존 engine 재사용. 인공 gap→held owner→후속진입→NAV 회귀 및 새 gateway의 승인 전 차단. 실자료 loader·경제실행0; 미승인 관문 거부 시험 |",
         "",
-        "독립검토에서 발견한 source mark-price 재표기, 지연 BAR_CLOSE 지원 누락, 후속 주문 submit 시점의 소유권·자본 인과 오류를 실제 수정하고 회귀시험했다. 해결 내역과 명령·해시는 implementation/ 및 audits/guard/에 있다.",
+        "독립검토에서 발견한 source mark-price 재표기, 지연 BAR_CLOSE 지원 누락, 후속 주문 submit 시점의 소유권·자본 인과 오류를 실제 수정하고 회귀시험했다. PR 리뷰의 가격격자 영수증→Kell/Gajjala caller 필드 불일치와 심볼별 VWAP 거래량 기준의 조기 거부도 수선하고 통합시험했다. 해결 내역과 명령·해시는 implementation/ 및 audits/guard/에 있다.",
         "",
         "## 3. 남은 항목",
         "",
@@ -207,7 +207,7 @@ def reports():
         "",
         "## 검증·통합·롤백",
         "",
-        "VALIDATION.json은 실제 시험·정상 hooks·frontend와 저장 검사 명령/exit/출력을 보존한다. INPUT_SEAL과 saved guard는 PR1345의181파일 및 새 증분을 결속하고, CI는 실제 인공시험과 이전 saved-only 검산을 다시 수행한다. 정상 리뷰→CI→PR→병합→고정 병합본 검증의 영수증은 PR에 남긴다. 서비스 변경·배포·유료 지출·실주문·LIVE·공식 승격은 없다. 배포 workflow는 불필요하다.",
+        "VALIDATION.json은 실제 시험·정상 hooks·frontend와 저장 검사 명령/exit/출력을 보존한다. INPUT_SEAL과 saved guard는 PR1345의181파일 및 새 증분을 결속하고, CI는 실제 인공시험과 이전 saved-only 검산을 다시 수행한다. 보존 검사는 고정된 이전181파일과 현재 게시 기준의 기존 backend를 구분하며, 같은 게시 기준을 CI의 최초·최종 검사에 전달해 master의 별도 자동 기록을 보존하고 후보의 기존 코드 변경은 거부한다. 정상 리뷰→CI→PR→병합→고정 병합본 검증의 영수증은 PR에 남긴다. 서비스 변경·배포·유료 지출·실주문·LIVE·공식 승격은 없다. 배포 workflow는 불필요하다.",
         "",
         "롤백은 이번 연구 증분 PR만 정상 revert한다. 기존 엔진·원자료·봉인·경제결과·소진된 원장 및 이번 결손 회수 증거는 보존하고 사용 예산을 초기화하지 않는다.",
     ]

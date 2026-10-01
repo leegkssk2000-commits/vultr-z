@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
@@ -55,6 +56,9 @@ def bind_price_grid(
 
     A current contract cannot silently supply an old point-in-time grid. A
     synthetic receipt remains synthetic even when its bytes match its digest.
+    Canonical unit/PIT keys feed Kell/Gajjala; legacy aliases serve Anti/Soup.
+    HG accepts the numeric tick_size field through its scalar configuration,
+    which does not independently authenticate this receipt.
     """
     stamp = _stamp(at_ts_ms, "at_ts_ms")
     if hashlib.sha256(receipt_bytes).hexdigest() != expected_sha256:
@@ -74,22 +78,35 @@ def bind_price_grid(
         raise ValueError("PRICE_GRID_PRODUCT_BINDING_MISMATCH")
     if row.get("evidence_class") != evidence_class:
         raise ValueError("PRICE_GRID_EVIDENCE_CLASS_MISMATCH")
+    if row.get("unit", "QUOTE_PRICE_INCREMENT") != "QUOTE_PRICE_INCREMENT":
+        raise ValueError("PRICE_GRID_PRICE_INCREMENT_UNIT_REQUIRED")
     start = _stamp(row.get("valid_from_ms"), "valid_from_ms")
     end = _stamp(row.get("valid_to_ms"), "valid_to_ms")
+    for alias, value in (("valid_from_ts_ms", start), ("valid_to_ts_ms", end)):
+        if alias in row and _stamp(row[alias], alias) != value:
+            raise ValueError("PRICE_GRID_VALIDITY_ALIAS_CONFLICT")
     known = _stamp(row.get("available_ts_ms"), "available_ts_ms")
     if not start <= stamp < end or known > stamp:
         raise ValueError("HISTORICAL_PRICE_GRID_NOT_AVAILABLE_OR_VALID")
     if not isinstance(row.get("source_ref"), str) or not row["source_ref"].strip():
         raise ValueError("PRICE_GRID_SOURCE_REQUIRED")
     tick = _positive(row.get("price_increment"), "price_increment")
+    caller_tick = float(tick)
+    if not math.isfinite(caller_tick) or caller_tick <= 0:
+        raise ValueError("PRICE_GRID_CALLER_NUMERIC_RANGE_UNSUPPORTED")
     return {
         "schema": SCHEMA,
         "kind": "PRICE_GRID",
-        "tick_size": str(tick),
+        "unit": "QUOTE_PRICE_INCREMENT",
+        "tick_size": caller_tick,
+        "price_increment_decimal": str(tick),
         "symbol": symbol,
         "venue": venue,
         "product": product,
         "available_ts_ms": known,
+        "valid_from_ts_ms": start,
+        "valid_to_ts_ms": end,
+        # Preserve the published Anti/Soup receipt aliases with equal values.
         "valid_from_ms": start,
         "valid_to_ms": end,
         "source_ref": row["source_ref"],

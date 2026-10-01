@@ -312,3 +312,84 @@ def test_reviewed_artifact_tampering_rejected(tmp_path):
     (folder / "COVERAGE.json").write_text("changed after review\n")
     with pytest.raises(ValueError, match="HASH_CHANGED"):
         guard.check_review_artifacts(tmp_path, review)
+
+
+@pytest.fixture
+def published_backend_base(published):
+    repo, _, _, _ = published
+    metadata = repo / "backend/research/state.json"
+    code = repo / "backend/research/existing.py"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"last_scan": 1}\n')
+    code.write_text("preserved = True\n")
+    guard.git(repo, "add", ".")
+    guard.git(
+        repo,
+        "-c",
+        "user.name=Guard Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "original backend",
+    )
+    older = guard.git(repo, "rev-parse", "HEAD").decode().strip()
+    metadata.write_text('{"last_scan": 2}\n')
+    guard.git(repo, "add", ".")
+    guard.git(
+        repo,
+        "-c",
+        "user.name=Guard Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "independent published metadata",
+    )
+    base = guard.git(repo, "rev-parse", "HEAD").decode().strip()
+    guard.git(repo, "update-ref", "refs/remotes/origin/master", base)
+    addition = sorted(guard.NEW_MODULES)[0]
+    path = repo / addition
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("new_research_module = True\n")
+    guard.git(repo, "add", ".")
+    guard.git(
+        repo,
+        "-c",
+        "user.name=Guard Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "reviewed research addition",
+    )
+    head = guard.git(repo, "rev-parse", "HEAD").decode().strip()
+    return repo, older, base, head, addition, metadata, code
+
+
+def test_inherited_published_backend_metadata_preserved(
+    published_backend_base, monkeypatch
+):
+    repo, older, base, head, addition, _, _ = published_backend_base
+    assert guard.history(repo, base, head, "PUBLISHED_DEFAULT_BRANCH", "master") == 0
+    assert guard.preserve_backend(repo, base) == [addition]
+    monkeypatch.setattr(guard, "PREDECESSOR", older)
+    with pytest.raises(ValueError, match="UNEXPECTED_BACKEND_CHANGE"):
+        guard.preserve_backend(repo)
+    with pytest.raises(ValueError, match="BASE_REF_MISMATCH"):
+        guard.history(repo, older, head, "PUBLISHED_DEFAULT_BRANCH", "master")
+
+
+@pytest.mark.parametrize("target", ["metadata", "code"])
+def test_own_change_to_published_backend_still_rejected(published_backend_base, target):
+    repo, _, base, head, addition, metadata, code = published_backend_base
+    guard.history(repo, base, head, "PUBLISHED_DEFAULT_BRANCH", "master")
+    assert guard.preserve_backend(repo, base) == [addition]
+    (metadata if target == "metadata" else code).write_text(
+        "candidate changed inherited bytes\n"
+    )
+    with pytest.raises(ValueError, match="UNEXPECTED_BACKEND_CHANGE"):
+        guard.preserve_backend(repo, base)

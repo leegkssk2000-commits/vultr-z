@@ -165,10 +165,11 @@ def preserve_predecessor(repo: Path) -> int:
     return count
 
 
-def preserve_backend(repo: Path) -> list[str]:
-    """Existing backend is immutable; only declared new module paths may differ."""
+def preserve_backend(repo: Path, published_base: str | None = None) -> list[str]:
+    """Only declared additions may differ from the authenticated published base."""
+    baseline = explicit_commit(repo, published_base or PREDECESSOR)
     changed = set(
-        git(repo, "diff", "--name-only", "-z", PREDECESSOR, "--", "backend")
+        git(repo, "diff", "--name-only", "-z", baseline, "--", "backend")
         .decode()
         .strip("\0")
         .split("\0")
@@ -180,7 +181,7 @@ def preserve_backend(repo: Path) -> list[str]:
         .split("\0")
     ) - {""}
     known = set(
-        git(repo, "ls-tree", "-r", "--name-only", PREDECESSOR, "--", "backend")
+        git(repo, "ls-tree", "-r", "--name-only", baseline, "--", "backend")
         .decode()
         .splitlines()
     )
@@ -195,7 +196,7 @@ def preserve_backend(repo: Path) -> list[str]:
     )
     for name in changed:
         require(
-            not git(repo, "ls-tree", "--name-only", PREDECESSOR, "--", name).strip(),
+            not git(repo, "ls-tree", "--name-only", baseline, "--", name).strip(),
             "EXISTING_BACKEND_REPLACED:" + name,
         )
         local_file(repo, name)
@@ -556,10 +557,10 @@ def check_review_artifacts(repo: Path, review: dict[str, Any]) -> None:
     check_files(repo, artifacts)
 
 
-def verify(repo: Path) -> dict[str, Any]:
+def verify(repo: Path, published_base: str | None = None) -> dict[str, Any]:
     repo = repo.resolve()
     count = preserve_predecessor(repo)
-    additions = preserve_backend(repo)
+    additions = preserve_backend(repo, published_base)
     hashes = hash_map(local_file(repo, str(SEAL)).read_bytes(), "covered_files", SCOPE)
     require(
         REQUIRED <= hashes.keys(),
@@ -611,6 +612,7 @@ def verify(repo: Path) -> dict[str, Any]:
         "status": "PASS",
         "scope_key": SCOPE,
         "predecessor_commit": PREDECESSOR,
+        "backend_baseline_commit": published_base or PREDECESSOR,
         "predecessor_sealed_files_checked": count,
         "new_sealed_files_checked": len(hashes),
         "new_backend_modules": additions,
@@ -633,12 +635,23 @@ def main() -> None:
     repo = args.repo.resolve()
     values = (args.base_sha, args.checkout_sha, args.base_source, args.default_branch)
     published = 0
+    backend_base = None
+    backend_changes = []
     if any(values) or args.history_only:
         require(all(values), "ALL_CI_HISTORY_ARGUMENTS_REQUIRED")
         preserve_predecessor(repo)
         published = history(repo, *values)
+        backend_base = args.base_sha
+        backend_changes = preserve_backend(repo, backend_base)
     result = (
-        {"status": "PASS", "new_full_runs": 0} if args.history_only else verify(repo)
+        {
+            "status": "PASS",
+            "new_full_runs": 0,
+            "backend_baseline_commit": backend_base,
+            "new_backend_modules": backend_changes,
+        }
+        if args.history_only
+        else verify(repo, backend_base)
     )
     result["event_base_sealed_files_checked"] = published
     print(json.dumps(result, sort_keys=True, allow_nan=False))

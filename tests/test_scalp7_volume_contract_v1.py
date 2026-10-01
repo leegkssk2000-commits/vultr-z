@@ -370,3 +370,146 @@ def test_explicit_source_mark_price_cannot_be_relabelled_as_last(source):
     assert result["status"] == "BLOCKED_VOLUME_INPUT_CONTRACT"
     assert "SOURCE_PRICE_" in result["per_symbol"][SYMBOL]["error"]
     assert not result["components"]
+
+
+def symbol_fixture(symbol, *, quote=True):
+    frame, binding = fixture(quote=quote)
+    binding["instrument"] = symbol
+    binding["base_asset"] = symbol.removesuffix("-USDT")
+    binding["fields"]["base"]["asset"] = binding["base_asset"]
+    return frame, binding
+
+
+@pytest.mark.parametrize("strategy", mod.VWAPS)
+def test_per_symbol_only_heterogeneous_bases_reach_frozen_components(strategy):
+    true_symbol, proxy_symbol = "QUOTE-USDT", "PROXY-USDT"
+    true_frame, true_binding = symbol_fixture(true_symbol)
+    proxy_frame, proxy_binding = symbol_fixture(proxy_symbol, quote=False)
+    true_frame.loc[:1, "source_base"] = [1.0, 3.0]
+    true_frame.loc[:1, "source_quote"] = [9.0, 33.0]
+    proxy_frame.loc[:1, "source_base"] = [1.0, 3.0]
+    proxy_frame["volume_quote"] = 999999.0  # Not an observed quote field.
+    true_frame.loc[1, "source_quote_available_ts_ms"] = 10 * STEP
+    renames = {
+        name: name.replace("source_", "quote_symbol_")
+        for name in true_frame.columns
+        if name.startswith("source_")
+    }
+    true_frame.rename(columns=renames, inplace=True)
+    for field in true_binding["fields"].values():
+        field["value"] = renames[field["value"]]
+        field["available"] = renames[field["available"]]
+    true_frame.attrs["volume_field_units"] = {
+        renames[name]: unit
+        for name, unit in true_frame.attrs["volume_field_units"].items()
+    }
+    inputs = {true_symbol: true_frame, proxy_symbol: proxy_frame}
+    before = {symbol: frame.copy(deep=True) for symbol, frame in inputs.items()}
+    bindings = {true_symbol: true_binding, proxy_symbol: proxy_binding}
+    settings = config(strategy)
+    settings.pop("volume_basis")
+    settings["symbol_configs"] = {
+        true_symbol: {"volume_basis": "BASE_QUOTE_SUMS"},
+        proxy_symbol: {"volume_basis": "HLC3_BASE_PROXY"},
+    }
+    before_config = copy.deepcopy(settings)
+    result = mod.evaluate_volume_component(strategy, inputs, settings, bindings)
+    assert result["status"] == "COMPONENT_INPUT_ADMITTED_ECONOMICS_NOT_RUN"
+    true = result["per_symbol"][true_symbol]["components"]
+    proxy = result["per_symbol"][proxy_symbol]["components"]
+    assert true[1]["value"] == pytest.approx(42 / 4)
+    assert proxy[1]["value"] == pytest.approx(46 / 4)
+    assert true[1]["available_ts_ms"] == 10 * STEP
+    assert proxy[1]["available_ts_ms"] == 2 * STEP
+    assert all(row["trade_vwap_claim"] for row in true)
+    assert all(not row["trade_vwap_claim"] for row in proxy)
+    assert {row["symbol"] for row in true} == {true_symbol}
+    assert {row["symbol"] for row in proxy} == {proxy_symbol}
+    assert result["requirements"]["volume_basis"] == "PER_SYMBOL"
+    assert result["per_symbol_requirements"][true_symbol][
+        "required_observed_units"
+    ] == ["BASE", "QUOTE"]
+    assert result["per_symbol_requirements"][proxy_symbol][
+        "required_observed_units"
+    ] == ["BASE"]
+    assert result["economic_runs"] == 0 and not result["new_full_authority"]
+    assert settings == before_config
+    for symbol, frame in inputs.items():
+        pd.testing.assert_frame_equal(frame, before[symbol])
+
+
+@pytest.mark.parametrize("strategy", mod.VWAPS)
+@pytest.mark.parametrize("default_basis", ["BASE_QUOTE_SUMS", "HLC3_BASE_PROXY"])
+def test_top_level_basis_is_default_and_symbol_override_wins(strategy, default_basis):
+    default_symbol, override_symbol = "DEFAULT-USDT", "OVERRIDE-USDT"
+    alternate = (
+        "HLC3_BASE_PROXY" if default_basis == "BASE_QUOTE_SUMS" else "BASE_QUOTE_SUMS"
+    )
+    frames, bindings = {}, {}
+    for symbol, basis in (
+        (default_symbol, default_basis),
+        (override_symbol, alternate),
+    ):
+        frames[symbol], bindings[symbol] = symbol_fixture(
+            symbol, quote=basis == "BASE_QUOTE_SUMS"
+        )
+    settings = config(
+        strategy,
+        volume_basis=default_basis,
+        symbol_configs={override_symbol: {"volume_basis": alternate}},
+    )
+    result = mod.evaluate_volume_component(strategy, frames, settings, bindings)
+    assert result["status"] == "COMPONENT_INPUT_ADMITTED_ECONOMICS_NOT_RUN"
+    for symbol, basis in (
+        (default_symbol, default_basis),
+        (override_symbol, alternate),
+    ):
+        own = result["per_symbol"][symbol]
+        assert own["components"]
+        assert all(
+            row["trade_vwap_claim"] == (basis == "BASE_QUOTE_SUMS")
+            for row in own["components"]
+        )
+        assert result["per_symbol_requirements"][symbol]["volume_basis"] == basis
+
+
+@pytest.mark.parametrize("strategy", mod.VWAPS)
+@pytest.mark.parametrize(
+    "failure,error",
+    [
+        ("quote_absent", "MISSING_OBSERVED_QUOTE_VOLUME"),
+        ("unknown_unit", "UNPROVEN_CANONICAL_VOLUME_UNITS"),
+        ("missing_basis", "EXPLICIT_VOLUME_BASIS_REQUIRED"),
+    ],
+)
+def test_per_symbol_basis_failures_cannot_borrow_other_symbol_authority(
+    strategy, failure, error
+):
+    good, bad = "GOOD-USDT", "BAD-USDT"
+    good_frame, good_binding = symbol_fixture(good, quote=False)
+    bad_frame, bad_binding = symbol_fixture(bad, quote=False)
+    bad_frame["volume_quote"] = bad_frame["source_base"] * bad_frame["close"]
+    if failure == "unknown_unit":
+        bad_frame.attrs["volume_units"] = "UNKNOWN"
+    settings = config(strategy)
+    settings.pop("volume_basis")
+    settings["symbol_configs"] = {good: {"volume_basis": "HLC3_BASE_PROXY"}}
+    if failure != "missing_basis":
+        settings["symbol_configs"][bad] = {"volume_basis": "BASE_QUOTE_SUMS"}
+    result = mod.evaluate_volume_component(
+        strategy,
+        {good: good_frame, bad: bad_frame},
+        settings,
+        {good: good_binding, bad: bad_binding},
+    )
+    assert result["status"] == "MIXED_COMPONENT_AND_BLOCKED_INPUT"
+    assert result["per_symbol"][good]["components"]
+    assert result["per_symbol"][bad]["status"] == "BLOCKED_VOLUME_INPUT_CONTRACT"
+    assert result["per_symbol"][bad]["error"] == error
+    assert not result["per_symbol"][bad]["components"]
+    assert not result["per_symbol"][bad]["intents"]
+    assert {row["symbol"] for row in result["components"]} == {good}
+    assert all(not row["trade_vwap_claim"] for row in result["components"])
+    assert result["per_symbol_requirements"][good]["volume_basis"] == "HLC3_BASE_PROXY"
+    if failure == "missing_basis":
+        assert result["per_symbol_requirements"][bad] is None

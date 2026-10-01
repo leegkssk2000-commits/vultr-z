@@ -22,8 +22,13 @@ R21/V2_DGT_RUNNER/V2_DGT_LOGIC는 현물 DGT 자료이며 perp bounded-reversion
 SYNTHETIC_FIXTURE는 실제 과거 metadata로 승격하지 않는다. DECLARED_MODEL_FILL과 OBSERVED_FILL은 섞지 않는다.
 원래 source rule, 기존 동결 구현, 새 계약의 구분과 hash는 SOURCE_CONTRACT_REVIEW.json에 기록했다.
 
-인공 회귀시험 tests/test_scalp7_product_contracts_v1.py는 41개 PASS다.
+인공 회귀시험 tests/test_scalp7_product_contracts_v1.py는 50개 PASS다.
 가격격자의 과거 시각·상품·SHA 오류, FVG touch/partial/cancel/gap, Turtle DAILY/N/실제 fill 간격/기록 시각, 현물 유한 현금·재고·상품 격리를 검사했다.
+PR #1346 P2 검수에서 발견한 실제 receipt→caller 계약 불일치도 수정했다.
+bind_price_grid 출력에 QUOTE_PRICE_INCREMENT 단위와 canonical valid_from_ts_ms/valid_to_ts_ms를 추가하고 Anti/Soup의 기존 valid_from_ms/valid_to_ms 별칭은 동일한 값으로 보존했다.
+HG/Kell/Gajjala가 요구하는 양의 유한 float tick_size를 전달하며 원 price_increment의 정확한 Decimal 표기는 price_increment_decimal에 남긴다. float overflow/underflow와 원 receipt의 단위·시간 별칭 충돌은 차단한다.
+실제 Kell·Gajjala compile_model에 어댑터 receipt를 그대로 공급한 두 인공 시험에서 주문 계획 각 1개와 원 SHA 결속을 확인했고, 이후 setup에서 유효기간이 지난 receipt는 계획이 생성되지 않았다.
+HG의 숫자형 tick_sizes 입력에는 어댑터의 tick_size를 직접 전달해 계획 1개를 확인했다. HG는 metadata receipt 자체를 독립 검증하는 API가 아니며 genuine_tick_receipt_verified=False를 유지한다.
 현물 계산은 손으로 검산한 BUY 1@100+fee1, BUY 1@120+fee1, SELL 1@150-fee2, 잔량1@130 사례다:
 cash=926, qty=1, 평균원가110, 실현gross40, 미실현20, fee4, equity1056, net56. 이는 인공 원장 산술이며 경제 T/PnL 성과가 아니다.
 Black/Ruff/Mypy/immutable-source 정상 hook은 PASS다.

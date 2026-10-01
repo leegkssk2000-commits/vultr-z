@@ -30,6 +30,7 @@ backend/research/rebuild/scalp7_volume_contract_v1.py가 공통 입장 계약을
 | quote/base를 동일 열로 전달하거나 다른 자산 차원을 섞을 위험 | 열 별칭·단위·자산 차원·음수·비유한 값·미성숙 시각·혼합 행 단위를 거부한다. |
 | source mark 가격을 last로 표기할 위험 | source row/attrs/binding의 price_type 및 price_basis 충돌을 검수하고 차단한다. |
 | 거래량 proof 부재에 대한 호출부 결과가 분산됨 | evaluate_volume_component가 심볼별 BLOCKED_VOLUME_INPUT_CONTRACT와 원인을 반환한다. |
+| AVWAP의 symbol_configs만으로 basis를 선택하면 top-level 사전 검수에서 거부됨 | 심볼 config 병합 후 basis와 필요 필드를 검수한다. top-level은 기본값이며 심볼별 override가 우선한다. 이질적 계약은 PER_SYMBOL로 보고하고 한 심볼의 단위·quote 권위를 다른 심볼에 적용하지 않는다. |
 | Gajjala가 같은 검수된 참여량 입력을 재사용할 연결 부족 | admit_observed_base_frame은 지표·매매 계산 없이 검수된 BASE frame을 반환한다. |
 
 기존 scalp7_exact25_indicators_v1과 scalp7_exact25_reference_v1의
@@ -68,6 +69,11 @@ tests/test_scalp7_volume_contract_v1.py는 실제 원천 파일을 읽지 않는
 필드별 지연과 누적 가용성, 불필요한 quote 지연 제외,
 prefix/future mutation 인과성, OBV 독립 손계산,
 true AVWAP와 HLC3 근사의 독립 손계산, 물리 단절의 state 보존이다.
+PR #1346 검토 후 회귀시험은 총 57개다. 추가 12개는 두 VWAP component의
+심볼별 BASE_QUOTE_SUMS/HLC3_BASE_PROXY 혼합, top-level basis 생략,
+기본값과 override, 독립 필드 mapping 및 quote 지연의 인과성,
+UNKNOWN/quote ABSENT/basis 부재의 심볼별 차단을 실제 기존 caller까지 검증한다.
+인공 손계산 42/4와 46/4를 구별하며 proxy에 끼워 넣은 quote 열은 입장되지 않는다.
 
 최종 실행 증거는 synthetic_tests.txt와 루트 통합 검증 영수증을 참조한다.
 단위시험 개수는 T/WR/PnL/DD 측정치가 아니다. 새로운 수익 측정은 미실행이다.

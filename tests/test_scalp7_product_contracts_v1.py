@@ -4,9 +4,13 @@ import hashlib
 import json
 from copy import deepcopy
 
+import pandas as pd
 import pytest
 
+from backend.research.rebuild import scalp7_hg_closure_v1 as hg
+from backend.research.rebuild import scalp7_kell_gajjala_closure_v1 as kg
 from backend.research.rebuild import scalp7_product_contracts_v1 as contracts
+from backend.research.rebuild.scalp7_volume_contract_v1 import VERSION as VOLUME_VERSION
 
 
 def grid_bytes(**changes):
@@ -184,8 +188,12 @@ def spot_ledger(fills=None, **changes):
 
 def test_price_increment_is_not_tape_or_authenticity_credit():
     out = bind_grid()
-    assert out["tick_size"] == "0.1"
+    assert out["tick_size"] == pytest.approx(0.1)
+    assert out["price_increment_decimal"] == "0.1"
     assert out["kind"] == "PRICE_GRID"
+    assert out["unit"] == "QUOTE_PRICE_INCREMENT"
+    assert out["valid_from_ts_ms"] == out["valid_from_ms"] == 0
+    assert out["valid_to_ts_ms"] == out["valid_to_ms"] == 100
     assert not out["trade_tape_available"]
     assert not out["provider_authenticity_independently_verified"]
     assert not out["economic_credit"]
@@ -196,10 +204,16 @@ def test_price_increment_is_not_tape_or_authenticity_credit():
     "payload",
     [
         grid_bytes(kind="TRADE_TAPE"),
+        grid_bytes(unit="TRADE_COUNT"),
+        grid_bytes(valid_from_ts_ms=1),
+        grid_bytes(valid_to_ts_ms=101),
+        grid_bytes(valid_from_ts_ms=False),
         grid_bytes(available_ts_ms=51),
         grid_bytes(valid_to_ms=50),
         grid_bytes(valid_from_ms=51),
         grid_bytes(price_increment="NaN"),
+        grid_bytes(price_increment="1e1000"),
+        grid_bytes(price_increment="1e-1000"),
         grid_bytes(price_increment=0),
         grid_bytes(source_ref=" "),
         grid_bytes(evidence_class="OBSERVED_METADATA"),
@@ -417,3 +431,146 @@ def test_finite_spot_cannot_sell_unowned_inventory_or_get_implicit_cash_topups()
         spot_ledger([spot_fill("a", "SELL", 1, 100, 10, 0)])
     with pytest.raises(ValueError, match="INSUFFICIENT_FINITE_CASH"):
         spot_ledger([spot_fill("a", "BUY", 11, 100, 10, 0)])
+
+
+def integration_bars(values, minutes, start=0):
+    """Hand drawn candles for the real compile paths, never market history."""
+    rows = []
+    for i, (opened, high, low, close, volume) in enumerate(values):
+        ts = start + i * minutes * kg.MINUTE
+        rows.append(
+            dict(
+                open_ts_ms=ts,
+                close_ts_ms=ts + minutes * kg.MINUTE,
+                available_ts_ms=ts + minutes * kg.MINUTE,
+                segment_id="synthetic-grid-integration",
+                open=opened,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                volume_unit="BASE",
+                source_base=volume,
+                source_base_available_ts_ms=ts + minutes * kg.MINUTE,
+            )
+        )
+    frame = pd.DataFrame(rows)
+    frame.attrs.update(
+        data_kind="SYNTHETIC_FIXTURE",
+        fixture_label="SYNTHETIC_UNIT_TEST_ONLY",
+        volume_units="BASE",
+        source_revision_sha256="1" * 64,
+        source_schema_sha256="2" * 64,
+        source_unit_authority_sha256="3" * 64,
+        volume_field_units={"source_base": "BASE"},
+    )
+    return frame
+
+
+def integration_grid(tick, valid_to_ms=100 * kg.HOUR):
+    payload = grid_bytes(price_increment=str(tick), valid_to_ms=valid_to_ms)
+    return bind_grid(payload, at_ts_ms=0)
+
+
+def integration_kg_inputs(model, receipt):
+    symbol, benchmark = "BTC-USDT", "BENCH-USDT"
+    if model == kg.KELL:
+        values = [(100, 100.2, 99.8, 100, 100)] * 30 + [
+            (100, 110, 99, 105, 100),
+            (105, 107, 104, 106, 100),
+            (106, 108, 105, 107, 100),
+            (107, 107.5, 104, 105.5, 100),
+        ]
+        level = 95
+    else:
+        values = [(10, 10.1, 9.9, 10, 100)] * 30 + [
+            (10, 14, 10, 13.8, 1000),
+            (13.8, 13.9, 13, 13.2, 200),
+            (13.2, 13.7, 13.1, 13.4, 200),
+            (13.4, 14.2, 13.2, 14, 800),
+        ]
+        level = 9
+    context = [
+        (
+            level + i * 0.001,
+            level + 1 + i * 0.001,
+            level - 1,
+            level + 0.0005 + i * 0.001,
+            100,
+        )
+        for i in range(30)
+    ]
+    binding = dict(
+        schema=VOLUME_VERSION,
+        venue="SYNTHETIC",
+        instrument=symbol,
+        product="SYNTHETIC",
+        base_asset="BTC",
+        quote_asset="USDT",
+        price_unit="USDT",
+        source_revision_sha256="1" * 64,
+        source_schema_sha256="2" * 64,
+        source_unit_authority_sha256="3" * 64,
+        source_unit_authority_locator="synthetic integration fixture recipe",
+        evidence_kind="SYNTHETIC_TEST_ONLY",
+        fields={
+            "base": dict(
+                value="source_base",
+                available="source_base_available_ts_ms",
+                unit="BASE",
+                asset="BTC",
+                observed=True,
+            )
+        },
+    )
+    return {symbol: integration_bars(values, 15, start=6 * kg.HOUR)}, {
+        "tick_evidence": {symbol: receipt},
+        "context_frames": {
+            symbol: integration_bars(context, 60),
+            benchmark: integration_bars(
+                [(level, level + 1, level - 1, level, 100)] * 30, 60
+            ),
+        },
+        "benchmark_symbol": benchmark,
+        "volume_bindings": {symbol: binding},
+    }
+
+
+@pytest.mark.parametrize("model", kg.MODEL_IDS)
+def test_bound_grid_receipt_feeds_actual_kell_gajjala_compile_and_pit_gate(model):
+    tick = 0.1 if model == kg.KELL else 0.01
+    receipt = integration_grid(tick)
+    frames, config = integration_kg_inputs(model, receipt)
+    out = kg.compile_model(model, frames, config)
+    assert len(out["plans"]) == 1
+    plan = out["plans"][0]
+    assert plan["tick_size"] == pytest.approx(tick)
+    assert plan["tick_receipt_sha256"] == receipt["source_receipt_sha256"]
+    assert not out["genuine_execution_ready"] and out["new_full_runs"] == 0
+    assert receipt["evidence_class"] == "SYNTHETIC_FIXTURE"
+    assert not receipt["trade_tape_available"] and not receipt["economic_credit"]
+    # Valid when bound at t=0 does not imply valid at a later setup or entry.
+    config["tick_evidence"]["BTC-USDT"] = integration_grid(tick, kg.HOUR)
+    blocked = kg.compile_model(model, frames, config)
+    assert blocked["plans"] == []
+    assert any(e["kind"] == "BLOCKED_PIT_TICK_GRID" for e in blocked["events"])
+
+
+def test_bound_grid_numeric_field_feeds_actual_hg_scalar_compile_contract():
+    candles = [(100, 100.2, 99.8, 100, 100)] * 35
+    candles += [
+        (100 + i + 0.2, 101 + i + 0.2, 100 + i, 101 + i, 100) for i in range(12)
+    ] + [(112, 112.2, 103, 108, 100)]
+    frame = integration_bars(candles, 30)
+    known = int(frame.iloc[-1]["available_ts_ms"])
+    receipt = bind_grid(grid_bytes(valid_to_ms=100 * kg.HOUR), at_ts_ms=known)
+    out = hg.compile_model(
+        hg.MODEL_ID,
+        {"BTC-USDT": frame},
+        {"tick_sizes": {"BTC-USDT": receipt["tick_size"]}},
+    )
+    assert len(out["plans"]) == 1
+    assert out["plans"][0]["signal"]["tick_size"] == pytest.approx(0.1)
+    assert not out["genuine_tick_receipt_verified"]
+    assert not out["economic_execution_performed"]
+    assert not receipt["provider_authenticity_independently_verified"]

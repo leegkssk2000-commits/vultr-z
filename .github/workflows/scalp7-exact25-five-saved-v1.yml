@@ -1,0 +1,85 @@
+name: Scalp7 Exact25 five saved publication verification
+on:
+  pull_request:
+    paths:
+      - 'backend/__init__.py'
+      - 'backend/research/**'
+      - 'research/campaigns/scalp7*/**'
+      - 'scripts/run_scalp7*'
+      - 'scripts/supervise_scalp7*'
+      - 'scripts/report_scalp7*'
+      - 'scripts/recheck_scalp7*'
+      - 'scripts/verify_scalp7*'
+      - 'scripts/verify_frozen_exact25_source_v1.py'
+      - 'tests/test_scalp7*'
+      - 'tests/fixtures/scalp7*/**'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/scalp7*.yml'
+  push:
+    paths:
+      - 'backend/__init__.py'
+      - 'backend/research/**'
+      - 'research/campaigns/scalp7*/**'
+      - 'scripts/run_scalp7*'
+      - 'scripts/supervise_scalp7*'
+      - 'scripts/report_scalp7*'
+      - 'scripts/recheck_scalp7*'
+      - 'scripts/verify_scalp7*'
+      - 'scripts/verify_frozen_exact25_source_v1.py'
+      - 'tests/test_scalp7*'
+      - 'tests/fixtures/scalp7*/**'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/scalp7*.yml'
+permissions:
+  contents: read
+jobs:
+  five-saved-publication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Anchor execution evidence to immutable published history
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_REF: ${{ github.ref }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            HISTORY_BASE_SHA="$EVENT_BASE_SHA"
+            HISTORY_BASE_SOURCE="PR_EVENT_BASE"
+          elif [ "$EVENT_NAME" = "push" ] && [ "$EVENT_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            HISTORY_BASE_SHA="$EVENT_BASE_SHA"
+            HISTORY_BASE_SOURCE="DEFAULT_BRANCH_PUSH_BEFORE"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            git check-ref-format "refs/heads/$DEFAULT_BRANCH"
+            git fetch --no-tags --depth=1 origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+            HISTORY_BASE_SHA="$(git rev-parse --verify "refs/remotes/origin/$DEFAULT_BRANCH^{commit}")"
+            HISTORY_BASE_SOURCE="PUBLISHED_DEFAULT_BRANCH"
+          else
+            exit 1
+          fi
+          [[ "$HISTORY_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$HISTORY_BASE_SHA" != "0000000000000000000000000000000000000000" ]
+          git fetch --no-tags --depth=1 origin "$HISTORY_BASE_SHA" b23437663194b4f790cb4b2d3cef00c55d47aa0b
+          HISTORY_SCRIPT="scripts/verify_scalp7_exact25_five_history_v1.py"
+          TRUSTED_HISTORY_SCRIPT="$RUNNER_TEMP/exact25-history-verifier.py"
+          if git cat-file -e "$HISTORY_BASE_SHA:$HISTORY_SCRIPT" 2>/dev/null; then
+            git show "$HISTORY_BASE_SHA:$HISTORY_SCRIPT" > "$TRUSTED_HISTORY_SCRIPT"
+          else
+            cp "$HISTORY_SCRIPT" "$TRUSTED_HISTORY_SCRIPT"
+          fi
+          python "$TRUSTED_HISTORY_SCRIPT" --repo "$GITHUB_WORKSPACE" --base-sha "$HISTORY_BASE_SHA" --checkout-sha "$CHECKOUT_SHA" --base-source "$HISTORY_BASE_SOURCE" --default-branch "$DEFAULT_BRANCH"
+      - name: Reject coordinated evidence and seal tampering
+        run: python scripts/verify_scalp7_exact25_five_history_v1.py --self-test
+      - name: Reject budget, history, identity and path tampering
+        run: python scripts/verify_scalp7_exact25_five_publication_v1.py --self-test
+      - name: Recompute independent saved-only arithmetic and comparison audits
+        run: python scripts/recheck_scalp7_exact25_five_saved_v1.py --output-root "$RUNNER_TEMP/exact25-saved-recheck"
+      - name: Verify sealed receipts, results and independent audit without replay
+        run: python scripts/verify_scalp7_exact25_five_publication_v1.py

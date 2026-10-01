@@ -1,7 +1,7 @@
 # 동결 5개 identity: 저장된 경제검증 결과
 
 - 결과 상태: 저장 결과 독립 검산 완료 (경제 JSON 원본 보존). 독립 검산: PASS.
-- 독립 감사: research/campaigns/scalp7_20261001/exact25_five_v1/audits/INDEPENDENT_ECONOMIC_AUDIT.json; 경제 JSON SHA256=b827d1eb818ee94c185af9d1c93eb06b758c31ade08a2b182c166a61081dfcaa; 감사 SHA256=0ca9f661c6d84bd49b52028d9515ba6ba161f178f783f553a74a93e788b40fc0.
+- 독립 감사: research/campaigns/scalp7_20261001/exact25_five_v1/audits/INDEPENDENT_ECONOMIC_AUDIT.json; 경제 JSON SHA256=b827d1eb818ee94c185af9d1c93eb06b758c31ade08a2b182c166a61081dfcaa; 감사 SHA256=2e37d0d8069f11bc6e0c2a5939b8543ac0bd978506fe53b0c503595f81c200c2.
 - 경제 JSON의 PENDING 표시는 검산 전 생성단계를 보존한 값이다. 동일 JSON 해시에 결속된 별도 독립 감사 PASS를 확인한 뒤 이 문서만 갱신했다. 미확보 결과는 계속 미완료다.
 - 저장 결과 확보: 5/5; 미확보: none.
 - 펀딩 제외 연구 손익이며 단위는 USDT다. 펀딩은 미확인이고 0으로 간주하지 않는다. 과거 OHLC 체결모형과 기준 비용을 적용한 결과로, 실제 계좌 실현손익이 아니다.

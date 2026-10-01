@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Audit report arithmetic using already verified saved fills, one raw file at a time."""
+import argparse
 import gc
 import gzip
 import hashlib
@@ -158,6 +159,13 @@ def risk_stats(items, start, end, complete):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=CAMPAIGN / "audits/INDEPENDENT_ECONOMIC_AUDIT.json",
+    )
+    args = parser.parse_args()
     report_path = CAMPAIGN / "ECONOMIC_COMPARISON.json"
     report = json.loads(report_path.read_text())
     sources, compact, audit_paths = {}, {}, []
@@ -487,7 +495,8 @@ def main():
             else "PARTIAL_SAVED_RESULTS"
         ),
     }
-    destination = CAMPAIGN / "audits/INDEPENDENT_ECONOMIC_AUDIT.json"
+    destination = args.output
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(output, ensure_ascii=False, indent=2, default=core["serial"]) + "\n"
     )

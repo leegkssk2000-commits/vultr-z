@@ -23,6 +23,8 @@ ARITHMETIC = "scripts/verify_scalp7_exact25_five_arithmetic_v1.py"
 REQUIRED = {
     SELF,
     ARITHMETIC,
+    "scripts/verify_scalp7_exact25_five_history_v1.py",
+    "scripts/recheck_scalp7_exact25_five_saved_v1.py",
     "scripts/run_scalp7_exact25_five_authorized_v1.py",
     "scripts/supervise_scalp7_exact25_five_v1.py",
     "scripts/report_scalp7_exact25_five_v1.py",

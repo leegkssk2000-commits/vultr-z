@@ -1,0 +1,134 @@
+name: ZEL EMA Path Semantics Reconciliation V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_ema_path_semantics_reconciliation_v1.py
+      - backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py
+      - .github/workflows/zel-ema-path-semantics-reconciliation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-ema-path-semantics-reconciliation-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: zel-data-expansion-results-v1
+          path: results
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            backend/tools/zel_ema_ribbon_intratrade_path_audit_v1.py \
+            backend/tools/zel_ema_path_semantics_reconciliation_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Reconcile immutable ledger semantics read-only
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          timeout 1800s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            '/home/z/z/.venv/bin/python - --stdout' \
+            < backend/tools/zel_ema_path_semantics_reconciliation_v1.py \
+            > out/reconciliation.json
+          test -s out/reconciliation.json
+          python -m json.tool out/reconciliation.json >/dev/null
+
+      - name: Verify safety and report exact contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          row=json.load(open('out/reconciliation.json'))
+          assert row['trade_count']==424,row
+          assert row['contract_identification_uses_all_windows'] is True,row
+          assert row['strategy_selection_performed'] is False,row
+          for key in ('raw_trade_rows_published','raw_event_ids_published','raw_price_data_published','canonical_mutated','runtime_mutated','formal_ledger_mutated','shadow_started','paper_started','live_enabled','selection_authority','promotion_authority'):
+              assert row[key] is False,(key,row)
+          assert row['execution_authority']=='NONE' and row['order_authority']=='BLOCKED',row
+          assert row['action']=='hold',row
+          print({
+              'state':row['state'],
+              'best':row['best_candidate'],
+              'best_entry_known':row['best_entry_known_candidate'],
+              'exact':row['exact_match'],
+              'entry_known_exact':row['entry_known_exact_match'],
+              'mapping_failures':row['mapping_failure_counts'],
+              'risk_coverage':row['risk_mode_coverage'],
+              'blockers':row['blockers'],
+              'next':row['next'],
+          })
+          PY
+
+      - name: Publish compact reconciliation receipt
+        run: |
+          set -euo pipefail
+          git -C results pull --rebase origin zel-data-expansion-results-v1
+          dest=results/runtime_results/zel/ema_path_semantics_reconciliation_v1
+          rm -rf "$dest/latest"
+          mkdir -p "$dest/latest"
+          cp out/reconciliation.json "$dest/latest/reconciliation.json"
+          cp out/reconciliation.json "$dest/run_${GITHUB_RUN_ID}.json"
+          cd results
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add runtime_results/zel/ema_path_semantics_reconciliation_v1
+          git commit -m "result(zel): EMA path semantics reconciliation ${GITHUB_RUN_ID}" || true
+          git push origin HEAD:zel-data-expansion-results-v1
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-path-semantics-reconciliation-v1-${{ github.run_id }}
+          path: out/reconciliation.json
+          if-no-files-found: error
+          retention-days: 90

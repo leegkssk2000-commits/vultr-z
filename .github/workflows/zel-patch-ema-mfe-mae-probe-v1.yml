@@ -1,0 +1,45 @@
+name: ZEL Patch EMA MFE MAE Probe V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_patch_ema_mfe_mae_probe_v1.py
+      - .github/workflows/zel-patch-ema-mfe-mae-probe-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zel-patch-ema-mfe-mae-probe-v1
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply and validate import fix
+        run: |
+          set -euo pipefail
+          python backend/tools/zel_patch_ema_mfe_mae_probe_v1.py
+          python -m py_compile backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+          grep -q 'from collections import Counter' backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+      - name: Commit fixed probe
+        run: |
+          set -euo pipefail
+          git config user.name 'zel-strategy-research-bot'
+          git config user.email 'zel-strategy-research-bot@users.noreply.github.com'
+          git add backend/tools/zel_ema_mfe_mae_semantics_probe_v1.py
+          git commit -m 'fix(zel): import Counter in EMA excursion probe' || exit 0
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}

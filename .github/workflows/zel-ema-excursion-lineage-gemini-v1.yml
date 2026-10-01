@@ -1,0 +1,185 @@
+name: ZEL EMA Excursion Lineage Gemini V1
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - backend/tools/zel_ema_excursion_state_lineage_v1.py
+      - .github/workflows/zel-ema-excursion-lineage-gemini-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zel-ema-excursion-lineage-gemini-v1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static validation
+        run: python -m py_compile backend/tools/zel_ema_excursion_state_lineage_v1.py
+
+      - name: Prepare read-only SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_HOST"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh" ~/.ssh out
+          printf '%s\n' "$VPS_SSH_KEY" > "$GITHUB_WORKSPACE/.ssh/vps_key"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/vps_key"
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Trace pinned producer excursion state lineage
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          timeout 900s ssh \
+            -i "$GITHUB_WORKSPACE/.ssh/vps_key" \
+            -o BatchMode=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$VPS_USER@$VPS_HOST" \
+            'python3 - --stdout' \
+            < backend/tools/zel_ema_excursion_state_lineage_v1.py \
+            > out/lineage.json
+          test -s out/lineage.json
+          python -m json.tool out/lineage.json >/dev/null
+
+      - name: Gemini causal semantics review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          python - <<'PY'
+          import json, os, time, urllib.request
+          row=json.load(open('out/lineage.json'))
+          evidence={
+            'state':row.get('state'),
+            'producer_sha_match':row.get('producer_sha_match'),
+            'target_reference_counts':row.get('target_reference_counts'),
+            'semantic_mode_counts':row.get('semantic_mode_counts'),
+            'contexts':row.get('contexts'),
+            'blockers':row.get('blockers'),
+            'known_path_result':{
+              'entry_candle_excluded':True,
+              'mfe_mean_abs_error_R':0.13171728648868533,
+              'mae_mean_abs_error_R':0.15707498472446987,
+              'mfe_max_abs_error_R':15.270529628656409,
+              'mae_max_abs_error_R':14.080928639572236,
+            },
+            'constraints':{
+              'single_axis_only':True,
+              'no_raw_code':True,
+              'no_runtime_mutation':True,
+              'execution_authority':'NONE',
+              'order_authority':'BLOCKED',
+            },
+          }
+          prompt=(
+            'You are a causal auditor for an immutable trading replay. Use only the aggregate AST facts. '
+            'Determine how max_favorable_usdt and max_adverse_usdt are updated before MFE_R and MAE_R are written. '
+            'Return JSON only with keys semantic_mode, exact_reconstruction_change, falsification, verdict. '
+            'semantic_mode must be one of BAR_HIGH_LOW, CLOSE_ONLY_UNREALIZED_PNL, MIXED_OR_ORDER_DEPENDENT, UNKNOWN. '
+            'verdict must be TEST, HOLD, or REJECT. Propose exactly one reconstruction change; do not combine axes. '
+            'No production authority. EVIDENCE='+json.dumps(evidence,sort_keys=True,separators=(',',':'))
+          )
+          payload={'contents':[{'parts':[{'text':prompt}]}], 'generationConfig':{'temperature':0.1,'maxOutputTokens':2048,'responseMimeType':'application/json'}}
+          models=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite']
+          last=None
+          result=None
+          model_used=None
+          for model in models:
+            try:
+              url=f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={os.environ["GEMINI_API_KEY"]}'
+              req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=90) as response:
+                body=json.load(response)
+              result=json.loads(body['candidates'][0]['content']['parts'][0]['text'])
+              model_used=model
+              break
+            except Exception as exc:
+              last=f'{type(exc).__name__}:{exc}'
+              time.sleep(2)
+          if result is None:
+            raise RuntimeError('GEMINI_FAILED:'+str(last))
+          valid=(result.get('semantic_mode') in {'BAR_HIGH_LOW','CLOSE_ONLY_UNREALIZED_PNL','MIXED_OR_ORDER_DEPENDENT','UNKNOWN'} and result.get('verdict') in {'TEST','HOLD','REJECT'} and isinstance(result.get('exact_reconstruction_change'),str) and isinstance(result.get('falsification'),str))
+          receipt={
+            'schema_version':'zel.ema.excursion_lineage.gemini_review.v1',
+            'state':'PASS_GEMINI_EXCURSION_RECONSTRUCTION_AXIS_READY' if valid else 'HOLD_GEMINI_EXCURSION_RESPONSE_INVALID',
+            'model':model_used,
+            'response':result,
+            'response_valid':valid,
+            'raw_code_sent':False,
+            'raw_trade_rows_sent':False,
+            'raw_prices_sent':False,
+            'credentials_sent':False,
+            'canonical_mutated':False,
+            'runtime_mutated':False,
+            'selection_authority':False,
+            'promotion_authority':False,
+            'execution_authority':'NONE',
+            'order_authority':'BLOCKED',
+            'action':'hold',
+          }
+          json.dump(receipt,open('out/gemini_lineage_review.json','w'),indent=2,sort_keys=True)
+          print({'state':receipt['state'],'model':model_used,'response':result})
+          PY
+          python -m json.tool out/gemini_lineage_review.json >/dev/null
+
+      - name: Verify safety and summarize
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          lineage=json.load(open('out/lineage.json'))
+          gemini=json.load(open('out/gemini_lineage_review.json'))
+          assert lineage['producer_sha_match'] is True,lineage
+          assert lineage['canonical_mutated'] is False and lineage['runtime_mutated'] is False,lineage
+          assert gemini['canonical_mutated'] is False and gemini['runtime_mutated'] is False,gemini
+          assert lineage['execution_authority']=='NONE' and lineage['order_authority']=='BLOCKED',lineage
+          assert gemini['execution_authority']=='NONE' and gemini['order_authority']=='BLOCKED',gemini
+          print({
+            'lineage_state':lineage['state'],
+            'semantic_modes':lineage['semantic_mode_counts'],
+            'context_count':lineage['context_count'],
+            'gemini_state':gemini['state'],
+            'gemini_response':gemini['response'],
+          })
+          PY
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f "$GITHUB_WORKSPACE/.ssh/vps_key"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zel-ema-excursion-lineage-gemini-v1-${{ github.run_id }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 90

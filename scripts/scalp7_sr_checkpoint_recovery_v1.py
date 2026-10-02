@@ -63,7 +63,18 @@ def read_regular(path: Path) -> bytes:
 
 
 def sha(path: Path) -> str:
-    return hashlib.sha256(read_regular(path)).hexdigest()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    value = hashlib.sha256()
+    with os.fdopen(fd, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        require(stat.S_ISREG(before.st_mode), "REGULAR_FILE_REQUIRED")
+        require(before.st_size <= 512 * 1024 * 1024, "INPUT_TOO_LARGE")
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(block)
+        after = os.fstat(handle.fileno())
+    require((before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+            (after.st_size, after.st_mtime_ns, after.st_ctime_ns), "INPUT_CHANGED_DURING_READ")
+    return value.hexdigest()
 
 
 def sync_directory(path: Path) -> None:
@@ -160,7 +171,7 @@ def validate_child(result: Mapping[str, Any], child: Mapping[str, Any]) -> None:
     canonical(result)
 
 
-def inspect(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any], pins: Pins) -> dict[str, Any]:
+def _validate_context(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any], pins: Pins) -> Path:
     require(runtime.is_absolute() and runtime.resolve(strict=True) == runtime, "CANONICAL_RUNTIME_REQUIRED")
     results = runtime / "results"
     require(results.is_dir() and results.resolve() == results, "CANONICAL_RESULTS_REQUIRED")
@@ -181,6 +192,11 @@ def inspect(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any]
             "FROZEN_BINDING_CHANGED")
     require(set(binding["segment_bindings"]) == set(SEGMENTS), "EXACT_TWO_SEGMENTS_REQUIRED")
     require(binding["cross_segment_nav_aggregation"] == "FORBIDDEN", "SEGMENT_CAPITAL_CHANGED")
+    return results
+
+
+def inspect(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any], pins: Pins) -> dict[str, Any]:
+    results = _validate_context(runtime, binding, permit, pins)
     for path in (runtime / "checkpoint_recovery_v1", results / "SR_CONTROL.json",
                  results / "SR_CONTROL.json.partial", results / "SR_RETEST.json",
                  results / "SR_RETEST.json.partial", results / ("SR_CONTROL." + SEGMENTS[1] + ".checkpoint.json")):
@@ -206,6 +222,13 @@ def _event(db: sqlite3.Connection, pins: Pins, name: str, payload: Mapping[str, 
                (pins.scope, pins.control_identity, name, canonical(payload).decode()))
 
 
+def _verify_existing_lock(path: Path, held: os.stat_result) -> None:
+    """The named existing lock must still be the regular inode held by this caller."""
+    current = os.stat(path, follow_symlinks=False)
+    require(stat.S_ISREG(current.st_mode), "REGULAR_LOCK_REQUIRED")
+    require((current.st_dev, current.st_ino) == (held.st_dev, held.st_ino), "LOCK_INODE_CHANGED")
+
+
 def recover_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any], pins: Pins,
                     *, verify_frozen: Callable[[], None], ensure_no_worker: Callable[[], None],
                     replay_missing: Callable[[str], Mapping[str, Any]]) -> dict[str, Any]:
@@ -219,35 +242,43 @@ def recover_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[s
     lock_path = runtime / "execution.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
     with os.fdopen(fd, "r+b") as lock:
-        require(stat.S_ISREG(os.fstat(lock.fileno()).st_mode), "REGULAR_LOCK_REQUIRED")
+        held = os.fstat(lock.fileno())
+        require(stat.S_ISREG(held.st_mode), "REGULAR_LOCK_REQUIRED")
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        require(os.stat(lock_path, follow_symlinks=False).st_ino == os.fstat(lock.fileno()).st_ino,
-                "LOCK_INODE_CHANGED")
+        _verify_existing_lock(lock_path, held)
         ensure_no_worker()
         verify_frozen()
         plan = inspect(runtime, binding, permit, pins)
+        _verify_existing_lock(lock_path, held)
         journal = runtime / "checkpoint_recovery_v1"
         journal.mkdir(mode=0o700)
         sync_directory(runtime)
+        _verify_existing_lock(lock_path, held)
         save_exclusive(journal / "INTENT.json", {"pins": pins.__dict__, "permit": permit, "plan": plan})
         db_path = runtime / "candidate_registry.sqlite3"
         with database(db_path, writable=True) as db:
             validate_snapshot(snapshot(db), pins)
+            _verify_existing_lock(lock_path, held)
             _event(db, pins, "RECOVERY_STARTED", {"permit_sha256": pins.continuation_permit_sha256,
                    "reused_checkpoint_sha256": pins.checkpoint_sha256,
                    "missing_segment": SEGMENTS[1], "additional_full_starts": 0,
                    "prior_uncheckpointed_segment_work_may_repeat": True})
             expected_events = snapshot(db)["events"]
+            _verify_existing_lock(lock_path, held)
         destination = runtime / "results/SR_CONTROL.json"
         published = False
         try:
+            _verify_existing_lock(lock_path, held)
             save_exclusive(journal / "SEGMENT_STARTED.json", {"segment_id": SEGMENTS[1], "attempt": 1})
+            _verify_existing_lock(lock_path, held)
             new_result = dict(replay_missing(SEGMENTS[1]))
+            _verify_existing_lock(lock_path, held)
             validate_child(new_result, binding["segment_bindings"][SEGMENTS[1]])
             checkpoint1 = destination.with_suffix("." + SEGMENTS[0] + ".checkpoint.json")
             first_raw = read_regular(checkpoint1)
             require(hashlib.sha256(first_raw).hexdigest() == pins.checkpoint_sha256, "REUSED_CHECKPOINT_CHANGED")
             checkpoint2 = destination.with_suffix("." + SEGMENTS[1] + ".checkpoint.json")
+            _verify_existing_lock(lock_path, held)
             save_exclusive(checkpoint2, {"outer_identity_key": pins.control_identity,
                            "segment_id": SEGMENTS[1], "binding_sha256": pins.control_binding_sha256,
                            "result": new_result})
@@ -261,10 +292,13 @@ def recover_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[s
                       "funding_status": "UNKNOWN_NOT_ZERO",
                       "old_unresolved_positions": "PRESERVED_SEPARATE_PARENT_STATE", "authority": dict(BLOCKED)}
             partial = destination.with_suffix(".json.partial")
+            _verify_existing_lock(lock_path, held)
             save_exclusive(partial, result)
+            _verify_existing_lock(lock_path, held)
             os.link(partial, destination, follow_symlinks=False)
             sync_directory(destination.parent)
             published = True
+            _verify_existing_lock(lock_path, held)
             partial.unlink()
             sync_directory(destination.parent)
             receipt = {"result_path": str(destination), "result_file_sha256": sha(destination),
@@ -275,12 +309,15 @@ def recover_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[s
                         current["claims"] == plan["ledger_before"]["claims"] and
                         current["events"] == expected_events,
                         "LEDGER_CHANGED_DURING_RECOVERY")
+                _verify_existing_lock(lock_path, held)
                 changed = db.execute("UPDATE claims SET state='COMPLETED',result_json=? WHERE identity_key=? AND state='RUNNING'",
                                      (canonical(receipt).decode(), pins.control_identity)).rowcount
                 require(changed == 1, "CONTROL_COMPLETION_CONFLICT")
                 _event(db, pins, "COMPLETED", receipt)
                 _event(db, pins, "RECOVERY_COMPLETED", {"reused_checkpoint_sha256": pins.checkpoint_sha256,
                         "additional_full_starts": 0, "segment_replay_calls": 1})
+                _verify_existing_lock(lock_path, held)
+            _verify_existing_lock(lock_path, held)
             save_exclusive(journal / "COMPLETED.json", {**receipt, "control_completed": True,
                            "retest_started_by_recovery": False, "additional_control_full_starts": 0})
             return result
@@ -290,3 +327,228 @@ def recover_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[s
                            "durable_result_published": published, "automatic_retry": False,
                            "requires_explicit_reconciliation": True, "ledger_not_reset": True})
             raise
+
+
+def _reconciliation_evidence(runtime: Path, binding: Mapping[str, Any],
+                             permit: Mapping[str, Any], pins: Pins, *,
+                             expected_intent_sha256: str, expected_result_sha256: str,
+                             expected_second_checkpoint_sha256: str) -> dict[str, Any]:
+    """Read original intent and completed bytes; never turn current state into new pins."""
+    results = _validate_context(runtime, binding, permit, pins)
+    journal = runtime / "checkpoint_recovery_v1"
+    require(journal.is_dir() and journal.resolve() == journal, "EXISTING_CANONICAL_JOURNAL_REQUIRED")
+    for expected in (expected_intent_sha256, expected_result_sha256, expected_second_checkpoint_sha256):
+        require(isinstance(expected, str) and len(expected) == 64 and
+                all(c in "0123456789abcdef" for c in expected), "EXTERNAL_EVIDENCE_HASH_REQUIRED")
+    intent_raw = read_regular(journal / "INTENT.json")
+    require(hashlib.sha256(intent_raw).hexdigest() == expected_intent_sha256, "INTENT_HASH_CHANGED")
+    intent = decode(intent_raw)
+    require(canonical(intent["pins"]) == canonical(pins.__dict__) and
+            canonical(intent["permit"]) == canonical(permit), "ORIGINAL_INTENT_CHANGED")
+    before = intent["plan"]["ledger_before"]
+    validate_snapshot(before, pins)
+    expected_plan = {"ledger_before": before, "reused_segment": SEGMENTS[0],
+                     "missing_segment": SEGMENTS[1], "checkpoint_sha256": pins.checkpoint_sha256,
+                     "existing_full_starts": 1, "additional_control_full_starts": 0,
+                     "automatic_retry": False}
+    require(canonical(intent) == canonical({"pins": pins.__dict__, "permit": permit,
+                                          "plan": expected_plan}), "ORIGINAL_INTENT_CHANGED")
+    file_hashes = {runtime / "USER_APPROVAL.json": pins.original_approval_sha256,
+                   journal / "INTENT.json": expected_intent_sha256}
+    absent_paths = []
+    started_raw = read_regular(journal / "SEGMENT_STARTED.json")
+    file_hashes[journal / "SEGMENT_STARTED.json"] = hashlib.sha256(started_raw).hexdigest()
+    require(canonical(decode(started_raw)) ==
+            canonical({"segment_id": SEGMENTS[1], "attempt": 1}), "SEGMENT_START_EVIDENCE_CHANGED")
+    if os.path.lexists(journal / "STOPPED.json"):
+        stopped_raw = read_regular(journal / "STOPPED.json")
+        file_hashes[journal / "STOPPED.json"] = hashlib.sha256(stopped_raw).hexdigest()
+        stopped = decode(stopped_raw)
+        require(stopped["automatic_retry"] is False and stopped["ledger_not_reset"] is True and
+                stopped["requires_explicit_reconciliation"] is True and
+                type(stopped["durable_result_published"]) is bool, "STOPPED_BOUNDARY_CHANGED")
+        # The flag can be false after link() succeeded but directory fsync failed.
+        # Actual pinned files decide whether ledger-only reconciliation is possible.
+    else:
+        absent_paths.append(journal / "STOPPED.json")
+    destination = results / "SR_CONTROL.json"
+    require(os.path.lexists(destination), "EXISTING_FINAL_RESULT_REQUIRED")
+    result_raw = read_regular(destination)
+    require(hashlib.sha256(result_raw).hexdigest() == expected_result_sha256, "RESULT_HASH_CHANGED")
+    file_hashes[destination] = expected_result_sha256
+    result = decode(result_raw)
+    del result_raw
+    require(isinstance(result, dict) and isinstance(result.get("segments"), dict) and
+            set(result["segments"]) == set(SEGMENTS), "PUBLISHED_RESULT_EVIDENCE_CONFLICT")
+    partial = results / "SR_CONTROL.json.partial"
+    if os.path.lexists(partial):
+        require(sha(partial) == expected_result_sha256, "PARTIAL_RESULT_CONFLICT")
+        file_hashes[partial] = expected_result_sha256
+    else:
+        absent_paths.append(partial)
+    for path in (results / "SR_RETEST.json", results / "SR_RETEST.json.partial"):
+        require(not os.path.lexists(path), "RETEST_ALREADY_EXECUTED")
+        absent_paths.append(path)
+    require(not list(results.glob("SR_RETEST.*.checkpoint.json")), "RETEST_ALREADY_EXECUTED")
+    receipts = {}
+    for sid, expected in ((SEGMENTS[0], pins.checkpoint_sha256),
+                          (SEGMENTS[1], expected_second_checkpoint_sha256)):
+        checkpoint = destination.with_suffix("." + sid + ".checkpoint.json")
+        raw = read_regular(checkpoint)
+        require(hashlib.sha256(raw).hexdigest() == expected, "CHECKPOINT_HASH_CHANGED:" + sid)
+        file_hashes[checkpoint] = expected
+        saved = decode(raw)
+        del raw
+        require(canonical({k: v for k, v in saved.items() if k != "result"}) ==
+                canonical({"outer_identity_key": pins.control_identity, "segment_id": sid,
+                           "binding_sha256": pins.control_binding_sha256}), "CHECKPOINT_BINDING_CHANGED")
+        validate_child(saved["result"], binding["segment_bindings"][sid])
+        require(digest(saved["result"]) == digest(result["segments"][sid]),
+                "PUBLISHED_RESULT_EVIDENCE_CONFLICT")
+        del saved
+        receipts[sid] = {"path": str(checkpoint), "sha256": expected}
+    expected_header = {"schema": "scalp7.measurement.segment_comparison_result.v1",
+                       "identity_key": pins.control_identity, "binding_sha256": pins.control_binding_sha256,
+                       "segment_checkpoints": receipts,
+                       "whole_period_nav": None, "cross_segment_nav_aggregation": "FORBIDDEN",
+                       "full_execution_performed": True, "full_execution_count": 1,
+                       "funding_status": "UNKNOWN_NOT_ZERO",
+                       "old_unresolved_positions": "PRESERVED_SEPARATE_PARENT_STATE", "authority": dict(BLOCKED)}
+    require(canonical({k: v for k, v in result.items() if k != "segments"}) == canonical(expected_header),
+            "PUBLISHED_RESULT_EVIDENCE_CONFLICT")
+    receipt = {"result_path": str(destination), "result_file_sha256": expected_result_sha256,
+               "binding_sha256": pins.control_binding_sha256}
+    completed_path = journal / "COMPLETED.json"
+    if os.path.lexists(completed_path):
+        completed_raw = read_regular(completed_path)
+        file_hashes[completed_path] = hashlib.sha256(completed_raw).hexdigest()
+        require(canonical(decode(completed_raw)) == canonical(
+            {**receipt, "control_completed": True, "retest_started_by_recovery": False,
+             "additional_control_full_starts": 0}), "COMPLETION_JOURNAL_CONFLICT")
+    else:
+        absent_paths.append(completed_path)
+    return {"ledger_before": before, "result": result, "receipt": receipt,
+            "destination": destination, "file_hashes": file_hashes, "absent_paths": absent_paths,
+            "completion_journal_present": os.path.lexists(completed_path),
+            "reconciliation_payload": {
+                "intent_file_sha256": expected_intent_sha256, "result_file_sha256": expected_result_sha256,
+                "reused_checkpoint_sha256": pins.checkpoint_sha256,
+                "second_checkpoint_sha256": expected_second_checkpoint_sha256,
+                "ledger_only": True, "additional_full_starts": 0, "segment_replay_calls": 0,
+                "preserves_prior_recovery_work": True}}
+
+
+def _validate_reconciliation_ledger(current: Mapping[str, Any], evidence: Mapping[str, Any], pins: Pins) -> bool:
+    before, receipt = evidence["ledger_before"], evidence["receipt"]
+    require(canonical(current["scopes"]) == canonical(before["scopes"]), "ORIGINAL_SCOPE_CHANGED")
+    claims = {row["identity_key"]: row for row in current["claims"]}
+    original_claims = {row["identity_key"]: row for row in before["claims"]}
+    require(set(claims) == set(original_claims), "EXACT_TWO_IDENTITIES_REQUIRED")
+    require(canonical(claims[pins.retest_identity]) == canonical(original_claims[pins.retest_identity]),
+            "RETEST_RESERVATION_CHANGED")
+    control = claims[pins.control_identity]
+    require(control["state"] in {"RUNNING", "COMPLETED"}, "CONTROL_TERMINAL_CONFLICT")
+    expected_control = dict(original_claims[pins.control_identity])
+    completed = control["state"] == "COMPLETED"
+    require(completed or not evidence["completion_journal_present"], "COMPLETION_JOURNAL_CONFLICT")
+    if completed:
+        expected_control.update(state="COMPLETED", result_json=canonical(receipt).decode())
+    require(canonical(control) == canonical(expected_control), "CONTROL_CLAIM_CHANGED")
+    events, original = current["events"], before["events"]
+    require(canonical(events[:len(original)]) == canonical(original), "ORIGINAL_EVENTS_CHANGED")
+    tail = events[len(original):]
+    names = [row["event"] for row in tail]
+    require(names == ["RECOVERY_STARTED"] if not completed else
+            names in (["RECOVERY_STARTED", "COMPLETED", "RECOVERY_COMPLETED"],
+                      ["RECOVERY_STARTED", "COMPLETED", "RECOVERY_RECONCILED"]),
+            "RECOVERY_EVENT_CHAIN_CHANGED")
+    expected_payloads = [{"permit_sha256": pins.continuation_permit_sha256,
+                          "reused_checkpoint_sha256": pins.checkpoint_sha256,
+                          "missing_segment": SEGMENTS[1], "additional_full_starts": 0,
+                          "prior_uncheckpointed_segment_work_may_repeat": True}]
+    if completed:
+        last_payload = evidence["reconciliation_payload"] if names[-1] == "RECOVERY_RECONCILED" else {
+            "reused_checkpoint_sha256": pins.checkpoint_sha256,
+            "additional_full_starts": 0, "segment_replay_calls": 1}
+        expected_payloads.extend([receipt, last_payload])
+    previous_sequence = original[-1]["sequence"]
+    for row, payload in zip(tail, expected_payloads):
+        require(row["scope"] == pins.scope and row["identity_key"] == pins.control_identity and
+                type(row["sequence"]) is int and row["sequence"] == previous_sequence + 1 and
+                isinstance(row["created_at"], str) and bool(row["created_at"]), "RECOVERY_EVENT_HEADER_CHANGED")
+        require(canonical(decode(row["payload_json"].encode())) == canonical(payload),
+                "RECOVERY_EVENT_PAYLOAD_CHANGED")
+        previous_sequence = row["sequence"]
+    return completed
+
+
+def _recheck_reconciliation_files(evidence: Mapping[str, Any]) -> None:
+    for path, expected in evidence["file_hashes"].items():
+        require(sha(path) == expected, "EVIDENCE_CHANGED_BEFORE_COMMIT:" + path.name)
+    for path in evidence["absent_paths"]:
+        require(not os.path.lexists(path), "EVIDENCE_APPEARED_BEFORE_COMMIT:" + path.name)
+    require(not list(evidence["destination"].parent.glob("SR_RETEST.*.checkpoint.json")),
+            "RETEST_ALREADY_EXECUTED")
+
+
+def reconcile_control(runtime: Path, binding: Mapping[str, Any], permit: Mapping[str, Any], pins: Pins, *,
+                      expected_intent_sha256: str, expected_result_sha256: str,
+                      expected_second_checkpoint_sha256: str, verify_frozen: Callable[[], None],
+                      ensure_no_worker: Callable[[], None]) -> dict[str, Any]:
+    """Finish an already published CONTROL result without any replay or new start.
+
+    Pins and the INTENT hash must come from independently saved original approval
+    and execution evidence. The result and second-checkpoint hashes must come
+    from an explicit read-only validation of their actual bytes, child/header,
+    frozen source and economic consistency; hashing arbitrary current files is
+    not authorization. The caller records that validation's provenance.
+
+    Both callbacks have the same fail-closed contract as recover_control. This
+    API has no replay callback, does not publish a partial-only result, preserves
+    every checkpoint/partial/STOPPED byte and never widens the original budget.
+    Matching completed state is a read-only no-op; conflicts require investigation.
+    """
+    hashes = {"expected_intent_sha256": expected_intent_sha256,
+              "expected_result_sha256": expected_result_sha256,
+              "expected_second_checkpoint_sha256": expected_second_checkpoint_sha256}
+    evidence = _reconciliation_evidence(runtime, binding, permit, pins, **hashes)
+    with database(runtime / "candidate_registry.sqlite3") as db:
+        _validate_reconciliation_ledger(snapshot(db), evidence, pins)
+    # Do not retain two decoded account results while inspecting the locked state.
+    del evidence
+    lock_path = runtime / "execution.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r+b") as lock:
+        locked = os.fstat(lock.fileno())
+        require(stat.S_ISREG(locked.st_mode), "REGULAR_LOCK_REQUIRED")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _verify_existing_lock(lock_path, locked)
+        ensure_no_worker()
+        verify_frozen()
+        evidence = _reconciliation_evidence(runtime, binding, permit, pins, **hashes)
+        _verify_existing_lock(lock_path, locked)
+        with database(runtime / "candidate_registry.sqlite3", writable=True) as db:
+            completed = _validate_reconciliation_ledger(snapshot(db), evidence, pins)
+            _recheck_reconciliation_files(evidence)
+            _verify_existing_lock(lock_path, locked)
+            if not completed:
+                # A prior crash can leave link() successful without directory fsync.
+                # Establish durability of the verified existing result before the DB commit.
+                result_fd = os.open(evidence["destination"], os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(result_fd)
+                finally:
+                    os.close(result_fd)
+                sync_directory(evidence["destination"].parent)
+                _recheck_reconciliation_files(evidence)
+                _verify_existing_lock(lock_path, locked)
+                changed = db.execute("UPDATE claims SET state='COMPLETED',result_json=? "
+                                     "WHERE identity_key=? AND state='RUNNING'",
+                                     (canonical(evidence["receipt"]).decode(), pins.control_identity)).rowcount
+                require(changed == 1, "CONTROL_COMPLETION_CONFLICT")
+                _event(db, pins, "COMPLETED", evidence["receipt"])
+                _event(db, pins, "RECOVERY_RECONCILED", evidence["reconciliation_payload"])
+                _verify_existing_lock(lock_path, locked)
+        return {"result": evidence["result"], "receipt": evidence["receipt"],
+                "reconciliation_performed": not completed, "already_completed": completed,
+                "segment_replay_calls": 0, "additional_full_starts": 0}

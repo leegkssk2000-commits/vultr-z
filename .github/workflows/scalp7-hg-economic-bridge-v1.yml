@@ -29,7 +29,7 @@ jobs:
           cat frontend/z-os-app-source/package.json
           npm run --prefix frontend/z-os-app-source validate
       - name: Install pinned fixture dependencies
-        run: python -m pip install -r requirements.txt pytest==8.3.5
+        run: python -m pip install -r requirements.txt pytest==8.3.5 black==24.8.0 ruff==0.6.9
       - name: Test actual HG producer and adapter with generated prices only
         env:
           PYTHONPATH: .
@@ -39,6 +39,14 @@ jobs:
           python -m py_compile backend/research/rebuild/scalp7_hg_economic_bridge_v1.py
           python -m pytest -q tests/test_scalp7_hg_economic_bridge_v1.py tests/test_scalp7_hg_closure_v1.py --junitxml=/tmp/hg-fixture-results/pytest.xml 2>&1 | tee /tmp/hg-fixture-results/pytest.txt
           npm run --prefix frontend/z-os-app-source validate
+          git diff --exit-code
+      - name: Export formatting proposal without changing tested checkout
+        run: |
+          mkdir -p /tmp/hg-fixture-results/formatted
+          cp backend/research/rebuild/scalp7_hg_economic_bridge_v1.py /tmp/hg-fixture-results/formatted/
+          cp tests/test_scalp7_hg_economic_bridge_v1.py /tmp/hg-fixture-results/formatted/
+          python -m black /tmp/hg-fixture-results/formatted/*.py
+          python -m ruff check /tmp/hg-fixture-results/formatted/*.py
           git diff --exit-code
       - name: Preserve fixture evidence
         if: always()

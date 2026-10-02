@@ -87,7 +87,7 @@ def test_gap_preserves_unresolved_position_without_invented_close():
     assert out["unknown_execution_count"]==1
     assert [x["effect"] for x in out["execution"]["ledger"]]==["OPEN"]
 
-@pytest.mark.parametrize("field,value",[("available_ts_ms",10**11),("valid_to_ms",1),("symbol","WRONG"),("product","SPOT")])
+@pytest.mark.parametrize("field,value",[("available_ts_ms",10**11),("valid_to_ms",1),("symbol","WRONG"),("product","SPOT"),("venue","OTHER")])
 def test_invalid_or_unavailable_grid_rejected(field,value):
     inp,b=inputs_and_binding()
     config=copy.deepcopy(b["config"])

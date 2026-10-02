@@ -38,7 +38,7 @@ def _config(config: Mapping[str, Any], frames: Mapping[str, Any]) -> dict[str, A
         stamps = [int(x) for x in frame["available_ts_ms"]]
         for stamp in (min(stamps), max(stamps)):
             bound = bind_price_grid(raw, expected_sha256=item["canonical_receipt_sha256"],
-                symbol=symbol, venue=item["receipt"]["venue"], product="USDT_M_PERPETUAL",
+                symbol=symbol, venue="BINGX", product="USDT_M_PERPETUAL",
                 at_ts_ms=stamp, evidence_class=item["receipt"]["evidence_class"])
             if bound["evidence_class"] == "SYNTHETIC_FIXTURE" and (
                 frame.attrs.get("data_kind") != "SYNTHETIC_FIXTURE"

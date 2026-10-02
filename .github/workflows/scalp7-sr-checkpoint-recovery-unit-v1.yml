@@ -1,0 +1,61 @@
+name: SR checkpoint recovery synthetic unit tests
+on:
+  push:
+    branches: [codex/g4-sr-checkpoint-resume-20261002]
+    paths:
+      - scripts/scalp7_sr_checkpoint_recovery_v1.py
+      - tests/test_scalp7_sr_checkpoint_recovery_v1.py
+      - .github/workflows/scalp7-sr-checkpoint-recovery-unit-v1.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/scalp7_sr_checkpoint_recovery_v1.py
+      - tests/test_scalp7_sr_checkpoint_recovery_v1.py
+      - .github/workflows/scalp7-sr-checkpoint-recovery-unit-v1.yml
+permissions:
+  contents: read
+concurrency:
+  group: sr-checkpoint-unit-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  synthetic-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Compile and exercise temporary synthetic registries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sr-checkpoint-unit"
+          python3 -m py_compile scripts/scalp7_sr_checkpoint_recovery_v1.py tests/test_scalp7_sr_checkpoint_recovery_v1.py
+          PYTHONPATH=. python3 -m unittest discover -s tests -p test_scalp7_sr_checkpoint_recovery_v1.py -v 2>&1 | tee "$RUNNER_TEMP/sr-checkpoint-unit/UNIT_TESTS.txt"
+          python3 - <<'PY'
+          import ast,hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'sr-checkpoint-unit'
+          paths=['scripts/scalp7_sr_checkpoint_recovery_v1.py','tests/test_scalp7_sr_checkpoint_recovery_v1.py']
+          core=ast.parse(pathlib.Path(paths[0]).read_text())
+          names=[]
+          for node in ast.walk(core):
+              if isinstance(node,ast.Import): names.extend(x.name.split('.')[0] for x in node.names)
+              if isinstance(node,ast.ImportFrom): names.append((node.module or '').split('.')[0])
+          assert not set(names)&{'backend','subprocess','socket','requests','urllib'},names
+          for name in paths:
+              (root/pathlib.Path(name).name).write_bytes(pathlib.Path(name).read_bytes())
+          result={'head_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                  'fixture_kind':'SYNTHETIC_UNIT_TEST_ONLY','genuine_source_loader_imports':0,
+                  'new_full_runs':0,'vps_access':False,'runtime_deployment':False,
+                  'files':{name:hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() for name in paths}}
+          (root/'VALIDATION.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sr-checkpoint-unit-${{ github.run_id }}
+          path: ${{ runner.temp }}/sr-checkpoint-unit/
+          if-no-files-found: error
+          retention-days: 14

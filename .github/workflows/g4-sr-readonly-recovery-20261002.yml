@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Read existing VPS runtime without restart or economic execution
+      - name: Inspect termination evidence and preserve existing checkpoint without replay
         shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -24,112 +24,86 @@ jobs:
           umask 077
           OUT="$RUNNER_TEMP/g4-sr-readonly"
           mkdir -p "$OUT"
-          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_SSH_KEY" ]; then
-            echo '{"state":"EXISTING_SSH_SECRET_REFERENCE_UNAVAILABLE","remote_command_executed":false}' > "$OUT/status.json"
-            exit 1
-          fi
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_KEY"
           KEY="$RUNNER_TEMP/g4-sr-key"
           KNOWN="$RUNNER_TEMP/g4-sr-known-hosts"
           trap 'rm -f "$KEY" "$KNOWN"' EXIT
           printf '%s\n' "$VPS_SSH_KEY" > "$KEY"
           chmod 600 "$KEY"
-          if ! ssh-keyscan -T 10 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null; then
-            echo '{"state":"SSH_HOST_KEY_SCAN_FAILED","remote_command_executed":false}' > "$OUT/status.json"
-            exit 1
-          fi
+          ssh-keyscan -T 10 -H "$VPS_HOST" > "$KNOWN" 2>/dev/null
           cat > "$RUNNER_TEMP/inspect-sr.py" <<'PYREMOTE'
-          """Read existing SR runtime only; never imports or starts strategy execution."""
-          import datetime, hashlib, json, os, pathlib, re, sqlite3, subprocess, time
-          R = pathlib.Path('/home/z/z/runtime/g4_measurement_exact25_closure_after_pr1345_v1/sr_continuous_two_authorized_20261001')
-          W = pathlib.Path('/home/z/worktrees/g4-sr-continuous-two-full-20261001')
-          report = {'schema': 'g4.sr.readonly-recovery.v1', 'checked_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'mutation_performed': False, 'economic_execution_started': False, 'runtime_exists': R.is_dir(), 'worktree_exists': W.is_dir()}
+          """Read-only failure diagnosis and recovery-source export; no strategy imports."""
+          import ast, datetime, hashlib, json, os, re, subprocess
+          from pathlib import Path
+          R=Path('/home/z/z/runtime/g4_measurement_exact25_closure_after_pr1345_v1/sr_continuous_two_authorized_20261001')
+          W=Path('/home/z/worktrees/g4-sr-continuous-two-full-20261001')
+          report={'schema':'g4.sr.readonly-cause.v1','checked_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'remote_mutation':False,'new_fulls':0}
           def clean(s):
-              s = re.sub(r'(?i)(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+', r'\1=[REDACTED]', s)
-              s = re.sub(r'https?://[^\s\"\']+', '[URL_REDACTED]', s)
+              s=re.sub(r'https?://[^\s\"\']+','[URL_REDACTED]',s)
+              s=re.sub(r'(?i)(authorization|api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+',r'\1=[REDACTED]',s)
               return s
-          def run(args):
+          def cmd(args,limit=50000):
               try:
-                  p = subprocess.run(args, capture_output=True, text=True, timeout=15, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
-                  return {'returncode': p.returncode, 'stdout': clean(p.stdout[-16000:]), 'stderr': clean(p.stderr[-1500:])}
+                  p=subprocess.run(args,capture_output=True,text=True,timeout=35,env={**os.environ,'GIT_OPTIONAL_LOCKS':'0'})
+                  return {'rc':p.returncode,'stdout':clean(p.stdout[-limit:]),'stderr':clean(p.stderr[-1000:]),'output_truncated':len(p.stdout)>limit}
               except Exception as e:
-                  return {'error': type(e).__name__}
-          report['remote_service'] = run(['systemctl', 'show', 'desktop-commander-remote.service', '-p', 'LoadState', '-p', 'ActiveState', '-p', 'SubState', '-p', 'MainPID', '-p', 'KillMode', '-p', 'ControlGroup', '-p', 'Result', '-p', 'ExecMainCode', '-p', 'ExecMainStatus', '-p', 'NRestarts', '-p', 'ActiveEnterTimestamp', '-p', 'InactiveEnterTimestamp'])
-          report['system_capacity'] = {'loadavg': pathlib.Path('/proc/loadavg').read_text().strip(), 'memory_kib': {line.split(':')[0]: line.split(':')[1].strip() for line in pathlib.Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:', 'MemAvailable:', 'SwapTotal:', 'SwapFree:'))}}
-          report['processes'] = []
-          for p in pathlib.Path('/proc').iterdir():
-              if not p.name.isdigit():
+                  return {'error':type(e).__name__}
+          report['boot']=[s for s in Path('/proc/stat').read_text().splitlines() if s.startswith('btime ')]
+          report['cpu_count']=os.cpu_count()
+          report['service_journal']=cmd(['journalctl','--utc','--no-pager','-u','desktop-commander-remote.service','--since','2026-10-01 23:15:00 UTC','--until','2026-10-02 10:15:00 UTC','-o','short-iso-precise','--grep','exit|kill|stop|restart|oom|memory|watchdog','--case-sensitive=no','-n','120'])
+          report['kernel_memory_journal']=cmd(['journalctl','--utc','--no-pager','_TRANSPORT=kernel','--since','2026-10-01 23:15:00 UTC','--until','2026-10-02 10:15:00 UTC','-o','short-iso-precise','--grep','oom-kill|Out of memory|Killed process|invoked oom-killer|oom_reaper','--case-sensitive=no','-n','100'])
+          report['scoped_lock']={}
+          p=R/'execution.lock'
+          if p.exists():
+              st=p.stat()
+              dev=f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}'
+              report['scoped_lock']={'inode_key':dev,'held_entries':[x for x in Path('/proc/locks').read_text().splitlines() if dev in x]}
+          report['sources']={}
+          files=[R/'worker.py',R/'archive_saved_results.py',W/'scripts/verify_scalp7_sr_continuous_two_arithmetic_v1.py',W/'scripts/verify_scalp7_sr_continuous_two_saved_v1.py',W/'tests/test_scalp7_sr_continuous_two_arithmetic_v1.py']
+          files+=sorted((W/'backend/research/rebuild').glob('scalp7_measurement*.py'))
+          for p in files:
+              if not p.is_file() or p.is_symlink() or p.stat().st_size>180000:
                   continue
+              b=p.read_bytes(); s=b.decode('utf-8')
               try:
-                  cwd = str((p/'cwd').resolve())
-                  args = (p/'cmdline').read_bytes().split(b'\0')
-                  scoped = cwd == str(W) or any(str(R).encode() in a or str(W).encode() in a for a in args)
-                  if not scoped and p.name not in ('162354', '162625'):
-                      continue
-                  status = (p/'status').read_text().splitlines()
-                  report['processes'].append({'pid': int(p.name), 'scoped_match': scoped, 'cwd': cwd, 'comm': (p/'comm').read_text().strip(), 'status': [line for line in status if line.startswith(('Name:', 'State:', 'PPid:', 'VmRSS:'))], 'cgroup': (p/'cgroup').read_text().strip(), 'start_ticks': (p/'stat').read_text().split(') ',1)[1].split()[19]})
-              except (OSError, ValueError, IndexError):
-                  pass
-          report['files'] = []
-          for base in (R, R/'results'):
-              if not base.is_dir():
+                  ast.parse(s); syntax='PASS'
+              except SyntaxError as e:
+                  syntax=f'FAIL:{e.lineno}:{e.msg}'
+              report['sources'][str(p)]={'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b),'syntax_ast':syntax,'content':s}
+          report['checkpoints']=[]
+          for p in sorted((R/'results').glob('*')):
+              if not p.is_file() or p.is_symlink():
                   continue
-              for f in sorted(base.iterdir()):
-                  if not f.is_file() or f.is_symlink():
-                      continue
-                  st = f.stat()
-                  report['files'].append({'path': str(f.relative_to(R)), 'bytes': st.st_size, 'mtime_utc': datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).isoformat()})
-          report['small_receipts'] = {}
-          for name in ('USER_APPROVAL.json', 'BATCH_STARTED.json', 'RESERVATIONS.json', 'PREFLIGHT.json', 'TERMINAL_RECEIPT.json', 'BATCH_TERMINAL.json', 'RECOVERY_PREEXECUTION.json'):
-              p = R/name
-              if p.is_file() and not p.is_symlink() and p.stat().st_size <= 150000:
-                  try:
-                      raw = p.read_bytes()
-                      report['small_receipts'][name] = {'sha256': hashlib.sha256(raw).hexdigest(), 'body': json.loads(raw)}
-                  except Exception as e:
-                      report['small_receipts'][name] = {'error': type(e).__name__}
-          p = R/'worker.log'
-          if p.is_file() and not p.is_symlink():
+              st=p.stat(); h=hashlib.sha256()
               with p.open('rb') as f:
-                  f.seek(max(0, p.stat().st_size-12000))
-                  report['worker_log_tail'] = clean(f.read().decode('utf-8', errors='replace'))
-          p = R/'candidate_registry.sqlite3'
-          report['registry'] = {}
-          if p.is_file() and not p.is_symlink():
-              try:
-                  con = sqlite3.connect(p.as_uri()+'?mode=ro', uri=True, timeout=3)
-                  con.execute('PRAGMA query_only=ON')
-                  con.row_factory = sqlite3.Row
-                  tables = [row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-                  report['registry']['tables'] = tables
-                  for table in ('scopes', 'claims', 'events'):
-                      if table not in tables:
-                          continue
-                      rows = con.execute('SELECT * FROM "'+table+'" LIMIT 200').fetchall()
-                      report['registry'][table] = [{k: (v if not isinstance(v, bytes) else {'bytes': len(v)}) for k,v in dict(row).items()} for row in rows]
-                  con.close()
-              except Exception as e:
-                  report['registry']['error'] = type(e).__name__
-          if W.is_dir():
-              report['worktree_head'] = run(['git', '-C', str(W), 'rev-parse', 'HEAD'])
-              report['worktree_status'] = run(['git', '-C', str(W), 'status', '--short', '--untracked-files=normal'])
-          print(json.dumps(report, ensure_ascii=False, indent=2))
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              after=p.stat()
+              report['checkpoints'].append({'name':p.name,'bytes':st.st_size,'sha256':h.hexdigest(),'stable_during_hash':st.st_mtime_ns==after.st_mtime_ns and st.st_size==after.st_size,'mtime_utc':datetime.datetime.fromtimestamp(st.st_mtime,datetime.timezone.utc).isoformat()})
+          print(json.dumps(report,ensure_ascii=False))
           PYREMOTE
-          set +e
-          timeout 150 ssh -T -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -' < "$RUNNER_TEMP/inspect-sr.py" > "$OUT/inspection.json" 2> "$OUT/transport.log"
-          RC=$?
-          set -e
-          printf '{"ssh_exit_code":%s,"new_full_runs":0,"service_restart":false}\n' "$RC" > "$OUT/status.json"
-          if [ "$RC" -eq 0 ]; then
-            cat "$OUT/inspection.json"
-          else
-            echo "SSH_READ_ONLY_INSPECTION_FAILED exit=$RC"
-          fi
-          exit "$RC"
-      - name: Preserve read-only observation
+          OPTS=(-i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN")
+          timeout 150 ssh -T "${OPTS[@]}" "$VPS_USER@$VPS_HOST" 'PYTHONDONTWRITEBYTECODE=1 python3 -' < "$RUNNER_TEMP/inspect-sr.py" > "$OUT/cause_and_sources.json" 2> "$OUT/transport.log"
+          timeout 150 scp -q "${OPTS[@]}" "$VPS_USER@$VPS_HOST:/home/z/z/runtime/g4_measurement_exact25_closure_after_pr1345_v1/sr_continuous_two_authorized_20261001/results/SR_CONTROL.common_contiguous_1.checkpoint.json" "$OUT/"
+          python3 - "$OUT" <<'PYLOCAL'
+          import hashlib,json,sys
+          from pathlib import Path
+          out=Path(sys.argv[1]);r=json.loads((out/'cause_and_sources.json').read_text())
+          name='SR_CONTROL.common_contiguous_1.checkpoint.json'
+          receipt=next(x for x in r['checkpoints'] if x['name']==name)
+          got=hashlib.sha256((out/name).read_bytes()).hexdigest()
+          assert receipt['stable_during_hash'] and got==receipt['sha256']
+          brief={k:r[k] for k in ('checked_utc','remote_mutation','new_fulls','cpu_count','boot','scoped_lock','checkpoints','service_journal','kernel_memory_journal')}
+          brief['checkpoint_copy_sha256_verified']=True
+          brief['source_files']={k:{kk:vv for kk,vv in v.items() if kk!='content'} for k,v in r['sources'].items()}
+          (out/'SUMMARY.json').write_text(json.dumps(brief,indent=2)+'\n')
+          print(json.dumps(brief,indent=2))
+          PYLOCAL
+      - name: Preserve read-only evidence and recovered checkpoint
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: g4-sr-readonly-${{ github.run_id }}
           path: ${{ runner.temp }}/g4-sr-readonly/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14

@@ -17,7 +17,14 @@ FIXTURES = runpy.run_path(str(ROOT / "tests/test_scalp7_hg_closure_v1.py"))
 
 def inputs_and_binding(detail=None):
     frame, default_detail = FIXTURES["lifecycle_fixture"]()
-    detail = default_detail if detail is None else detail
+    if detail is None:
+        detail = default_detail.copy(deep=True)
+        # Separate normal fills from the frozen shared-capital gap-over-cap
+        # rejection: do not weaken that guard just to reproduce standalone PnL.
+        detail.loc[detail.index[0], "open"] = 112.21
+        detail.loc[detail.index[0], "low"] = 112.0
+    else:
+        detail = detail.copy(deep=True)
     for value in (frame, detail):
         value.attrs.update(data_kind="SYNTHETIC_FIXTURE", source_rows_are_genuine=False)
     receipt = dict(kind="PRICE_GRID", symbol="X", venue="BINGX", product="USDT_M_PERPETUAL",
@@ -38,7 +45,7 @@ def run(inp, binding):
 def test_reproduces_generic_adapter_omission_then_cancels_in_new_bridge():
     active = 48 * hg.TF + hg.MINUTE
     detail = pd.DataFrame([FIXTURES["minute"](active, low=102),
-        FIXTURES["minute"](active+hg.MINUTE, o=113,h=114,low=113,c=114)])
+        FIXTURES["minute"](active+hg.MINUTE, o=112,h=114,low=111,c=113)])
     inp, binding = inputs_and_binding(detail)
     legacy_compiled = hg.compile_model(hg.MODEL_ID, inp["frames"], {"tick_size": .01})
     legacy = old._conditional(binding, hg, legacy_compiled, inp)
@@ -124,3 +131,14 @@ def test_foreign_binding_cannot_enter_bridge():
 def test_retuning_is_not_an_accepted_config():
     inp,b=inputs_and_binding();cfg=copy.deepcopy(b["config"]);cfg["be_arm_r"]=1
     with pytest.raises(ValueError,match="EXACT_HG_PRICE_GRID"):m.compile_model(m.MODEL_ID,inp["frames"],cfg)
+
+
+def test_gap_above_reserved_notional_is_explicitly_rejected_not_repriced():
+    _, original_detail = FIXTURES["lifecycle_fixture"]()
+    inp, binding = inputs_and_binding(original_detail)
+    out = run(inp, binding)
+    assert out["execution"]["ledger"] == []
+    assert out["unknown_execution_count"] == 0
+    assert any(x["status"] == "CANCELLED" for x in out["execution"]["statuses"])
+    # The standalone HG fixture does not impose this shared-capital reserve.
+    # This test preserves rather than silently removes the execution difference.
